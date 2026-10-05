@@ -27,15 +27,28 @@ function Set-FastLlmLabShortcut {
     return $ShortcutPath
 }
 
-function New-TestPackage([string]$Directory,[string]$ZipName,[bool]$BomManifest=$false){
+function New-TestPackage([string]$Directory,[string]$ZipName,[bool]$BomManifest=$false,[bool]$LeaseCapable=$false,
+    [string]$UiSource='<default>',[string]$CliSource='<default>',[string]$HelperSource='<default>'){
     $payload=Join-Path $Directory ('payload-'+[Guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory((Join-Path $payload 'src'))
     [void][IO.Directory]::CreateDirectory((Join-Path $payload 'config'))
     $files=@('FastLLM.cmd','fast-llm-ui.ps1','fast-llm.ps1','src/FastLlm.psm1','config/catalog.json')
+    if($LeaseCapable){$files+= 'src/FastLlm.LabApp.ps1'}
     $rows=@()
     foreach($name in $files){
         $path=Join-Path $payload $name
-        [IO.File]::WriteAllText($path,"source $name")
+        $content=if($name -ceq 'fast-llm-ui.ps1' -and $UiSource -cne '<default>'){
+            $UiSource
+        }elseif($name -ceq 'fast-llm.ps1' -and $CliSource -cne '<default>'){
+            $CliSource
+        }elseif($name -ceq 'src/FastLlm.LabApp.ps1' -and $HelperSource -cne '<default>'){
+            $HelperSource
+        }elseif($LeaseCapable -and $name -ceq 'src/FastLlm.LabApp.ps1'){
+            'function Enter-FastLlmLabAppLifetime { }'
+        }elseif($LeaseCapable -and $name -in @('fast-llm-ui.ps1','fast-llm.ps1')){
+            'Enter-FastLlmLabAppLifetime -SourceRoot $PSScriptRoot'
+        }else{"source $name"}
+        [IO.File]::WriteAllText($path,$content)
         $rows+=@{path=$name;sizeBytes=[long](Get-Item -LiteralPath $path).Length;sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
     $manifest=@{schemaVersion=1;kind='unsigned-private-windows-lab-package';physicalQualification=$false;publicReleaseApproved=$false;
@@ -72,6 +85,11 @@ function Add-TestZipEntry([string]$Zip,[string]$Name){
         try{$bytes=[Text.Encoding]::UTF8.GetBytes('extra');$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
     }finally{$archive.Dispose()}
 }
+function RejectGuardPackageBeforeStage($Package,[string]$Name){
+    $testStage=Join-Path $temp ('guard-reject-'+[Guid]::NewGuid().ToString('N'))
+    Reject {Expand-FastLlmLabVerifiedPackage -ArchivePath $Package.path -ExpectedSha256 $Package.sha256 -Stage $testStage} "$Name was accepted."
+    Check (-not (Test-Path -LiteralPath $testStage)) "$Name reached an extraction stage."
+}
 
 $tempBase=if([IO.Directory]::Exists('/private/tmp')){'/private/tmp'}else{[IO.Path]::GetTempPath()}
 $temp=Join-Path $tempBase ('fastllm-lab-app-'+[Guid]::NewGuid().ToString('N'))
@@ -81,6 +99,22 @@ try{
     $first=New-TestPackage $temp 'first.zip'
     $second=New-TestPackage $temp 'second.zip'
     $bom=New-TestPackage $temp 'bom.zip' $true
+    $guarded=New-TestPackage $temp 'guarded.zip' $false $true
+    $commentOnly=New-TestPackage $temp 'comment-only.zip' $false $false '# Enter-FastLlmLabAppLifetime' '# Enter-FastLlmLabAppLifetime'
+    RejectGuardPackageBeforeStage $commentOnly 'Comment-only UI/CLI guard markers'
+    $oneSided=New-TestPackage $temp 'one-sided.zip' $false $true '<default>' '# no lifetime call'
+    RejectGuardPackageBeforeStage $oneSided 'One-sided guard call'
+    $missingHelper=New-TestPackage $temp 'missing-helper.zip' $false $false 'Enter-FastLlmLabAppLifetime' 'Enter-FastLlmLabAppLifetime'
+    RejectGuardPackageBeforeStage $missingHelper 'Guard calls without helper'
+    $commentHelper=New-TestPackage $temp 'comment-helper.zip' $false $true '<default>' '<default>' '# function Enter-FastLlmLabAppLifetime { }'
+    RejectGuardPackageBeforeStage $commentHelper 'Comment-only helper definition'
+    $lateGuard=New-TestPackage $temp 'late-guard.zip' $false $true "Import-Module foo`nEnter-FastLlmLabAppLifetime"
+    RejectGuardPackageBeforeStage $lateGuard 'Guard call after first Import-Module'
+    $nestedGuard=New-TestPackage $temp 'nested-guard.zip' $false $true 'function Demo { Enter-FastLlmLabAppLifetime }'
+    RejectGuardPackageBeforeStage $nestedGuard 'Guard call nested in a function'
+    Check ((Test-FastLlmLabEntryLeaseSource (Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw)) -and
+           (Test-FastLlmLabEntryLeaseSource (Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw)) -and
+           (Test-FastLlmLabHelperLeaseSource (Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.LabApp.ps1') -Raw))) 'Actual UI, CLI, and helper satisfy the AST lease-source contract.'
     Reject {Assert-FastLlmLabPackagePath '../x.ps1'} 'Parent traversal accepted.'
     Reject {Assert-FastLlmLabPackagePath 'src//x.ps1'} 'Empty path component accepted.'
     Reject {Assert-FastLlmLabPackagePath 'src/CON.txt'} 'Reserved Win32 device accepted.'
@@ -124,11 +158,18 @@ try{
     if($linkCreated){
         Reject {Expand-FastLlmLabVerifiedPackage -ArchivePath $first.path -ExpectedSha256 $first.sha256 -Stage $linkStage} 'Reparse-point stage accepted.'
         Check (-not (Test-Path -LiteralPath (Join-Path $linkTarget 'FastLLM.cmd'))) 'Reparse-point stage redirected extraction.'
+    }else{
+        Write-Host 'SKIP: symbolic-link fixture could not be created; two stage-reparse assertions were not executed.'
     }
     $installed=Invoke-FastLlmLabAppCore -Action Install -ArchivePath $first.path -ExpectedSha256 $first.sha256 -AppRoot $app -ShortcutPath $shortcut
     Check ($installed.currentVersion -cmatch '^[0-9a-f]{64}-[0-9a-f]{32}$' -and $null -eq $installed.previousVersion -and -not $installed.publicReleaseApproved) 'First install state is invalid.'
     Check ((Get-Content -LiteralPath $shortcut -Raw) -ceq $installed.currentVersion) 'Owned shortcut did not target installed version.'
     $ownedState=Get-FastLlmLabAppState $app
+    Check ($null -eq (Get-FastLlmLabAppLedger $app)) 'Legacy package was not silently claimed as fully owned.'
+    $legacyStageNames=@(Get-ChildItem -LiteralPath $app -Force | Where-Object {$_.Name -like '.stage-*'} | ForEach-Object {$_.Name})
+    Reject {Invoke-FastLlmLabAppCore -Action Repair -ArchivePath $guarded.path -ExpectedSha256 $guarded.sha256 -AppRoot $app -ShortcutPath $shortcut} 'Guarded repair of pre-ledger app was accepted.'
+    Check ((Get-FastLlmLabAppState $app).currentVersion -ceq $installed.currentVersion -and
+           @((Get-ChildItem -LiteralPath $app -Force | Where-Object {$_.Name -like '.stage-*'} | ForEach-Object {$_.Name})).Count -eq $legacyStageNames.Count) 'Rejected guarded repair did not stage or change legacy app.'
     $ownedTarget=Join-Path (Join-Path (Join-Path $app 'versions') $installed.currentVersion) 'FastLLM.cmd'
     Check ((Assert-FastLlmLabShortcutOwnership -TargetPath $ownedTarget -Arguments '' -AppRoot $app -State $ownedState -Journal $null) -ceq $installed.currentVersion) 'Recorded shortcut ownership was not accepted.'
     Reject {Assert-FastLlmLabShortcutOwnership -TargetPath $ownedTarget -Arguments '/c evil' -AppRoot $app -State $ownedState -Journal $null} 'Shortcut arguments were accepted as owned.'
@@ -185,5 +226,15 @@ try{
     $recovered=Invoke-FastLlmLabAppCore -Action Rollback -AppRoot $retryApp -ShortcutPath $retryShortcut
     Check ($recovered.currentVersion -ceq $retryPrior.currentVersion -and $recovered.previousVersion -ceq $retryRepair.currentVersion -and
            -not (Test-Path -LiteralPath (Join-Path $retryApp 'lab-app-journal.json'))) 'Prior-state interrupted repair was not recovered before rollback.'
+    $guardedApp=Join-Path $temp 'guarded-app';$guardedShortcut=Join-Path $temp 'guarded-shortcut.lnk'
+    $guardedInitial=Invoke-FastLlmLabAppCore -Action Install -ArchivePath $guarded.path -ExpectedSha256 $guarded.sha256 -AppRoot $guardedApp -ShortcutPath $guardedShortcut
+    $firstLedger=Get-FastLlmLabAppLedger $guardedApp
+    Check (@($firstLedger.versions).Count -eq 1 -and $firstLedger.versions[0].version -ceq $guardedInitial.currentVersion -and
+           $firstLedger.shortcut.sha256 -ceq (Get-FastLlmLabShortcutRecord $guardedShortcut).sha256) 'Guarded fresh install records exact version and shortcut bytes.'
+    $guardedRepair=Invoke-FastLlmLabAppCore -Action Repair -ArchivePath $guarded.path -ExpectedSha256 $guarded.sha256 -AppRoot $guardedApp -ShortcutPath $guardedShortcut
+    $secondLedger=Get-FastLlmLabAppLedger $guardedApp
+    Check (@($secondLedger.versions).Count -eq 2 -and $guardedRepair.currentVersion -cne $guardedInitial.currentVersion) 'Guarded repair records both retained versions.'
+    $null=Invoke-FastLlmLabAppCore -Action Rollback -AppRoot $guardedApp -ShortcutPath $guardedShortcut
+    Check (@((Get-FastLlmLabAppLedger $guardedApp).versions).Count -eq 2) 'Guarded rollback keeps complete retained-version ledger.'
 }finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Recurse -Force}}
 "Lab app checks: $checks passed"

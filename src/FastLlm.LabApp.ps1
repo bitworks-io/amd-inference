@@ -1,5 +1,6 @@
 #requires -Version 5.1
-# Local, unsigned lab-package installation only. This never executes archive content.
+# Local, unsigned lab-package installation and recoverable app lifecycle.
+# This never executes archive content or removes the model cache.
 
 function Assert-FastLlmLabAppLeaf {
     param([string]$Name)
@@ -11,9 +12,14 @@ function Assert-FastLlmLabAppPath {
     $full=[IO.Path]::GetFullPath($Path)
     $part=New-Object IO.DirectoryInfo($full)
     while($null -ne $part){
-        if($part.Exists -and (($part.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){
-            throw 'Lab-app path includes a reparse-point ancestor.'
-        }
+        # File.GetAttributes checks the path entry itself even for a dangling
+        # junction/symlink, whereas DirectoryInfo.Exists can report false.
+        try{
+            $attributes=[IO.File]::GetAttributes($part.FullName)
+            if(($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){
+                throw 'Lab-app path includes a reparse-point ancestor.'
+            }
+        }catch [IO.FileNotFoundException]{} catch [IO.DirectoryNotFoundException]{}
         $part=$part.Parent
     }
     if(Test-Path -LiteralPath $full){
@@ -55,6 +61,47 @@ function Assert-FastLlmLabPackagePath {
        [IO.Path]::GetExtension($Name).ToLowerInvariant() -notin @('.ps1','.psm1','.cs','.md','.json','.sha256','.cmd')){
         throw 'ZIP contains an unapproved source-file type.'
     }
+}
+
+function Get-FastLlmLabSourceAst {
+    param([string]$Source)
+    $tokens=$null;$errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+    if(@($errors).Count -ne 0){throw 'Lab-app entry source has PowerShell parser errors.'}
+    return $ast
+}
+
+function Test-FastLlmLabRootAstNode {
+    param($Node,$Root)
+    $parent=$Node.Parent
+    while($null -ne $parent -and $parent -ne $Root){
+        if($parent -is [Management.Automation.Language.FunctionDefinitionAst] -or
+           $parent -is [Management.Automation.Language.ScriptBlockAst]){return $false}
+        $parent=$parent.Parent
+    }
+    return ($parent -eq $Root)
+}
+
+function Test-FastLlmLabEntryLeaseSource {
+    param([string]$Source)
+    $ast=Get-FastLlmLabSourceAst $Source
+    $commands=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]},$true) |
+        Where-Object {Test-FastLlmLabRootAstNode -Node $_ -Root $ast})
+    $imports=@($commands | Where-Object {$_.GetCommandName() -ieq 'Import-Module'} |
+        Sort-Object {$_.Extent.StartOffset})
+    $firstImport=if($imports.Count){$imports[0].Extent.StartOffset}else{[int]::MaxValue}
+    $calls=@($commands | Where-Object {$_.GetCommandName() -ieq 'Enter-FastLlmLabAppLifetime' -and
+        $_.Extent.StartOffset -lt $firstImport})
+    return ($calls.Count -gt 0)
+}
+
+function Test-FastLlmLabHelperLeaseSource {
+    param([string]$Source)
+    $ast=Get-FastLlmLabSourceAst $Source
+    $definitions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$true) |
+        Where-Object {$_.Name -ieq 'Enter-FastLlmLabAppLifetime' -and
+            (Test-FastLlmLabRootAstNode -Node $_ -Root $ast)})
+    return ($definitions.Count -gt 0)
 }
 
 function Assert-FastLlmLabManifest {
@@ -162,7 +209,7 @@ function Copy-FastLlmLabEntry {
 }
 
 function Expand-FastLlmLabVerifiedPackage {
-    param([string]$ArchivePath,[string]$ExpectedSha256,[string]$Stage)
+    param([string]$ArchivePath,[string]$ExpectedSha256,[string]$Stage,[switch]$RejectLeaseCapable)
     if($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$'){throw 'An independently reviewed exact ZIP SHA-256 is required.'}
     if($env:OS -ceq 'Windows_NT'){Assert-FastLlmLabLocalWindowsPath $ArchivePath}
     $zipPath=Assert-FastLlmLabAppPath $ArchivePath
@@ -219,6 +266,27 @@ function Expand-FastLlmLabVerifiedPackage {
                     throw 'Lab ZIP metadata differs from its manifest.'
                 }
                 Assert-FastLlmLabEntryDigest -Entry $byName[$name] -ExpectedBytes ([long]$declared.sizeBytes) -ExpectedSha256 $declared.sha256
+            }
+            $leaseCalls=0
+            foreach($entryName in @('fast-llm-ui.ps1','fast-llm.ps1')){
+                $entryBytes=Read-FastLlmLabEntryBytes -Entry $byName[$entryName] -Limit 2MB
+                $entrySource=$utf8.GetString($entryBytes)
+                $hasLeaseCall=Test-FastLlmLabEntryLeaseSource $entrySource
+                if(-not $hasLeaseCall -and $entrySource -match 'Enter-FastLlmLabAppLifetime'){
+                    throw 'Lab ZIP entry mentions the lifetime lease without an eligible early command.'
+                }
+                if($hasLeaseCall){$leaseCalls++}
+            }
+            if($leaseCalls -eq 1){throw 'Lab ZIP has an inconsistent app-lifetime guard across UI and CLI.'}
+            if($leaseCalls -eq 2){
+                if(-not $byName.ContainsKey('src/FastLlm.LabApp.ps1')){throw 'Guarded lab ZIP lacks its lifetime-lease helper.'}
+                $helperBytes=Read-FastLlmLabEntryBytes -Entry $byName['src/FastLlm.LabApp.ps1'] -Limit 2MB
+                if(-not (Test-FastLlmLabHelperLeaseSource ($utf8.GetString($helperBytes)))){
+                    throw 'Guarded lab ZIP has no lifetime-lease helper function.'
+                }
+            }
+            if($RejectLeaseCapable -and $leaseCalls -gt 0){
+                throw 'A pre-ledger lab app cannot be repaired into a lifetime-guarded package. Review and migrate it separately.'
             }
             # No stage exists or is written before every expanded member is verified.
             $stage=Assert-FastLlmLabAppPath $Stage
@@ -294,6 +362,73 @@ function Write-FastLlmLabAppJsonAtomic {
         [IO.File]::Replace($temp,$Path,$backup)
         [IO.File]::Delete($backup)
     }else{[IO.File]::Move($temp,$Path)}
+}
+
+function Get-FastLlmLabAppLedger {
+    param([string]$AppRoot)
+    $path=Join-Path $AppRoot 'lab-app-ledger.json'
+    if(-not (Test-Path -LiteralPath $path)){return $null}
+    $path=Assert-FastLlmLabAppPath $path
+    $item=Get-Item -LiteralPath $path -Force
+    if($item.PSIsContainer -or $item.Length -lt 1 -or $item.Length -gt 8192){throw 'Lab-app ownership ledger is unsafe.'}
+    $ledger=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if($ledger.schemaVersion -ne 1 -or $ledger.kind -cne 'fastllm-private-lab-app-ledger' -or
+       $ledger.installId -cnotmatch '^[0-9a-f]{32}$' -or $null -eq $ledger.versions -or
+       @($ledger.versions).Count -lt 1 -or @($ledger.versions).Count -gt 32){throw 'Lab-app ownership ledger is invalid.'}
+    $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach($row in @($ledger.versions)){
+        Assert-FastLlmLabAppLeaf ([string]$row.version)
+        if($row.manifestSha256 -cnotmatch '^[0-9a-f]{64}$' -or -not $seen.Add([string]$row.version)){
+            throw 'Lab-app ownership ledger contains an invalid or duplicate version.'
+        }
+    }
+    if($ledger.shortcut){
+        if($ledger.shortcut.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+           [long]$ledger.shortcut.sizeBytes -lt 1 -or [long]$ledger.shortcut.sizeBytes -gt 1MB){
+            throw 'Lab-app shortcut ledger is invalid.'
+        }
+    }
+    return $ledger
+}
+
+function Test-FastLlmLabAppLeaseCapableVersion {
+    param([string]$AppRoot,[string]$Version,[string]$ManifestSha256)
+    $versionRoot=Test-FastLlmLabAppVersion $AppRoot $Version $ManifestSha256
+    foreach($entry in @('fast-llm-ui.ps1','fast-llm.ps1')){
+        $source=Get-Content -LiteralPath (Join-Path $versionRoot $entry) -Raw
+        if(-not (Test-FastLlmLabEntryLeaseSource $source)){return $false}
+    }
+    $helper=Join-Path $versionRoot 'src/FastLlm.LabApp.ps1'
+    if(-not (Test-Path -LiteralPath $helper -PathType Leaf)){return $false}
+    return (Test-FastLlmLabHelperLeaseSource (Get-Content -LiteralPath $helper -Raw))
+}
+
+function Get-FastLlmLabShortcutRecord {
+    param([string]$ShortcutPath)
+    $path=Assert-FastLlmLabAppPath $ShortcutPath
+    $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if($item.PSIsContainer -or $item.Length -lt 1 -or $item.Length -gt 1MB){throw 'Managed shortcut is unsafe.'}
+    return [ordered]@{sizeBytes=[long]$item.Length;sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+}
+
+function Update-FastLlmLabAppLedger {
+    param([string]$AppRoot,[string]$InstallId,[string]$Version,[string]$ManifestSha256,[string]$ShortcutPath)
+    $ledger=Get-FastLlmLabAppLedger $AppRoot
+    $state=Get-FastLlmLabAppState $AppRoot
+    if($ledger -and $ledger.installId -cne $InstallId){throw 'Lab-app ledger owner differs from the managed root.'}
+    if(-not $ledger){
+        # Existing pre-ledger installations may contain older unrecorded versions.
+        # Never claim these as owned based merely on their directory names.
+        if($state -or -not (Test-FastLlmLabAppLeaseCapableVersion $AppRoot $Version $ManifestSha256)){return}
+        $ledger=[ordered]@{schemaVersion=1;kind='fastllm-private-lab-app-ledger';installId=$InstallId;
+            versions=@();shortcut=$null}
+    }
+    $rows=@($ledger.versions | Where-Object {$_.version -cne $Version})
+    $rows+= [ordered]@{version=$Version;manifestSha256=$ManifestSha256}
+    if($rows.Count -gt 32){throw 'Lab-app retained-version ledger is full; manual review is required.'}
+    $ledger.versions=$rows
+    $ledger.shortcut=Get-FastLlmLabShortcutRecord $ShortcutPath
+    Write-FastLlmLabAppJsonAtomic -Path (Join-Path $AppRoot 'lab-app-ledger.json') -Value $ledger
 }
 
 function Test-FastLlmLabAppVersion {
@@ -429,7 +564,11 @@ function Invoke-FastLlmLabAppCore {
     [void][IO.Directory]::CreateDirectory($app)
     $lockPath=Join-Path $app 'lab-app.lock'
     $lock=[IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    $appLifetime=$null
     try{
+        if(Test-Path -LiteralPath (Join-Path $app 'lab-app-uninstall.json')){
+            throw 'Interrupted lab-app removal must be restored or completed before setup.'
+        }
         $owner=Get-FastLlmLabAppOwner $app
         if(-not $owner){
             if($alreadyExists){
@@ -441,6 +580,17 @@ function Invoke-FastLlmLabAppCore {
         }
         $state=Get-FastLlmLabAppState $app
         if($state -and $state.installId -cne $owner.installId){throw 'Lab-app state owner differs from the managed root.'}
+        $ledger=Get-FastLlmLabAppLedger $app
+        if($ledger -and $ledger.installId -cne $owner.installId){throw 'Lab-app ledger owner differs from the managed root.'}
+        if($ledger){
+            $appLifetime=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-lifetime.lock')),
+                [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        }
+        if(-not $state -and -not $ledger){
+            $lifetimePath=Join-Path $app 'lab-app-lifetime.lock'
+            $lifetime=[IO.File]::Open($lifetimePath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+            $lifetime.Dispose()
+        }
         $journalPath=Join-Path $app 'lab-app-journal.json'
         if(Test-Path -LiteralPath $journalPath){
             $journalItem=Get-Item -LiteralPath $journalPath -Force
@@ -468,11 +618,17 @@ function Invoke-FastLlmLabAppCore {
             }
             $null=Test-FastLlmLabAppVersion $app $journal.targetVersion $journal.targetManifestSha256
             $null=Set-FastLlmLabShortcut -ShortcutPath $ShortcutPath -AppRoot $app -Version $journal.targetVersion -ManifestSha256 $journal.targetManifestSha256
+            Update-FastLlmLabAppLedger -AppRoot $app -InstallId $owner.installId -Version $journal.targetVersion `
+                -ManifestSha256 $journal.targetManifestSha256 -ShortcutPath $ShortcutPath
             $state=[pscustomobject]@{schemaVersion=1;kind='fastllm-private-lab-app';installId=$journal.installId;
                 currentVersion=$journal.targetVersion;currentManifestSha256=$journal.targetManifestSha256;
                 previousVersion=$journal.previousVersion;previousManifestSha256=$journal.previousManifestSha256}
             Write-FastLlmLabAppJsonAtomic -Path (Join-Path $app 'lab-app.json') -Value $state
             [IO.File]::Delete($journalPath)
+        }
+        $ledger=Get-FastLlmLabAppLedger $app
+        if($Action -ceq 'Repair' -and $ledger -and @($ledger.versions).Count -ge 32){
+            throw 'Retained-version ledger is full; review old app versions before another repair.'
         }
         if($Action -ceq 'Rollback'){
             if($ArchivePath -or $ExpectedSha256){throw 'Rollback does not accept an archive or new hash.'}
@@ -488,7 +644,8 @@ function Invoke-FastLlmLabAppCore {
             [void][IO.Directory]::CreateDirectory($versions)
             $target=$ExpectedSha256+'-'+[Guid]::NewGuid().ToString('N')
             $stage=Assert-FastLlmLabAppPath (Join-Path $app ('.stage-'+[Guid]::NewGuid().ToString('N')))
-            $verified=Expand-FastLlmLabVerifiedPackage -ArchivePath $ArchivePath -ExpectedSha256 $ExpectedSha256 -Stage $stage
+            $verified=Expand-FastLlmLabVerifiedPackage -ArchivePath $ArchivePath -ExpectedSha256 $ExpectedSha256 -Stage $stage `
+                -RejectLeaseCapable:([bool]($state -and -not $ledger))
             if($verified.sha256 -cne $ExpectedSha256){throw 'Lab ZIP verification failed.'}
             $targetManifestSha=$verified.manifestSha256
             [IO.Directory]::Move($stage,(Join-Path $versions $target))
@@ -502,6 +659,8 @@ function Invoke-FastLlmLabAppCore {
             previousVersion=$previous;previousManifestSha256=$previousManifestSha}
         Write-FastLlmLabAppJsonAtomic -Path $journalPath -Value $journal
         $null=Set-FastLlmLabShortcut -ShortcutPath $ShortcutPath -AppRoot $app -Version $target -ManifestSha256 $targetManifestSha
+        Update-FastLlmLabAppLedger -AppRoot $app -InstallId $id -Version $target `
+            -ManifestSha256 $targetManifestSha -ShortcutPath $ShortcutPath
         $next=[ordered]@{schemaVersion=1;kind='fastllm-private-lab-app';installId=$id;
             currentVersion=$target;currentManifestSha256=$targetManifestSha;
             previousVersion=$previous;previousManifestSha256=$previousManifestSha}
@@ -510,7 +669,7 @@ function Invoke-FastLlmLabAppCore {
         return [pscustomobject]@{appRoot=$app;currentVersion=$target;previousVersion=$previous;
             shortcutPath=$ShortcutPath;publisherAuthenticated=$false;publicReleaseApproved=$false;
             retainedVersions=$true;modelCacheUntouched=$true}
-    }finally{$lock.Dispose()}
+    }finally{if($appLifetime){$appLifetime.Dispose()};$lock.Dispose()}
 }
 
 function Invoke-FastLlmLabApp {
@@ -527,4 +686,417 @@ function Invoke-FastLlmLabApp {
     Assert-FastLlmLabLocalWindowsPath $local
     return Invoke-FastLlmLabAppCore -Action $Action -ArchivePath $ArchivePath -ExpectedSha256 $ExpectedSha256 `
         -AppRoot (Join-Path $local 'Bitworks/FastLLM-App') -ShortcutPath (Get-FastLlmLabShortcutPath)
+}
+
+# A managed app holds a shared read lease for its whole process lifetime. The
+# removal path opens this same existing file exclusively and never stops a child.
+function Enter-FastLlmLabAppLifetime {
+    param([Parameter(Mandatory=$true)][string]$SourceRoot)
+    $source=(Assert-FastLlmLabAppPath $SourceRoot).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar))
+    $version=[IO.Path]::GetFileName($source)
+    $versions=[IO.Path]::GetDirectoryName($source)
+    if([IO.Path]::GetFileName($versions) -ine 'versions'){
+        return $null # An ordinary source checkout is not a managed installation.
+    }
+    if($version -notmatch '^[0-9a-f]{64}-[0-9a-f]{32}$'){
+        throw 'A possible managed app has an invalid version path; lifetime lease is refused.'
+    }
+    $app=Assert-FastLlmLabAppPath ([IO.Path]::GetDirectoryName($versions))
+    $owner=Get-FastLlmLabAppOwner $app
+    $ledger=Get-FastLlmLabAppLedger $app
+    if(-not $owner -or -not $ledger -or $owner.installId -cne $ledger.installId){
+        throw 'Managed lab app lacks a complete lifetime-lease ownership record.'
+    }
+    $row=@($ledger.versions | Where-Object {$_.version -ieq $version})
+    if($row.Count -ne 1){throw 'This managed lab-app version is not recorded in the ownership ledger.'}
+    $leasePath=Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-lifetime.lock')
+    $lease=[IO.File]::Open($leasePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try{
+        if(Test-Path -LiteralPath (Join-Path $app 'lab-app-uninstall.json')){
+            throw 'Lab-app removal is in progress; this version cannot start.'
+        }
+        $null=Test-FastLlmLabAppVersion $app ([string]$row[0].version) ([string]$row[0].manifestSha256)
+        return $lease
+    }catch{$lease.Dispose();throw}
+}
+
+function Get-FastLlmLabAppRemovalPlan {
+    param([string]$AppRoot,[string]$ShortcutPath)
+    $app=Assert-FastLlmLabAppPath $AppRoot
+    $shortcut=Assert-FastLlmLabAppPath $ShortcutPath
+    if($env:OS -ceq 'Windows_NT'){
+        Assert-FastLlmLabLocalWindowsPath $app
+        Assert-FastLlmLabLocalWindowsPath $shortcut
+    }
+    if([IO.Path]::GetPathRoot($app) -ine [IO.Path]::GetPathRoot($shortcut)){
+        throw 'The Start Menu shortcut is on another volume; recoverable lab removal is refused.'
+    }
+    if(Test-Path -LiteralPath (Join-Path $app 'lab-app-uninstall.json')){throw 'An interrupted lab-app removal needs recovery before another removal.'}
+    if(Test-Path -LiteralPath (Join-Path $app 'lab-app-journal.json')){throw 'An interrupted install/repair/rollback needs recovery first.'}
+    $owner=Get-FastLlmLabAppOwner $app
+    $state=Get-FastLlmLabAppState $app
+    $ledger=Get-FastLlmLabAppLedger $app
+    if(-not $owner -or -not $state -or -not $ledger -or
+       $owner.installId -cne $state.installId -or $owner.installId -cne $ledger.installId){
+        throw 'This lab app has no complete owner, state, and version ledger; removal is refused.'
+    }
+    $allowed=@('lab-app.lock','lab-app-lifetime.lock','lab-app-owner.json','lab-app.json','lab-app-ledger.json','versions')
+    $rootNames=@(Get-ChildItem -LiteralPath $app -Force | ForEach-Object {$_.Name})
+    if(@($rootNames | Where-Object {$_ -cnotin $allowed}).Count -ne 0 -or
+       @($allowed | Where-Object {$_ -cnotin $rootNames}).Count -ne 0){
+        throw 'Application root contains missing or unrecorded entries; removal is refused.'
+    }
+    $versionsRoot=Assert-FastLlmLabAppPath (Join-Path $app 'versions')
+    $recorded=@($ledger.versions | ForEach-Object {$_.version})
+    $actual=@(Get-ChildItem -LiteralPath $versionsRoot -Force | ForEach-Object {$_.Name})
+    if($recorded.Count -ne $actual.Count -or @($actual | Where-Object {$_ -cnotin $recorded}).Count -ne 0){
+        throw 'Retained versions differ from the ownership ledger; removal is refused.'
+    }
+    foreach($row in @($ledger.versions)){
+        if(-not (Test-FastLlmLabAppLeaseCapableVersion $app ([string]$row.version) ([string]$row.manifestSha256))){
+            throw 'A retained version lacks the app-lifetime guard; removal is refused.'
+        }
+    }
+    if(@($ledger.versions | Where-Object {$_.version -ceq $state.currentVersion -and
+        $_.manifestSha256 -ceq $state.currentManifestSha256}).Count -ne 1){
+        throw 'Current state differs from the ownership ledger.'
+    }
+    if($state.previousVersion -and @($ledger.versions | Where-Object {$_.version -ceq $state.previousVersion -and
+        $_.manifestSha256 -ceq $state.previousManifestSha256}).Count -ne 1){
+        throw 'Previous state differs from the ownership ledger.'
+    }
+    $link=Get-FastLlmLabShortcutRecord $shortcut
+    if($link.sizeBytes -ne [long]$ledger.shortcut.sizeBytes -or $link.sha256 -cne $ledger.shortcut.sha256){
+        throw 'Start Menu shortcut differs from the exact owned bytes.'
+    }
+    if($env:OS -ceq 'Windows_NT'){
+        $shell=New-Object -ComObject WScript.Shell
+        $target=$shell.CreateShortcut($shortcut)
+        if((Assert-FastLlmLabShortcutOwnership -TargetPath ([string]$target.TargetPath) -Arguments ([string]$target.Arguments) `
+            -AppRoot $app -State $state -Journal $null) -cne $state.currentVersion){throw 'Shortcut does not target the current version.'}
+    }
+    $files=@('lab-app-owner.json','lab-app.json','lab-app-ledger.json')
+    $fileRecords=@()
+    foreach($name in $files){
+        $path=Assert-FastLlmLabAppPath (Join-Path $app $name)
+        $item=Get-Item -LiteralPath $path -Force
+        if($item.PSIsContainer -or $item.Length -lt 1 -or $item.Length -gt 8192){throw 'Managed metadata is unsafe.'}
+        $fileRecords+= [ordered]@{name=$name;sizeBytes=[long]$item.Length;sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
+    $pieces=@($owner.installId,$link.sha256,[string]$link.sizeBytes)
+    foreach($record in $fileRecords){$pieces+= @($record.name,$record.sha256,[string]$record.sizeBytes)}
+    foreach($row in @($ledger.versions | Sort-Object version)){$pieces+= @([string]$row.version,[string]$row.manifestSha256)}
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try{$digest=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($pieces -join "`n"))))).Replace('-','').ToLowerInvariant()}
+    finally{$sha.Dispose()}
+    return [pscustomobject]@{appRoot=$app;shortcutPath=$shortcut;installId=$owner.installId;versions=@($ledger.versions);
+        files=$fileRecords;shortcut=$link;digest=$digest;items=@('Start Menu shortcut')+@($recorded | ForEach-Object {"App version $_"})+ $files}
+}
+
+function Get-FastLlmLabAppRemovalPreview {
+    param([string]$AppRoot,[string]$ShortcutPath)
+    $operation=$null;$lifetime=$null
+    try{
+        $app=Assert-FastLlmLabAppPath $AppRoot
+        $operation=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+        $lifetime=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-lifetime.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+        $plan=Get-FastLlmLabAppRemovalPlan -AppRoot $app -ShortcutPath $ShortcutPath
+        return [pscustomobject]@{ready=$true;reason=$null;items=$plan.items;digest=$plan.digest}
+    }catch{return [pscustomobject]@{ready=$false;reason=[string]$_.Exception.Message;items=@();digest=$null}}
+    finally{if($lifetime){$lifetime.Dispose()};if($operation){$operation.Dispose()}}
+}
+
+function Get-FastLlmLabAppPendingRecovery {
+    param([string]$AppRoot,[string]$ShortcutPath)
+    $app=Assert-FastLlmLabAppPath $AppRoot
+    $shortcut=Assert-FastLlmLabAppPath $ShortcutPath
+    $journalPath=Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-uninstall.json')
+    if(-not (Test-Path -LiteralPath $journalPath)){return $null}
+    $operation=$null;$lifetime=$null
+    try{
+        $operation=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+        $lifetime=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-lifetime.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+        $item=Get-Item -LiteralPath $journalPath -Force
+        if($item.PSIsContainer -or $item.Length -lt 1 -or $item.Length -gt 8192){throw 'Pending removal journal is unsafe.'}
+        $journal=Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+        $hasOperation=$null -ne $journal.PSObject.Properties['operation']
+        $journalOperation=if($hasOperation){[string]$journal.operation}else{$null}
+        if($journal.schemaVersion -ne 1 -or $journal.kind -cne 'fastllm-private-lab-app-removal' -or
+           $journal.previewDigest -cnotmatch '^[0-9a-f]{64}$' -or
+           ($hasOperation -and $journalOperation -cnotin @('remove','restore'))){
+            throw 'Pending removal journal is invalid.'
+        }
+        $quarantine=Assert-FastLlmLabQuarantinePath $app ([string]$journal.quarantinePath)
+        $tx=Get-FastLlmLabRemovalTransaction -AppRoot $app -ShortcutPath $shortcut -QuarantinePath $quarantine
+        if($tx.previewDigest -cne $journal.previewDigest){throw 'Pending removal and quarantine records disagree.'}
+        $items=Get-FastLlmLabRemovalItems -AppRoot $app -ShortcutPath $shortcut -QuarantinePath $quarantine -Transaction $tx
+        $moved=0
+        foreach($entry in @($items)){
+            $sourceExists=Test-Path -LiteralPath $entry.source
+            $destinationExists=Test-Path -LiteralPath $entry.destination
+            if($sourceExists -eq $destinationExists){throw 'Pending removal has a missing or conflicting recorded item.'}
+            Assert-FastLlmLabRemovalItem -Item $entry -AppRoot $app -QuarantinePath $quarantine -InQuarantine $destinationExists
+            if($destinationExists){$moved++}
+        }
+        $status=if($journalOperation -ceq 'restore'){'interrupted-restore'}else{'interrupted-removal'}
+        return [pscustomobject]@{quarantinePath=$quarantine;status=$status;
+            previewDigest=$tx.previewDigest;movedItems=$moved;totalItems=@($items).Count}
+    }finally{if($lifetime){$lifetime.Dispose()};if($operation){$operation.Dispose()}}
+}
+
+function Assert-FastLlmLabQuarantinePath {
+    param([string]$AppRoot,[string]$QuarantinePath)
+    $app=Assert-FastLlmLabAppPath $AppRoot
+    $quarantine=Assert-FastLlmLabAppPath $QuarantinePath
+    $parent=[IO.Path]::GetDirectoryName($app)
+    $expectedParent=Join-Path $parent 'FastLLM-App-Quarantine'
+    if(-not [IO.Path]::GetDirectoryName($quarantine).Equals($expectedParent,[StringComparison]::OrdinalIgnoreCase) -or
+       [IO.Path]::GetFileName($quarantine) -cnotmatch '^[0-9a-f]{32}-[0-9a-f]{32}$'){
+        throw 'Quarantine path is outside the dedicated per-user lab-app area.'
+    }
+    if([IO.Path]::GetPathRoot($app) -ine [IO.Path]::GetPathRoot($quarantine)){
+        throw 'Lab-app quarantine must remain on the same volume.'
+    }
+    if($env:OS -ceq 'Windows_NT'){Assert-FastLlmLabLocalWindowsPath $quarantine}
+    return $quarantine
+}
+
+function Get-FastLlmLabRemovalTransaction {
+    param([string]$AppRoot,[string]$ShortcutPath,[string]$QuarantinePath)
+    $app=Assert-FastLlmLabAppPath $AppRoot
+    $quarantine=Assert-FastLlmLabQuarantinePath $app $QuarantinePath
+    $path=Assert-FastLlmLabAppPath (Join-Path $quarantine 'transaction.json')
+    $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if($item.PSIsContainer -or $item.Length -lt 1 -or $item.Length -gt 8192){throw 'Quarantine transaction is unsafe.'}
+    $tx=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if($tx.schemaVersion -ne 1 -or $tx.kind -cne 'fastllm-private-lab-app-quarantine' -or
+       $tx.installId -cnotmatch '^[0-9a-f]{32}$' -or
+       $tx.installId -cne [IO.Path]::GetFileName($quarantine).Substring(0,32) -or
+       $tx.appRoot -cne $app -or $tx.shortcutPath -cne (Assert-FastLlmLabAppPath $ShortcutPath) -or
+       $tx.previewDigest -cnotmatch '^[0-9a-f]{64}$' -or
+       @($tx.versions).Count -lt 1 -or @($tx.versions).Count -gt 32 -or
+       @($tx.files).Count -ne 3 -or $tx.shortcut.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+       [long]$tx.shortcut.sizeBytes -lt 1 -or [long]$tx.shortcut.sizeBytes -gt 1MB){
+        throw 'Quarantine transaction is invalid or belongs to another installation.'
+    }
+    $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach($row in @($tx.versions)){
+        Assert-FastLlmLabAppLeaf ([string]$row.version)
+        if($row.manifestSha256 -cnotmatch '^[0-9a-f]{64}$' -or -not $seen.Add([string]$row.version)){
+            throw 'Quarantine transaction version is invalid.'
+        }
+    }
+    $required=@('lab-app-owner.json','lab-app.json','lab-app-ledger.json')
+    foreach($record in @($tx.files)){
+        if($record.name -cnotin $required -or $record.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+           [long]$record.sizeBytes -lt 1 -or [long]$record.sizeBytes -gt 8192 -or
+           -not $seen.Add([string]$record.name)){throw 'Quarantine metadata record is invalid.'}
+    }
+    if(@($required | Where-Object {-not $seen.Contains($_)}).Count){throw 'Quarantine metadata record is incomplete.'}
+    return $tx
+}
+
+function Test-FastLlmLabRecordedFile {
+    param([string]$Path,[long]$SizeBytes,[string]$Sha256)
+    $path=Assert-FastLlmLabAppPath $Path
+    $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if($item.PSIsContainer -or $item.Length -ne $SizeBytes -or
+       (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha256){
+        throw 'Recorded lab-app file differs from its transaction digest.'
+    }
+}
+
+function Get-FastLlmLabRemovalItems {
+    param([string]$AppRoot,[string]$ShortcutPath,[string]$QuarantinePath,$Transaction)
+    $content=Join-Path $QuarantinePath 'content'
+    $items=@([pscustomobject]@{kind='shortcut';source=$ShortcutPath;destination=(Join-Path $content 'shortcut/FastLLM Lab.lnk');
+        sizeBytes=[long]$Transaction.shortcut.sizeBytes;sha256=[string]$Transaction.shortcut.sha256;version=$null;manifestSha256=$null})
+    foreach($row in @($Transaction.versions)){
+        $items+= [pscustomobject]@{kind='version';source=(Join-Path (Join-Path $AppRoot 'versions') ([string]$row.version));
+            destination=(Join-Path (Join-Path $content 'versions') ([string]$row.version));sizeBytes=0;sha256=$null;
+            version=[string]$row.version;manifestSha256=[string]$row.manifestSha256}
+    }
+    foreach($record in @($Transaction.files)){
+        $items+= [pscustomobject]@{kind='metadata';source=(Join-Path $AppRoot ([string]$record.name));
+            destination=(Join-Path $content ([string]$record.name));sizeBytes=[long]$record.sizeBytes;
+            sha256=[string]$record.sha256;version=$null;manifestSha256=$null}
+    }
+    return ,$items
+}
+
+function Assert-FastLlmLabRemovalItem {
+    param($Item,[string]$AppRoot,[string]$QuarantinePath,[bool]$InQuarantine)
+    $path=if($InQuarantine){$Item.destination}else{$Item.source}
+    if($Item.kind -ceq 'version'){
+        $root=if($InQuarantine){Join-Path $QuarantinePath 'content'}else{$AppRoot}
+        $null=Test-FastLlmLabAppVersion $root $Item.version $Item.manifestSha256
+    }else{Test-FastLlmLabRecordedFile -Path $path -SizeBytes $Item.sizeBytes -Sha256 $Item.sha256}
+}
+
+function Move-FastLlmLabRemovalItems {
+    param($Items,[string]$AppRoot,[string]$QuarantinePath,[switch]$Restore)
+    foreach($item in @($Items)){
+        $from=if($Restore){$item.destination}else{$item.source}
+        $to=if($Restore){$item.source}else{$item.destination}
+        $fromExists=Test-Path -LiteralPath $from
+        $toExists=Test-Path -LiteralPath $to
+        if($fromExists -and $toExists){throw 'Removal/restore conflict: both source and destination exist.'}
+        if(-not $fromExists -and -not $toExists){throw 'Removal/restore conflict: recorded item is missing on both sides.'}
+        if($toExists){
+            Assert-FastLlmLabRemovalItem -Item $item -AppRoot $AppRoot -QuarantinePath $QuarantinePath -InQuarantine (-not $Restore)
+            continue
+        }
+        Assert-FastLlmLabRemovalItem -Item $item -AppRoot $AppRoot -QuarantinePath $QuarantinePath -InQuarantine ([bool]$Restore)
+        $parent=Assert-FastLlmLabAppPath (Split-Path $to -Parent)
+        [void][IO.Directory]::CreateDirectory($parent)
+        $null=Assert-FastLlmLabAppPath $parent
+        if($item.kind -ceq 'version'){[IO.Directory]::Move($from,$to)}else{[IO.File]::Move($from,$to)}
+        Assert-FastLlmLabRemovalItem -Item $item -AppRoot $AppRoot -QuarantinePath $QuarantinePath -InQuarantine (-not $Restore)
+    }
+}
+
+function Invoke-FastLlmLabAppRemovalCore {
+    param([string]$AppRoot,[string]$ShortcutPath,[string]$ExpectedPreviewDigest)
+    if($ExpectedPreviewDigest -cnotmatch '^[0-9a-f]{64}$'){throw 'Removal requires the exact reviewed preview digest.'}
+    $app=Assert-FastLlmLabAppPath $AppRoot
+    $shortcut=Assert-FastLlmLabAppPath $ShortcutPath
+    $operation=$null;$lifetime=$null
+    try{
+        $operation=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $lifetime=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-lifetime.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $journalPath=Join-Path $app 'lab-app-uninstall.json'
+        if(Test-Path -LiteralPath $journalPath){
+            $journalItem=Get-Item -LiteralPath (Assert-FastLlmLabAppPath $journalPath) -Force
+            if($journalItem.PSIsContainer -or $journalItem.Length -lt 1 -or $journalItem.Length -gt 8192){throw 'Removal journal is unsafe.'}
+            $journal=Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+            $hasOperation=$null -ne $journal.PSObject.Properties['operation']
+            $journalOperation=if($hasOperation){[string]$journal.operation}else{$null}
+            if($journal.schemaVersion -ne 1 -or $journal.kind -cne 'fastllm-private-lab-app-removal' -or
+               ($hasOperation -and $journalOperation -cne 'remove') -or
+               $journal.previewDigest -cne $ExpectedPreviewDigest){throw 'Interrupted removal differs from the reviewed preview.'}
+            $quarantine=Assert-FastLlmLabQuarantinePath $app ([string]$journal.quarantinePath)
+            $tx=Get-FastLlmLabRemovalTransaction -AppRoot $app -ShortcutPath $shortcut -QuarantinePath $quarantine
+            if($tx.previewDigest -cne $ExpectedPreviewDigest){throw 'Quarantine transaction differs from the reviewed preview.'}
+        }else{
+            $plan=Get-FastLlmLabAppRemovalPlan -AppRoot $app -ShortcutPath $shortcut
+            if($plan.digest -cne $ExpectedPreviewDigest){throw 'Lab-app contents changed after preview; review them again.'}
+            $quarantineParent=Assert-FastLlmLabAppPath (Join-Path ([IO.Path]::GetDirectoryName($app)) 'FastLLM-App-Quarantine')
+            [void][IO.Directory]::CreateDirectory($quarantineParent)
+            $quarantine=Assert-FastLlmLabQuarantinePath $app (Join-Path $quarantineParent ($plan.installId+'-'+[Guid]::NewGuid().ToString('N')))
+            if(Test-Path -LiteralPath $quarantine){throw 'New lab-app quarantine path unexpectedly exists.'}
+            [void][IO.Directory]::CreateDirectory($quarantine)
+            if(@(Get-ChildItem -LiteralPath $quarantine -Force).Count -ne 0){throw 'New lab-app quarantine is not empty.'}
+            $tx=[ordered]@{schemaVersion=1;kind='fastllm-private-lab-app-quarantine';installId=$plan.installId;
+                appRoot=$app;shortcutPath=$shortcut;previewDigest=$plan.digest;versions=$plan.versions;
+                files=$plan.files;shortcut=$plan.shortcut}
+            Write-FastLlmLabAppJsonAtomic -Path (Join-Path $quarantine 'transaction.json') -Value $tx
+            $journal=[ordered]@{schemaVersion=1;kind='fastllm-private-lab-app-removal';operation='remove';
+                quarantinePath=$quarantine;previewDigest=$plan.digest}
+            Write-FastLlmLabAppJsonAtomic -Path $journalPath -Value $journal
+        }
+        $items=Get-FastLlmLabRemovalItems -AppRoot $app -ShortcutPath $shortcut -QuarantinePath $quarantine -Transaction $tx
+        Move-FastLlmLabRemovalItems -Items $items -AppRoot $app -QuarantinePath $quarantine
+        [IO.File]::Delete($journalPath)
+        return [pscustomobject]@{quarantinePath=$quarantine;installId=$tx.installId;movedItems=@($items).Count;
+            modelCacheUntouched=$true;publicReleaseApproved=$false}
+    }finally{if($lifetime){$lifetime.Dispose()};if($operation){$operation.Dispose()}}
+}
+
+function Invoke-FastLlmLabAppRestoreCore {
+    param([string]$AppRoot,[string]$ShortcutPath,[string]$QuarantinePath)
+    $app=Assert-FastLlmLabAppPath $AppRoot
+    $shortcut=Assert-FastLlmLabAppPath $ShortcutPath
+    $quarantine=Assert-FastLlmLabQuarantinePath $app $QuarantinePath
+    $operation=$null;$lifetime=$null
+    try{
+        $operation=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $lifetime=[IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app-lifetime.lock')),
+            [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        if(Test-Path -LiteralPath (Join-Path $app 'lab-app-journal.json')){throw 'Install/repair/rollback is incomplete; restore is refused.'}
+        $tx=Get-FastLlmLabRemovalTransaction -AppRoot $app -ShortcutPath $shortcut -QuarantinePath $quarantine
+        $journalPath=Join-Path $app 'lab-app-uninstall.json'
+        $hasJournal=Test-Path -LiteralPath $journalPath
+        if($hasJournal){
+            $checkedJournal=Assert-FastLlmLabAppPath $journalPath
+            $journalItem=Get-Item -LiteralPath $checkedJournal -Force
+            if($journalItem.PSIsContainer -or $journalItem.Length -lt 1 -or $journalItem.Length -gt 8192){
+                throw 'Interrupted removal journal is unsafe.'
+            }
+            $journal=Get-Content -LiteralPath $checkedJournal -Raw | ConvertFrom-Json
+            $hasOperation=$null -ne $journal.PSObject.Properties['operation']
+            $journalOperation=if($hasOperation){[string]$journal.operation}else{$null}
+            if($journal.schemaVersion -ne 1 -or $journal.kind -cne 'fastllm-private-lab-app-removal' -or
+               ($hasOperation -and $journalOperation -cnotin @('remove','restore')) -or
+               $journal.quarantinePath -cne $quarantine -or $journal.previewDigest -cne $tx.previewDigest){
+                throw 'Interrupted removal journal belongs to a different quarantine.'
+            }
+        }
+        $items=Get-FastLlmLabRemovalItems -AppRoot $app -ShortcutPath $shortcut -QuarantinePath $quarantine -Transaction $tx
+        # Preflight the entire transaction before changing anything. A partial
+        # transaction has each item on exactly one side; unexpected conflicts stop.
+        $inQuarantine=0
+        foreach($item in @($items)){
+            $sourceExists=Test-Path -LiteralPath $item.source
+            $destinationExists=Test-Path -LiteralPath $item.destination
+            if($sourceExists -eq $destinationExists){throw 'Restore refused a missing or conflicting recorded item.'}
+            Assert-FastLlmLabRemovalItem -Item $item -AppRoot $app -QuarantinePath $quarantine -InQuarantine $destinationExists
+            if($destinationExists){$inQuarantine++}
+        }
+        if(-not $hasJournal){
+            if($inQuarantine -ne @($items).Count){
+                throw 'Partial restore without its recovery journal requires manual review.'
+            }
+            $restoreJournal=[ordered]@{schemaVersion=1;kind='fastllm-private-lab-app-removal';operation='restore';
+                quarantinePath=$quarantine;previewDigest=$tx.previewDigest}
+            Write-FastLlmLabAppJsonAtomic -Path $journalPath -Value $restoreJournal
+        }
+        Move-FastLlmLabRemovalItems -Items $items -AppRoot $app -QuarantinePath $quarantine -Restore
+        if(Test-Path -LiteralPath $journalPath){[IO.File]::Delete($journalPath)}
+        return [pscustomobject]@{appRoot=$app;restoredItems=@($items).Count;modelCacheUntouched=$true;publicReleaseApproved=$false}
+    }finally{if($lifetime){$lifetime.Dispose()};if($operation){$operation.Dispose()}}
+}
+
+function Assert-FastLlmLabAppStandardUser {
+    if($env:OS -cne 'Windows_NT' -or -not [Environment]::Is64BitProcess){throw 'Lab-app lifecycle requires 64-bit Windows PowerShell.'}
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+    if((New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
+        throw 'Do not elevate the private lab-app lifecycle tool.'
+    }
+}
+
+function Get-FastLlmLabAppUserPaths {
+    Assert-FastLlmLabAppStandardUser
+    $local=[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    Assert-FastLlmLabLocalWindowsPath $local
+    return [pscustomobject]@{appRoot=(Join-Path $local 'Bitworks/FastLLM-App');shortcutPath=(Get-FastLlmLabShortcutPath)}
+}
+
+function Get-FastLlmLabAppRemovalPreviewForUser {
+    $paths=Get-FastLlmLabAppUserPaths
+    return Get-FastLlmLabAppRemovalPreview -AppRoot $paths.appRoot -ShortcutPath $paths.shortcutPath
+}
+
+function Get-FastLlmLabAppPendingRecoveryForUser {
+    $paths=Get-FastLlmLabAppUserPaths
+    return Get-FastLlmLabAppPendingRecovery -AppRoot $paths.appRoot -ShortcutPath $paths.shortcutPath
+}
+
+function Invoke-FastLlmLabAppRemoval {
+    param([Parameter(Mandatory=$true)][string]$ExpectedPreviewDigest)
+    $paths=Get-FastLlmLabAppUserPaths
+    return Invoke-FastLlmLabAppRemovalCore -AppRoot $paths.appRoot -ShortcutPath $paths.shortcutPath `
+        -ExpectedPreviewDigest $ExpectedPreviewDigest
+}
+
+function Invoke-FastLlmLabAppRestore {
+    param([Parameter(Mandatory=$true)][string]$QuarantinePath)
+    $paths=Get-FastLlmLabAppUserPaths
+    return Invoke-FastLlmLabAppRestoreCore -AppRoot $paths.appRoot -ShortcutPath $paths.shortcutPath -QuarantinePath $QuarantinePath
 }

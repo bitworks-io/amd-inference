@@ -77,6 +77,12 @@ if ($env:OS -eq 'Windows_NT') {
     }
 }
 
+$labAppLifetime = $null
+try {
+# Managed installations share a lifetime lease before importing application code.
+# Ordinary reviewed source checkouts do not create installation state or a lease.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.LabApp.ps1')
+$labAppLifetime = Enter-FastLlmLabAppLifetime -SourceRoot $projectRoot
 Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFlow.ps1')
 $selectionOptions = @{ ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel }
@@ -280,3 +286,5 @@ catch {
     exit 1
 }
 finally { if ($operationLock) { $operationLock.Dispose() } }
+}
+finally { if ($labAppLifetime) { $labAppLifetime.Dispose() } }

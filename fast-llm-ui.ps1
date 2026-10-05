@@ -5,6 +5,10 @@ Set-StrictMode -Version 2
 if ($env:OS -ne 'Windows_NT') { throw 'The control window requires Windows PowerShell on Windows.' }
 $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Open FastLLM as a standard user, not as administrator.' }
+$labAppLifetime=$null
+try {
+. (Join-Path $PSScriptRoot 'src/FastLlm.LabApp.ps1')
+$labAppLifetime=Enter-FastLlmLabAppLifetime -SourceRoot $PSScriptRoot
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
@@ -559,3 +563,5 @@ try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application
     # An elevated Microsoft broker is outside the ProcessHost job. Never kill or dispose it here.
     DisposeTrayControls;$timer.Dispose();$form.Dispose()
 }
+}
+finally { if($labAppLifetime){$labAppLifetime.Dispose()} }

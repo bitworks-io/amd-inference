@@ -26,6 +26,12 @@ Fixtures never authorize native serving. For actual hardware, the supervised ins
 
 Do not pass automatic license-acceptance options without separately reviewing the exact terms. Downloads can be large; free disk space, host RAM and GPU memory are separate requirements. Every live start refreshes hardware information and rechecks integrity/consent. The intended local API is `http://127.0.0.1:8080/v1`; wait for Ready. No firewall/LAN exposure is needed. In a second console with the same install root, `status` inspects the run and `stop` requests scoped shutdown.
 
+## Optional managed app removal
+
+The separately reviewed external `Install-FastLLM-Lab.cmd` companion includes a locally tested removal/restore precursor for newly ledgered per-user lab installations. Close the managed app and its CLI sessions, use **Preview uninstall**, and review the exact item count and preview digest before confirming. Only intact recorded versions, metadata and the owned shortcut move to recoverable `FastLLM-App-Quarantine`; models, consent receipts and reports stay in place. Keep the displayed path for **Restore**. Preview also identifies verified interrupted removal/restore recovery paths. Quarantine retains data and does not reclaim its disk space.
+
+Do not run this companion from the installed version it would move. Automatic busy detection covers the managed control window and main CLI, not developer/experimental scripts launched directly from the installed source. Run experiments from a separate reviewed checkout and close those tools before removal or restore. Unknown or modified entries and pre-ledger installations are refused for manual review. A guarded new package cannot repair a pre-ledger app in place. The retained app root is not recursively deleted; use Restore rather than assuming a clean reinstall or permanent quarantine disposal is automated. These cooperative source checks are not publisher authentication, malicious same-user protection, native Windows lifecycle qualification or a signed consumer uninstall.
+
 ## Fixed-model experiments
 
 Use an exact catalog `-ModelId` and a `-ContextSize` no greater than that artifact's current recipe ceiling when deliberately comparing a model/context configuration. A new artifact needs its own consent and integrity checks. Do not override the model on a card-swap test until the automatic decision has been recorded. Context reduction does not invent a lower VRAM fit threshold.

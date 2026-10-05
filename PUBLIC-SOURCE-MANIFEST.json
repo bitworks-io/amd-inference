@@ -9,8 +9,8 @@
     },
     {
       "path": ".github/workflows/test.yml",
-      "sizeBytes": 5499,
-      "sha256": "abec435e9de086ff7223ae53cd1ec9b78cc2203873b8430daba6a6d86e8d12fc"
+      "sizeBytes": 5591,
+      "sha256": "3368b1c380da7c929dc0bed41caa3acf5c3bc156ec6a22cad3b5b8114333804a"
     },
     {
       "path": ".gitignore",
@@ -79,8 +79,8 @@
     },
     {
       "path": "docs/PUBLIC-LAB-GUIDE.md",
-      "sizeBytes": 6395,
-      "sha256": "7eb99836cdd04385fec9ca05751e2599c21acda3b13073bfe676ec8ceb9266fb"
+      "sizeBytes": 7867,
+      "sha256": "de983be87dfca6f110ef342a9db16f3e0757ee6ae972af8942deb643c58f0b05"
     },
     {
       "path": "docs/PUBLIC-README.md",
@@ -89,13 +89,13 @@
     },
     {
       "path": "fast-llm-ui.ps1",
-      "sizeBytes": 35956,
-      "sha256": "a85833cba6d6be9ff89cc4e1f7814c5392894089f71a572f5c1a78d7b5c3fc81"
+      "sizeBytes": 36168,
+      "sha256": "1d6a7527ccffc9dbe6e64b104f9f1a36a18d008000d2ac2a5666d08459da9898"
     },
     {
       "path": "fast-llm.ps1",
-      "sizeBytes": 15723,
-      "sha256": "a2d6c1e2d2aae282d9462305afef6e62a74b56a29027d6b9f0ff0ec4518c5169"
+      "sizeBytes": 16119,
+      "sha256": "d9a6679382a8b9912669149ed7e1557eb02da4dd50c3cf36b14f0e0410e9c965"
     },
     {
       "path": "linux/bootstrap.py",
@@ -194,8 +194,8 @@
     },
     {
       "path": "src/FastLlm.LabApp.ps1",
-      "sizeBytes": 32758,
-      "sha256": "395561003175330a3ed8480ec8fc4c412752454ca0e1f503f10cf66b628095e7"
+      "sizeBytes": 67920,
+      "sha256": "e5a43e1d5775c6b87fe034d9bb8d97882355b9bdc556559411d90e6d27ba907a"
     },
     {
       "path": "src/FastLlm.OffloadBenchmark.ps1",
@@ -588,19 +588,24 @@
       "sha256": "9c1ee1dea4666a376d774ef3da3c4cd4a6c362676bd235fb416332c672ea3e0b"
     },
     {
+      "path": "tests/lab-app-lifecycle-tests.ps1",
+      "sizeBytes": 9975,
+      "sha256": "fd35d28f69422214cf4e357dbaef37d6b2abc499b63e7a6c3193914bd9381a03"
+    },
+    {
       "path": "tests/lab-app-native-tests.ps1",
       "sizeBytes": 12141,
       "sha256": "d8f92ab454e7b0ef22b9ff7979e7c472ae6a9d04931b4d0c0c89d61ba37f8be1"
     },
     {
       "path": "tests/lab-app-tests.ps1",
-      "sizeBytes": 16351,
-      "sha256": "781420af7ac18f8bb259d235ce056264b781da66785d7dd6e5ab4499c7363efc"
+      "sizeBytes": 21388,
+      "sha256": "c9b3e4af76c16e948c3d8594329eea95c6eea78da415cb524da09285191426ea"
     },
     {
       "path": "tests/lab-app-ui-tests.ps1",
-      "sizeBytes": 7028,
-      "sha256": "f38dbcf50e12041a6ef2fe40bbb02194b45dc2835c52658ce6ca1b5a9838a386"
+      "sizeBytes": 13534,
+      "sha256": "f04995bc4a063bfcb2638d05274f66c4f6f80257b21e2593ff964122e9aa7e7b"
     },
     {
       "path": "tests/lab-launcher-tests.ps1",
@@ -954,8 +959,8 @@
     },
     {
       "path": "tools/install-lab-app.ps1",
-      "sizeBytes": 9213,
-      "sha256": "d1df9fac98ee8a9402677bd2a5dc81ef2f922b041be0492facd54fb0e35b3569"
+      "sizeBytes": 17488,
+      "sha256": "d77e00b59638a8f49c1d441c4102e705aec156403e58425cb5de91d758d04390"
     },
     {
       "path": "tools/install-vc-runtime.ps1",
@@ -964,8 +969,8 @@
     },
     {
       "path": "tools/lab-setup-README.md",
-      "sizeBytes": 746,
-      "sha256": "1df01ca2592fee35f873fa215bf12f46655672d31acc8c6c96fbf0ebc93dd5f8"
+      "sizeBytes": 2102,
+      "sha256": "73518a023b4c6b03cbeb54b12f7947c66e3fadd3292f03fccb300b7f469e86ed"
     },
     {
       "path": "tools/offload-benchmark.ps1",

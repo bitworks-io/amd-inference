@@ -97,11 +97,13 @@ jobs:
         shell: powershell
         run: |
           .\tests\lab-app-tests.ps1
+          .\tests\lab-app-lifecycle-tests.ps1
           .\tests\lab-app-ui-tests.ps1
       - name: Private app-package setup tests in PowerShell 7
         shell: pwsh
         run: |
           .\tests\lab-app-tests.ps1
+          .\tests\lab-app-lifecycle-tests.ps1
           .\tests\lab-app-ui-tests.ps1
       - name: Concurrent-client mock tests in Windows PowerShell 5.1
         shell: powershell

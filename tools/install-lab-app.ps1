@@ -14,6 +14,15 @@ $repo = Split-Path $PSScriptRoot -Parent
 $corePath = Join-Path $repo 'src/FastLlm.LabApp.ps1'
 if (-not (Test-Path -LiteralPath $corePath -PathType Leaf)) { throw 'The companion package is incomplete: the lab app installer helper is missing.' }
 . $corePath
+function Assert-FastLlmLabCompanionLocation {
+    param([string]$SourceRoot)
+    $full = [IO.Path]::GetFullPath($SourceRoot).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar))
+    $parentName = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($full))
+    if ($parentName -ieq 'versions') {
+        throw 'Run the reviewed external setup companion, not the copy inside an installed app version. This window must not repair, move or restore its own source.'
+    }
+}
+$null = Assert-FastLlmLabCompanionLocation -SourceRoot (Assert-FastLlmLabAppPath $repo)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -55,9 +64,51 @@ function Format-FastLlmLabInstallerResult {
     return "Current version: $($Result.currentVersion)`r`nPrevious version: $previous`r`nApp folder: $($Result.appRoot)`r`nStart Menu shortcut: $($Result.shortcutPath)`r`nPublisher authenticated: No`r`nPublic release approved: No`r`nNo model was downloaded or started."
 }
 
+function Format-FastLlmLabRemovalPreview {
+    param($Preview)
+    if (-not $Preview -or $Preview.ready -isnot [bool]) { throw 'The removal preview is incomplete.' }
+    if (-not $Preview.ready) {
+        if ($Preview.reason -isnot [string] -or [string]::IsNullOrWhiteSpace($Preview.reason) -or
+            $Preview.reason.Length -gt 4096) { throw 'The refused preview lacks a bounded reason.' }
+        return "Uninstall is unavailable: $($Preview.reason)`r`nNo files were moved."
+    }
+    if ($Preview.digest -cnotmatch '^[0-9a-f]{64}$' -or @($Preview.items).Count -lt 1 -or
+        @($Preview.items).Count -gt 2048) { throw 'The removal preview lacks its exact reviewed item set.' }
+    foreach ($item in @($Preview.items)) {
+        if ($item -isnot [string] -or $item.Length -lt 1 -or $item.Length -gt 1024 -or
+            $item -match '[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]') { throw 'The removal preview contains an unsafe display item.' }
+    }
+    return "Verified app items to move into recoverable quarantine: $(@($Preview.items).Count)`r`nPreview SHA-256: $($Preview.digest)`r`n`r`n$(@($Preview.items) -join "`r`n")`r`n`r`nModel caches, consent receipts and benchmark reports stay in place. Automatic busy detection covers the managed control window and main CLI only. Close separately launched developer tools yourself; run experiments from a separate reviewed checkout."
+}
+
+function Test-FastLlmLabRestoreInput {
+    param([string]$QuarantinePath)
+    if ([string]::IsNullOrWhiteSpace($QuarantinePath) -or -not [IO.Path]::IsPathRooted($QuarantinePath) -or
+        ($env:OS -eq 'Windows_NT' -and $QuarantinePath -cnotmatch '^[A-Za-z]:[\\/]')) {
+        throw 'Choose the exact local quarantine folder recorded by a previous uninstall.'
+    }
+    Assert-FastLlmLabLocalWindowsPath -Path $QuarantinePath
+    # The fixed-path core additionally checks ownership, journal, contents and destinations.
+    return [IO.Path]::GetFullPath($QuarantinePath)
+}
+
+function Format-FastLlmLabRemovalResult {
+    param($Result,[ValidateSet('Uninstall','Restore')][string]$Action)
+    if (-not $Result -or $Result.modelCacheUntouched -isnot [bool] -or $Result.modelCacheUntouched -ne $true -or
+        $Result.publicReleaseApproved -isnot [bool] -or $Result.publicReleaseApproved -ne $false) {
+        throw 'The lifecycle operation returned an incomplete result; success is not confirmed.'
+    }
+    if ($Action -eq 'Uninstall') {
+        if (-not $Result.quarantinePath) { throw 'Uninstall did not report a recoverable quarantine path.' }
+        return "App files moved to recoverable quarantine:`r`n$($Result.quarantinePath)`r`n`r`nKeep this folder for Restore. Model caches, consent receipts and benchmark reports were not removed. No public release is approved."
+    }
+    if (-not $Result.appRoot) { throw 'Restore did not report the restored application folder.' }
+    return "App files restored to:`r`n$($Result.appRoot)`r`n`r`nThe app was not started. Model caches, consent receipts and benchmark reports were not changed. No public release is approved."
+}
+
 $form = New-Object Windows.Forms.Form
 $form.Text = 'Bitworks FastLLM - private lab setup'
-$form.Size = New-Object Drawing.Size(760,610)
+$form.Size = New-Object Drawing.Size(760,780)
 $form.MinimumSize = $form.Size
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
@@ -107,14 +158,38 @@ $installButton = AddButton 'Install' 22 155
 $repairButton = AddButton 'Repair' 190 155
 $rollbackButton = AddButton 'Roll back' 358 155
 $closeButton = AddButton 'Close' 575 155
-$status = AddLabel 'No action has been taken.' 22 410 700 30
+$previewButton = AddButton 'Preview uninstall' 22 220
+$previewButton.Location = New-Object Drawing.Point(22,405)
+$removeButton = AddButton 'Uninstall app' 260 220
+$removeButton.Location = New-Object Drawing.Point(260,405)
+$restoreButton = AddButton 'Restore app' 500 230
+$restoreButton.Location = New-Object Drawing.Point(500,405)
+$status = AddLabel 'No action has been taken.' 22 454 700 30
 $output = New-Object Windows.Forms.TextBox
-$output.Location = New-Object Drawing.Point(22,445)
-$output.Size = New-Object Drawing.Size(708,107)
+$output.Location = New-Object Drawing.Point(22,489)
+$output.Size = New-Object Drawing.Size(708,105)
 $output.Multiline = $true
 $output.ReadOnly = $true
 $output.ScrollBars = 'Vertical'
 $form.Controls.Add($output)
+$null = AddLabel 'Quarantine folder (only used by Restore)' 22 606 700
+$quarantineBox = New-Object Windows.Forms.TextBox
+$quarantineBox.Location = New-Object Drawing.Point(22,638)
+$quarantineBox.Size = New-Object Drawing.Size(596,30)
+$form.Controls.Add($quarantineBox)
+$quarantineBrowse = New-Object Windows.Forms.Button
+$quarantineBrowse.Text = 'Browse...'
+$quarantineBrowse.Location = New-Object Drawing.Point(625,636)
+$quarantineBrowse.Size = New-Object Drawing.Size(105,34)
+$form.Controls.Add($quarantineBrowse)
+$null = AddLabel 'Uninstall preserves model caches and reports. It refuses active, modified or uncertain installations; it never force-stops a model.' 22 686 708 50
+
+function SetInstallerBusy([bool]$Busy) {
+    foreach ($button in @($installButton,$repairButton,$rollbackButton,$closeButton,$browse,
+        $previewButton,$removeButton,$restoreButton,$quarantineBrowse)) { $button.Enabled = -not $Busy }
+    $quarantineBox.Enabled = -not $Busy
+    $form.UseWaitCursor = $Busy
+}
 
 $browse.Add_Click({
     $dialog = New-Object Windows.Forms.OpenFileDialog
@@ -124,6 +199,14 @@ $browse.Add_Click({
         $dialog.CheckFileExists = $true
         $dialog.Multiselect = $false
         if ($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) { $zipBox.Text = $dialog.FileName }
+    } finally { $dialog.Dispose() }
+})
+$quarantineBrowse.Add_Click({
+    $dialog = New-Object Windows.Forms.FolderBrowserDialog
+    try {
+        $dialog.Description = 'Select the exact FastLLM quarantine folder recorded by Uninstall.'
+        $dialog.ShowNewFolderButton = $false
+        if ($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) { $quarantineBox.Text = $dialog.SelectedPath }
     } finally { $dialog.Dispose() }
 })
 
@@ -140,7 +223,7 @@ function InvokeUiAction([string]$Action) {
             [Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning,
             [Windows.Forms.MessageBoxDefaultButton]::Button2)
         if ($answer -ne [Windows.Forms.DialogResult]::Yes) { $status.Text = 'Cancelled. No action was taken.'; return }
-        foreach ($button in @($installButton,$repairButton,$rollbackButton,$closeButton,$browse)) { $button.Enabled = $false }
+        SetInstallerBusy $true
         $status.Text = "$Action in progress. Verification is bounded; this window may briefly stop responding."
         $output.Text = ''
         $form.UseWaitCursor = $true
@@ -155,11 +238,52 @@ function InvokeUiAction([string]$Action) {
         $output.Text = [string]$_.Exception.Message
     } finally {
         $form.UseWaitCursor = $false
-        foreach ($button in @($installButton,$repairButton,$rollbackButton,$closeButton,$browse)) { $button.Enabled = $true }
+        SetInstallerBusy $false
     }
+}
+
+function InvokeLifecycleUiAction([ValidateSet('Preview','Uninstall','Restore')][string]$Action) {
+    try {
+        SetInstallerBusy $true
+        $status.Text = 'Checking exact app ownership and lifecycle state; this window may briefly stop responding.'
+        $form.Refresh()
+        if ($Action -eq 'Restore') {
+            $quarantine = Test-FastLlmLabRestoreInput -QuarantinePath $quarantineBox.Text.Trim()
+            $message = "Restore the recorded app from this quarantine folder?`r`n`r`n$quarantine`r`n`r`nExisting destination files will not be overwritten. The core will verify the journal and every owned item. No model is started."
+        } else {
+            $preview = Get-FastLlmLabAppRemovalPreviewForUser
+            $output.Text = Format-FastLlmLabRemovalPreview $preview
+            if (-not $preview.ready) {
+                $status.Text = 'Uninstall refused. No files were moved.'
+                $pending = Get-FastLlmLabAppPendingRecoveryForUser
+                if ($pending) {
+                    $quarantineBox.Text = [string]$pending.quarantinePath
+                    $output.AppendText("`r`n`r`nA verified pending removal can be restored from:`r`n$($pending.quarantinePath)`r`nUse Restore app to recover that transaction; no recovery was started automatically.")
+                }
+                return
+            }
+            if ($Action -eq 'Preview') { $status.Text = 'Preview only. No files were moved.'; return }
+            $message = "Move $(@($preview.items).Count) verified app items to recoverable quarantine?`r`n`r`nPreview SHA-256:`r`n$($preview.digest)`r`n`r`nThe full item list is in the preview. Model caches and benchmark reports stay in place. Close the app and all separately launched developer tools; those tools are not detected automatically. Nothing is permanently deleted."
+        }
+        $answer = [Windows.Forms.MessageBox]::Show($form,$message,'Confirm private lab lifecycle action',
+            [Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning,
+            [Windows.Forms.MessageBoxDefaultButton]::Button2)
+        if ($answer -ne [Windows.Forms.DialogResult]::Yes) { $status.Text = 'Cancelled. No action was taken.'; return }
+        $result = if ($Action -eq 'Restore') { Invoke-FastLlmLabAppRestore -QuarantinePath $quarantine }
+            else { Invoke-FastLlmLabAppRemoval -ExpectedPreviewDigest $preview.digest }
+        $output.Text = Format-FastLlmLabRemovalResult -Result $result -Action $Action
+        if ($Action -eq 'Uninstall') { $quarantineBox.Text = [string]$result.quarantinePath }
+        $status.Text = "$Action completed. Models and reports were kept."
+    } catch {
+        $status.Text = "$Action was not confirmed. Review the error; do not remove files manually."
+        $output.Text = [string]$_.Exception.Message
+    } finally { SetInstallerBusy $false }
 }
 $installButton.Add_Click({ InvokeUiAction 'Install' })
 $repairButton.Add_Click({ InvokeUiAction 'Repair' })
 $rollbackButton.Add_Click({ InvokeUiAction 'Rollback' })
+$previewButton.Add_Click({ InvokeLifecycleUiAction 'Preview' })
+$removeButton.Add_Click({ InvokeLifecycleUiAction 'Uninstall' })
+$restoreButton.Add_Click({ InvokeLifecycleUiAction 'Restore' })
 $closeButton.Add_Click({ $form.Close() })
 [Windows.Forms.Application]::Run($form)
