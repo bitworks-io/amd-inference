@@ -16,6 +16,7 @@ import stat
 
 
 ROOT_FILES = (
+    ".gitattributes",
     ".gitignore",
     ".github/workflows/test.yml",
     "FastLLM.cmd",

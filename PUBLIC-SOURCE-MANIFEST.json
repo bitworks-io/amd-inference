@@ -3,6 +3,11 @@
   "kind": "source-only-public-staging",
   "files": [
     {
+      "path": ".gitattributes",
+      "sizeBytes": 148,
+      "sha256": "8341c5da51b156b0404709a48c68ba4179df13f1be73dd6df493b1fb8fd9b35d"
+    },
+    {
       "path": ".github/workflows/test.yml",
       "sizeBytes": 5499,
       "sha256": "abec435e9de086ff7223ae53cd1ec9b78cc2203873b8430daba6a6d86e8d12fc"
@@ -739,8 +744,8 @@
     },
     {
       "path": "tests/test_public_source.py",
-      "sizeBytes": 6230,
-      "sha256": "6cf2f40c855d6602a60d83b88e4ba61adc9b7ca5750d620547313f28544f894a"
+      "sizeBytes": 9068,
+      "sha256": "f09e668c11144cd592496ca78ea5d0d49f5bd56d81c6457f258a3123d5cfaa0d"
     },
     {
       "path": "tests/test_recipes.py",
@@ -1004,8 +1009,8 @@
     },
     {
       "path": "tools/stage-public-source.py",
-      "sizeBytes": 6380,
-      "sha256": "3269ea198219354629edac2bfe959866f3f9f07f8130a999b049278317456f10"
+      "sizeBytes": 6402,
+      "sha256": "fdbbe078a41ba188f8562442da41a8297a48337263a413a2375b0cf5404fc114"
     },
     {
       "path": "tools/start-windows-lab-setup.ps1",

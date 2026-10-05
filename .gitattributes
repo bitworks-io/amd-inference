@@ -1,0 +1,3 @@
+# Catalog, manifests and source files are hash-pinned as authored bytes.
+# Never let platform checkout settings rewrite their line endings.
+* -text

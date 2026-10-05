@@ -6,6 +6,8 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -27,8 +29,9 @@ class PublicSourceTests(unittest.TestCase):
             (self.source / directory).mkdir()
         for relative in STAGE.ROOT_FILES + STAGE.PUBLIC_DOCS:
             self.put(relative, f"reviewed {relative}\n".encode())
+        self.put(".gitattributes", b"* -text\n")
         self.put("src/core.psm1", b"function Invoke-Test {}\n")
-        self.put("config/catalog.json", b"{}\n")
+        self.put("config/catalog.json", b'{\n  "engine": "pinned"\n}\n')
         self.put("linux/serve.py", b"# reviewed source\n")
         self.put("tests/fixtures/llama-list-devices.txt", b"Vulkan0: Test GPU\n")
         self.put("tools/benchmark.ps1", b"# reproducible benchmark\n")
@@ -137,6 +140,45 @@ class PublicSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside"):
             STAGE.stage(self.source, link / "public")
         self.assertFalse((self.source / "public").exists())
+
+    def test_autocrlf_checkout_preserves_exact_catalog_and_manifest_bytes(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is unavailable")
+        staged = self.base / "staged"
+        STAGE.stage(self.source, staged)
+        expected_catalog = (staged / "config/catalog.json").read_bytes()
+        expected_manifest = (staged / STAGE.MANIFEST_NAME).read_bytes()
+        subprocess.run(["git", "init", "-q", str(staged)], check=True)
+        subprocess.run(["git", "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)
+        subprocess.run(["git", "-C", str(staged), "-c", "user.name=FastLLM test",
+                        "-c", "user.email=test@example.invalid", "commit", "-qm", "source fixture"], check=True)
+        checked_out = self.base / "autocrlf-true-checkout"
+        subprocess.run(["git", "-c", "core.autocrlf=true", "clone", "-q",
+                        str(staged), str(checked_out)], check=True)
+        self.assertEqual((checked_out / "config/catalog.json").read_bytes(), expected_catalog)
+        self.assertEqual((checked_out / STAGE.MANIFEST_NAME).read_bytes(), expected_manifest)
+
+    def test_real_catalog_pin_survives_autocrlf_checkout(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is unavailable")
+        staged = self.base / "real-staged"
+        manifest = STAGE.stage(SCRIPT.parents[1], staged)
+        catalog_digest = "65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6"
+        self.assertEqual(hashlib.sha256((staged / "config/catalog.json").read_bytes()).hexdigest(), catalog_digest)
+        subprocess.run(["git", "init", "-q", str(staged)], check=True)
+        subprocess.run(["git", "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)
+        subprocess.run(["git", "-C", str(staged), "-c", "user.name=FastLLM test",
+                        "-c", "user.email=test@example.invalid", "commit", "-qm", "source fixture"], check=True)
+        checked_out = self.base / "real-autocrlf-true-checkout"
+        subprocess.run(["git", "-c", "core.autocrlf=true", "clone", "-q",
+                        str(staged), str(checked_out)], check=True)
+        self.assertEqual(hashlib.sha256((checked_out / "config/catalog.json").read_bytes()).hexdigest(), catalog_digest)
+        self.assertEqual((checked_out / STAGE.MANIFEST_NAME).read_bytes(),
+                         (staged / STAGE.MANIFEST_NAME).read_bytes())
+        for item in manifest["files"]:
+            payload = (checked_out / item["path"]).read_bytes()
+            self.assertEqual(len(payload), item["sizeBytes"], item["path"])
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), item["sha256"], item["path"])
 
 
 if __name__ == "__main__":
