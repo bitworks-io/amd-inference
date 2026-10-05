@@ -8,7 +8,16 @@ $catalog=Join-Path $root 'config/catalog.json'
 $hardware=Read-FastLlmJson (Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json')
 $count=0
 function Check([bool]$Condition,[string]$Message) { if (-not $Condition) { throw "FAIL: $Message" }; $script:count++; Write-Host "PASS: $Message" }
-function Throws([scriptblock]$Action,[string]$Pattern) { $caught=$false; try { & $Action | Out-Null } catch { $caught=$_.Exception.Message -match $Pattern }; Check $caught "rejects $Pattern" }
+function Throws([scriptblock]$Action,[string]$Pattern) {
+    $caught=$false;$observed='no exception'
+    try { & $Action | Out-Null } catch {
+        $caught=[bool]([string]$_.Exception.Message -match $Pattern)
+        $observed=[regex]::Replace([string]$_.Exception.Message,'[\x00-\x1f\x7f]',' ')
+        if($observed.Length -gt 240){$observed=$observed.Substring(0,240)}
+    }
+    if(-not $caught){throw "FAIL: rejects $Pattern (observed: $observed)"}
+    Check $true "rejects $Pattern"
+}
 $explicit=Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-ud-iq4-xs' -ContextSize 8192
 Check ($explicit.model.id -eq 'qwen3.8-27b-ud-iq4-xs' -and $explicit.model.contextSize -eq 8192) 'explicit artifact/context survive resolution'
 Check ($explicit.model.requiredFreeVramMiB -eq 17800) 'reduced context does not invent a lower fit threshold'
@@ -50,6 +59,12 @@ $runtimeSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Runtime.ps
 Check ($runtimeSource -match "(?s)\`$state\.phase='checking';\s*\`$state\.updatedAt=.*?Write-FastLlmState" -and $runtimeSource -match "(?s)\`$state\.phase='ready';\s*\`$state\.updatedAt=.*?Write-FastLlmState") 'checking and ready publishes refresh status timestamps'
 Check ($runtimeSource -match "(?s)\`$hostProcess\.Start\(\`$info\).*?\`$state\.processIdentity\s*=.*?pid=\[int\]\`$hostProcess\.Process\.Id.*?startUtcTicks=\[long\]\`$hostProcess\.Process\.StartTime\.ToUniversalTime\(\)\.Ticks.*?Write-FastLlmState") 'supervisor publishes actual child PID and UTC start ticks immediately after spawn'
 & $module { Initialize-FastLlmProcessHost }
+Add-Type -Path (Join-Path $PSScriptRoot 'helpers/MockServer.cs')
+Check ([FastLlmTests.MockServer]::IsSynchronousChatRequest('{"stream":false,"model":"test"}') -and
+    [FastLlmTests.MockServer]::IsSynchronousChatRequest('{"model":"test", "stream" :  false }') -and
+    [FastLlmTests.MockServer]::IsSynchronousChatRequest((@{model='test';stream=$false}|ConvertTo-Json -Compress)) -and
+    -not [FastLlmTests.MockServer]::IsSynchronousChatRequest('{"stream":true}') -and
+    -not [FastLlmTests.MockServer]::IsSynchronousChatRequest('{"stream":"false"}')) 'mock detects the synchronous JSON boolean across PowerShell whitespace'
 Throws { [Bitworks.FastLlm.LoopbackHttp]::Request('http://localhost:1234', $null, 100, 100) } 'loopback'
 Throws { [Bitworks.FastLlm.LoopbackHttp]::Request('https://example.com', $null, 100, 100) } 'loopback'
 

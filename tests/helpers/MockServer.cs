@@ -3,9 +3,16 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace FastLlmTests {
     public static class MockServer {
+        // Windows PowerShell 5.1 and PowerShell 7 can format compressed JSON
+        // with different whitespace. Match the JSON boolean, not one byte
+        // layout, so the no-text canary tests the canary rather than spacing.
+        public static bool IsSynchronousChatRequest(string json) {
+            return Regex.IsMatch(json ?? "", "\"stream\"\\s*:\\s*false(?:\\s*[,}])", RegexOptions.CultureInvariant);
+        }
         public static void Run(int port, string mode, string model, int context) {
             if (Environment.GetEnvironmentVariable("FASTLLM_TEST_EXPECT_ISOLATION") == "1") {
                 foreach (string name in new string[] {"LLAMA_ARG_MODEL", "GGML_TEST_OVERRIDE", "VK_TEST_OVERRIDE", "HIP_TEST_OVERRIDE", "SMITHY_TEST_OVERRIDE", "AIP_TEST_OVERRIDE"})
@@ -66,7 +73,7 @@ namespace FastLlmTests {
                         if (path == "/props") body="{\"default_generation_settings\":{\"n_ctx\":"+(mode=="context"?context/2:context)+"},\"total_slots\":1}";
                         if (path == "/completion") { if (method!="POST") status=405; completion++; body="{\"tokens\":[" + (mode=="unstable"?completion:42) + "],\"content\":\"Paris\"}"; }
                         if (path == "/v1/chat/completions") {
-                            if (requestBody.ToString().Contains("\"stream\":false"))
+                            if (IsSynchronousChatRequest(requestBody.ToString()))
                                 body="{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\""+(mode=="chat"?"":"Hello")+"\"}}]}";
                             else {
                                 body="data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n";

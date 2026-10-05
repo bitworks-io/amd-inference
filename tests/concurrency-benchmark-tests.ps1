@@ -18,6 +18,15 @@ function Get-MockStartupDiagnostic($Process,[string]$StderrPath){
     }
     return "mock startup: $state; effective policy=$(Get-ExecutionPolicy); stderr=$stderr"
 }
+$diagnosticStderr=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-diagnostic-'+[Guid]::NewGuid().ToString('N')+'.txt')
+try {
+    [IO.File]::WriteAllText($diagnosticStderr,('x'*4096))
+    $diagnostic=Get-MockStartupDiagnostic -Process ([pscustomobject]@{HasExited=$true;ExitCode=17}) -StderrPath $diagnosticStderr
+    Check ($diagnostic.Contains('exited code=17') -and $diagnostic.Contains('stderr='+('x'*2048)) -and
+        -not $diagnostic.Contains('x'*2049)) 'mock startup diagnostic reports child exit and bounds stderr'
+} finally {
+    if(Test-Path -LiteralPath $diagnosticStderr){Remove-Item -LiteralPath $diagnosticStderr -Force}
+}
 Check (-not $collectorSource.Contains("'-ExecutionPolicy'") -and -not $collectorSource.Contains('PSExecutionPolicyPreference')) 'contained worker inherits the effective script policy without a weaker override'
 
 $bad=$false
@@ -181,14 +190,19 @@ $stallPortListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,
 $stallPortListener.Start();$stallPort=([Net.IPEndPoint]$stallPortListener.LocalEndpoint).Port;$stallPortListener.Stop()
 $stallScript=Join-Path $PSScriptRoot 'helpers/mock-concurrency-stall-server.ps1'
 $stallProcess=$null
+$stallStderr=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-stall-mock-'+[Guid]::NewGuid().ToString('N')+'.stderr.txt')
+$stallStdout=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-stall-mock-'+[Guid]::NewGuid().ToString('N')+'.stdout.txt')
 try {
-    $stallProcess=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$stallScript+'"'),'-Port',$stallPort) -PassThru
+    $stallProcess=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$stallScript+'"'),'-Port',$stallPort) `
+        -PassThru -RedirectStandardError $stallStderr -RedirectStandardOutput $stallStdout
     $reachable=$false
     for($attempt=0;$attempt -lt 50;$attempt++){
+        if($stallProcess.HasExited){break}
         $client=New-Object Net.Sockets.TcpClient
         try{$client.Connect([Net.IPAddress]::Loopback,$stallPort);$reachable=$true;break}catch{Start-Sleep -Milliseconds 100}finally{$client.Dispose()}
     }
-    Check $reachable 'silent mock listener is ready for HTTP timeout test'
+    if(-not $reachable){throw (Get-MockStartupDiagnostic -Process $stallProcess -StderrPath $stallStderr)}
+    Check $true 'silent mock listener is ready for HTTP timeout test'
     $timer=[Diagnostics.Stopwatch]::StartNew()
     $timedWave=Invoke-ConcurrencyWave -Url "http://127.0.0.1:$stallPort/completion" -Body '{"stream":true}' -Clients 4 -TimeoutMs 1000
     $timer.Stop()
@@ -196,6 +210,7 @@ try {
         $timer.Elapsed.TotalSeconds -lt 10) 'silent HTTP child produces four bounded request failures without blocked cleanup'
 } finally {
     if($stallProcess){try{$stallProcess.Kill()}catch{};try{$stallProcess.WaitForExit(5000)|Out-Null}catch{};$stallProcess.Dispose()}
+    foreach($path in @($stallStderr,$stallStdout)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 }
 $hungWorker=Join-Path $PSScriptRoot 'helpers/mock-concurrency-hung-worker.ps1'
 $contained=& $module {
