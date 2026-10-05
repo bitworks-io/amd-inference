@@ -125,9 +125,10 @@ try {
         $listener.Start();$port=$listener.LocalEndpoint.Port;$listener.Stop()
         $runRoot=Join-Path $temp $mode
         $lock=Enter-FastLlmOperation $runRoot
+        $diagnosticPath=Join-Path $runRoot 'mock-startup-diagnostic.txt'
         $plan=[pscustomobject]@{
             enginePath=(Get-Process -Id $PID).Path
-            serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$mode)
+            serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$mode,'-DiagnosticPath',$diagnosticPath)
             endpoint="http://127.0.0.1:$port/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
             hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}
         }
@@ -176,6 +177,13 @@ try {
                 Check ($status.placement.modelBufferMiB[0].sizeMiB -eq 1200) 'lifecycle retains the selected GPU model-buffer MiB'
                 $history=Read-FastLlmJson (Join-Path $runRoot 'state/synthetic.last-ready.json')
                 Check ($history.kind -eq 'api-smoke-only' -and $history.modelSha256 -eq $plan.model.sha256) 'recovery history is recorded only as exact-artifact API smoke evidence'
+            } catch {
+                $marker='not-written'
+                if (Test-Path -LiteralPath $diagnosticPath) {
+                    try { $marker=[string](Get-Content -LiteralPath $diagnosticPath -Raw -ErrorAction Stop) } catch { $marker='unreadable' }
+                }
+                Write-Host ('Unexpected mock child state for ' + $mode + ': ' + $marker.Substring(0,[Math]::Min(500,$marker.Length)))
+                throw
             } finally {
                 foreach($name in $savedEnvironment.Keys){[Environment]::SetEnvironmentVariable($name,$savedEnvironment[$name])}
                 if (-not $stopper.HasExited) { $stopper.Kill() };$stopper.Dispose()

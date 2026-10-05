@@ -349,8 +349,8 @@
     },
     {
       "path": "tests/concurrency-benchmark-tests.ps1",
-      "sizeBytes": 17773,
-      "sha256": "0f70cdbe6ca07856e9f507c186e20bd2f9deb8ba1f24d6f3cc85993ebaaefccb"
+      "sizeBytes": 18967,
+      "sha256": "296a6e4f65ffc22406a58786578828d01ee291f2d1966688fda64acc0ddb802c"
     },
     {
       "path": "tests/download-progress-tests.ps1",
@@ -514,8 +514,8 @@
     },
     {
       "path": "tests/helpers/MockServer.cs",
-      "sizeBytes": 6720,
-      "sha256": "a3cc07f80e673e50a70077bef6dbbbf4405194c700516afb8248c2339554db09"
+      "sizeBytes": 7124,
+      "sha256": "009cc62389b7d88df137f5e292175a217273980d678666126e3fe5a1e8c62a2b"
     },
     {
       "path": "tests/helpers/mock-benchmark-server.ps1",
@@ -544,8 +544,8 @@
     },
     {
       "path": "tests/helpers/mock-server.ps1",
-      "sizeBytes": 237,
-      "sha256": "66f5e52e636d55e26e4bd42ab605aa1abb957979c75e632277984164a0c846e3"
+      "sizeBytes": 775,
+      "sha256": "24d1f8f4d91181445d9177eca4a175f1dd2bc5fdc83c40b41dbbc09beb96f419"
     },
     {
       "path": "tests/hip-benchmark-tests.ps1",
@@ -639,8 +639,8 @@
     },
     {
       "path": "tests/runtime-tests.ps1",
-      "sizeBytes": 24253,
-      "sha256": "ef2133a9881de04388b1812b1b7dee91a7e30b9e11ccac320d1ef618b90f71b9"
+      "sizeBytes": 24797,
+      "sha256": "c35712b953db9a05e34b6632dced20759edc3563969eadc5baa0474a3ec9bab6"
     },
     {
       "path": "tests/selected-device-identity-tests.ps1",
@@ -914,8 +914,8 @@
     },
     {
       "path": "tools/concurrency-benchmark.ps1",
-      "sizeBytes": 31621,
-      "sha256": "8fbac2e47e514e395c48bd6b2e1a504f6ecb4c94c2feeea9595bf87cf6654b88"
+      "sizeBytes": 31718,
+      "sha256": "be189018c15da999bbc9b05f611dbbd8d43c504355680f4eb80427f7d6c62965"
     },
     {
       "path": "tools/gpu-memory-sample.ps1",

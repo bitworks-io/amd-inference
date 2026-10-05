@@ -13,16 +13,20 @@ namespace FastLlmTests {
         public static bool IsSynchronousChatRequest(string json) {
             return Regex.IsMatch(json ?? "", "\"stream\"\\s*:\\s*false(?:\\s*[,}])", RegexOptions.CultureInvariant);
         }
-        public static void Run(int port, string mode, string model, int context) {
+        private static void Mark(string path, string stage) {
+            if (!String.IsNullOrEmpty(path)) File.WriteAllText(path, stage);
+        }
+        public static void Run(int port, string mode, string model, int context, string diagnosticPath) {
             if (Environment.GetEnvironmentVariable("FASTLLM_TEST_EXPECT_ISOLATION") == "1") {
                 foreach (string name in new string[] {"LLAMA_ARG_MODEL", "GGML_TEST_OVERRIDE", "VK_TEST_OVERRIDE", "HIP_TEST_OVERRIDE", "SMITHY_TEST_OVERRIDE", "AIP_TEST_OVERRIDE"})
-                    if (!String.IsNullOrEmpty(Environment.GetEnvironmentVariable(name))) Environment.Exit(71);
+                    if (!String.IsNullOrEmpty(Environment.GetEnvironmentVariable(name))) { Mark(diagnosticPath, "isolation-variable-present: " + name); Environment.Exit(71); }
                 foreach (string name in new string[] {"APPDATA", "PROGRAMDATA"}) {
                     string folder=Environment.GetEnvironmentVariable(name);
-                    if (String.IsNullOrEmpty(folder) || !Directory.Exists(folder) || Directory.GetFileSystemEntries(folder).Length != 0) Environment.Exit(72);
+                    if (String.IsNullOrEmpty(folder) || !Directory.Exists(folder) || Directory.GetFileSystemEntries(folder).Length != 0) { Mark(diagnosticPath, "isolation-root-not-empty: " + name); Environment.Exit(72); }
                 }
             }
             if (mode == "exit") Environment.Exit(7);
+            Mark(diagnosticPath, "mock-entered");
             Console.Error.WriteLine("load_tensors: offloaded " + (mode == "partial" ? "39" : "41") + "/41 layers to GPU");
             Console.Error.WriteLine("load_tensors: Vulkan0 model buffer size = 1200.00 MiB");
             Console.Error.WriteLine("llama_kv_cache: Vulkan0 KV buffer size = 256.00 MiB");
@@ -43,6 +47,7 @@ namespace FastLlmTests {
             }
             var listener = new TcpListener(IPAddress.Loopback, port);
             listener.Start();
+            Mark(diagnosticPath, "listener-started");
             int completion = 0;
             while (true) {
                 using (var client = listener.AcceptTcpClient()) {

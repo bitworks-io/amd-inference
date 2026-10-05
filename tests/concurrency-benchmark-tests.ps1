@@ -72,6 +72,24 @@ $state=[pscustomobject]@{schemaVersion=1;active=$true;phase='ready';endpoint='ht
     processIdentity=[pscustomobject]@{pid=123;startUtcTicks=123456789};
     canary=[pscustomobject]@{modelIdentity=$true;repeatableToken=$true;synchronousChat=$true;streaming=$true;semanticCorrectnessQualified=$false;effectiveContext=256};
     placement=[pscustomobject]@{reportedAllLayers=$true;reportedLayers=1;totalLayers=1;devices=@('Vulkan0')}}
+$semanticSource=[IO.Path]::GetFullPath((Join-Path $root 'src/FastLlm.SemanticSmoke.ps1'))
+$controllerBinding=& $module {
+    param($SemanticSource,$ReadyState)
+    . $SemanticSource
+    Assert-FastLlmSemanticSmokeState $ReadyState
+} $semanticSource $state
+Check ($controllerBinding -match '^[0-9a-f]{64}$' -and
+    -not $collectorSource.Contains("Join-Path `$PSScriptRoot 'FastLlm.SemanticSmoke.ps1'") -and
+    $collectorSource.Contains('} $semanticSource $status')) 'controller module entry resolves the explicit semantic helper and mock Ready binding'
+$workerBinding=& $module {
+    param($Tool,$SemanticSource,$ReadyState)
+    . $SemanticSource
+    . $Tool -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-concurrency-worker-entry.json')
+    Assert-FastLlmSemanticSmokeState $ReadyState
+} (Join-Path $root 'tools/concurrency-benchmark.ps1') $semanticSource $state
+Check ($workerBinding -ceq $controllerBinding -and
+    $collectorSource.Contains('} $PSCommandPath $semanticSource $InstallRoot $OutputPath') -and
+    -not $collectorSource.Contains("Join-Path `$PSScriptRoot 'FastLlm.SemanticSmoke.ps1'")) 'worker module entry resolves the same explicit helper and mock Ready binding'
 function New-ConcurrencyTestWave([int]$Clients){
     $out=@(for($i=1;$i -le $Clients;$i++){
         $response=[pscustomobject]@{Status=200;Events=@('{"content":"X","stop":false}',

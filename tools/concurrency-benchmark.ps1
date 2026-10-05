@@ -401,11 +401,13 @@ if($MyInvocation.InvocationName -ne '.'){
         if($WorkerPromptCsv -cnotmatch '^[0-9]{1,5}(,[0-9]{1,5}){0,3}$'){throw 'Worker prompt lengths are invalid.'}
         $PromptTokens=@($WorkerPromptCsv.Split(',')|ForEach-Object {[int]$_})
     }elseif($WorkerNonce -or $WorkerPromptCsv){throw 'Worker-only parameters are not accepted for the controller.'}
-    $module=Import-Module (Join-Path $PSScriptRoot '../src/FastLlm.psm1') -Force -PassThru
+    $sourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src'))
+    $semanticSource=Join-Path $sourceRoot 'FastLlm.SemanticSmoke.ps1'
+    $module=Import-Module (Join-Path $sourceRoot 'FastLlm.psm1') -Force -PassThru
     if($WorkerMode){
         $result=& $module {
-            param($ScriptPath,$InstallRoot,$OutputPath,$PromptTokens,$GenerationTokens,$Repetitions,$DeadlineSeconds,$RequestTimeoutBaseSeconds)
-            . (Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1')
+            param($ScriptPath,$SemanticSource,$InstallRoot,$OutputPath,$PromptTokens,$GenerationTokens,$Repetitions,$DeadlineSeconds,$RequestTimeoutBaseSeconds)
+            . $SemanticSource
             . $ScriptPath -InstallRoot $InstallRoot -OutputPath $OutputPath -PromptTokens $PromptTokens `
                 -GenerationTokens $GenerationTokens -Repetitions $Repetitions -DeadlineSeconds $DeadlineSeconds `
                 -RequestTimeoutBaseSeconds $RequestTimeoutBaseSeconds
@@ -415,14 +417,14 @@ if($MyInvocation.InvocationName -ne '.'){
                 -ReadState {Get-FastLlmStatus $InstallRoot} -CheckProcess {param($State) Assert-FastLlmSemanticSmokeProcess $State} `
                 -Request {param($Path,$Body,$Timeout) Invoke-FastLlmHttp -BaseUrl 'http://127.0.0.1:8080' -Path $Path -Body $Body -TimeoutMs $Timeout} `
                 -Wave {param($Base,$Path,$Body,$Count,$Timeout) Invoke-ConcurrencyWave -Url ($Base+$Path) -Body $Body -Clients $Count -TimeoutMs $Timeout}
-        } $PSCommandPath $InstallRoot $OutputPath $PromptTokens $GenerationTokens $Repetitions $DeadlineSeconds $RequestTimeoutBaseSeconds
+        } $PSCommandPath $semanticSource $InstallRoot $OutputPath $PromptTokens $GenerationTokens $Repetitions $DeadlineSeconds $RequestTimeoutBaseSeconds
         if($result.reportStatus -ne 'complete'){throw "Concurrency benchmark aborted; report saved with reason code $($result.abortReasonCode)."}
     }else{
         Assert-ConcurrencyArguments $PromptTokens $GenerationTokens 32768
         $outFull=[IO.Path]::GetFullPath($OutputPath)
         if(Test-Path -LiteralPath $outFull){throw 'Concurrency report already exists.'}
         $status=& $module {param($Root) Get-FastLlmStatus $Root} $InstallRoot
-        $null=& $module {param($ScriptPath,$State) . (Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1'); Assert-FastLlmSemanticSmokeState $State} $PSCommandPath $status
+        $null=& $module {param($SemanticSource,$State) . $SemanticSource; Assert-FastLlmSemanticSmokeState $State} $semanticSource $status
         $root=& $module {param($Root) Get-FastLlmStateRoot $Root} $InstallRoot
         $lockPath=Join-Path $root 'benchmark.lock'
         if((Test-Path -LiteralPath $lockPath) -and ((Get-Item -LiteralPath $lockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unsafe benchmark lock.'}
