@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "source": "fixture",
+  "backend": "Vulkan",
+  "enginePath": "C:\\FastLLM\\vulkan\\llama-server.exe",
+  "adapters": [
+    {
+      "device": "Vulkan0",
+      "name": "AMD Radeon 4GB Fixture",
+      "vendorId": "1002",
+      "vramMiB": 3584,
+      "freeVramMiB": 3500,
+      "driverVersion": "fixture",
+      "backend": "Vulkan",
+      "isAmd": true
+    }
+  ]
+}

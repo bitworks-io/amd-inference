@@ -1,0 +1,137 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Run planner and parser tests in Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\run-tests.ps1
+      - name: Run planner and parser tests in PowerShell 7
+        shell: pwsh
+        run: .\tests\run-tests.ps1
+      - name: Inventory, driver-guidance and download-progress tests in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          .\tests\inventory-tests.ps1
+          .\tests\native-host-inventory-tests.ps1
+          .\tests\smbios-memory-tests.ps1
+          .\tests\driver-guidance-tests.ps1
+          .\tests\driver-guidance-view-tests.ps1
+          .\tests\prerequisite-diagnostics-tests.ps1
+          .\tests\vc-redist-tests.ps1
+          .\tests\vc-redist-install-tests.ps1
+          .\tests\ggml-vulkan-identity-tests.ps1
+          .\tests\ggml-vulkan-capabilities-tests.ps1
+          .\tests\pci-identity-join-tests.ps1
+          .\tests\hip-candidate-probe-tests.ps1
+          .\tests\selected-device-identity-tests.ps1
+          .\tests\windows-vulkan-pnp-bridge-tests.ps1
+          .\tests\hip-model-trial-tests.ps1
+          .\tests\hip-benchmark-tests.ps1
+          .\tests\hip-semantic-smoke-tests.ps1
+          .\tests\hip-soak-tests.ps1
+          .\tests\vulkan-capabilities-tests.ps1
+          .\tests\vulkan-coopmat-screen-tests.ps1
+          .\tests\download-progress-tests.ps1
+      - name: Inventory, driver-guidance and download-progress tests in PowerShell 7
+        shell: pwsh
+        run: |
+          .\tests\inventory-tests.ps1
+          .\tests\native-host-inventory-tests.ps1
+          .\tests\smbios-memory-tests.ps1
+          .\tests\driver-guidance-tests.ps1
+          .\tests\driver-guidance-view-tests.ps1
+          .\tests\prerequisite-diagnostics-tests.ps1
+          .\tests\vc-redist-tests.ps1
+          .\tests\vc-redist-install-tests.ps1
+          .\tests\ggml-vulkan-identity-tests.ps1
+          .\tests\ggml-vulkan-capabilities-tests.ps1
+          .\tests\pci-identity-join-tests.ps1
+          .\tests\hip-candidate-probe-tests.ps1
+          .\tests\selected-device-identity-tests.ps1
+          .\tests\windows-vulkan-pnp-bridge-tests.ps1
+          .\tests\hip-model-trial-tests.ps1
+          .\tests\hip-benchmark-tests.ps1
+          .\tests\hip-semantic-smoke-tests.ps1
+          .\tests\hip-soak-tests.ps1
+          .\tests\vulkan-capabilities-tests.ps1
+          .\tests\vulkan-coopmat-screen-tests.ps1
+          .\tests\download-progress-tests.ps1
+      # This suite defines a fake ProcessHost type; keep it in its own shell
+      # process so it cannot replace real lifecycle-test types in later steps.
+      - name: Inventory parent mock tests in Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\native-host-parent-tests.ps1
+      - name: Inventory parent mock tests in PowerShell 7
+        shell: pwsh
+        run: .\tests\native-host-parent-tests.ps1
+      - name: Lab-access helper tests in Windows PowerShell 5.1 (no setup execution)
+        shell: powershell
+        run: |
+          .\tests\lab-access-tests.ps1
+          .\tests\lab-launcher-tests.ps1
+      - name: Lab-access helper tests in PowerShell 7 (no setup execution)
+        shell: pwsh
+        run: |
+          .\tests\lab-access-tests.ps1
+          .\tests\lab-launcher-tests.ps1
+      - name: Private app-package setup tests in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          .\tests\lab-app-tests.ps1
+          .\tests\lab-app-ui-tests.ps1
+      - name: Private app-package setup tests in PowerShell 7
+        shell: pwsh
+        run: |
+          .\tests\lab-app-tests.ps1
+          .\tests\lab-app-ui-tests.ps1
+      - name: Concurrent-client mock tests in Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\concurrency-benchmark-tests.ps1
+      - name: Concurrent-client mock tests in PowerShell 7
+        shell: pwsh
+        run: .\tests\concurrency-benchmark-tests.ps1
+      - name: Behavioral lifecycle and benchmark tests in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          .\tests\ui-flow-tests.ps1
+          .\tests\ui-prerequisite-tests.ps1
+          .\tests\runtime-tests.ps1
+          .\tests\start-tests.ps1
+          .\tests\benchmark-tests.ps1
+          .\tests\offload-lab-tests.ps1
+          .\tests\offload-benchmark-tests.ps1
+          .\tests\vulkan-fit-trial-tests.ps1
+          .\tests\vulkan-fit-benchmark-tests.ps1
+          .\tests\semantic-smoke-tests.ps1
+      - name: Behavioral lifecycle and benchmark tests in PowerShell 7
+        shell: pwsh
+        run: |
+          .\tests\ui-flow-tests.ps1
+          .\tests\ui-prerequisite-tests.ps1
+          .\tests\runtime-tests.ps1
+          .\tests\start-tests.ps1
+          .\tests\benchmark-tests.ps1
+          .\tests\offload-lab-tests.ps1
+          .\tests\offload-benchmark-tests.ps1
+          .\tests\vulkan-fit-trial-tests.ps1
+          .\tests\vulkan-fit-benchmark-tests.ps1
+          .\tests\semantic-smoke-tests.ps1

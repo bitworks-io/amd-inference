@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "source": "fixture",
+  "backend": "Vulkan",
+  "enginePath": "C:\\FastLLM\\vulkan\\llama-server.exe",
+  "adapters": [
+    {
+      "device": "Vulkan0",
+      "name": "AMD Radeon RX 7900 XTX",
+      "vendorId": "1002",
+      "vramMiB": 24576,
+      "freeVramMiB": 23800,
+      "driverVersion": "fixture",
+      "backend": "Vulkan",
+      "isAmd": true
+    }
+  ]
+}

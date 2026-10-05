@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "source": "fixture",
+  "backend": "Vulkan",
+  "enginePath": "C:\\FastLLM\\vulkan\\llama-server.exe",
+  "adapters": [
+    {
+      "device": "Vulkan0",
+      "name": "AMD Radeon RX 6700 XT",
+      "vendorId": "1002",
+      "vramMiB": 12288,
+      "freeVramMiB": 11850,
+      "driverVersion": "fixture",
+      "backend": "Vulkan",
+      "isAmd": true
+    }
+  ]
+}

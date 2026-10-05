@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "lemonade-hip-b1339-windows-gfx110x",
+  "status": "offline-inspected-lab-candidate",
+  "executionEnabled": false,
+  "sourceRepository": "https://github.com/lemonade-sdk/llamacpp-rocm",
+  "releaseTag": "b1339",
+  "releaseUrl": "https://github.com/lemonade-sdk/llamacpp-rocm/releases/tag/b1339",
+  "sourceLlamaCppCommitPrefixAsReported": "7f2dd",
+  "rocmVersionAsReported": "10.2.0a20261004",
+  "gpuTarget": "gfx110X",
+  "entryPoint": "llama-server.exe",
+  "archive": {
+    "file": "llama-b1339-windows-rocm-gfx110X-x64.zip",
+    "url": "https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1339/llama-b1339-windows-rocm-gfx110X-x64.zip",
+    "sizeBytes": 172433329,
+    "sha256": "cc9f6ce72a700507f0a1cb6b1e1a06481d7710a3bd433d0829e2f8762ee85a1d"
+  },
+  "extractedFileCount": 1081,
+  "extractedDirectoryCount": 8,
+  "extractedSizeBytes": 595119585,
+  "fileSetDigest": {
+    "algorithm": "sha256 over path UTF-8, NUL, decimal size, NUL, lowercase file SHA-256, newline; sorted by case-sensitive path",
+    "sha256": "f8a5d8f4640c456fcee095d298a2a6aa1af0c8ba147c522766e74da08e9fdcf1"
+  },
+  "verifiedFiles": [
+    {"path":"llama-server.exe","sizeBytes":9728,"sha256":"9356bfcfc322700fe263ee79d1c089277ab20c3460d17f22ac6668a7474cc98d"},
+    {"path":"llama-server-impl.dll","sizeBytes":9134080,"sha256":"76d7a80e1ac3b6f962387379b759f83c204bb14e23af515672f6f6c0a91f8c1a"},
+    {"path":"ggml-base.dll","sizeBytes":821760,"sha256":"2be9dc73ba90f6428ca26349bbfbda0b47cdc3bfb122f179c11cb733e3575eef"},
+    {"path":"ggml.dll","sizeBytes":90624,"sha256":"4a76d58dba14f5499a1692e562c53267d8a500ac67cf99bd7c7948d125e6b6b0"},
+    {"path":"ggml-hip.dll","sizeBytes":240220160,"sha256":"e18d0305d05b66422c7ad4da63cb60c2ce24ebbbd454c0c9c5e7b50ff74d3978"},
+    {"path":"amdhip64_7.dll","sizeBytes":16402432,"sha256":"28bc24cf72aa83af304b0b756c54c834b97fe3f92904ed7334711af08988b925"},
+    {"path":"amd_comgr.dll","sizeBytes":124869632,"sha256":"3c482039802dfbe237bc60d8c063d08ea9b8300f5d65df1db55d7723f86b2b99"},
+    {"path":"hipblas.dll","sizeBytes":809472,"sha256":"35c6c47554d0a40cacc8895600a35e05d77aede502c157273913a2c3bbe186e0"},
+    {"path":"rocblas.dll","sizeBytes":21074944,"sha256":"4ad90e3658302578b97fdd145fdb35eaa3aaf4bc41f93ae767fffcb3703fffdb"},
+    {"path":"rocsolver.dll","sizeBytes":26806272,"sha256":"60c840b284037f6fc587d9347cecc6008101bf665b21bb71c1d33c25fe6c0746"},
+    {"path":"libhipblaslt.dll","sizeBytes":2490368,"sha256":"6e1fe75c1fda0b28d6d89ea4499920c7325813db72d4c470ba270842d7bc15f4"},
+    {"path":"libtensilelite-host.dll","sizeBytes":4265472,"sha256":"1bce6fc126d59055a0e77b5c0898c8dce9dc91c88b64d42fcfd2dfd7e6fee020"},
+    {"path":"origami.dll","sizeBytes":430592,"sha256":"535670f4ce15d0df6cd1f9e0b64d8da484c550e027ae12fcbf87efc98639f848"},
+    {"path":"rocm_kpack.dll","sizeBytes":181248,"sha256":"2e9734ffe6f6eefe1ff660a55dc85fffbcd2d66f794fce4878c6d95a55787b48"}
+  ],
+  "qualification": {
+    "staticPeImportClosure": "bundled AMD/llama DLL names present; Windows system and Microsoft VC++ runtime remain external",
+    "dynamicLoadClosureVerified": false,
+    "nativeExecutionVerified": false,
+    "qwen38ModelVerified": false,
+    "licenseNoticeReviewComplete": false,
+    "performanceVerified": false
+  }
+}

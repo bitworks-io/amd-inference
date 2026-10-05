@@ -1,0 +1,1041 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-only-public-staging",
+  "files": [
+    {
+      "path": ".github/workflows/test.yml",
+      "sizeBytes": 5499,
+      "sha256": "abec435e9de086ff7223ae53cd1ec9b78cc2203873b8430daba6a6d86e8d12fc"
+    },
+    {
+      "path": ".gitignore",
+      "sizeBytes": 571,
+      "sha256": "cd32d0108b90b385f5c4d6f4ba75b25f9d38dde9bbf6d47dc5eb33417ff34136"
+    },
+    {
+      "path": "FastLLM.cmd",
+      "sizeBytes": 565,
+      "sha256": "a27ab2e7ebf3fc746fbecbb77a7caa4f78db14b8fa115416a2575b220c485a61"
+    },
+    {
+      "path": "Install-FastLLM-Lab.cmd",
+      "sizeBytes": 595,
+      "sha256": "0636edecf673ea8f358e2605e040730deccc104812f269bd2bd580b9eb6a4e6b"
+    },
+    {
+      "path": "README.md",
+      "sizeBytes": 6366,
+      "sha256": "2ae8713f4fef2f1556a8ad70092e7d7932e1c7b1afba002952064e19a6238dee"
+    },
+    {
+      "path": "SECURITY.md",
+      "sizeBytes": 5396,
+      "sha256": "6e691374db4697d7a7a1453ec3dc4dd1a7af38032caf55193ed37d9a5fbb0cd4"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sizeBytes": 3265,
+      "sha256": "349269e2674b91b56d052605bf4ed9b4a43be4c6619bc19476069862b9ef97a5"
+    },
+    {
+      "path": "config/catalog.json",
+      "sizeBytes": 25294,
+      "sha256": "65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6"
+    },
+    {
+      "path": "config/catalog.sha256",
+      "sizeBytes": 79,
+      "sha256": "7e9a3ddea9f92b1310a2932ea9be300da2b8b4245979c1b7cbc17e5126da8427"
+    },
+    {
+      "path": "config/driver-guidance.json",
+      "sizeBytes": 5850,
+      "sha256": "f76aa849b3ada98f9be1043c5aae60b53b2b74363a3e4c8403a9b972de499deb"
+    },
+    {
+      "path": "config/experiments/lemonade-hip-b1339-gfx110x.json",
+      "sizeBytes": 3273,
+      "sha256": "1f9d747976b8e35e063377a29b699497b6706ab5ccaf22852d67d2f812119291"
+    },
+    {
+      "path": "config/recipes.schema.json",
+      "sizeBytes": 5640,
+      "sha256": "12c8cb1f7125d9f3cce73f7f170243b5d0c7b8d1572c84572f95f63359d3b1f1"
+    },
+    {
+      "path": "config/windows-prerequisites.json",
+      "sizeBytes": 663,
+      "sha256": "5c7242ad4f07407cc9dc2c7f082df61256bc39aef5641872f001049f2f839d09"
+    },
+    {
+      "path": "docs/BENCHMARK-METHODOLOGY.md",
+      "sizeBytes": 13359,
+      "sha256": "9e0ab31f99a99afdf9338571b003b51f4dff9830de23281137643a5dbf2e1c30"
+    },
+    {
+      "path": "docs/PUBLIC-LAB-GUIDE.md",
+      "sizeBytes": 6395,
+      "sha256": "7eb99836cdd04385fec9ca05751e2599c21acda3b13073bfe676ec8ceb9266fb"
+    },
+    {
+      "path": "docs/PUBLIC-README.md",
+      "sizeBytes": 6366,
+      "sha256": "2ae8713f4fef2f1556a8ad70092e7d7932e1c7b1afba002952064e19a6238dee"
+    },
+    {
+      "path": "fast-llm-ui.ps1",
+      "sizeBytes": 35956,
+      "sha256": "a85833cba6d6be9ff89cc4e1f7814c5392894089f71a572f5c1a78d7b5c3fc81"
+    },
+    {
+      "path": "fast-llm.ps1",
+      "sizeBytes": 15723,
+      "sha256": "a2d6c1e2d2aae282d9462305afef6e62a74b56a29027d6b9f0ff0ec4518c5169"
+    },
+    {
+      "path": "linux/bootstrap.py",
+      "sizeBytes": 6675,
+      "sha256": "ec6a26d3d19c9e961b6b41bf6d2392a4bb27b905e0711769b5bf63acb093f415"
+    },
+    {
+      "path": "linux/engine-candidates.json",
+      "sizeBytes": 14779,
+      "sha256": "2e0d88d1fc3ff8677fff93659cbd2442698117e405220bba0835dd244894e2ef"
+    },
+    {
+      "path": "linux/fast-llm-linux.py",
+      "sizeBytes": 6439,
+      "sha256": "cfe335ef3638bae9eb558686d754c24e521a9be6620d4f09fc6f330554d8fe5e"
+    },
+    {
+      "path": "linux/lab.py",
+      "sizeBytes": 10914,
+      "sha256": "4f17f817444898fa74bfb62244aaff17356434032cbba35b7e20f4538d2fb815"
+    },
+    {
+      "path": "linux/models.py",
+      "sizeBytes": 16989,
+      "sha256": "71d2427c28b1c6beab41c8fac6b117b57881885cd9ee2220859e22aa121af3dd"
+    },
+    {
+      "path": "linux/prereqs.py",
+      "sizeBytes": 12473,
+      "sha256": "f3c658b1bab9677dfd0529a0cd5411d93884e7b69f4eb22097da8a24b78f5548"
+    },
+    {
+      "path": "linux/probe.py",
+      "sizeBytes": 13320,
+      "sha256": "fa384803a036cea5fbbce300c9c384afac39508bf3adeb3aec9ddea168a84ab1"
+    },
+    {
+      "path": "linux/runtime.py",
+      "sizeBytes": 11496,
+      "sha256": "2d96e3b9732c86c26be2582885cfe4ace4bf836b475b7788a32a34d4b2852d54"
+    },
+    {
+      "path": "linux/serve.py",
+      "sizeBytes": 36430,
+      "sha256": "ffb9a0e31f89624f7e7d563179323ba14ea20b9c23a03fe82b678f112d19ebb7"
+    },
+    {
+      "path": "linux/ubuntu_packages.py",
+      "sizeBytes": 21557,
+      "sha256": "52c8cf59db1a82a4b44940e00fc7faf21e63f0c3cfcc9bf0cc5471d334d716f9"
+    },
+    {
+      "path": "src/FastLlm.Benchmark.ps1",
+      "sizeBytes": 12175,
+      "sha256": "c8b64fe0a2e78e3974b63a127da9ae385ca84b51fba69505ee323ab5d464a43b"
+    },
+    {
+      "path": "src/FastLlm.DriverGuidance.ps1",
+      "sizeBytes": 9593,
+      "sha256": "3bf3f6866138a692dabbae409d94c6f7f6528cfe0b6fc6c41f7ac6970c5931cb"
+    },
+    {
+      "path": "src/FastLlm.DriverGuidanceView.ps1",
+      "sizeBytes": 2214,
+      "sha256": "dad1a7a0be36f14fd2ffc47ec01c6a864b15f1f0dffcabfb6af2ed80d8155580"
+    },
+    {
+      "path": "src/FastLlm.GgmlVulkanIdentity.ps1",
+      "sizeBytes": 5768,
+      "sha256": "1597ceb831add47e2b522e611c3a306ef6e1b35f68e92bf95e54e8a07c543343"
+    },
+    {
+      "path": "src/FastLlm.HipBenchmark.ps1",
+      "sizeBytes": 19347,
+      "sha256": "871de2dd3d4ec3d04d13dac225a784f28a85b3fd49ec384c698b38deeab33a5e"
+    },
+    {
+      "path": "src/FastLlm.HipCandidateProbe.ps1",
+      "sizeBytes": 23127,
+      "sha256": "ecbe7b16f0cbcbe27bf6562d9f994bd3789fc7be0aa41b30557799b58b482bdc"
+    },
+    {
+      "path": "src/FastLlm.HipModelTrial.ps1",
+      "sizeBytes": 27122,
+      "sha256": "e5dee27e66b508fd12363b005f2bf0abd664f506c0373ea0b8e7baff62e95c2f"
+    },
+    {
+      "path": "src/FastLlm.HipSemanticSmoke.ps1",
+      "sizeBytes": 8251,
+      "sha256": "c0c476f3d22feeaadfc18715301a30ed1a47d3f565e1348b9fe5aadfe6fe3b99"
+    },
+    {
+      "path": "src/FastLlm.HipSoak.ps1",
+      "sizeBytes": 11546,
+      "sha256": "941f07ae66e4218eb67b3bba254825414daa7c1b4ba7b04a10bc92fc924327ed"
+    },
+    {
+      "path": "src/FastLlm.LabApp.ps1",
+      "sizeBytes": 32758,
+      "sha256": "395561003175330a3ed8480ec8fc4c412752454ca0e1f503f10cf66b628095e7"
+    },
+    {
+      "path": "src/FastLlm.OffloadBenchmark.ps1",
+      "sizeBytes": 18483,
+      "sha256": "f214f8b498eff554fe78836c6448e1f5008b0c2763e182e1f9013a575fe7028b"
+    },
+    {
+      "path": "src/FastLlm.OffloadLab.ps1",
+      "sizeBytes": 25786,
+      "sha256": "50ea73c1810968473dfe18b10891937baa690e24dd5f373aef5d73088dc612ab"
+    },
+    {
+      "path": "src/FastLlm.PciIdentityJoin.ps1",
+      "sizeBytes": 9116,
+      "sha256": "1f9123a43cfaf361b6729c69ed5c9549294a4fcb4189d31d998849022df87227"
+    },
+    {
+      "path": "src/FastLlm.PrerequisiteDiagnostics.ps1",
+      "sizeBytes": 7801,
+      "sha256": "93f873217beb666f72a39ba53714138ffe9d3683de70ce27cedc59df243c3593"
+    },
+    {
+      "path": "src/FastLlm.Runtime.ps1",
+      "sizeBytes": 27569,
+      "sha256": "3a9afbe0c545693b547e00e2a4f48ea1d9aefbc551ed2f74b252cf20321e152a"
+    },
+    {
+      "path": "src/FastLlm.SelectedDeviceIdentity.ps1",
+      "sizeBytes": 2880,
+      "sha256": "b2971d008fa8bf6582c424f9a55f37419360836c14f368f3c310ad511d1ea272"
+    },
+    {
+      "path": "src/FastLlm.SemanticSmoke.ps1",
+      "sizeBytes": 16468,
+      "sha256": "d0438f6ec2744600e341fe7f4426ff3327ac750ec98d6fda39d41adb045d6125"
+    },
+    {
+      "path": "src/FastLlm.Soak.ps1",
+      "sizeBytes": 3983,
+      "sha256": "82140acf1756f5cec89931b3b7f6e522369214a77c4e29525463256850cc2d76"
+    },
+    {
+      "path": "src/FastLlm.UiFlow.ps1",
+      "sizeBytes": 16787,
+      "sha256": "3718b941f8ad2a4c3acc1463c3efe3f43c30f998421b97f3055577d879b22ca8"
+    },
+    {
+      "path": "src/FastLlm.UiPrerequisite.ps1",
+      "sizeBytes": 9746,
+      "sha256": "96a8c82d915763a222f73bcedc897b871d9f3147a6ba5e060cd4b07de897a188"
+    },
+    {
+      "path": "src/FastLlm.VcRedist.ps1",
+      "sizeBytes": 13022,
+      "sha256": "c833e531f2da7015a8b9d291a502b8d319be6c2c0c46ed418a64e16a6f94e352"
+    },
+    {
+      "path": "src/FastLlm.VcRedistInstall.ps1",
+      "sizeBytes": 15720,
+      "sha256": "dae7df4aadcccc51314f092a737bc975090dc6ff8768516175984f2d4619b139"
+    },
+    {
+      "path": "src/FastLlm.VulkanCoopmatScreen.ps1",
+      "sizeBytes": 23844,
+      "sha256": "a22edb12bb6c159e0eaedbace6698f46488443a4c0dbc5d17c5c2b602db95592"
+    },
+    {
+      "path": "src/FastLlm.VulkanFitBenchmark.ps1",
+      "sizeBytes": 19798,
+      "sha256": "7409fc0fdfe35c19d5ae9a6383f1c3ae586cee447f46370702dfeddd12e20636"
+    },
+    {
+      "path": "src/FastLlm.VulkanFitTrial.ps1",
+      "sizeBytes": 20353,
+      "sha256": "74456437847888d0153aa4a00219c9174a839a9ab7857c054b7a4cae52ac5c98"
+    },
+    {
+      "path": "src/FastLlm.VulkanModuleBinding.ps1",
+      "sizeBytes": 5585,
+      "sha256": "4ae2ea8c521e8f39180dfdd60e6b22b4ec939759bdf4e106b3075ccd24d07b05"
+    },
+    {
+      "path": "src/FastLlm.psm1",
+      "sizeBytes": 78238,
+      "sha256": "a933613a5454cde94202efafdb3d181526ad1f3b063d0f0fdcc207ab0d2e6f5b"
+    },
+    {
+      "path": "src/ProcessHost.cs",
+      "sizeBytes": 18430,
+      "sha256": "7254379a4761bc00bbfc798de8f11de9a4958cc61a7c04c0ee5c34688c0811d5"
+    },
+    {
+      "path": "src/WindowsGgmlVulkanCapabilities.cs",
+      "sizeBytes": 15003,
+      "sha256": "d6e4c05f33b48300c17e34c7acf659e514f9d1bf92fc2e9cb48eea9d62a947e2"
+    },
+    {
+      "path": "src/WindowsGgmlVulkanIdentity.cs",
+      "sizeBytes": 8445,
+      "sha256": "cce666e99037eb3c7f5a58f7cdbf5ffd55ed347a2dd3feb1e9717ed4a19843ae"
+    },
+    {
+      "path": "src/WindowsGpuIdentity.cs",
+      "sizeBytes": 6818,
+      "sha256": "d34981d2cc498c4b318ddab609bd4d8667d8c9a20cdf004225819264c6631c73"
+    },
+    {
+      "path": "src/WindowsGpuTelemetry.cs",
+      "sizeBytes": 13791,
+      "sha256": "2145d33b0a8fb42c94d617281f25242310f0b77f941d26273f40fad7c41c6d65"
+    },
+    {
+      "path": "src/WindowsHostInventory.cs",
+      "sizeBytes": 4415,
+      "sha256": "fb83e30087d65ab59bbec0cad289e40627763471740493f9025da28a56034e51"
+    },
+    {
+      "path": "src/WindowsInventory.cs",
+      "sizeBytes": 4670,
+      "sha256": "9fc9a618055fe83c25c2b1b1d93d1adcb6b46da1f7015211b6aff96c10e17c37"
+    },
+    {
+      "path": "src/WindowsInventory.ps1",
+      "sizeBytes": 10140,
+      "sha256": "bf57379a280d9ca57d1e9820460cd4c2e10d23ea074b7cb601b3ee8002e75e61"
+    },
+    {
+      "path": "src/WindowsPciAddress.cs",
+      "sizeBytes": 4916,
+      "sha256": "06f48485e971f716334a8c983e8aa860457bfdb6ed9cb804ff1f17fa63d13e58"
+    },
+    {
+      "path": "src/WindowsSmbiosMemory.cs",
+      "sizeBytes": 12018,
+      "sha256": "e248c3bc7d3a7792c5ab888958f9fdbae3a69dba70c53a338718798db7cb5c60"
+    },
+    {
+      "path": "src/WindowsVulkanPnPBridge.cs",
+      "sizeBytes": 19960,
+      "sha256": "10b1337de71c8d7f3b6291a751c7b9ac575de1031ea8198a46d368a7ed3274f3"
+    },
+    {
+      "path": "tests/benchmark-integration-tests.ps1",
+      "sizeBytes": 8642,
+      "sha256": "64a3d71d96293db5d5c90ed2740262a2847ce9fe794271cd0c79c1d8d4717be0"
+    },
+    {
+      "path": "tests/benchmark-tests.ps1",
+      "sizeBytes": 6415,
+      "sha256": "8a9f6f6dd9d07e5388ea131ae6eb1387e86865d51bc0f4bfa7e324b58218b44a"
+    },
+    {
+      "path": "tests/concurrency-benchmark-tests.ps1",
+      "sizeBytes": 15470,
+      "sha256": "0856177929d7ec075a5303d02c6adfc882a9382fa0cb14df3a858716a5bce1c7"
+    },
+    {
+      "path": "tests/download-progress-tests.ps1",
+      "sizeBytes": 4106,
+      "sha256": "250eec82ed014ecf4fd328384f8df195d27f29d35a73031781cd26f670acfcf2"
+    },
+    {
+      "path": "tests/driver-guidance-tests.ps1",
+      "sizeBytes": 8749,
+      "sha256": "229e04751ba906b1aab9a163eab55daf7fcbc602b5f9779a5e00433e3ec8c7cf"
+    },
+    {
+      "path": "tests/driver-guidance-view-tests.ps1",
+      "sizeBytes": 2512,
+      "sha256": "a9197ae6df2e9fab76c9158e4225445f5158b9987922a031dec932b8e8b1762d"
+    },
+    {
+      "path": "tests/first-model-cancel-resume-native-tests.ps1",
+      "sizeBytes": 10849,
+      "sha256": "e6a9fa25e4db7f1185120f202525e42e58e178e061aa563c902009a355f0706d"
+    },
+    {
+      "path": "tests/first-model-native-tests.ps1",
+      "sizeBytes": 5646,
+      "sha256": "7edb041d17f8f58086c9bf14e7d2a99e56045f05709911d8e82a1fc75af7d22c"
+    },
+    {
+      "path": "tests/first-run-native-tests.ps1",
+      "sizeBytes": 8107,
+      "sha256": "b4a7135e95408933886e9c7e18f7ac05774e95f6ba78ff3bfa601c9c63a26b74"
+    },
+    {
+      "path": "tests/fixtures/amd-12gb.json",
+      "sizeBytes": 386,
+      "sha256": "1db38f285bcebffa5a802a47661efaa9239441443ea81b221676440c4710ede5"
+    },
+    {
+      "path": "tests/fixtures/amd-16gb.json",
+      "sizeBytes": 378,
+      "sha256": "61363099bd34c4e5dd8bd16446bd92a035406cc043023d0e9718d1d0d63f5133"
+    },
+    {
+      "path": "tests/fixtures/amd-4gb.json",
+      "sizeBytes": 381,
+      "sha256": "3cf3f974641955b0190f5c92f14dc9adc7ea8ab17e94099e636ab2a5af2d04a1"
+    },
+    {
+      "path": "tests/fixtures/amd-8gb.json",
+      "sizeBytes": 373,
+      "sha256": "82b8973f80b7e9190dd2355012b6f6551a5073ddcb65065eb31eedbf827c3ccd"
+    },
+    {
+      "path": "tests/fixtures/dual-r9700-32gb.json",
+      "sizeBytes": 616,
+      "sha256": "d7869a9b1ebf2552b3464df439ce593fb7c60a61d4b097263c07b561bf545cd9"
+    },
+    {
+      "path": "tests/fixtures/dual-reserve-boundary.json",
+      "sizeBytes": 602,
+      "sha256": "4e3778f64002db978020c46ed86b0f78286809e2408861807a0a8495aa67a832"
+    },
+    {
+      "path": "tests/fixtures/dual-rx-7900-xt-20gb.json",
+      "sizeBytes": 612,
+      "sha256": "6a90625876deafbefbf9e366b041a1cdfd5eaa53ce4d3b383f95678ab82842d8"
+    },
+    {
+      "path": "tests/fixtures/dual-rx-7900-xtx-24gb-with-igpu.json",
+      "sizeBytes": 876,
+      "sha256": "2f41d7db34b66355d59f2273096c564485974864b4e2617e17dd610d1781361b"
+    },
+    {
+      "path": "tests/fixtures/dual-rx-7900-xtx-24gb.json",
+      "sizeBytes": 614,
+      "sha256": "15a538d9112efe4a99b056c982e2f8d101d22b50c01b7da1870bb06571eeb8f1"
+    },
+    {
+      "path": "tests/fixtures/duplicate-device-identifiers.json",
+      "sizeBytes": 614,
+      "sha256": "75dd0efd8698c7568f7eb8c890dddd0af6af72924b3ee49f5019293daaca0899"
+    },
+    {
+      "path": "tests/fixtures/heterogeneous-20gb-24gb.json",
+      "sizeBytes": 613,
+      "sha256": "2df4a4a946119751687393bac81c4fbc55ff99d4a0cc79e846cea19fe81b7fed"
+    },
+    {
+      "path": "tests/fixtures/invalid-free-exceeds-total.json",
+      "sizeBytes": 379,
+      "sha256": "fe3f9871758f64bfc110bc1e92d25c947be6209bf0ce06b4758a85ec3e321c1b"
+    },
+    {
+      "path": "tests/fixtures/legacy-vega-8-igpu.json",
+      "sizeBytes": 389,
+      "sha256": "2de53bb649a7ff10ce0cb67a36b4da3f95a58362563a90dabb31bf70ddac23d5"
+    },
+    {
+      "path": "tests/fixtures/llama-list-devices.txt",
+      "sizeBytes": 140,
+      "sha256": "a0289260d01236260c5d27ef8acff217630e581afc1f926c5a2ef5d47ae2aab7"
+    },
+    {
+      "path": "tests/fixtures/nominal-4gb-reported-3584mb.json",
+      "sizeBytes": 385,
+      "sha256": "432eef7009cba84a21568b974c7b076ed008d7c5028a00221c11055d13a3f1b1"
+    },
+    {
+      "path": "tests/fixtures/r9700-32gb.json",
+      "sizeBytes": 380,
+      "sha256": "25417fd7721fd100be5dd5e71ed259a9854986d72d5e90ca07607525f7f04fdd"
+    },
+    {
+      "path": "tests/fixtures/r9700-plus-dual-rx-7900-xt.json",
+      "sizeBytes": 848,
+      "sha256": "2798b0ab660388a47c4f7d798844f68e3474c4d24e4bba3b1de02866892d6a9f"
+    },
+    {
+      "path": "tests/fixtures/rx-7900-xt-20gb.json",
+      "sizeBytes": 378,
+      "sha256": "1c8b732a06741fcbfbaf19217afc46637505822a5930bbde89422da1ef3c96ec"
+    },
+    {
+      "path": "tests/fixtures/rx-7900-xtx-24gb-with-igpu.json",
+      "sizeBytes": 641,
+      "sha256": "483359082f5dc38da783d3d5343553b0da816fc1e297a735928a085e37448e88"
+    },
+    {
+      "path": "tests/fixtures/rx-7900-xtx-24gb.json",
+      "sizeBytes": 387,
+      "sha256": "8faf90fd5d5c872167a0e2716c6437f8948fc26ebecf987e71c0bffe1f26ce0d"
+    },
+    {
+      "path": "tests/fixtures/triple-rx-7900-xtx-24gb.json",
+      "sizeBytes": 849,
+      "sha256": "8ef681f700d865d13650325b4bf2a4c79f118c05ab33203597be641185d77d0b"
+    },
+    {
+      "path": "tests/fixtures/unsupported-2gb.json",
+      "sizeBytes": 385,
+      "sha256": "2cf35d7a1ffd9594c524ffdf777fc6b39fc41f2cca0c23ac96f65a7293093837"
+    },
+    {
+      "path": "tests/ggml-vulkan-capabilities-tests.ps1",
+      "sizeBytes": 9515,
+      "sha256": "ee53dd07c5e87af951301b6ff0235847be40eca2ceda31c4ef2efb694ec92b3c"
+    },
+    {
+      "path": "tests/ggml-vulkan-identity-tests.ps1",
+      "sizeBytes": 7531,
+      "sha256": "d05521b71d020cbb1b3785d01786eac24853d6d4258eba5374d2eef58fd2c73c"
+    },
+    {
+      "path": "tests/gpu-identity-tests.ps1",
+      "sizeBytes": 1470,
+      "sha256": "7df9df70e8659aecf3717bc95bb6a1b7b1f0da7399f3b0ef4a1e761b2babd6d6"
+    },
+    {
+      "path": "tests/gpu-telemetry-tests.ps1",
+      "sizeBytes": 6424,
+      "sha256": "1c5d781350a1d41e41fff7d2e248d3bbf02ab34c0c990e49e2ba712e7b64c496"
+    },
+    {
+      "path": "tests/helpers/MockServer.cs",
+      "sizeBytes": 6259,
+      "sha256": "99ae2576cba20bfcfa2f562a4ca4bf8948c8a97e0896ac982c4e5fe12020461b"
+    },
+    {
+      "path": "tests/helpers/mock-benchmark-server.ps1",
+      "sizeBytes": 4672,
+      "sha256": "fbe6e46f9e9e7ebcefc20644ed02b6d02a22c4799791991865a7ef488bde0178"
+    },
+    {
+      "path": "tests/helpers/mock-concurrency-hung-worker.ps1",
+      "sizeBytes": 91,
+      "sha256": "6494106968b9d626805f3925006689bf908a7a35508083bfb895f3f7a910e896"
+    },
+    {
+      "path": "tests/helpers/mock-concurrency-stall-server.ps1",
+      "sizeBytes": 364,
+      "sha256": "1e1861ae523e4a86389d4e8d02a67b4f8b6320d2af0230a0bd3c79aa3661cc98"
+    },
+    {
+      "path": "tests/helpers/mock-ggml-identity-output.ps1",
+      "sizeBytes": 633,
+      "sha256": "7244820f149b84bcef9d1165fdbb312e2875a3ab43dd6eaa125d6661ca038168"
+    },
+    {
+      "path": "tests/helpers/mock-pci-identity-output.ps1",
+      "sizeBytes": 1210,
+      "sha256": "9a7b307014fabbfd6607c1ee3e361f13f60f0660c0a61bdc885566edbb2355b7"
+    },
+    {
+      "path": "tests/helpers/mock-server.ps1",
+      "sizeBytes": 237,
+      "sha256": "66f5e52e636d55e26e4bd42ab605aa1abb957979c75e632277984164a0c846e3"
+    },
+    {
+      "path": "tests/hip-benchmark-tests.ps1",
+      "sizeBytes": 14368,
+      "sha256": "d3a2cb60ad8c9ab510790cb7168d305676aa994de890ba785ce59a21444c36d6"
+    },
+    {
+      "path": "tests/hip-candidate-probe-tests.ps1",
+      "sizeBytes": 4803,
+      "sha256": "7ef99008c8a4d7d82df68901f77bd08cc951bea32386f3909e53942da3544d5a"
+    },
+    {
+      "path": "tests/hip-model-trial-tests.ps1",
+      "sizeBytes": 12875,
+      "sha256": "08295091f197f433aa1b5dd2bf1d9f81ba7a9eb4da08924192548d7843b3a1d2"
+    },
+    {
+      "path": "tests/hip-semantic-smoke-tests.ps1",
+      "sizeBytes": 9323,
+      "sha256": "407f5893932e3648aa8a8e04f3702c9f66c8eaa9bb97d297f6af751c23289d4a"
+    },
+    {
+      "path": "tests/hip-soak-tests.ps1",
+      "sizeBytes": 10287,
+      "sha256": "9d25cc8fac6f61008a63253372997dd407d7907fa28ffd008f5a5808f295a253"
+    },
+    {
+      "path": "tests/inventory-tests.ps1",
+      "sizeBytes": 6828,
+      "sha256": "b98748c09936cdcd4f24eb0a529a15942888eccac8f92a1eeeaf47cd786c31da"
+    },
+    {
+      "path": "tests/lab-access-tests.ps1",
+      "sizeBytes": 9384,
+      "sha256": "9c1ee1dea4666a376d774ef3da3c4cd4a6c362676bd235fb416332c672ea3e0b"
+    },
+    {
+      "path": "tests/lab-app-native-tests.ps1",
+      "sizeBytes": 12141,
+      "sha256": "d8f92ab454e7b0ef22b9ff7979e7c472ae6a9d04931b4d0c0c89d61ba37f8be1"
+    },
+    {
+      "path": "tests/lab-app-tests.ps1",
+      "sizeBytes": 16351,
+      "sha256": "781420af7ac18f8bb259d235ce056264b781da66785d7dd6e5ab4499c7363efc"
+    },
+    {
+      "path": "tests/lab-app-ui-tests.ps1",
+      "sizeBytes": 7028,
+      "sha256": "f38dbcf50e12041a6ef2fe40bbb02194b45dc2835c52658ce6ca1b5a9838a386"
+    },
+    {
+      "path": "tests/lab-launcher-tests.ps1",
+      "sizeBytes": 3325,
+      "sha256": "a39b8faf5814349587fb27a4ef1e254c535059b1d77eeaba126002543889a277"
+    },
+    {
+      "path": "tests/native-host-inventory-tests.ps1",
+      "sizeBytes": 6726,
+      "sha256": "d4d8ab0f1a1b049e313de9e7bfe2c594457d3020b24466ea54b6a7bbf6035781"
+    },
+    {
+      "path": "tests/native-host-parent-tests.ps1",
+      "sizeBytes": 4538,
+      "sha256": "6d59ccf9d8a08a6599b9d71992dd6a9da76c02ed1fb00a8a11f5dd257be20e7d"
+    },
+    {
+      "path": "tests/offload-benchmark-tests.ps1",
+      "sizeBytes": 13031,
+      "sha256": "b91ca91bf634849890e4b33b2340335974154eed146535552315937c77d5b1d4"
+    },
+    {
+      "path": "tests/offload-lab-tests.ps1",
+      "sizeBytes": 14145,
+      "sha256": "aa07db43cdaa95b7d7567d1ef56019beb1da14cebb909aeafcd047ed97e74f1d"
+    },
+    {
+      "path": "tests/pci-identity-join-tests.ps1",
+      "sizeBytes": 8341,
+      "sha256": "9fcc176bb79685b7e217725d89c190eea4667b6b16b67d06b0139fb710b02158"
+    },
+    {
+      "path": "tests/prerequisite-diagnostics-tests.ps1",
+      "sizeBytes": 6331,
+      "sha256": "6360f1492a8711a910c8beb137826c2551c45fbda2d95f825ce74f5ba91f94b2"
+    },
+    {
+      "path": "tests/run-tests.ps1",
+      "sizeBytes": 31306,
+      "sha256": "dbd8a6c96a7dc2ded716dfc06b3d730996c9dd4c01df32503d82d32bcd652d05"
+    },
+    {
+      "path": "tests/runtime-tests.ps1",
+      "sizeBytes": 23329,
+      "sha256": "414e54308427ed902b5e3f44ae344b8aa1824e357fdfa76d07aed9611d70befb"
+    },
+    {
+      "path": "tests/selected-device-identity-tests.ps1",
+      "sizeBytes": 6878,
+      "sha256": "ac02a0d2fff385f17c81602e540188d746cf1f652532101f0912014cf93a70e0"
+    },
+    {
+      "path": "tests/semantic-smoke-tests.ps1",
+      "sizeBytes": 7923,
+      "sha256": "8fee6e67e7cf865738835c87ab61f890d1700c7fdf3d2f094b747f1f88c3a11f"
+    },
+    {
+      "path": "tests/smbios-memory-tests.ps1",
+      "sizeBytes": 6914,
+      "sha256": "5213b3dad4b47aba29c41d7c5a864b07bfdccd148113e7d205bc753c29e05f2e"
+    },
+    {
+      "path": "tests/start-tests.ps1",
+      "sizeBytes": 6023,
+      "sha256": "9497b7a2e2abaef1fe009090a0f196ff30c0730f4b786dd5b1e2f302122d315a"
+    },
+    {
+      "path": "tests/test_adlx_telemetry.py",
+      "sizeBytes": 3397,
+      "sha256": "017b68861f0051421850f65a7ce9368834e1ad015698f24a51caa7c805f206c2"
+    },
+    {
+      "path": "tests/test_adlx_vram_diagnostic.py",
+      "sizeBytes": 3482,
+      "sha256": "4919fab7ca37a0843cf8d987256280be6d9971befc2926a93c31ca8217259cac"
+    },
+    {
+      "path": "tests/test_benchmark_matrix.py",
+      "sizeBytes": 6704,
+      "sha256": "fad6073a45e0db605e60659c0aeab375fcdf497f444b04a87d8d0635d38189e9"
+    },
+    {
+      "path": "tests/test_benchmarks.py",
+      "sizeBytes": 16372,
+      "sha256": "f3b3e2a428549e2e0c2964563a3bee6dd5ca77320382e79714aed0beab024596"
+    },
+    {
+      "path": "tests/test_catalog.py",
+      "sizeBytes": 4693,
+      "sha256": "6837e612865aa61f9ad54f847c9d230c8ea213d4e8b5e100cf56191ecd19e119"
+    },
+    {
+      "path": "tests/test_ggml_export_ownership.py",
+      "sizeBytes": 4112,
+      "sha256": "fba2c1b2b6430f63a4017fab205108b67831a22891df297bdbb00b932b38982b"
+    },
+    {
+      "path": "tests/test_hip_archive_audit.py",
+      "sizeBytes": 11030,
+      "sha256": "cce120d13bc72e8e10e567f5609b1ff99959e09e963c75f877d7c89c731ea0d5"
+    },
+    {
+      "path": "tests/test_linux_delivery.py",
+      "sizeBytes": 15952,
+      "sha256": "eef85e073c3369d21876dc456f246fb10e6ed43c401572c9dba4181056d56301"
+    },
+    {
+      "path": "tests/test_linux_lab.py",
+      "sizeBytes": 11806,
+      "sha256": "638cce19dd9df567878a231bd50d6ae46e5d534264da634e1abeceedee22dddb"
+    },
+    {
+      "path": "tests/test_linux_models.py",
+      "sizeBytes": 12261,
+      "sha256": "bea42522c032568d25543af46561cc7f7f44a186d87abfed7453c48d9823b644"
+    },
+    {
+      "path": "tests/test_linux_prereqs.py",
+      "sizeBytes": 11134,
+      "sha256": "4d75fe86a72e715cbd5d5a5c2b1af7c1eb083a6690400e082c851e66206f46c1"
+    },
+    {
+      "path": "tests/test_linux_probe.py",
+      "sizeBytes": 11093,
+      "sha256": "8e8051c05f5df680c200ab0d28f0b1cfeff0bf3e71a725fbcb3347504d823a27"
+    },
+    {
+      "path": "tests/test_linux_runtime.py",
+      "sizeBytes": 8836,
+      "sha256": "a0d72f8d88f9718774dacedc3b50aeaf19c1e81f7d5e9af0325dc69f4bb19ee2"
+    },
+    {
+      "path": "tests/test_linux_serve.py",
+      "sizeBytes": 32890,
+      "sha256": "2d8dbe0fcdb0293f8652d2fc50e6fd9360f005b57ef901ad9c29fe7105b2958a"
+    },
+    {
+      "path": "tests/test_linux_serve_native.py",
+      "sizeBytes": 6991,
+      "sha256": "3e701a956200a099a227b6b89985285888b6dc6a07d70cf0c824538a532b039a"
+    },
+    {
+      "path": "tests/test_package.py",
+      "sizeBytes": 7794,
+      "sha256": "87d38d08da1d1576dcb76ef150ddb1aa613e8f0a8288228565b62df7d68fb012"
+    },
+    {
+      "path": "tests/test_public_source.py",
+      "sizeBytes": 6230,
+      "sha256": "6cf2f40c855d6602a60d83b88e4ba61adc9b7ca5750d620547313f28544f894a"
+    },
+    {
+      "path": "tests/test_recipes.py",
+      "sizeBytes": 18281,
+      "sha256": "a5d675de73bab9373e55b827a1f5c039ffdd3c9b487b929fddb76ec70f22fb37"
+    },
+    {
+      "path": "tests/test_ubuntu_packages.py",
+      "sizeBytes": 13370,
+      "sha256": "428635c4d1fc648a7e6a3904efbbe04015d41a799701281e33ee58141a885598"
+    },
+    {
+      "path": "tests/ui-cli-native-tests.ps1",
+      "sizeBytes": 5160,
+      "sha256": "d3629389f33e2cd29cfe285d88d664106df660f711aabc1bb8e3559101a2d28a"
+    },
+    {
+      "path": "tests/ui-flow-tests.ps1",
+      "sizeBytes": 24197,
+      "sha256": "f345e570459a4be8e551998d91a435b1781911bb00b3acaf63ee136245ad4156"
+    },
+    {
+      "path": "tests/ui-prerequisite-tests.ps1",
+      "sizeBytes": 8021,
+      "sha256": "98437ce54df5df34ffa55ba4ec5845c92fdb4549f48083b8fed4df1f2c75352e"
+    },
+    {
+      "path": "tests/ui-setup-native-tests.ps1",
+      "sizeBytes": 7001,
+      "sha256": "6786a39d7ecb7e607a7ee96ad8bbe94a3654063bedd0ba41ec52c4ebaeb6a1bd"
+    },
+    {
+      "path": "tests/vc-redist-install-tests.ps1",
+      "sizeBytes": 8501,
+      "sha256": "db7df38725401f1ae0609511fb1c952835b36d8b49e2727cb06797aa7cdb184c"
+    },
+    {
+      "path": "tests/vc-redist-tests.ps1",
+      "sizeBytes": 8559,
+      "sha256": "a626f6dc749d632aa90dad43ef415f6b3bbdf33fcd68d220554885c7c5a0994d"
+    },
+    {
+      "path": "tests/vulkan-capabilities-tests.ps1",
+      "sizeBytes": 4930,
+      "sha256": "9d3328c61b573075cc54f95e6e0fe93d7fb7817d8cfba48b40db9e990ba6e262"
+    },
+    {
+      "path": "tests/vulkan-coopmat-screen-tests.ps1",
+      "sizeBytes": 8655,
+      "sha256": "ae079985180ca984582594d23e3f3fb28952575a74944415c1d3c39f35ceb894"
+    },
+    {
+      "path": "tests/vulkan-driver-modules-tests.ps1",
+      "sizeBytes": 7156,
+      "sha256": "c195943b34b59b11ed1fed3162a6cdc5cb81fe981b23e2123e44c8a9254760f8"
+    },
+    {
+      "path": "tests/vulkan-fit-benchmark-tests.ps1",
+      "sizeBytes": 9940,
+      "sha256": "b5e50b9919013ad3f4e188767920cac25bfb5d4b62a2b249d22aa90b7458c798"
+    },
+    {
+      "path": "tests/vulkan-fit-trial-tests.ps1",
+      "sizeBytes": 6788,
+      "sha256": "0c81b43502de88d33d525886c1d0165a8b1ce0925df0cddca600e6c6a502117b"
+    },
+    {
+      "path": "tests/windows-http-transport-tests.ps1",
+      "sizeBytes": 3957,
+      "sha256": "36cd5af21de9508e6acdc2532b3e1bcfce31dd66800916530df519b11c1b51ab"
+    },
+    {
+      "path": "tests/windows-vulkan-pnp-bridge-tests.ps1",
+      "sizeBytes": 3773,
+      "sha256": "f422b1043a2ef1bfc8356a70fd7156a75a00a585e6e14d806c8d7880184784c5"
+    },
+    {
+      "path": "tools/adlx-telemetry.c",
+      "sizeBytes": 7652,
+      "sha256": "f40506f015e3dd6ecaa9f11671ff3cc127896b539faac18ae572a12a4bb16a24"
+    },
+    {
+      "path": "tools/adlx-telemetry.ps1",
+      "sizeBytes": 7746,
+      "sha256": "8588cdf920e1efa7d1e09ef236afd1c9423dc5a3a364a9534480307bf91fe15a"
+    },
+    {
+      "path": "tools/adlx-vram-diagnostic.c",
+      "sizeBytes": 12223,
+      "sha256": "f4ee4abc813e7b79070953b51b5a4c909eafccd5c3a3d8fdbe9123704606faa1"
+    },
+    {
+      "path": "tools/adlx-vram-diagnostic.ps1",
+      "sizeBytes": 8636,
+      "sha256": "414f206f9a6cab38ead9d60b46c57a89b94634e9b2ea22f7326c7d12415a1d09"
+    },
+    {
+      "path": "tools/audit_hip_archive.py",
+      "sizeBytes": 17141,
+      "sha256": "2b30449656151f80995aec436497a847cc50ac7b23d48593cf453ef4b33f3f61"
+    },
+    {
+      "path": "tools/benchmark-matrix.py",
+      "sizeBytes": 8857,
+      "sha256": "b8b52a7a50c2aecce036aaa72f23eac50bd4f285da42b1179203bf3f551859fa"
+    },
+    {
+      "path": "tools/benchmark.ps1",
+      "sizeBytes": 685,
+      "sha256": "77878253be85e8f9fa05809a173f8daae28c66a328d2acea7a959aa1344168ab"
+    },
+    {
+      "path": "tools/build-adlx-telemetry.sh",
+      "sizeBytes": 1600,
+      "sha256": "e8429803637be044414eb3a7736c0867b8db2ccc405cbef76c29d47bdedcf60d"
+    },
+    {
+      "path": "tools/build-adlx-vram-diagnostic.sh",
+      "sizeBytes": 1985,
+      "sha256": "8ac03adb2b4e87f05d7d7c51a965faef29d6fb2390c588ea10dd2ea60e25b3cb"
+    },
+    {
+      "path": "tools/build-lab-package.ps1",
+      "sizeBytes": 7263,
+      "sha256": "4df9acd1c5087ae5e0a9c77ce92e998dedcc7eba57bf7bc98a96edac92054a93"
+    },
+    {
+      "path": "tools/collect-ggml-vulkan-capabilities.ps1",
+      "sizeBytes": 20196,
+      "sha256": "8e7b893b6baf4d0f34a8234a1e4b0f19e77a6df7fbc7ac80f3ceccbaa4a0a526"
+    },
+    {
+      "path": "tools/collect-ggml-vulkan-identity.ps1",
+      "sizeBytes": 2848,
+      "sha256": "a30b0cd33587d34459e74c48d83077bf91e43fe493683420a3e27c6f36cd7e67"
+    },
+    {
+      "path": "tools/collect-pci-identity-join.ps1",
+      "sizeBytes": 5082,
+      "sha256": "2bb96e2cdbb5ff5603b152cfd5c9684af3cf737ac1b7b696be2d6910f5ea46d7"
+    },
+    {
+      "path": "tools/collect-prerequisite-inventory.ps1",
+      "sizeBytes": 743,
+      "sha256": "39a7a1796599a93df07af119c212e8726487bae791665cc39433a3df00d0ded8"
+    },
+    {
+      "path": "tools/collect-smbios-memory.ps1",
+      "sizeBytes": 2940,
+      "sha256": "1b37988fe0b9953ec51b08aa4076e314863a9a97b4a3353f14812a82d4936b91"
+    },
+    {
+      "path": "tools/collect-vulkan-driver-modules.ps1",
+      "sizeBytes": 12664,
+      "sha256": "055ff337c4495fa15c17f204a232baeb23f731599f05296c05309f3b9076eff9"
+    },
+    {
+      "path": "tools/collect-windows-vulkan-pnp-bridge.ps1",
+      "sizeBytes": 5282,
+      "sha256": "59cfe938dcde9a78a5f3c1804d003383e5f2a3c777a5f4db2cb839df6f36317c"
+    },
+    {
+      "path": "tools/compare_benchmarks.py",
+      "sizeBytes": 18916,
+      "sha256": "c210615da84bdd361e45d3a32e67055b77283917f6d63f6a8057ebcc1a6e836b"
+    },
+    {
+      "path": "tools/concurrency-benchmark.ps1",
+      "sizeBytes": 31621,
+      "sha256": "8fbac2e47e514e395c48bd6b2e1a504f6ecb4c94c2feeea9595bf87cf6654b88"
+    },
+    {
+      "path": "tools/gpu-memory-sample.ps1",
+      "sizeBytes": 7754,
+      "sha256": "149b831ce62362e8b23b3a80085ff58ed894834d830193d5f7e6077501b1249f"
+    },
+    {
+      "path": "tools/hip-benchmark.ps1",
+      "sizeBytes": 895,
+      "sha256": "a28797cb99de1a190ea82baa579d9e8bb39c309ae8a925d125d0d97aee014c20"
+    },
+    {
+      "path": "tools/hip-candidate-native-worker.ps1",
+      "sizeBytes": 570,
+      "sha256": "c6f0b06e95c5dcd8487349998afe500e626fc0970dc4d9f20da5c543617a2554"
+    },
+    {
+      "path": "tools/hip-model-trial.ps1",
+      "sizeBytes": 2333,
+      "sha256": "32b9b0f9845998d1c2ba1d056f409fdbda5895e681e06ffbbad95107f486bb84"
+    },
+    {
+      "path": "tools/hip-semantic-smoke.ps1",
+      "sizeBytes": 1284,
+      "sha256": "c0a12efe7c19383cc42dd74ebfd60a01d803233bd0cdfc878a2e1bfe207bb544"
+    },
+    {
+      "path": "tools/hip-soak.ps1",
+      "sizeBytes": 1205,
+      "sha256": "247d93714a0e6524d0aa43f4e8441ee856276847504798829631a3015ed1bf28"
+    },
+    {
+      "path": "tools/install-lab-app.ps1",
+      "sizeBytes": 9213,
+      "sha256": "d1df9fac98ee8a9402677bd2a5dc81ef2f922b041be0492facd54fb0e35b3569"
+    },
+    {
+      "path": "tools/install-vc-runtime.ps1",
+      "sizeBytes": 1105,
+      "sha256": "9c2b3525ff05f65003522ea5f6345534a4d2e03b0057c80f309a321ddc136ad1"
+    },
+    {
+      "path": "tools/lab-setup-README.md",
+      "sizeBytes": 746,
+      "sha256": "1df01ca2592fee35f873fa215bf12f46655672d31acc8c6c96fbf0ebc93dd5f8"
+    },
+    {
+      "path": "tools/offload-benchmark.ps1",
+      "sizeBytes": 784,
+      "sha256": "e0e74c3b751fad31d25674eb497edacfb384ad2370af1a033066f352ad090ef2"
+    },
+    {
+      "path": "tools/offload-lab.ps1",
+      "sizeBytes": 2213,
+      "sha256": "124bc9c41c134df8fffd2ad01fd69f1609fa326748c15087b9b9b27711eaace8"
+    },
+    {
+      "path": "tools/prepare-vc-runtime.ps1",
+      "sizeBytes": 2060,
+      "sha256": "4b9707b3a3db98dda93d9faab91b24d5b9818f0fffba11b3019ed7d3df99744d"
+    },
+    {
+      "path": "tools/probe-lemonade-hip-b1339.ps1",
+      "sizeBytes": 479,
+      "sha256": "790bb07e3c6358e93324ae8cdfa6de79346b6a9c020a3f2514966f90773bbde8"
+    },
+    {
+      "path": "tools/recipes.py",
+      "sizeBytes": 24399,
+      "sha256": "0853069e337bff6ba5fe04d5dbc48f6bb9614deb802c5f2a110cafad6b45991f"
+    },
+    {
+      "path": "tools/semantic-smoke.ps1",
+      "sizeBytes": 920,
+      "sha256": "7260860b11074d597adfb477e75345fac86590aff98d0e6180f57b6c5ce22b87"
+    },
+    {
+      "path": "tools/setup-windows-lab.cmd",
+      "sizeBytes": 841,
+      "sha256": "78d4e98e72987e365641a793a09a3d73cdb83d930c84514ab3377371f7693821"
+    },
+    {
+      "path": "tools/setup-windows-lab.ps1",
+      "sizeBytes": 24210,
+      "sha256": "7fe4a19fce534166ae58681cbaa02052fe1cc7f7de888ce0a3f52fe61ea6d303"
+    },
+    {
+      "path": "tools/soak.ps1",
+      "sizeBytes": 620,
+      "sha256": "6935b167004543addaff9d2ed7b8b1fb91a6346426e4f198f90b8ce1da0bf450"
+    },
+    {
+      "path": "tools/stage-public-source.py",
+      "sizeBytes": 6380,
+      "sha256": "3269ea198219354629edac2bfe959866f3f9f07f8130a999b049278317456f10"
+    },
+    {
+      "path": "tools/start-windows-lab-setup.ps1",
+      "sizeBytes": 2827,
+      "sha256": "a4e16668c46f24445890b770ded41c9260628e1b4edf0e4fa4309172c0ca1cba"
+    },
+    {
+      "path": "tools/verify_lab_package.py",
+      "sizeBytes": 4214,
+      "sha256": "1d31c03e14a377870353f2936cc4315f0fba3cb1db5f32b33852d6f237d9d054"
+    },
+    {
+      "path": "tools/vulkan-capabilities.ps1",
+      "sizeBytes": 13452,
+      "sha256": "b732db09992558474208f31c396068a28d133453711e24e71d082c0297dc81b7"
+    },
+    {
+      "path": "tools/vulkan-coopmat-screen.ps1",
+      "sizeBytes": 882,
+      "sha256": "3c07e22b9e91ab3e733f15feac3b9deb3ad7ef28e4bc9c849cdb6e5b86a08830"
+    },
+    {
+      "path": "tools/vulkan-fit-benchmark.ps1",
+      "sizeBytes": 866,
+      "sha256": "25a8cc4704e67297ac2bd427db3e011b869d220c805ccb6f3d732b57e35e6a00"
+    },
+    {
+      "path": "tools/vulkan-fit-trial.ps1",
+      "sizeBytes": 1845,
+      "sha256": "995c985a55aecc952f27c9260eded575925904c094c91983ec22dc30f2dfa22f"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FastLLM measured recipe evidence manifest v1",
+  "description": "Structural guide only. tools/recipes.py performs catalog, evidence hash, measurement and source-review validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "records"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "records": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha"}}
+    },
+    "adapter": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pciId", "vramMiB", "busId", "rootComplexId", "upstreamPort", "attachment", "linkWidth", "linkGeneration"],
+      "properties": {
+        "pciId": {"type": "string", "minLength": 1},
+        "vramMiB": {"type": "integer", "minimum": 1},
+        "busId": {"type": "string", "minLength": 1},
+        "rootComplexId": {"type": "string", "minLength": 1},
+        "upstreamPort": {"type": "string", "minLength": 1},
+        "attachment": {"enum": ["cpu", "chipset"]},
+        "linkWidth": {"type": "integer", "minimum": 1},
+        "linkGeneration": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["os", "osBuild", "driverVersion", "engineVersion", "engineAssetSha256", "engineSha256", "engineBackend", "modelId", "modelSha256", "catalogSha256", "adapters", "topology", "workload"],
+      "properties": {
+        "os": {"enum": ["windows", "linux"]},
+        "osBuild": {"type": "string", "minLength": 1},
+        "driverVersion": {"type": "string", "minLength": 1},
+        "engineVersion": {"type": "string", "minLength": 1},
+        "engineAssetSha256": {"$ref": "#/$defs/sha"},
+        "engineSha256": {"$ref": "#/$defs/sha"},
+        "engineBackend": {"type": "string", "minLength": 1},
+        "modelId": {"type": "string", "minLength": 1},
+        "modelSha256": {"$ref": "#/$defs/sha"},
+        "catalogSha256": {"$ref": "#/$defs/sha"},
+        "adapters": {"type": "array", "minItems": 1, "maxItems": 2, "items": {"$ref": "#/$defs/adapter"}},
+        "topology": {"type": "object", "additionalProperties": false, "required": ["gpuLinks", "peerToPeer"], "properties": {"gpuLinks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["fromBusId", "toBusId", "path"], "properties": {"fromBusId": {"type": "string"}, "toBusId": {"type": "string"}, "path": {"type": "string", "minLength": 1}}}}, "peerToPeer": {"type": "boolean"}}},
+        "workload": {"type": "object", "additionalProperties": false, "required": ["id", "promptTokens", "generationTokens", "concurrency", "sampling", "corpus", "prefixCache", "warmupPerPrompt", "randomizedPromptOrder", "powerPlan", "processorCount", "systemFingerprint", "promptArtifactSha256"], "properties": {"id": {"type": "string"}, "promptTokens": {"type": "integer", "minimum": 1}, "generationTokens": {"type": "integer", "minimum": 1}, "concurrency": {"type": "integer", "minimum": 1}, "sampling": {"type": "string"}, "corpus": {"type": "string"}, "prefixCache": {"type": "boolean"}, "warmupPerPrompt": {"type": "integer", "minimum": 1}, "randomizedPromptOrder": {"type": "boolean"}, "powerPlan": {"type": "string"}, "processorCount": {"type": "integer", "minimum": 1}, "systemFingerprint": {"$ref": "#/$defs/sha"}, "promptArtifactSha256": {"$ref": "#/$defs/sha"}}}
+      }
+    },
+    "recipe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["placement", "contextSize", "slots", "gpuLayers", "splitMode", "tensorSplit", "cacheTypeK", "cacheTypeV", "launchArgsSha256"],
+      "properties": {
+        "placement": {"enum": ["full-gpu", "cpu-offload"]},
+        "contextSize": {"type": "integer", "minimum": 1},
+        "slots": {"type": "integer", "minimum": 1},
+        "gpuLayers": {"oneOf": [{"const": "all"}, {"type": "integer", "minimum": 1}]},
+        "splitMode": {"type": ["string", "null"]},
+        "tensorSplit": {"type": ["string", "null"]},
+        "cacheTypeK": {"type": "string"},
+        "cacheTypeV": {"type": "string"},
+        "launchArgsSha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "state", "binding", "recipe", "metrics", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "state": {"enum": ["candidate", "reviewed"]},
+        "binding": {"$ref": "#/$defs/binding"},
+        "recipe": {"$ref": "#/$defs/recipe"},
+        "metrics": {"type": "object", "additionalProperties": false, "required": ["promptTokensPerSecond", "generationTokensPerSecond", "timeToFirstTextMs", "peakDedicatedVramMiB"], "properties": {"promptTokensPerSecond": {"type": "number", "exclusiveMinimum": 0}, "generationTokensPerSecond": {"type": "number", "exclusiveMinimum": 0}, "timeToFirstTextMs": {"type": "number", "exclusiveMinimum": 0}, "peakDedicatedVramMiB": {"type": ["array", "null"], "items": {"type": "number", "exclusiveMinimum": 0}}}},
+        "evidence": {"type": "object", "additionalProperties": false, "required": ["benchmark", "qualification"], "properties": {"benchmark": {"$ref": "#/$defs/evidence"}, "qualification": {"anyOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]}}}
+      }
+    }
+  }
+}

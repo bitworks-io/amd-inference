@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "source": "fixture",
+  "backend": "ROCm",
+  "enginePath": "C:\\FastLLM\\rocm\\llama-server.exe",
+  "adapters": [
+    {
+      "device": "ROCm0",
+      "name": "AMD Radeon AI PRO R9700",
+      "vendorId": "1002",
+      "vramMiB": 32768,
+      "freeVramMiB": 31000,
+      "driverVersion": "fixture",
+      "backend": "ROCm",
+      "isAmd": true
+    },
+    {
+      "device": "ROCm1",
+      "name": "AMD Radeon RX 7900 XT",
+      "vendorId": "1002",
+      "vramMiB": 20480,
+      "freeVramMiB": 20000,
+      "driverVersion": "fixture",
+      "backend": "ROCm",
+      "isAmd": true
+    },
+    {
+      "device": "ROCm2",
+      "name": "AMD Radeon RX 7900 XT",
+      "vendorId": "1002",
+      "vramMiB": 20480,
+      "freeVramMiB": 20000,
+      "driverVersion": "fixture",
+      "backend": "ROCm",
+      "isAmd": true
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "asOf": "2026-10-05",
+  "status": "guidance-only-unqualified",
+  "automaticDriverInstall": false,
+  "sourceNote": "AMD product download pages and official release notes checked 2026-10-05; recheck before release or driver change.",
+  "models": [
+    {
+      "id": "rx-7900-xtx",
+      "names": ["AMD Radeon RX 7900 XTX", "Radeon RX 7900 XTX"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-rx/radeon-rx-7000-series/amd-radeon-rx-7900-xtx.html",
+      "recommended": {"name": "Adrenalin 26.8.1", "channel": "WHQL Recommended", "releaseDate": "2026-08-20", "driverStoreVersion": "32.0.31041.1004", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-8-1.html"},
+      "optional": {"name": "Adrenalin 26.9.2", "channel": "WHQL Optional", "releaseDate": "2026-09-29", "driverStoreVersion": "32.0.32015.2008", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-9-2.html"},
+      "installerFamily": "adrenalin"
+    },
+    {
+      "id": "rx-7900-xt",
+      "names": ["AMD Radeon RX 7900 XT", "Radeon RX 7900 XT"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-rx/radeon-rx-7000-series/amd-radeon-rx-7900-xt.html",
+      "recommended": {"name": "Adrenalin 26.8.1", "channel": "WHQL Recommended", "releaseDate": "2026-08-20", "driverStoreVersion": "32.0.31041.1004", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-8-1.html"},
+      "optional": {"name": "Adrenalin 26.9.2", "channel": "WHQL Optional", "releaseDate": "2026-09-29", "driverStoreVersion": "32.0.32015.2008", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-9-2.html"},
+      "installerFamily": "adrenalin"
+    },
+    {
+      "id": "rx-7800-xt",
+      "names": ["AMD Radeon RX 7800 XT", "Radeon RX 7800 XT"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-rx/radeon-rx-7000-series/amd-radeon-rx-7800-xt.html",
+      "recommended": {"name": "Adrenalin 26.8.1", "channel": "WHQL Recommended", "releaseDate": "2026-08-20", "driverStoreVersion": "32.0.31041.1004", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-8-1.html"},
+      "optional": {"name": "Adrenalin 26.9.2", "channel": "WHQL Optional", "releaseDate": "2026-09-29", "driverStoreVersion": "32.0.32015.2008", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-9-2.html"},
+      "installerFamily": "adrenalin"
+    },
+    {
+      "id": "rx-9070-xt",
+      "names": ["AMD Radeon RX 9070 XT", "Radeon RX 9070 XT"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-rx/radeon-rx-9000-series/amd-radeon-rx-9070-xt.html",
+      "recommended": {"name": "Adrenalin 26.8.1", "channel": "WHQL Recommended", "releaseDate": "2026-08-20", "driverStoreVersion": "32.0.31041.1004", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-8-1.html"},
+      "optional": {"name": "Adrenalin 26.9.2", "channel": "WHQL Optional", "releaseDate": "2026-09-29", "driverStoreVersion": "32.0.32015.2008", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-9-2.html"},
+      "installerFamily": "adrenalin"
+    },
+    {
+      "id": "rx-9070",
+      "names": ["AMD Radeon RX 9070", "Radeon RX 9070"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-rx/radeon-rx-9000-series/amd-radeon-rx-9070.html",
+      "recommended": {"name": "Adrenalin 26.8.1", "channel": "WHQL Recommended", "releaseDate": "2026-08-20", "driverStoreVersion": "32.0.31041.1004", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-8-1.html"},
+      "optional": {"name": "Adrenalin 26.9.2", "channel": "WHQL Optional", "releaseDate": "2026-09-29", "driverStoreVersion": "32.0.32015.2008", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-9-2.html"},
+      "installerFamily": "adrenalin"
+    },
+    {
+      "id": "rx-9060-xt",
+      "names": ["AMD Radeon RX 9060 XT", "Radeon RX 9060 XT"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-rx/radeon-rx-9000-series/amd-radeon-rx-9060-xt.html",
+      "recommended": {"name": "Adrenalin 26.8.1", "channel": "WHQL Recommended", "releaseDate": "2026-08-20", "driverStoreVersion": "32.0.31041.1004", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-8-1.html"},
+      "optional": {"name": "Adrenalin 26.9.2", "channel": "WHQL Optional", "releaseDate": "2026-09-29", "driverStoreVersion": "32.0.32015.2008", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-9-2.html"},
+      "installerFamily": "adrenalin",
+      "note": "The same AMD driver product page covers 8GB and 16GB board variants; this is not a memory or model-fit assertion."
+    },
+    {
+      "id": "ai-pro-r9700",
+      "names": ["AMD Radeon AI PRO R9700", "Radeon AI PRO R9700"],
+      "productUrl": "https://www.amd.com/en/support/downloads/drivers.html/graphics/radeon-ai-pro/radeon-ai-pro-r9000-series/amd-radeon-ai-pro-r9700.html",
+      "recommended": {"name": "PRO Edition 26.Q3", "channel": "Product-page PRO driver", "releaseDate": "2026-08-18", "driverStoreVersion": "32.0.31036.15", "notesUrl": "https://www.amd.com/en/resources/support-articles/release-notes/RN-PRO-WIN-26-Q3.html"},
+      "optional": null,
+      "installerFamily": "pro",
+      "note": "Adrenalin release notes also list R9700 compatibility, but its own Windows 11 product page presents PRO 26.Q3 and no optional PRO package."
+    }
+  ]
+}

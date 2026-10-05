@@ -1,0 +1,455 @@
+{
+  "schemaVersion": 1,
+  "release": "b10698",
+  "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b10698",
+  "assets": {
+    "vulkan": {
+      "status": "archive-verified-execution-disabled",
+      "executionEnabled": false,
+      "platform": "ubuntu-x86_64",
+      "archiveRoot": "llama-b10698",
+      "entryPoint": "llama-server",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10698/llama-b10698-bin-ubuntu-vulkan-x64.tar.gz",
+      "sizeBytes": 33483600,
+      "sha256": "76b77c0a9afa4d6a4424d409cc98c52f3fccb242b7a4dbf4292f0c16f40f4b01",
+      "minimumObservedSymbolVersions": {
+        "glibc": "2.34",
+        "glibcxx": "3.4.30",
+        "cxxabi": "1.3.13"
+      },
+      "externalNeeded": [
+        "libvulkan.so.1",
+        "libgomp.so.1",
+        "libssl.so.3",
+        "libcrypto.so.3",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "members": [
+        {
+          "path": "LICENSE",
+          "type": "file",
+          "sizeBytes": 1078,
+          "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+          "executable": false
+        },
+        {
+          "path": "ggml-rpc-server",
+          "type": "file",
+          "sizeBytes": 194744,
+          "sha256": "71aee55927792db0693aa23e6bfcb1c753e8792b17f511a12bb1bda60a9a7a48",
+          "executable": true
+        },
+        {
+          "path": "libggml-base.so",
+          "type": "symlink",
+          "target": "libggml-base.so.0"
+        },
+        {
+          "path": "libggml-base.so.0",
+          "type": "symlink",
+          "target": "libggml-base.so.0.22.0"
+        },
+        {
+          "path": "libggml-base.so.0.22.0",
+          "type": "file",
+          "sizeBytes": 920112,
+          "sha256": "4188db1a53d67ae8cf4014b378b5b91fc9c7164cf097dfccc5f2ebf50b33a9ea",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-alderlake.so",
+          "type": "file",
+          "sizeBytes": 1141184,
+          "sha256": "4dccee7489a1eec40751eac4d61b4621c355e889d1cb2486042b0f016132eb89",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-cannonlake.so",
+          "type": "file",
+          "sizeBytes": 1286176,
+          "sha256": "7745f69fbc2f2a014376ae9b3dcd73f2334395b085cd3bd5c92c14e517b8c6f0",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-cascadelake.so",
+          "type": "file",
+          "sizeBytes": 1282080,
+          "sha256": "c55e8efea2879c51c402b0095bf866564acf50606f960ed25b44d447519f2276",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-cooperlake.so",
+          "type": "file",
+          "sizeBytes": 1282144,
+          "sha256": "93ee8b3a76eb2b21b8ffc1af25e43adfaade459f955523d5e330190f40b55e44",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-haswell.so",
+          "type": "file",
+          "sizeBytes": 1145280,
+          "sha256": "c36348d0f5c58c9f1776853149cd58983547778b07912c95e5a8751d78a2348b",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-icelake.so",
+          "type": "file",
+          "sizeBytes": 1282080,
+          "sha256": "8d5bafc27a1d21b52cf5dca540201357582e1992fe332e4f00842faece5a1a75",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-ivybridge.so",
+          "type": "file",
+          "sizeBytes": 1094656,
+          "sha256": "dcb33871818ed3c68f503a1d38f845bf30f727368fbff05bff5396c55682abcb",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-piledriver.so",
+          "type": "file",
+          "sizeBytes": 1090560,
+          "sha256": "090792427f3500977863dcb7042fd4ee314a2a8a168beb560de069b224316a58",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-sandybridge.so",
+          "type": "file",
+          "sizeBytes": 1081248,
+          "sha256": "236b3f5de845f4d4ae9d81a7573200b08e7d86326c225f1830265f1280ea4b6c",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-sapphirerapids.so",
+          "type": "file",
+          "sizeBytes": 1548480,
+          "sha256": "311ecd5075c3b035cacc160ddc8c1485f5d8f848e5450c5a7293dbbf3f771583",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-skylakex.so",
+          "type": "file",
+          "sizeBytes": 1286176,
+          "sha256": "fd1e3e3ec0481c8b612d979d396e070ebedda89f669493c069c5b98cecb00c22",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-sse42.so",
+          "type": "file",
+          "sizeBytes": 886144,
+          "sha256": "fdf1ca3530aaf021d0e73756ce6a59fede3ce5d5ff9710953e527b9096866acf",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-x64.so",
+          "type": "file",
+          "sizeBytes": 878128,
+          "sha256": "4ea6df5ec4b169fa8b90bd535c41b25fffed442acb04e12ead74d12c9cfc4167",
+          "executable": true
+        },
+        {
+          "path": "libggml-cpu-zen4.so",
+          "type": "file",
+          "sizeBytes": 1282144,
+          "sha256": "044de78eb2d8efe221fceee9251909a2655fa35cd151ac85c25968926962a975",
+          "executable": true
+        },
+        {
+          "path": "libggml-rpc.so",
+          "type": "file",
+          "sizeBytes": 246816,
+          "sha256": "cef0afbc30b1e1c4d84d4375b9ebe8e35d059401cb8737c92815e31506b46f24",
+          "executable": true
+        },
+        {
+          "path": "libggml-vulkan.so",
+          "type": "file",
+          "sizeBytes": 54760928,
+          "sha256": "b55c4c79c1ee61abce8076c6cce3d87755003b84ab41d12fa54499ed4baaae8a",
+          "executable": true
+        },
+        {
+          "path": "libggml.so",
+          "type": "symlink",
+          "target": "libggml.so.0"
+        },
+        {
+          "path": "libggml.so.0",
+          "type": "symlink",
+          "target": "libggml.so.0.22.0"
+        },
+        {
+          "path": "libggml.so.0.22.0",
+          "type": "file",
+          "sizeBytes": 54936,
+          "sha256": "ffd6a736ad58e2d9407ed427252520ffbd4bca8dd5de467ecb2bd446a7a3d75b",
+          "executable": true
+        },
+        {
+          "path": "libllama-batched-bench-impl.so",
+          "type": "file",
+          "sizeBytes": 48728,
+          "sha256": "f88fcce14d7ae8ea034ae1f6f74543ed723cc917924e767554c8837e1cc9976e",
+          "executable": true
+        },
+        {
+          "path": "libllama-bench-impl.so",
+          "type": "file",
+          "sizeBytes": 485816,
+          "sha256": "d9cd815681050cdf818c0ed0222a3322931a79c149c2e6edab4023d17d69cc72",
+          "executable": true
+        },
+        {
+          "path": "libllama-cli-impl.so",
+          "type": "file",
+          "sizeBytes": 259416,
+          "sha256": "623a76747e43c3c27fd78eab46f5ad9c3d55192b39bc23da0d8b06a3600ce3be",
+          "executable": true
+        },
+        {
+          "path": "libllama-common.so",
+          "type": "symlink",
+          "target": "libllama-common.so.0"
+        },
+        {
+          "path": "libllama-common.so.0",
+          "type": "symlink",
+          "target": "libllama-common.so.0.3.0"
+        },
+        {
+          "path": "libllama-common.so.0.3.0",
+          "type": "file",
+          "sizeBytes": 6093904,
+          "sha256": "4f3d9ba78bd6c586ff2e23288d720bce2b9ac6709b93a945d85060f50c3aa71e",
+          "executable": true
+        },
+        {
+          "path": "libllama-completion-impl.so",
+          "type": "file",
+          "sizeBytes": 118504,
+          "sha256": "94b166b6972c2ccf77c04b243b74c063668f0f490671ad25b3eda8db596bd90a",
+          "executable": true
+        },
+        {
+          "path": "libllama-fit-params-impl.so",
+          "type": "file",
+          "sizeBytes": 39632,
+          "sha256": "4253a35b2a0842260cf4026e24fb6af75857f6dd5857db1d3059708d8d1b3d8c",
+          "executable": true
+        },
+        {
+          "path": "libllama-perplexity-impl.so",
+          "type": "file",
+          "sizeBytes": 171400,
+          "sha256": "b0bb67c4772e2b3f5de306fbebc22b9ec57918404fb1e1fe833404c8df52fc83",
+          "executable": true
+        },
+        {
+          "path": "libllama-quantize-impl.so",
+          "type": "file",
+          "sizeBytes": 85928,
+          "sha256": "b04ee558167aa2ffc96f78114a0de66c4ab5ac0f0a461d48d7c8e9c502d6f2a0",
+          "executable": true
+        },
+        {
+          "path": "libllama-server-impl.so",
+          "type": "file",
+          "sizeBytes": 7149288,
+          "sha256": "56106d6387695ec1fb945203139c575fd411169398cd343b387c7abec4fbba69",
+          "executable": true
+        },
+        {
+          "path": "libllama.so",
+          "type": "symlink",
+          "target": "libllama.so.0"
+        },
+        {
+          "path": "libllama.so.0",
+          "type": "symlink",
+          "target": "libllama.so.0.3.0"
+        },
+        {
+          "path": "libllama.so.0.3.0",
+          "type": "file",
+          "sizeBytes": 4520528,
+          "sha256": "cba3a59c974e8c411c5dc00037672cdd6c969457a3a57c9c78c920a0aa2d9c97",
+          "executable": true
+        },
+        {
+          "path": "libmtmd.so",
+          "type": "symlink",
+          "target": "libmtmd.so.0"
+        },
+        {
+          "path": "libmtmd.so.0",
+          "type": "symlink",
+          "target": "libmtmd.so.0.3.0"
+        },
+        {
+          "path": "libmtmd.so.0.3.0",
+          "type": "file",
+          "sizeBytes": 1846840,
+          "sha256": "cb2a9bbbfaf86ca0049e138490c4f0529874623f3a72223ca4ed44c458cd5d85",
+          "executable": true
+        },
+        {
+          "path": "llama",
+          "type": "file",
+          "sizeBytes": 62208,
+          "sha256": "aa72329c607889bb5c73cb67ba4e394c2a066d41c808803d07aef6f5a3d8c373",
+          "executable": true
+        },
+        {
+          "path": "llama-batched-bench",
+          "type": "file",
+          "sizeBytes": 15976,
+          "sha256": "3b70e62c5c5cf43c8c436622a845ad4b80c01837d6ba3a10c90e39b219bbd2ab",
+          "executable": true
+        },
+        {
+          "path": "llama-bench",
+          "type": "file",
+          "sizeBytes": 17896,
+          "sha256": "71b8b336b286f5f00d2aec82afaa84b2beab2903d5c008573675d1d6998576a3",
+          "executable": true
+        },
+        {
+          "path": "llama-cli",
+          "type": "file",
+          "sizeBytes": 1453352,
+          "sha256": "e63e769a0e068822103c8fc59670e3a9c62b873a4df5599e0126afffc8dc7313",
+          "executable": true
+        },
+        {
+          "path": "llama-completion",
+          "type": "file",
+          "sizeBytes": 15968,
+          "sha256": "7119bef261611b26f326f7c4da4dc3fdeb7bb28e2faf1ec392bda7b21215ef52",
+          "executable": true
+        },
+        {
+          "path": "llama-fit-params",
+          "type": "file",
+          "sizeBytes": 15968,
+          "sha256": "b2ad073a0c093706e5dfdfe2c9864d199ed921e49ea0383a7d0013e2ad8a81c8",
+          "executable": true
+        },
+        {
+          "path": "llama-gemma3-cli",
+          "type": "file",
+          "sizeBytes": 16952,
+          "sha256": "053ff1b820407b8a1836b0b05d1ffcc91e56b6531f08d9b00b8dfb97a41de294",
+          "executable": true
+        },
+        {
+          "path": "llama-gguf-split",
+          "type": "file",
+          "sizeBytes": 48224,
+          "sha256": "3a995c4d8e0c35ab91a70e96b155d10349d74e6cf8b50346e17887f5a63c348c",
+          "executable": true
+        },
+        {
+          "path": "llama-imatrix",
+          "type": "file",
+          "sizeBytes": 339464,
+          "sha256": "2e29fd82b5d3f1f7e57cda5689e07c0bc30841827767129d9b4b1ce3c6c804a3",
+          "executable": true
+        },
+        {
+          "path": "llama-llava-cli",
+          "type": "file",
+          "sizeBytes": 16952,
+          "sha256": "053ff1b820407b8a1836b0b05d1ffcc91e56b6531f08d9b00b8dfb97a41de294",
+          "executable": true
+        },
+        {
+          "path": "llama-minicpmv-cli",
+          "type": "file",
+          "sizeBytes": 16952,
+          "sha256": "053ff1b820407b8a1836b0b05d1ffcc91e56b6531f08d9b00b8dfb97a41de294",
+          "executable": true
+        },
+        {
+          "path": "llama-mtmd-cli",
+          "type": "file",
+          "sizeBytes": 83576,
+          "sha256": "e0c4d23eea4460e57eb332b0c006d8a00f12dce6d0bda4c395a467c2bebaf51b",
+          "executable": true
+        },
+        {
+          "path": "llama-mtmd-debug",
+          "type": "file",
+          "sizeBytes": 54264,
+          "sha256": "55a4cfae09bf744a634474cc2c30f895acb3950601b47f49ee5639576a5d7737",
+          "executable": true
+        },
+        {
+          "path": "llama-perplexity",
+          "type": "file",
+          "sizeBytes": 15968,
+          "sha256": "1c06240ed8594fd377d655aef2dab0865431e3e779c06638474c96b38e6d74a0",
+          "executable": true
+        },
+        {
+          "path": "llama-quantize",
+          "type": "file",
+          "sizeBytes": 17896,
+          "sha256": "c20868ff1c5cdb6e52453e5a2a19c994c0e60e1bcbb7378bb1fb27047c40ed32",
+          "executable": true
+        },
+        {
+          "path": "llama-qwen2vl-cli",
+          "type": "file",
+          "sizeBytes": 16952,
+          "sha256": "053ff1b820407b8a1836b0b05d1ffcc91e56b6531f08d9b00b8dfb97a41de294",
+          "executable": true
+        },
+        {
+          "path": "llama-results",
+          "type": "file",
+          "sizeBytes": 50120,
+          "sha256": "2ea12658a0ff90434e2003a499ed027b105120f247fdf26ed7c102d3ef963af2",
+          "executable": true
+        },
+        {
+          "path": "llama-server",
+          "type": "file",
+          "sizeBytes": 17896,
+          "sha256": "497d2a086f44053a40627f15ced701fd6451d10a7dad6070f0335186e1ab427e",
+          "executable": true
+        },
+        {
+          "path": "llama-tokenize",
+          "type": "file",
+          "sizeBytes": 40960,
+          "sha256": "dcf8290501a1fdcf4ac42256d822d43477693b8f75422087073b0e7cd007e3c0",
+          "executable": true
+        },
+        {
+          "path": "llama-tts",
+          "type": "file",
+          "sizeBytes": 44840,
+          "sha256": "a5551f82189175093b8db0ea1936dfe67442e69731f245b397331f66461b1da3",
+          "executable": true
+        }
+      ]
+    },
+    "rocm": {
+      "status": "disabled-incomplete-runtime",
+      "executionEnabled": false,
+      "platform": "ubuntu-x86_64",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10698/llama-b10698-bin-ubuntu-rocm-7.14-x64.tar.gz",
+      "sizeBytes": 214059925,
+      "sha256": "959dabeda1562abdaf9a744bb0a3ac21524e06c38a6dec791e6c6d647198f1a1",
+      "missingNeeded": [
+        "libhipblas.so.3",
+        "librocblas.so.5",
+        "libamdhip64.so.7"
+      ],
+      "minimumObservedGlibc": "2.38"
+    }
+  }
+}

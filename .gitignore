@@ -1,0 +1,34 @@
+# Runtime downloads and local state
+downloads/
+engines/
+models/
+state/
+logs/
+consents/
+runtime-sandboxes/
+*.partial
+*.corrupt.*
+*.incomplete.*
+*.noresume.*
+*.staging.*
+*.lock
+
+# Test/editor output
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+dist/
+results/
+
+# Deployment public keys supplied separately for lab setup (not source defaults)
+/test-client.pub
+/admin-client.pub
+/tools/test-client.pub
+/tools/admin-client.pub
+
+# Internal bench evidence and website coordination must never be staged publicly.
+/docs/lab-results/
+/docs/bitworks/
+/docs/PUBLIC-SOURCE-SNAPSHOT.md

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "source": "fixture",
+  "backend": "ROCm",
+  "enginePath": "C:\\FastLLM\\rocm\\llama-server.exe",
+  "adapters": [
+    {
+      "device": "ROCm0",
+      "name": "AMD Radeon RX 7600",
+      "vendorId": "1002",
+      "vramMiB": 8192,
+      "freeVramMiB": 7200,
+      "driverVersion": "fixture",
+      "backend": "ROCm",
+      "isAmd": true
+    },
+    {
+      "device": "ROCm1",
+      "name": "AMD Radeon RX 7600",
+      "vendorId": "1002",
+      "vramMiB": 8192,
+      "freeVramMiB": 7200,
+      "driverVersion": "fixture",
+      "backend": "ROCm",
+      "isAmd": true
+    }
+  ]
+}
