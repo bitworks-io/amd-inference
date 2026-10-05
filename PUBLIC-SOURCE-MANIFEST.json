@@ -74,8 +74,8 @@
     },
     {
       "path": "docs/BENCHMARK-METHODOLOGY.md",
-      "sizeBytes": 13359,
-      "sha256": "9e0ab31f99a99afdf9338571b003b51f4dff9830de23281137643a5dbf2e1c30"
+      "sizeBytes": 15548,
+      "sha256": "473eee613a02f46ac9107050d22721b2a6ca2a151a30ce0853167b34ea98e34a"
     },
     {
       "path": "docs/PUBLIC-LAB-GUIDE.md",
@@ -548,6 +548,11 @@
       "sha256": "24d1f8f4d91181445d9177eca4a175f1dd2bc5fdc83c40b41dbbc09beb96f419"
     },
     {
+      "path": "tests/helpers/offload-supervisor-worker.ps1",
+      "sizeBytes": 668,
+      "sha256": "982345b28c7df388d08e10936c4c972081f9d6bb9c13145a001baf0a031b473c"
+    },
+    {
       "path": "tests/hip-benchmark-tests.ps1",
       "sizeBytes": 14368,
       "sha256": "d3a2cb60ad8c9ab510790cb7168d305676aa994de890ba785ce59a21444c36d6"
@@ -619,8 +624,8 @@
     },
     {
       "path": "tests/offload-lab-tests.ps1",
-      "sizeBytes": 14145,
-      "sha256": "aa07db43cdaa95b7d7567d1ef56019beb1da14cebb909aeafcd047ed97e74f1d"
+      "sizeBytes": 16940,
+      "sha256": "f0b78698db04c6f0726676293c01c7c4a683561f9fa9e9da5860358dede1ec65"
     },
     {
       "path": "tests/pci-identity-join-tests.ps1",

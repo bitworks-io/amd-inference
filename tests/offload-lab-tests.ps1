@@ -8,6 +8,22 @@ if(@($errors).Count){throw ('Offload lab parser errors: '+(@($errors | ForEach-O
 $passes=0
 function Assert($condition,$message){if(-not $condition){throw $message};$script:passes++}
 function Fails($operation,$message){$failed=$false;try{& $operation}catch{$failed=$true};Assert $failed $message}
+function Wait-OffloadSupervisorReady($Worker,[scriptblock]$ReadState,[int]$TimeoutSeconds){
+    $deadline=[Diagnostics.Stopwatch]::StartNew()
+    while($deadline.Elapsed.TotalSeconds -lt $TimeoutSeconds){
+        if($Worker.Process.HasExited){
+            $tail=([string]$Worker.Snapshot() -replace '[\r\n\x00-\x1f]+',' ')
+            throw ('Offload supervisor worker exited before lab-ready (exit '+$Worker.Process.ExitCode+'). Output: '+$tail.Substring(0,[Math]::Min(400,$tail.Length)))
+        }
+        $state=$null
+        try{$state=& $ReadState}catch{}
+        if($state.phase -eq 'lab-ready'){return $state}
+        if($state.phase -eq 'lab-failed'){throw 'Offload supervisor worker reported lab-failed before lab-ready.'}
+        Start-Sleep -Milliseconds 100
+    }
+    $tail=([string]$Worker.Snapshot() -replace '[\r\n\x00-\x1f]+',' ')
+    throw ('Offload supervisor worker did not reach lab-ready before the test deadline. Output: '+$tail.Substring(0,[Math]::Min(400,$tail.Length)))
+}
 $good="0.01 I llama load_tensors: offloaded 20/66 layers to GPU`n0.02 I llama load_tensors: Vulkan0 model buffer size = 6144.00 MiB"
 $placement=ConvertFrom-FastLlmOffloadPlacementLog -Text $good -Device 'Vulkan0' -RequestedLayers 20
 Assert ($placement.reportedGpuLayers -eq 20 -and $placement.reportedTotalLayers -eq 66 -and $placement.gpuModelBufferMiB -eq 6144) 'Exact partial placement failed.'
@@ -59,6 +75,31 @@ try{
         $captured -notmatch 'NaN|unsafe-path' -and $captureHost.CpuBufferLikeLines -eq 3) 'CPU placement capture included untrusted text or lost malformed-line count.'
     Fails {ConvertFrom-FastLlmOffloadPlacementLog -Text ($good+"`n"+$captured) -Device 'Vulkan0' -RequestedLayers 20 -CpuBufferLikeLines $captureHost.CpuBufferLikeLines} 'Native malformed/duplicate CPU capture passed parsing.'
 }finally{$captureHost.Dispose()}
+$earlyWorker=New-Object Bitworks.FastLlm.ProcessHost
+try{
+    $earlyInfo=New-Object Diagnostics.ProcessStartInfo
+    $earlyInfo.FileName=(Get-Process -Id $PID).Path
+    $earlyInfo.Arguments=& $module {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-Command','exit 7')
+    $earlyWorker.Start($earlyInfo)
+    $earlyReason=$null
+    try{Wait-OffloadSupervisorReady $earlyWorker { [pscustomobject]@{phase='lab-loading'} } 3}catch{$earlyReason=$_.Exception.Message}
+    Assert ($earlyReason -match 'exited before lab-ready \(exit 7\)') 'An exited supervisor worker was not rejected before readiness.'
+}finally{$earlyWorker.Dispose()}
+$neverReadyWorker=New-Object Bitworks.FastLlm.ProcessHost
+$neverReadyPid=$null
+try{
+    $neverReadyInfo=New-Object Diagnostics.ProcessStartInfo
+    $neverReadyInfo.FileName=(Get-Process -Id $PID).Path
+    $neverReadyInfo.Arguments=& $module {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-Command','Start-Sleep -Seconds 30')
+    $neverReadyWorker.Start($neverReadyInfo)
+    $neverReadyPid=$neverReadyWorker.Process.Id
+    $neverReadyReason=$null
+    try{Wait-OffloadSupervisorReady $neverReadyWorker { [pscustomobject]@{phase='lab-loading'} } 1}catch{$neverReadyReason=$_.Exception.Message}
+    Assert ($neverReadyReason -match '^Offload supervisor worker did not reach lab-ready before the test deadline\.') 'A never-ready supervisor worker escaped its test deadline.'
+}finally{$neverReadyWorker.Dispose()}
+$stillAlive=$false
+try{$probe=[Diagnostics.Process]::GetProcessById($neverReadyPid);$stillAlive=$true;$probe.Dispose()}catch [ArgumentException]{}
+Assert ($neverReadyPid -gt 0 -and -not $stillAlive) 'Timed-out test worker was not terminated by its owner.'
 $mock=Join-Path $PSScriptRoot 'helpers/mock-server.ps1'
 $tempParent=if($env:OS -eq 'Windows_NT'){[IO.Path]::GetTempPath()}elseif(Test-Path -LiteralPath '/private/tmp' -PathType Container){'/private/tmp'}else{[IO.Path]::GetTempPath()}
 $temp=Join-Path $tempParent ('fast-llm-offload-test-'+[Guid]::NewGuid().ToString('N'))
@@ -106,36 +147,26 @@ try{
     $runRoot=Join-Path $temp 'success'
     $plan.serverArguments=@('-NoLogo','-NoProfile','-File',$mock,'-Port','18080','-Mode','partial','-Model','lab-mock','-Context','1024')
     $lock=Enter-FastLlmOperation $runRoot
-    $stopper=Start-Job -ScriptBlock {
-        param($modulePath,$offloadSource,$labRoot)
-        Import-Module $modulePath -Force
-        & (Get-Module FastLlm) {
-            param($sourcePath,$rootPath)
-            . $sourcePath
-            for($i=0;$i -lt 100;$i++){
-                $state=Get-FastLlmOffloadLabStatus -LabRunRoot $rootPath
-                if($state.phase -eq 'lab-ready'){
-                    Request-FastLlmOffloadLabStop -LabRunRoot $rootPath
-                    return
-                }
-                Start-Sleep -Milliseconds 200
-            }
-            throw 'Lab did not reach ready for stop test.'
-        } $offloadSource $labRoot
-    } -ArgumentList (Join-Path $repo 'src/FastLlm.psm1'),$source,$runRoot
+    $worker=New-Object Bitworks.FastLlm.ProcessHost
     try{
-        $result=& $module {param($S,$P,$R) . $S; Invoke-FastLlmOffloadLabSupervisor -Plan $P -LabRunRoot $R -LoadTimeoutSeconds 15} $source $plan $runRoot
-        Assert ($result -eq 0) 'Healthy partial mock did not stop cleanly.'
-        $null=Wait-Job $stopper -Timeout 10
-        Assert ($stopper.State -eq 'Completed') 'Independent lab stop did not complete.'
+        $planPath=Join-Path $runRoot 'synthetic-plan.json'
+        [IO.File]::WriteAllText($planPath,($plan|ConvertTo-Json -Depth 12))
+        $workerInfo=New-Object Diagnostics.ProcessStartInfo
+        $workerInfo.FileName=(Get-Process -Id $PID).Path
+        $workerInfo.Arguments=& $module {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/offload-supervisor-worker.ps1'),'-PlanPath',$planPath,'-LabRunRoot',$runRoot,'-SourcePath',$source,'-ModulePath',(Join-Path $repo 'src/FastLlm.psm1'))
+        $worker.Start($workerInfo)
+        $ready=Wait-OffloadSupervisorReady $worker { & $module {param($S,$R) . $S; Get-FastLlmOffloadLabStatus -LabRunRoot $R} $source $runRoot } 20
+        Assert ($ready.phase -eq 'lab-ready' -and $ready.active) 'Healthy partial mock did not reach active lab-ready.'
+        & $module {param($S,$R) . $S; Request-FastLlmOffloadLabStop -LabRunRoot $R} $source $runRoot
+        Assert ($worker.Process.WaitForExit(10000)) 'Offload supervisor worker ignored its run-scoped stop deadline.'
+        Assert ($worker.Process.ExitCode -eq 0) 'Healthy partial mock worker did not stop cleanly.'
         $status=Read-FastLlmJson (Join-Path $runRoot 'state/status.json')
         Assert ($status.phase -eq 'lab-stopped' -and $status.placement.reportedGpuLayers -eq 39 -and $status.placement.reportedTotalLayers -eq 41) 'Partial reported placement was not persisted.'
         Assert ($status.recipe.selectedAdapters[0].reportedTotalVramMiB -eq 20480 -and $status.recipe.requestedArguments -contains '-Mode') 'Lab recipe did not preserve requested arguments and probed adapter.'
         Assert ($status.canary.streaming -and -not $status.performanceQualified -and -not $status.physicalResidencyVerified) 'Lab canary or qualification state was incorrect.'
         Assert (-not (Test-Path (Join-Path $runRoot ('state/stop-'+$status.runId)))) 'Run-scoped stop request was not cleaned up.'
     }finally{
-        if($stopper.State -eq 'Running'){Stop-Job $stopper}
-        Remove-Job $stopper -Force
+        $worker.Dispose()
         $lock.Dispose()
     }
 }finally{
