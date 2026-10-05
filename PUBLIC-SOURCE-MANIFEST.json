@@ -624,8 +624,8 @@
     },
     {
       "path": "tests/offload-lab-tests.ps1",
-      "sizeBytes": 16940,
-      "sha256": "f0b78698db04c6f0726676293c01c7c4a683561f9fa9e9da5860358dede1ec65"
+      "sizeBytes": 17744,
+      "sha256": "bd73b4241b228191415840a5ca3a11d837b2f4153449ad4ef9eb95dd253850e8"
     },
     {
       "path": "tests/pci-identity-join-tests.ps1",

@@ -87,19 +87,35 @@ try{
 }finally{$earlyWorker.Dispose()}
 $neverReadyWorker=New-Object Bitworks.FastLlm.ProcessHost
 $neverReadyPid=$null
+$neverReadyStartTicks=$null
 try{
     $neverReadyInfo=New-Object Diagnostics.ProcessStartInfo
     $neverReadyInfo.FileName=(Get-Process -Id $PID).Path
     $neverReadyInfo.Arguments=& $module {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-Command','Start-Sleep -Seconds 30')
     $neverReadyWorker.Start($neverReadyInfo)
     $neverReadyPid=$neverReadyWorker.Process.Id
+    $neverReadyStartTicks=[long]$neverReadyWorker.Process.StartTime.ToUniversalTime().Ticks
     $neverReadyReason=$null
     try{Wait-OffloadSupervisorReady $neverReadyWorker { [pscustomobject]@{phase='lab-loading'} } 1}catch{$neverReadyReason=$_.Exception.Message}
     Assert ($neverReadyReason -match '^Offload supervisor worker did not reach lab-ready before the test deadline\.') 'A never-ready supervisor worker escaped its test deadline.'
 }finally{$neverReadyWorker.Dispose()}
-$stillAlive=$false
-try{$probe=[Diagnostics.Process]::GetProcessById($neverReadyPid);$stillAlive=$true;$probe.Dispose()}catch [ArgumentException]{}
-Assert ($neverReadyPid -gt 0 -and -not $stillAlive) 'Timed-out test worker was not terminated by its owner.'
+$cleanupEvidence='unverified'
+$cleanupClock=[Diagnostics.Stopwatch]::StartNew()
+do{
+    $probe=$null
+    try{
+        $probe=[Diagnostics.Process]::GetProcessById($neverReadyPid)
+        if($probe.HasExited){$cleanupEvidence='exited';break}
+        $observedStartTicks=[long]$probe.StartTime.ToUniversalTime().Ticks
+        if($observedStartTicks -ne $neverReadyStartTicks){$cleanupEvidence='pid-reused';break}
+        $cleanupEvidence='same-instance-alive'
+    }catch [ArgumentException]{$cleanupEvidence='missing';break}
+    catch{$cleanupEvidence='unverified-'+$_.Exception.GetType().Name}
+    finally{if($probe){$probe.Dispose()}}
+    if($cleanupClock.ElapsedMilliseconds -ge 2000){break}
+    Start-Sleep -Milliseconds 100
+}while($true)
+Assert ($neverReadyPid -gt 0 -and $neverReadyStartTicks -gt 0 -and $cleanupEvidence -in @('missing','exited','pid-reused')) ('Timed-out test worker cleanup could not be verified: '+$cleanupEvidence)
 $mock=Join-Path $PSScriptRoot 'helpers/mock-server.ps1'
 $tempParent=if($env:OS -eq 'Windows_NT'){[IO.Path]::GetTempPath()}elseif(Test-Path -LiteralPath '/private/tmp' -PathType Container){'/private/tmp'}else{[IO.Path]::GetTempPath()}
 $temp=Join-Path $tempParent ('fast-llm-offload-test-'+[Guid]::NewGuid().ToString('N'))
