@@ -349,8 +349,8 @@
     },
     {
       "path": "tests/concurrency-benchmark-tests.ps1",
-      "sizeBytes": 15470,
-      "sha256": "0856177929d7ec075a5303d02c6adfc882a9382fa0cb14df3a858716a5bce1c7"
+      "sizeBytes": 16539,
+      "sha256": "b26c474e7caccc25a869e3941c3392618ccb4149114740ecd43760f9b65dde2d"
     },
     {
       "path": "tests/download-progress-tests.ps1",

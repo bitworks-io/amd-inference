@@ -10,6 +10,14 @@ $collectorSource=Get-Content -LiteralPath (Join-Path $root 'tools/concurrency-be
 . (Join-Path $root 'tools/concurrency-benchmark.ps1') -OutputPath (Join-Path $PSScriptRoot 'unused-concurrency-report.json')
 $count=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message};$script:count++;Write-Host "PASS: $Message"}
+function Get-MockStartupDiagnostic($Process,[string]$StderrPath){
+    $state=if($Process.HasExited){"exited code=$($Process.ExitCode)"}else{'still running'}
+    $stderr='none'
+    if(Test-Path -LiteralPath $StderrPath){
+        try{$value=Get-Content -LiteralPath $StderrPath -Raw -ErrorAction Stop;if($value){$stderr=$value.Substring(0,[Math]::Min(2048,$value.Length)).Trim()}}catch{$stderr='unavailable'}
+    }
+    return "mock startup: $state; effective policy=$(Get-ExecutionPolicy); stderr=$stderr"
+}
 Check (-not $collectorSource.Contains("'-ExecutionPolicy'") -and -not $collectorSource.Contains('PSExecutionPolicyPreference')) 'contained worker inherits the effective script policy without a weaker override'
 
 $bad=$false
@@ -147,21 +155,27 @@ $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
 $listener.Start();$port=([Net.IPEndPoint]$listener.LocalEndpoint).Port;$listener.Stop()
 $mock=Join-Path $PSScriptRoot 'helpers/mock-benchmark-server.ps1'
 $process=$null
+$mockStderr=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-'+[Guid]::NewGuid().ToString('N')+'.stderr.txt')
+$mockStdout=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-'+[Guid]::NewGuid().ToString('N')+'.stdout.txt')
 try {
-    $process=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$mock+'"'),'-Port',$port,'-Mode','normal') -PassThru
+    $process=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$mock+'"'),'-Port',$port,'-Mode','normal') `
+        -PassThru -RedirectStandardError $mockStderr -RedirectStandardOutput $mockStdout
     $url="http://127.0.0.1:$port/health"
     $healthy=$false
     for($attempt=0;$attempt -lt 50;$attempt++){
+        if($process.HasExited){break}
         try{if([Bitworks.FastLlm.LoopbackHttp]::Request($url,$null,1000,1048576).Status -eq 200){$healthy=$true;break}}catch{}
         Start-Sleep -Milliseconds 100
     }
-    Check $healthy 'mock HTTP child is available for concurrent requests'
+    if(-not $healthy){throw (Get-MockStartupDiagnostic -Process $process -StderrPath $mockStderr)}
+    Check $true 'mock HTTP child is available for concurrent requests'
     $wave=Invoke-ConcurrencyWave -Url $url -Body '' -Clients 4 -TimeoutMs 5000
     Check ($wave.requests.Count -eq 4 -and @($wave.requests|Where-Object {$_.response.Status -eq 200}).Count -eq 4) 'four concurrent client calls complete against a serialized mock server'
     Check ((Get-ConcurrencyObservedOverlap $wave.requests) -ge 2 -and $wave.wallMs -gt 0) 'released clients have measured overlapping HTTP intervals and a positive shared wall time'
     Check (@($wave.requests|Where-Object errorCode).Count -eq 0) 'wave retains every client result without a synthetic failure'
 } finally {
     if($process){try{$process.Kill()}catch{};try{$process.WaitForExit(5000)|Out-Null}catch{};$process.Dispose()}
+    foreach($path in @($mockStderr,$mockStdout)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 }
 $stallPortListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
 $stallPortListener.Start();$stallPort=([Net.IPEndPoint]$stallPortListener.LocalEndpoint).Port;$stallPortListener.Stop()
