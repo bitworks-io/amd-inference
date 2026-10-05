@@ -514,8 +514,8 @@
     },
     {
       "path": "tests/helpers/MockServer.cs",
-      "sizeBytes": 7124,
-      "sha256": "009cc62389b7d88df137f5e292175a217273980d678666126e3fe5a1e8c62a2b"
+      "sizeBytes": 7521,
+      "sha256": "d86b999b0a42d13e66e044e4edfc0d2af3b13a031d2baeb02ef741c04724fd23"
     },
     {
       "path": "tests/helpers/mock-benchmark-server.ps1",
@@ -639,8 +639,8 @@
     },
     {
       "path": "tests/runtime-tests.ps1",
-      "sizeBytes": 24797,
-      "sha256": "c35712b953db9a05e34b6632dced20759edc3563969eadc5baa0474a3ec9bab6"
+      "sizeBytes": 25691,
+      "sha256": "4f3624298e86eb1c8aee4c0f696787dca7d7ca122635505044b191d59cfddeee"
     },
     {
       "path": "tests/selected-device-identity-tests.ps1",

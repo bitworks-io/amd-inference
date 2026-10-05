@@ -221,6 +221,20 @@ try {
             if($healthy){break};Start-Sleep -Milliseconds 100
         }
         Check $healthy 'HTTP transport mock is ready'
+        $abandoned=New-Object Net.Sockets.TcpClient
+        $abandoned.Connect('127.0.0.1',$port)
+        $abandoned.Client.LingerState=New-Object Net.Sockets.LingerOption($true,0)
+        try {
+            $request=[Text.Encoding]::ASCII.GetBytes("GET /health HTTP/1.1`r`nHost: 127.0.0.1`r`nConnection: close`r`n`r`n")
+            $stream=$abandoned.GetStream()
+            $stream.Write($request,0,$request.Length)
+        } finally { $abandoned.Close() }
+        $healthyAfterReset=$false
+        for($attempt=0;$attempt -lt 20;$attempt++){
+            try{$healthyAfterReset=[Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/health",$null,200,1000).Status -eq 200}catch{}
+            if($healthyAfterReset){break};Start-Sleep -Milliseconds 100
+        }
+        Check ($healthyAfterReset -and -not $httpHost.Process.HasExited) 'mock survives an abruptly reset health client'
         $soakState=[pscustomobject]@{runId='synthetic';active=$true;phase='ready';endpoint="http://127.0.0.1:$port/v1";modelId='test-model';recipe=[pscustomobject]@{contextSize=1024}}
         $soak=& $module {param($S) Invoke-FastLlmApiSoakCore -State $S -ReadState { $S } -MinimumCycles 2 -DurationSeconds 0} $soakState
         Check ($soak.completed -and $soak.completedCycles -eq 2) 'API soak exercises real HTTP without storing generated text'

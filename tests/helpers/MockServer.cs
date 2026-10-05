@@ -51,8 +51,9 @@ namespace FastLlmTests {
             int completion = 0;
             while (true) {
                 using (var client = listener.AcceptTcpClient()) {
-                    client.ReceiveTimeout = 2000;
-                    using (var stream = client.GetStream()) {
+                    try {
+                        client.ReceiveTimeout = 2000;
+                        using (var stream = client.GetStream()) {
                         var reader = new StreamReader(stream, Encoding.UTF8, false, 1024, true);
                         string first = reader.ReadLine();
                         if (first == null) continue;
@@ -91,6 +92,12 @@ namespace FastLlmTests {
                         var bytes=Encoding.UTF8.GetBytes(body);
                         var header=Encoding.ASCII.GetBytes("HTTP/1.1 "+status+" OK\r\n"+(status==302?"Location: https://example.com/\r\n":"")+"Content-Length: "+bytes.Length+"\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
                         stream.Write(header,0,header.Length); stream.Write(bytes,0,bytes.Length);
+                        }
+                    } catch (IOException) {
+                        // A timed-out health probe may reset its own connection.
+                        // One abandoned client must not terminate the mock server.
+                    } catch (SocketException) {
+                        // Same per-client disconnect boundary as IOException.
                     }
                 }
             }
