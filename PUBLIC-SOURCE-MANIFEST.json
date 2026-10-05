@@ -629,8 +629,8 @@
     },
     {
       "path": "tests/run-tests.ps1",
-      "sizeBytes": 31306,
-      "sha256": "dbd8a6c96a7dc2ded716dfc06b3d730996c9dd4c01df32503d82d32bcd652d05"
+      "sizeBytes": 31533,
+      "sha256": "7f54843c0c7c88cd5ad8877c936652526c556fd5fa76b40b9632928b08b8ab4d"
     },
     {
       "path": "tests/runtime-tests.ps1",

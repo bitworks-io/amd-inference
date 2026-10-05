@@ -416,3 +416,7 @@ Write-Host "`n$script:passed passed; $script:failed failed"
 if ($script:failed -gt 0) {
     exit 1
 }
+# The final child deliberately exits nonzero for the install -DryRun rejection
+# test. Give this suite an explicit success status instead of leaking that
+# expected native exit code to powershell -File / GitHub Actions.
+exit 0
