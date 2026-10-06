@@ -92,7 +92,17 @@ function Assert-ConcurrencyControllerLock {
 }
 
 function Invoke-ConcurrencyWave {
-    param([string]$Url,[string]$Body,[int]$Clients,[int]$TimeoutMs)
+    param([string]$Url,[string]$Body,[int]$Clients,[int]$TimeoutMs,[string[]]$Bodies)
+    if($Clients -lt 1 -or $Clients -gt 8){throw 'Concurrent client count must be between one and eight.'}
+    $hasBody=$PSBoundParameters.ContainsKey('Body')
+    $hasBodies=$PSBoundParameters.ContainsKey('Bodies')
+    if($hasBody -eq $hasBodies){throw 'Supply exactly one of Body or Bodies.'}
+    if($hasBodies){
+        if($null -eq $Bodies -or $Bodies.Count -ne $Clients){throw 'Bodies must contain one request for each client.'}
+        foreach($requestBody in $Bodies){
+            if([string]::IsNullOrEmpty($requestBody)){throw 'Bodies cannot contain null or empty requests.'}
+        }
+    }
     $pool=[RunspaceFactory]::CreateRunspacePool(1,$Clients)
     $pool.Open()
     $gate=New-Object Threading.ManualResetEventSlim($false)
@@ -114,7 +124,8 @@ try {
     try {
         for($i=0;$i -lt $Clients;$i++){
             $shell=[PowerShell]::Create();$shell.RunspacePool=$pool
-            [void]$shell.AddScript($source).AddArgument($gate).AddArgument($ready).AddArgument($clock).AddArgument($Url).AddArgument($Body).AddArgument($TimeoutMs)
+            $clientBody=if($hasBodies){$Bodies[$i]}else{$Body}
+            [void]$shell.AddScript($source).AddArgument($gate).AddArgument($ready).AddArgument($clock).AddArgument($Url).AddArgument($clientBody).AddArgument($TimeoutMs)
             $handle=$shell.BeginInvoke()
             [void]$workers.Add([pscustomobject]@{shell=$shell;handle=$handle})
         }

@@ -117,6 +117,18 @@ jobs:
       - name: Concurrent-client mock tests in PowerShell 7
         shell: pwsh
         run: .\tests\concurrency-benchmark-tests.ps1
+      - name: Task-quality workload and concurrent transport tests in Windows PowerShell 5.1 (mock only)
+        shell: powershell
+        run: |
+          .\tests\task-workload-tests.ps1
+          .\tests\task-wave-tests.ps1
+          .\tests\task-quality-benchmark-tests.ps1
+      - name: Task-quality workload and concurrent transport tests in PowerShell 7 (mock only)
+        shell: pwsh
+        run: |
+          .\tests\task-workload-tests.ps1
+          .\tests\task-wave-tests.ps1
+          .\tests\task-quality-benchmark-tests.ps1
       - name: Behavioral lifecycle and benchmark tests in Windows PowerShell 5.1
         shell: powershell
         run: |

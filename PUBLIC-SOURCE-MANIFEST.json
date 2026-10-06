@@ -9,8 +9,8 @@
     },
     {
       "path": ".github/workflows/test.yml",
-      "sizeBytes": 5909,
-      "sha256": "0e489aa58d8e7c1b69fb932ecfe2e654240d37d84dc5196d62b0337279e96a2a"
+      "sizeBytes": 6447,
+      "sha256": "5e8ca64a8d217fc58a3a7bf644bf5667ea5566977dec05462999c8b86c083d51"
     },
     {
       "path": ".gitignore",
@@ -29,8 +29,8 @@
     },
     {
       "path": "README.md",
-      "sizeBytes": 6366,
-      "sha256": "2ae8713f4fef2f1556a8ad70092e7d7932e1c7b1afba002952064e19a6238dee"
+      "sizeBytes": 6772,
+      "sha256": "d2fbae490a1053f421fd5d16a0814181c009a0d74c1b3b00dedfdb507bb0d82f"
     },
     {
       "path": "SECURITY.md",
@@ -74,18 +74,18 @@
     },
     {
       "path": "docs/BENCHMARK-METHODOLOGY.md",
-      "sizeBytes": 15548,
-      "sha256": "473eee613a02f46ac9107050d22721b2a6ca2a151a30ce0853167b34ea98e34a"
+      "sizeBytes": 18939,
+      "sha256": "30c8cc001a4ae619f48e5a2b326a312193ec2aa40f61040aaa1572703bde6155"
     },
     {
       "path": "docs/PUBLIC-LAB-GUIDE.md",
-      "sizeBytes": 7867,
-      "sha256": "de983be87dfca6f110ef342a9db16f3e0757ee6ae972af8942deb643c58f0b05"
+      "sizeBytes": 9505,
+      "sha256": "ac18abac0655581d358c45c46c82ee5e5389404df4fb23262604043532f07a83"
     },
     {
       "path": "docs/PUBLIC-README.md",
-      "sizeBytes": 6366,
-      "sha256": "2ae8713f4fef2f1556a8ad70092e7d7932e1c7b1afba002952064e19a6238dee"
+      "sizeBytes": 6772,
+      "sha256": "d2fbae490a1053f421fd5d16a0814181c009a0d74c1b3b00dedfdb507bb0d82f"
     },
     {
       "path": "fast-llm-ui.ps1",
@@ -236,6 +236,11 @@
       "path": "src/FastLlm.Soak.ps1",
       "sizeBytes": 3983,
       "sha256": "82140acf1756f5cec89931b3b7f6e522369214a77c4e29525463256850cc2d76"
+    },
+    {
+      "path": "src/FastLlm.TaskWorkload.ps1",
+      "sizeBytes": 14799,
+      "sha256": "8a11399d783569b4e3fdd5bb2542258eb5431d1705fce4cdf7a40e6f77212bfb"
     },
     {
       "path": "src/FastLlm.UiFlow.ps1",
@@ -548,6 +553,11 @@
       "sha256": "24d1f8f4d91181445d9177eca4a175f1dd2bc5fdc83c40b41dbbc09beb96f419"
     },
     {
+      "path": "tests/helpers/mock-task-wave-server.ps1",
+      "sizeBytes": 2865,
+      "sha256": "6ce2398285aadb7ec85ddecf8f554b09f578459940f88401d3faff44c7521017"
+    },
+    {
       "path": "tests/helpers/offload-supervisor-worker.ps1",
       "sizeBytes": 668,
       "sha256": "982345b28c7df388d08e10936c4c972081f9d6bb9c13145a001baf0a031b473c"
@@ -676,6 +686,21 @@
       "path": "tests/start-tests.ps1",
       "sizeBytes": 6023,
       "sha256": "9497b7a2e2abaef1fe009090a0f196ff30c0730f4b786dd5b1e2f302122d315a"
+    },
+    {
+      "path": "tests/task-quality-benchmark-tests.ps1",
+      "sizeBytes": 16554,
+      "sha256": "09c8177783961fbe8cf18be88f493dbbb7ce5cc545f11b7b0051c3a1cf457a44"
+    },
+    {
+      "path": "tests/task-wave-tests.ps1",
+      "sizeBytes": 7421,
+      "sha256": "340b16b2349bc31a2ace8007a7e2ed538e4b68b4d57be348e1b74c49de039c8f"
+    },
+    {
+      "path": "tests/task-workload-tests.ps1",
+      "sizeBytes": 7334,
+      "sha256": "ffb50409d02c8b2a174ea356e1b04326c1a172124694d4d3d4e55638804886f9"
     },
     {
       "path": "tests/test_adlx_telemetry.py",
@@ -929,8 +954,8 @@
     },
     {
       "path": "tools/concurrency-benchmark.ps1",
-      "sizeBytes": 31718,
-      "sha256": "be189018c15da999bbc9b05f611dbbd8d43c504355680f4eb80427f7d6c62965"
+      "sizeBytes": 32404,
+      "sha256": "af1bc3f18833e84f1bf260972bca927e5eafabc99865d44d46e1f72140d2cbde"
     },
     {
       "path": "tools/get-lab-package.ps1",
@@ -1036,6 +1061,11 @@
       "path": "tools/start-windows-lab-setup.ps1",
       "sizeBytes": 2827,
       "sha256": "a4e16668c46f24445890b770ded41c9260628e1b4edf0e4fa4309172c0ca1cba"
+    },
+    {
+      "path": "tools/task-quality-benchmark.ps1",
+      "sizeBytes": 28269,
+      "sha256": "a5adca2048663ae64041491dbab0c36d05c1f2a5c6f20c70238afdef1eab593d"
     },
     {
       "path": "tools/verify_lab_package.py",

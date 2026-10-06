@@ -49,6 +49,16 @@ Keep unrelated clients disconnected and use a new private report path in an exis
 
 The concurrency tool submits 1/2/4/8-client waves to the current normal one-slot server, using the same fixed numeric prompt for each client at a given length with prefix reuse disabled. It does not reconfigure slots, start a model, demonstrate GPU execution overlap, run multiple models simultaneously or implement an agent task harness. Its CLI contains the request collector in a child process while the parent holds the benchmark lock. Cooperative failures preserve partial reports; forced controller termination records a separate abort file without inventing samples. A controller abort takes precedence even if the child wrote a complete report just before termination: retain both files and do not interpret the child file alone as success. Review this deadline and failure behavior before native use. This new collector has not been qualified on physical Windows/AMD hardware. Longer inputs and queued requests can require substantially longer deadlines; a timeout is evidence to retain, not a sample to discard.
 
+For a separate, supervised task-quality screen on that same normal Ready service:
+
+```powershell
+./tools/task-quality-benchmark.ps1 -OutputPath ./task-quality-private.json
+```
+
+This runs the same eight original tasks at C1/C2/C4, grading answers and reporting correctly completed tasks per whole-suite elapsed time. It does not start or reconfigure the server. It stops escalation on incorrect, inconclusive or truncated output and preserves failed/partial evidence. `-DistractorCount 32` or `128` changes the deterministic input text in a separately identified screen; the default is `0`. These values are not token counts, and this tool does not qualify long-context behavior. Use the default first, and do not use a different screen to erase a previous failure or bypass a held hardware test.
+
+The screen uses explicit schema requests for its structured task, trims only surrounding answer whitespace, and does not repair fences or wrong answers. It uses non-streamed replies, so first-text latency is not measured. C1/C2/C4 run in that fixed order with no separate warmup; results are a small diagnostic screen, not a controlled concurrency ranking or broad intelligence score. Actual response usage, task/reference hashes, source/run binding and all attempted failures are retained without raw prompts or answers. Read the [methodology](BENCHMARK-METHODOLOGY.md#independent-task-screen-v1) before interpreting its report. Physical Windows/AMD validation remains separate from local mock tests; no recipe is automatically promoted.
+
 The offline matrix lists planned coverage, including configurations the current launcher/collector cannot execute:
 
 ```sh
@@ -66,6 +76,9 @@ Inspect `tools/soak.ps1` and `tools/semantic-smoke.ps1` for their exact paramete
 ./tests/benchmark-tests.ps1
 ./tests/benchmark-integration-tests.ps1
 ./tests/concurrency-benchmark-tests.ps1
+./tests/task-workload-tests.ps1
+./tests/task-wave-tests.ps1
+./tests/task-quality-benchmark-tests.ps1
 ```
 
 Native/optional suites may have platform, archive or privilege prerequisites; inspect them before running. Mock services and synthetic fixtures test code behavior, not model accuracy, hardware fit, driver compatibility or speed. The CI workflow records the automated source test set, not a physical GPU qualification matrix.
