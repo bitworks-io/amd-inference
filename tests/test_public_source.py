@@ -53,6 +53,7 @@ class PublicSourceTests(unittest.TestCase):
             "tools/test-client.pub",
             "src/native.dll",
             "tests/fixture.exe",
+            "tests/test_community_coverage.py",
             "config/private.env",
             "tools/notes.txt",
             "tools/__pycache__/cached.py",

@@ -37,6 +37,9 @@ SOURCE_EXTENSIONS = frozenset({
 })
 SOURCE_DIRS = ("src", "config", "linux", "tests", "tools")
 MANIFEST_NAME = "PUBLIC-SOURCE-MANIFEST.json"
+# This test binds private editorial research registers, which are deliberately
+# outside the public documentation allowlist. Keep it with those inputs.
+PRIVATE_TEST_FILES = frozenset({"tests/test_community_coverage.py"})
 
 
 def _inside(child: Path, parent: Path) -> bool:
@@ -73,6 +76,8 @@ def _iter_source_files(root: Path):
             for name in sorted(files):
                 path = current_path / name
                 relative = path.relative_to(root)
+                if relative.as_posix() in PRIVATE_TEST_FILES:
+                    continue
                 if (name.startswith(".") or name.endswith(".pub") or
                         any(part.startswith(".") for part in relative.parts) or
                         "__pycache__" in relative.parts):

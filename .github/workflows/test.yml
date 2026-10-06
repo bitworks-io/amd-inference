@@ -105,6 +105,12 @@ jobs:
           .\tests\lab-app-tests.ps1
           .\tests\lab-app-lifecycle-tests.ps1
           .\tests\lab-app-ui-tests.ps1
+      - name: Source package acquisition tests in Windows PowerShell 5.1 (loopback only)
+        shell: powershell
+        run: .\tests\lab-package-download-tests.ps1
+      - name: Source package acquisition tests in PowerShell 7 (loopback only)
+        shell: pwsh
+        run: .\tests\lab-package-download-tests.ps1
       - name: Concurrent-client mock tests in Windows PowerShell 5.1
         shell: powershell
         run: .\tests\concurrency-benchmark-tests.ps1

@@ -9,8 +9,8 @@
     },
     {
       "path": ".github/workflows/test.yml",
-      "sizeBytes": 5591,
-      "sha256": "3368b1c380da7c929dc0bed41caa3acf5c3bc156ec6a22cad3b5b8114333804a"
+      "sizeBytes": 5909,
+      "sha256": "0e489aa58d8e7c1b69fb932ecfe2e654240d37d84dc5196d62b0337279e96a2a"
     },
     {
       "path": ".gitignore",
@@ -613,6 +613,11 @@
       "sha256": "a39b8faf5814349587fb27a4ef1e254c535059b1d77eeaba126002543889a277"
     },
     {
+      "path": "tests/lab-package-download-tests.ps1",
+      "sizeBytes": 12603,
+      "sha256": "b694a96f600bebbb9971098cc4bd350c4aefbfee3483e15f505d6a3086a52c20"
+    },
+    {
       "path": "tests/native-host-inventory-tests.ps1",
       "sizeBytes": 6726,
       "sha256": "d4d8ab0f1a1b049e313de9e7bfe2c594457d3020b24466ea54b6a7bbf6035781"
@@ -754,8 +759,8 @@
     },
     {
       "path": "tests/test_public_source.py",
-      "sizeBytes": 9068,
-      "sha256": "f09e668c11144cd592496ca78ea5d0d49f5bd56d81c6457f258a3123d5cfaa0d"
+      "sizeBytes": 9116,
+      "sha256": "88563cf1723f8424bef2ef83e9d61eb15551183b553aa46bdccf3f7037e03235"
     },
     {
       "path": "tests/test_recipes.py",
@@ -928,6 +933,11 @@
       "sha256": "be189018c15da999bbc9b05f611dbbd8d43c504355680f4eb80427f7d6c62965"
     },
     {
+      "path": "tools/get-lab-package.ps1",
+      "sizeBytes": 9300,
+      "sha256": "c2af03096a8f3f278a7904540bbde46b0a004b14b7ed8da0b66a06c3f427140d"
+    },
+    {
       "path": "tools/gpu-memory-sample.ps1",
       "sizeBytes": 7754,
       "sha256": "149b831ce62362e8b23b3a80085ff58ed894834d830193d5f7e6077501b1249f"
@@ -1019,8 +1029,8 @@
     },
     {
       "path": "tools/stage-public-source.py",
-      "sizeBytes": 6402,
-      "sha256": "fdbbe078a41ba188f8562442da41a8297a48337263a413a2375b0cf5404fc114"
+      "sizeBytes": 6714,
+      "sha256": "27bef423cfb5abb4b85fbc1666783756f18b91136dadfb1978ee57e498265c14"
     },
     {
       "path": "tools/start-windows-lab-setup.ps1",
