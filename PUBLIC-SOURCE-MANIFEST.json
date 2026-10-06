@@ -664,8 +664,8 @@
     },
     {
       "path": "tests/runtime-tests.ps1",
-      "sizeBytes": 25691,
-      "sha256": "4f3624298e86eb1c8aee4c0f696787dca7d7ca122635505044b191d59cfddeee"
+      "sizeBytes": 29532,
+      "sha256": "4ea5d8b2768791656cbde9b379ed5719879fb3f01c9650d57c9e8ba726a9aef6"
     },
     {
       "path": "tests/selected-device-identity-tests.ps1",

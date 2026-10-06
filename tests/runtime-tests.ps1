@@ -8,6 +8,26 @@ $catalog=Join-Path $root 'config/catalog.json'
 $hardware=Read-FastLlmJson (Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json')
 $count=0
 function Check([bool]$Condition,[string]$Message) { if (-not $Condition) { throw "FAIL: $Message" }; $script:count++; Write-Host "PASS: $Message" }
+function Get-RuntimeTestProcessEvidence([int]$ProcessId,[long]$ExpectedStartUtcTicks=0) {
+    $evidence=[ordered]@{pid=$ProcessId; identityState='not-found'; alive=$false; startUtcTicks=$null; matchesExpectedStart=$false; inspectionError=$null}
+    if($ProcessId -le 0){return [pscustomobject]$evidence}
+    $observed=$null
+    try {
+        $observed=[Diagnostics.Process]::GetProcessById($ProcessId)
+        $evidence.startUtcTicks=[long]$observed.StartTime.ToUniversalTime().Ticks
+        $evidence.alive=-not $observed.HasExited
+        $evidence.matchesExpectedStart=($ExpectedStartUtcTicks -gt 0 -and $evidence.startUtcTicks -eq $ExpectedStartUtcTicks)
+        $evidence.identityState=if(-not $evidence.alive){'exited'}elseif($ExpectedStartUtcTicks -le 0){'alive-unbound'}elseif($evidence.matchesExpectedStart){'alive-same'}else{'alive-different'}
+    } catch [ArgumentException] {
+        # The process is already gone; keep the recorded identity for comparison.
+    } catch {
+        $evidence.identityState='inspection-failed'
+        $evidence.inspectionError=$_.Exception.GetType().Name
+    } finally {
+        if($observed){$observed.Dispose()}
+    }
+    return [pscustomobject]$evidence
+}
 function Throws([scriptblock]$Action,[string]$Pattern) {
     $caught=$false;$observed='no exception'
     try { & $Action | Out-Null } catch {
@@ -70,6 +90,7 @@ Throws { [Bitworks.FastLlm.LoopbackHttp]::Request('https://example.com', $null, 
 
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('fast-llm-runtime-'+[Guid]::NewGuid().ToString('N'))
 $lock=$null
+$suitePassed=$false
 try {
     $lock=Enter-FastLlmOperation $temp
     Throws { Enter-FastLlmOperation $temp } 'Another FastLLM'
@@ -194,7 +215,48 @@ try {
             Check ((Get-FastLlmStatus $runRoot).phase -eq 'failed') "$mode failure recorded"
         }
         $probe=New-Object Net.Sockets.TcpClient
-        try { $probe.Connect('127.0.0.1',$port);throw 'Leaked child server remains listening.' } catch [Net.Sockets.SocketException] { Check $true "$mode child was terminated" } finally { $probe.Dispose() }
+        try {
+            $probe.Connect('127.0.0.1',$port)
+            # This is failure-only evidence, not a grace period or a replacement
+            # for the immediate strict listener assertion above.
+            $diagnosticPath=Join-Path $runRoot 'post-stop-listener-diagnostic.json'
+            try {
+                $finalStatus=Get-FastLlmStatus $runRoot
+                $recordedPid=0
+                $recordedTicks=0L
+                if($finalStatus.processIdentity){
+                    $recordedPid=[int]$finalStatus.processIdentity.pid
+                    $recordedTicks=[long]$finalStatus.processIdentity.startUtcTicks
+                }
+                $listenerOwners=@()
+                $listenerQueryError=$null
+                if($env:OS -eq 'Windows_NT'){
+                    try {
+                        if(-not ('Bitworks.FastLlm.WindowsGpuTelemetry' -as [type])){
+                            Add-Type -Path (Join-Path $root 'src/WindowsGpuTelemetry.cs') -ErrorAction Stop
+                        }
+                        $listenerOwners=@([Bitworks.FastLlm.WindowsGpuTelemetry]::GetLoopbackListenerOwners($port) |
+                            Select-Object -First 8 |
+                            ForEach-Object { Get-RuntimeTestProcessEvidence -ProcessId ([int]$_) })
+                    } catch {$listenerQueryError=$_.Exception.GetType().Name}
+                }else{$listenerQueryError='not-windows'}
+                $diagnostic=[ordered]@{
+                    kind='runtime-post-stop-listener-diagnostic';mode=$mode;port=[int]$port
+                    observedAtUtc=(Get-Date).ToUniversalTime().ToString('o')
+                    finalPhase=[string]$finalStatus.phase
+                    supervisedProcess=(Get-RuntimeTestProcessEvidence -ProcessId $recordedPid -ExpectedStartUtcTicks $recordedTicks)
+                    recordedStartUtcTicks=$recordedTicks
+                    listenerOwners=@($listenerOwners);listenerQueryError=$listenerQueryError
+                }
+                $diagnosticJson=$diagnostic|ConvertTo-Json -Depth 5 -Compress
+                Write-Warning "Unexpected listener evidence: $diagnosticJson"
+                [IO.File]::WriteAllText($diagnosticPath,$diagnosticJson,[Text.Encoding]::UTF8)
+                Write-Warning "Unexpected listener diagnostic retained: $diagnosticPath"
+            } catch {
+                Write-Warning ('Unexpected listener diagnostic could not be completed: '+$_.Exception.GetType().Name)
+            }
+            throw 'Leaked child server remains listening.'
+        } catch [Net.Sockets.SocketException] { Check $true "$mode child was terminated" } finally { $probe.Dispose() }
         $lock.Dispose();$lock=$null
     }
 
@@ -258,5 +320,13 @@ try {
         try { [Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/stall",$null,200,1000) } catch { $caught=$true }
         Check ($caught -and $elapsed.Elapsed.TotalSeconds -lt 5) 'a stalled HTTP request is bounded by its whole-request deadline'
     } finally { $stallHost.Dispose() }
-} finally { if($lock){$lock.Dispose()}; if(Test-Path $temp){Remove-Item -LiteralPath $temp -Recurse -Force} }
+    $suitePassed=$true
+} finally {
+    if($lock){$lock.Dispose()}
+    if($suitePassed){
+        if(Test-Path $temp){Remove-Item -LiteralPath $temp -Recurse -Force}
+    }else{
+        Write-Warning "Runtime test scratch retained for failure diagnostics: $temp"
+    }
+}
 Write-Host "$count runtime checks passed. Mock services are not Windows/AMD qualification."
