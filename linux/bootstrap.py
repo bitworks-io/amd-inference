@@ -299,11 +299,13 @@ def _parent_death(expected_parent):
         os._exit(127)
 
 
-def continue_lab(destination, action):
+def continue_lab(destination, action, *, install_system_packages=False):
     if action not in ("setup", "start"):
         raise ValueError("guided lab continuation action is not allowed")
     verify_launch_tree(destination)
     command = [sys.executable, "-I", "-B", str(destination / "linux" / "lab.py"), action, "--lab"]
+    if install_system_packages:
+        command.append("--install-system-packages")
     old_term = signal.getsignal(signal.SIGTERM)
 
     def interrupted(signum, _frame):
@@ -356,7 +358,11 @@ def main(argv=None):
     parser.add_argument("--dest", required=True, type=Path, help="new installation directory")
     parser.add_argument("--continue-lab", choices=("setup", "start"),
                         help="opt in to fixed guided lab command after complete source verification")
+    parser.add_argument("--continue-install-system-packages", action="store_true",
+                        help="with --continue-lab, offer existing interactive Ubuntu package review; never auto-approve")
     args = parser.parse_args(argv)
+    if args.continue_install_system_packages and not args.continue_lab:
+        parser.error("--continue-install-system-packages requires --continue-lab setup or start")
     if getattr(os, "geteuid", lambda: -1)() == 0:
         parser.error("run as a standard user; root execution is refused")
     if len(args.sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in args.sha256):
@@ -396,7 +402,8 @@ def main(argv=None):
     print(f"Source installed at {target}")
     if args.continue_lab:
         print("Starting explicitly opted-in private guided lab " + args.continue_lab + "; source remains installed on child failure.")
-        return continue_lab(target, args.continue_lab)
+        return continue_lab(target, args.continue_lab,
+                            install_system_packages=args.continue_install_system_packages)
     print(f"Next (explicit private lab only): python3 {target / 'linux' / 'lab.py'} start --lab")
     print("No engine, driver, model, or system package was installed.")
     return 0

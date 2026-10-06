@@ -466,6 +466,58 @@ class LinuxDeliveryTests(unittest.TestCase):
             self.assertTrue(target.is_dir())
             self.assertNotIn("No engine, driver, model", output.getvalue())
 
+    def test_package_review_opt_in_requires_continuation_before_fetch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "installed"
+            args = ["--source-url", SOURCE_URL, "--sha256", "a" * 64,
+                    "--source-bytes", "10", "--dest", str(target),
+                    "--continue-install-system-packages"]
+            with patch.object(bootstrap.os, "geteuid", return_value=1000), \
+                    patch.object(bootstrap, "fetch") as fetch, \
+                    patch.object(bootstrap.subprocess, "Popen") as child, \
+                    patch("sys.stderr", new_callable=io.StringIO) as error:
+                with self.assertRaises(SystemExit) as stopped:
+                    bootstrap.main(args)
+                self.assertEqual(stopped.exception.code, 2)
+                self.assertIn("requires --continue-lab", error.getvalue())
+                fetch.assert_not_called()
+                child.assert_not_called()
+            self.assertFalse(target.exists())
+
+    def test_package_review_flag_reaches_fixed_child_and_failure_retains_source(self):
+        if os.geteuid() == 0:
+            self.skipTest("real-child source ownership test requires a standard user")
+        for action in ("setup", "start"):
+            for opted_in in (False, True):
+                with self.subTest(action=action, opted_in=opted_in), tempfile.TemporaryDirectory() as folder:
+                    folder = Path(folder)
+                    capture = folder / "child-result.json"
+                    mock_lab = ("import json, signal, sys\nfrom pathlib import Path\nsignal.alarm(5)\n"
+                                "Path(%r).write_text(json.dumps({'argv': sys.argv[1:], "
+                                "'isolated': sys.flags.isolated, 'noBytecode': sys.dont_write_bytecode}))\n"
+                                "raise SystemExit(9)\n") % str(capture)
+                    archive = folder / "source.zip"
+                    source_fixture(archive, {"linux/lab.py": mock_lab.encode()})
+                    target = folder / "installed"
+                    args = ["--source-url", SOURCE_URL, "--sha256", hashlib.sha256(archive.read_bytes()).hexdigest(),
+                            "--source-bytes", str(archive.stat().st_size), "--dest", str(target),
+                            "--continue-lab", action]
+                    expected = [action, "--lab"]
+                    if opted_in:
+                        args.append("--continue-install-system-packages")
+                        expected.append("--install-system-packages")
+                    with patch.object(bootstrap.platform, "system", return_value="Linux"), \
+                            patch.object(bootstrap.platform, "machine", return_value="x86_64"), \
+                            patch.object(bootstrap, "fetch", side_effect=lambda _u, d, _n: shutil.copyfile(archive, d)), \
+                            patch.object(bootstrap, "_parent_death", return_value=None,
+                                         side_effect=bootstrap._parent_death if sys.platform.startswith("linux") else None), \
+                            patch("sys.stdout", new_callable=io.StringIO):
+                        self.assertEqual(bootstrap.main(args), 9)
+                    self.assertEqual(json.loads(capture.read_text()),
+                                     {"argv": expected, "isolated": 1, "noBytecode": True})
+                    self.assertTrue(target.is_dir())
+                    bootstrap.verify_launch_tree(target.resolve())
+
     def test_default_source_install_does_not_launch_lab(self):
         if os.geteuid() == 0:
             self.skipTest("source install test requires a standard user")

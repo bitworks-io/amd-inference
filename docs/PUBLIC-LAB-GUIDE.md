@@ -95,6 +95,8 @@ Native/optional suites may have platform, archive or privilege prerequisites; in
 
 Linux source under `linux/` is a separate assessment/supervised lab path, not a released URL installer. Inspect its help, prerequisite and exact-artifact consent behavior before any acquisition or launch. No Windows benchmark certifies a Linux recipe, and this source snapshot makes no physical AMD/Linux serving claim.
 
+After independently reviewing the bootstrap and its exact full-commit source ZIP URL, byte count and SHA-256, `linux/bootstrap.py` can optionally continue with `--continue-lab setup` or `--continue-lab start`. Add `--continue-install-system-packages` to offer the existing interactive Ubuntu prerequisite review during that same flow. This second option requires a continuation action; it never silently approves package installation or model terms. The helper's two package confirmations and OS elevation remain required. By default the bootstrap only verifies and installs source, without executing it. A continuation failure retains that source for inspection and an explicit `linux/lab.py` retry. No customer release notice supplying a complete reviewed download tuple has been issued.
+
 ## Public evidence
 
 Keep original reports intact and private. A reviewed public derivative must remove credentials, hostnames, IPs, private paths and unique hardware identifiers while retaining specifications relevant to performance. Include exact source/model/engine/configuration identity, workload and cache settings, failures and missing observations. A source commit or a completed model load alone does not authorize a card-performance claim or installer release.

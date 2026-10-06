@@ -79,8 +79,8 @@
     },
     {
       "path": "docs/PUBLIC-LAB-GUIDE.md",
-      "sizeBytes": 10393,
-      "sha256": "0a8e8a68a8c3e6cae32e293162ff6cf56ad07f94ab3bb85df4185569bbfd595f"
+      "sizeBytes": 11184,
+      "sha256": "18906371e0870a4050bb5eca374103223fe7d2b0e63378f01d54c02e2836b337"
     },
     {
       "path": "docs/PUBLIC-README.md",
@@ -99,8 +99,8 @@
     },
     {
       "path": "linux/bootstrap.py",
-      "sizeBytes": 18414,
-      "sha256": "7562d85b0730928b47aae4c8dd27f4a355bb1527030e3e5928b221cff457b503"
+      "sizeBytes": 18998,
+      "sha256": "4593ca0bd486073b0d35a087b0f74c00271fbea29f6b4f8d79c653fd41665c99"
     },
     {
       "path": "linux/engine-candidates.json",
@@ -739,8 +739,8 @@
     },
     {
       "path": "tests/test_linux_delivery.py",
-      "sizeBytes": 36046,
-      "sha256": "4e25fe793b3bc57a7e345f6de81207886dc890ec523692b535a1bcec941995f6"
+      "sizeBytes": 39589,
+      "sha256": "8241dce4e29bd324890044ea674247d652254de68e0e5ce842ee498f62883711"
     },
     {
       "path": "tests/test_linux_lab.py",
