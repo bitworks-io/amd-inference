@@ -1,5 +1,6 @@
 #requires -Version 5.1
-param([int]$Port,[string]$Mode,[string]$LogPath,[string]$StatusPath,[string]$OriginalRunId)
+param([int]$Port,[string]$Mode,[string]$LogPath,[string]$StatusPath,[string]$OriginalRunId,
+      [string]$TransportProbePath)
 $ErrorActionPreference='Stop'
 $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$Port)
 $listener.Start()
@@ -8,26 +9,36 @@ try {
     while ($true) {
         $client=$listener.AcceptTcpClient()
         try {
+            if($TransportProbePath){[IO.File]::AppendAllText($TransportProbePath,"accepted`n")}
             $client.ReceiveTimeout=3000
             $stream=$client.GetStream()
             $reader=New-Object IO.StreamReader($stream,[Text.Encoding]::UTF8,$false,1024,$true)
-            $first=$reader.ReadLine()
+            try { $first=$reader.ReadLine() }
+            catch [IO.IOException] { continue }
+            catch [Net.Sockets.SocketException] { continue }
             if (-not $first) { continue }
             $path=($first -split ' ')[1]
             $length=0
+            $peerReadFailed=$false
             while ($true) {
-                $line=$reader.ReadLine()
+                try { $line=$reader.ReadLine() }
+                catch [IO.IOException] { $peerReadFailed=$true;break }
+                catch [Net.Sockets.SocketException] { $peerReadFailed=$true;break }
                 if (-not $line) { break }
                 if ($line -match '^Content-Length:\s*(\d+)') { $length=[int]$Matches[1] }
             }
+            if($peerReadFailed){continue}
             if ($length -gt 32768) { throw 'Oversize mock request.' }
             $chars=New-Object char[] $length
             $read=0
             while ($read -lt $length) {
-                $n=$reader.Read($chars,$read,$length-$read)
+                try { $n=$reader.Read($chars,$read,$length-$read) }
+                catch [IO.IOException] { $peerReadFailed=$true;break }
+                catch [Net.Sockets.SocketException] { $peerReadFailed=$true;break }
                 if ($n -le 0) { throw 'Truncated mock request.' }
                 $read+=$n
             }
+            if($peerReadFailed){continue}
             $bodyText=-join $chars
             $status=200
             $contentType='application/json'

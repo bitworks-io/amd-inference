@@ -185,8 +185,9 @@ $process=$null
 $mockStderr=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-'+[Guid]::NewGuid().ToString('N')+'.stderr.txt')
 $mockStdout=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-'+[Guid]::NewGuid().ToString('N')+'.stdout.txt')
 $disconnectMarker=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-disconnect-'+[Guid]::NewGuid().ToString('N')+'.txt')
+$transportMarker=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-accept-'+[Guid]::NewGuid().ToString('N')+'.txt')
 try {
-    $process=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$mock+'"'),'-Port',$port,'-Mode','normal','-LogPath',('"'+$disconnectMarker+'"')) `
+    $process=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$mock+'"'),'-Port',$port,'-Mode','normal','-LogPath',('"'+$disconnectMarker+'"'),'-TransportProbePath',('"'+$transportMarker+'"')) `
         -PassThru -RedirectStandardError $mockStderr -RedirectStandardOutput $mockStdout
     $url="http://127.0.0.1:$port/health"
     $healthy=$false
@@ -197,6 +198,30 @@ try {
     }
     if(-not $healthy){throw (Get-MockStartupDiagnostic -Process $process -StderrPath $mockStderr)}
     Check $true 'mock HTTP child is available for concurrent requests'
+    $acceptedBefore=if(Test-Path -LiteralPath $transportMarker){(Get-Item -LiteralPath $transportMarker).Length}else{0}
+    $emptyPeer=New-Object Net.Sockets.TcpClient
+    try {
+        $emptyPeer.Connect([Net.IPAddress]::Loopback,$port)
+        $acceptClock=[Diagnostics.Stopwatch]::StartNew()
+        while($acceptClock.Elapsed.TotalSeconds -lt 3){
+            if($process.HasExited){break}
+            if((Test-Path -LiteralPath $transportMarker) -and (Get-Item -LiteralPath $transportMarker).Length -gt $acceptedBefore){break}
+            Start-Sleep -Milliseconds 25
+        }
+        if(-not (Test-Path -LiteralPath $transportMarker) -or (Get-Item -LiteralPath $transportMarker).Length -le $acceptedBefore){
+            throw 'Mock did not accept the empty-header peer.'
+        }
+        $emptyPeer.Client.LingerState=New-Object Net.Sockets.LingerOption($true,0)
+    } finally { $emptyPeer.Dispose() }
+    $readRecovered=$false
+    $readClock=[Diagnostics.Stopwatch]::StartNew()
+    while($readClock.Elapsed.TotalSeconds -lt 5){
+        if($process.HasExited){break}
+        try{if([Bitworks.FastLlm.LoopbackHttp]::Request($url,$null,500,1048576).Status -eq 200){$readRecovered=$true;break}}catch{}
+        Start-Sleep -Milliseconds 50
+    }
+    if(-not $readRecovered){throw (Get-MockStartupDiagnostic -Process $process -StderrPath $mockStderr)}
+    Check $true 'mock survives an accepted empty-header peer reset and serves the next health request'
     $peer=New-Object Net.Sockets.TcpClient
     try {
         $peer.Connect([Net.IPAddress]::Loopback,$port)
@@ -225,7 +250,7 @@ try {
     Check (@($wave.requests|Where-Object errorCode).Count -eq 0) 'wave retains every client result without a synthetic failure'
 } finally {
     if($process){try{$process.Kill()}catch{};try{$process.WaitForExit(5000)|Out-Null}catch{};$process.Dispose()}
-    foreach($path in @($mockStderr,$mockStdout,$disconnectMarker)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+    foreach($path in @($mockStderr,$mockStdout,$disconnectMarker,$transportMarker)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 }
 $stallPortListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
 $stallPortListener.Start();$stallPort=([Net.IPEndPoint]$stallPortListener.LocalEndpoint).Port;$stallPortListener.Stop()

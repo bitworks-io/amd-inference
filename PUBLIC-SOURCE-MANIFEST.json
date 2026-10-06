@@ -349,8 +349,8 @@
     },
     {
       "path": "tests/concurrency-benchmark-tests.ps1",
-      "sizeBytes": 20454,
-      "sha256": "723d68d7a51ddb1033646056ebd7b5017182f0dfc27b13baf11231142c75a4b3"
+      "sizeBytes": 22095,
+      "sha256": "28b1179b2a2034bd9247318e4afbdbd3e40644b4aff5ca06f1a24554dadc1fcd"
     },
     {
       "path": "tests/download-progress-tests.ps1",
@@ -519,8 +519,8 @@
     },
     {
       "path": "tests/helpers/mock-benchmark-server.ps1",
-      "sizeBytes": 5423,
-      "sha256": "f767155a161ba1a98f6ed55ed293662602b950d3e0171aeab9591478dc5240ca"
+      "sizeBytes": 6116,
+      "sha256": "6b884a3a4aa23041c7f7a45317f132292e4bd60d4eff67d5346c34cda3709b27"
     },
     {
       "path": "tests/helpers/mock-concurrency-hung-worker.ps1",
