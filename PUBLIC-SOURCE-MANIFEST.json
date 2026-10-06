@@ -554,8 +554,8 @@
     },
     {
       "path": "tests/helpers/mock-task-wave-server.ps1",
-      "sizeBytes": 2865,
-      "sha256": "6ce2398285aadb7ec85ddecf8f554b09f578459940f88401d3faff44c7521017"
+      "sizeBytes": 3407,
+      "sha256": "a703c9ee6c0baca512bd5ba8ab611897be6288fdc0982124e98a392e1ed7cdc8"
     },
     {
       "path": "tests/helpers/offload-supervisor-worker.ps1",
@@ -694,8 +694,8 @@
     },
     {
       "path": "tests/task-wave-tests.ps1",
-      "sizeBytes": 7421,
-      "sha256": "340b16b2349bc31a2ace8007a7e2ed538e4b68b4d57be348e1b74c49de039c8f"
+      "sizeBytes": 11305,
+      "sha256": "a38c3e9943a310cd63115850d40c6753e2e3e145ea4d2926a435c085a982b484"
     },
     {
       "path": "tests/task-workload-tests.ps1",

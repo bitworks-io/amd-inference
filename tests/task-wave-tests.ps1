@@ -32,13 +32,15 @@ $listener.Stop()
 $mock=Join-Path $PSScriptRoot 'helpers/mock-task-wave-server.ps1'
 $log=Join-Path $scratch 'requests.txt'
 $accepted=Join-Path $scratch 'accepted.txt'
+$disconnected=Join-Path $scratch 'body-disconnected.txt'
 $stdout=Join-Path $scratch 'mock.stdout.txt'
 $stderr=Join-Path $scratch 'mock.stderr.txt'
 $process=$null
+$suitePassed=$false
 try {
     $exe=(Get-Process -Id $PID).Path
     $process=Start-Process -FilePath $exe -ArgumentList @('-NoProfile','-NonInteractive','-File',('"'+$mock+'"'),'-Port',$port,
-        '-LogPath',('"'+$log+'"'),'-AcceptPath',('"'+$accepted+'"')) `
+        '-LogPath',('"'+$log+'"'),'-AcceptPath',('"'+$accepted+'"'),'-DisconnectPath',('"'+$disconnected+'"')) `
         -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $url="http://127.0.0.1:$port/task-wave"
     $healthy=$false
@@ -72,6 +74,47 @@ try {
         Start-Sleep -Milliseconds 50
     }
     Check $recoveredAfterReset 'accepted no-header peer reset does not kill fixture or next healthy request'
+
+    $loggedBeforePartial=@(Get-Content -LiteralPath $log).Count
+    $acceptedBeforePartial=(Get-Item -LiteralPath $accepted).Length
+    $disconnectsBeforePartial=if(Test-Path -LiteralPath $disconnected){
+        @(Get-Content -LiteralPath $disconnected).Count
+    }else{0}
+    $partialPeer=New-Object Net.Sockets.TcpClient
+    $observedBodyEof=$false
+    try {
+        $partialPeer.Connect([Net.IPAddress]::Loopback,$port)
+        $acceptClock=[Diagnostics.Stopwatch]::StartNew()
+        while($acceptClock.Elapsed.TotalSeconds -lt 3){
+            if($process.HasExited){break}
+            if((Get-Item -LiteralPath $accepted).Length -gt $acceptedBeforePartial){break}
+            Start-Sleep -Milliseconds 25
+        }
+        if((Get-Item -LiteralPath $accepted).Length -le $acceptedBeforePartial){throw 'Mock did not accept the partial-body peer.'}
+        $partial=[Text.Encoding]::ASCII.GetBytes("POST /task-wave HTTP/1.1`r`nHost: 127.0.0.1`r`nContent-Length: 8`r`nConnection: close`r`n`r`nabc")
+        $partialPeer.GetStream().Write($partial,0,$partial.Length)
+        # A half-close preserves the transmitted partial body, then produces
+        # the exact EOF (Read returns zero) observed in the Windows failure.
+        $partialPeer.Client.Shutdown([Net.Sockets.SocketShutdown]::Send)
+        $discardClock=[Diagnostics.Stopwatch]::StartNew()
+        while($discardClock.Elapsed.TotalSeconds -lt 3){
+            if($process.HasExited){break}
+            if(Test-Path -LiteralPath $disconnected){
+                $disconnectMarkers=@(Get-Content -LiteralPath $disconnected)
+                if($disconnectMarkers.Count -gt $disconnectsBeforePartial){
+                    $observedBodyEof=($disconnectMarkers.Count -eq ($disconnectsBeforePartial+1) -and
+                        $disconnectMarkers[$disconnectsBeforePartial] -ceq 'body-eof')
+                    break
+                }
+            }
+            Start-Sleep -Milliseconds 25
+        }
+    }finally{$partialPeer.Dispose()}
+    Check ($observedBodyEof -and -not $process.HasExited -and
+        @(Get-Content -LiteralPath $log).Count -eq $loggedBeforePartial) `
+        'accepted partial-body EOF is discarded without logging or killing the fixture'
+    Check ([Bitworks.FastLlm.LoopbackHttp]::Request($url,'after-partial-reset',1000,1048576).Status -eq 200) `
+        'fixture serves another healthy request after a partial-body disconnect'
 
     $before=@(Get-Content -LiteralPath $log).Count
     foreach($invoke in @(
@@ -127,8 +170,40 @@ try {
     $emptyGet=Invoke-ConcurrencyWave -Url $url -Body '' -Clients 1 -TimeoutMs 4000
     Assert-WaveTiming $emptyGet 1
     Check ($emptyGet.requests[0].response.Status -eq 200) 'legacy empty Body remains accepted'
+
+    $invalidPeer=New-Object Net.Sockets.TcpClient
+    try {
+        $invalidPeer.Connect([Net.IPAddress]::Loopback,$port)
+        $invalid=[Text.Encoding]::ASCII.GetBytes("POST /task-wave HTTP/1.1`r`nHost: 127.0.0.1`r`nContent-Length: 5000`r`nConnection: close`r`n`r`n")
+        $invalidPeer.GetStream().Write($invalid,0,$invalid.Length)
+    }finally{$invalidPeer.Dispose()}
+    $invalidExited=$process.WaitForExit(5000)
+    $invalidDiagnostic=$false
+    for($attempt=0;$attempt -lt 40;$attempt++){
+        if((Test-Path -LiteralPath $stderr) -and
+           (Get-Content -LiteralPath $stderr -Raw).Contains('Unexpected mock body length.')){
+            $invalidDiagnostic=$true;break
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    Check ($invalidExited -and $process.ExitCode -ne 0 -and $invalidDiagnostic) `
+        'malformed oversized request remains a fixture protocol failure'
+    $suitePassed=$true
 } finally {
-    if($process -and -not $process.HasExited){$process.Kill();$process.WaitForExit(5000)|Out-Null}
-    if(Test-Path -LiteralPath $scratch){[IO.Directory]::Delete($scratch,$true)}
+    $childGone=$true
+    if($process){
+        try {
+            if(-not $process.HasExited){$process.Kill()}
+            $childGone=$process.WaitForExit(5000)
+        } catch {
+            try {$childGone=$process.HasExited}catch{$childGone=$false}
+        } finally {$process.Dispose()}
+    }
+    if($suitePassed -and $childGone){
+        if(Test-Path -LiteralPath $scratch){[IO.Directory]::Delete($scratch,$true)}
+    } else {
+        Write-Warning "Task-wave scratch retained for failure diagnostics: $scratch"
+        if(-not $childGone){throw 'Task-wave mock child survived cleanup; scratch retained.'}
+    }
 }
 Write-Host "Task-wave assertions passed: $count"

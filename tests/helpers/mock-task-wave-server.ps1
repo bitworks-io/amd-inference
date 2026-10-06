@@ -1,6 +1,6 @@
 #requires -Version 5.1
 param([Parameter(Mandatory=$true)][int]$Port,[Parameter(Mandatory=$true)][string]$LogPath,
-      [string]$AcceptPath)
+      [string]$AcceptPath,[string]$DisconnectPath)
 $ErrorActionPreference='Stop'
 $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$Port)
 $listener.Start()
@@ -29,14 +29,21 @@ try {
             if($length -lt 0 -or $length -gt 4096){throw 'Unexpected mock body length.'}
             $chars=New-Object char[] $length
             $read=0
+            $peerDisconnectReason=$null
             while($read -lt $length){
                 try {$n=$reader.Read($chars,$read,$length-$read)}
-                catch [IO.IOException] {$peerReadFailed=$true;break}
-                catch [Net.Sockets.SocketException] {$peerReadFailed=$true;break}
-                if($n -le 0){throw 'Truncated mock request.'}
+                catch [IO.IOException] {$peerReadFailed=$true;$peerDisconnectReason='body-read-io';break}
+                catch [Net.Sockets.SocketException] {$peerReadFailed=$true;$peerDisconnectReason='body-read-socket';break}
+                if($n -le 0){$peerReadFailed=$true;$peerDisconnectReason='body-eof';break}
                 $read+=$n
             }
-            if($peerReadFailed){continue}
+            if($peerReadFailed){
+                # A client can abort after sending a valid bounded length but
+                # before the body arrives (including during startup retries).
+                # Discard only this incomplete peer; never log or answer it.
+                if($DisconnectPath){[IO.File]::AppendAllText($DisconnectPath,($peerDisconnectReason+"`n"))}
+                continue
+            }
             $body=-join $chars
             [IO.File]::AppendAllText($LogPath,($body+"`n"),[Text.Encoding]::UTF8)
             if($body -eq 'stall') {Start-Sleep -Milliseconds 1500}
