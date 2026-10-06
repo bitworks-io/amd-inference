@@ -29,8 +29,8 @@
     },
     {
       "path": "README.md",
-      "sizeBytes": 6772,
-      "sha256": "d2fbae490a1053f421fd5d16a0814181c009a0d74c1b3b00dedfdb507bb0d82f"
+      "sizeBytes": 6977,
+      "sha256": "e940864303d9a7769c84c602e2c3399af928c9e90ed4022bcea2b4ad88fedd68"
     },
     {
       "path": "SECURITY.md",
@@ -74,18 +74,18 @@
     },
     {
       "path": "docs/BENCHMARK-METHODOLOGY.md",
-      "sizeBytes": 18939,
-      "sha256": "30c8cc001a4ae619f48e5a2b326a312193ec2aa40f61040aaa1572703bde6155"
+      "sizeBytes": 20534,
+      "sha256": "3a4e8d3dd5492edb159b3557beac5f1e03e0c9f52892f90beebad6a9cc3b58c1"
     },
     {
       "path": "docs/PUBLIC-LAB-GUIDE.md",
-      "sizeBytes": 9505,
-      "sha256": "ac18abac0655581d358c45c46c82ee5e5389404df4fb23262604043532f07a83"
+      "sizeBytes": 10393,
+      "sha256": "0a8e8a68a8c3e6cae32e293162ff6cf56ad07f94ab3bb85df4185569bbfd595f"
     },
     {
       "path": "docs/PUBLIC-README.md",
-      "sizeBytes": 6772,
-      "sha256": "d2fbae490a1053f421fd5d16a0814181c009a0d74c1b3b00dedfdb507bb0d82f"
+      "sizeBytes": 6977,
+      "sha256": "e940864303d9a7769c84c602e2c3399af928c9e90ed4022bcea2b4ad88fedd68"
     },
     {
       "path": "fast-llm-ui.ps1",
@@ -689,8 +689,8 @@
     },
     {
       "path": "tests/task-quality-benchmark-tests.ps1",
-      "sizeBytes": 16554,
-      "sha256": "09c8177783961fbe8cf18be88f493dbbb7ce5cc545f11b7b0051c3a1cf457a44"
+      "sizeBytes": 21788,
+      "sha256": "69fb111c0bf7cc394e3a776b1c23f5a8f199e61cd45221e68e4873964675c0f9"
     },
     {
       "path": "tests/task-wave-tests.ps1",
@@ -1064,8 +1064,8 @@
     },
     {
       "path": "tools/task-quality-benchmark.ps1",
-      "sizeBytes": 28269,
-      "sha256": "a5adca2048663ae64041491dbab0c36d05c1f2a5c6f20c70238afdef1eab593d"
+      "sizeBytes": 33713,
+      "sha256": "be66f618d98d8ecc0f7bc671113fa73a23512a9fe8264eec2e1b2042779fab08"
     },
     {
       "path": "tools/verify_lab_package.py",

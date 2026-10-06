@@ -7,6 +7,7 @@ param(
     [ValidateSet(0,32,128)][int]$DistractorCount=0,
     [ValidateRange(60,3600)][int]$DeadlineSeconds=1200,
     [ValidateRange(10,300)][int]$RequestTimeoutBaseSeconds=120,
+    [switch]$AssessmentMode,
     [switch]$WorkerMode,
     [string]$WorkerNonce
 )
@@ -142,9 +143,79 @@ function New-TaskQualityAbortRecord([string]$OutputPath,$State,[string]$ReasonCo
     return $target
 }
 
+function Test-TaskQualityControllerReport($Report,$State,[bool]$Assessment,[int]$Distractors){
+    try {
+    $kind=if($Assessment){'private-task-quality-assessment'}else{'private-task-quality-screen'}
+    $protocol=if($Assessment){'task-quality-assessment-v1'}else{'task-quality-screen-v1'}
+    $policy=if($Assessment){'continue-incorrect-stop-inconclusive'}else{'stop-incorrect-or-inconclusive'}
+    if($null -eq $Report -or $Report.resultKind -cne $kind -or $Report.reportStatus -cne 'complete' -or
+       $Report.bindingStatus -cne 'verified' -or $Report.sourceProvenance.endStatus -cne 'verified' -or
+       $Report.runId -cne $State.runId -or $Report.modelId -cne $State.modelId -or
+       $Report.modelSha256 -cne $State.modelSha256 -or $Report.engineVersion -cne $State.engineVersion -or
+       (ConvertTo-Json -InputObject $Report.processIdentity -Depth 8 -Compress) -cne
+           (ConvertTo-Json -InputObject $State.processIdentity -Depth 8 -Compress) -or
+       $Report.methodology.protocolVersion -cne $protocol -or $Report.methodology.answerPolicy -cne $policy -or
+       $Report.methodology.suiteVersion -cne (Get-FastLlmTaskWorkloadSuiteVersion) -or
+       [int]$Report.methodology.distractorCount -ne $Distractors -or
+       $Report.methodology.sampling -cne 'temperature-0-seed-42-thinking-disabled' -or
+       $Report.methodology.stream -ne $false -or $Report.methodology.serverSlots -ne 1 -or
+       $Report.methodology.prefixCache -ne $false -or
+       [int]$Report.methodology.plannedTotalTasks -ne 24 -or
+       @($Report.summary).Count -ne 3 -or
+       (@($Report.summary|ForEach-Object requestedClients) -join ',') -cne '1,2,4' -or
+       [int]$Report.totals.planned -ne 24 -or [int]$Report.totals.attempted -ne 24 -or
+       [int]$Report.totals.unattempted -ne 0 -or [int]$Report.totals.inconclusive -ne 0 -or
+       [int]$Report.totals.correct -lt 0 -or [int]$Report.totals.incorrect -lt 0 -or
+       ([int]$Report.totals.correct+[int]$Report.totals.incorrect) -ne 24 -or
+       (-not $Assessment -and ([int]$Report.totals.correct -ne 24 -or [int]$Report.totals.incorrect -ne 0)) -or
+       $Report.qualification.approved -ne $false -or $Report.qualification.qualityEvaluation -ne $false -or
+       $Report.qualityPass -ne ($Report.totals.correct -eq 24)){return $false}
+    foreach($name in @('planned','attempted','correct','incorrect','inconclusive','unattempted')){
+        if($Report.totals.$name -isnot [int] -and $Report.totals.$name -isnot [long]){return $false}
+    }
+    foreach($level in @($Report.summary)){
+        foreach($name in @('requestedClients','planned','attempted','correct','incorrect','inconclusive','unattempted')){
+            if($level.$name -isnot [int] -and $level.$name -isnot [long]){return $false}
+        }
+        if($level.complete -ne $true -or [int]$level.planned -ne 8 -or [int]$level.attempted -ne 8 -or
+           [int]$level.unattempted -ne 0 -or [int]$level.inconclusive -ne 0 -or
+           [int]$level.correct -lt 0 -or [int]$level.incorrect -lt 0 -or
+           ([int]$level.correct+[int]$level.incorrect) -ne 8){return $false}
+    }
+    $requests=@($Report.waves|ForEach-Object requests)
+    if($requests.Count -ne 24 -or
+       @($requests|Where-Object { $_.grade -cnotin @('correct','incorrect') }).Count -ne 0 -or
+       @($requests|Where-Object grade -eq 'correct').Count -ne [int]$Report.totals.correct -or
+       @($requests|Where-Object grade -eq 'incorrect').Count -ne [int]$Report.totals.incorrect){return $false}
+    $canonical=@(Get-FastLlmTaskWorkloadCases -DistractorCount $Distractors|ForEach-Object id)
+    if($canonical.Count -ne 8 -or @($Report.methodology.cases).Count -ne 8 -or
+       (@($Report.methodology.cases|ForEach-Object id) -join ',') -cne ($canonical -join ',') -or
+       @($Report.waves).Count -ne 14){return $false}
+    foreach($clients in @(1,2,4)){
+        $level=@($Report.summary|Where-Object requestedClients -eq $clients)
+        $group=@($Report.waves|Where-Object requestedClients -eq $clients)
+        $levelRequests=@($group|ForEach-Object requests)
+        if($level.Count -ne 1 -or $levelRequests.Count -ne 8 -or
+           @($levelRequests|Where-Object grade -eq 'correct').Count -ne [int]$level[0].correct -or
+           @($levelRequests|Where-Object grade -eq 'incorrect').Count -ne [int]$level[0].incorrect){return $false}
+        $offset=0
+        foreach($wave in $group){
+            $expected=@($canonical[$offset..($offset+$clients-1)])
+            if(@($wave.requests).Count -ne $clients -or
+               (@($wave.taskIds) -join ',') -cne ($expected -join ',') -or
+               (@($wave.requests|ForEach-Object taskId) -join ',') -cne ($expected -join ',') -or
+               (@($wave.requests|ForEach-Object client) -join ',') -cne ((1..$clients) -join ',')){return $false}
+            $offset+=$clients
+        }
+        if($offset -ne 8){return $false}
+    }
+    return $true
+    }catch{return $false}
+}
+
 function Invoke-TaskQualityBenchmarkCore {
     param([string]$OutputPath,[int]$DistractorCount,[int]$DeadlineSeconds,[int]$RequestTimeoutBaseSeconds,
-          [scriptblock]$ReadState,[scriptblock]$CheckProcess,[scriptblock]$Wave)
+          [scriptblock]$ReadState,[scriptblock]$CheckProcess,[scriptblock]$Wave,[switch]$AssessmentMode)
     if(Test-Path -LiteralPath $OutputPath){throw 'Task-quality report already exists.'}
     if($DistractorCount -notin @(0,32,128) -or $DeadlineSeconds -lt 60 -or $DeadlineSeconds -gt 3600 -or
        $RequestTimeoutBaseSeconds -lt 10 -or $RequestTimeoutBaseSeconds -gt 300 -or
@@ -217,7 +288,10 @@ function Invoke-TaskQualityBenchmarkCore {
                 $postChecked=$true
                 if(-not (Test-TaskQualitySourceHashes $source)){$abortReason='source-changed';throw 'Source changed.'}
                 if($clock.Elapsed.TotalSeconds -gt $DeadlineSeconds){$abortReason='overall-deadline';throw 'Overall deadline.'}
-                if($incorrect -gt 0 -or $inconclusive -gt 0){$abortReason='failed-or-inconclusive-wave';throw 'Stop escalation after a failed task wave.'}
+                if($inconclusive -gt 0 -or (-not $AssessmentMode -and $incorrect -gt 0)){
+                    $abortReason=if($AssessmentMode){'inconclusive-wave'}else{'failed-or-inconclusive-wave'}
+                    throw 'Stop escalation after a failed or inconclusive task wave.'
+                }
             }
             $suiteEndMs=$clock.Elapsed.TotalMilliseconds
             $group=@($waves|Where-Object requestedClients -eq $clients)
@@ -286,19 +360,23 @@ function Invoke-TaskQualityBenchmarkCore {
         incorrect=@($all|Where-Object grade -eq 'incorrect').Count;
         inconclusive=@($all|Where-Object grade -eq 'inconclusive').Count;
         unattempted=24-$all.Count}
-    $report=[ordered]@{schemaVersion=1;resultKind='private-task-quality-screen';recordedAt=[DateTime]::UtcNow.ToString('o');
+    $report=[ordered]@{schemaVersion=1;resultKind=$(if($AssessmentMode){'private-task-quality-assessment'}else{'private-task-quality-screen'});recordedAt=[DateTime]::UtcNow.ToString('o');
         reportStatus=$reportStatus;abortReasonCode=$abortReason;bindingStatus=$bindingStatus;failedCondition=$failedCondition;
+        qualityPass=($reportStatus -ceq 'complete' -and $totals.correct -eq 24 -and $totals.incorrect -eq 0 -and $totals.inconclusive -eq 0);
         controllerOutcomeAuthoritative=$false;
         runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256;
         engineVersion=$first.engineVersion;recipe=$first.recipe;endpoint=$first.endpoint;evidenceBindingSha256=$binding;
         sourceProvenance=@{sha256=$source;endStatus=$sourceStatus;scope='On-disk hashes before/after; loaded code not attested'};
-        methodology=@{suiteVersion=$suiteVersion;distractorCount=$DistractorCount;cases=$caseMetadata;
+        methodology=@{suiteVersion=$suiteVersion;
+            protocolVersion=$(if($AssessmentMode){'task-quality-assessment-v1'}else{'task-quality-screen-v1'});
+            answerPolicy=$(if($AssessmentMode){'continue-incorrect-stop-inconclusive'}else{'stop-incorrect-or-inconclusive'});
+            distractorCount=$DistractorCount;cases=$caseMetadata;
             conditionOrder='C1, C2, C4; same eight task IDs at each level; sequential bursts of C requests; no warmup';
             perLevelPlannedTasks=8;plannedTotalTasks=24;serverSlots=1;start='barrier release within each burst';
             stream=$false;firstText='not-measured';sampling='temperature-0-seed-42-thinking-disabled';prefixCache=$false;
             requestTimeoutBaseSeconds=$RequestTimeoutBaseSeconds;overallDeadlineSeconds=$DeadlineSeconds;
             actualUsageRequired=$true;contextEvidence='response usage only; no pretokenized or context qualification';
-            interpretation='Single-slot queue-pressure and useful-task screen, not parallel GPU proof or quality qualification'};
+            interpretation='Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification'};
         waves=$waves;summary=$summary;totals=$totals;
         qualification=@{approved=$false;qualityEvaluation=$false;performanceQualified=$false;physicalResidency=$false;
             parallelDecodeVerified=$false;exclusiveWorkloadConfirmed=$false;contextQualified=$false}}
@@ -323,7 +401,7 @@ if($MyInvocation.InvocationName -ne '.'){
     $concurrencyTool=Join-Path $PSScriptRoot 'concurrency-benchmark.ps1'
     if($WorkerMode){
         $result=& $module {
-            param($Tool,$Semantic,$Workload,$Concurrency,$Root,$Destination,$Distractors,$Deadline,$Timeout)
+            param($Tool,$Semantic,$Workload,$Concurrency,$Root,$Destination,$Distractors,$Deadline,$Timeout,$Assessment)
             . $Semantic
             . $Workload
             . $Concurrency -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-task-quality-helper.json')
@@ -332,10 +410,12 @@ if($MyInvocation.InvocationName -ne '.'){
             Assert-ConcurrencyControllerLock -InstallRoot $Root
             Invoke-TaskQualityBenchmarkCore -OutputPath $Destination -DistractorCount $Distractors -DeadlineSeconds $Deadline -RequestTimeoutBaseSeconds $Timeout `
                 -ReadState {Get-FastLlmStatus -InstallRoot $Root} -CheckProcess {param($State) Assert-FastLlmSemanticSmokeProcess -State $State} `
-                -Wave {param($Base,$Path,$Bodies,$Count,$TimeoutMs) Invoke-ConcurrencyWave -Url ($Base+$Path) -Bodies $Bodies -Clients $Count -TimeoutMs $TimeoutMs}
-        } $PSCommandPath $semanticSource $workloadSource $concurrencyTool $InstallRoot $OutputPath $DistractorCount $DeadlineSeconds $RequestTimeoutBaseSeconds
+                -Wave {param($Base,$Path,$Bodies,$Count,$TimeoutMs) Invoke-ConcurrencyWave -Url ($Base+$Path) -Bodies $Bodies -Clients $Count -TimeoutMs $TimeoutMs} `
+                -AssessmentMode:$Assessment
+        } $PSCommandPath $semanticSource $workloadSource $concurrencyTool $InstallRoot $OutputPath $DistractorCount $DeadlineSeconds $RequestTimeoutBaseSeconds ([bool]$AssessmentMode)
         if($result.reportStatus -cne 'complete'){throw "Private task-quality screen aborted; report saved with reason $($result.abortReasonCode)."}
     }else{
+        . $workloadSource
         $outFull=[IO.Path]::GetFullPath($OutputPath)
         if(Test-Path -LiteralPath $outFull){throw 'Task-quality report already exists.'}
         $status=& $module {param($Root,$Semantic) . $Semantic; $state=Get-FastLlmStatus -InstallRoot $Root;
@@ -351,6 +431,7 @@ if($MyInvocation.InvocationName -ne '.'){
             $workerArguments=@('-NoLogo','-NoProfile','-NonInteractive','-File',$PSCommandPath,'-WorkerMode','-WorkerNonce',$nonce,
                 '-InstallRoot',$InstallRoot,'-OutputPath',$outFull,'-DistractorCount',([string]$DistractorCount),
                 '-DeadlineSeconds',([string]$DeadlineSeconds),'-RequestTimeoutBaseSeconds',([string]$RequestTimeoutBaseSeconds))
+            if($AssessmentMode){$workerArguments+= '-AssessmentMode'}
             $worker=& $module {
                 param($Tool,$Concurrency,$Exe,$WorkerArguments,$Directory,$Seconds,$Nonce)
                 . $Concurrency -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-task-quality-helper.json')
@@ -373,16 +454,11 @@ if($MyInvocation.InvocationName -ne '.'){
             if(-not (Test-TaskQualitySourceHashes $controllerSource)){
                 $failure=New-TaskQualityAbortRecord $outFull $status 'controller-source-changed';throw "Source changed while task worker ran: $failure"
             }
-            if($final.resultKind -cne 'private-task-quality-screen' -or $final.reportStatus -cne 'complete' -or
-               $final.bindingStatus -cne 'verified' -or $final.runId -cne $status.runId -or
-               @($final.summary).Count -ne 3 -or
-               (@($final.summary|ForEach-Object requestedClients) -join ',') -cne '1,2,4' -or
-               [int]$final.totals.attempted -ne 24 -or [int]$final.totals.correct -ne 24 -or
-               [int]$final.totals.incorrect -ne 0 -or [int]$final.totals.inconclusive -ne 0){
+            if(-not (Test-TaskQualityControllerReport -Report $final -State $status -Assessment ([bool]$AssessmentMode) -Distractors $DistractorCount)){
                 $failure=New-TaskQualityAbortRecord $outFull $status 'contained-task-worker-report-rejected'
                 throw "Task worker report did not pass controller checks: $failure"
             }
-            Write-Host "Saved private task-quality screen: $outFull. No qualification granted."
+            Write-Host "Saved private task-quality $(if($AssessmentMode){'assessment'}else{'screen'}): $outFull. No qualification granted."
         }finally{$lock.Dispose()}
     }
 }

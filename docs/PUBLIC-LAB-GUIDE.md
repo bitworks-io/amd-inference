@@ -59,6 +59,14 @@ This runs the same eight original tasks at C1/C2/C4, grading answers and reporti
 
 The screen uses explicit schema requests for its structured task, trims only surrounding answer whitespace, and does not repair fences or wrong answers. It uses non-streamed replies, so first-text latency is not measured. C1/C2/C4 run in that fixed order with no separate warmup; results are a small diagnostic screen, not a controlled concurrency ranking or broad intelligence score. Actual response usage, task/reference hashes, source/run binding and all attempted failures are retained without raw prompts or answers. Read the [methodology](BENCHMARK-METHODOLOGY.md#independent-task-screen-v1) before interpreting its report. Physical Windows/AMD validation remains separate from local mock tests; no recipe is automatically promoted.
 
+For an explicitly reviewed, finite assessment that counts wrong answers across the complete fixed workload:
+
+```powershell
+./tools/task-quality-benchmark.ps1 -OutputPath ./task-assessment-private.json -AssessmentMode
+```
+
+This opt-in mode continues after strictly graded incorrect answers, while retaining the same stop conditions for inconclusive replies, transport failures, truncation, deadlines and changed source/process identity. It keeps the same 24-request maximum and does not retry a task. Execution completion does not mean all answers passed. The distinct assessment report records each error and correct-task throughput over the full suite; all qualification flags remain false. Preserve earlier smoke failures separately, and do not use this option to bypass a held hardware test. See [finite assessment methodology](BENCHMARK-METHODOLOGY.md#finite-quality-assessment-v1).
+
 The offline matrix lists planned coverage, including configurations the current launcher/collector cannot execute:
 
 ```sh

@@ -155,6 +155,63 @@ try {
     Check ($wrong.reportStatus -ceq 'aborted' -and $wrong.abortReasonCode -ceq 'failed-or-inconclusive-wave') 'wrong answer stops before C4'
     Check ($wrong.totals.attempted -eq 10 -and $wrong.totals.correct -eq 9 -and $wrong.totals.incorrect -eq 1 -and
         $wrong.totals.unattempted -eq 14 -and $script:waveCalls -eq 9) 'wrong answer denominators and no escalation'
+    $script:waveCalls=0
+    $assessmentWave={param($Base,$Path,$Bodies,$Count,$TimeoutMs)
+        $result=& $goodWave $Base $Path $Bodies $Count $TimeoutMs
+        $result.requests[0].response.Body='{"choices":[{"message":{"role":"assistant","content":"wrong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":4}}'
+        $result
+    }
+    $assessment=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'assessment.json') -DistractorCount 0 `
+        -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 -AssessmentMode `
+        -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $assessmentWave
+    Check ($assessment.resultKind -ceq 'private-task-quality-assessment' -and
+        $assessment.methodology.protocolVersion -ceq 'task-quality-assessment-v1' -and
+        $assessment.methodology.answerPolicy -ceq 'continue-incorrect-stop-inconclusive') 'assessment identity and policy are explicit'
+    Check ($assessment.reportStatus -ceq 'complete' -and $assessment.qualityPass -eq $false -and
+        $assessment.qualification.approved -eq $false -and $assessment.qualification.qualityEvaluation -eq $false) 'assessment completion is not quality pass or qualification'
+    Check ($assessment.totals.attempted -eq 24 -and $assessment.totals.correct -eq 10 -and
+        $assessment.totals.incorrect -eq 14 -and $assessment.totals.inconclusive -eq 0 -and
+        $script:waveCalls -eq 14) 'assessment retains all wrong answers and completes all 24 tasks'
+    Check (@($assessment.summary|Where-Object { $_.complete -and $_.attempted -eq 8 -and $_.incorrect -gt 0 -and
+        $null -ne $_.usefulTasksPerSecond -and $_.usefulTasksPerSecond -ge 0 }).Count -eq 3 -and
+        $assessment.summary[0].usefulTasksPerSecond -eq 0) 'each assessment level has full denominator and nonnegative correct-task rate'
+    Check (Test-TaskQualityControllerReport $assessment $script:mockState $true 0) 'controller accepts completed assessment with wrong answers'
+    Check (-not (Test-TaskQualityControllerReport $assessment $script:mockState $false 0)) 'controller rejects assessment as default smoke'
+    $spoof=Get-Content -LiteralPath (Join-Path $root 'assessment.json') -Raw|ConvertFrom-Json
+    $spoof.methodology.answerPolicy='stop-incorrect-or-inconclusive'
+    Check (-not (Test-TaskQualityControllerReport $spoof $script:mockState $true 0)) 'controller rejects policy mismatch'
+    $spoof=Get-Content -LiteralPath (Join-Path $root 'assessment.json') -Raw|ConvertFrom-Json
+    $spoof.waves[0].requests[0].grade='inconclusive'
+    Check (-not (Test-TaskQualityControllerReport $spoof $script:mockState $true 0)) 'controller rejects contradictory request grades'
+    $spoof=Get-Content -LiteralPath (Join-Path $root 'assessment.json') -Raw|ConvertFrom-Json
+    $spoof.sourceProvenance.endStatus='changed'
+    Check (-not (Test-TaskQualityControllerReport $spoof $script:mockState $true 0)) 'controller rejects source mismatch'
+    $spoof=Get-Content -LiteralPath (Join-Path $root 'assessment.json') -Raw|ConvertFrom-Json
+    $spoof.processIdentity.pid=99
+    Check (-not (Test-TaskQualityControllerReport $spoof $script:mockState $true 0)) 'controller rejects process mismatch'
+    $spoof=Get-Content -LiteralPath (Join-Path $root 'assessment.json') -Raw|ConvertFrom-Json
+    $spoof.waves[0].requests[0].taskId=$spoof.waves[1].requests[0].taskId
+    Check (-not (Test-TaskQualityControllerReport $spoof $script:mockState $true 0)) 'controller rejects duplicated task identity'
+    $spoof=Get-Content -LiteralPath (Join-Path $root 'assessment.json') -Raw|ConvertFrom-Json
+    $spoof.totals.correct='10'
+    Check (-not (Test-TaskQualityControllerReport $spoof $script:mockState $true 0)) 'controller rejects stringified counts'
+    $script:waveCalls=0
+    $inconclusiveWave={param($Base,$Path,$Bodies,$Count,$TimeoutMs)
+        $result=& $assessmentWave $Base $Path $Bodies $Count $TimeoutMs
+        $result.requests[0].response.Body='{"choices":[{"message":{"role":"assistant","content":"wrong"},"finish_reason":"length"}],"usage":{"prompt_tokens":100,"completion_tokens":4}}'
+        $result
+    }
+    $assessmentAbort=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'assessment-truncated.json') -DistractorCount 0 `
+        -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 -AssessmentMode `
+        -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $inconclusiveWave
+    Check ($assessmentAbort.reportStatus -ceq 'aborted' -and $assessmentAbort.abortReasonCode -ceq 'inconclusive-wave' -and
+        $assessmentAbort.totals.attempted -eq 1 -and $script:waveCalls -eq 1) 'assessment stops on truncation despite wrong-answer continuation'
+    $script:waveCalls=0
+    $assessmentTransport=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'assessment-transport.json') -DistractorCount 0 `
+        -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 -AssessmentMode `
+        -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $abortWave
+    Check ($assessmentTransport.reportStatus -ceq 'aborted' -and $assessmentTransport.totals.inconclusive -eq 1 -and
+        $script:waveCalls -eq 1) 'assessment stops after unavailable transport result'
     $script:reads=0;$script:waveCalls=0
     $changedBinding=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'identity-change.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
         -ReadState {$script:reads++;if($script:reads -ge 3){[pscustomobject]@{active=$true;phase='ready';runId='ffffffffffffffffffffffffffffffff';
