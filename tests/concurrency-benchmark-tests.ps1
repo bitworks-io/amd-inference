@@ -184,8 +184,9 @@ $mock=Join-Path $PSScriptRoot 'helpers/mock-benchmark-server.ps1'
 $process=$null
 $mockStderr=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-'+[Guid]::NewGuid().ToString('N')+'.stderr.txt')
 $mockStdout=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-'+[Guid]::NewGuid().ToString('N')+'.stdout.txt')
+$disconnectMarker=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mock-disconnect-'+[Guid]::NewGuid().ToString('N')+'.txt')
 try {
-    $process=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$mock+'"'),'-Port',$port,'-Mode','normal') `
+    $process=Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-File',('"'+$mock+'"'),'-Port',$port,'-Mode','normal','-LogPath',('"'+$disconnectMarker+'"')) `
         -PassThru -RedirectStandardError $mockStderr -RedirectStandardOutput $mockStdout
     $url="http://127.0.0.1:$port/health"
     $healthy=$false
@@ -196,13 +197,35 @@ try {
     }
     if(-not $healthy){throw (Get-MockStartupDiagnostic -Process $process -StderrPath $mockStderr)}
     Check $true 'mock HTTP child is available for concurrent requests'
+    $peer=New-Object Net.Sockets.TcpClient
+    try {
+        $peer.Connect([Net.IPAddress]::Loopback,$port)
+        $request=[Text.Encoding]::ASCII.GetBytes("GET /disconnect-probe HTTP/1.1`r`nHost: 127.0.0.1`r`nConnection: close`r`n`r`n")
+        $peer.GetStream().Write($request,0,$request.Length)
+        $signalClock=[Diagnostics.Stopwatch]::StartNew()
+        while(-not (Test-Path -LiteralPath $disconnectMarker) -and $signalClock.Elapsed.TotalSeconds -lt 3){
+            if($process.HasExited){break}
+            Start-Sleep -Milliseconds 25
+        }
+        if(-not (Test-Path -LiteralPath $disconnectMarker)){throw 'Mock did not receive the disconnect probe.'}
+        $peer.Client.LingerState=New-Object Net.Sockets.LingerOption($true,0)
+    } finally { $peer.Dispose() }
+    $survived=$false
+    $healthClock=[Diagnostics.Stopwatch]::StartNew()
+    while($healthClock.Elapsed.TotalSeconds -lt 5){
+        if($process.HasExited){break}
+        try{if([Bitworks.FastLlm.LoopbackHttp]::Request($url,$null,500,1048576).Status -eq 200){$survived=$true;break}}catch{}
+        Start-Sleep -Milliseconds 50
+    }
+    if(-not $survived){throw (Get-MockStartupDiagnostic -Process $process -StderrPath $mockStderr)}
+    Check $true 'mock survives a deliberate peer reset and serves the next health request'
     $wave=Invoke-ConcurrencyWave -Url $url -Body '' -Clients 4 -TimeoutMs 5000
     Check ($wave.requests.Count -eq 4 -and @($wave.requests|Where-Object {$_.response.Status -eq 200}).Count -eq 4) 'four concurrent client calls complete against a serialized mock server'
     Check ((Get-ConcurrencyObservedOverlap $wave.requests) -ge 2 -and $wave.wallMs -gt 0) 'released clients have measured overlapping HTTP intervals and a positive shared wall time'
     Check (@($wave.requests|Where-Object errorCode).Count -eq 0) 'wave retains every client result without a synthetic failure'
 } finally {
     if($process){try{$process.Kill()}catch{};try{$process.WaitForExit(5000)|Out-Null}catch{};$process.Dispose()}
-    foreach($path in @($mockStderr,$mockStdout)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+    foreach($path in @($mockStderr,$mockStdout,$disconnectMarker)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
 }
 $stallPortListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
 $stallPortListener.Start();$stallPort=([Net.IPEndPoint]$stallPortListener.LocalEndpoint).Port;$stallPortListener.Stop()

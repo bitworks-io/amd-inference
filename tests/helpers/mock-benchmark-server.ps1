@@ -31,7 +31,14 @@ try {
             $bodyText=-join $chars
             $status=200
             $contentType='application/json'
-            if ($path -eq '/health') { $response='{"status":"ok"}' }
+            if ($path -eq '/disconnect-probe') {
+                if (-not $LogPath) { throw 'Mock disconnect probe requires a signal path.' }
+                [IO.File]::WriteAllText($LogPath,'ready')
+                Start-Sleep -Milliseconds 300
+                # Large enough that an RST peer cannot just absorb a buffered write.
+                $response='x'*1048576
+            }
+            elseif ($path -eq '/health') { $response='{"status":"ok"}' }
             elseif ($path -eq '/tokenize') {
                 $request=$bodyText|ConvertFrom-Json
                 if ($request.add_special -ne $false -or [string]$request.content -notmatch 'A local inference system') { throw 'Unexpected tokenize request.' }
@@ -70,8 +77,15 @@ try {
             else { $status=404; $response='{}' }
             $bytes=[Text.Encoding]::UTF8.GetBytes($response)
             $header=[Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $status OK`r`nContent-Length: $($bytes.Length)`r`nContent-Type: $contentType`r`nConnection: close`r`n`r`n")
-            $stream.Write($header,0,$header.Length)
-            $stream.Write($bytes,0,$bytes.Length)
+            try {
+                $stream.Write($header,0,$header.Length)
+                $stream.Write($bytes,0,$bytes.Length)
+            } catch [IO.IOException] {
+                # A probe or timed-out client may close its socket after a valid
+                # request. This peer's failed response must not kill the fixture.
+            } catch [Net.Sockets.SocketException] {
+                # Some runtimes surface the same peer reset directly.
+            }
         } finally { $client.Dispose() }
     }
 } finally { $listener.Stop() }
