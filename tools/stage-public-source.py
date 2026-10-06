@@ -36,6 +36,11 @@ SOURCE_EXTENSIONS = frozenset({
     ".py", ".sh", ".sha256",
 })
 SOURCE_DIRS = ("src", "config", "linux", "tests", "tools")
+TEST_SOURCE_EXTENSIONS = {
+    (): frozenset({".ps1", ".py"}),
+    ("fixtures",): frozenset({".cs", ".json", ".ps1", ".txt"}),
+    ("helpers",): frozenset({".cs", ".ps1"}),
+}
 MANIFEST_NAME = "PUBLIC-SOURCE-MANIFEST.json"
 # This test binds private editorial research registers, which are deliberately
 # outside the public documentation allowlist. Keep it with those inputs.
@@ -69,10 +74,18 @@ def _iter_source_files(root: Path):
             raise ValueError(f"required source directory is missing or a symlink: {directory}")
         for current, dirs, files in os.walk(base, followlinks=False):
             current_path = Path(current)
+            subdir = current_path.relative_to(base).parts
             for name in dirs + files:
                 if (current_path / name).is_symlink():
                     raise ValueError(f"symlink in source directory: {(current_path / name).relative_to(root)}")
-            dirs[:] = sorted(name for name in dirs if name != "__pycache__" and not name.startswith("."))
+            if directory == "tests":
+                # Only these actual, reviewed test-source locations are public.
+                # Runtime scratch trees (including nonce-named JSON reports) stay
+                # private even when their suffixes resemble fixture data.
+                dirs[:] = sorted(name for name in dirs if not subdir and
+                                 (name,) in TEST_SOURCE_EXTENSIONS)
+            else:
+                dirs[:] = sorted(name for name in dirs if name != "__pycache__" and not name.startswith("."))
             for name in sorted(files):
                 path = current_path / name
                 relative = path.relative_to(root)
@@ -82,9 +95,10 @@ def _iter_source_files(root: Path):
                         any(part.startswith(".") for part in relative.parts) or
                         "__pycache__" in relative.parts):
                     continue
-                allowed = path.suffix.lower() in SOURCE_EXTENSIONS
-                if directory == "tests" and relative.parts[:2] == ("tests", "fixtures"):
-                    allowed = allowed or path.suffix.lower() == ".txt"
+                if directory == "tests":
+                    allowed = path.suffix.lower() in TEST_SOURCE_EXTENSIONS.get(subdir, ())
+                else:
+                    allowed = path.suffix.lower() in SOURCE_EXTENSIONS
                 if allowed:
                     if not path.is_file():
                         raise ValueError(f"source is not a regular file: {relative}")

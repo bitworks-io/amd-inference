@@ -784,8 +784,8 @@
     },
     {
       "path": "tests/test_public_source.py",
-      "sizeBytes": 9116,
-      "sha256": "88563cf1723f8424bef2ef83e9d61eb15551183b553aa46bdccf3f7037e03235"
+      "sizeBytes": 10660,
+      "sha256": "b1dcd84d477889df54562c12cb5d64a46bac1982b496168ef1a7a88b70b09838"
     },
     {
       "path": "tests/test_recipes.py",
@@ -1054,8 +1054,8 @@
     },
     {
       "path": "tools/stage-public-source.py",
-      "sizeBytes": 6714,
-      "sha256": "27bef423cfb5abb4b85fbc1666783756f18b91136dadfb1978ee57e498265c14"
+      "sizeBytes": 7382,
+      "sha256": "bc2fb6362baf6c7bd4ce0f36c946ec51c31d54dd3f60e04cbf6ed8da6695248e"
     },
     {
       "path": "tools/start-windows-lab-setup.ps1",

@@ -34,6 +34,8 @@ class PublicSourceTests(unittest.TestCase):
         self.put("config/catalog.json", b'{\n  "engine": "pinned"\n}\n')
         self.put("linux/serve.py", b"# reviewed source\n")
         self.put("tests/fixtures/llama-list-devices.txt", b"Vulkan0: Test GPU\n")
+        self.put("tests/fixtures/catalog-shape.json", b'{"reviewed":true}\n')
+        self.put("tests/helpers/mock-api.ps1", b"# reviewed test helper\n")
         self.put("tools/benchmark.ps1", b"# reproducible benchmark\n")
         self.put("tools/stage-public-source.py", b"# staging source\n")
 
@@ -44,6 +46,7 @@ class PublicSourceTests(unittest.TestCase):
 
     def test_source_only_mapping_and_content_manifest(self):
         private_paths = (
+            ".github/workflows/replica-private.yml",
             "docs/lab-results/BENCH-1.md",
             "docs/bitworks/outbox/internal.md",
             "docs/DELIVERY-PLAN.md",
@@ -66,7 +69,8 @@ class PublicSourceTests(unittest.TestCase):
         self.assertEqual(paths, {
             *STAGE.ROOT_FILES, *STAGE.PUBLIC_DOCS, "README.md",
             "src/core.psm1", "config/catalog.json", "linux/serve.py",
-            "tests/fixtures/llama-list-devices.txt", "tools/benchmark.ps1",
+            "tests/fixtures/llama-list-devices.txt", "tests/fixtures/catalog-shape.json",
+            "tests/helpers/mock-api.ps1", "tools/benchmark.ps1",
             "tools/stage-public-source.py",
         })
         self.assertEqual((output / "README.md").read_bytes(),
@@ -83,6 +87,29 @@ class PublicSourceTests(unittest.TestCase):
             self.assertEqual(item["sha256"], hashlib.sha256(payload).hexdigest())
         second = STAGE.stage(self.source, self.base / "public-again")
         self.assertEqual(second, manifest)
+
+    def test_generated_test_trees_and_top_level_reports_stay_private(self):
+        private = (
+            "tests/gateway-task-tests-a0b83df2f7094103af56cdef07551433/complete.json",
+            "tests/gateway-task-tests-a0b83df2f7094103af56cdef07551433/nested/trace.md",
+            "tests/other-scratch/fixture-looking.json",
+            "tests/fixtures/generated/run.json",
+            "tests/helpers/temp/response.ps1",
+            "tests/complete.json",
+        )
+        for relative in private:
+            self.put(relative, b'{"privateLocalPath":"C:\\Users\\bench\\model.gguf"}\n')
+        self.put("tests/gateway-task-quality-tests.ps1", b"# real top-level source test\n")
+        output = self.base / "public"
+        manifest = STAGE.stage(self.source, output)
+        paths = {entry["path"] for entry in manifest["files"]}
+        for relative in private:
+            self.assertNotIn(relative, paths)
+            self.assertFalse((output / relative).exists())
+        self.assertIn("tests/gateway-task-quality-tests.ps1", paths)
+        self.assertIn("tests/fixtures/catalog-shape.json", paths)
+        self.assertIn("tests/helpers/mock-api.ps1", paths)
+        self.assertNotIn("C:\\Users\\bench", (output / STAGE.MANIFEST_NAME).read_text())
 
     def test_existing_output_is_never_modified(self):
         output = self.base / "public"
