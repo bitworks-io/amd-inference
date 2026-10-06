@@ -613,7 +613,12 @@ class LinuxDeliveryTests(unittest.TestCase):
                 stopped = False
                 for _ in range(100):
                     status = Path(f"/proc/{child_pid}/stat")
-                    if not status.exists() or status.read_text().split()[2] == "Z":
+                    try:
+                        state = status.read_text().split()[2]
+                    except (FileNotFoundError, ProcessLookupError):
+                        stopped = True
+                        break
+                    if state == "Z":
                         stopped = True
                         break
                     time.sleep(0.05)

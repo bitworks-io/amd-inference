@@ -714,8 +714,8 @@
     },
     {
       "path": "tests/test_linux_delivery.py",
-      "sizeBytes": 35869,
-      "sha256": "c1caf66b48f2498312ac0ccbeb885dc51d89510fe2b53525c8aa8886b3803c67"
+      "sizeBytes": 36046,
+      "sha256": "4e25fe793b3bc57a7e345f6de81207886dc890ec523692b535a1bcec941995f6"
     },
     {
       "path": "tests/test_linux_lab.py",
@@ -734,8 +734,8 @@
     },
     {
       "path": "tests/test_linux_probe.py",
-      "sizeBytes": 17091,
-      "sha256": "ae50676eb8c49ae59b72dcfb8c26b4d5ed45b438691705728e2728847b7d4e08"
+      "sizeBytes": 17248,
+      "sha256": "d3ad46bdaee080a6ea7a2f2eab93b0ec0c21cd59157c83e6e1bfc3c16dca9594"
     },
     {
       "path": "tests/test_linux_runtime.py",
