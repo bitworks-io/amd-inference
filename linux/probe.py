@@ -6,6 +6,8 @@ dependency-closure, AMD-identity, model-fit, placement nor performance approval.
 """
 
 import argparse
+import ctypes
+import functools
 import hashlib
 import importlib.util
 import json
@@ -214,16 +216,29 @@ def _stop_group(child):
         raise ProbeError("probe process group did not terminate")
 
 
-def _capture(child, deadline):
+def _parent_death(expected_parent):
+    # Linux-only child setup: the expected PID check closes the fork/prctl race.
+    if os.getppid() != expected_parent:
+        os._exit(127)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != expected_parent:
+        os._exit(127)
+
+
+def _capture(child, deadline, interrupted=lambda: False):
     output = bytearray()
     with selectors.DefaultSelector() as watcher:
         os.set_blocking(child.stdout.fileno(), False)
         watcher.register(child.stdout, selectors.EVENT_READ)
         while watcher.get_map():
+            if interrupted():
+                raise ProbeError("device probe interrupted")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ProbeError("device probe deadline exceeded")
             for key, _ in watcher.select(min(remaining, 0.2)):
+                if interrupted():
+                    raise ProbeError("device probe interrupted")
                 block = os.read(key.fileobj.fileno(), 65536)
                 if not block:
                     watcher.unregister(key.fileobj)
@@ -231,13 +246,17 @@ def _capture(child, deadline):
                 if len(output) + len(block) > MAX_OUTPUT:
                     raise ProbeError("device probe output exceeded its limit")
                 output.extend(block)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ProbeError("device probe deadline exceeded")
-        try:
-            code = child.wait(timeout=remaining)
-        except subprocess.TimeoutExpired as exc:
-            raise ProbeError("device probe deadline exceeded") from exc
+        while True:
+            if interrupted():
+                raise ProbeError("device probe interrupted")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProbeError("device probe deadline exceeded")
+            try:
+                code = child.wait(timeout=min(remaining, 0.2))
+                break
+            except subprocess.TimeoutExpired:
+                continue
     if code != 0:
         raise ProbeError("pinned engine device probe exited nonzero")
     return bytes(output)
@@ -259,16 +278,34 @@ def run(stage, *, timeout=20):
                        "LC_ALL": "C", "LANG": "C",
                        "VK_DRIVER_FILES": ":".join(host["icdManifests"]),
                        "VK_LOADER_LAYERS_DISABLE": "~implicit~"}
-        child = subprocess.Popen([str(engine), "--list-devices"], cwd=private, env=environment,
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+        interrupted = False
+        old_handlers = {}
+
+        def interrupt_probe(_signum, _frame):
+            nonlocal interrupted
+            interrupted = True
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            old_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, interrupt_probe)
+        child = None
         try:
-            devices = parse_devices(_capture(child, deadline))
+            child = subprocess.Popen([str(engine), "--list-devices"], cwd=private, env=environment,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
+                                     preexec_fn=functools.partial(_parent_death, os.getpid()))
+            devices = parse_devices(_capture(child, deadline, lambda: interrupted))
+            if interrupted:
+                raise ProbeError("device probe interrupted")
         finally:
             try:
-                _stop_group(child)
+                if child is not None:
+                    _stop_group(child)
             finally:
-                child.stdout.close()
+                if child is not None:
+                    child.stdout.close()
+                for sig, handler in old_handlers.items():
+                    signal.signal(sig, handler)
     runtime.verify_tree(stage, asset)
     engine_digest = runtime.digest_file(engine)
     pinned_engine = next(item["sha256"] for item in asset["members"] if item["path"] == asset["entryPoint"])

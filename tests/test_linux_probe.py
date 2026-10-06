@@ -4,6 +4,10 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import select
+import signal
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -115,7 +119,7 @@ class ProbeTests(unittest.TestCase):
                     probe.preflight(Path("/absent"), ASSET)
             with mock.patch.object(probe, "_trusted_system_file", return_value=True), \
                  mock.patch.object(probe, "_has_symbol_versions", return_value=False):
-                with self.assertRaisesRegex(probe.ProbeError, "C\+\+ library"):
+                with self.assertRaisesRegex(probe.ProbeError, r"C\+\+ library"):
                     probe.preflight(Path("/absent"), ASSET)
             with mock.patch.object(probe, "_trusted_system_file", return_value=True), \
                  mock.patch.object(probe, "_has_symbol_versions", return_value=True), \
@@ -169,6 +173,8 @@ class ProbeTests(unittest.TestCase):
             self.assertFalse(any(key in options["env"] for key in ("LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH",
                                                              "VK_ICD_FILENAMES", "VK_LAYER_PATH", "GGML_MODEL")))
             self.assertTrue(options["start_new_session"])
+            self.assertIs(options["preexec_fn"].func, probe._parent_death)
+            self.assertEqual(options["preexec_fn"].args, (os.getpid(),))
             self.assertFalse(result["executionEnabledForServing"])
             self.assertFalse(result["dependencyClosureVerified"])
             self.assertFalse(result["driverIdentityVerified"])
@@ -182,6 +188,112 @@ class ProbeTests(unittest.TestCase):
                     probe.run(stage)
             stopped.assert_called_once_with(failed)
             failed.stdout.close.assert_called_once()
+
+    def test_sigterm_during_capture_stops_owned_probe_group(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            stage = Path(folder) / "stage"
+            stage.mkdir(mode=0o700)
+            handlers = {}
+            child = mock.Mock(pid=8125)
+
+            def install_handler(sig, handler):
+                handlers[sig] = handler
+
+            def interrupted_capture(_child, _deadline, interrupted):
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+                self.assertTrue(interrupted())
+                raise probe.ProbeError("device probe interrupted")
+
+            with mock.patch.object(probe, "preflight", return_value={"icdManifests": ["/usr/share/vulkan/icd.d/amd.json"]}), \
+                 mock.patch.object(probe.runtime, "verify_tree"), \
+                 mock.patch.object(probe.subprocess, "Popen", return_value=child), \
+                 mock.patch.object(probe.signal, "signal", side_effect=install_handler) as signal_calls, \
+                 mock.patch.object(probe, "_stop_group") as stopped, \
+                 mock.patch.object(probe, "_capture", side_effect=interrupted_capture):
+                with self.assertRaisesRegex(probe.ProbeError, "interrupted"):
+                    probe.run(stage)
+            stopped.assert_called_once_with(child)
+            child.stdout.close.assert_called_once()
+            self.assertEqual(signal_calls.call_count, 4)  # install and restore SIGINT/SIGTERM
+
+    def test_spawn_failure_restores_handlers_without_group_cleanup(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            stage = Path(folder) / "stage"
+            stage.mkdir(mode=0o700)
+            with mock.patch.object(probe, "preflight", return_value={"icdManifests": ["/usr/share/vulkan/icd.d/amd.json"]}), \
+                 mock.patch.object(probe.runtime, "verify_tree"), \
+                 mock.patch.object(probe.subprocess, "Popen", side_effect=OSError("spawn refused")), \
+                 mock.patch.object(probe.signal, "signal") as signal_calls, \
+                 mock.patch.object(probe, "_stop_group") as stopped:
+                with self.assertRaisesRegex(OSError, "spawn refused"):
+                    probe.run(stage)
+            stopped.assert_not_called()
+            self.assertEqual(signal_calls.call_count, 4)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and Path("/proc").is_dir(),
+                         "requires Linux parent-death signaling and procfs")
+    def test_parent_death_signal_kills_disposable_child(self):
+        source = str(ROOT / "linux" / "probe.py")
+        parent_script = (
+            "import functools, importlib.util, os, select, subprocess, sys\n"
+            f"s=importlib.util.spec_from_file_location('probe_child_test', {source!r})\n"
+            "m=importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+            "expected_parent=os.getpid()\n"
+            "p=subprocess.Popen([sys.executable,'-c',"
+            "'import os,time; print(\"READY\",os.getpid(),flush=True); time.sleep(30)'], "
+            "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL, "
+            "text=True,start_new_session=True,"
+            "preexec_fn=functools.partial(m._parent_death,expected_parent))\n"
+            "ready,_,_=select.select([p.stdout],[],[],3)\n"
+            "if not ready: p.kill(); raise SystemExit(2)\n"
+            "line=p.stdout.readline().strip()\n"
+            "if line != 'READY '+str(p.pid) or p.poll() is not None: raise SystemExit(3)\n"
+            "print(line,flush=True)\n"
+            "sys.stdin.buffer.read(1)\n"
+        )
+        parent = subprocess.Popen([sys.executable, "-I", "-B", "-c", parent_script],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, start_new_session=True)
+        child_pid = None
+        try:
+            ready, _, _ = select.select([parent.stdout], [], [], 5)
+            self.assertTrue(ready, "disposable parent did not report a live child")
+            reported = parent.stdout.readline().strip().split()
+            self.assertEqual(reported[0], "READY")
+            child_pid = int(reported[1])
+            self.assertIsNone(parent.poll(), "parent exited before deliberate handoff")
+            self.assertNotEqual(Path(f"/proc/{child_pid}/stat").read_text().split()[2], "Z")
+            parent.stdin.write("x")
+            parent.stdin.flush()
+            parent.stdin.close()
+            self.assertEqual(parent.wait(timeout=5), 0)
+            stopped = False
+            for _ in range(100):
+                status = Path(f"/proc/{child_pid}/stat")
+                if not status.exists() or status.read_text().split()[2] == "Z":
+                    stopped = True
+                    break
+                time.sleep(0.05)
+            self.assertTrue(stopped, "disposable child survived its parent")
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            parent.stdout.close()
+            parent.stderr.close()
+            if not parent.stdin.closed:
+                parent.stdin.close()
+            if child_pid is not None:
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux prctl")
+    def test_parent_death_setup_fails_closed_on_wrong_expected_pid(self):
+        child = subprocess.run([sys.executable, "-c", "raise SystemExit(0)"], timeout=5,
+                               preexec_fn=lambda: probe._parent_death(os.getpid() + 1))
+        self.assertEqual(child.returncode, 127)
 
 
 if __name__ == "__main__":
