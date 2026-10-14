@@ -24,8 +24,8 @@ try {
 
     $setup = Join-Path $AssetsDir "FastLLM-Setup-$Version.exe"
     Test-FastLlmReleaseSignature -Path $setup | Out-Null; Pass 'setup-signature'
-    $productVersion = (Get-Item -LiteralPath $setup).VersionInfo.ProductVersion
-    if ($productVersion -ne $Version) { throw "installer ProductVersion $productVersion != $Version" }
+    $productVersion = Get-FastLlmInstallerProductVersion -Path $setup
+    if ($productVersion -cne $Version) { throw "installer ProductVersion '$productVersion' != '$Version'" }
     Pass 'setup-product-version'
 
     $pkg = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-verify-' + [guid]::NewGuid().ToString('N'))

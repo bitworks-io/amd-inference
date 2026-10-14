@@ -52,7 +52,12 @@ Assert-True ($ui -notmatch '(?i)-ExecutionPolicy') 'child processes inherit the 
 
 # 2. Fresh install
 $v1 = '2026.01.01.1'; $tree1 = Build-Tree $v1 @('only-in-v1.txt')
-Invoke-Silent (Build-Installer $v1 $tree1) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v1.log")
+$setup1 = Build-Installer $v1 $tree1
+# Real Inno output: the version-resource padding must not defeat verify-release's exact ProductVersion check
+Import-Module (Join-Path $repo 'release/ReleaseVerify.psm1') -Force
+$productVersion = Get-FastLlmInstallerProductVersion -Path $setup1
+Assert-True ($productVersion -ceq $v1) "installer ProductVersion is '$productVersion', expected '$v1'"
+Invoke-Silent $setup1 @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v1.log")
 Assert-True (Test-Path -LiteralPath (Join-Path $app 'fast-llm.ps1')) 'app not installed'
 Assert-True (Test-Path -LiteralPath (Join-Path $app '_uninstall\unins000.exe')) 'uninstaller not in _uninstall'
 Assert-True (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) 'FastLLM.lnk')) 'Start Menu shortcut missing'

@@ -75,4 +75,18 @@ function Test-FastLlmCatalogTree {
     if ($check.Status -ne 'Valid' -or (Compare-Object $catKeys $pathKeys)) { throw "catalog does not match the tree exactly: $($check.Status)" }
 }
 
-Export-ModuleMember -Function Test-FastLlmReleaseSignature, Read-FastLlmSha256Sums, Resolve-FastLlmReleaseTag, Test-FastLlmCatalogTree
+function ConvertTo-FastLlmVersionInfoText {
+    [CmdletBinding()]
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    # Inno Setup patches the setup loader's version resource in place, so its strings come back padded with trailing spaces and NULs.
+    return $Text.TrimEnd([char]' ', [char]0)
+}
+
+function Get-FastLlmInstallerProductVersion {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    return ConvertTo-FastLlmVersionInfoText ((Get-Item -LiteralPath $Path).VersionInfo.ProductVersion)
+}
+
+Export-ModuleMember -Function Test-FastLlmReleaseSignature, Read-FastLlmSha256Sums, Resolve-FastLlmReleaseTag, Test-FastLlmCatalogTree, ConvertTo-FastLlmVersionInfoText, Get-FastLlmInstallerProductVersion
