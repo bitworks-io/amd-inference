@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'status', 'stop')]
+    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop')]
     [string] $Action = 'start',
 
     [ValidateSet('fast', 'balanced', 'quality')]
@@ -12,6 +12,9 @@ param(
     [string] $InstallRoot,
 
     [string] $ModelId,
+
+    # plan/start/install: use this recipe ID from config/recipes.json; refuses if it does not apply. Cannot be combined with -ModelId.
+    [string] $Recipe,
 
     [ValidateRange(0, 1048576)]
     [int] $ContextSize = 0,
@@ -120,7 +123,11 @@ try {
 $labAppLifetime = Enter-FastLlmLabAppLifetime -SourceRoot $projectRoot
 Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFlow.ps1')
-$selectionOptions = @{ ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel }
+$recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
+$selectionOptions = @{
+    ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
+    RecipesPath = $recipesPath; GpuVariantsPath = (Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'); RecipeId = $Recipe
+}
 
 function Write-FastLlmPlan {
     param($Plan)
@@ -133,6 +140,8 @@ function Write-FastLlmPlan {
     Write-Host "Hardware:  $((@($Plan.selectedAdapters | ForEach-Object { $_.name })) -join ' + ')"
     Write-Host "Backend:   $($Plan.backend) / llama.cpp $($Plan.engineVersion)"
     Write-Host "Profile:   $($Plan.profile)"
+    Write-Host "Setup:     $($Plan.recipe.label)"
+    if ($Plan.recipe.evidenceUrl) { Write-Host "Results:   $($Plan.recipe.evidenceUrl)" }
     Write-Host "Model:     $($Plan.model.id) ($($Plan.model.quantization))"
     Write-Host "Serving:   $($Plan.model.servingMode)"
     Write-Host "Context:   $($Plan.model.contextSize) tokens"
@@ -159,6 +168,16 @@ try {
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             if ($AsJson) { ConvertTo-Json -InputObject @($catalog.models) -Depth 12 }
             else { $catalog.models | Select-Object id, quantization, contextSize, requiredFreeVramMiB, servingMode | Format-Table -AutoSize }
+        }
+        'recipes' {
+            $recipeList = @(Read-FastLlmRecipes -Path $recipesPath)
+            if ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
+            elseif ($recipeList.Count -eq 0) { Write-Host 'This release has no published recipes.' }
+            else {
+                foreach ($listed in $recipeList) {
+                    Write-Host ("{0} - {1} - {2} x{3} - {4}, {5} tokens" -f $listed.id, (Get-FastLlmRecipeLabel ([string] $listed.origin)), $listed.gpu.variant, $listed.gpu.count, $listed.components.model, $listed.runtime.contextSize)
+                }
+            }
         }
         'status' { Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12 }
         'stop' { Request-FastLlmStop -InstallRoot $InstallRoot }
@@ -269,6 +288,8 @@ try {
                         $recovery = Get-FastLlmRecoveryPlan -Hardware $recoveryHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot -Profile $Profile -FailedModelId $plan.model.id -RequestedModelId $ModelId -ContextSize $ContextSize
                         if ($recovery) {
                             $selectionOptions.ModelId = $recovery.model.id
+                            # -Recipe and -ModelId cannot be combined; recovery is an explicit cached model.
+                            $selectionOptions.RecipeId = $null
                             Write-Host "The automatic choice failed runtime checks. Trying previously smoke-tested, cached model '$($recovery.model.id)' once; it will be rehashed and checked again."
                             continue
                         }

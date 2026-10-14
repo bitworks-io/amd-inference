@@ -2,6 +2,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.SelectedDeviceIdentity.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.CardIdentity.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.Recipes.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
@@ -909,9 +910,16 @@ function Get-FastLlmPlan {
         [ValidateRange(0, 1048576)]
         [int] $ContextSize = 0,
 
-        [switch] $AllowExperimentalModel
+        [switch] $AllowExperimentalModel,
+
+        [string] $RecipesPath,
+
+        [string] $GpuVariantsPath,
+
+        [string] $RecipeId
     )
 
+    if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
     if ($ContextSize -gt 0 -and $ContextSize -lt 512) { throw 'Explicit context must be at least 512 tokens, or 0 for the catalog default.' }
@@ -982,32 +990,60 @@ function Get-FastLlmPlan {
         }
     }
 
-    $fitting = @()
-    foreach ($placement in $placements) {
-        foreach ($model in @($catalog.models)) {
-            if ($ModelId -and [string] $model.id -ne $ModelId) { continue }
-            if ($ContextSize -gt [int] $model.contextSize) { continue }
-            $autoEligibleProperty = $model.PSObject.Properties['autoEligible']
-            if ($autoEligibleProperty -and -not [bool] $autoEligibleProperty.Value -and -not ($ModelId -and $AllowExperimentalModel)) {
-                continue
-            }
-            $score = if ($ModelId) { 0 } else { Get-FastLlmScore -Model $model -Profile $Profile }
-            if ($score -lt 0) {
-                continue
-            }
-            if ([int64] $model.requiredFreeVramMiB -le [int64] $placement.selectionCapacity) {
-                $fitting += [pscustomobject] @{
-                    model     = $model
-                    score     = $score
-                    gpuCount  = @($placement.adapters).Count
-                    placement = $placement
+    $recipePick = $null
+    $recipeSkippedSink = New-Object System.Collections.Generic.List[string]
+    if (-not $ModelId -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
+        # Recipe data never fails an automatic plan; only an explicit -Recipe refuses.
+        try {
+            $dxgi = @()
+            if ($Hardware.PSObject.Properties['dxgiAdapters']) { $dxgi = @($Hardware.dxgiAdapters) }
+            $recipePick = Select-FastLlmRecipeForPlacements -Recipes (Read-FastLlmRecipes -Path $RecipesPath) `
+                -Variants (Get-FastLlmGpuVariants -Path $GpuVariantsPath) -Placements $placements -DxgiAdapters $dxgi `
+                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -SkippedSink $recipeSkippedSink
+        }
+        catch {
+            if ($RecipeId) { throw }
+            $recipePick = $null
+        }
+        if ($recipePick -and $ContextSize -gt [int] $recipePick.model.contextSize) {
+            if ($RecipeId) { throw 'Requested context exceeds the catalog ceiling for this model.' }
+            $recipePick = $null
+        }
+    }
+    if ($RecipeId -and -not $recipePick) { throw "Recipe '$RecipeId' does not apply to this PC. No other recipe was substituted." }
+    $recipeSkipped = @($recipeSkippedSink)
+
+    if ($recipePick) {
+        $selected = [pscustomobject] @{ model = $recipePick.model; placement = $recipePick.placement; score = 0; gpuCount = @($recipePick.placement.adapters).Count }
+    }
+    else {
+        $fitting = @()
+        foreach ($placement in $placements) {
+            foreach ($model in @($catalog.models)) {
+                if ($ModelId -and [string] $model.id -ne $ModelId) { continue }
+                if ($ContextSize -gt [int] $model.contextSize) { continue }
+                $autoEligibleProperty = $model.PSObject.Properties['autoEligible']
+                if ($autoEligibleProperty -and -not [bool] $autoEligibleProperty.Value -and -not ($ModelId -and $AllowExperimentalModel)) {
+                    continue
+                }
+                $score = if ($ModelId) { 0 } else { Get-FastLlmScore -Model $model -Profile $Profile }
+                if ($score -lt 0) {
+                    continue
+                }
+                if ([int64] $model.requiredFreeVramMiB -le [int64] $placement.selectionCapacity) {
+                    $fitting += [pscustomobject] @{
+                        model     = $model
+                        score     = $score
+                        gpuCount  = @($placement.adapters).Count
+                        placement = $placement
+                    }
                 }
             }
         }
+        $selected = $fitting |
+            Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [int64] $_.model.requiredFreeVramMiB }; Descending = $true }, gpuCount, @{ Expression = { [int64] $_.placement.selectionCapacity }; Descending = $true } |
+            Select-Object -First 1
     }
-    $selected = $fitting |
-        Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [int64] $_.model.requiredFreeVramMiB }; Descending = $true }, gpuCount, @{ Expression = { [int64] $_.placement.selectionCapacity }; Descending = $true } |
-        Select-Object -First 1
 
     if (-not $selected) {
         if ($ModelId) { throw "Requested model '$ModelId' does not fit the estimated current free-memory budget. No other model was substituted." }
@@ -1018,6 +1054,13 @@ function Get-FastLlmPlan {
     # Copy before narrowing context: the immutable artifact/provenance remains unchanged.
     $model = $selected.model | ConvertTo-Json -Depth 12 | ConvertFrom-Json
     $catalogContext = [int] $model.contextSize
+    if ($recipePick) {
+        $recipeRuntime = $recipePick.recipe.runtime
+        $model.contextSize = [int] $recipeRuntime.contextSize
+        foreach ($field in 'parallel', 'cacheTypeK', 'cacheTypeV', 'fitTargetMiB') {
+            if ($recipeRuntime.PSObject.Properties[$field] -and $null -ne $recipeRuntime.$field) { $model.$field = $recipeRuntime.$field }
+        }
+    }
     if ($ContextSize -gt 0) { $model.contextSize = $ContextSize }
     $selectedPlacement = $selected.placement
     $selectedAdapters = @($selectedPlacement.adapters)
@@ -1109,8 +1152,9 @@ function Get-FastLlmPlan {
         catalogVersion      = [string] $catalog.catalogVersion
         hardwareFingerprint = Get-FastLlmFingerprint -Hardware $Hardware
         fingerprintKind     = 'inventory-key-not-authoritative-pci-identity'
-        selectionMode       = if ($ModelId) { 'explicit' } else { 'auto' }
+        selectionMode       = if ($ModelId) { 'explicit' } elseif ($recipePick) { 'recipe' } else { 'auto' }
         requestedModelId    = $ModelId
+        requestedRecipeId   = $RecipeId
         requestedContextSize = $ContextSize
         allowExperimentalModel = [bool] $AllowExperimentalModel
         catalogContextSize  = $catalogContext
@@ -1135,6 +1179,7 @@ function Get-FastLlmPlan {
         tensorSplit         = $tensorSplit
         endpoint            = "http://$($catalog.hardwarePolicy.serverHost):$($catalog.hardwarePolicy.serverPort)/v1"
         serverArguments     = $arguments
+        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped)
         warnings            = $warnings
     }
 }
@@ -1795,7 +1840,17 @@ function Start-FastLlmServer {
     }
 
     $freshHardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot
-    $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel
+    # A recipe-chosen plan is re-planned with the same recipe data, or it would always look "changed" against the estimated choice.
+    $freshRecipeOptions = @{}
+    $configRoot = Split-Path -Parent $CatalogPath
+    $planRecipeId = $null
+    if ($Plan.PSObject.Properties['requestedRecipeId'] -and $Plan.requestedRecipeId) { $planRecipeId = [string] $Plan.requestedRecipeId }
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.origin -notin @('estimated', 'manual')) {
+        $freshRecipeOptions.RecipesPath = Join-Path $configRoot 'recipes.json'
+        $freshRecipeOptions.GpuVariantsPath = Join-Path $configRoot 'gpu-variants.json'
+        if ($planRecipeId) { $freshRecipeOptions.RecipeId = $planRecipeId }
+    }
+    $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
         [string] $freshPlan.enginePath -ne [string] $Plan.enginePath -or
@@ -1867,6 +1922,8 @@ Export-ModuleMember -Function @(
     'Install-FastLlmModel',
     'Invoke-FastLlmDeviceProbe',
     'Read-FastLlmJson',
+    'Read-FastLlmRecipes',
+    'Get-FastLlmRecipeLabel',
     'Remove-FastLlmDeviceBindingPrivateFields',
     'Save-FastLlmVerifiedFile',
     'Start-FastLlmServer',

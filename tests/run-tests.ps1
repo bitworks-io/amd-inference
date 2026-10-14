@@ -104,6 +104,60 @@ foreach ($case in $cases) {
     Assert-True -Condition (-not [bool] $plan.placementVerified) -Message "$($case.Fixture) does not claim placement before a runtime canary"
 }
 
+# Recipe choice: a published XTX recipe is used only when the DXGI card identity matches; otherwise the estimated choice is unchanged.
+$recipeTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fast-llm-recipe-plan-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $recipeTestRoot -Force | Out-Null
+try {
+    $recipeCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
+    $recipeFile = Join-Path $recipeTestRoot 'recipes.json'
+    $recipeDocument = [pscustomobject] [ordered] @{
+        schema  = 'bitworks.fastllm-recipes/v2'
+        recipes = @([pscustomobject] [ordered] @{
+                id = 'test-xtx-q4'; origin = 'bitworks'; recommended = $true
+                gpu = [pscustomobject] @{ variant = 'rx-7900-xtx'; count = 1 }
+                components = [pscustomobject] @{ engine = "llama.cpp-$($recipeCatalog.engine.version)-vulkan"; model = 'qwen3.8-27b-ud-q4-k-m' }
+                engineBuild = [string] $recipeCatalog.engine.version
+                runtime = [pscustomobject] @{ contextSize = 32768; vulkanBarMitigation = 'auto' }
+                expected = [pscustomobject] @{ generationTokS = 30.5 }
+                evidence = [pscustomobject] @{ url = 'https://bitworks.io/test-recipe'; publishedAt = '2026-10-01' }
+            })
+    }
+    $recipeDocument | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recipeFile -Encoding UTF8
+    $variantsFile = Join-Path (Join-Path $projectRoot 'config') 'gpu-variants.json'
+    $recipeOptions = @{ RecipesPath = $recipeFile; GpuVariantsPath = $variantsFile }
+    $xtxHardware = Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')
+    $xtxHardware | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @([pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 200; dedicatedVideoMiB = 24534 })
+    $recipePlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') @recipeOptions
+    Assert-Equal -Expected 'bitworks' -Actual $recipePlan.recipe.origin -Message 'a matched XTX picks the published recipe'
+    Assert-Equal -Expected 'test-xtx-q4' -Actual $recipePlan.recipe.id -Message 'the plan names the chosen recipe'
+    Assert-Equal -Expected 'Measured by Bitworks on this card' -Actual $recipePlan.recipe.label -Message 'the plan carries the exact Bitworks label'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m' -Actual $recipePlan.model.id -Message 'the recipe model is planned'
+    Assert-Equal -Expected 32768 -Actual $recipePlan.model.contextSize -Message 'the recipe context is planned'
+    Assert-Equal -Expected 'recipe' -Actual $recipePlan.selectionMode -Message 'a recipe pick reports selectionMode recipe'
+    $catalogXtxModel = @($recipeCatalog.models | Where-Object { $_.id -eq 'qwen3.8-27b-ud-q4-k-m' })[0]
+    Assert-Equal -Expected $catalogXtxModel.parallel -Actual $recipePlan.model.parallel -Message 'runtime fields a recipe omits keep the catalog values'
+    $smallerContext = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ContextSize 8192 @recipeOptions
+    Assert-Equal -Expected 8192 -Actual $smallerContext.model.contextSize -Message 'a smaller explicit context wins over the recipe context'
+    $namedRecipePlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -RecipeId 'test-xtx-q4' @recipeOptions
+    Assert-Equal -Expected 'test-xtx-q4' -Actual $namedRecipePlan.requestedRecipeId -Message 'an explicit -Recipe is recorded on the plan'
+
+    $noIdentityPlan = Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') @recipeOptions
+    Assert-Equal -Expected 'estimated' -Actual $noIdentityPlan.recipe.origin -Message 'without card identity the plan is labelled estimated'
+    Assert-Equal -Expected 'auto' -Actual $noIdentityPlan.selectionMode -Message 'without card identity selection stays automatic'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m' -Actual $noIdentityPlan.model.id -Message 'without card identity the estimated model choice is unchanged'
+
+    Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -ModelId 'qwen3.8-27b-ud-q4-k-m' -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'cannot be combined' -Message '-Recipe and -ModelId cannot be combined'
+    Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -RecipeId 'no-such-recipe' @recipeOptions } -Pattern 'No other recipe was substituted' -Message 'an unknown -Recipe refuses without substituting'
+    Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'does not apply to this PC' -Message '-Recipe without a matching card identity refuses'
+
+    # Recovery names an explicit cached model, so the CLI must clear -Recipe at the same moment (the CLI start loop is not unit-testable).
+    $cliSource = Get-Content -LiteralPath (Join-Path $projectRoot 'fast-llm.ps1') -Raw
+    Assert-True -Condition ($cliSource -match '(?s)\$selectionOptions\.ModelId = \$recovery\.model\.id\s+[^\r\n]*\r?\n\s*\$selectionOptions\.RecipeId = \$null') -Message 'recovery clears RecipeId when it sets ModelId'
+}
+finally {
+    if (Test-Path -LiteralPath $recipeTestRoot) { Remove-Item -LiteralPath $recipeTestRoot -Recurse -Force }
+}
+
 $dual20 = Get-FixturePlan -Fixture 'dual-rx-7900-xt-20gb.json'
 Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $dual20.model.id -Message 'dual 20GB balanced profile uses aggregate capacity'
 Assert-Equal -Expected 'layer' -Actual $dual20.splitMode -Message 'dual 20GB defaults to layer split'
