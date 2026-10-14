@@ -4,7 +4,7 @@
 Tag runs: the tag must be vYYYY.MM.DD.N or vYYYY.MM.DD.N-canary, its commit must be on origin/main, and no other tag may
 carry the same version (a version is used once across both channels). Other runs (workflow_dispatch) are rehearsals:
 version <today>.9999, channel canary; release.yml signs and publishes nothing for them.
-A tag run must be attempt 1 (a re-run never signs again), and no
+A tag run must be attempt 1 (a re-run never signs again), the version's date may not be after the current UTC date, and no
 GitHub release may already exist for the version on either channel. workflow_dispatch is always a rehearsal, even on a tag.
 Env: REF_TYPE, REF_NAME, GITHUB_SHA, EVENT_NAME, RUN_ATTEMPT, RELEASE_TAGS (newline-separated tag names of existing releases).
 """
@@ -49,6 +49,8 @@ def resolve(ref_type, ref_name, sha, git=run_git, today=None, event_name="push",
     version = match.group(1)
     if str(run_attempt) != "1":
         raise ResolveError(f"run attempt {run_attempt} is a re-run: a failed or spent version is never signed again; tag a new version")
+    if version.rsplit(".", 1)[0] > today:
+        raise ResolveError(f"version {version} is dated after today (UTC {today})")
     released = sorted({f"v{version}", f"v{version}-canary"} & set(release_tags))
     if released:
         raise ResolveError(f"a GitHub release already exists for version {version}: {', '.join(released)}")

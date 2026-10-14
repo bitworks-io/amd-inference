@@ -65,6 +65,21 @@ class ResolveTests(unittest.TestCase):
         r = resolve("tag", "v2026.10.16.1", "abc", fake_git(["v2026.10.16.1"]), event_name="workflow_dispatch", release_tags=["v2026.10.16.1"], run_attempt="2")
         self.assertEqual((r["rehearsal"], r["tag"], r["version"]), ("true", "", "2026.10.16.9999"))
 
+    def test_future_date_is_refused(self):
+        for tag in ("v2026.10.17.1", "v2026.11.01.1-canary", "v2062.10.14.1-canary"):
+            with self.subTest(tag=tag), self.assertRaisesRegex(rv.ResolveError, "after today"):
+                resolve("tag", tag, "abc", fake_git([tag]))
+
+    def test_today_and_past_dates_are_allowed(self):
+        for tag in ("v2026.10.16.1", "v2026.10.15.1", "v2025.12.31.3-canary"):
+            with self.subTest(tag=tag):
+                resolve("tag", tag, "abc", fake_git([tag]))
+
+    def test_default_today_is_utc(self):
+        future = (rv.datetime.datetime.now(rv.datetime.timezone.utc) + rv.datetime.timedelta(days=2)).strftime("v%Y.%m.%d.1")
+        with self.assertRaisesRegex(rv.ResolveError, "after today"):
+            rv.resolve("tag", future, "abc", fake_git([future]))
+
 
 if __name__ == "__main__":
     unittest.main()
