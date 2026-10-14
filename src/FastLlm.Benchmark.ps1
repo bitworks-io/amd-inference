@@ -130,6 +130,7 @@ $script:FastLlmHostStableFields = @('powerPlan','cpuTopology','smbiosMemory','bo
 $script:FastLlmRecipeVramTolerance = 0.06
 $script:FastLlmBenchmarkInputRelativePaths = @('src/WindowsCpuTopology.cs','src/WindowsSmbiosMemory.cs','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs','src/WindowsPciLink.cs','src/WindowsAcpiMcfg.cs','src/WindowsInventory.ps1','src/WindowsInventory.cs','src/WindowsGpuIdentity.cs','src/WindowsHostInventory.cs','src/ProcessHost.cs','src/FastLlm.Runtime.ps1','src/FastLlm.psm1','tools/collect-vulkan-luid-join.ps1','tools/adlx-identity-vram.ps1','tools/benchmark.ps1',
     'src/FastLlm.FileReplace.ps1','src/FastLlm.SelectedDeviceIdentity.ps1','src/FastLlm.OffloadLab.ps1','src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.DeviceBinding.ps1',
+    'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','src/FastLlm.SelfTest.ps1',
     'src/FastLlm.OffloadBenchmark.ps1','src/FastLlm.Soak.ps1','src/FastLlm.DriverGuidance.ps1','src/FastLlm.DriverGuidanceView.ps1','src/FastLlm.PrerequisiteDiagnostics.ps1',
     'src/WindowsBootTime.cs','src/WindowsGpuTelemetry.cs')
 # Every file the module loads at import (the dot-sourced .ps1 files, transitively, and the C# sources they Add-Type) is listed above, except this
