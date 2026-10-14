@@ -24,7 +24,7 @@ New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
     $source = Split-Path -Parent $PSScriptRoot
     $pinNames = @((Get-FastLlmBackgroundSourcePins -SourceRoot $source).Keys)
-    foreach ($pinned in @('src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.DeviceBinding.ps1','tools/collect-vulkan-luid-join.ps1','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs','src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','config/recipes.json','config/gpu-variants.json')) {
+    foreach ($pinned in @('src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.SelfTest.ps1','src/FastLlm.DeviceBinding.ps1','tools/collect-vulkan-luid-join.ps1','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs','src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','config/recipes.json','config/gpu-variants.json')) {
         Assert-BackgroundTest ($pinNames -contains $pinned) "Background source pins omit $pinned."
     }
     $self = [Diagnostics.Process]::GetCurrentProcess()
@@ -133,7 +133,8 @@ try {
     }
     function Enter-FastLlmOperation { param($InstallRoot) $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
-        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds)
+        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[switch]$SelfTest)
+        Assert-BackgroundTest ([bool]$SelfTest) 'Background worker did not request the post-load self-test.'
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
         $script:mockServerStarts++
         if ($script:throwServer) { throw 'disposable test server failure' }

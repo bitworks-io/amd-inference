@@ -408,6 +408,8 @@ function Invoke-FastLlmSupervisedServer {
     param($Plan, [string] $InstallRoot, [int] $LoadTimeoutSeconds=300, [string] $CatalogPath,
           # Policy defaults and the canary default to off; direct callers (lab trials) are unaffected.
           [string] $VulkanBarMitigation='off', [switch] $ThroughputCanary,
+          # Post-load self-test (default off for direct callers; the CLI start enables it).
+          [switch] $SelfTest,
           # W03 Phase A device binding. Absent or off: nothing below runs and no field is added. record observes only.
           # enforce additionally fails a start whose binding is not bound (before launch) or whose post-load device check fails;
           # both failures are typed (FastLlmReason DeviceBindingFailed) and never trigger model recovery.
@@ -658,6 +660,30 @@ function Invoke-FastLlmSupervisedServer {
             }
             $canaryFloor = if ($null -ne $state.throughputCanary.floor) { "floor $($state.throughputCanary.floor)" } else { 'no reviewed floor for this model and card' }
             Write-Host "Throughput canary (advisory): PP512 $($state.throughputCanary.ppTokPerS) tok/s, $canaryFloor, status $($state.throughputCanary.status).$canaryNote"
+        }
+        if ($SelfTest) {
+            $expected = $null
+            if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.expected) { $expected = $Plan.recipe.expected }
+            $contextForTest = 0
+            if ($Plan.model.PSObject.Properties['contextSize']) { $contextForTest = [int] $Plan.model.contextSize }
+            $mitigation = 'off'
+            if ($state.vulkanMemoryPolicy -and $state.vulkanMemoryPolicy.effective -eq 'on') { $mitigation = 'on' }
+            $selfTest = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation
+            $recipeId = $null
+            if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) { $recipeId = $Plan.recipe.id }
+            $state.selfTest = $selfTest
+            try { Write-FastLlmState -InstallRoot $InstallRoot -FileName 'selftest.json' -State ([ordered]@{ schemaVersion = 1; recipeId = $recipeId; modelId = [string] $Plan.model.id
+                        engineBuild = [string] $Plan.engineVersion; result = $selfTest }) } catch { }
+            try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { }
+            if ($selfTest.status -eq 'pass') { Write-Host "Self-test passed: $($selfTest.generationTokS) tok/s generation, $($selfTest.promptTokS) tok/s prompt." }
+            elseif ($selfTest.status -eq 'below-expected') {
+                Write-Host "Self-test: generation $($selfTest.generationTokS) tok/s is below 70% of the $($selfTest.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
+            }
+            else {
+                $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message "Self-test failed ($(@($selfTest.reasons) -join ', ')). The server was stopped; FastLLM tries the next cached setup."
+                $failure.Data['FastLlmReason'] = 'RuntimeCheckFailed'
+                throw $failure
+            }
         }
         while (-not $hostProcess.Process.WaitForExit(250)) {
             if (Test-Path -LiteralPath $stopPath) { $state.phase='stopped'; return 0 }

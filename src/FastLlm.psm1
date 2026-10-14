@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.VulkanMemoryPolicy.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.SelfTest.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DeviceBinding.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
@@ -1791,6 +1792,9 @@ function Start-FastLlmServer {
         # Advisory post-Ready prompt-processing canary; default off.
         [switch] $ThroughputCanary,
 
+        # Post-load self-test (default off for direct callers; the CLI start enables it).
+        [switch] $SelfTest,
+
         # W03 Phase A per-start device binding. off is byte-identical to a start without the parameter; record observes only;
         # enforce fails the start (typed, never recovered) when the binding is not bound or the post-load device check fails.
         [ValidateSet('off', 'record', 'enforce')]
@@ -1884,6 +1888,7 @@ function Start-FastLlmServer {
     $supervisorOptions = @{}
     if ($vulkanMemoryPolicy -ne 'off') { $supervisorOptions.VulkanBarMitigation = $vulkanMemoryPolicy }
     if ($ThroughputCanary) { $supervisorOptions.ThroughputCanary = $true }
+    if ($SelfTest) { $supervisorOptions.SelfTest = $true }
     if ($DeviceBinding -ne 'off') { $supervisorOptions.DeviceBinding = $DeviceBinding }
     return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
 }

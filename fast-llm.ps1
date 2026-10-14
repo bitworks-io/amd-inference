@@ -49,6 +49,9 @@ param(
     # Advisory post-Ready prompt-processing measurement (live start only; default off).
     [switch] $ThroughputCanary,
 
+    # start only: skip the post-load self-test
+    [switch] $SkipSelfTest,
+
     # Live start only: W03 Phase A per-start device binding. record = observe which GPU the plan resolves to and note GPU, slot or
     # driver changes since the last recorded start; it never changes the server arguments, the environment or the BAR policy.
     # enforce additionally fails the start when the GPU cannot be bound before launch, or when the server's device list after the model
@@ -272,6 +275,7 @@ try {
                 $startPolicyOptions = @{}
                 if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation }
                 if ($ThroughputCanary) { $startPolicyOptions.ThroughputCanary = $true }
+                if (-not $SkipSelfTest) { $startPolicyOptions.SelfTest = $true }
                 if ($DeviceBinding -ne 'off') { $startPolicyOptions.DeviceBinding = $DeviceBinding }
                 try {
                     $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions

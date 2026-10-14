@@ -51,7 +51,7 @@ function Get-FastLlmBackgroundSourcePins {
         'src/FastLlm.psm1','src/FastLlm.Runtime.ps1','src/FastLlm.FileReplace.ps1','src/FastLlm.LabApp.ps1',
         'src/FastLlm.SelectedDeviceIdentity.ps1','src/FastLlm.OffloadLab.ps1',
         'src/FastLlm.Benchmark.ps1','src/FastLlm.OffloadBenchmark.ps1',
-        'src/FastLlm.Soak.ps1','src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.DeviceBinding.ps1','src/WindowsBootTime.cs',
+        'src/FastLlm.Soak.ps1','src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.SelfTest.ps1','src/FastLlm.DeviceBinding.ps1','src/WindowsBootTime.cs',
         'tools/collect-vulkan-luid-join.ps1','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs',
         'src/FastLlm.DriverGuidance.ps1',
         'src/FastLlm.DriverGuidanceView.ps1','src/FastLlm.PrerequisiteDiagnostics.ps1',
@@ -523,7 +523,7 @@ function Invoke-FastLlmBackgroundServe {
         # then re-probes before using the normal supervised server. No install,
         # download, quarantine, or consent path is reachable here.
         $exit = Start-FastLlmServer -Plan $plan -CatalogPath $catalog -InstallRoot $install `
-            -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds)
+            -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -SelfTest
         $record.phase = 'stopped'
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
         return $exit
