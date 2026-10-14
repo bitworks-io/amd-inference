@@ -58,7 +58,8 @@ function Get-FastLlmBackgroundSourcePins {
         'src/ProcessHost.cs','src/WindowsInventory.ps1',
         'src/WindowsInventory.cs','src/WindowsGpuIdentity.cs',
         'src/WindowsHostInventory.cs','src/WindowsGpuTelemetry.cs',
-        'config/catalog.json'
+        'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1',
+        'config/catalog.json','config/recipes.json','config/gpu-variants.json'
     )
     $pins = [ordered]@{}
     foreach ($name in $names) {
@@ -511,7 +512,8 @@ function Invoke-FastLlmBackgroundServe {
         $hardware = Get-FastLlmHardware -CatalogPath $catalog -InstallRoot $install
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
             -InstallRoot $install -ModelId ([string]$request.modelId) -ContextSize ([int]$request.contextSize) `
-            -AllowExperimentalModel:([bool]$request.allowExperimentalModel)
+            -AllowExperimentalModel:([bool]$request.allowExperimentalModel) `
+            -RecipesPath (Join-Path $source 'config\recipes.json') -GpuVariantsPath (Join-Path $source 'config\gpu-variants.json')
         $plan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue $RequestId -Force
         $record.modelId = [string]$plan.model.id
         $record.phase = 'loading'

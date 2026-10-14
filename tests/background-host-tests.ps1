@@ -24,7 +24,7 @@ New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
     $source = Split-Path -Parent $PSScriptRoot
     $pinNames = @((Get-FastLlmBackgroundSourcePins -SourceRoot $source).Keys)
-    foreach ($pinned in @('src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.DeviceBinding.ps1','tools/collect-vulkan-luid-join.ps1','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs')) {
+    foreach ($pinned in @('src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.DeviceBinding.ps1','tools/collect-vulkan-luid-join.ps1','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs','src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','config/recipes.json','config/gpu-variants.json')) {
         Assert-BackgroundTest ($pinNames -contains $pinned) "Background source pins omit $pinned."
     }
     $self = [Diagnostics.Process]::GetCurrentProcess()
