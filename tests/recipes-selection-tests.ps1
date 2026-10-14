@@ -78,4 +78,24 @@ Check ($block.origin -eq 'manual' -and $block.label -eq 'Chosen by you') 'an exp
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @() -Recovered
 Check ($block.origin -eq 'estimated' -and $block.label -eq 'Estimated for your card') 'a model chosen by recovery is labelled estimated, never Chosen by you'
 Check ((Get-FastLlmRecipeLabel 'bitworks') -eq 'Measured by Bitworks on this card') 'the Bitworks label text is exact'
+# The SHIPPED config files, planned together: a shape mismatch between tools/build-recipes.py output and the selector fails here.
+$shippedRecipes = Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.json')
+$shippedCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
+function ShippedFree($modelId) { [int64] (@($shippedCatalog.models | Where-Object { $_.id -eq $modelId })[0].requiredFreeVramMiB) + 500 }
+$xtDxgi = @([pscustomobject]@{ vendorId = 4098; deviceId = 29772; revision = 204; dedicatedVideoMiB = 20422 })
+$pick = Select-FastLlmRecipeForPlacements -Recipes $shippedRecipes -Variants $variants -Placements @([pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'n'; vramMiB = 20470 }); selectionCapacity = (ShippedFree 'qwen3.8-27b-ud-iq4-xs') }) -DxgiAdapters $xtDxgi -Catalog $shippedCatalog -Profile 'balanced'
+Check ($null -ne $pick -and $pick.recipe.id -eq 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k') 'the shipped recipes select the RX 7900 XT recipe for 1002/744C/CC'
+$block = New-FastLlmPlanRecipeBlock -Pick $pick -ModelId '' -Skipped @()
+Check ($block.origin -eq 'bitworks' -and $block.label -eq 'Measured by Bitworks on this card') 'the shipped RX 7900 XT recipe is labelled as measured by Bitworks'
+Check ($block.evidenceUrl -eq 'https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation') 'the shipped RX 7900 XT recipe carries its lab-observation URL'
+$pick = Select-FastLlmRecipeForPlacements -Recipes $shippedRecipes -Variants $variants -Placements @([pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'n'; vramMiB = 24560 }); selectionCapacity = (ShippedFree 'qwen3.8-27b-ud-q4-k-m') }) -DxgiAdapters $xtxDxgi -Catalog $shippedCatalog -Profile 'balanced'
+Check ($null -ne $pick -and $pick.recipe.id -eq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k') 'the shipped recipes select the RX 7900 XTX recipe for 1002/744C/C8'
+$block = New-FastLlmPlanRecipeBlock -Pick $pick -ModelId '' -Skipped @()
+Check ($block.origin -eq 'bitworks' -and $block.label -eq 'Measured by Bitworks on this card') 'the shipped RX 7900 XTX recipe is labelled as measured by Bitworks'
+Check ($block.evidenceUrl -eq 'https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km/#lab-observation') 'the shipped RX 7900 XTX recipe carries its lab-observation URL'
+$unknownRevision = @([pscustomobject]@{ vendorId = 4098; deviceId = 29772; revision = 192; dedicatedVideoMiB = 24534 })
+$pick = Select-FastLlmRecipeForPlacements -Recipes $shippedRecipes -Variants $variants -Placements @([pscustomobject]@{ adapters = @([pscustomobject]@{ name = 'n'; vramMiB = 24560 }); selectionCapacity = 30000 }) -DxgiAdapters $unknownRevision -Catalog $shippedCatalog -Profile 'balanced'
+Check ($null -eq $pick) 'an unknown revision (C0) of the same device selects no shipped recipe'
+$block = New-FastLlmPlanRecipeBlock -Pick $pick -ModelId '' -Skipped @()
+Check ($block.origin -eq 'estimated') 'an unknown revision leaves the plan estimated'
 Write-Host 'recipes-selection-tests: PASS'
