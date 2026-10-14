@@ -10,7 +10,7 @@ $data = Join-Path $env:LOCALAPPDATA 'Bitworks\FastLLM'
 function Assert-True([bool]$Condition, [string]$Message) { if (-not $Condition) { throw "ASSERT: $Message" } }
 function Build-Tree([string]$Version, [string[]]$ExtraFiles = @()) {
     $out = Join-Path $work "pkg-$Version"
-    & python (Join-Path $repo 'tools/build-release.py') --version $Version --channel canary --min-agent-version 0.10.0 --built-at '2026-01-01T00:00:00Z' --out $out
+    $null = & python (Join-Path $repo 'tools/build-release.py') --version $Version --channel canary --min-agent-version 0.10.0 --built-at '2026-01-01T00:00:00Z' --out $out
     if ($LASTEXITCODE) { throw "build-release failed for $Version" }
     $tree = Join-Path $work "tree-$Version"
     Expand-Archive -LiteralPath (Join-Path $out 'package-unsigned.zip') -DestinationPath $tree
@@ -19,7 +19,7 @@ function Build-Tree([string]$Version, [string[]]$ExtraFiles = @()) {
 }
 function Build-Installer([string]$Version, [string]$Tree) {
     $outDir = Join-Path $work "setup-$Version"
-    & (Join-Path $repo 'installer/build-installer.ps1') -Version $Version -SourceDir $Tree -OutputDir $outDir
+    $null = & (Join-Path $repo 'installer/build-installer.ps1') -Version $Version -SourceDir $Tree -OutputDir $outDir
     return (Join-Path $outDir "FastLLM-Setup-$Version.exe")
 }
 function Invoke-Silent([string]$Exe, [string[]]$Arguments) {
@@ -44,12 +44,11 @@ Assert-True ($iss -notmatch '(?m)^PrivilegesRequiredOverridesAllowed') 'an eleva
 Assert-True ($iss -match '(?m)^UninstallFilesDir=\{app\}\\_uninstall\s*$') 'UninstallFilesDir must be {app}\_uninstall'
 Assert-True ($iss -match '(?m)^DefaultDirName=\{localappdata\}\\Programs\\Bitworks FastLLM\s*$') 'DefaultDirName changed'
 $cmd = Get-Content -LiteralPath (Join-Path $repo 'FastLLM.cmd') -Raw
-Assert-True ($cmd -match '-ExecutionPolicy RemoteSigned') 'FastLLM.cmd must pass -ExecutionPolicy RemoteSigned'
+Assert-True ($cmd -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Restricted" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"\s*$') 'FastLLM.cmd must lift a Restricted policy to RemoteSigned'
+Assert-True ($cmd -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"\s*$') 'FastLLM.cmd must lift an Undefined policy to RemoteSigned'
 Assert-True ($cmd -notmatch '(?i)bypass') 'FastLLM.cmd must never use Bypass'
 $ui = Get-Content -LiteralPath (Join-Path $repo 'fast-llm-ui.ps1') -Raw
-Assert-True ($ui -match "'-ExecutionPolicy','RemoteSigned','-File'") 'UI child processes must pass -ExecutionPolicy RemoteSigned'
-$bg = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.BackgroundHost.ps1') -Raw
-Assert-True ($bg -match '-ExecutionPolicy RemoteSigned -EncodedCommand') 'the background host process must pass -ExecutionPolicy RemoteSigned'
+Assert-True ($ui -notmatch '(?i)-ExecutionPolicy') 'child processes inherit the entry policy; they never override it'
 
 # 2. Fresh install
 $v1 = '2026.01.01.1'; $tree1 = Build-Tree $v1 @('only-in-v1.txt')

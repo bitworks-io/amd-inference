@@ -102,7 +102,7 @@ function Get-FastLlmPrerequisiteInventory {
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
         $worker = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/collect-prerequisite-inventory.ps1'
-        $info.Arguments = Join-FastLlmProcessArguments @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned','-File',$worker)
+        $info.Arguments = Join-FastLlmProcessArguments @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',$worker)
         $child.Start($info)
         $remaining = [Math]::Max(1, 20000 - [int]$watch.ElapsedMilliseconds)
         if (-not $child.Process.WaitForExit($remaining)) { throw 'Prerequisite inventory exceeded its 20-second deadline.' }

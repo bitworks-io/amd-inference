@@ -485,7 +485,7 @@ if($MyInvocation.InvocationName -ne '.'){
         try {
             $nonce=[Guid]::NewGuid().ToString('N')
             $exe=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-            $workerArguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','RemoteSigned','-File',$PSCommandPath,
+            $workerArguments=@('-NoLogo','-NoProfile','-NonInteractive','-File',$PSCommandPath,
                 '-WorkerMode','-WorkerNonce',$nonce,'-WorkerPromptCsv',($PromptTokens -join ','),
                 '-InstallRoot',$InstallRoot,'-OutputPath',$outFull,'-GenerationTokens',([string]$GenerationTokens),
                 '-Repetitions',([string]$Repetitions),'-DeadlineSeconds',([string]$DeadlineSeconds),

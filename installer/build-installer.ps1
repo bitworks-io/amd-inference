@@ -21,7 +21,7 @@ if ($SignScript) {
     $isccArgs += '/DSignToolName=artifactsign'
 }
 $isccArgs += (Join-Path $PSScriptRoot 'FastLLM.iss')
-& $iscc @isccArgs
+& $iscc @isccArgs | Out-Host
 if ($LASTEXITCODE) { throw "ISCC failed with exit code $LASTEXITCODE" }
 $setup = Join-Path $OutputDir "FastLLM-Setup-$Version.exe"
 if (-not (Test-Path -LiteralPath $setup)) { throw "installer not produced: $setup" }
