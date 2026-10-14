@@ -105,3 +105,27 @@ Describe 'Test-FastLlmCatalogTree' {
         { Test-FastLlmCatalogTree -CatalogPath $script:cat -TreePath $script:tree } | Should -Throw '*does not match*'
     }
 }
+
+Describe 'ConvertTo-FastLlmVersionInfoText' {
+    BeforeAll { $script:ver = '2026.10.14.1' }
+    It 'strips 40 trailing spaces' {
+        ConvertTo-FastLlmVersionInfoText ($script:ver + (' ' * 40)) | Should -BeExactly $script:ver
+    }
+    It 'strips trailing NULs' {
+        ConvertTo-FastLlmVersionInfoText ($script:ver + [string]::new([char]0, 5)) | Should -BeExactly $script:ver
+    }
+    It 'strips a mix of trailing spaces and NULs' {
+        ConvertTo-FastLlmVersionInfoText ($script:ver + '  ' + [string]::new([char]0, 3) + ' ' + [char]0) | Should -BeExactly $script:ver
+    }
+    It 'keeps a leading space so the exact comparison still fails' {
+        $text = ConvertTo-FastLlmVersionInfoText (' ' + $script:ver + '   ')
+        $text | Should -BeExactly (' ' + $script:ver)
+        ($text -cne $script:ver) | Should -BeTrue
+    }
+    It 'keeps a trailing tab' {
+        ConvertTo-FastLlmVersionInfoText ($script:ver + "`t") | Should -BeExactly ($script:ver + "`t")
+    }
+    It 'returns an empty string for null' {
+        ConvertTo-FastLlmVersionInfoText $null | Should -BeExactly ''
+    }
+}
