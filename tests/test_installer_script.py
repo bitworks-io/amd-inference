@@ -1,0 +1,29 @@
+import re
+import unittest
+from pathlib import Path
+
+ISS = (Path(__file__).resolve().parents[1] / "installer" / "FastLLM.iss").read_text(encoding="utf-8")
+
+
+class InstallerScriptTests(unittest.TestCase):
+    def test_uninstall_prompt_states_what_yes_deletes_and_defaults_to_no(self):
+        prompt = re.search(r"(?s)MsgBox\(.*?\) = IDYES", ISS).group(0)
+        for word in ("ALL FastLLM data", "downloaded models", "engines", "settings", "logs"):
+            self.assertIn(word, prompt)
+        self.assertIn("MB_YESNO or MB_DEFBUTTON2", prompt)
+        self.assertNotIn("models and engines (", prompt)
+
+    def test_install_refuses_a_foreign_non_empty_folder_before_install_delete(self):
+        self.assertIn("function PrepareToInstall(var NeedsRestart: Boolean): String;", ISS)
+        body = ISS[ISS.index("function PrepareToInstall"):]
+        self.assertRegex(body, r"DirExists\(Dir\) and DirHasEntries\(Dir\) and not IsFastLlmInstall\(Dir\)")
+        self.assertIn("'FastLLM.cat'", ISS)
+        self.assertIn("'_uninstall\\unins000.dat'", ISS)
+
+    def test_upgrade_still_clears_the_previous_version(self):
+        for line in ('Type: files; Name: "{app}\\*"', 'Type: filesandordirs; Name: "{app}\\src"', 'Type: filesandordirs; Name: "{app}\\tools"'):
+            self.assertIn(line, ISS)
+
+
+if __name__ == "__main__":
+    unittest.main()
