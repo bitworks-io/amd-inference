@@ -24,9 +24,9 @@ function Get-Pins {
 
 function Assert-Signer([string]$Path, [string]$CommonName) {
     $sig = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($sig.Status -ne 'Valid') { throw "$Path: Authenticode status is $($sig.Status), want Valid" }
+    if ($sig.Status -ne 'Valid') { throw "${Path}: Authenticode status is $($sig.Status), want Valid" }
     if ($sig.SignerCertificate.Subject -notmatch ('(^|, )CN=' + [regex]::Escape($CommonName) + '(,|$)')) {
-        throw "$Path: signer is '$($sig.SignerCertificate.Subject)', want CN=$CommonName"
+        throw "${Path}: signer is '$($sig.SignerCertificate.Subject)', want CN=$CommonName"
     }
 }
 
