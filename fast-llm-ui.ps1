@@ -207,7 +207,7 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
         if(@($Arguments).Count -ne 0){throw 'VC++ preparation accepts no arbitrary child arguments.'}
         $argsList=Get-FastLlmUiVcPrepareArguments -ProjectRoot $PSScriptRoot -CacheRoot $script:vcCacheRoot
     }else{
-        $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $PSScriptRoot 'fast-llm.ps1'))+$Arguments
+        $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned','-File',(Join-Path $PSScriptRoot 'fast-llm.ps1'))+$Arguments
     }
     $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
     $script:child=New-Object Bitworks.FastLlm.ProcessHost

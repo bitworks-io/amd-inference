@@ -28,10 +28,10 @@ Reject {Get-FastLlmUiVcOffer -Decision $decision -InstallDecision 'made-up'} 'Un
 $root=Split-Path $PSScriptRoot -Parent
 $cache=Join-Path $root 'test-vc-cache'
 $arguments=@(Get-FastLlmUiVcPrepareArguments -ProjectRoot $root -CacheRoot $cache)
-Check ($arguments.Count -eq 11 -and $arguments[5] -ceq '-File' -and
-    $arguments[6] -ceq (Join-Path $root 'tools/prepare-vc-runtime.ps1') -and
-    $arguments[7] -ceq '-Action' -and $arguments[8] -ceq 'Prepare' -and
-    $arguments[9] -ceq '-CacheRoot' -and $arguments[10] -ceq $cache) 'Preparation child arguments are not fixed to the reviewed helper.'
+Check ($arguments.Count -eq 13 -and $arguments[5] -ceq '-ExecutionPolicy' -and $arguments[6] -ceq 'RemoteSigned' -and $arguments[7] -ceq '-File' -and
+    $arguments[8] -ceq (Join-Path $root 'tools/prepare-vc-runtime.ps1') -and
+    $arguments[9] -ceq '-Action' -and $arguments[10] -ceq 'Prepare' -and
+    $arguments[11] -ceq '-CacheRoot' -and $arguments[12] -ceq $cache) 'Preparation child arguments are not fixed to the reviewed helper.'
 foreach($action in @('launch','stop','close','tray-exit','minimize')){
     Check (-not (Test-FastLlmUiVcActionAllowed -BrokerActive $true -Action $action)) "Live broker permitted $action."
 }

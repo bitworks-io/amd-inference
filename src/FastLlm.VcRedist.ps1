@@ -124,7 +124,7 @@ function Assert-FastLlmVcRedistArtifactBounded {
     $info.FileName=(Get-Process -Id $PID -ErrorAction Stop).Path
     $worker=Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/prepare-vc-runtime.ps1'
     $info.Arguments=Join-FastLlmProcessArguments -Arguments @('-NoLogo','-NoProfile','-NonInteractive',
-        '-File',$worker,'-Action','Validate','-ArtifactPath',$Path,'-InternalWorker')
+        '-ExecutionPolicy','RemoteSigned','-File',$worker,'-Action','Validate','-ArtifactPath',$Path,'-InternalWorker')
     $child=New-Object Bitworks.FastLlm.ProcessHost
     $watch=[Diagnostics.Stopwatch]::StartNew()
     try{

@@ -47,3 +47,8 @@ Flash-Next is excluded from automatic selection. Its approximately 180B stored p
 
 If the Microsoft Visual C++ 2015–2022 x64 runtime is missing, FastLLM offers to download Microsoft's signed installer from
 Microsoft and runs it only when the user clicks. The runtime is licensed by Microsoft under its own terms.
+
+## Inno Setup
+
+The Windows installer is built with Inno Setup (https://jrsoftware.org/isinfo.php), Copyright (C) 1997-2026 Jordan Russell
+and Martijn Laan, used under the Inno Setup License (https://jrsoftware.org/files/is/license.txt).
