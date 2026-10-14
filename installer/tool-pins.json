@@ -1,8 +1,8 @@
 {
-  "_comment": "Pins for third-party build tools installed on release/CI runners. A null pin fails closed. Sources: see release notes in the commit that introduced this file.",
+  "_comment": "Pins for third-party build tools installed on release/CI runners. A null pin fails closed. Inno 6.7.1 SHA-256: the GitHub release asset digest of jrsoftware/issrc is-6_7_1 (matches the Chocolatey innosetup 6.7.1 checksum); signer: jrsoftware's verification page. ArtifactSigning 0.1.20: the PowerShell Gallery PackageHash (SHA-512).",
   "inno": {
     "version": "6.7.1",
-    "installerUrl": "https://files.jrsoftware.org/is/6/innosetup-6.7.1.exe",
+    "installerUrl": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe",
     "installerSha256": "4D11E8050B6185E0D49BD9E8CC661A7A59F44959A621D31D11033124C4E8A7B0",
     "signerCommonName": "Pyrsys B.V."
   },
