@@ -69,6 +69,7 @@ foreach ($rel in $policyAllowlist.Keys) {
 foreach ($f in Get-ChildItem -LiteralPath $repo -File | Where-Object { $_.Name -ne 'FastLLM.cmd' -and @('.cmd', '.bat', '.ps1') -contains $_.Extension.ToLowerInvariant() }) {
     Assert-True (-not (Select-String -LiteralPath $f.FullName -Pattern 'ExecutionPolicy' -Quiet)) "$($f.Name) sets a policy; FastLLM.cmd must stay the only product launcher that does"
 }
+Assert-True ($iss -match '(?m)^function PrepareToInstall\(' -and $iss -match "FileExists\(AddBackslash\(Dir\) \+ 'FastLLM\.cat'\)" -and $iss -match "_uninstall\\unins000\.dat") 'the installer must refuse a non-empty folder that is not a FastLLM install before [InstallDelete] runs'
 Assert-True ($iss -notmatch '(?i)ExecutionPolicy') 'the installer script must not set an execution policy'
 
 # 2. Fresh install
@@ -103,4 +104,19 @@ Invoke-Silent (Join-Path $app '_uninstall\unins000.exe') @('/VERYSILENT', '/SUPP
 Assert-True (Wait-Gone (Join-Path $app 'fast-llm.ps1')) 'app files remain 60 s after uninstall'
 Assert-True (Test-Path -LiteralPath $marker) 'uninstall removed user data'
 Remove-Item -LiteralPath $marker -Force
+# 5. /DIR= at a non-empty folder that is not a FastLLM install: Setup refuses and nothing in the folder is deleted
+$foreign = Join-Path $work 'foreign-folder'
+foreach ($sub in 'src', 'tools', 'config', 'licenses', 'other') { New-Item -ItemType Directory -Force -Path (Join-Path $foreign $sub) | Out-Null }
+$foreignFiles = @('notes.txt', 'FastLLM.cmd', 'LICENSE', 'src\mine.ps1', 'tools\mine.ps1', 'config\mine.json', 'licenses\mine.txt', 'other\keep.bin')
+foreach ($f in $foreignFiles) { Set-Content -LiteralPath (Join-Path $foreign $f) -Value "user file $f" -Encoding ascii }
+$p = Start-Process -FilePath $setup1 -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/DIR=`"$foreign`"", "/LOG=$work\install-foreign.log") -Wait -PassThru
+Assert-True ($p.ExitCode -ne 0) 'Setup must refuse a non-empty folder that is not a FastLLM install'
+foreach ($f in $foreignFiles) {
+    $path = Join-Path $foreign $f
+    Assert-True (Test-Path -LiteralPath $path) "Setup deleted the unrelated file $f"
+    Assert-True ((Get-Content -LiteralPath $path -Raw).Trim() -eq "user file $f") "Setup changed the unrelated file $f"
+}
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $foreign 'fast-llm.ps1'))) 'Setup installed into a foreign folder'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $foreign '_uninstall'))) 'Setup left an uninstaller in a foreign folder'
+Remove-Item -LiteralPath $foreign -Recurse -Force
 Write-Host 'installer-tests: PASS'
