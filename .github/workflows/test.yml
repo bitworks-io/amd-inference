@@ -144,6 +144,7 @@ jobs:
           .\tests\offload-benchmark-tests.ps1
           .\tests\vulkan-fit-trial-tests.ps1
           .\tests\vulkan-fit-benchmark-tests.ps1
+          .\tests\card-identity-tests.ps1
           .\tests\semantic-smoke-tests.ps1
       - name: Behavioral lifecycle and benchmark tests in PowerShell 7
         shell: pwsh
@@ -158,6 +159,7 @@ jobs:
           .\tests\offload-benchmark-tests.ps1
           .\tests\vulkan-fit-trial-tests.ps1
           .\tests\vulkan-fit-benchmark-tests.ps1
+          .\tests\card-identity-tests.ps1
           .\tests\semantic-smoke-tests.ps1
 
   release-scripts:
