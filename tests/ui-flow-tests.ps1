@@ -314,4 +314,27 @@ try {
 } finally {
     $env:OS=$oldOs
 }
+$plan = [pscustomobject]@{ selectedAdapters = @([pscustomobject]@{ name = 'AMD Radeon RX 7900 XTX' })
+    model = [pscustomobject]@{ id = 'qwen3.8-27b-ud-q4-k-m'; quantization = 'UD-Q4_K_M'; contextSize = 32768 }
+    recipe = [pscustomobject]@{ label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
+$text = Format-FastLlmUiRecipeSummary -Plan $plan
+Check ($text -eq 'Best setup for your AMD Radeon RX 7900 XTX: qwen3.8-27b-ud-q4-k-m (UD-Q4_K_M), 32,768 context. Measured by Bitworks on this card.') 'recipe summary text is exact'
+Check ((Get-FastLlmUiEvidenceUrl -Plan $plan) -eq 'https://bitworks.io/amd/results/x') 'evidence link is the recipe page'
+$plan.recipe.evidenceUrl = 'https://evil.example/x'
+Check ($null -eq (Get-FastLlmUiEvidenceUrl -Plan $plan)) 'only https bitworks.io links are offered'
+$plan.recipe = $null
+Check ((Format-FastLlmUiRecipeSummary -Plan $plan).EndsWith('Estimated for your card.')) 'a plan without a recipe is labelled estimated'
+Check ((Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status = 'pass'; generationTokS = 32.5; promptTokS = 650 })) -eq 'Self-test passed: 32.5 tok/s generation, 650 tok/s prompt.') 'self-test pass text'
+Check ((Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status = 'below-expected'; generationTokS = 20; promptTokS = 400; expectedGenerationTokS = 32.7 })) -like 'Self-test: slower than expected*20*32.7*doctor*') 'below-expected text names the gap and doctor'
+Check ($null -eq (Get-FastLlmUiBarNote -State ([pscustomobject]@{ barGuidance = [pscustomobject]@{ shown = $false; text = $null } }))) 'no BAR note when not shown'
+Check ((Get-FastLlmUiBarNote -State ([pscustomobject]@{ barGuidance = [pscustomobject]@{ shown = $true; text = 'Resizable BAR (AMD Smart Access Memory) appears to be off on this PC. x' } })) -like 'Resizable BAR*') 'BAR note passes through the runtime text'
+$uiRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-set-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $uiRoot | Out-Null
+Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'auto') 'BAR setting defaults to auto'
+Write-FastLlmUiSettings -InstallRoot $uiRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'off' })
+Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'off') 'BAR setting persists'
+Set-Content -LiteralPath (Join-Path $uiRoot 'settings.json') -Value '{"vulkanBarMitigation":"sideways"}' -Encoding ascii
+Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'auto') 'an invalid stored value falls back to auto'
+Remove-Item -LiteralPath $uiRoot -Recurse -Force
+
 Write-Output "UI flow tests passed: $checks"
