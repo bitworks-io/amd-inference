@@ -4,6 +4,7 @@ function Invoke-FastLlmApiSoakCore {
     $clock=[Diagnostics.Stopwatch]::StartNew()
     $completed=0
     $failure=$null
+    $failureType=$null
     try {
         do {
             $current=& $ReadState
@@ -16,10 +17,10 @@ function Invoke-FastLlmApiSoakCore {
         } while ($true)
         $current=& $ReadState
         if (-not $current.active -or $current.phase -ne 'ready' -or $current.runId -ne $State.runId) { throw 'Server identity changed before soak completion.' }
-    } catch { $failure='api-canary-or-server-identity-failed' }
+    } catch { $failure='api-canary-or-server-identity-failed'; $failureType=$_.Exception.GetType().Name }
     return [pscustomobject]@{
         completedCycles=$completed;minimumCycles=$MinimumCycles;requestedDurationSeconds=$DurationSeconds
-        elapsedSeconds=$clock.Elapsed.TotalSeconds;completed=($null -eq $failure);failureCode=$failure
+        elapsedSeconds=$clock.Elapsed.TotalSeconds;completed=($null -eq $failure);failureCode=$failure;failureType=$failureType
         inferenceRequestsPerCycle=4;tokensPerCompletionCanary=1;maximumTokensPerChatCanary=8
     }
 }

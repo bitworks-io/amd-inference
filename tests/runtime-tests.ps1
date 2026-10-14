@@ -311,7 +311,7 @@ try {
         Check ($healthyAfterReset -and -not $httpHost.Process.HasExited) 'mock survives an abruptly reset health client'
         $soakState=[pscustomobject]@{runId='synthetic';active=$true;phase='ready';endpoint="http://127.0.0.1:$port/v1";modelId='test-model';recipe=[pscustomobject]@{contextSize=1024}}
         $soak=& $module {param($S) Invoke-FastLlmApiSoakCore -State $S -ReadState { $S } -MinimumCycles 2 -DurationSeconds 0} $soakState
-        Check ($soak.completed -and $soak.completedCycles -eq 2) 'API soak exercises real HTTP without storing generated text'
+        Check ($soak.completed -and $soak.completedCycles -eq 2) ('API soak exercises real HTTP without storing generated text' + $(if (-not $soak.completed) { " [failure=$($soak.failureCode) type=$($soak.failureType) cycles=$($soak.completedCycles) elapsed=$([int]$soak.elapsedSeconds)s]" }))
         $soak=& $module {param($S) Invoke-FastLlmApiSoakCore -State $S -ReadState { [pscustomobject]@{runId='other';phase='ready';active=$true} } -MinimumCycles 2 -DurationSeconds 0} $soakState
         Check (-not $soak.completed -and $soak.completedCycles -eq 0) 'API soak stops on a changed supervisor run'
         Check ([Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/redirect",$null,1000,1000).Status -eq 302) 'HTTP client never follows a remote redirect'
