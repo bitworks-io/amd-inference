@@ -34,10 +34,9 @@ try {
     if ($release.version -ne $Version -or $release.channel -ne $channel) { throw "RELEASE.json says $($release.version)/$($release.channel)" }
     Test-FastLlmReleaseSignature -Path (Join-Path $pkg 'FastLLM.cat') | Out-Null
     Test-FastLlmCatalogTree -CatalogPath (Join-Path $pkg 'FastLLM.cat') -TreePath $pkg
-    $scripts = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' } |
-        Where-Object { $rel = $_.FullName.Substring($pkg.Length + 1); $rel -notmatch '\\' -or $rel -match '^(src|tools)\\' })
-    foreach ($s in $scripts) { Test-FastLlmReleaseSignature -Path $s.FullName | Out-Null }
-    Pass 'package' @{ scripts = $scripts.Count }
+    $scriptCount = Test-FastLlmPackageScriptsSigned -PackagePath $pkg
+    Pass 'package-scripts-signed' @{ scripts = $scriptCount }
+    Pass 'package' @{ scripts = $scriptCount }
 
     $sbom = Get-Content -LiteralPath (Join-Path $AssetsDir "fastllm-$Version.cdx.json") -Raw | ConvertFrom-Json
     if ($sbom.bomFormat -ne 'CycloneDX') { throw 'SBOM is not CycloneDX' }
@@ -53,6 +52,11 @@ try {
     Test-FastLlmReleaseSignature -Path (Join-Path $app '_uninstall\unins000.exe') | Out-Null; Pass 'uninstaller-signature'
     Test-FastLlmCatalogTree -CatalogPath (Join-Path $app 'FastLLM.cat') -TreePath $app -SkipNames 'unins000.exe', 'unins000.dat', 'unins000.msg' -SkipPrefixes '_uninstall\'
     Pass 'installed-catalog'
+
+    Test-FastLlmReleaseSignature -Path (Join-Path $app 'FastLLM.cat') | Out-Null; Pass 'installed-catalog-signature'
+    Test-FastLlmFileHashEqual -Path (Join-Path $app 'FastLLM.cat') -ReferencePath (Join-Path $pkg 'FastLLM.cat'); Pass 'installed-catalog-equals-package'
+    $treeFiles = Test-FastLlmTreeMatchesPackage -PackagePath $pkg -InstalledPath $app -SkipNames 'unins000.exe', 'unins000.dat', 'unins000.msg' -SkipPrefixes '_uninstall\'
+    Pass 'installed-tree-equals-package' @{ files = $treeFiles }
 
     $planOut = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File (Join-Path $app 'fast-llm.ps1') plan -HardwareFile $FixtureHardware -AsJson
     if ($LASTEXITCODE) { throw "offline plan exited $LASTEXITCODE" }
