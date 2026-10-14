@@ -3,8 +3,87 @@
     "config/catalog.json": "65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6",
     "config/gpu-variants.json": "cbbc815150015687ce736e53ba90311d72cbceb9e47e3f61526197ddf890a7d2",
     "data/community-records.json": "201849d8ae11d656bdbf3a90d0950a941b19c4cfa05d84e7b4a75e5b406da967",
-    "data/verified-recipes.json": "59cc2e83cca0554ac18062c96fafc78cbebb2bfc7a86ea6aa1c1d4128c8b4bba"
+    "data/verified-recipes.json": "e1366b544325203ae6dcaa0261a975e864daf3761ca86f246bc13514db4ce814"
   },
-  "recipes": [],
+  "recipes": [
+    {
+      "compelling": null,
+      "components": {
+        "engine": "llama.cpp-b10698-vulkan",
+        "model": "qwen3.8-27b-ud-iq4-xs"
+      },
+      "engineBuild": "b10698",
+      "evidence": {
+        "publishedAt": "2026-10-14",
+        "resultId": "obs-rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs-2026-10-07",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation"
+      },
+      "expected": {
+        "contextTokens": 16384,
+        "engineBuild": "b10698",
+        "firstTextS": 1.01,
+        "generationTokS": 32.75,
+        "measuredAt": "2026-10-07",
+        "mitigation": "off",
+        "producer": "fastllm-benchmark-vnext vnext.2",
+        "promptTokS": 507.02,
+        "promptTokens": 512
+      },
+      "gpu": {
+        "count": 1,
+        "variant": "rx-7900-xt"
+      },
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
+      "label": "Measured by Bitworks on this card",
+      "origin": "bitworks",
+      "recommended": true,
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 16384,
+        "vulkanBarMitigation": "auto"
+      },
+      "source": null
+    },
+    {
+      "compelling": null,
+      "components": {
+        "engine": "llama.cpp-b10698-vulkan",
+        "model": "qwen3.8-27b-ud-q4-k-m"
+      },
+      "engineBuild": "b10698",
+      "evidence": {
+        "publishedAt": "2026-10-14",
+        "resultId": "obs-rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km-2026-10-07",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km/#lab-observation"
+      },
+      "expected": {
+        "contextTokens": 32768,
+        "engineBuild": "b10698",
+        "firstTextS": 0.82,
+        "generationTokS": 32.73,
+        "measuredAt": "2026-10-07",
+        "mitigation": "on",
+        "producer": "fastllm-benchmark-vnext vnext.1",
+        "promptTokS": 654.14,
+        "promptTokens": 512
+      },
+      "gpu": {
+        "count": 1,
+        "variant": "rx-7900-xtx"
+      },
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k",
+      "label": "Measured by Bitworks on this card",
+      "origin": "bitworks",
+      "recommended": true,
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 32768,
+        "vulkanBarMitigation": "auto"
+      },
+      "source": null
+    }
+  ],
   "schema": "bitworks.fastllm-recipes/v2"
 }
