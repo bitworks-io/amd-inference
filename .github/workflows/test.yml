@@ -192,6 +192,15 @@ jobs:
         shell: pwsh
         run: ./tests/installer-tests.ps1
 
+  launcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Execute FastLLM.cmd under each script policy (Windows PowerShell 5.1)
+        shell: powershell
+        timeout-minutes: 10
+        run: .\tests\launcher-tests.ps1
+
   leak-scan:
     runs-on: ubuntu-latest
     steps:
