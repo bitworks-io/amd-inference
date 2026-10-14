@@ -39,7 +39,14 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: python3 release/resolve_version.py >> "$GITHUB_OUTPUT"
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAGS=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName')
+          export RELEASE_TAGS
+          python3 release/resolve_version.py >> "$GITHUB_OUTPUT"
       - name: Build the unsigned package and SBOM
         env:
           VER: ${{ steps.meta.outputs.version }}
