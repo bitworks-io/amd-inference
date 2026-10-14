@@ -939,7 +939,7 @@ try {
     Check ($null -ne $r.report -and $null -eq $r.category -and $r.report.devices.Count -ge 1) 'the real probe runs a collector in a child and returns its parsed report'
     $r=Invoke-RealProbe $envCollector
     $outputDirectory=[string]$r.report.outputDirectory
-    Check ($r.report.policy -eq 'RemoteSigned') 'the probe child runs with -ExecutionPolicy RemoteSigned, never Bypass'
+    Check ($r.report.policy -eq [string](Get-ExecutionPolicy -Scope Process)) 'the probe child inherits this process''s script policy instead of overriding it'
     Check ($r.report.ggml -eq '' -and $r.report.vk -eq '' -and $r.report.llama -eq '') 'the probe child has inherited GGML_/VK_/LLAMA_ variables cleared'
     Check ($r.report.path -eq ([Environment]::SystemDirectory+';'+$env:SystemRoot)) 'the probe child PATH is the sandboxed system directories only'
     Check ($r.report.appData -eq $r.report.programData -and $r.report.appData -like (Join-Path ([IO.Path]::GetTempPath()) 'FastLlm-VkHeap-*') -and $outputDirectory -eq $r.report.appData) 'the probe child APPDATA/PROGRAMDATA and report folder are the per-call temp sandbox, not the install root'
@@ -968,7 +968,7 @@ Start-Sleep -Seconds 120
     if(Test-Path -LiteralPath $probeTemp){Remove-Item -LiteralPath $probeTemp -Recurse -Force -ErrorAction SilentlyContinue}
 }
 $policySource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.VulkanMemoryPolicy.ps1') -Raw
-Check ($policySource -match "'-ExecutionPolicy', 'RemoteSigned'" -and $policySource -notmatch 'Bypass' -and $policySource -notmatch 'ReadToEndAsync') 'the probe source uses RemoteSigned and ProcessHost'
+Check ($policySource -notmatch 'ExecutionPolicy' -and $policySource -notmatch 'Bypass' -and $policySource -notmatch 'ReadToEndAsync') 'the probe source sets no execution policy (the child inherits it) and uses ProcessHost'
 $probeBody=[regex]::Match($policySource,'(?s)function Invoke-FastLlmVulkanHeapProbe.*?\r?\n}\r?\n').Value
 $doctorBody=[regex]::Match($policySource,'(?s)function Get-FastLlmVulkanMemoryDiagnostic.*?\r?\n}\r?\n').Value
 $resolveBody=[regex]::Match($policySource,'(?s)function Resolve-FastLlmVulkanBarMitigation \{.*?\r?\n}\r?\n').Value+[regex]::Match($policySource,'(?s)function Resolve-FastLlmVulkanBarMitigationCore \{.*?\r?\n}\r?\n').Value

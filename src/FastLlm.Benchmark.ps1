@@ -274,15 +274,16 @@ function Get-FastLlmBenchmarkFailureReason {
     return 'unclassified'
 }
 
-# Child PowerShell start info. -ExecutionPolicy is explicit (no Bypass inheritance), so identity
-# collection works on a default-policy machine. ClearEngineEnvironment removes the same engine
-# variables the server launch strips (VK_*, GGML_*, ...), so the join sees the neutral environment.
+# Child PowerShell start info. The child sets no script-policy switch of its own: it inherits the entry policy
+# (FastLLM.cmd's process-scope setting reaches it through the environment), so it never weakens AllSigned or
+# Group Policy. ClearEngineEnvironment removes the same engine variables the server launch strips
+# (VK_*, GGML_*, ...), so the join sees the neutral environment.
 function New-FastLlmBenchmarkChildStartInfo {
     param([string]$ScriptPath, [string[]]$ScriptArguments = @(), [switch]$ClearEngineEnvironment)
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = (Get-Process -Id $PID).Path
     $info.UseShellExecute = $false
-    $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned','-File',$ScriptPath)
+    $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',$ScriptPath)
     foreach ($argument in @($ScriptArguments)) { $arguments += [string]$argument }
     $info.Arguments = Join-FastLlmProcessArguments $arguments
     if ($ClearEngineEnvironment) {

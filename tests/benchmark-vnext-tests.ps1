@@ -476,7 +476,7 @@ if(-not $Worker){
         $plain=& $module {param($t) New-FastLlmBenchmarkChildStartInfo $t @('-Mode','identity')} 'C:\tools\adlx.ps1'
         Check (-not $cleaned.EnvironmentVariables.ContainsKey('VK_ICD_FILENAMES') -and -not $cleaned.EnvironmentVariables.ContainsKey('GGML_VK_VISIBLE_DEVICES') -and $cleaned.EnvironmentVariables.ContainsKey('FASTLLM_VNEXT_KEEP')) 'the join child environment drops VK_* and GGML_* and keeps unrelated variables'
         Check ($plain.EnvironmentVariables.ContainsKey('VK_ICD_FILENAMES')) 'a child that is not cleaned keeps the inherited environment'
-        Check ($cleaned.Arguments -match 'ExecutionPolicy\s+RemoteSigned' -and $plain.Arguments -match 'ExecutionPolicy\s+RemoteSigned' -and $cleaned.Arguments -notmatch 'Bypass') 'child PowerShell processes pass -ExecutionPolicy RemoteSigned explicitly'
+        Check ($cleaned.Arguments -notmatch 'ExecutionPolicy' -and $plain.Arguments -notmatch 'ExecutionPolicy' -and $cleaned.Arguments -notmatch 'Bypass' -and $plain.Arguments -notmatch 'Bypass') 'child PowerShell processes set no -ExecutionPolicy and inherit the entry policy, never Bypass'
         Check ($cleaned.Arguments -match '-OutputPath' -and $plain.Arguments -match '-Mode' -and $cleaned.UseShellExecute -eq $false) 'child arguments are preserved'
     } finally {
         $env:VK_ICD_FILENAMES=$savedVk;$env:GGML_VK_VISIBLE_DEVICES=$savedGgml;$env:FASTLLM_VNEXT_KEEP=$savedKeep
@@ -947,7 +947,7 @@ if(-not $Worker){
     $producerSource=[IO.File]::ReadAllText((Join-Path $repo 'src/FastLlm.Benchmark.ps1'))
     $runtimeSource=[IO.File]::ReadAllText((Join-Path $repo 'src/FastLlm.Runtime.ps1'))
     $inventoryLine=@($runtimeSource -split "`n"|Where-Object {$_ -match "WindowsInventory\.ps1"})
-    Check ($inventoryLine.Count -eq 1 -and $inventoryLine[0] -match "'-ExecutionPolicy','RemoteSigned'" -and $inventoryLine[0] -notmatch 'Bypass') 'the inventory child (both captures call it) passes -ExecutionPolicy RemoteSigned'
+    Check ($inventoryLine.Count -eq 1 -and $inventoryLine[0] -notmatch 'ExecutionPolicy' -and $inventoryLine[0] -notmatch 'Bypass') 'the inventory child (both captures call it) sets no -ExecutionPolicy and inherits the entry policy'
     $parseTokens=$null;$parseErrors=$null
     $producerAst=[Management.Automation.Language.Parser]::ParseInput($producerSource,[ref]$parseTokens,[ref]$parseErrors)
     $childCalls=@($producerAst.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-FastLlmBenchmarkChildStartInfo'},$true))

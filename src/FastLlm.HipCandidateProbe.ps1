@@ -221,7 +221,7 @@ function Invoke-FastLlmHipCandidateProbe {
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
         $info.Arguments = Join-FastLlmHipProcessArguments -Arguments @('-NoLogo','-NoProfile','-NonInteractive',
-            '-ExecutionPolicy','RemoteSigned','-File',$worker,'-CandidateRoot',$candidate,'-TimeoutSeconds',$TimeoutSeconds)
+            '-File',$worker,'-CandidateRoot',$candidate,'-TimeoutSeconds',$TimeoutSeconds)
         $info.WorkingDirectory = $projectRoot
         $controller.Start($info)
         # Includes every potentially blocking Process.Modules/hash/Authenticode call in the native worker.

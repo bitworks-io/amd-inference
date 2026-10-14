@@ -66,7 +66,7 @@ function Get-FastLlmGgmlVulkanIdentity {
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
         $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text',
-            '-ExecutionPolicy','RemoteSigned','-File',$worker,'-InstallRoot',$InstallRoot)
+            '-File',$worker,'-InstallRoot',$InstallRoot)
         $info.Arguments = & $fastLlmModule { param($items) Join-FastLlmProcessArguments -Arguments $items } $arguments
         $info.WorkingDirectory = $projectRoot
         foreach ($name in @($info.EnvironmentVariables.Keys)) {
