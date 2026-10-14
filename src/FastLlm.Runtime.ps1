@@ -406,7 +406,8 @@ function New-FastLlmDeviceBindingFailure {
 
 function Invoke-FastLlmSupervisedServer {
     param($Plan, [string] $InstallRoot, [int] $LoadTimeoutSeconds=300, [string] $CatalogPath,
-          # Policy defaults and the canary default to off; direct callers (lab trials) are unaffected.
+          # Policy defaults and the canary default to off here (and in the module policy) so direct callers (lab trials) are unaffected;
+          # the CLI and the background host default to auto and always pass it.
           [string] $VulkanBarMitigation='off', [switch] $ThroughputCanary,
           # Post-load self-test (default off for direct callers; the CLI start enables it).
           [switch] $SelfTest,
@@ -417,7 +418,7 @@ function Invoke-FastLlmSupervisedServer {
     # ValidateSet ignores case and keeps the typed value, but the enforce checks below are case-sensitive: normalise once, first.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     Initialize-FastLlmProcessHost
-    $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; processIdentity=$null; vulkanMemoryPolicy=$null }
+    $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
     # Resolve the policy before any state is written; a non-off policy may run the bounded advisory heap probe.
     $state.vulkanMemoryPolicy = Resolve-FastLlmVulkanBarMitigation -Plan $Plan -Requested $VulkanBarMitigation -InstallRoot $InstallRoot
     if ($ThroughputCanary) { $state.throughputCanary = $null }
@@ -435,6 +436,9 @@ function Invoke-FastLlmSupervisedServer {
         if (-not $barCard) { $barCard = 'the selected GPU' }
         if ($state.vulkanMemoryPolicy.reason -eq 'rebar-off-detected') {
             Write-Host "Vulkan memory: Resizable BAR (Smart Access Memory) appears to be off for $barCard; keeping model buffers in device-only VRAM ($($script:FastLlmVulkanBarMitigationVariable)=1). Model load time may differ. Details: fast-llm doctor -ProbeVulkanMemory."
+            $guidance = "Resizable BAR (AMD Smart Access Memory) appears to be off on this PC. FastLLM applied a workaround so models run at full speed. Turning on Resizable BAR / Smart Access Memory in your BIOS is AMD's recommended setup and may help further. See docs/RESIZABLE-BAR.md."
+            Write-Host $guidance
+            $state.barGuidance = [ordered]@{ shown = $true; text = $guidance }
         }
         else {
             Write-Host "Vulkan memory: keeping model buffers in device-only VRAM for $barCard ($($script:FastLlmVulkanBarMitigationVariable)=1, -VulkanBarMitigation on). Model load time may differ. Details: fast-llm doctor."

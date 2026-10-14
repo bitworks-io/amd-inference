@@ -546,15 +546,15 @@ function StartUiBackground {
     AssertUiBackgroundNotOccupied
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
-        modelId=$selectedModel;contextSize=[int]$contextBox.Value}
+        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation='auto'}
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
