@@ -50,6 +50,37 @@ class LeakScanTests(unittest.TestCase):
                 self.assertIn("tests/fixtures/f.txt:1: " + rule, result.stdout)
                 self.assertNotIn(marker, result.stdout + result.stderr)
 
+    def test_every_rule_catches_its_marker_in_a_file_name(self):
+        for rule, marker in MARKERS.items():
+            with self.subTest(rule=rule):
+                name = marker.replace("\\", "/") if rule == "windows-user-path" else marker
+                if os.name == "nt" and any(c in name for c in ':\\/"<>|*?'):
+                    self.skipTest("this marker is not a legal Windows file name")
+                rel = "tests/fixtures/inventory-" + name + "-capture.json"
+                result = run(self.tree({rel: "{}\n"}))
+                self.assertEqual(result.returncode, 1, rule)
+                self.assertIn(":0: " + rule, result.stdout)
+
+    def test_hyphenated_mac_and_dotted_ip_in_a_file_name(self):
+        for name, rule in (("tests/fixtures/inventory-00-1" + "A-2B-3C-4D-5E.json", "mac-address"),
+                           ("tests/fixtures/inventory-DESK" + "TOP-7Q2M4KD.json", "machine-name"),
+                           ("tests/fixtures/inventory-192." + "168.1.20.json", "private-ipv4")):
+            with self.subTest(name=name):
+                result = run(self.tree({name: "{}\n"}))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(name + ":0: " + rule, result.stdout)
+
+    def test_clean_file_names_pass(self):
+        names = ("tests/fixtures/inventory-xtx-rebar-off.json", "docs/v1.2.3.4-notes.md", "src/Windows-Inventory.ps1")
+        self.assertEqual(run(self.tree({n: "ok\n" for n in names})).returncode, 0)
+
+    def test_file_name_hit_can_be_allowlisted_per_rule(self):
+        rel = "tests/fixtures/inventory-192." + "168.1.20.json"
+        root = self.tree({rel: "{}\n"})
+        allow = root / "allow.json"
+        allow.write_text(json.dumps({"entries": [{"path": rel, "rule": "private-ipv4", "reason": "synthetic"}]}))
+        self.assertEqual(run(root, "--allow", str(allow)).returncode, 0)
+
     def test_allowed_addresses_and_placeholders_pass(self):
         text = ("git" + "@github.com:bitworks-io/amd-inference.git\n"
                 "261824696+bitworks-io" + "@users.noreply.github.com\n"

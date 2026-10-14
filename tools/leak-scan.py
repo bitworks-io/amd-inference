@@ -2,7 +2,8 @@
 """Public leak scan for FastLLM.
 
 Fails when a tree contains private network addresses, personal paths, email addresses, secrets, key files or
-host-specific hardware identifiers. Prints path:line: rule-id (line 0 = a file-name hit) and never the matched text.
+host-specific hardware identifiers, in file contents and in file names. Prints path:line: rule-id (line 0 = a file-name
+hit) and never the matched content; a file-name hit necessarily shows the path.
 Exit 0 clean, 1 findings, 2 refused.
 
 Usage: leak-scan.py <tree> [--git-tracked] [--allow tools/leak-scan-allow.json]
@@ -89,6 +90,11 @@ def scan(tree, allow, git_tracked=False):
     for rel in list_files(tree, git_tracked):
         if os.path.splitext(rel)[1].lower() in KEY_FILE_EXTENSIONS and (rel, "key-file") not in allow:
             findings.append((rel, 0, "key-file"))
+        # Every content rule also applies to the file's own relative path (a capture named after a machine, IP or MAC).
+        # The name is also scanned without its extension, so "capture-<ip>.json" is not shielded by the dot before "json".
+        for rule in sorted(set(line_rules(rel)) | set(line_rules(os.path.splitext(rel)[0]))):
+            if (rel, rule) not in allow:
+                findings.append((rel, 0, rule))
         path = os.path.join(tree, rel)
         if os.path.islink(path) or not os.path.isfile(path):
             continue
