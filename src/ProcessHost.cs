@@ -343,16 +343,18 @@ namespace Bitworks.FastLlm {
                 using (var stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
             }
             HttpWebResponse response;
-            // Begin/EndGetResponse, not GetResponse. On .NET (PowerShell 7) HttpWebRequest creates a per-request
-            // HttpClient and only disposes it in the async send path; the synchronous path throws before that
-            // dispose when the request fails (refused or timed out), so the client, its pool and any connection
-            // attempt still pending in the background (Windows retries a refused SYN for seconds) are leaked.
-            // Such a leaked connection then completes against the server once it listens and sits open but
-            // silent, which a single-threaded server observes as a full receive timeout per leaked connection.
-            // The async path always disposes the client, closing the late connection at once. On .NET
-            // Framework the Timeout property does not apply to Begin/End; the deadline timer above bounds the
-            // whole request there, and ReadWriteTimeout plus the elapsed check below bound the body.
-            try { response = (HttpWebResponse)request.EndGetResponse(request.BeginGetResponse(null, null)); }
+            // On .NET 5+ (PowerShell 7) the synchronous GetResponse leaks the per-request HttpClient when the
+            // request fails (refused or timed out), and the leaked connection attempt can complete later against
+            // a single-threaded server, which then waits out a full receive timeout on it. Begin/EndGetResponse
+            // always disposes the client. .NET Framework (Windows PowerShell 5.1) keeps GetResponse unchanged,
+            // so its Timeout property still applies there. On .NET 5+ the deadline timer's Abort() surfaces as
+            // RequestCanceled, which callers that classify timeouts already treat as a timeout.
+            bool modernRuntime = Environment.Version.Major >= 5; // .NET Framework 4.x reports 4.0.30319.x
+            try {
+                response = modernRuntime
+                    ? (HttpWebResponse)request.EndGetResponse(request.BeginGetResponse(null, null))
+                    : (HttpWebResponse)request.GetResponse();
+            }
             catch (WebException error) {
                 if (error.Response == null) throw;
                 response = (HttpWebResponse)error.Response;
