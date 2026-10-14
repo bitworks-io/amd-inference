@@ -19,7 +19,7 @@ if(-not $Worker){
     try{
         $info=New-Object Diagnostics.ProcessStartInfo
         $info.FileName=(Get-Process -Id $PID).Path
-        $args=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned',
+        $args=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text',
             '-File',$PSCommandPath,'-InstallRoot',$InstallRoot,'-Worker')
         $module=Get-Module FastLlm
         $info.Arguments=& $module {param($Items) Join-FastLlmProcessArguments -Arguments $Items} $args

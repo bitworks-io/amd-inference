@@ -268,7 +268,7 @@ function Invoke-FastLlmVulkanHeapProbe {
     try {
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
-        $info.Arguments = Join-FastLlmProcessArguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'RemoteSigned', '-File', $collector, '-OutputPath', $output)
+        $info.Arguments = Join-FastLlmProcessArguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-File', $collector, '-OutputPath', $output)
         $info.WorkingDirectory = $projectRoot
         foreach ($name in @($info.EnvironmentVariables.Keys)) {
             if (Test-FastLlmEnvironmentNameRequiresClearing -Name ([string]$name)) { $info.EnvironmentVariables.Remove([string]$name) }

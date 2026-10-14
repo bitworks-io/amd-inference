@@ -15,7 +15,7 @@ function Get-FastLlmWindowsInventory {
     try {
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
-        $info.Arguments = Join-FastLlmProcessArguments @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned','-File',(Join-Path $PSScriptRoot 'WindowsInventory.ps1'))
+        $info.Arguments = Join-FastLlmProcessArguments @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $PSScriptRoot 'WindowsInventory.ps1'))
         $deadline = [Diagnostics.Stopwatch]::StartNew()
         $child.Start($info)
         $remaining = [Math]::Max(1, 30000 - [int]$deadline.ElapsedMilliseconds)

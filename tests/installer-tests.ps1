@@ -49,6 +49,27 @@ Assert-True ($cmd -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Undefined" set "FA
 Assert-True ($cmd -notmatch '(?i)bypass') 'FastLLM.cmd must never use Bypass'
 $ui = Get-Content -LiteralPath (Join-Path $repo 'fast-llm-ui.ps1') -Raw
 Assert-True ($ui -notmatch '(?i)-ExecutionPolicy') 'child processes inherit the entry policy; they never override it'
+# No product script, module or tool may set a script policy: children inherit the entry policy, so AllSigned and Group Policy
+# are never weakened. FastLLM.cmd is the only product launcher that sets one. The allowlist holds lab-only admin scripts that
+# are never packaged (tools/build-release.py keeps them out), each with its justification.
+$policyAllowlist = @{ 'tools/setup-windows-lab.cmd' = 'private bench administration launcher (admin SSH setup); excluded from the release package' }
+$policyExt = @('.ps1', '.psm1', '.psd1', '.cmd', '.bat', '.py', '.sh')
+$policyFiles = @(Get-Item -LiteralPath (Join-Path $repo 'fast-llm.ps1'), (Join-Path $repo 'fast-llm-ui.ps1'))
+foreach ($dir in 'src', 'tools') { $policyFiles += @(Get-ChildItem -LiteralPath (Join-Path $repo $dir) -Recurse -File | Where-Object { $policyExt -contains $_.Extension.ToLowerInvariant() }) }
+foreach ($f in $policyFiles) {
+    $rel = $f.FullName.Substring($repo.Length + 1).Replace('\', '/')
+    $hit = [bool](Select-String -LiteralPath $f.FullName -Pattern 'ExecutionPolicy' -Quiet)
+    if ($policyAllowlist.ContainsKey($rel)) { continue }
+    Assert-True (-not $hit) "$rel sets or names an execution policy; only FastLLM.cmd may, and lab-only scripts must be allowlisted with a justification"
+}
+foreach ($rel in $policyAllowlist.Keys) {
+    Assert-True (Test-Path -LiteralPath (Join-Path $repo $rel)) "allowlisted $rel no longer exists; remove it from the allowlist"
+    Assert-True ([bool](Select-String -LiteralPath (Join-Path $repo $rel) -Pattern 'ExecutionPolicy' -Quiet)) "allowlisted $rel no longer sets a policy; remove it from the allowlist"
+}
+foreach ($f in Get-ChildItem -LiteralPath $repo -File | Where-Object { $_.Name -ne 'FastLLM.cmd' -and @('.cmd', '.bat', '.ps1') -contains $_.Extension.ToLowerInvariant() }) {
+    Assert-True (-not (Select-String -LiteralPath $f.FullName -Pattern 'ExecutionPolicy' -Quiet)) "$($f.Name) sets a policy; FastLLM.cmd must stay the only product launcher that does"
+}
+Assert-True ($iss -notmatch '(?i)ExecutionPolicy') 'the installer script must not set an execution policy'
 
 # 2. Fresh install
 $v1 = '2026.01.01.1'; $tree1 = Build-Tree $v1 @('only-in-v1.txt')

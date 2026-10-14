@@ -229,7 +229,7 @@ function Invoke-GgmlVulkanCapabilities {
         $child = New-Object Bitworks.FastLlm.ProcessHost
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
-        $args = @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned',
+        $args = @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text',
             '-File',$workerSource,'-InstallRoot',$InstallRoot,'-Worker','-WorkerToken',$runToken)
         $info.Arguments = & $module {param($items) Join-FastLlmProcessArguments -Arguments $items} $args
         $info.WorkingDirectory = $repo
