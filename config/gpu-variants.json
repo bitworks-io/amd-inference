@@ -1,0 +1,9 @@
+{
+  "schema": "bitworks.fastllm-gpu-variants/v1",
+  "variants": [
+    {"key": "rx-7900-xt", "displayName": "AMD Radeon RX 7900 XT", "vendorId": "1002", "deviceId": "744C", "revisionIds": ["CC"],
+     "vramMiBMin": 19900, "vramMiBMax": 20600, "confirmed": true, "confirmedBy": "Bitworks bench DXGI capture, 2026-10-07"},
+    {"key": "rx-7900-xtx", "displayName": "AMD Radeon RX 7900 XTX", "vendorId": "1002", "deviceId": "744C", "revisionIds": ["C8"],
+     "vramMiBMin": 23900, "vramMiBMax": 24600, "confirmed": true, "confirmedBy": "Bitworks bench DXGI capture, 2026-10-07"}
+  ]
+}

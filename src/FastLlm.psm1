@@ -1,6 +1,7 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.SelectedDeviceIdentity.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.CardIdentity.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
@@ -841,6 +842,7 @@ function Get-FastLlmHardware {
         enginePath    = $vulkanPath
         adapters      = $vulkanAdapters
     }
+    $hardware | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @(Get-FastLlmDxgiCardIdentities)
     Assert-FastLlmHardware -Hardware $hardware
     return $hardware
 }
