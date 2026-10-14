@@ -3,9 +3,9 @@
     {
       "engineBuild": "b10698",
       "evidence": {
-        "publishedAt": null,
-        "resultId": null,
-        "url": null
+        "publishedAt": "2026-10-14",
+        "resultId": "obs-rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs-2026-10-07",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation"
       },
       "expected": {
         "contextTokens": 16384,
@@ -33,9 +33,9 @@
     {
       "engineBuild": "b10698",
       "evidence": {
-        "publishedAt": null,
-        "resultId": null,
-        "url": null
+        "publishedAt": "2026-10-14",
+        "resultId": "obs-rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km-2026-10-07",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km/#lab-observation"
       },
       "expected": {
         "contextTokens": 32768,
