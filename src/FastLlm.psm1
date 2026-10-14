@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.VulkanMemoryPolicy.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.DeviceBinding.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DriverGuidance.ps1')
@@ -91,14 +93,58 @@ function Read-FastLlmJson {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Path
+        [string] $Path,
+
+        # Optional hard cap in bytes (0 = unbounded, the historical behaviour). Checked on the OPENED handle, so a name
+        # swapped after any earlier check cannot defeat it; at most MaxBytes+1 bytes are ever read. A larger file throws a
+        # typed System.IO.InvalidDataException (Data['FastLlmJsonTooLarge'] = $true) that callers must not retry.
+        [ValidateRange(0, 1073741824)]
+        [int] $MaxBytes = 0
     )
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "JSON file was not found: $Path"
+    # Open with FileShare.Delete so a concurrent atomic replace of this file is never blocked by the reader.
+    # ReplaceFile can briefly hide the destination name from openers, so a missing name is re-checked for <= ~150 ms.
+    $stream = $null
+    for ($attempt = 0; -not $stream; $attempt++) {
+        $last = ($attempt -ge 9)
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            if ($last) { throw "JSON file was not found: $Path" }
+            Start-Sleep -Milliseconds 15
+            continue
+        }
+        try {
+            $stream = New-Object IO.FileStream($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        } catch {
+            $failure = $_.Exception
+            if ($failure -is [Management.Automation.MethodInvocationException] -and $failure.InnerException) { $failure = $failure.InnerException }
+            if ($failure -is [IO.FileNotFoundException] -and $last) { throw "JSON file was not found: $Path" }
+            if ($last -or -not ($failure -is [IO.IOException] -or $failure -is [UnauthorizedAccessException]) -or $failure -is [IO.DirectoryNotFoundException]) { throw }
+            Start-Sleep -Milliseconds 15
+        }
     }
-
-    return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    try {
+        $source = $stream
+        $buffered = $null
+        if ($MaxBytes -gt 0) {
+            $tooLarge = { $failure = New-Object IO.InvalidDataException(('JSON file exceeds its size limit of {0} bytes: {1}' -f $MaxBytes,[IO.Path]::GetFileName($Path))); $failure.Data['FastLlmJsonTooLarge'] = $true; throw $failure }
+            if ($stream.Length -gt $MaxBytes) { & $tooLarge }
+            $buffer = New-Object byte[] ($MaxBytes + 1)
+            $total = 0
+            while ($total -le $MaxBytes) {
+                $read = $stream.Read($buffer,$total,($MaxBytes + 1 - $total))
+                if ($read -le 0) { break }
+                $total += $read
+            }
+            if ($total -gt $MaxBytes) { & $tooLarge }
+            $buffered = New-Object IO.MemoryStream($buffer,0,$total)
+            $source = $buffered
+        }
+        try {
+            $reader = New-Object IO.StreamReader($source,(New-Object Text.UTF8Encoding($false)),$true)
+            try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { if ($buffered) { $buffered.Dispose() } }
+    } finally { $stream.Dispose() }
+    return ($text | ConvertFrom-Json)
 }
 
 function Get-FastLlmCatalog {
@@ -1621,14 +1667,17 @@ function Write-FastLlmModelConsentReceipt {
         artifactSha256        = [string] $Model.sha256
     }
     $temporary = "$receiptPath.tmp.$([Guid]::NewGuid().ToString('N'))"
+    $written = $false
     try {
         $receipt | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporary -Encoding UTF8 -NoNewline -ErrorAction Stop
-        Move-Item -LiteralPath $temporary -Destination $receiptPath -Force -ErrorAction Stop
+        $written = $true
+        Move-FastLlmFileReplacing -Source $temporary -Destination $receiptPath
+        # Success consumed the temp. Stale temps kept by earlier FAILED replaces of this receipt are swept, best-effort.
+        Remove-FastLlmStaleTemporaries -Folder $receiptRoot -NamePattern ('^' + [regex]::Escape([IO.Path]::GetFileName($receiptPath)) + '\.tmp\.[0-9a-f]{32}$')
     }
     finally {
-        if (Test-Path -LiteralPath $temporary) {
-            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-        }
+        # Best-effort. A fully written temp is ALWAYS kept after a failed replace (it may be the only copy); only a partial write is removed.
+        if (-not $written) { try { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue } } catch { } }
     }
 }
 
@@ -1647,7 +1696,8 @@ function Test-FastLlmModelConsentReceipt {
         return $false
     }
     try {
-        $receipt = Read-FastLlmJson -Path $receiptPath
+        # A real receipt is well under 4 KiB; a larger file is rejected unparsed and counts as no receipt.
+        $receipt = Read-FastLlmJson -Path $receiptPath -MaxBytes 16384
         return [int] $receipt.schemaVersion -eq 1 -and
             [string] $receipt.modelId -eq [string] $Model.id -and
             [string] $receipt.upstreamModel -ceq [string] $Model.upstreamModel -and
@@ -1664,6 +1714,14 @@ function Test-FastLlmModelConsentReceipt {
     }
 }
 
+# A failure carrying a typed, closed-vocabulary code (Data['FastLlmFailureCode']) next to its human message.
+function New-FastLlmTypedFailure {
+    param([Parameter(Mandatory = $true)][string] $Code, [Parameter(Mandatory = $true)][string] $Message)
+    $exception = New-Object -TypeName System.InvalidOperationException -ArgumentList ($Code + ': ' + $Message)
+    $exception.Data['FastLlmFailureCode'] = $Code
+    return $exception
+}
+
 function Start-FastLlmServer {
     [CmdletBinding()]
     param(
@@ -1677,10 +1735,28 @@ function Start-FastLlmServer {
         [string] $InstallRoot,
 
         [ValidateRange(10, 1800)]
-        [int] $LoadTimeoutSeconds = 300
+        [int] $LoadTimeoutSeconds = 300,
+
+        # Lab override of the module-level policy; absent means "use $script:FastLlmVulkanBarMitigationPolicy" (default off).
+        [ValidateSet('off', 'on', 'auto')]
+        [string] $VulkanBarMitigation,
+
+        # Advisory post-Ready prompt-processing canary; default off.
+        [switch] $ThroughputCanary,
+
+        # W03 Phase A per-start device binding. off is byte-identical to a start without the parameter; record observes only;
+        # enforce fails the start (typed, never recovered) when the binding is not bound or the post-load device check fails.
+        [ValidateSet('off', 'record', 'enforce')]
+        [string] $DeviceBinding = 'off'
     )
 
+    # ValidateSet ignores case and keeps the typed value; normalise once, before any comparison or forwarding.
+    $DeviceBinding = $DeviceBinding.ToLowerInvariant()
+
     Assert-FastLlmWindowsPrerequisites
+
+    if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $vulkanMemoryPolicy = ConvertTo-FastLlmVulkanBarMitigationName $VulkanBarMitigation }
+    else { $vulkanMemoryPolicy = ConvertTo-FastLlmVulkanBarMitigationName $script:FastLlmVulkanBarMitigationPolicy }
 
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     $backendKey = ([string] $Plan.backend).ToLowerInvariant()
@@ -1740,9 +1816,19 @@ function Start-FastLlmServer {
         throw $planChangedException
     }
     # The model is unchanged, so use the newest device set, free-memory split, and launch arguments.
+    if ($Plan.PSObject.Properties['backgroundRequestId']) {
+        $backgroundRequestId = [string]$Plan.backgroundRequestId
+        if ($backgroundRequestId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid background request correlation.' }
+        $freshPlan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue $backgroundRequestId -Force
+    }
     $Plan = $freshPlan
 
-    return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath
+    # Extra supervisor options are passed only when requested, so the default call is unchanged.
+    $supervisorOptions = @{}
+    if ($vulkanMemoryPolicy -ne 'off') { $supervisorOptions.VulkanBarMitigation = $vulkanMemoryPolicy }
+    if ($ThroughputCanary) { $supervisorOptions.ThroughputCanary = $true }
+    if ($DeviceBinding -ne 'off') { $supervisorOptions.DeviceBinding = $DeviceBinding }
+    return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
 }
 
 Export-ModuleMember -Function @(
@@ -1753,6 +1839,7 @@ Export-ModuleMember -Function @(
     'Get-FastLlmEngineExecutable',
     'Get-FastLlmHardware',
     'Get-FastLlmPlan',
+    'Get-FastLlmVulkanMemoryDiagnostic',
     'Get-FastLlmWindowsPrerequisiteStatus',
     'Get-FastLlmPrerequisiteInventory',
     'Get-FastLlmStatus',
@@ -1774,9 +1861,11 @@ Export-ModuleMember -Function @(
     'Format-FastLlmDriverGuidance',
     'Get-FastLlmRecoveryPlan',
     'Install-FastLlmEngines',
+    'New-FastLlmTypedFailure',
     'Install-FastLlmModel',
     'Invoke-FastLlmDeviceProbe',
     'Read-FastLlmJson',
+    'Remove-FastLlmDeviceBindingPrivateFields',
     'Save-FastLlmVerifiedFile',
     'Start-FastLlmServer',
     'Test-FastLlmEngineInstallation',

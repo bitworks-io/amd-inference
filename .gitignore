@@ -13,13 +13,14 @@ runtime-sandboxes/
 *.staging.*
 *.lock
 
-# Test/editor output
+# Editor, cache and build output
 __pycache__/
 *.pyc
 .DS_Store
 .idea/
 .vscode/
 dist/
+out/
 results/
 
 # Deployment public keys supplied separately for lab setup (not source defaults)
@@ -28,7 +29,6 @@ results/
 /tools/test-client.pub
 /tools/admin-client.pub
 
-# Internal bench evidence and website coordination must never be staged publicly.
-/docs/lab-results/
-/docs/bitworks/
-/docs/PUBLIC-SOURCE-SNAPSHOT.md
+# Agent session scratch: never part of the public repository
+/.superpowers/
+/.claude/

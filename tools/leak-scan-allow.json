@@ -1,0 +1,44 @@
+{
+  "entries": [
+    {
+      "path": "tests/device-binding-tests.ps1",
+      "rule": "windows-user-path",
+      "reason": "synthetic username token in a redaction test"
+    },
+    {
+      "path": "tests/sampler-diagnostic-tests.ps1",
+      "rule": "windows-user-path",
+      "reason": "synthetic user profile path in test data"
+    },
+    {
+      "path": "tests/test_public_source.py",
+      "rule": "windows-user-path",
+      "reason": "synthetic user profile path in stager test data"
+    },
+    {
+      "path": "tests/test_public_source.py",
+      "rule": "email",
+      "reason": "reserved example.invalid address in stager test data"
+    },
+    {
+      "path": "tests/lab-package-download-tests.ps1",
+      "rule": "email",
+      "reason": "URL with userinfo in a credential-refusal negative test"
+    },
+    {
+      "path": "tests/vulkan-driver-modules-tests.ps1",
+      "rule": "private-ipv4",
+      "reason": "synthetic non-loopback endpoint in a negative test"
+    },
+    {
+      "path": "tests/test_linux_benchmark.py",
+      "rule": "private-ipv4",
+      "reason": "synthetic non-loopback endpoint in a negative test"
+    },
+    {
+      "path": "tests/vulkan-vidmem-benchmark-tests.ps1",
+      "rule": "private-ipv4",
+      "reason": "synthetic SSH_CONNECTION values in session-detection tests"
+    }
+  ]
+}

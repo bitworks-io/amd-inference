@@ -25,6 +25,17 @@ namespace FastLlmTests {
                     if (String.IsNullOrEmpty(folder) || !Directory.Exists(folder) || Directory.GetFileSystemEntries(folder).Length != 0) { Mark(diagnosticPath, "isolation-root-not-empty: " + name); Environment.Exit(72); }
                 }
             }
+            // Policy tests: the supervisor must set (or leave absent) the one mitigation variable AFTER clearing GGML_*.
+            string expectVk = Environment.GetEnvironmentVariable("FASTLLM_TEST_EXPECT_VK_HOST_VISIBLE");
+            if (!String.IsNullOrEmpty(expectVk)) {
+                string actualVk = Environment.GetEnvironmentVariable("GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM");
+                bool good = expectVk == "absent" ? String.IsNullOrEmpty(actualVk) : actualVk == expectVk;
+                if (!good) { Mark(diagnosticPath, "vk-host-visible-variable-unexpected: expected " + expectVk + " got " + (actualVk ?? "absent")); Environment.Exit(73); }
+                foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
+                    string key = (string)entry.Key;
+                    if (key.StartsWith("GGML_", StringComparison.OrdinalIgnoreCase) && !String.Equals(key, "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM", StringComparison.OrdinalIgnoreCase)) { Mark(diagnosticPath, "extra-ggml-variable: " + key); Environment.Exit(74); }
+                }
+            }
             if (mode == "exit") Environment.Exit(7);
             Mark(diagnosticPath, "mock-entered");
             Console.Error.WriteLine("load_tensors: offloaded " + (mode == "partial" ? "39" : "41") + "/41 layers to GPU");
@@ -34,7 +45,23 @@ namespace FastLlmTests {
             Console.Error.WriteLine("sched_reserve: Vulkan0 compute buffer size = 777.00 MiB /private/untrusted-text");
             Console.Error.WriteLine("llama_context: flash_attn = auto");
             Console.Error.WriteLine("resolve_fused_ops: Flash Attention enabled");
-            if (mode != "diagflood") Console.Error.WriteLine("llama_prepare_model_devices: using device Vulkan0 (AMD Radeon RX 7900 XTX) (0000:03:00.0) - 20000 MiB free");
+            // Real b10698 shapes: common_init() prefix (timestamp + level letter) and, for the device_info entry, the "cmn  %12.*s: " tag.
+            // LOG_TRC logs at INFO level in b10698, so BOTH the device_info entry and the "using device" line carry level letter I (never D).
+            // W03 enforce post-load modes (pl-*) change exactly one property of the default pair so each check of the post-load check fails alone.
+            string gpuName = "Vulkan0", gpuDesc = "AMD Radeon RX 7900 XTX", usingName = "Vulkan0", usingId = "0000:03:00.0";
+            int gpuTotal = 24560;
+            if (mode == "pl-name") { gpuName = "Vulkan1"; usingName = "Vulkan1"; }
+            if (mode == "pl-desc") gpuDesc = "AMD Radeon RX 7900 XT";
+            if (mode == "pl-total") gpuTotal = 24561;
+            if (mode == "pl-using-name") usingName = "Vulkan1";
+            if (mode == "pl-ok-unknown") usingId = "unknown id";
+            if (mode != "pl-no-gpu") Console.Error.WriteLine("0.00.402.123 I cmn  common_param:   - " + gpuName + " : " + gpuDesc + " (" + gpuTotal + " MiB, 20304 MiB free)");
+            else Console.Error.WriteLine("0.00.402.123 I cmn  common_param:   - CPU : Synthetic CPU (65536 MiB, 32000 MiB free)");
+            if (mode == "pl-two-gpu") Console.Error.WriteLine("0.00.402.124 I cmn  common_param:   - Vulkan1 : " + gpuDesc + " (" + gpuTotal + " MiB, 20304 MiB free)");
+            if (mode == "pl-malformed") Console.Error.WriteLine("0.00.402.125 I cmn  common_param:   - Vulkan1 : broken (NaN MiB, 5 MiB free)");
+            if (mode == "pl-overflow") for (int i = 1; i <= 16; i++) Console.Error.WriteLine("0.00.402.126 I cmn  common_param:   - Vulkan" + i + " : " + gpuDesc + " (" + gpuTotal + " MiB, 20304 MiB free)");
+            if (mode != "diagflood" && mode != "pl-using-missing") Console.Error.WriteLine("0.01.234.567 I llama_prepare_model_devices: using device " + usingName + " (" + gpuDesc + ") (" + usingId + ") - 20000 MiB free");
+            if (mode == "pl-using-double") Console.Error.WriteLine("0.01.234.568 I llama_prepare_model_devices: using device " + usingName + " (" + gpuDesc + ") (unknown id) - 20000 MiB free");
             if (mode == "diagduplicate") Console.Error.WriteLine("llama_prepare_model_devices: using device Vulkan0 (AMD Radeon) (unknown id) - 20000 MiB free");
             if (mode == "duplicate") Console.Error.WriteLine("load_tensors: offloaded 41/41 layers to GPU");
             if (mode == "diagduplicate") Console.Error.WriteLine("llama_kv_cache: Vulkan0 KV buffer size = 257.00 MiB");
@@ -77,7 +104,23 @@ namespace FastLlmTests {
                             body="{\"data\":[{\"id\":\"" + model + "\"}]}";
                         }
                         if (path == "/props") body="{\"default_generation_settings\":{\"n_ctx\":"+(mode=="context"?context/2:context)+"},\"total_slots\":1}";
-                        if (path == "/completion") { if (method!="POST") status=405; completion++; body="{\"tokens\":[" + (mode=="unstable"?completion:42) + "],\"content\":\"Paris\"}"; }
+                        if (path == "/tokenize") {
+                            var ids = new StringBuilder("{\"tokens\":[");
+                            for (int i = 0; i < 600; i++) { if (i > 0) ids.Append(','); ids.Append(i + 1); }
+                            body = ids.Append("]}").ToString();
+                        }
+                        bool streamingCompletion = path == "/completion" && Regex.IsMatch(requestBody.ToString(), "\"stream\"\\s*:\\s*true", RegexOptions.CultureInvariant);
+                        if (streamingCompletion) {
+                            // Throughput-canary workload: 512 prompt tokens, 16 generated; modes pick the prompt_ms timing.
+                            if (mode == "canary-fail") { status = 500; body = "{}"; }
+                            else {
+                                string promptMs = mode == "canary-slow" ? "5000" : "100";
+                                body = "data: {\"content\":\"x\",\"stop\":false}\n\n" +
+                                    "data: {\"content\":\"\",\"stop\":true,\"timings\":{\"prompt_n\":512,\"prompt_ms\":" + promptMs + ",\"predicted_n\":16,\"predicted_ms\":160}}\n\n" +
+                                    "data: [DONE]\n\n";
+                            }
+                        }
+                        else if (path == "/completion") { if (method!="POST") status=405; completion++; body="{\"tokens\":[" + (mode=="unstable"?completion:42) + "],\"content\":\"Paris\"}"; }
                         if (path == "/v1/chat/completions") {
                             if (IsSynchronousChatRequest(requestBody.ToString()))
                                 body="{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\""+(mode=="chat"?"":"Hello")+"\"}}]}";

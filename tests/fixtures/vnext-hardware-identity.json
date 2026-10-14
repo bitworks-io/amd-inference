@@ -1,0 +1,21 @@
+{
+  "note": "Synthetic expected hardwareIdentity for the v-next producer fixture binding (tests/benchmark-vnext-tests.ps1). Shared by the PowerShell builder test and tests/test_recipes.py. Not hardware evidence.",
+  "expectedHardwareIdentity": {
+    "adapters": [
+      {
+        "pciId": "VEN_1002&DEV_744C&SUBSYS_E4711DA2&REV_C8",
+        "vramMiB": 24576,
+        "busId": "0000:03:00.0",
+        "rootComplexId": "PCIROOT(0)#PCI(0100)",
+        "upstreamPort": "PCI\\VEN_8086&DEV_A70D&SUBSYS_88821043&REV_01\\3&11583659&0&08",
+        "attachment": "cpu",
+        "linkWidth": 16,
+        "linkGeneration": 4
+      }
+    ],
+    "topology": {
+      "gpuLinks": [],
+      "peerToPeer": false
+    }
+  }
+}

@@ -55,12 +55,13 @@ class RecipeTests(unittest.TestCase):
         (self.root / name).write_bytes(raw)
         return {'path': name, 'sha256': hashlib.sha256(raw).hexdigest()}
 
-    def fixture(self, state='reviewed', rate=40):
+    def fixture(self, state='reviewed', rate=40, extra=None, sample_extra=None, driver='synthetic-driver', driver_source=None):
         samples = [{'requestedPromptTokens': 512, 'promptTokens': 512, 'outputTokens': 128,
                     'repetition': i, 'promptTokensPerSecond': 1000,
                     'generationTokensPerSecond': rate, 'timeToFirstTextMs': 200,
                     'completionMs': 3000,
-                    'promptArtifactSha256': self.binding['workload']['promptArtifactSha256']} for i in range(1, 6)]
+                    'promptArtifactSha256': self.binding['workload']['promptArtifactSha256'],
+                    **(sample_extra or {})} for i in range(1, 6)]
         benchmark = {
             'schemaVersion': 1, 'resultKind': 'native-windows-api-benchmark-not-full-qualification',
             'modelId': MODEL['id'], 'modelSha256': MODEL['sha256'], 'engineVersion': ENGINE['version'],
@@ -70,8 +71,9 @@ class RecipeTests(unittest.TestCase):
                        'slots': 1, 'backend': 'Vulkan', 'cacheTypeK': 'f16', 'cacheTypeV': 'f16',
                        'splitMode': 'none', 'tensorSplit': None,
                        'requestedArguments': ['--model', '<verified-model>', '--n-gpu-layers', 'all'],
-                       'adapters': [{'driverVersion': 'synthetic-driver', 'vramMiB': 24576,
-                                     'device': 'Vulkan0'}]},
+                       'adapters': [dict({'driverVersion': driver, 'vramMiB': 24576,
+                                          'device': 'Vulkan0'},
+                                         **({'driverVersionSource': driver_source} if driver_source else {}))]},
             'methodology': {'repetitions': 5, 'generationTokens': 128, 'concurrency': 1,
                             'sampling': 'greedy-seed42', 'corpus': 'synthetic-corpus',
                             'prefixCache': False, 'warmupPerPrompt': 1,
@@ -85,6 +87,7 @@ class RecipeTests(unittest.TestCase):
                                              'topology': self.binding['topology']}
             benchmark['placement'] = {'reportedLayers': 100, 'totalLayers': 100,
                                       'reportedAllLayers': True, 'devices': ['Vulkan0']}
+        benchmark.update(extra or {})
         benchmark_ref = self.write(f'benchmark-{rate}.json', benchmark)
         metrics = {'promptTokensPerSecond': statistics.median(s['promptTokensPerSecond'] for s in samples),
                    'generationTokensPerSecond': rate, 'timeToFirstTextMs': 200,
@@ -110,6 +113,66 @@ class RecipeTests(unittest.TestCase):
 
     def inventory(self):
         return dict(copy.deepcopy(self.binding), availableDedicatedVramMiB=[18000])
+
+    def vnext_extras(self):
+        """Additive v-next producer keys; the v1 contract keys are unchanged."""
+        return {
+            'producer': {'name': 'fastllm-benchmark-vnext', 'sourceSha256': 'a' * 64},
+            'hostCapture': [{'phase': 'pre', 'startUtc': '2026-10-06T10:00:00.0000000Z',
+                             'endUtc': '2026-10-06T10:00:01.0000000Z', 'fields': {}},
+                            {'phase': 'post', 'startUtc': '2026-10-06T10:05:00.0000000Z',
+                             'endUtc': '2026-10-06T10:05:01.0000000Z', 'fields': {}}],
+            'binding': {'status': 'bound', 'method': 'single-adapter-elimination+luid-chain'},
+            'telemetry': {'status': 'unknown', 'reason': 'not-configured', 'sidecar': None, 'perSample': []},
+            'timedWindow': {'firstStartUtc': '2026-10-06T10:00:02.0000000Z',
+                            'lastEndUtc': '2026-10-06T10:04:59.0000000Z'},
+            'refusals': [{'item': 'cim-os', 'reason': 'access-denied', 'phase': 'post'}],
+        }
+
+    def vnext_identity(self):
+        path = Path(__file__).resolve().parent / 'fixtures/vnext-hardware-identity.json'
+        return json.loads(path.read_text(encoding='utf-8'))['expectedHardwareIdentity']
+
+    def test_vnext_candidate_validates_like_v1(self):
+        sample_extra = {'startUtc': '2026-10-06T10:00:02.0000000Z', 'endUtc': '2026-10-06T10:00:05.0000000Z'}
+        record = self.fixture('candidate', 50, extra=dict(self.vnext_extras(), hardwareIdentityOmitted={'reason': 'pci-segment-unknown'}),
+                              sample_extra=sample_extra)
+        manifest = {'schemaVersion': 1, 'records': [record]}
+        self.assertEqual(validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA), CATALOG_SHA)
+
+    def test_vnext_reviewed_requires_exact_hardware_identity_from_fixture(self):
+        identity = self.vnext_identity()
+        self.binding['adapters'] = copy.deepcopy(identity['adapters'])
+        self.binding['topology'] = copy.deepcopy(identity['topology'])
+        extra = dict(self.vnext_extras(), hardwareIdentity=copy.deepcopy(identity),
+                     hardwareIdentityProvenance={'linkWidth': 'adlx-driver-reported'})
+        manifest = {'schemaVersion': 1, 'records': [self.fixture(extra=extra)]}
+        self.assertEqual(validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA), CATALOG_SHA)
+        # Any difference between the emitted identity and the binding is rejected.
+        wrong = copy.deepcopy(identity)
+        wrong['adapters'][0]['busId'] = '0000:04:00.0'
+        manifest = {'schemaVersion': 1, 'records': [self.fixture(extra=dict(extra, hardwareIdentity=wrong))]}
+        with self.assertRaisesRegex(ValueError, 'authoritative PCI/topology identity'):
+            validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA)
+        # An omitted identity (the producer omits it unless proven) cannot be reviewed.
+        omitted = {k: v for k, v in extra.items() if k not in ('hardwareIdentity', 'hardwareIdentityProvenance')}
+        manifest = {'schemaVersion': 1, 'records': [self.fixture(extra=dict(omitted, hardwareIdentity=None, hardwareIdentityOmitted={'reason': 'link-unknown'}))]}
+        with self.assertRaisesRegex(ValueError, 'authoritative PCI/topology identity'):
+            validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA)
+
+    def test_vnext_proven_driver_version_is_accepted_and_null_is_refused(self):
+        """Benches report driverVersion null from the supervisor; v-next fills it only when proven."""
+        self.binding['driverVersion'] = '32.0.31041.1004'
+        source = 'setupapi-device-property+adlx-cross-check'
+        filled = self.fixture('candidate', 50, extra=self.vnext_extras(), driver='32.0.31041.1004', driver_source=source)
+        self.assertEqual(validate_manifest({'schemaVersion': 1, 'records': [filled]}, self.root, CATALOG, CATALOG_SHA), CATALOG_SHA)
+        # A v1-style report (null driver, as on the benches) cannot satisfy the driver binding.
+        for driver in (None, '31.0.1.1'):
+            with self.subTest(driver=driver):
+                stale = self.fixture('candidate', 51, extra=self.vnext_extras(), driver=driver)
+                with self.assertRaisesRegex(ValueError, 'driver or adapter memory differs'):
+                    validate_manifest({'schemaVersion': 1, 'records': [stale]}, self.root, CATALOG, CATALOG_SHA)
+
 
     def test_default_allowlist_is_empty_even_with_reviewed_flag(self):
         manifest = {'schemaVersion': 1, 'records': [self.fixture()]}
@@ -256,6 +319,25 @@ class RecipeTests(unittest.TestCase):
         ref['sha256'] = hashlib.sha256(oversized).hexdigest()
         with self.assertRaisesRegex(ValueError, '8 MiB limit'):
             validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA)
+
+    def test_benchmark_environment_override_cannot_bind_to_a_default_recipe(self):
+        for override, message in (({'GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM': '1'}, 'environment override differs'),
+                                  ({'GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM': 1}, 'environment override malformed'),
+                                  (['GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM'], 'environment override malformed')):
+            with self.subTest(override=override):
+                manifest = {'schemaVersion': 1, 'records': [self.fixture('candidate')]}
+                ref = manifest['records'][0]['evidence']['benchmark']
+                benchmark = json.loads((self.root / ref['path']).read_text())
+                benchmark['recipe']['environmentOverride'] = override
+                manifest['records'][0]['evidence']['benchmark'] = self.write(ref['path'], benchmark)
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA)
+        manifest = {'schemaVersion': 1, 'records': [self.fixture('candidate')]}
+        ref = manifest['records'][0]['evidence']['benchmark']
+        benchmark = json.loads((self.root / ref['path']).read_text())
+        benchmark['recipe']['environmentOverride'] = {}
+        manifest['records'][0]['evidence']['benchmark'] = self.write(ref['path'], benchmark)
+        validate_manifest(manifest, self.root, CATALOG, CATALOG_SHA)
 
     def test_gpu_layer_and_placement_claims_match_launch_and_observation(self):
         manifest = {'schemaVersion': 1, 'records': [self.fixture('candidate')]}

@@ -35,7 +35,7 @@ try {
         'config/catalog.json','config/catalog.sha256','config/driver-guidance.json','config/windows-prerequisites.json',
         'config/experiments/lemonade-hip-b1339-gfx110x.json',
         'tools/benchmark.ps1','tools/soak.ps1','tools/offload-lab.ps1','tools/offload-benchmark.ps1',
-        'tools/semantic-smoke.ps1','tools/collect-prerequisite-inventory.ps1','tools/collect-smbios-memory.ps1','tools/prepare-vc-runtime.ps1','tools/install-vc-runtime.ps1','tools/install-lab-app.ps1',
+        'tools/semantic-smoke.ps1','tools/collect-prerequisite-inventory.ps1','tools/collect-smbios-memory.ps1','tools/collect-vulkan-luid-join.ps1','tools/adlx-identity-vram.ps1','tools/prepare-vc-runtime.ps1','tools/install-vc-runtime.ps1','tools/install-lab-app.ps1',
         'tools/collect-ggml-vulkan-identity.ps1','tools/collect-ggml-vulkan-capabilities.ps1','tools/collect-pci-identity-join.ps1',
         'tools/collect-windows-vulkan-pnp-bridge.ps1','tools/collect-vulkan-driver-modules.ps1','tools/vulkan-coopmat-screen.ps1',
         'tools/probe-lemonade-hip-b1339.ps1','tools/hip-candidate-native-worker.ps1',

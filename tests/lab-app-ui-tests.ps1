@@ -7,15 +7,17 @@ Set-StrictMode -Version 2
 $repo = Split-Path $PSScriptRoot -Parent
 $tool = Join-Path $repo 'tools/install-lab-app.ps1'
 $launcher = Join-Path $repo 'Install-FastLLM-Lab.cmd'
+$managedLauncher = Join-Path $repo 'FastLLM.cmd'
 $source = Get-Content -LiteralPath $tool -Raw
 $cmd = Get-Content -LiteralPath $launcher -Raw
+$managedCmd = Get-Content -LiteralPath $managedLauncher -Raw
 $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($tool,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'Lab app window script does not parse.' }
 foreach ($name in @('Test-FastLlmLabInstallerInput','Format-FastLlmLabInstallerResult',
     'Format-FastLlmLabRemovalPreview','Test-FastLlmLabRestoreInput','Format-FastLlmLabRemovalResult',
-    'Assert-FastLlmLabCompanionLocation')) {
+    'Assert-FastLlmLabCompanionLocation','Get-FastLlmLabOpenPlan','Invoke-FastLlmLabOpenForUser')) {
     $node = $ast.Find({param($item) $item -is [Management.Automation.Language.FunctionDefinitionAst] -and $item.Name -eq $name},$true)
     if (-not $node) { throw "Missing testable UI helper: $name" }
     . ([scriptblock]::Create($node.Extent.Text))
@@ -38,12 +40,37 @@ function Assert-FastLlmLabLocalWindowsPath {
     if ($script:mockNetworkDrive) { throw 'Simulated mapped network volume.' }
     if ($Path.StartsWith('\\') -or $Path.StartsWith('//')) { throw 'Simulated UNC or device path.' }
 }
+function Get-FastLlmLabAppRemovalPlan {
+    param([string]$AppRoot,[string]$ShortcutPath)
+    $script:openPlanCalls++
+    if ($script:openPlanFailure) { throw 'Simulated ownership or manifest failure.' }
+    return $script:ownedOpenPlan
+}
+function Get-FastLlmLabAppState { param([string]$AppRoot) return $script:openState }
+function Assert-FastLlmLabAppPath { param([string]$Path) return [IO.Path]::GetFullPath($Path) }
+function Get-FastLlmLabAppUserPaths { return [pscustomobject]@{appRoot=$script:testAppRoot;shortcutPath=$script:testShortcutPath} }
+function Enter-FastLlmLabAppLifetime { param([string]$SourceRoot) $script:leaseCalls++; return (New-Object IO.MemoryStream) }
+function Start-FastLlmLabGuardedCommand {
+    param($Lease,[string]$Target,[string]$WorkingDirectory)
+    $script:spawnCalls++
+    $script:spawnTarget = $Target
+    $script:launchSawLease = ($null -ne $Lease)
+    if ($script:spawnFailure) { throw 'Simulated launch failure.' }
+    return 12345
+}
 $script:localGuardCalls = 0
 $script:mockNetworkDrive = $false
+$script:openPlanCalls = 0
+$script:openPlanFailure = $false
+$script:leaseCalls = 0
+$script:spawnCalls = 0
+$script:spawnFailure = $false
+$script:launchSawLease = $false
 
 $folder = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-lab-ui-test-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $folder
 $archive = Join-Path $folder 'reviewed-source.zip'
+$appRoot = $null
 try {
     [IO.File]::WriteAllBytes($archive,[byte[]]@(1,2,3))
     $digest = 'a' * 64
@@ -108,8 +135,54 @@ try {
     Assert-FastLlmLabCompanionLocation -SourceRoot $folder
     $managedSource = Join-Path (Join-Path $folder 'versions') ('a' * 64 + '-' + 'b' * 32)
     Check-Throws { Assert-FastLlmLabCompanionLocation -SourceRoot $managedSource } 'companion refuses to operate from a managed version it could move'
+
+    $appRoot = Join-Path $folder 'managed-app'
+    $shortcutPath = Join-Path $folder 'FastLLM Lab.lnk'
+    $version = ('a' * 64) + '-' + ('b' * 32)
+    $script:openState = [pscustomobject]@{ installId='c' * 32; currentVersion=$version; currentManifestSha256=$digest }
+    $script:ownedOpenPlan = [pscustomobject]@{ appRoot=$appRoot; shortcutPath=$shortcutPath; installId='c' * 32;
+        versions=@([pscustomobject]@{version=$version;manifestSha256=$digest}) }
+    $open = Get-FastLlmLabOpenPlan -AppRoot $appRoot -ShortcutPath $shortcutPath
+    Check ($script:openPlanCalls -eq 1 -and $open.version -ceq $version -and
+        $open.target -ceq (Join-Path (Join-Path (Join-Path $appRoot 'versions') $version) 'FastLLM.cmd')) 'manual Open binds the exact committed version and verified target'
+    $script:ownedOpenPlan.shortcutPath = Join-Path $folder 'other.lnk'
+    Check-Throws { Get-FastLlmLabOpenPlan -AppRoot $appRoot -ShortcutPath $shortcutPath } 'Open rejects a different shortcut path'
+    $script:ownedOpenPlan.shortcutPath = $shortcutPath
+    $script:ownedOpenPlan.installId = 'd' * 32
+    Check-Throws { Get-FastLlmLabOpenPlan -AppRoot $appRoot -ShortcutPath $shortcutPath } 'Open rejects an owner mismatch'
+    $script:ownedOpenPlan.installId = 'c' * 32
+    $script:ownedOpenPlan.versions[0].manifestSha256 = 'e' * 64
+    Check-Throws { Get-FastLlmLabOpenPlan -AppRoot $appRoot -ShortcutPath $shortcutPath } 'Open rejects a ledger digest mismatch'
+    $script:ownedOpenPlan.versions[0].manifestSha256 = $digest
+    $script:openPlanFailure = $true
+    Check-Throws { Get-FastLlmLabOpenPlan -AppRoot $appRoot -ShortcutPath $shortcutPath } 'Open propagates core source/shortcut integrity refusal'
+    $script:openPlanFailure = $false
+
+    $null = New-Item -ItemType Directory -Path $appRoot
+    [IO.File]::WriteAllBytes((Join-Path $appRoot 'lab-app.lock'),[byte[]]@())
+    $script:testAppRoot = $appRoot
+    $script:testShortcutPath = $shortcutPath
+    $launched = Invoke-FastLlmLabOpenForUser
+    Check ($launched.version -ceq $version -and $launched.processId -eq 12345 -and
+        $script:spawnCalls -eq 1 -and $script:leaseCalls -eq 1 -and $script:launchSawLease -and
+        $script:spawnTarget -ceq $open.target) 'explicit Open submits only the verified managed target with its lifetime lease'
+    $reopened = [IO.File]::Open((Join-Path $appRoot 'lab-app.lock'),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    $reopened.Dispose()
+    Check $true 'successful Open releases the operation lock'
+    $script:spawnFailure = $true
+    Check-Throws { Invoke-FastLlmLabOpenForUser } 'launch error does not claim the control window opened'
+    $reopened = [IO.File]::Open((Join-Path $appRoot 'lab-app.lock'),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    $reopened.Dispose()
+    Check $true 'failed Open releases the operation lock'
+    $script:spawnFailure = $false
+    $script:openPlanFailure = $true
+    $priorSpawnCalls = $script:spawnCalls
+    Check-Throws { Invoke-FastLlmLabOpenForUser } 'unverified app cannot be opened'
+    Check ($script:spawnCalls -eq $priorSpawnCalls) 'ownership or source failure prevents process launch'
+    $script:openPlanFailure = $false
 } finally {
     if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+    if ($appRoot -and (Test-Path -LiteralPath $appRoot)) { Remove-Item -LiteralPath $appRoot -Recurse -Force }
     if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Force }
 }
 
@@ -127,6 +200,32 @@ Check ($source.Contains('Get-FastLlmLabAppRemovalPreviewForUser') -and
 Check ($source.Contains("if (`$Action -eq 'Preview')") -and $source.Contains('Preview only. No files were moved.')) 'preview path returns before mutation confirmation'
 Check ($source.Contains('ShowNewFolderButton = $false') -and $source.Contains('Existing destination files will not be overwritten')) 'restore chooser does not create folders or promise to overwrite conflicts'
 Check ($source.Contains('SetInstallerBusy $true') -and $source.Contains('SetInstallerBusy $false')) 'lifecycle actions serialize all companion controls'
+Check ($source.Contains("AddButton 'Open FastLLM'") -and $source.Contains('$openButton.Add_Click({ InvokeOpenUiAction })') -and
+    $source.Contains('$openButton,$closeButton')) 'manual Open is visible and serialized with lifecycle controls'
+Check ($source.Contains('Get-FastLlmLabAppRemovalPlan -AppRoot $AppRoot -ShortcutPath $ShortcutPath') -and
+    $source.Contains('Enter-FastLlmLabAppLifetime -SourceRoot $plan.versionRoot') -and
+    $source.Contains("[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None") -and
+    $source.Contains('$operation.Dispose()')) 'Open verifies exact owned source/shortcut under operation and lifetime locks'
+Check ($source.Contains('Start-FastLlmLabGuardedCommand -Lease $lifetime -Target $plan.target -WorkingDirectory $plan.versionRoot') -and
+    $source.Contains('No model or server was started by setup.')) 'Open only launches the committed control-window entry point on explicit click'
+Check ($source.Contains('CreateProcessW(cmd, line') -and $source.Contains('0x00000004u | 0x00000010u') -and
+    $source.IndexOf('DuplicateHandle(GetCurrentProcess(), leaseHandle') -lt $source.IndexOf('ResumeThread(child.thread)') -and
+    $source.Contains('$Lease.SafeFileHandle.DangerousGetHandle()')) 'the command process is created suspended and receives the exact lease before it can run'
+Check ($source.Contains('if (!resumed)') -and $source.Contains('TerminateProcess(child.process, 1u)') -and
+    $source.Contains('WaitForSingleObject(child.process, 5000u)') -and
+    $source.Contains('CloseHandle(child.thread)') -and $source.Contains('CloseHandle(child.process)')) 'pre-resume failure cleans up a process that cannot have started descendants'
+Check ($source -notmatch '(?i)\bStart-Process\b') 'setup does not spawn an unleased command process'
+Check ($managedCmd.Contains('"%FASTLLM_PS%" -NoLogo -NoProfile -STA -File') -and
+    $managedCmd -notmatch '(?im)^\s*start\s') 'managed command synchronously waits for its PowerShell control-window descendant'
+$nativeStart = $source.IndexOf('using System;')
+$nativeEnd = $source.IndexOf("`n'@",$nativeStart)
+Check ($nativeStart -ge 0 -and $nativeEnd -gt $nativeStart) 'guarded-launch interop declaration is bounded in source'
+if (-not ('FastLlmLabLeaseNative' -as [type])) {
+    Add-Type -TypeDefinition $source.Substring($nativeStart,$nativeEnd-$nativeStart)
+}
+$startupType = [FastLlmLabLeaseNative].GetNestedType('StartupInfo',[Reflection.BindingFlags]::NonPublic)
+$expectedStartupSize = if ([IntPtr]::Size -eq 8) { 104 } else { 68 }
+Check ([Runtime.InteropServices.Marshal]::SizeOf([type]$startupType) -eq $expectedStartupSize) 'guarded-launch STARTUPINFO layout matches native process creation ABI'
 Check ($source.Contains('Get-FastLlmLabAppPendingRecoveryForUser') -and $source.Contains('$quarantineBox.Text = [string]$pending.quarantinePath')) 'verified interrupted-removal path is discoverable without guessing'
 Check ($source.Contains('Preview SHA-256:') -and $source.Contains('$(@($preview.items).Count) verified app items')) 'uninstall confirmation visibly binds item count and preview digest'
 Check ($source.Contains('Automatic busy detection covers the managed control window and main CLI only.') -and $source.Contains('those tools are not detected automatically')) 'preview and confirmation disclose the unguarded developer-tool limitation'
@@ -143,7 +242,7 @@ foreach ($entry in @('fast-llm.ps1','fast-llm-ui.ps1')) {
     Check ($leaseTry -and $leaseTry.Body.Extent.StartOffset -lt $leaseNode.Extent.StartOffset -and
         $leaseTry.Body.Extent.EndOffset -gt $importNode.Extent.EndOffset) "$entry releases its lifetime lease from an enclosing finally"
 }
-Check ($source -notmatch '(?i)\b(?:Unblock-File|Start-Process|Invoke-WebRequest|curl\.exe|AcceptModelLicense)\b|\-ExecutionPolicy\b') 'UI has no unblock, policy bypass, download, or model-consent path'
+Check ($source -notmatch '(?i)\b(?:Unblock-File|Invoke-WebRequest|curl\.exe|AcceptModelLicense)\b|\-ExecutionPolicy\b|\-Verb\s+RunAs') 'UI has no unblock, policy bypass, elevation, download, or model-consent path'
 Check ($cmd.Contains('WindowsPowerShell\v1.0\powershell.exe') -and $cmd.Contains('-STA -File') -and $cmd.Contains('tools\install-lab-app.ps1')) 'double-click launcher uses adjacent setup script and Windows PowerShell STA'
 Check ($cmd -notmatch '(?i)(?:-ExecutionPolicy|\-Verb\s+RunAs|Invoke-WebRequest|curl\.exe)') 'launcher has no policy bypass, elevation, or download switch'
 Write-Host "$script:checks lab app UI checks passed. No installer or native Windows UI was executed."

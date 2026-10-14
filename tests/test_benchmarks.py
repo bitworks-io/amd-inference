@@ -151,6 +151,45 @@ class BenchmarkComparisonTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     compare(left, candidate)
 
+    def test_vnext_additive_keys_do_not_block_comparison_with_v1(self):
+        v1 = identified(32)
+        v1['windowsInventory']['nativeHost'] = native_host()
+        vnext = identified(33)
+        vnext['windowsInventory']['nativeHost'] = native_host()
+        vnext['windowsInventory']['errors'] = [{'section': 'os', 'reason': 'access-denied'}]
+        vnext.update({
+            'producer': {'name': 'fastllm-benchmark-vnext', 'sourceSha256': 'd' * 64},
+            'hostCapture': [{'phase': 'pre'}, {'phase': 'post'}],
+            'binding': {'status': 'ambiguous', 'reason': 'multiple-amd-adapters'},
+            'telemetry': {'status': 'unknown', 'reason': 'not-configured'},
+            'timedWindow': {'firstStartUtc': '2026-10-06T10:00:02.0000000Z', 'lastEndUtc': '2026-10-06T10:04:59.0000000Z'},
+            'refusals': [{'item': 'cim-os', 'reason': 'access-denied', 'phase': 'post'}],
+            'hardwareIdentityOmitted': {'reason': 'pci-segment-unknown'},
+        })
+        for index, sample in enumerate(vnext['samples']):
+            sample['startUtc'] = '2026-10-06T10:00:0%d.0000000Z' % index
+            sample['endUtc'] = '2026-10-06T10:00:0%d.5000000Z' % index
+        result = compare(v1, vnext)
+        self.assertEqual(result['decision'], 'descriptive-comparison-only')
+        self.assertFalse(result['qualificationApproved'])
+        self.assertTrue(result['promptIdentityVerified'])
+
+    def test_vnext_proven_driver_version_is_required_for_comparison(self):
+        """The bench supervisor records driverVersion null; only a v-next proven value makes it comparable."""
+        def vnext(rate, driver):
+            result = identified(rate)
+            result['windowsInventory']['nativeHost'] = native_host()
+            result['recipe']['adapters'][0]['driverVersion'] = driver
+            if driver:
+                result['recipe']['adapters'][0]['driverVersionSource'] = 'setupapi-device-property+adlx-cross-check'
+            return result
+        proven = compare(vnext(32, '32.0.31041.1004'), vnext(33, '32.0.31041.1004'))
+        self.assertEqual(proven['decision'], 'descriptive-comparison-only')
+        with self.assertRaisesRegex(ValueError, 'recorded adapter identity'):
+            compare(vnext(32, None), vnext(33, None))
+        with self.assertRaisesRegex(ValueError, 'changed recipe.adapters'):
+            compare(vnext(32, '32.0.31041.1004'), vnext(33, '32.0.99999.1'))
+
     def test_measured_delta_is_not_qualification(self):
         result = compare(record(), record(40))
         self.assertEqual(25, result['comparisons'][0]['generationTokensPerSecond']['changePercent'])
@@ -251,6 +290,29 @@ class BenchmarkComparisonTests(unittest.TestCase):
                 change(candidate)
                 with self.assertRaisesRegex(ValueError, field.replace('.', r'\.')):
                     compare(record(), candidate)
+
+    def test_environment_override_is_part_of_the_configuration(self):
+        mitigated = record()
+        mitigated['recipe']['environmentOverride'] = {'GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM': '1'}
+        for baseline, candidate in ((record(), mitigated), (mitigated, record())):
+            with self.assertRaisesRegex(ValueError, r'Cannot compare changed recipe\.environmentOverride'):
+                compare(baseline, candidate)
+        other = record()
+        other['recipe']['environmentOverride'] = {'GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM': '0'}
+        with self.assertRaisesRegex(ValueError, r'Cannot compare changed recipe\.environmentOverride'):
+            compare(mitigated, other)
+        # absent and an empty map are the same default configuration; identical overrides compare normally
+        empty = record()
+        empty['recipe']['environmentOverride'] = {}
+        compare(record(), empty)
+        same = record()
+        same['recipe']['environmentOverride'] = {'GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM': '1'}
+        compare(mitigated, same)
+        for malformed in ([], 'x', {'A': 1}, {'': '1'}, None):
+            bad = record()
+            bad['recipe']['environmentOverride'] = malformed
+            with self.assertRaisesRegex(ValueError, 'Malformed recorded recipe.environmentOverride'):
+                compare(record(), bad)
 
     def test_inconsistent_or_missing_configuration_rejected(self):
         changes = [

@@ -130,6 +130,43 @@ function Get-FastLlmNativeHostInventory {
 }
 
 function Get-FastLlmWindowsInventorySnapshot {
+    # Typed reason from the error category, exception types and HRESULT only. Message text is never inspected.
+    # Kept inside this function so tests that extract it by name stay self-contained.
+    $classifyReason = {
+        param($ErrorRecord)
+        $ex = $ErrorRecord
+        if ($ErrorRecord -is [Management.Automation.ErrorRecord]) {
+            $category = [string]$ErrorRecord.CategoryInfo.Category
+            if ($category -eq 'PermissionDenied') { return 'access-denied' }
+            if ($category -eq 'OperationTimeout') { return 'timeout' }
+            if ($category -eq 'ObjectNotFound') { return 'not-found' }
+            $ex = $ErrorRecord.Exception
+    }
+    $depth = 0
+    while ($null -ne $ex -and $depth -lt 6) {
+        if ($ex -is [UnauthorizedAccessException] -or $ex -is [Security.SecurityException]) { return 'access-denied' }
+        if ($ex -is [TimeoutException]) { return 'timeout' }
+        if ($ex -is [IO.FileNotFoundException] -or $ex -is [IO.DirectoryNotFoundException]) { return 'not-found' }
+        if ($ex -is [ComponentModel.Win32Exception]) {
+            $code = [int]$ex.NativeErrorCode
+            if ($code -eq 5) { return 'access-denied' }
+            if ($code -eq 1460) { return 'timeout' }
+            if ($code -eq 2 -or $code -eq 3) { return 'not-found' }
+        }
+        if ($ex.GetType().FullName -eq 'Microsoft.Management.Infrastructure.CimException') {
+            $native = [string]$ex.NativeErrorCode
+            if ($native -eq 'AccessDenied') { return 'access-denied' }
+            if ($native -eq 'NotFound' -or $native -eq 'InvalidNamespace' -or $native -eq 'InvalidClass') { return 'not-found' }
+        }
+        $hresult = [int]$ex.HResult
+        if ($hresult -eq -2147024891) { return 'access-denied' }
+        if ($hresult -eq -2147023436) { return 'timeout' }
+        if ($hresult -eq -2147024894 -or $hresult -eq -2147024893) { return 'not-found' }
+        $ex = $ex.InnerException
+        $depth++
+    }
+    return 'other'
+    }
     $errors = New-Object 'System.Collections.Generic.List[object]'
     $successfulSections = 0
     $dxgi = @()
@@ -145,7 +182,7 @@ function Get-FastLlmWindowsInventorySnapshot {
         $successfulSections++
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'dxgi'; message = $_.Exception.Message })
+        $errors.Add([pscustomobject]@{ section = 'dxgi'; message = $_.Exception.Message; reason = (& $classifyReason $_) })
     }
 
     try {
@@ -153,16 +190,16 @@ function Get-FastLlmWindowsInventorySnapshot {
         $successfulSections++
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'pnpDisplayDevices'; message = $_.Exception.Message })
+        $errors.Add([pscustomobject]@{ section = 'pnpDisplayDevices'; message = $_.Exception.Message; reason = (& $classifyReason $_) })
     }
 
     try {
         $nativeHost = Get-FastLlmNativeHostInventory
         if ($nativeHost.status -eq 'captured') { $successfulSections++ }
-        else { $errors.Add([pscustomobject]@{ section = 'nativeHost'; message = 'Native host inventory was incomplete.' }) }
+        else { $errors.Add([pscustomobject]@{ section = 'nativeHost'; message = 'Native host inventory was incomplete.'; reason = 'other' }) }
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'nativeHost'; message = 'Native host inventory unavailable.' })
+        $errors.Add([pscustomobject]@{ section = 'nativeHost'; message = 'Native host inventory unavailable.'; reason = 'other' })
     }
 
     try {
@@ -171,7 +208,7 @@ function Get-FastLlmWindowsInventorySnapshot {
         $successfulSections++
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'pnpControllers'; message = $_.Exception.Message })
+        $errors.Add([pscustomobject]@{ section = 'pnpControllers'; message = $_.Exception.Message; reason = (& $classifyReason $_) })
     }
 
     try {
@@ -180,7 +217,7 @@ function Get-FastLlmWindowsInventorySnapshot {
         $successfulSections++
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'processors'; message = $_.Exception.Message })
+        $errors.Add([pscustomobject]@{ section = 'processors'; message = $_.Exception.Message; reason = (& $classifyReason $_) })
     }
 
     try {
@@ -189,7 +226,7 @@ function Get-FastLlmWindowsInventorySnapshot {
         $successfulSections++
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'system'; message = $_.Exception.Message })
+        $errors.Add([pscustomobject]@{ section = 'system'; message = $_.Exception.Message; reason = (& $classifyReason $_) })
     }
 
     try {
@@ -198,7 +235,7 @@ function Get-FastLlmWindowsInventorySnapshot {
         $successfulSections++
     }
     catch {
-        $errors.Add([pscustomobject]@{ section = 'os'; message = $_.Exception.Message })
+        $errors.Add([pscustomobject]@{ section = 'os'; message = $_.Exception.Message; reason = (& $classifyReason $_) })
     }
 
     if ($successfulSections -eq 0) {
