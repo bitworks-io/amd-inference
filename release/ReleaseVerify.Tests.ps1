@@ -129,3 +129,74 @@ Describe 'ConvertTo-FastLlmVersionInfoText' {
         ConvertTo-FastLlmVersionInfoText $null | Should -BeExactly ''
     }
 }
+
+Describe 'installed tree versus signed package' {
+    BeforeEach {
+        $script:pkgTree = Join-Path $script:work ('pkg-' + [guid]::NewGuid().ToString('N'))
+        $script:appTree = Join-Path $script:work ('app-' + [guid]::NewGuid().ToString('N'))
+        foreach ($t in $script:pkgTree, $script:appTree) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $t 'src'), (Join-Path $t 'config') | Out-Null
+            Set-Content -LiteralPath (Join-Path $t 'fast-llm.ps1') -Value 'root' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $t 'src\a.ps1') -Value 'a' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $t 'config\c.json') -Value '{}' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $t 'FastLLM.cat') -Value 'cat' -Encoding ascii
+        }
+        $script:skipNames = @('unins000.exe', 'unins000.dat', 'unins000.msg')
+    }
+    It 'accepts an identical tree and ignores _uninstall and unins000.*' {
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:appTree '_uninstall') | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:appTree '_uninstall\unins000.exe') -Value 'u' -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $script:appTree 'unins000.dat') -Value 'u' -Encoding ascii
+        Test-FastLlmTreeMatchesPackage -PackagePath $script:pkgTree -InstalledPath $script:appTree -SkipNames $script:skipNames -SkipPrefixes '_uninstall\' | Should -Be 4
+    }
+    It 'rejects an extra installed file' {
+        Set-Content -LiteralPath (Join-Path $script:appTree 'src\extra.ps1') -Value 'x' -Encoding ascii
+        { Test-FastLlmTreeMatchesPackage -PackagePath $script:pkgTree -InstalledPath $script:appTree -SkipNames $script:skipNames -SkipPrefixes '_uninstall\' } | Should -Throw '*installed only*extra.ps1*'
+    }
+    It 'rejects a file missing from the installed tree' {
+        Remove-Item -LiteralPath (Join-Path $script:appTree 'config\c.json')
+        { Test-FastLlmTreeMatchesPackage -PackagePath $script:pkgTree -InstalledPath $script:appTree -SkipNames $script:skipNames -SkipPrefixes '_uninstall\' } | Should -Throw '*package only*c.json*'
+    }
+    It 'rejects a changed file with the same name' {
+        Set-Content -LiteralPath (Join-Path $script:appTree 'src\a.ps1') -Value 'changed' -Encoding ascii
+        { Test-FastLlmTreeMatchesPackage -PackagePath $script:pkgTree -InstalledPath $script:appTree -SkipNames $script:skipNames -SkipPrefixes '_uninstall\' } | Should -Throw '*does not equal the signed package tree*'
+    }
+    It 'rejects a tree mismatch even when the installed tree carries its own matching catalog' {
+        Set-Content -LiteralPath (Join-Path $script:appTree 'extra.txt') -Value 'x' -Encoding ascii
+        Remove-Item -LiteralPath (Join-Path $script:appTree 'FastLLM.cat')
+        New-FileCatalog -Path $script:appTree -CatalogFilePath (Join-Path $script:appTree 'FastLLM.cat') -CatalogVersion 2 | Out-Null
+        { Test-FastLlmTreeMatchesPackage -PackagePath $script:pkgTree -InstalledPath $script:appTree -SkipNames $script:skipNames -SkipPrefixes '_uninstall\' } | Should -Throw '*differences*'
+    }
+    It 'rejects an installed catalog whose hash differs from the package catalog' {
+        { Test-FastLlmFileHashEqual -Path (Join-Path $script:appTree 'FastLLM.cat') -ReferencePath (Join-Path $script:pkgTree 'FastLLM.cat') } | Should -Not -Throw
+        Set-Content -LiteralPath (Join-Path $script:appTree 'FastLLM.cat') -Value 'other catalog' -Encoding ascii
+        { Test-FastLlmFileHashEqual -Path (Join-Path $script:appTree 'FastLLM.cat') -ReferencePath (Join-Path $script:pkgTree 'FastLLM.cat') } | Should -Throw '*differs from the package copy*'
+    }
+}
+
+Describe 'Test-FastLlmPackageScriptsSigned' {
+    BeforeEach {
+        $script:sigPkg = Join-Path $script:work ('sig-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:sigPkg 'config\schemas') | Out-Null
+        $script:sigArgs = @{ ExpectedRootThumbprint = $script:cert.Thumbprint; RequiredEkus = $script:codeSigning; AllowUntrustedRootForTests = $true }
+        foreach ($rel in 'fast-llm.ps1', 'config\schemas\ok.ps1') {
+            $signed = New-SignedScript ('s-' + [guid]::NewGuid().ToString('N') + '.ps1') $script:cert
+            Copy-Item -LiteralPath $signed -Destination (Join-Path $script:sigPkg $rel)
+        }
+    }
+    It 'counts signed scripts at every depth' {
+        Test-FastLlmPackageScriptsSigned -PackagePath $script:sigPkg -SignatureArgs $script:sigArgs | Should -Be 2
+    }
+    It 'rejects an unsigned script in a subfolder outside src and tools' {
+        Set-Content -LiteralPath (Join-Path $script:sigPkg 'config\schemas\validate.ps1') -Value 'x' -Encoding ascii
+        { Test-FastLlmPackageScriptsSigned -PackagePath $script:sigPkg -SignatureArgs $script:sigArgs } | Should -Throw '*signature not valid*validate.ps1*'
+    }
+    It 'rejects an unsigned module or manifest in a subfolder' {
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:sigPkg 'licenses') | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:sigPkg 'licenses\m.psm1') -Value 'x' -Encoding ascii
+        { Test-FastLlmPackageScriptsSigned -PackagePath $script:sigPkg -SignatureArgs $script:sigArgs } | Should -Throw '*m.psm1*'
+        Remove-Item -LiteralPath (Join-Path $script:sigPkg 'licenses\m.psm1')
+        Set-Content -LiteralPath (Join-Path $script:sigPkg 'licenses\m.psd1') -Value '@{}' -Encoding ascii
+        { Test-FastLlmPackageScriptsSigned -PackagePath $script:sigPkg -SignatureArgs $script:sigArgs } | Should -Throw '*m.psd1*'
+    }
+}

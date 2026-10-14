@@ -75,6 +75,62 @@ function Test-FastLlmCatalogTree {
     if ($check.Status -ne 'Valid' -or (Compare-Object $catKeys $pathKeys)) { throw "catalog does not match the tree exactly: $($check.Status)" }
 }
 
+function Get-FastLlmTreeHashList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TreePath,
+        [string[]]$SkipNames = @(),
+        [string[]]$SkipPrefixes = @()
+    )
+    $root = (Resolve-Path -LiteralPath $TreePath).ProviderPath.TrimEnd('\', '/')
+    $lines = @(foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File -Force) {
+        $rel = $f.FullName.Substring($root.Length + 1).Replace('/', '\').ToLowerInvariant()
+        if (@($SkipNames | Where-Object { $f.Name -ieq $_ }).Count) { continue }
+        if (@($SkipPrefixes | Where-Object { $rel.StartsWith($_.ToLowerInvariant().Replace('/', '\'), [StringComparison]::Ordinal) }).Count) { continue }
+        $rel + '  ' + (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    })
+    [Array]::Sort($lines, [StringComparer]::Ordinal)
+    return , $lines
+}
+
+function Test-FastLlmTreeMatchesPackage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PackagePath,
+        [Parameter(Mandatory)][string]$InstalledPath,
+        [string[]]$SkipNames = @(),
+        [string[]]$SkipPrefixes = @()
+    )
+    $want = @(Get-FastLlmTreeHashList -TreePath $PackagePath -SkipNames $SkipNames -SkipPrefixes $SkipPrefixes)
+    $got = @(Get-FastLlmTreeHashList -TreePath $InstalledPath -SkipNames $SkipNames -SkipPrefixes $SkipPrefixes)
+    $diff = @(Compare-Object -ReferenceObject $want -DifferenceObject $got)
+    if ($diff.Count) {
+        $detail = ($diff | Select-Object -First 10 | ForEach-Object { $(if ($_.SideIndicator -eq '<=') { 'package only' } else { 'installed only' }) + ': ' + $_.InputObject }) -join '; '
+        throw "installed tree does not equal the signed package tree ($($diff.Count) differences): $detail"
+    }
+    return $want.Count
+}
+
+function Test-FastLlmFileHashEqual {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ReferencePath)
+    $a = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    $b = (Get-FileHash -LiteralPath $ReferencePath -Algorithm SHA256).Hash
+    if ($a -ne $b) { throw "$Path (sha256 $a) differs from the package copy $ReferencePath (sha256 $b)" }
+}
+
+function Test-FastLlmPackageScriptsSigned {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PackagePath,
+        [hashtable]$SignatureArgs = @{}
+    )
+    $root = (Resolve-Path -LiteralPath $PackagePath).ProviderPath.TrimEnd('\', '/')
+    $scripts = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' })
+    foreach ($s in $scripts) { Test-FastLlmReleaseSignature -Path $s.FullName @SignatureArgs | Out-Null }
+    return $scripts.Count
+}
+
 function ConvertTo-FastLlmVersionInfoText {
     [CmdletBinding()]
     param([string]$Text)
@@ -89,4 +145,4 @@ function Get-FastLlmInstallerProductVersion {
     return ConvertTo-FastLlmVersionInfoText ((Get-Item -LiteralPath $Path).VersionInfo.ProductVersion)
 }
 
-Export-ModuleMember -Function Test-FastLlmReleaseSignature, Read-FastLlmSha256Sums, Resolve-FastLlmReleaseTag, Test-FastLlmCatalogTree, ConvertTo-FastLlmVersionInfoText, Get-FastLlmInstallerProductVersion
+Export-ModuleMember -Function Test-FastLlmReleaseSignature, Read-FastLlmSha256Sums, Resolve-FastLlmReleaseTag, Test-FastLlmCatalogTree, ConvertTo-FastLlmVersionInfoText, Get-FastLlmInstallerProductVersion, Get-FastLlmTreeHashList, Test-FastLlmTreeMatchesPackage, Test-FastLlmFileHashEqual, Test-FastLlmPackageScriptsSigned
