@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  INNO_VERSION: '6.7.3'
+  INNO_VERSION: '6.7.1'
   ARTIFACT_SIGNING_MODULE_VERSION: '0.1.20'
 
 jobs:
