@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { throw "bad version: $Version" }
 $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC not found at $iscc (install Inno Setup 6.7.3)" }
+if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC not found at $iscc (install Inno Setup 6.7.1)" }
 $source = (Resolve-Path -LiteralPath $SourceDir).Path
 if (-not (Test-Path -LiteralPath (Join-Path $source 'LICENSE'))) { throw 'SourceDir has no LICENSE: not a FastLLM package tree' }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null

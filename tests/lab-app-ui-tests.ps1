@@ -215,7 +215,7 @@ Check ($source.Contains('if (!resumed)') -and $source.Contains('TerminateProcess
     $source.Contains('WaitForSingleObject(child.process, 5000u)') -and
     $source.Contains('CloseHandle(child.thread)') -and $source.Contains('CloseHandle(child.process)')) 'pre-resume failure cleans up a process that cannot have started descendants'
 Check ($source -notmatch '(?i)\bStart-Process\b') 'setup does not spawn an unleased command process'
-Check ($managedCmd.Contains('"%FASTLLM_PS%" -NoLogo -NoProfile -STA -File') -and
+Check ($managedCmd.Contains('"%FASTLLM_PS%" -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -STA -File') -and
     $managedCmd -notmatch '(?im)^\s*start\s') 'managed command synchronously waits for its PowerShell control-window descendant'
 $nativeStart = $source.IndexOf('using System;')
 $nativeEnd = $source.IndexOf("`n'@",$nativeStart)
