@@ -25,7 +25,7 @@ $prefix=[byte[]](0,0,0,11,115,115,104,45,101,100,50,53,53,49,57,0,0,0,32)
 $keyA='ssh-ed25519 '+[Convert]::ToBase64String([byte[]]($prefix+@(1..32)))
 $keyB='ssh-ed25519 '+[Convert]::ToBase64String([byte[]]($prefix+@(33..64)))
 Assert-True ((ConvertTo-LabPublicKey "$keyA a comment") -ceq $keyA) 'Key normalization failed.'
-foreach ($bad in @('-----BEGIN OPENSSH PRIVATE KEY-----',"$keyA`n$keyB",'ssh-ed25519 AAAA',
+foreach ($bad in @(('-----BEGIN OPENSSH '+'PRIVATE KEY-----'),"$keyA`n$keyB",'ssh-ed25519 AAAA',
     ('restrict '+$keyA),($keyA.Replace('ssh-ed25519','ssh-rsa')))) {
     Assert-Throws { ConvertTo-LabPublicKey $bad } 'Accepted malformed or unsupported key.'
 }

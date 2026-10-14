@@ -24,7 +24,7 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
@@ -41,7 +41,9 @@ try {
             return $script:startTestState.fresh
         }
         function script:Invoke-FastLlmSupervisedServer {
-            param($Plan,$InstallRoot,$LoadTimeoutSeconds,$CatalogPath)
+            param($Plan,$InstallRoot,$LoadTimeoutSeconds,$CatalogPath,[string]$VulkanBarMitigation,[switch]$ThroughputCanary,[string]$DeviceBinding)
+            $script:startTestState.supervisorBound=@($PSBoundParameters.Keys | Sort-Object);$script:startTestState.supervisorBinding=$DeviceBinding
+            $script:startTestState.supervisorPolicy=$VulkanBarMitigation;$script:startTestState.supervisorCanary=[bool]$ThroughputCanary
             $script:startTestState.events.Add('supervisor');$script:startTestState.observed=$Plan;return 0
         }
     } $state
@@ -49,6 +51,39 @@ try {
     Check ($result -eq 0 -and ($state.events -join ',') -eq 'hash,reprobe,supervisor') 'startup hashes, re-probes, then delegates to the supervisor in order'
     Check ($state.requestedModel -eq $plan.model.id -and $state.requestedContext -eq 8192) 'post-hash replanning preserves the explicit artifact and context'
     Check ($state.observed.selectedAdapters[0].device -eq 'Vulkan1' -and $state.observed.serverArguments[$deviceArgument] -eq 'Vulkan1') 'same-artifact launch uses the latest device arguments'
+
+    # Vulkan memory policy / canary wiring: defaults leave the supervisor call exactly as it was.
+    Check (($state.supervisorBound -join ',') -eq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan') 'a default start passes the supervisor exactly the pre-existing parameters (mitigation and canary stay off)'
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -VulkanBarMitigation on | Out-Null
+    Check ($state.supervisorBound -contains 'VulkanBarMitigation' -and $state.supervisorPolicy -eq 'on' -and -not $state.supervisorCanary) 'an explicit on reaches the supervisor and nothing else changes'
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -VulkanBarMitigation auto -ThroughputCanary | Out-Null
+    Check ($state.supervisorPolicy -eq 'auto' -and $state.supervisorCanary) 'an explicit auto and the canary flag reach the supervisor'
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -VulkanBarMitigation off | Out-Null
+    Check (($state.supervisorBound -join ',') -eq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan') 'an explicit off is the same call as the default'
+    # W03 Phase A device binding: reaches the supervisor only when not off; off is the very same supervisor call as the default.
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding off | Out-Null
+    Check (($state.supervisorBound -join ',') -eq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan' -and [string]::IsNullOrEmpty([string]$state.supervisorBinding)) 'an explicit -DeviceBinding off is exactly the default supervisor call (no DeviceBinding parameter passed)'
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding record | Out-Null
+    Check (($state.supervisorBound -join ',') -eq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan' -and $state.supervisorBinding -ceq 'record' -and -not $state.supervisorCanary) '-DeviceBinding record reaches the supervisor and nothing else changes'
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -VulkanBarMitigation auto -DeviceBinding record | Out-Null
+    Check ($state.supervisorPolicy -eq 'auto' -and $state.supervisorBinding -ceq 'record') 'the BAR policy and the device binding travel together'
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding enforce | Out-Null
+    Check (($state.supervisorBound -join ',') -eq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan' -and $state.supervisorBinding -ceq 'enforce' -and -not $state.supervisorCanary) '-DeviceBinding enforce reaches the supervisor and nothing else changes'
+    $state.events.Clear();$bogusRejected=$false
+    try { Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding bogus | Out-Null } catch { $bogusRejected=$true }
+    Check ($bogusRejected -and $state.events.Count -eq 0) 'an unknown -DeviceBinding value fails before any hashing or launch'
+    & $module { $script:FastLlmVulkanBarMitigationPolicy = 'auto' }
+    try {
+        Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+        Check ($state.supervisorPolicy -eq 'auto') 'the module-level policy is honoured when no start parameter is given'
+        Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp -VulkanBarMitigation off | Out-Null
+        Check ($null -eq $state.supervisorPolicy -or $state.supervisorPolicy -eq '') 'an explicit start parameter overrides the module-level policy'
+        & $module { $script:FastLlmVulkanBarMitigationPolicy = 'bogus' }
+        $caught=$false;$state.events.Clear()
+        try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match 'Unknown Vulkan Resizable BAR mitigation'}
+        Check ($caught -and $state.events.Count -eq 0) 'an invalid module-level policy fails before any hashing or launch'
+    } finally { & $module { $script:FastLlmVulkanBarMitigationPolicy = 'off' } }
+    $state.events.Clear()
 
     foreach($property in @('modelPath','backend','catalogVersion')){
         $original=$fresh.$property;$fresh.$property='changed';$state.events.Clear();$reason=$null
@@ -68,6 +103,135 @@ try {
     $state.hash=$true;$state.consent=$false;$state.events.Clear();$caught=$false
     try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match 'consent'}
     Check ($caught -and -not $state.events.Contains('supervisor')) 'missing consent cannot reach native launch'
+
+    # ================= fast-llm.ps1 start -NoDownload: every acquisition path is blocked with a typed failure code =================
+    # The real 'start' branch of fast-llm.ps1 is extracted from its AST and run with every I/O boundary replaced by a recorder, so no
+    # Install-*, download or network seam can be reached unnoticed (the same technique as ui-flow-tests for the install branch).
+    $cliTokens=$null;$cliErrors=$null
+    $cliTree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm.ps1'),[ref]$cliTokens,[ref]$cliErrors)
+    Check (@($cliErrors).Count -eq 0) 'fast-llm.ps1 parses'
+    $cliSwitch=@($cliTree.FindAll({param($node) $node -is [Management.Automation.Language.SwitchStatementAst]},$true))[0]
+    $startClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'start'" })[0]
+    $startText=$startClause.Item2.Extent.Text
+    $startBranch=[scriptblock]::Create($startText.Substring(1,$startText.Length-2))
+    $cliSource=[IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
+    Check ($cliSource.Contains('[switch] $NoDownload') -and $cliSource.Contains("-NoDownload is supported only by a live start.")) 'fast-llm.ps1 declares -NoDownload and refuses it outside a live start'
+
+    $ndRoot=Join-Path $temp 'nodownload'
+    New-Item -ItemType Directory -Path $ndRoot -Force | Out-Null
+    $ndModel=Join-Path $ndRoot 'model.gguf'
+    $script:nd=@{log=(New-Object 'Collections.Generic.List[string]');prereq=$true;engine=$true;modelExists=$true;consent=$true;startQueue=(New-Object 'Collections.Generic.Queue[object]');recovery=$true;planCalls=0;requestedModelIds=(New-Object 'Collections.Generic.List[string]')}
+    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear()
+        if(Test-Path -LiteralPath $ndModel){Remove-Item -LiteralPath $ndModel -Force};Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true }
+    function Get-FastLlmWindowsPrerequisiteStatus { $script:nd.log.Add('prerequisites');return [pscustomobject]@{applicable=$true;ready=$script:nd.prereq} }
+    function Get-FastLlmCatalog { param($CatalogPath) $script:nd.log.Add('catalog');return [pscustomobject]@{engine=[pscustomobject]@{version='b-test';assets=[pscustomobject]@{vulkan=[pscustomobject]@{enabled=$true};rocm=[pscustomobject]@{enabled=$false}}}} }
+    function Test-FastLlmEngineInstallation { param($InstallRoot,$EngineVersion,$BackendKey,$Asset) $script:nd.log.Add('engine-check');return $script:nd.engine }
+    function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) $script:nd.log.Add('hardware');return [pscustomobject]@{} }
+    function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel)
+        $script:nd.log.Add('plan');$script:nd.planCalls++;$script:nd.requestedModelIds.Add([string]$ModelId)
+        return [pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}} }
+    function Write-FastLlmPlan { param($Plan) }
+    function Test-FastLlmModelConsentReceipt { param($Model,$InstallRoot) $script:nd.log.Add('consent-check');return $script:nd.consent }
+    function Install-FastLlmModel { param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:nd.log.Add('INSTALL-MODEL');Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true;return $ndModel }
+    function Install-FastLlmEngines { param($CatalogPath,$InstallRoot) $script:nd.log.Add('INSTALL-ENGINE') }
+    function Save-FastLlmVerifiedFile { param($Url,$Destination,$Sha256,$SizeBytes) $script:nd.log.Add('NETWORK-SAVE') }
+    function Invoke-WebRequest { $script:nd.log.Add('NETWORK-WEB') }
+    function Invoke-RestMethod { $script:nd.log.Add('NETWORK-REST') }
+    function Get-FastLlmRecoveryPlan { param($Hardware,$CatalogPath,$InstallRoot,$Profile,$FailedModelId,$RequestedModelId,$ContextSize)
+        $script:nd.log.Add('recovery-plan');if($script:nd.recovery){return [pscustomobject]@{model=[pscustomobject]@{id='other-model'}}};return $null }
+    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding)
+        $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object)
+        if($script:nd.startQueue.Count -gt 0){
+            $next=$script:nd.startQueue.Dequeue()
+            if($next -is [string]){$e=New-Object InvalidOperationException('simulated '+$next);$e.Data['FastLlmReason']=$next;throw $e}
+            if($next -is [hashtable]){$e=New-Object InvalidOperationException('simulated '+$next.reason);$e.Data['FastLlmReason']=$next.reason;$e.Data['FastLlmFailureCode']=$next.code;throw $e}
+            return [int]$next
+        }
+        return 0 }
+    $script:ndDeviceBinding='off'
+    function Invoke-NdStart([bool]$NoDownloadSwitch) {
+        $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
+        $AcceptModelLicense=$false;$Unattended=$true;$ThroughputCanary=$false;$VulkanBarMitigation='off';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
+        $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
+        $failure=$null
+        try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
+        return $failure
+    }
+    function Get-NdCode($Failure) { if($null -eq $Failure){return $null};return $Failure.Data['FastLlmFailureCode'] }
+    function Test-NdNoAcquisition { return (@($script:nd.log | Where-Object { $_ -cmatch '^(INSTALL|NETWORK)' }).Count -eq 0) }
+
+    # -- blocked paths: a typed code, never RuntimeCheckFailed, and no Install-*/network seam is reached
+    Reset-Nd; $script:nd.prereq=$false
+    $f=Invoke-NdStart $true
+    Check ((Get-NdCode $f) -ceq 'needs-setup-prerequisite-missing' -and $f.Data['FastLlmReason'] -cne 'RuntimeCheckFailed' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('hardware') -and -not $script:nd.log.Contains('start')) '-NoDownload: a missing runtime prerequisite is needs-setup-prerequisite-missing before any probe or start'
+    Reset-Nd; $script:nd.engine=$false
+    $f=Invoke-NdStart $true
+    Check ((Get-NdCode $f) -ceq 'needs-setup-engine-missing' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('hardware') -and -not $script:nd.log.Contains('start')) '-NoDownload: a missing engine is needs-setup-engine-missing and Install-FastLlmEngines is never reached'
+    Reset-Nd; Remove-Item -LiteralPath $ndModel -Force; $script:nd.modelExists=$false
+    $f=Invoke-NdStart $true
+    Check ((Get-NdCode $f) -ceq 'needs-setup-model-missing' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('start') -and -not $script:nd.log.Contains('recovery-plan')) '-NoDownload: a missing model file is needs-setup-model-missing, with no Install-FastLlmModel and no start'
+    Reset-Nd; $script:nd.consent=$false
+    $f=Invoke-NdStart $true
+    Check ((Get-NdCode $f) -ceq 'needs-setup-consent-missing' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('start')) '-NoDownload: a present model without a consent receipt is needs-setup-consent-missing (no provisioning)'
+    Reset-Nd; $script:nd.startQueue.Enqueue('ModelNeedsProvisioning')
+    $f=Invoke-NdStart $true
+    Check ((Get-NdCode $f) -ceq 'needs-setup-model-invalid' -and (Test-NdNoAcquisition) -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1) '-NoDownload: a model that fails verification inside start is needs-setup-model-invalid; the repair download path (Install-FastLlmModel) is not reached and there is no re-plan'
+    Reset-Nd; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+    $f=Invoke-NdStart $true
+    Check ($f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and -not $script:nd.log.Contains('recovery-plan') -and (Test-NdNoAcquisition) -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.requestedModelIds.Count -eq 1) '-NoDownload: a genuine runtime failure never triggers model recovery or substitution (one start, no recovery plan)'
+    Reset-Nd; $script:nd.startQueue.Enqueue('PlanChanged')
+    $f=Invoke-NdStart $true
+    Check ($null -eq $f -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 2 -and (Test-NdNoAcquisition) -and @($script:nd.requestedModelIds | Where-Object { $_ -cne 'nd-model' }).Count -eq 0) '-NoDownload: a PlanChanged re-plan is not an acquisition and keeps the pinned -ModelId'
+    Reset-Nd
+    $f=Invoke-NdStart $true
+    Check ($null -eq $f -and (Test-NdNoAcquisition) -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1) '-NoDownload: a healthy start still starts exactly once'
+
+    # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
+    Reset-Nd
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan') 'default start: Start-FastLlmServer is called without -DeviceBinding'
+    Reset-Nd; $script:ndDeviceBinding='record'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan') '-DeviceBinding record: Start-FastLlmServer receives it'
+    # -- W03 Phase A enforce: the CLI passes it on, and a DeviceBindingFailed failure is NEVER retried, re-planned, recovered or model-swapped
+    foreach($recoveryAllowed in @($false,$true)){
+        Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.recovery=$recoveryAllowed; $script:nd.startQueue.Enqueue('DeviceBindingFailed')
+        $f=Invoke-NdStart $false
+        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan' -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "-DeviceBinding enforce: a DeviceBindingFailed start is rethrown after exactly one start (no retry, no re-plan, no recovery plan, no model swap; recovery available: $recoveryAllowed)"
+    }
+    Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.startQueue.Enqueue('DeviceBindingFailed')
+    $f=Invoke-NdStart $true
+    Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and (Test-NdNoAcquisition)) '-DeviceBinding enforce with -NoDownload: the DeviceBindingFailed failure is rethrown unchanged'
+    # N-1: a failure that carries a device-binding-* code is never recovered, even if its reason is the recoverable RuntimeCheckFailed
+    # (this is the only thing that stops the CLI guard being dead code: delete the code half of the guard and these fail).
+    foreach($recoveryAllowed in @($false,$true)){
+        Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.recovery=$recoveryAllowed; $script:nd.startQueue.Enqueue(@{reason='RuntimeCheckFailed';code='device-binding-post-load-mismatch'})
+        $f=Invoke-NdStart $false
+        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and $f.Data['FastLlmFailureCode'] -ceq 'device-binding-post-load-mismatch' -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "a RuntimeCheckFailed carrying a device-binding-* code is rethrown after one start with no recovery (recovery available: $recoveryAllowed)"
+    }
+    Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.startQueue.Enqueue(@{reason='RuntimeCheckFailed';code='startup-or-runtime-check-failed'})
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan')) 'a RuntimeCheckFailed with an ordinary failure code is still recovered'
+    Check ($cliSource.Contains("-clike 'device-binding-*'") -and $cliSource.Contains('$DeviceBinding = $DeviceBinding.ToLowerInvariant()')) 'fast-llm.ps1 rethrows on a device-binding-* failure code and normalises -DeviceBinding to lowercase'
+    Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan')) '-DeviceBinding enforce: an ordinary RuntimeCheckFailed is still recovered exactly as before'
+    $script:ndDeviceBinding='off'
+    Check ($cliSource.Contains("[ValidateSet('off', 'record', 'enforce')]") -and $cliSource.Contains("[string] `$DeviceBinding = 'off'") -and $cliSource.Contains('-DeviceBinding is supported only by a live start.') -and $cliSource.Contains("`$PSBoundParameters.ContainsKey('DeviceBinding')")) 'fast-llm.ps1 declares -DeviceBinding off|record|enforce and refuses it outside a live start'
+
+    # -- the default start (no switch) is unchanged: it still provisions and recovers exactly as before
+    Reset-Nd; Remove-Item -LiteralPath $ndModel -Force; $script:nd.modelExists=$false
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.log -join ',') -ceq 'hardware,plan,INSTALL-MODEL,hardware,plan,consent-check,start') 'default start, model missing: provisions through Install-FastLlmModel, re-plans, then starts (no prerequisite or engine pre-check added)'
+    Reset-Nd; $script:nd.startQueue.Enqueue('ModelNeedsProvisioning')
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.log -join ',') -ceq 'hardware,plan,consent-check,start,INSTALL-MODEL,hardware,plan,consent-check,start') 'default start, corrupt model: still repaired through Install-FastLlmModel and re-planned'
+    Reset-Nd; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.log -join ',') -ceq 'hardware,plan,consent-check,start,hardware,recovery-plan,hardware,plan,consent-check,start' -and $script:nd.requestedModelIds[$script:nd.requestedModelIds.Count-1] -ceq 'other-model') 'default start, runtime failure: model recovery and substitution still happen'
+    Reset-Nd; $script:nd.consent=$false
+    $f=Invoke-NdStart $false
+    Check ($null -ne $f -and $null -eq (Get-NdCode $f) -and $script:nd.log.Contains('INSTALL-MODEL')) 'default start, no consent receipt: still provisions (and the failure carries no typed -NoDownload code)'
 } finally {
     foreach($name in $saved.Keys){& $module {param($N,$B) Set-Item -Path ('Function:script:'+$N) -Value $B} $name $saved[$name]}
     if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Recurse -Force}

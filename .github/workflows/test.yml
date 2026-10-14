@@ -137,6 +137,7 @@ jobs:
           .\tests\runtime-tests.ps1
           .\tests\start-tests.ps1
           .\tests\benchmark-tests.ps1
+          .\tests\benchmark-vnext-tests.ps1
           .\tests\offload-lab-tests.ps1
           .\tests\offload-benchmark-tests.ps1
           .\tests\vulkan-fit-trial-tests.ps1
@@ -150,6 +151,7 @@ jobs:
           .\tests\runtime-tests.ps1
           .\tests\start-tests.ps1
           .\tests\benchmark-tests.ps1
+          .\tests\benchmark-vnext-tests.ps1
           .\tests\offload-lab-tests.ps1
           .\tests\offload-benchmark-tests.ps1
           .\tests\vulkan-fit-trial-tests.ps1

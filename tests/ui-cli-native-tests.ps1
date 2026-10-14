@@ -43,7 +43,10 @@ function Invoke-BoundedCli([string[]]$CliArguments){
         if(-not $child.Process.HasExited){throw 'CLI negative child exceeded its 30-second deadline.'}
         while(-not $child.OutputCompleted -and $watch.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 20}
         if(-not $child.OutputCompleted -or $child.OutputTruncated){throw 'CLI negative child output was incomplete.'}
-        return [pscustomobject]@{exitCode=$child.Process.ExitCode;text=$child.Snapshot()}
+        # Windows PowerShell wraps an error record to the host width, so a message can be split across lines at a point that depends on
+        # the script path's length. Match against the text with line breaks removed (flat); keep the raw text too.
+        $text=$child.Snapshot()
+        return [pscustomobject]@{exitCode=$child.Process.ExitCode;text=$text;flat=($text -replace "\r?\n",'')}
     }finally{$child.Dispose()}
 }
 
@@ -61,7 +64,7 @@ try{
     $rejectedRoot=Join-Path $testParent 'wrong-digest'
     $result=Invoke-BoundedCli @('install','-ModelId',$modelId,'-InstallRoot',$rejectedRoot,
         '-AcceptModelLicense','-Unattended','-ExpectedModelProvenanceSha256',$wrongDigest)
-    Check ($result.exitCode -ne 0 -and $result.text -match 'selected model provenance changed after license review') 'Real CLI rejected the wrong exact digest.'
+    Check ($result.exitCode -ne 0 -and $result.flat -match 'selected model provenance changed after license review') 'Real CLI rejected the wrong exact digest.'
     foreach($name in @('engines','downloads','models','consents')){
         Check (-not (Test-Path -LiteralPath (Join-Path $rejectedRoot $name))) "Rejected consent created no $name acquisition directory."
     }
@@ -78,7 +81,7 @@ try{
         $entry=$invalid[$index]
         $path=Join-Path $testParent ('invalid-'+$index)
         $result=Invoke-BoundedCli (@($entry.args)+@('-InstallRoot',$path))
-        Check ($result.exitCode -ne 0 -and $result.text -match 'ExpectedModelProvenanceSha256') "$($entry.label) combination was rejected."
+        Check ($result.exitCode -ne 0 -and $result.flat -match 'ExpectedModelProvenanceSha256') "$($entry.label) combination was rejected."
         Check (-not (Test-Path -LiteralPath $path)) "$($entry.label) created no install root."
     }
     Write-Output "Native CLI consent boundary passed: $checks checks; no positive install or native model execution."

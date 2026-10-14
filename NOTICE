@@ -1,0 +1,8 @@
+FastLLM
+Copyright 2026 Bitworks LLC
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+FastLLM downloads third-party software and model files to the user's computer at the user's request and verifies them
+against pinned SHA-256 hashes; it does not redistribute them. Their licenses and notices are listed in
+THIRD_PARTY_NOTICES.md, and the llama.cpp license text is in licenses/llama.cpp/LICENSE.

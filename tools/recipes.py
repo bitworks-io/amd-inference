@@ -253,6 +253,14 @@ def validate_manifest(manifest, root, catalog, catalog_sha):
             raise ValueError('Benchmark launch arguments malformed')
         if digest(arguments) != recipe['launchArgsSha256']:
             raise ValueError('Benchmark launch arguments differ')
+        # Manifest recipes describe the default child environment ({}); a benchmark run with an environment override
+        # (for example GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1) is a different configuration and cannot bind to them.
+        override = benchmark['recipe'].get('environmentOverride', {})
+        if not isinstance(override, dict) or any(not isinstance(key, str) or not key or not isinstance(value, str)
+                                                 for key, value in override.items()):
+            raise ValueError('Benchmark environment override malformed')
+        if override:
+            raise ValueError('Benchmark environment override differs')
         layer_flags = [arguments[i + 1] for i, arg in enumerate(arguments[:-1])
                        if arg in ('--n-gpu-layers', '-ngl')]
         if len(layer_flags) != 1:

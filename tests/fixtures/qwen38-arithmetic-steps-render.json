@@ -1,0 +1,5 @@
+{
+ "description": "Jinja2 render of the fixed synthetic arithmetic-steps-v1 prompt (first-party Qwen3.8 template, enable_thinking=false). Test fixture copied from the private local parity evidence; contains no user data.",
+ "renderSha256": "0de01e9758e7469fbbf649a3d529d756ccb8bcc0d937538633155ca18c20c41c",
+ "text": "<|im_start|>user\nCompute (84 divided by 7 plus 9) times 3, using the parentheses as written. Output only the resulting base-10 integer.\nNo units or explanation.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+}

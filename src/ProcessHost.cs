@@ -15,6 +15,9 @@ namespace Bitworks.FastLlm {
         private readonly StringBuilder placementOutput = new StringBuilder();
         private readonly StringBuilder startupOutput = new StringBuilder();
         private readonly StringBuilder selectedDeviceOutput = new StringBuilder();
+        private readonly StringBuilder selectedUnknownDeviceOutput = new StringBuilder();
+        private readonly StringBuilder deviceInfoOutput = new StringBuilder();
+        private readonly StringBuilder usingDeviceOutput = new StringBuilder();
         private readonly object sync = new object();
         private static readonly Regex OffloadLine = new Regex(@"load_tensors:\s+offloaded\s+([0-9]+)/([0-9]+)\s+layers to GPU\s*$", RegexOptions.CultureInvariant);
         private static readonly Regex BufferLine = new Regex(@"load_tensors:\s+(Vulkan[0-9]+|ROCm[0-9]+)\s+model buffer size\s*=\s*([0-9]+(?:\.[0-9]+)?)\s+MiB\s*$", RegexOptions.CultureInvariant);
@@ -32,10 +35,26 @@ namespace Bitworks.FastLlm {
         // this model load. Vulkan's device_id is a full BDF when VK_EXT_pci_bus_info
         // is available. Retain only the backend name and BDF, never the description.
         private static readonly Regex SelectedDeviceLine = new Regex(@"llama_prepare_model_devices:\s+using device\s+(Vulkan[0-9]{1,2})\s+\(.{1,512}\)\s+\(([0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7])\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-        private static readonly Regex SelectedDeviceUnknownIdLine = new Regex(@"llama_prepare_model_devices:\s+using device\s+Vulkan[0-9]{1,2}\s+\(.{1,512}\)\s+\(unknown id\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        private static readonly Regex SelectedDeviceUnknownIdLine = new Regex(@"llama_prepare_model_devices:\s+using device\s+(Vulkan[0-9]{1,2})\s+\(.{1,512}\)\s+\(unknown id\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        // Server device list capture (W03 enforce input). Exactly two line shapes are retained, nothing else:
+        //   the level-4 device_info entries   "  - <name>: <desc> (<total> MiB, <free> MiB free)"   (common.cpp prints "  - %-8s: %s (%zu MiB, %zu MiB free)")
+        //   the llama_prepare_model_devices   "using device <name> (<desc>) (<BDF or unknown id>) - <free> MiB free"   lines
+        // b10698 common_init() turns on the log prefix and timestamps, so a real line is "<M.SS.mmm.uuu> <L> " (level letter I/W/E/D) followed by the
+        // message, and a COM_TRC device_info entry also carries the "cmn  %12.*s: " tag. Exactly an optional timestamp, an optional single capital
+        // level letter and (device_info only) an optional 12-character cmn tag are tolerated before either shape. The description is limited to printable ASCII,
+        // a line longer than 256 characters is never retained, and at most 16 entries of each shape are kept. This capture is separate from
+        // the selected-device capture above, which is unchanged.
+        private static readonly Regex DeviceInfoEntryLine = new Regex(@"^(?:[0-9]{1,6}\.[0-9]{2}\.[0-9]{3}\.[0-9]{3} )?(?:[A-Z] )?(?:cmn  [A-Za-z0-9_ ]{12}: )?  - ([A-Za-z0-9_]{1,16}) *: ([\x20-\x7e]{1,128}) \(([0-9]{1,12}) MiB, ([0-9]{1,12}) MiB free\)[ \t\r]*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        private static readonly Regex UsingDeviceEntryLine = new Regex(@"^(?:[0-9]{1,6}\.[0-9]{2}\.[0-9]{3}\.[0-9]{3} )?(?:[A-Z] )?llama_prepare_model_devices: using device ([A-Za-z0-9_]{1,16}) \(([\x20-\x7e]{1,128})\) \((unknown id|[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7])\) - ([0-9]{1,12}) MiB free[ \t\r]*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        private const int DeviceListMaxEntries = 16;
+        private const int DeviceListMaxLineLength = 256;
+        private int deviceInfoLike, deviceInfoCaptured, deviceInfoMalformed, deviceInfoDropped;
+        private int usingDeviceLike, usingDeviceCaptured, usingDeviceMalformed, usingDeviceDropped;
+        private bool deviceListFrozen;
         private int placementLines, placementDropped, tensorLines, offloadLikeLines, bufferLikeLines, cpuBufferLikeLines;
         private int startupLines, startupDropped;
         private int selectedDeviceLikeLines, selectedDeviceLines, selectedDeviceDropped, selectedDeviceMalformed, selectedDeviceUnknownId, selectedDeviceBadFormat;
+        private int selectedUnknownDeviceLines, selectedUnknownDeviceDropped;
         private bool startupFrozen;
         private bool selectedDeviceFrozen;
         private bool outputTruncated;
@@ -92,9 +111,16 @@ namespace Bitworks.FastLlm {
                     try {
                         Match selected = args.Data.Length <= 8192 ? SelectedDeviceLine.Match(line) : null;
                         if (selected == null || !selected.Success) {
-                            bool unknownId = args.Data.Length <= 8192 && SelectedDeviceUnknownIdLine.IsMatch(line);
+                            Match unknown = args.Data.Length <= 8192 ? SelectedDeviceUnknownIdLine.Match(line) : null;
+                            bool unknownId = unknown != null && unknown.Success;
                             selectedDeviceMalformed++;
-                            if (unknownId) selectedDeviceUnknownId++;
+                            if (unknownId) {
+                                selectedDeviceUnknownId++;
+                                if (selectedUnknownDeviceLines < 16) {
+                                    selectedUnknownDeviceOutput.Append("selected-device-unknown ").AppendLine(unknown.Groups[1].Value);
+                                    selectedUnknownDeviceLines++;
+                                } else selectedUnknownDeviceDropped++;
+                            }
                             else selectedDeviceBadFormat++;
                         }
                         else if (selectedDeviceLines < 16) {
@@ -104,6 +130,7 @@ namespace Bitworks.FastLlm {
                         } else selectedDeviceDropped++;
                     } catch (RegexMatchTimeoutException) { selectedDeviceMalformed++; selectedDeviceBadFormat++; }
                 }
+                if (!deviceListFrozen) CaptureDeviceList(args.Data);
                 if (offload.Success || buffer.Success || cpuBuffer.Success) {
                     if (placementLines < 64) {
                         if (offload.Success)
@@ -134,17 +161,66 @@ namespace Bitworks.FastLlm {
                 if (output.Length > 262144) { output.Remove(0, output.Length - 262144); outputTruncated = true; }
             }
         }
+        // Called under the sync lock. The strict patterns run only on lines of at most 256 characters.
+        private void CaptureDeviceList(string data) {
+            bool usingLike = data.IndexOf("llama_prepare_model_devices:", StringComparison.Ordinal) >= 0 &&
+                             data.IndexOf("using device", StringComparison.Ordinal) >= 0;
+            bool infoLike = !usingLike && data.IndexOf(" MiB free)", StringComparison.Ordinal) >= 0 &&
+                            data.IndexOf("  - ", StringComparison.Ordinal) >= 0;
+            if (!usingLike && !infoLike) return;
+            bool withinLength = data.Length <= DeviceListMaxLineLength;
+            try {
+                if (usingLike) {
+                    usingDeviceLike++;
+                    Match m = withinLength ? UsingDeviceEntryLine.Match(data) : null;
+                    if (m == null || !m.Success) { usingDeviceMalformed++; return; }
+                    if (usingDeviceCaptured < DeviceListMaxEntries) {
+                        string id = m.Groups[3].Value == "unknown id" ? "unknown" : m.Groups[3].Value.ToLowerInvariant();
+                        usingDeviceOutput.Append("using-device ").Append(m.Groups[1].Value).Append(' ').Append(id).Append(' ')
+                            .Append(m.Groups[4].Value).Append(' ').AppendLine(m.Groups[2].Value);
+                        usingDeviceCaptured++;
+                    } else usingDeviceDropped++;
+                } else {
+                    deviceInfoLike++;
+                    Match m = withinLength ? DeviceInfoEntryLine.Match(data) : null;
+                    if (m == null || !m.Success) { deviceInfoMalformed++; return; }
+                    if (deviceInfoCaptured < DeviceListMaxEntries) {
+                        deviceInfoOutput.Append("device-info ").Append(m.Groups[1].Value).Append(' ').Append(m.Groups[3].Value).Append(' ')
+                            .Append(m.Groups[4].Value).Append(' ').AppendLine(m.Groups[2].Value);
+                        deviceInfoCaptured++;
+                    } else deviceInfoDropped++;
+                }
+            } catch (RegexMatchTimeoutException) { if (usingLike) usingDeviceMalformed++; else deviceInfoMalformed++; }
+        }
+        public string FreezeDeviceInfoEntries() { lock (sync) { deviceListFrozen = true; return deviceInfoOutput.ToString(); } }
+        public string FreezeUsingDeviceEntries() { lock (sync) { deviceListFrozen = true; return usingDeviceOutput.ToString(); } }
+        public int DeviceInfoLikeLines { get { lock (sync) { return deviceInfoLike; } } }
+        public int DeviceInfoMalformedLines { get { lock (sync) { return deviceInfoMalformed; } } }
+        public int UsingDeviceLikeLines { get { lock (sync) { return usingDeviceLike; } } }
+        public int UsingDeviceMalformedLines { get { lock (sync) { return usingDeviceMalformed; } } }
+        public bool DeviceInfoOverflow { get { lock (sync) { return deviceInfoDropped != 0; } } }
+        public bool UsingDeviceOverflow { get { lock (sync) { return usingDeviceDropped != 0; } } }
+        public string DeviceListCaptureDiagnostics() {
+            lock (sync) {
+                return String.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "deviceInfo(like={0}, captured={1}, malformed={2}, dropped={3}), usingDevice(like={4}, captured={5}, malformed={6}, dropped={7})",
+                    deviceInfoLike, deviceInfoCaptured, deviceInfoMalformed, deviceInfoDropped,
+                    usingDeviceLike, usingDeviceCaptured, usingDeviceMalformed, usingDeviceDropped);
+            }
+        }
         public string Snapshot() { lock (sync) { return output.ToString(); } }
         public bool OutputCompleted { get { lock (sync) { return stdoutCompleted && stderrCompleted; } } }
         public bool OutputTruncated { get { lock (sync) { return outputTruncated; } } }
         public string PlacementSnapshot() { lock (sync) { return placementOutput.ToString(); } }
         public string FreezeStartupDiagnostics() { lock (sync) { startupFrozen = true; return startupOutput.ToString(); } }
         public string FreezeSelectedDeviceIdentity() { lock (sync) { selectedDeviceFrozen = true; return selectedDeviceOutput.ToString(); } }
+        public string FreezeSelectedUnknownDeviceIdentity() { lock (sync) { selectedDeviceFrozen = true; return selectedUnknownDeviceOutput.ToString(); } }
         public int SelectedDeviceLikeLines { get { lock (sync) { return selectedDeviceLikeLines; } } }
         public int SelectedDeviceMalformedLines { get { lock (sync) { return selectedDeviceMalformed; } } }
         public int SelectedDeviceUnknownIdLines { get { lock (sync) { return selectedDeviceUnknownId; } } }
         public int SelectedDeviceBadFormatLines { get { lock (sync) { return selectedDeviceBadFormat; } } }
         public bool SelectedDeviceIdentityOverflow { get { lock (sync) { return selectedDeviceDropped != 0; } } }
+        public bool SelectedUnknownDeviceIdentityOverflow { get { lock (sync) { return selectedUnknownDeviceDropped != 0; } } }
         public string SelectedDeviceIdentityDiagnostics() {
             lock (sync) {
                 return String.Format(System.Globalization.CultureInfo.InvariantCulture,
@@ -174,6 +250,7 @@ namespace Bitworks.FastLlm {
                     Process.WaitForExit(5000);
                 }
             } catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { } // child already terminating: access denied on Kill/HasExited
             finally { Process.Dispose(); }
         }
         [StructLayout(LayoutKind.Sequential)] private struct BasicLimits {
@@ -206,8 +283,42 @@ namespace Bitworks.FastLlm {
         public string[] Events;
         public double[] EventTimesMs;
     }
+    public sealed class GatewayHttpResult {
+        public HttpResult Response;
+        public string Worker;
+        public double? QueueMs;
+    }
+    public sealed class GatewayMetadataException : IOException {
+        public GatewayMetadataException() : base("Gateway response metadata is missing or invalid.") { }
+    }
     public static class LoopbackHttp {
         public static HttpResult Request(string url, string body, int timeoutMs, int maxBytes) {
+            string worker; double queueMs;
+            return RequestCore(url, body, timeoutMs, maxBytes, false, out worker, out queueMs);
+        }
+        public static GatewayHttpResult RequestWithGatewayMetadata(string url, string body, int timeoutMs, int maxBytes) {
+            string worker; double queueMs;
+            HttpResult response = RequestCore(url, body, timeoutMs, maxBytes, true, out worker, out queueMs);
+            return new GatewayHttpResult { Response=response, Worker=worker,
+                QueueMs=Double.IsNaN(queueMs) ? (double?)null : queueMs };
+        }
+        private static void ReadGatewayMetadata(HttpWebResponse response, out string worker, out double queueMs) {
+            string[] workers = response.Headers.GetValues("X-FastLLM-Worker");
+            string[] queues = response.Headers.GetValues("X-FastLLM-Queue-Ms");
+            if (workers == null || workers.Length != 1 || queues == null || queues.Length != 1 ||
+                workers[0] == null || workers[0].Length > 16 || queues[0] == null || queues[0].Length > 16 ||
+                (workers[0] != "worker-0" && workers[0] != "worker-1") ||
+                !System.Text.RegularExpressions.Regex.IsMatch(queues[0], @"^[0-9]{1,6}(?:\.[0-9]{1,3})?$", System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
+                !Double.TryParse(queues[0], System.Globalization.NumberStyles.AllowDecimalPoint,
+                    System.Globalization.CultureInfo.InvariantCulture, out queueMs) ||
+                Double.IsNaN(queueMs) || Double.IsInfinity(queueMs) || queueMs < 0 || queueMs > 600000) {
+                throw new GatewayMetadataException();
+            }
+            worker = workers[0];
+        }
+        private static HttpResult RequestCore(string url, string body, int timeoutMs, int maxBytes,
+            bool captureGatewayMetadata, out string gatewayWorker, out double gatewayQueueMs) {
+            gatewayWorker = null; gatewayQueueMs = Double.NaN;
             Uri uri = new Uri(url);
             if (uri.Scheme != "http" || uri.Host != "127.0.0.1" || !String.IsNullOrEmpty(uri.UserInfo))
                 throw new ArgumentException("Only literal IPv4 loopback HTTP is permitted.");
@@ -237,7 +348,11 @@ namespace Bitworks.FastLlm {
                 if (error.Response == null) throw;
                 response = (HttpWebResponse)error.Response;
             }
-            using (response)
+            using (response) {
+            // Overload/fail-closed gateway responses need not have a selected worker.
+            // Preserve their HTTP status/body; require metadata on successful routing.
+            if (captureGatewayMetadata && (int)response.StatusCode >= 200 && (int)response.StatusCode < 300)
+                ReadGatewayMetadata(response, out gatewayWorker, out gatewayQueueMs);
             using (var stream = response.GetResponseStream())
             using (var memory = new MemoryStream()) {
                 var events = new List<string>();
@@ -263,6 +378,7 @@ namespace Bitworks.FastLlm {
                     }
                 }
                 return new HttpResult { Status = (int)response.StatusCode, Body = Encoding.UTF8.GetString(memory.ToArray()), ElapsedMs = timer.Elapsed.TotalMilliseconds, Events=events.ToArray(), EventTimesMs=eventTimes.ToArray() };
+            }
             }
             }
         }

@@ -91,9 +91,35 @@ function Assert-ConcurrencyControllerLock {
     throw 'Contained worker must run while its controller holds the benchmark lock.'
 }
 
+function Assert-ConcurrencyWaveUrl {
+    param([string]$Value)
+    if([string]::IsNullOrEmpty($Value) -or
+       $Value -cnotmatch '^http://127\.0\.0\.1:([1-9][0-9]{0,4})/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$'){
+        throw 'Wave URL must be a literal IPv4 loopback HTTP endpoint with an explicit port and plain path.'
+    }
+    $port=[int]$Matches[1]
+    $uri=$null
+    if($port -gt 65535 -or -not [Uri]::TryCreate($Value,[UriKind]::Absolute,[ref]$uri) -or
+       $uri.Scheme -cne 'http' -or $uri.Host -cne '127.0.0.1' -or
+       $uri.Port -ne $port -or $uri.UserInfo -or $uri.Query -or $uri.Fragment){
+        throw 'Wave URL is not an exact local HTTP endpoint.'
+    }
+}
+
 function Invoke-ConcurrencyWave {
-    param([string]$Url,[string]$Body,[int]$Clients,[int]$TimeoutMs,[string[]]$Bodies)
+    param([string]$Url,[string]$Body,[int]$Clients,[int]$TimeoutMs,[string[]]$Bodies,[string[]]$Urls,
+          [switch]$CaptureGatewayMetadata)
     if($Clients -lt 1 -or $Clients -gt 8){throw 'Concurrent client count must be between one and eight.'}
+    $hasUrl=$PSBoundParameters.ContainsKey('Url')
+    $hasUrls=$PSBoundParameters.ContainsKey('Urls')
+    if($hasUrl -eq $hasUrls){throw 'Supply exactly one of Url or Urls.'}
+    if($hasUrls -and ($null -eq $Urls -or $Urls.Count -ne $Clients)){
+        throw 'Urls must contain one endpoint for each client.'
+    }
+    $clientUrls=@(if($hasUrls){$Urls}else{$Url})
+    # The multi-endpoint interface rejects the entire mapping before any I/O.
+    # Preserve the legacy single-URL transport's URI/error behavior unchanged.
+    if($hasUrls){foreach($clientUrl in $clientUrls){Assert-ConcurrencyWaveUrl -Value $clientUrl}}
     $hasBody=$PSBoundParameters.ContainsKey('Body')
     $hasBodies=$PSBoundParameters.ContainsKey('Bodies')
     if($hasBody -eq $hasBodies){throw 'Supply exactly one of Body or Bodies.'}
@@ -110,22 +136,35 @@ function Invoke-ConcurrencyWave {
     $clock=[Diagnostics.Stopwatch]::StartNew()
     $workers=New-Object Collections.ArrayList
     $source=@'
-param($Gate,$Ready,$Clock,$Url,$Body,$TimeoutMs)
+param($Gate,$Ready,$Clock,$Url,$Body,$TimeoutMs,$CaptureGatewayMetadata)
 [void]$Ready.Signal()
 $Gate.Wait()
 $start=$Clock.Elapsed.TotalMilliseconds
 try {
-    $response=[Bitworks.FastLlm.LoopbackHttp]::Request($Url,$Body,$TimeoutMs,1048576)
-    [pscustomobject]@{startedMs=$start;finishedMs=$Clock.Elapsed.TotalMilliseconds;response=$response;errorCode=$null}
+    if($CaptureGatewayMetadata){
+        $observed=[Bitworks.FastLlm.LoopbackHttp]::RequestWithGatewayMetadata($Url,$Body,$TimeoutMs,1048576)
+        [pscustomobject]@{startedMs=$start;finishedMs=$Clock.Elapsed.TotalMilliseconds;
+            response=$observed.Response;gatewayWorker=$observed.Worker;gatewayQueueMs=$observed.QueueMs;errorCode=$null}
+    }else{
+        $response=[Bitworks.FastLlm.LoopbackHttp]::Request($Url,$Body,$TimeoutMs,1048576)
+        [pscustomobject]@{startedMs=$start;finishedMs=$Clock.Elapsed.TotalMilliseconds;response=$response;errorCode=$null}
+    }
 } catch {
-    [pscustomobject]@{startedMs=$start;finishedMs=$Clock.Elapsed.TotalMilliseconds;response=$null;errorCode='request-error'}
+    $kind='request-error';$exception=$_.Exception
+    while($exception){
+        if($exception -is [Bitworks.FastLlm.GatewayMetadataException]){$kind='gateway-metadata-error';break}
+        $exception=$exception.InnerException
+    }
+    [pscustomobject]@{startedMs=$start;finishedMs=$Clock.Elapsed.TotalMilliseconds;
+        response=$null;gatewayWorker=$null;gatewayQueueMs=$null;errorCode=$kind}
 }
 '@
     try {
         for($i=0;$i -lt $Clients;$i++){
             $shell=[PowerShell]::Create();$shell.RunspacePool=$pool
             $clientBody=if($hasBodies){$Bodies[$i]}else{$Body}
-            [void]$shell.AddScript($source).AddArgument($gate).AddArgument($ready).AddArgument($clock).AddArgument($Url).AddArgument($clientBody).AddArgument($TimeoutMs)
+            $clientUrl=if($hasUrls){$clientUrls[$i]}else{$Url}
+            [void]$shell.AddScript($source).AddArgument($gate).AddArgument($ready).AddArgument($clock).AddArgument($clientUrl).AddArgument($clientBody).AddArgument($TimeoutMs).AddArgument([bool]$CaptureGatewayMetadata)
             $handle=$shell.BeginInvoke()
             [void]$workers.Add([pscustomobject]@{shell=$shell;handle=$handle})
         }
@@ -139,7 +178,10 @@ try {
             if(-not $worker.handle.AsyncWaitHandle.WaitOne($waitMs)){throw 'Concurrent request exceeded the shared wave deadline.'}
             $items=@($worker.shell.EndInvoke($worker.handle))
             if($items.Count -ne 1){throw "Concurrent worker returned an invalid result (items=$($items.Count), errors=$($worker.shell.Streams.Error.Count))."}
-            $result+= [pscustomobject]@{client=($result.Count+1);startedMs=$items[0].startedMs;finishedMs=$items[0].finishedMs;response=$items[0].response;errorCode=$items[0].errorCode}
+            $row=[ordered]@{client=($result.Count+1);startedMs=$items[0].startedMs;finishedMs=$items[0].finishedMs;response=$items[0].response;errorCode=$items[0].errorCode}
+            if($hasUrls){$row.url=$clientUrls[$result.Count]}
+            if($CaptureGatewayMetadata){$row.gatewayWorker=$items[0].gatewayWorker;$row.gatewayQueueMs=$items[0].gatewayQueueMs}
+            $result+= [pscustomobject]$row
         }
         $terminalMs=($result|Measure-Object finishedMs -Maximum).Maximum
         return [pscustomobject]@{releasedMs=$releasedMs;wallMs=[double]$terminalMs-$releasedMs;

@@ -136,6 +136,23 @@ try{
     Reject {& $module {param($R) ConvertFrom-FastLlmOffloadBenchmarkResponse -Response $R -ExpectedTokens 128} $bad} 'String stop flag passed.'
     $text=Get-Content -LiteralPath $source -Raw
     Check ($text.Contains('GetLoopbackListenerOwners(18081)') -and $text.Contains('MainModule.FileName') -and -not $text.Contains('Invoke-FastLlmBenchmark -')) 'Live HIP listener/executable boundary missing.'
-    Check ((Get-FileHash (Join-Path $root 'src/FastLlm.Benchmark.ps1') -Algorithm SHA256).Hash.ToLowerInvariant() -eq 'c8b64fe0a2e78e3974b63a127da9ae385ca84b51fba69505ee323ab5d464a43b') 'Normal benchmark producer changed.'
+    # Helper-source contract: HIP uses only the shared sample helpers of the canonical producer (Get-FastLlmStatistics,
+    # Get-FastLlmPromptArtifactSha256, and ConvertFrom-FastLlmBenchmarkResponse via the strict parser). The live
+    # src/FastLlm.Benchmark.ps1 is producer v-next (4beefbf7...); the reviewed v1 bytes are src/FastLlm.Benchmark.v1.ps1 (c8b64fe0...).
+    # So pin v1 whole-file, and require the live producer's helper function definitions to be token-identical to v1's.
+    Check ((Get-FileHash (Join-Path $root 'src/FastLlm.Benchmark.v1.ps1') -Algorithm SHA256).Hash.ToLowerInvariant() -eq 'c8b64fe0a2e78e3974b63a127da9ae385ca84b51fba69505ee323ab5d464a43b') 'Reviewed v1 benchmark producer bytes changed.'
+    $helperNames=@('Get-FastLlmStatistics','Get-FastLlmPromptArtifactSha256','Test-FastLlmBenchmarkFiniteNumber','ConvertFrom-FastLlmBenchmarkResponse')
+    $helperAst=@{}
+    foreach($name in @('Benchmark.v1','Benchmark')){
+        $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root "src/FastLlm.$name.ps1"),[ref]$null,[ref]$null)
+        $helperAst[$name]=@{}
+        foreach($fn in $helperNames){
+            $defs=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $fn},$true))
+            Check ($defs.Count -eq 1) "Helper $fn not defined exactly once in FastLlm.$name.ps1."
+            $bytes=[Text.Encoding]::UTF8.GetBytes(($defs[0].Extent.Text -replace '\s+',' '))
+            $helperAst[$name][$fn]=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))
+        }
+    }
+    foreach($fn in $helperNames){Check ($helperAst['Benchmark'][$fn] -ceq $helperAst['Benchmark.v1'][$fn]) "Live producer helper $fn differs from the reviewed v1 helper."}
 }finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Recurse -Force}}
 Write-Host "HIP private benchmark checks passed: $count. Mock requests only; no GPU benchmark executed."

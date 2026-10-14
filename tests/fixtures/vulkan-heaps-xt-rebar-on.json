@@ -1,0 +1,38 @@
+{
+  "schema": "fastllm.vulkan-heap-fixture.v1",
+  "note": "Trimmed from an idle LUID-join report of the XT host: device names, PCI vendor id and Vulkan memory heaps only (no LUIDs, UUIDs, host names or hashes).",
+  "devices": [
+    {
+      "index": 0,
+      "deviceName": "AMD Radeon RX 7900 XT",
+      "deviceTypeName": "discrete",
+      "vendorId": 4098
+    }
+  ],
+  "budgetSamples": [
+    {
+      "sampleIndex": 0,
+      "vulkan": [
+        {
+          "index": 0,
+          "status": "ok",
+          "identityMatchesInitialEnumeration": true,
+          "heaps": [
+            {
+              "heapIndex": 0,
+              "sizeBytes": 17068720128,
+              "flags": 0,
+              "deviceLocal": false
+            },
+            {
+              "heapIndex": 1,
+              "sizeBytes": 21458059264,
+              "flags": 3,
+              "deviceLocal": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

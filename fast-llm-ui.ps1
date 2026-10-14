@@ -14,6 +14,7 @@ Add-Type -AssemblyName System.Drawing
 Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiPrerequisite.ps1')
+. (Join-Path $PSScriptRoot 'src/FastLlm.UiBackground.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
@@ -22,9 +23,12 @@ $script:vcBroker=$null; $script:vcPrepared=$null
 $script:vcCacheRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM\prerequisites'
 $script:vcManifestPath=Join-Path $PSScriptRoot 'config/windows-prerequisites.json'
 $script:trayState=New-FastLlmUiTrayState; $script:trayIcon=$null; $script:trayMenu=$null
+$script:bgState=New-FastLlmUiBackgroundState; $script:bgNextPollUtc=[DateTime]::MinValue
+$script:bgStopRequested=$false
+$script:bgPoll=$null
 $form=New-Object Windows.Forms.Form
 $form.Text='Bitworks FastLLM - Windows lab alpha'
-$form.Size=New-Object Drawing.Size(880,690)
+$form.Size=New-Object Drawing.Size(880,755)
 $form.MinimumSize=$form.Size
 $form.StartPosition='CenterScreen'
 $form.Font=New-Object Drawing.Font('Segoe UI',10)
@@ -58,22 +62,123 @@ $startButton=ButtonAt 'Start / download' 220 255 180
 $stopButton=ButtonAt 'Stop' 416 255 110
 $doctorButton=ButtonAt 'Diagnostics' 542 255 130
 $copyButton=ButtonAt 'Copy API URL' 688 255 132
-$statusLabel=LabelAt 'Stopped. Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first.' 24 309
+$backgroundStartButton=ButtonAt 'Start in background' 24 303 205
+$backgroundAttachButton=ButtonAt 'Attach running' 245 303 165
+$backgroundCheckButton=ButtonAt 'Recheck background' 426 303 180
+$backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
+$statusLabel=LabelAt 'Stopped. Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first.' 24 382
 $progress=New-Object Windows.Forms.ProgressBar
-$progress.Location=New-Object Drawing.Point(24,341);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
+$progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
-$output.Location=New-Object Drawing.Point(24,368);$output.Size=New-Object Drawing.Size(796,214);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
-$vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$vc.Location=New-Object Drawing.Point(24,598);$vc.AutoSize=$true;$form.Controls.Add($vc)
-$amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,598);$amd.AutoSize=$true;$form.Controls.Add($amd)
-$trayButton=ButtonAt 'Minimize to tray' 440 591 175
-$driverButton=ButtonAt 'Driver guidance' 630 591 190
+$output.Location=New-Object Drawing.Point(24,440);$output.Size=New-Object Drawing.Size(796,206);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
+$vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$vc.Location=New-Object Drawing.Point(24,665);$vc.AutoSize=$true;$form.Controls.Add($vc)
+$amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,665);$amd.AutoSize=$true;$form.Controls.Add($amd)
+$trayButton=ButtonAt 'Minimize to tray' 440 658 175
+$driverButton=ButtonAt 'Driver guidance' 630 658 190
 $vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
 $amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
 function SetBusy([bool]$Busy) {
-    foreach($control in @($installButton,$startButton,$doctorButton,$driverButton,$modelBox,$pathBox,$contextBox)){$control.Enabled=-not $Busy}
-    $stopButton.Enabled=($null -eq $script:vcBroker)
+    $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
+        $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
+    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
+    foreach($control in @($doctorButton,$driverButton)){$control.Enabled=-not $Busy}
+    $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
+        (Test-FastLlmUiBackgroundMayStart -State $script:bgState))
+    $backgroundAttachButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
+        -not $script:bgState.attachedRequestId -and $script:bgState.observation -and
+        ($script:bgState.observation.attachable -or
+         ($script:bgState.observation.PSObject.Properties['readyIdentityVerified'] -and
+          $script:bgState.observation.readyIdentityVerified)) -and
+        (-not $script:bgState.pendingRequestId -or [string]$script:bgState.observation.requestId -ceq [string]$script:bgState.pendingRequestId))
+    $backgroundCheckButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child)
+    $stopButton.Enabled=($null -eq $script:vcBroker -and -not $script:bgStopRequested -and
+        ($script:child -or $script:bgState.attachedRequestId -or -not $occupied))
     $trayButton.Enabled=($null -eq $script:vcBroker)
     $progress.Visible=$Busy
+}
+function GetUiBackgroundStatus([switch]$SkipHealth) {
+    return & (Get-Module FastLlm) {param($Source,$Install,$Project,$Skip)
+        . $Source
+        Get-FastLlmBackgroundHostStatus -InstallRoot $Install -SourceRoot $Project -SkipHealth:$Skip
+    } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $script:installPath $PSScriptRoot ([bool]$SkipHealth)
+}
+function TestUiBackgroundProcess($Identity) {
+    try{
+        $process=[Diagnostics.Process]::GetProcessById([int]$Identity.pid)
+        try{return -not $process.HasExited -and $process.StartTime.ToUniversalTime().Ticks -eq [long]$Identity.startUtcTicks}
+        finally{$process.Dispose()}
+    }catch{return $false}
+}
+function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
+    $wasAttached=[bool]$script:bgState.attachedRequestId
+    $wasPending=[bool]$script:bgState.pendingRequestId
+    $observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $HealthChecked -Force
+    $null=Set-FastLlmUiBackgroundObservation -State $script:bgState -Observation $observation
+    $null=Test-FastLlmUiBackgroundPendingHost -State $script:bgState -TestProcess {
+        param($Identity) TestUiBackgroundProcess $Identity
+    }
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    if($wasAttached -and -not $script:bgState.attachedRequestId){
+        $statusLabel.Text='Background run ended or changed. Its ownership has not been silently replaced.'
+    }elseif($script:bgState.attachedRequestId -and $HealthChecked -and
+            $script:bgState.observation.PSObject.Properties['servingHealthy'] -and
+            -not $script:bgState.observation.servingHealthy){
+        $statusLabel.Text='Background run owner is verified, but the API health check failed.'
+    }elseif($script:bgState.attachedRequestId -and $HealthChecked -and $script:bgState.observation.attachable){
+        $statusLabel.Text='Ready background inference attached. API health passed; GPU residency/performance unqualified.'
+    }elseif($wasPending -and -not $script:bgState.pendingRequestId -and $script:bgState.attention){
+        $statusLabel.Text='Background launch needs attention. Review Diagnostics before another start.'
+    }
+    if($script:bgState.observation -and -not $script:bgState.observation.active){$script:bgStopRequested=$false}
+    SetBusy ([bool]($script:child -or $script:vcBroker))
+}
+function SetUiBackgroundUnknown {
+    $script:bgState.observation=[pscustomobject]@{phase='occupied-unverified';active=$false;attachable=$false;occupied=$true}
+    $script:bgState.attention='Background ownership could not be verified. Review Diagnostics; start and stop are disabled.'
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    SetBusy ([bool]($script:child -or $script:vcBroker))
+}
+function RefreshUiBackgroundStatus {
+    try{ApplyUiBackgroundStatus (GetUiBackgroundStatus -SkipHealth)}catch{SetUiBackgroundUnknown}
+}
+function StartUiBackgroundPoll {
+    if($script:bgPoll){return}
+    $source=@'
+param($Project,$Install,$CheckHealth)
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $Project 'src/FastLlm.psm1') -Force
+& (Get-Module FastLlm) {
+    param($Core,$Project,$Install)
+    . $Core
+    Get-FastLlmBackgroundHostStatus -InstallRoot $Install -SourceRoot $Project -SkipHealth:(-not $CheckHealth)
+} (Join-Path $Project 'src/FastLlm.BackgroundHost.ps1') $Project $Install
+'@
+    try{
+        $script:bgPoll=Start-FastLlmUiBackgroundPoll -ScriptText $source -SourceRoot $PSScriptRoot `
+            -InstallRoot $script:installPath -PendingRequestId $script:bgState.pendingRequestId `
+            -AttachedRequestId $script:bgState.attachedRequestId -AttachedRunId $script:bgState.attachedRunId `
+            -CheckHealth:([bool]$script:bgState.attachedRequestId)
+    }catch{SetUiBackgroundUnknown}
+}
+function CompleteUiBackgroundPoll {
+    if(-not $script:bgPoll){return}
+    $result=Complete-FastLlmUiBackgroundPoll -Poll $script:bgPoll -SourceRoot $PSScriptRoot `
+        -InstallRoot $script:installPath -PendingRequestId $script:bgState.pendingRequestId `
+        -AttachedRequestId $script:bgState.attachedRequestId -AttachedRunId $script:bgState.attachedRunId
+    if(-not $result.completed){return}
+    $script:bgPoll=$null
+    if($result.discarded){$script:bgNextPollUtc=[DateTime]::MinValue;return}
+    try{
+        if($result.error){throw $result.error}
+        ApplyUiBackgroundStatus $result.observation ([bool]$script:bgState.attachedRequestId)
+    }catch{SetUiBackgroundUnknown}
+}
+function AssertUiBackgroundNotOccupied {
+    RefreshUiBackgroundStatus
+    if($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
+       $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied)){
+        throw 'Background ownership is active or unresolved. Attach or review Diagnostics before starting another workflow.'
+    }
 }
 function GetVcCandidate {
     return & (Get-Module FastLlm) {param($Source,$Manifest)
@@ -95,6 +200,7 @@ function ReadSelection {
 function LaunchStep([string]$Step,[object[]]$Arguments) {
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
+    if($Step -in @('engine','model download','serving')){AssertUiBackgroundNotOccupied}
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
     if($Step -ceq 'vc prepare'){
@@ -128,7 +234,10 @@ function ShowFailure($Message){
             else{'Action needs attention. The active operation remains supervised; use Stop if needed.'}
         SetBusy $true
     }else{
-        $statusLabel.Text='Action stopped. Review diagnostics; no compatibility claim was made.'
+        $statusLabel.Text=if($script:bgState.attention -or
+            ($script:bgState.observation -and $script:bgState.observation.occupied)){
+            'Background ownership needs attention. Review Diagnostics before another start.'
+        }else{'Action stopped. Review diagnostics; no compatibility claim was made.'}
         SetBusy $false
     }
 }
@@ -188,8 +297,33 @@ function StopUiOperation {
     if($script:child){
         $script:child.Dispose();$script:child=$null;$script:step='idle'
         if($script:flow){$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event stop}
-        SetBusy $false;$statusLabel.Text='Stopped. Completed downloads remain; partial downloads can resume.'
-    }else{Request-FastLlmStop -InstallRoot ([IO.Path]::GetFullPath($pathBox.Text))}
+        RefreshUiBackgroundStatus
+        $statusLabel.Text=if($script:bgState.observation.occupied){
+            'Foreground action ended; background ownership still needs review.'
+        }else{'Stopped. Completed downloads remain; partial downloads can resume.'}
+        SetBusy $false
+    }elseif($script:bgState.attachedRequestId){
+        RefreshUiBackgroundStatus
+        $result=Invoke-FastLlmUiBackgroundStop -State $script:bgState -Stop {
+            param($ExpectedRequestId,$ExpectedRunId)
+            & (Get-Module FastLlm) {param($Source,$Install,$Project,$Request,$Run)
+                . $Source
+                Stop-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project `
+                    -ExpectedRequestId $Request -ExpectedRunId $Run
+            } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $script:installPath $PSScriptRoot `
+                $ExpectedRequestId $ExpectedRunId
+        }
+        $script:bgStopRequested=$true
+        $statusLabel.Text='Stop requested for the exact attached background run. Waiting for it to end.'
+        SetBusy $false
+    }else{
+        RefreshUiBackgroundStatus
+        if($script:bgState.pendingRequestId -or $script:bgState.attention -or
+           ($script:bgState.observation -and $script:bgState.observation.occupied)){
+            throw 'Background ownership is unresolved. Attach the verified Ready run before requesting Stop.'
+        }
+        Request-FastLlmStop -InstallRoot ([IO.Path]::GetFullPath($pathBox.Text))
+    }
 }
 function ShowSetupAttention($Decision,$Diagnostic) {
     RevealUiForAction
@@ -406,8 +540,67 @@ function ShowDriverGuidance($Diagnostic) {
     try{$devices.SelectedIndex=0;[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     $statusLabel.Text='Driver guidance viewed. No driver changes made.'
 }
-$installButton.Add_Click({try{ReadSelection;$script:flow=New-FastLlmUiFlow -Mode install;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
-$startButton.Add_Click({try{ReadSelection;$script:flow=New-FastLlmUiFlow -Mode start;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
+function StartUiBackground {
+    if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
+    ReadSelection
+    AssertUiBackgroundNotOccupied
+    $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
+    $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
+        modelId=$selectedModel;contextSize=[int]$contextBox.Value}
+    $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
+        param($Request)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context)
+            . $Source
+            Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
+                -ModelId $Model -ContextSize $Context -NoWait
+        } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
+            $Request.profile $Request.modelId $Request.contextSize
+    }
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
+    $output.Text='This optional background mode is not a Windows service or auto-start task. Keep this user signed in; re-open FastLLM to attach later.'
+    SetBusy $false
+    return $launched
+}
+function AttachUiBackground {
+    if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
+    ReadSelection
+    RefreshUiBackgroundStatus
+    $attached=Invoke-FastLlmUiBackgroundAttach -State $script:bgState -Attach {
+        param($ExpectedRequestId)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Request)
+            . $Source
+            Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request
+        } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId
+    }
+    $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    $statusLabel.Text='Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.'
+    $output.Text="Attached to exact request $($attached.requestId) and run $($attached.runId). Closing this window detaches; Stop ends this run."
+    SetBusy $false
+}
+$installButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:flow=New-FastLlmUiFlow -Mode install;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
+$startButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:flow=New-FastLlmUiFlow -Mode start;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
+$backgroundStartButton.Add_Click({
+    try{$null=StartUiBackground}
+    catch{
+        $message=$_.Exception.Message
+        RefreshUiBackgroundStatus
+        ShowFailure ($message+"`r`nBackground mode needs an already prepared, consented model. Use Install & start first, then Stop and try Start in background.")
+    }
+})
+$backgroundAttachButton.Add_Click({try{AttachUiBackground}catch{RefreshUiBackgroundStatus;ShowFailure $_.Exception.Message}})
+$backgroundCheckButton.Add_Click({
+    try{
+        ReadSelection;RefreshUiBackgroundStatus
+        if(-not $script:bgState.pendingRequestId -and -not $script:bgState.observation.occupied){
+            $null=Clear-FastLlmUiBackgroundAttention -State $script:bgState
+        }
+        $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+        $statusLabel.Text='Background ownership check completed.'
+        SetBusy $false
+    }catch{ShowFailure $_.Exception.Message}
+})
 $doctorButton.Add_Click({try{ReadSelection;LaunchStep 'diagnostics' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 $driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 $copyButton.Add_Click({[Windows.Forms.Clipboard]::SetText('http://127.0.0.1:8080/v1')})
@@ -448,6 +641,13 @@ $timer.Add_Tick({
             ShowFailure ('Microsoft prerequisite result needs manual review: '+$_.Exception.Message)
         }
         return
+    }
+    CompleteUiBackgroundPoll
+    $pollBackground=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
+        ($script:bgState.observation -and $script:bgState.observation.occupied -and -not $script:bgState.observation.attachable))
+    if($pollBackground -and -not $script:bgPoll -and [DateTime]::UtcNow -ge $script:bgNextPollUtc){
+        $script:bgNextPollUtc=[DateTime]::UtcNow.AddSeconds($(if($script:bgState.attachedRequestId){5}elseif($script:bgState.pendingRequestId){2}else{5}))
+        StartUiBackgroundPoll
     }
     if(-not $script:child){return}
     try{
@@ -538,6 +738,8 @@ $timer.Add_Tick({
         ShowFailure ('Setup needs attention: '+$_.Exception.Message)
     }
 })
+$script:bgNextPollUtc=[DateTime]::UtcNow.AddSeconds(2)
+StartUiBackgroundPoll
 $form.Add_FormClosing({param($sender,$event)
     SetTrayMenuAvailable $false
     if(-not (Test-FastLlmUiVcActionAllowed -BrokerActive ($null -ne $script:vcBroker) -Action close)){
@@ -556,10 +758,13 @@ $form.Add_FormClosing({param($sender,$event)
     $script:trayState=Move-FastLlmUiTrayState -State $script:trayState -Event 'close'
     DisposeTrayControls
     $timer.Stop()
+    Close-FastLlmUiBackgroundPoll $script:bgPoll
+    $script:bgPoll=$null
 })
 $timer.Start()
 try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application]::Run($form)}finally{
     if($script:child){$script:child.Dispose()}
+    Close-FastLlmUiBackgroundPoll $script:bgPoll
     # An elevated Microsoft broker is outside the ProcessHost job. Never kill or dispose it here.
     DisposeTrayControls;$timer.Dispose();$form.Dispose()
 }

@@ -40,6 +40,13 @@ def recorded_configuration(record):
                                       (not isinstance(recipe['tensorSplit'], str) or not recipe['tensorSplit'])):
         raise ValueError('Missing or invalid recorded recipe.tensorSplit')
     configuration['recipe.tensorSplit'] = recipe['tensorSplit']
+    # A mitigated run (for example GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1) is a different configuration from a default run.
+    # An absent override is the default environment, recorded as {}.
+    override = recipe.get('environmentOverride', {})
+    if not isinstance(override, dict) or any(not isinstance(key, str) or not key or not isinstance(value, str)
+                                             for key, value in override.items()):
+        raise ValueError('Malformed recorded recipe.environmentOverride')
+    configuration['recipe.environmentOverride'] = dict(override)
     arguments = recipe.get('requestedArguments')
     if not isinstance(arguments, list) or not arguments or any(not isinstance(arg, str) or not arg for arg in arguments):
         raise ValueError('Missing or invalid recorded recipe.requestedArguments')

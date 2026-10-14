@@ -1,5 +1,8 @@
 # Bitworks AMD inference integration
 
+> **Preview.** FastLLM is in public preview for Windows PCs with AMD Radeon graphics. Releases are signed by Bitworks LLC.
+> Licensed under the Apache License 2.0 (see `LICENSE`).
+
 **Supervised lab alpha — not a consumer installer release or a performance recommendation.**
 
 FastLLM is Bitworks' name for an integration and configuration package. It brings together existing inference engines, model artifacts and AMD hardware checks to reduce the work involved in deploying local inference. **It is not a new inference engine.** The initial Windows path uses pinned llama.cpp Vulkan binaries; model provenance and upstream licenses remain visible.
@@ -8,7 +11,7 @@ The intended user experience is simple: inspect the installed hardware at each s
 
 - Learn about the project and candidate card recipes at [Bitworks AMD inference](https://bitworks.io/amd-inference/).
 - Read the [benchmark methodology](https://github.com/bitworks-io/amd-inference/blob/main/docs/BENCHMARK-METHODOLOGY.md) and [supervised lab guide](https://github.com/bitworks-io/amd-inference/blob/main/docs/PUBLIC-LAB-GUIDE.md).
-- Review [security boundaries](https://github.com/bitworks-io/amd-inference/blob/main/SECURITY.md) and [third-party provenance and pending source-license decision](https://github.com/bitworks-io/amd-inference/blob/main/THIRD_PARTY_NOTICES.md) before use.
+- Review [security boundaries](https://github.com/bitworks-io/amd-inference/blob/main/SECURITY.md) and [third-party provenance and notices](https://github.com/bitworks-io/amd-inference/blob/main/THIRD_PARTY_NOTICES.md) before use.
 
 ## What is in this source snapshot
 
@@ -59,4 +62,4 @@ Public qualification still requires measured context/concurrency operating envel
 
 This repository contains a reviewed source-only subset of the working project. Private bench reports, addresses, access keys, website coordination records, downloads and generated packages are excluded. [The source staging tool](https://github.com/bitworks-io/amd-inference/blob/main/tools/stage-public-source.py) uses an explicit allowlist; the separate lab ZIP builder is for reviewed lab packaging and must not be used to publish an internal checkout wholesale.
 
-Bitworks has not yet selected a license for its integration code. **No open-source license grant or production-release approval should be inferred from this source publication.** Upstream components and models retain their own terms; see the notices. Do not add a license, redistribute dependencies or represent candidate performance as qualified without the corresponding review and approval.
+**No production-release approval should be inferred from this source publication.** Upstream components and models retain their own terms; see the notices. Do not redistribute dependencies or represent candidate performance as qualified without the corresponding review and approval.

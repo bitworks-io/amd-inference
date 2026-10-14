@@ -106,6 +106,145 @@ function Format-FastLlmLabRemovalResult {
     return "App files restored to:`r`n$($Result.appRoot)`r`n`r`nThe app was not started. Model caches, consent receipts and benchmark reports were not changed. No public release is approved."
 }
 
+function Get-FastLlmLabOpenPlan {
+    param([string]$AppRoot,[string]$ShortcutPath)
+    # The core plan verifies owner/state/ledger agreement, all retained source
+    # manifests, and the exact owned shortcut bytes and current-version target.
+    $owned = Get-FastLlmLabAppRemovalPlan -AppRoot $AppRoot -ShortcutPath $ShortcutPath
+    $state = Get-FastLlmLabAppState $AppRoot
+    if (-not $state -or $owned.appRoot -cne $AppRoot -or $owned.shortcutPath -cne $ShortcutPath -or
+        $owned.installId -cne $state.installId -or
+        @($owned.versions | Where-Object { $_.version -ceq $state.currentVersion -and
+            $_.manifestSha256 -ceq $state.currentManifestSha256 }).Count -ne 1) {
+        throw 'The current installed version is not bound to the owned app and shortcut ledger.'
+    }
+    $versionRoot = Assert-FastLlmLabAppPath (Join-Path (Join-Path $AppRoot 'versions') $state.currentVersion)
+    $target = Assert-FastLlmLabAppPath (Join-Path $versionRoot 'FastLLM.cmd')
+    return [pscustomobject]@{ appRoot=$AppRoot; version=$state.currentVersion; versionRoot=$versionRoot; target=$target }
+}
+
+function Start-FastLlmLabGuardedCommand {
+    param([IO.FileStream]$Lease,[string]$Target,[string]$WorkingDirectory)
+    if ($env:OS -cne 'Windows_NT' -or -not $Lease -or -not $Target -or -not $WorkingDirectory) {
+        throw 'The managed application launch requires a verified Windows target and lifetime lease.'
+    }
+    if (-not ('FastLlmLabLeaseNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class FastLlmLabLeaseNative {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo {
+        public uint cb;
+        public string reserved;
+        public string desktop;
+        public string title;
+        public uint x, y, xSize, ySize, xCountChars, yCountChars, fillAttribute, flags;
+        public ushort showWindow, reserved2;
+        public IntPtr reservedBytes, stdInput, stdOutput, stdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInfo {
+        public IntPtr process, thread;
+        public uint processId, threadId;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcessW(string application, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, [MarshalAs(UnmanagedType.Bool)] bool inheritHandles,
+        uint creationFlags, IntPtr environment, string currentDirectory, ref StartupInfo startup,
+        out ProcessInfo process);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr sourceHandle,
+        IntPtr targetProcess, out IntPtr targetHandle, uint desiredAccess,
+        [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint options);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static uint Launch(string target, string workingDirectory, IntPtr leaseHandle) {
+        // Percent and command-control characters are not allowed in the
+        // cmd.exe command line. Quoted spaces and ampersands remain supported.
+        if (String.IsNullOrEmpty(target) || target.IndexOfAny(new char[] {'"','%','!','^','\r','\n'}) >= 0 ||
+            target.Length > 16000 || String.IsNullOrEmpty(workingDirectory))
+            throw new ArgumentException("The managed app path cannot be safely passed to the Windows command launcher.");
+        string cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        string text = "\"" + cmd + "\" /d /v:off /s /c \"\"" + target + "\"\"";
+        var line = new StringBuilder(text, text.Length + 1);
+        var start = new StartupInfo();
+        start.cb = (uint)Marshal.SizeOf(typeof(StartupInfo));
+        ProcessInfo child;
+        // Create the command process suspended in a separate console. It
+        // cannot start PowerShell until the exact lease has been copied.
+        if (!CreateProcessW(cmd, line, IntPtr.Zero, IntPtr.Zero, false,
+            0x00000004u | 0x00000010u, IntPtr.Zero, workingDirectory, ref start, out child))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create the guarded FastLLM command process.");
+        bool resumed = false;
+        try {
+            IntPtr copied;
+            if (!DuplicateHandle(GetCurrentProcess(), leaseHandle, child.process, out copied, 0u, false, 0x00000002u))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not give the FastLLM command process its lifetime lease.");
+            if (ResumeThread(child.thread) == UInt32.MaxValue)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not resume the guarded FastLLM command process.");
+            resumed = true;
+            return child.processId;
+        } finally {
+            if (!resumed) {
+                // Before ResumeThread this process has had no opportunity to
+                // launch a PowerShell descendant. The copied lease, if any,
+                // stays in it until termination or process teardown.
+                TerminateProcess(child.process, 1u);
+                WaitForSingleObject(child.process, 5000u);
+            }
+            CloseHandle(child.thread);
+            CloseHandle(child.process);
+        }
+    }
+}
+'@
+    }
+    return [FastLlmLabLeaseNative]::Launch($Target,$WorkingDirectory,$Lease.SafeFileHandle.DangerousGetHandle())
+}
+
+function Invoke-FastLlmLabOpenForUser {
+    $paths = Get-FastLlmLabAppUserPaths
+    $app = Assert-FastLlmLabAppPath $paths.appRoot
+    $shortcut = Assert-FastLlmLabAppPath $paths.shortcutPath
+    if ($env:OS -ceq 'Windows_NT') {
+        Assert-FastLlmLabLocalWindowsPath $app
+        Assert-FastLlmLabLocalWindowsPath $shortcut
+    }
+    # Do not create an app root merely because Open was clicked before Install.
+    $operation = [IO.File]::Open((Assert-FastLlmLabAppPath (Join-Path $app 'lab-app.lock')),
+        [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    $lifetime = $null
+    try {
+        $plan = Get-FastLlmLabOpenPlan -AppRoot $app -ShortcutPath $shortcut
+        $lifetime = Enter-FastLlmLabAppLifetime -SourceRoot $plan.versionRoot
+        if (-not $lifetime) { throw 'The managed application lifetime lease was not acquired.' }
+        # The verified .cmd target starts only after it owns a duplicate of the
+        # exact lease. The child UI then obtains its own checked lease on entry.
+        $launchedProcessId = Start-FastLlmLabGuardedCommand -Lease $lifetime -Target $plan.target -WorkingDirectory $plan.versionRoot
+        return [pscustomobject]@{ version=$plan.version; target=$plan.target; processId=$launchedProcessId }
+    } finally {
+        if ($lifetime) { $lifetime.Dispose() }
+        $operation.Dispose()
+    }
+}
+
 $form = New-Object Windows.Forms.Form
 $form.Text = 'Bitworks FastLLM - private lab setup'
 $form.Size = New-Object Drawing.Size(760,780)
@@ -154,10 +293,11 @@ function AddButton([string]$Text,[int]$X,[int]$Width) {
     $form.Controls.Add($button)
     return $button
 }
-$installButton = AddButton 'Install' 22 155
-$repairButton = AddButton 'Repair' 190 155
-$rollbackButton = AddButton 'Roll back' 358 155
-$closeButton = AddButton 'Close' 575 155
+$installButton = AddButton 'Install' 22 137
+$repairButton = AddButton 'Repair' 171 137
+$rollbackButton = AddButton 'Roll back' 320 137
+$openButton = AddButton 'Open FastLLM' 469 150
+$closeButton = AddButton 'Close' 631 99
 $previewButton = AddButton 'Preview uninstall' 22 220
 $previewButton.Location = New-Object Drawing.Point(22,405)
 $removeButton = AddButton 'Uninstall app' 260 220
@@ -185,7 +325,7 @@ $form.Controls.Add($quarantineBrowse)
 $null = AddLabel 'Uninstall preserves model caches and reports. It refuses active, modified or uncertain installations; it never force-stops a model.' 22 686 708 50
 
 function SetInstallerBusy([bool]$Busy) {
-    foreach ($button in @($installButton,$repairButton,$rollbackButton,$closeButton,$browse,
+    foreach ($button in @($installButton,$repairButton,$rollbackButton,$openButton,$closeButton,$browse,
         $previewButton,$removeButton,$restoreButton,$quarantineBrowse)) { $button.Enabled = -not $Busy }
     $quarantineBox.Enabled = -not $Busy
     $form.UseWaitCursor = $Busy
@@ -279,9 +419,24 @@ function InvokeLifecycleUiAction([ValidateSet('Preview','Uninstall','Restore')][
         $output.Text = [string]$_.Exception.Message
     } finally { SetInstallerBusy $false }
 }
+function InvokeOpenUiAction {
+    try {
+        SetInstallerBusy $true
+        $status.Text = 'Verifying the committed app and shortcut; this window may briefly stop responding.'
+        $output.Text = ''
+        $form.Refresh()
+        $result = Invoke-FastLlmLabOpenForUser
+        $status.Text = 'Open FastLLM was requested. The control window may take a moment to appear.'
+        $output.Text = "Opened managed version: $($result.version)`r`nEntry point: $($result.target)`r`nNo model or server was started by setup. The FastLLM control window handles any later consent or start action. Keep its console open while serving."
+    } catch {
+        $status.Text = 'FastLLM did not open from a verified managed installation.'
+        $output.Text = [string]$_.Exception.Message
+    } finally { SetInstallerBusy $false }
+}
 $installButton.Add_Click({ InvokeUiAction 'Install' })
 $repairButton.Add_Click({ InvokeUiAction 'Repair' })
 $rollbackButton.Add_Click({ InvokeUiAction 'Rollback' })
+$openButton.Add_Click({ InvokeOpenUiAction })
 $previewButton.Add_Click({ InvokeLifecycleUiAction 'Preview' })
 $removeButton.Add_Click({ InvokeLifecycleUiAction 'Uninstall' })
 $restoreButton.Add_Click({ InvokeLifecycleUiAction 'Restore' })

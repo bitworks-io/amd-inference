@@ -83,6 +83,7 @@ Inspect `tools/soak.ps1` and `tools/semantic-smoke.ps1` for their exact paramete
 ./tests/start-tests.ps1
 ./tests/benchmark-tests.ps1
 ./tests/benchmark-integration-tests.ps1
+./tests/benchmark-vnext-tests.ps1
 ./tests/concurrency-benchmark-tests.ps1
 ./tests/task-workload-tests.ps1
 ./tests/task-wave-tests.ps1

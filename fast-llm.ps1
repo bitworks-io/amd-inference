@@ -33,7 +33,32 @@ param(
 
     [switch] $DryRun,
 
-    [switch] $AsJson
+    [switch] $AsJson,
+
+    # Vulkan Resizable-BAR mitigation for a live start: off = none, on = set GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 on the
+    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means the module policy (default off).
+    [ValidateSet('off', 'on', 'auto')]
+    [string] $VulkanBarMitigation = 'off',
+
+    # doctor only: opt in to the live Vulkan memory-layout probe (a bounded child process). Default doctor never probes.
+    [switch] $ProbeVulkanMemory,
+
+    # Advisory post-Ready prompt-processing measurement (live start only; default off).
+    [switch] $ThroughputCanary,
+
+    # Live start only: W03 Phase A per-start device binding. record = observe which GPU the plan resolves to and note GPU, slot or
+    # driver changes since the last recorded start; it never changes the server arguments, the environment or the BAR policy.
+    # enforce additionally fails the start when the GPU cannot be bound before launch, or when the server's device list after the model
+    # loads does not match the bound GPU. That failure is typed (device-binding-<status> or device-binding-post-load-mismatch) and never
+    # triggers model recovery or a model swap. off (default) is byte-identical to a start without the parameter.
+    [ValidateSet('off', 'record', 'enforce')]
+    [string] $DeviceBinding = 'off',
+
+    # Live start only: NEVER download or install anything (model, engine or runtime). Every acquisition path is blocked and ends the
+    # start with a typed failure code (needs-setup-model-missing, needs-setup-consent-missing, needs-setup-model-invalid,
+    # needs-setup-engine-missing, needs-setup-prerequisite-missing), never RuntimeCheckFailed, and model recovery or substitution
+    # is disabled. Absent means the default start, unchanged.
+    [switch] $NoDownload
 )
 
 Set-StrictMode -Version 2.0
@@ -55,6 +80,16 @@ if ($HardwareFile -and $Action -ne 'plan') {
     throw '-HardwareFile is a development fixture input and is permitted only with the non-executing plan action.'
 }
 if ($EngineOnly -and $Action -ne 'install') { throw '-EngineOnly is supported only by install.' }
+if (($PSBoundParameters.ContainsKey('VulkanBarMitigation') -or $ThroughputCanary) -and ($Action -ne 'start' -or $DryRun)) {
+    throw '-VulkanBarMitigation and -ThroughputCanary are supported only by a live start.'
+}
+# ValidateSet ignores case and keeps the typed value; every later comparison is case-sensitive, so normalise once here.
+$DeviceBinding = $DeviceBinding.ToLowerInvariant()
+if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -or $DryRun)) {
+    throw '-DeviceBinding is supported only by a live start.'
+}
+if ($NoDownload -and ($Action -ne 'start' -or $DryRun)) { throw '-NoDownload is supported only by a live start.' }
+if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
     throw '-AsJson is supported with start only when -DryRun is also specified; a foreground server owns its console output.'
 }
@@ -125,7 +160,7 @@ try {
             if ($AsJson) { ConvertTo-Json -InputObject @($catalog.models) -Depth 12 }
             else { $catalog.models | Select-Object id, quantization, contextSize, requiredFreeVramMiB, servingMode | Format-Table -AutoSize }
         }
-        'status' { Get-FastLlmStatus -InstallRoot $InstallRoot | ConvertTo-Json -Depth 12 }
+        'status' { Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12 }
         'stop' { Request-FastLlmStop -InstallRoot $InstallRoot }
         'install' {
             if ($env:OS -ne 'Windows_NT') {
@@ -172,6 +207,25 @@ try {
                 break
             }
 
+            if ($NoDownload) {
+                # Blocked acquisition: a missing runtime prerequisite or engine is a typed needs-setup failure, never an install.
+                $noDownloadPrerequisites = Get-FastLlmWindowsPrerequisiteStatus
+                if ($noDownloadPrerequisites.applicable -and -not $noDownloadPrerequisites.ready) {
+                    throw (New-FastLlmTypedFailure -Code 'needs-setup-prerequisite-missing' -Message 'A Windows prerequisite is missing and -NoDownload forbids installing anything.')
+                }
+                $noDownloadCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
+                $noDownloadEngineReady = $false
+                foreach ($noDownloadBackend in @('vulkan', 'rocm')) {
+                    $noDownloadAsset = $noDownloadCatalog.engine.assets.PSObject.Properties[$noDownloadBackend]
+                    if ($noDownloadAsset -and [bool] $noDownloadAsset.Value.enabled -and
+                        (Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $noDownloadCatalog.engine.version) -BackendKey $noDownloadBackend -Asset $noDownloadAsset.Value)) {
+                        $noDownloadEngineReady = $true
+                    }
+                }
+                if (-not $noDownloadEngineReady) {
+                    throw (New-FastLlmTypedFailure -Code 'needs-setup-engine-missing' -Message 'The verified engine is not installed and -NoDownload forbids installing it.')
+                }
+            }
             $maximumPlanAttempts = 3
             $serverCompleted = $false
             $recoveryAttempted = $false
@@ -182,6 +236,12 @@ try {
                 $modelReady = (Test-Path -LiteralPath ([string] $plan.modelPath) -PathType Leaf) -and
                     (Test-FastLlmModelConsentReceipt -Model $plan.model -InstallRoot $InstallRoot)
                 if (-not $modelReady) {
+                    if ($NoDownload) {
+                        if (-not (Test-Path -LiteralPath ([string] $plan.modelPath) -PathType Leaf)) {
+                            throw (New-FastLlmTypedFailure -Code 'needs-setup-model-missing' -Message 'The selected model is not installed and -NoDownload forbids downloading it.')
+                        }
+                        throw (New-FastLlmTypedFailure -Code 'needs-setup-consent-missing' -Message 'The selected model has no exact consent receipt and -NoDownload forbids provisioning it.')
+                    }
                     if ($recoveryAttempted) { throw 'The cached recovery artifact or consent changed. Recovery cannot download or accept a replacement.' }
                     Write-Host 'The selected model is missing or lacks an exact consent receipt; provisioning it before startup.'
                     Install-FastLlmModel -Plan $plan -InstallRoot $InstallRoot -AcceptModelLicense:$AcceptModelLicense -Unattended:$Unattended | Out-Null
@@ -189,11 +249,21 @@ try {
                     continue
                 }
 
+                # Passed only when the caller asked, so a default start is unchanged.
+                $startPolicyOptions = @{}
+                if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation }
+                if ($ThroughputCanary) { $startPolicyOptions.ThroughputCanary = $true }
+                if ($DeviceBinding -ne 'off') { $startPolicyOptions.DeviceBinding = $DeviceBinding }
                 try {
-                    $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds
+                    $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions
                 }
                 catch {
-                    if ($_.Exception.Data['FastLlmReason'] -eq 'RuntimeCheckFailed' -and -not $recoveryAttempted -and $planAttempt -lt $maximumPlanAttempts) {
+                    # W03 enforce: a device-binding failure is never retried, re-planned or recovered with another model.
+                    if ($_.Exception.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -or [string]$_.Exception.Data['FastLlmFailureCode'] -clike 'device-binding-*') { throw }
+                    if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
+                        throw (New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.')
+                    }
+                    if ($_.Exception.Data['FastLlmReason'] -eq 'RuntimeCheckFailed' -and -not $NoDownload -and -not $recoveryAttempted -and $planAttempt -lt $maximumPlanAttempts) {
                         $recoveryAttempted = $true
                         $recoveryHardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
                         $recovery = Get-FastLlmRecoveryPlan -Hardware $recoveryHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot -Profile $Profile -FailedModelId $plan.model.id -RequestedModelId $ModelId -ContextSize $ContextSize
@@ -251,6 +321,8 @@ try {
                 vulkanEngine   = Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey 'vulkan' -EntryPoint ([string] $catalog.engine.assets.vulkan.entryPoint)
                 hardware       = $null
                 plan           = $null
+                vulkanMemory   = $null
+                vulkanMemoryError = $null
                 error          = $null
             }
             try { $diagnostic.prerequisiteInventory = Get-FastLlmPrerequisiteInventory }
@@ -266,6 +338,20 @@ try {
             catch {
                 $diagnostic.error = $_.Exception.Message
             }
+            # Configured mitigation policy; the live Resizable-BAR probe runs only with -ProbeVulkanMemory and a Vulkan plan.
+            # Advisory: never changes the exit status, never creates the install root.
+            try {
+                $diagnosticAdapters = @()
+                $diagnosticAdapterObjects = @()
+                $diagnosticBackend = ''
+                if ($diagnostic.plan) {
+                    $diagnosticAdapterObjects = @($diagnostic.plan.selectedAdapters)
+                    $diagnosticAdapters = @(@($diagnostic.plan.selectedAdapters) | ForEach-Object { [string]$_.name })
+                    $diagnosticBackend = [string]$diagnostic.plan.backend
+                }
+                $diagnostic.vulkanMemory = Get-FastLlmVulkanMemoryDiagnostic -AdapterNames $diagnosticAdapters -Backend $diagnosticBackend -Probe:$ProbeVulkanMemory -Adapters $diagnosticAdapterObjects
+            }
+            catch { $diagnostic.vulkanMemoryError = 'vulkan-memory-diagnostic-unavailable' }
             $diagnostic | ConvertTo-Json -Depth 12
             if ($diagnostic.error) {
                 exit 2
@@ -275,14 +361,34 @@ try {
 }
 catch {
     $failure = $_
+    # A device-binding failure never trusts its code to be clean already: the same pattern as ConvertTo-FastLlmDeviceBindingCode in
+    # src/FastLlm.Runtime.ps1 (private to the module, so inlined here; a test asserts the two patterns are the same string).
+    # Non-conforming or empty becomes device-binding-unavailable. The result is used for status.json and for the console.
+    $isBindingFailure = $failure.Exception.Data['FastLlmReason'] -ceq 'DeviceBindingFailed'
+    $bindingCode = $null
+    if ($isBindingFailure) {
+        $bindingCode = [string] $failure.Exception.Data['FastLlmFailureCode']
+        if ($bindingCode -cnotmatch '^device-binding-[a-z-]{1,40}$') { $bindingCode = 'device-binding-unavailable' }
+    }
     if ($operationLock) {
         try {
             $state = Get-FastLlmStatus -InstallRoot $InstallRoot
             $state.phase = 'failed'
+            # A typed failure (for example a blocked -NoDownload acquisition) is recorded so a supervising caller can classify it.
+            if ($isBindingFailure) {
+                $state | Add-Member -NotePropertyName failureCode -NotePropertyValue $bindingCode -Force
+            } elseif ($failure.Exception.Data['FastLlmFailureCode']) {
+                $state | Add-Member -NotePropertyName failureCode -NotePropertyValue ([string] $failure.Exception.Data['FastLlmFailureCode']) -Force
+            }
             Write-FastLlmState -InstallRoot $InstallRoot -State $state
         } catch { Write-Warning 'Failure status could not be saved; the operation lock will still be released.' }
     }
-    Write-Error $failure.Exception.Message -ErrorAction Continue
+    $failureMessage = [string] $failure.Exception.Message
+    # A device-binding failure prints its message only when it already carries the conforming '<code>: ' prefix; otherwise a fixed text (no part of the message).
+    if ($isBindingFailure -and -not $failureMessage.StartsWith($bindingCode + ': ', [StringComparison]::Ordinal)) {
+        $failureMessage = $bindingCode + ': device binding failed (details withheld; see status)'
+    }
+    Write-Error $failureMessage -ErrorAction Continue
     exit 1
 }
 finally { if ($operationLock) { $operationLock.Dispose() } }

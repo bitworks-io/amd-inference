@@ -96,6 +96,7 @@ Check ($partial.dxgi.Count -eq 1 -and $partial.dxgi[0].VendorId -eq 0x1002) 'DXG
 Check ($partial.pnpDisplayDevices.Count -eq 1 -and $partial.pnpDisplayDevices[0].DriverVersion -eq '32.0.31041.1004') 'SetupAPI survives WMI denial'
 Check ((@($partial.errors | ForEach-Object section) -join ',') -eq 'pnpControllers,processors,system,os') 'each denied WMI section is identified'
 Check ($null -eq $partial.os -and $partial.pnpControllers.Count -eq 0) 'failed WMI sections are empty without fabricated data'
+Check (@($partial.errors | Where-Object { $_.reason -cin @('access-denied','timeout','not-found','other') }).Count -eq 4) 'every section error carries a typed reason beside its message'
 Check ($partial.nativeHost.status -eq 'captured') 'native host facts remain available when CIM is denied'
 
 $script:nativeHostPartial = $true
