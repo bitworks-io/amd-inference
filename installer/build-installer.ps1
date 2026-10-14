@@ -30,6 +30,15 @@ function Assert-Signer([string]$Path, [string]$CommonName) {
     }
 }
 
+# The pinned Inno Setup lives in its own version-named folder, so a different Inno preinstalled on the runner
+# (at 'Inno Setup 6') can never be the one that compiles or signs.
+function Get-InnoDir($Pins) { Join-Path ${env:ProgramFiles(x86)} ('Inno Setup ' + $Pins.inno.version) }
+
+function Get-NumericFileVersion([string]$Path) {
+    $vi = (Get-Item -LiteralPath $Path).VersionInfo
+    '{0}.{1}.{2}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart
+}
+
 function Install-Tools([bool]$WithModule) {
     $pins = Get-Pins
     $dl = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-tools-' + [guid]::NewGuid().ToString('N'))
@@ -39,11 +48,16 @@ function Install-Tools([bool]$WithModule) {
     $got = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
     if ($got -ne $pins.inno.installerSha256.ToUpperInvariant()) { throw "Inno installer SHA-256 mismatch: got $got, pinned $($pins.inno.installerSha256)" }
     Assert-Signer $setup $pins.inno.signerCommonName
-    $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+    $preinstalled = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+    if (Test-Path -LiteralPath $preinstalled) { Write-Host "note: a preinstalled Inno Setup is present (ISCC $(Get-NumericFileVersion $preinstalled)); it is not used" }
+    $innoDir = Get-InnoDir $pins
+    $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', ('/DIR="' + $innoDir + '"') -Wait -PassThru
     if ($p.ExitCode) { throw "Inno installer failed: $($p.ExitCode)" }
-    $installed = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+    $installed = Join-Path $innoDir 'ISCC.exe'
+    if (-not (Test-Path -LiteralPath $installed)) { throw "ISCC.exe not found at $installed after the pinned install" }
     Assert-Signer $installed $pins.inno.signerCommonName
-    if (-not (Get-Item -LiteralPath $installed).VersionInfo.FileVersion.StartsWith($pins.inno.version)) { throw "ISCC.exe version is not $($pins.inno.version)" }
+    $got = Get-NumericFileVersion $installed
+    if ($got -ne $pins.inno.version) { throw "ISCC.exe at $installed is version $got, pinned $($pins.inno.version)" }
     Write-Host "Inno Setup $($pins.inno.version) installed and verified"
     if ($WithModule) {
         $nupkg = Join-Path $dl 'ArtifactSigning.nupkg'
@@ -61,9 +75,10 @@ function Install-Tools([bool]$WithModule) {
 
 if ($PSCmdlet.ParameterSetName -eq 'Install') { Install-Tools $WithSigningModule.IsPresent; return }
 if ($Version -notmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { throw "bad version: $Version" }
-$iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC not found at $iscc (run -InstallTools)" }
 $pins = Get-Pins
+$iscc = Join-Path (Get-InnoDir $pins) 'ISCC.exe'
+if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC not found at $iscc (run -InstallTools)" }
+if ((Get-NumericFileVersion $iscc) -ne $pins.inno.version) { throw "ISCC at $iscc is not the pinned $($pins.inno.version)" }
 Assert-Signer $iscc $pins.inno.signerCommonName
 $source = (Resolve-Path -LiteralPath $SourceDir).Path
 if (-not (Test-Path -LiteralPath (Join-Path $source 'LICENSE'))) { throw 'SourceDir has no LICENSE: not a FastLLM package tree' }
