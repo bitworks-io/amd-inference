@@ -215,8 +215,11 @@ function Request-FastLlmStop {
                 if ([int]$item.Attributes -eq -1) { throw 'Stop request path was transient.' }
                 if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe stop request path.' }
             } else {
-                $stream = [IO.File]::Open($path, 'CreateNew', 'Write', 'None')
-                $stream.Dispose()
+                # Share Delete: the supervisor polls for this name and removes it on its way out, and it may do so while
+                # this handle is still open; with Delete shared the removal succeeds and the name goes when this closes.
+                $stream = $null
+                try { $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Delete) }
+                finally { if ($stream) { $stream.Dispose() } }
             }
             break
         } catch {
@@ -692,7 +695,17 @@ function Invoke-FastLlmSupervisedServer {
                 catch { if ($_.Exception.Data['FastLlmStateWrite'] -eq $true) { Write-Warning 'The final status write failed after retries; the previous status document is unchanged.' } else { throw } }
             } finally {
                 try { Remove-FastLlmRuntimeSandbox $sandbox }
-                finally { if (Test-Path -LiteralPath $stopPath) { Remove-Item -LiteralPath $stopPath -Force } }
+                finally {
+                    # The request file is run-scoped, so a leftover is harmless; a sharing violation here is transient (the
+                    # requesting client or a scanner still holds it) and must not turn a clean stop into exit 1.
+                    for ($attempt = 0; (Test-Path -LiteralPath $stopPath); $attempt++) {
+                        try { Remove-Item -LiteralPath $stopPath -Force -ErrorAction Stop; break }
+                        catch {
+                            if ($attempt -ge 9) { Write-Warning "The stop request file could not be removed after retries: $stopPath"; break }
+                            Start-Sleep -Milliseconds 15
+                        }
+                    }
+                }
             }
         }
     }
