@@ -122,16 +122,24 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  DataDir: String;
+  DataDir, ModelsDir, EnginesDir: String;
+  Bytes: Int64;
 begin
   if CurUninstallStep <> usPostUninstall then Exit;
   DataDir := ExpandConstant('{localappdata}\Bitworks\FastLLM');
-  if UninstallSilent or not DirExists(DataDir) then Exit;
-  if MsgBox('Also delete ALL FastLLM data in this folder (' + IntToStr(DirSizeBytes(DataDir) div 1048576) + ' MB)?' + #13#10 +
-            DataDir + #13#10#13#10 +
-            'Yes deletes everything in that folder: downloaded models, engines, settings, consent records, state and logs. ' +
-            'Anything else that keeps its files there, such as the FastLLM lab app, loses them too.' + #13#10#13#10 +
-            'Choose No to keep all of it for a later install.',
+  ModelsDir := DataDir + '\models';
+  EnginesDir := DataDir + '\engines';
+  if UninstallSilent or not (DirExists(ModelsDir) or DirExists(EnginesDir)) then Exit;
+  Bytes := 0;
+  if DirExists(ModelsDir) then Bytes := Bytes + DirSizeBytes(ModelsDir);
+  if DirExists(EnginesDir) then Bytes := Bytes + DirSizeBytes(EnginesDir);
+  // Spec 4.1: offer to delete only the downloaded models and engines; settings, consent records and logs stay.
+  if MsgBox('Also delete the downloaded models and engines (' + IntToStr(Bytes div 1048576) + ' MB)?' + #13#10 +
+            ModelsDir + #13#10 + EnginesDir + #13#10#13#10 +
+            'Settings, consent records and logs are kept. Choose No to keep the models and engines for a later install.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-    DelTree(DataDir, True, True, True);
+  begin
+    if DirExists(ModelsDir) then DelTree(ModelsDir, True, True, True);
+    if DirExists(EnginesDir) then DelTree(EnginesDir, True, True, True);
+  end;
 end;

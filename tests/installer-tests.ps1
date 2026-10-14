@@ -70,12 +70,12 @@ foreach ($f in Get-ChildItem -LiteralPath $repo -File | Where-Object { $_.Name -
     Assert-True (-not (Select-String -LiteralPath $f.FullName -Pattern 'ExecutionPolicy' -Quiet)) "$($f.Name) sets a policy; FastLLM.cmd must stay the only product launcher that does"
 }
 Assert-True ($iss -match '(?m)^function PrepareToInstall\(' -and $iss -match "FileExists\(AddBackslash\(Dir\) \+ 'FastLLM\.cat'\)" -and $iss -match "_uninstall\\unins000\.dat") 'the installer must refuse a non-empty folder that is not a FastLLM install before [InstallDelete] runs'
-# The uninstall prompt must say what Yes deletes (the whole data root, not just models) and default to No
+# The uninstall prompt (spec 4.1) offers to delete only the downloaded models and engines, says what it keeps, and defaults to No
 $uninstallPrompt = [regex]::Match($iss, '(?s)MsgBox\(.*?\) = IDYES').Value
-Assert-True ($uninstallPrompt -match 'ALL FastLLM data' -and $uninstallPrompt -match 'downloaded models' -and $uninstallPrompt -match 'engines' -and
-    $uninstallPrompt -match 'settings' -and $uninstallPrompt -match 'logs') 'the uninstall prompt must state that Yes deletes all FastLLM data: models, engines, settings and logs'
+Assert-True ($uninstallPrompt -match 'downloaded models and engines' -and $uninstallPrompt -match 'ModelsDir' -and $uninstallPrompt -match 'EnginesDir' -and
+    $uninstallPrompt -match 'are kept') 'the uninstall prompt must name the models and engines folders and say what is kept'
 Assert-True ($uninstallPrompt -match 'MB_YESNO or MB_DEFBUTTON2') 'the uninstall prompt must default to No'
-Assert-True ($uninstallPrompt -notmatch "models and engines \(") 'the old models-and-engines-only prompt text must be gone'
+Assert-True ($iss -match "DelTree\(ModelsDir, " -and $iss -match "DelTree\(EnginesDir, " -and $iss -notmatch "DelTree\(DataDir") 'Yes deletes only the models and engines folders, never the whole data root'
 Assert-True ($iss -notmatch '(?i)ExecutionPolicy') 'the installer script must not set an execution policy'
 
 # 2. Fresh install

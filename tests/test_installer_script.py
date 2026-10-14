@@ -6,12 +6,14 @@ ISS = (Path(__file__).resolve().parents[1] / "installer" / "FastLLM.iss").read_t
 
 
 class InstallerScriptTests(unittest.TestCase):
-    def test_uninstall_prompt_states_what_yes_deletes_and_defaults_to_no(self):
+    def test_uninstall_offers_only_models_and_engines_and_defaults_to_no(self):
         prompt = re.search(r"(?s)MsgBox\(.*?\) = IDYES", ISS).group(0)
-        for word in ("ALL FastLLM data", "downloaded models", "engines", "settings", "logs"):
+        for word in ("downloaded models and engines", "ModelsDir", "EnginesDir", "are kept"):
             self.assertIn(word, prompt)
         self.assertIn("MB_YESNO or MB_DEFBUTTON2", prompt)
-        self.assertNotIn("models and engines (", prompt)
+        self.assertIn("DelTree(ModelsDir, ", ISS)
+        self.assertIn("DelTree(EnginesDir, ", ISS)
+        self.assertNotIn("DelTree(DataDir", ISS)
 
     def test_install_refuses_a_foreign_non_empty_folder_before_install_delete(self):
         self.assertIn("function PrepareToInstall(var NeedsRestart: Boolean): String;", ISS)
