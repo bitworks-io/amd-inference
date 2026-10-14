@@ -1,0 +1,14 @@
+{
+  "_comment": "Pins for third-party build tools installed on release/CI runners. A null pin fails closed. Sources: see release notes in the commit that introduced this file.",
+  "inno": {
+    "version": "6.7.1",
+    "installerUrl": "https://files.jrsoftware.org/is/6/innosetup-6.7.1.exe",
+    "installerSha256": "4D11E8050B6185E0D49BD9E8CC661A7A59F44959A621D31D11033124C4E8A7B0",
+    "signerCommonName": "Pyrsys B.V."
+  },
+  "artifactSigningModule": {
+    "version": "0.1.20",
+    "packageUrl": "https://www.powershellgallery.com/api/v2/package/ArtifactSigning/0.1.20",
+    "packageSha512Base64": "yupoAW+4tM5A2JUxDi3qf1AtzZHs0Xblu6tPS97RhNK6jZkLQhEvND9pujzluJF8wiEUtdoHiYLab7BFerHlJA=="
+  }
+}

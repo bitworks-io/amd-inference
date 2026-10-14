@@ -11,10 +11,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  INNO_VERSION: '6.7.1'
-  ARTIFACT_SIGNING_MODULE_VERSION: '0.1.20'
-
 jobs:
   test:
     uses: ./.github/workflows/test.yml
@@ -78,15 +74,14 @@ jobs:
       - name: Build an unsigned installer from the unsigned package
         shell: pwsh
         run: |
-          choco install innosetup --version $env:INNO_VERSION -y --no-progress
-          if ($LASTEXITCODE) { throw "choco failed: $LASTEXITCODE" }
+          ./installer/build-installer.ps1 -InstallTools
           $tree = Join-Path $env:RUNNER_TEMP 'tree'
           Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP 'in/package-unsigned.zip') -DestinationPath $tree
           ./installer/build-installer.ps1 -Version $env:VER -SourceDir $tree -OutputDir (Join-Path $env:RUNNER_TEMP 'installer')
       - name: Show the Artifact Signing command syntax
         shell: pwsh
         run: |
-          Install-Module -Name ArtifactSigning -RequiredVersion $env:ARTIFACT_SIGNING_MODULE_VERSION -Repository PSGallery -Scope CurrentUser -Force
+          ./installer/build-installer.ps1 -InstallTools -WithSigningModule
           Get-Command -Module ArtifactSigning | Format-Table Name
           Get-Command Invoke-ArtifactSigning -Syntax
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -137,6 +132,9 @@ jobs:
           "files<<$d" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           $lines | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           $d | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Install Inno Setup and the Artifact Signing module (pinned and verified; before any Azure login)
+        shell: pwsh
+        run: ./installer/build-installer.ps1 -InstallTools -WithSigningModule
       - name: Azure login (OIDC)
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
@@ -153,6 +151,7 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          cache-dependencies: false
           exclude-environment-credential: true
           exclude-azure-cli-credential: false
       - name: Verify scripts, rebuild manifest, create catalog
@@ -168,17 +167,12 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          cache-dependencies: false
           exclude-environment-credential: true
           exclude-azure-cli-credential: false
       - name: Verify catalog and package
         shell: pwsh
         run: ./release/sign-release.ps1 -Phase AfterCatalog -WorkDir (Join-Path $env:RUNNER_TEMP 'w') -Version $env:VER
-      - name: Install Inno Setup and the Artifact Signing module
-        shell: pwsh
-        run: |
-          choco install innosetup --version $env:INNO_VERSION -y --no-progress
-          if ($LASTEXITCODE) { throw "choco failed: $LASTEXITCODE" }
-          Install-Module -Name ArtifactSigning -RequiredVersion $env:ARTIFACT_SIGNING_MODULE_VERSION -Repository PSGallery -Scope CurrentUser -Force
       - name: Build and sign the installer (uninstaller and Setup.exe signed during the compile)
         shell: pwsh
         run: ./installer/build-installer.ps1 -Version $env:VER -SourceDir (Join-Path $env:RUNNER_TEMP 'w/tree') -OutputDir (Join-Path $env:RUNNER_TEMP 'installer') -SignScript ./installer/inno-sign.ps1
