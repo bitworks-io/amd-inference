@@ -90,7 +90,7 @@ function Get-FastLlmTreeHashList {
         $rel + '  ' + (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     })
     [Array]::Sort($lines, [StringComparer]::Ordinal)
-    return , $lines
+    return $lines
 }
 
 function Test-FastLlmTreeMatchesPackage {
