@@ -26,6 +26,8 @@ MIN_AGENT_RE = re.compile(r"^[0-9]{1,4}(\.[0-9]{1,6}){1,3}$")
 BUILT_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 ROOT_FILES = ("fast-llm.ps1", "fast-llm-ui.ps1", "FastLLM.cmd", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "README.md", "SECURITY.md")
 TREES = ("src", "tools", "config", "licenses")
+PRODUCT_TOOLS_FILE = "tools/product-tools.json"             # the explicit allowlist of tools/ files that ship
+PRODUCT_TOOLS_SCHEMA = "fastllm.product-tools.v1"
 SKIP = re.compile(r"(^|/)(__pycache__|bin|obj|\.[^/]*)(/|$)")
 VERSION_FILE = "FASTLLM-VERSION.json"
 RESERVED = frozenset({VERSION_FILE, "MANIFEST.json", "RELEASE.json", "FastLLM.cat"})
@@ -75,10 +77,20 @@ def collect(root):
             raise BuildError("required root file is missing: " + name)
         with open(path, "rb") as handle:
             files[name] = handle.read()
+    product_tools = set(load_product_tools(root))
     for tree in TREES:
         base = os.path.join(root, tree)
         if not os.path.isdir(base):
             raise BuildError("required folder is missing: " + tree)
+        if tree == "tools":
+            # Product allowlist, not the whole folder: lab and bench administration tools never ship.
+            for name in sorted(product_tools):
+                full = os.path.join(base, *name.split("/"))
+                if not os.path.isfile(full) or os.path.islink(full):
+                    raise BuildError("allowlisted product tool is missing: tools/" + name)
+                with open(full, "rb") as handle:
+                    files["tools/" + name] = handle.read()
+            continue
         for current, dirs, names in os.walk(base):
             dirs.sort()
             for name in sorted(names):
@@ -92,6 +104,25 @@ def collect(root):
     if clash:
         raise BuildError("the source tree must not contain " + ", ".join(sorted(clash)))
     return files
+
+
+def load_product_tools(root):
+    """The allowlist of tools/ files that ship, as a sorted list of paths relative to tools/."""
+    path = os.path.join(root, *PRODUCT_TOOLS_FILE.split("/"))
+    try:
+        with open(path, "rb") as handle:
+            doc = json.loads(handle.read().decode("utf-8"))
+    except (OSError, ValueError):
+        raise BuildError("the product tools allowlist is missing or unreadable: " + PRODUCT_TOOLS_FILE)
+    names = doc.get("tools") if isinstance(doc, dict) and doc.get("schema") == PRODUCT_TOOLS_SCHEMA else None
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+        raise BuildError("the product tools allowlist must carry schema %s and a non-empty tools list" % PRODUCT_TOOLS_SCHEMA)
+    for name in names:
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$", name):
+            raise BuildError("the product tools allowlist has an unsafe path: " + name)
+    if len(set(names)) != len(names):
+        raise BuildError("the product tools allowlist has a duplicate entry")
+    return sorted(names)
 
 
 def manifest_bytes(entries):
