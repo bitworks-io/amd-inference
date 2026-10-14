@@ -28,7 +28,7 @@ $script:bgStopRequested=$false
 $script:bgPoll=$null
 $form=New-Object Windows.Forms.Form
 $form.Text='Bitworks FastLLM - Windows lab alpha'
-$form.Size=New-Object Drawing.Size(880,755)
+$form.Size=New-Object Drawing.Size(880,875)
 $form.MinimumSize=$form.Size
 $form.StartPosition='CenterScreen'
 $form.Font=New-Object Drawing.Font('Segoe UI',10)
@@ -40,7 +40,7 @@ function LabelAt($Text,$X,$Y,$Width=800) {
 }
 $title=LabelAt 'Local AMD inference, managed on this PC' 24 20
 $title.Font=New-Object Drawing.Font('Segoe UI',18,[Drawing.FontStyle]::Bold);$title.Height=40
-$notice=LabelAt 'LAB ALPHA - No Windows/GPU performance certification yet. Vulkan only. Text-only models.' 24 68
+$notice=LabelAt 'Preview. Windows + AMD Radeon. Vulkan engine. Text-only models.' 24 68
 $notice.ForeColor=[Drawing.Color]::DarkRed
 $null=LabelAt 'Model' 24 110 220
 $modelBox=New-Object Windows.Forms.ComboBox
@@ -53,7 +53,15 @@ $contextBox=New-Object Windows.Forms.NumericUpDown
 $contextBox.Location=New-Object Drawing.Point(560,138);$contextBox.Size=New-Object Drawing.Size(260,30);$contextBox.Maximum=32768;$contextBox.Increment=1024;$form.Controls.Add($contextBox)
 $null=LabelAt 'Install and model cache folder' 24 180
 $pathBox=New-Object Windows.Forms.TextBox
-$pathBox.Location=New-Object Drawing.Point(24,208);$pathBox.Size=New-Object Drawing.Size(796,30);$pathBox.Text=$InstallRoot;$form.Controls.Add($pathBox)
+$pathBox.Location=New-Object Drawing.Point(24,208);$pathBox.Size=New-Object Drawing.Size(510,30);$pathBox.Text=$InstallRoot;$form.Controls.Add($pathBox)
+$null=LabelAt 'Resizable BAR workaround' 560 180 260
+$barBox=New-Object Windows.Forms.ComboBox
+$barBox.Location=New-Object Drawing.Point(560,208);$barBox.Size=New-Object Drawing.Size(260,30);$barBox.DropDownStyle='DropDownList'
+$script:barValues=@('auto','on','off')
+foreach($barItem in @('Auto (recommended)','On','Off')){[void]$barBox.Items.Add($barItem)}
+$barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string](Read-FastLlmUiSettings -InstallRoot $InstallRoot).vulkanBarMitigation)
+$form.Controls.Add($barBox)
+function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.SelectedIndex)] }
 function ButtonAt($Text,$X,$Y,$Width=150) {
     $button=New-Object Windows.Forms.Button;$button.Text=$Text;$button.Location=New-Object Drawing.Point($X,$Y);$button.Size=New-Object Drawing.Size($Width,38);$form.Controls.Add($button);return $button
 }
@@ -71,16 +79,33 @@ $progress=New-Object Windows.Forms.ProgressBar
 $progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
 $output.Location=New-Object Drawing.Point(24,440);$output.Size=New-Object Drawing.Size(796,206);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
-$vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$vc.Location=New-Object Drawing.Point(24,665);$vc.AutoSize=$true;$form.Controls.Add($vc)
-$amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,665);$amd.AutoSize=$true;$form.Controls.Add($amd)
-$trayButton=ButtonAt 'Minimize to tray' 440 658 175
-$driverButton=ButtonAt 'Driver guidance' 630 658 190
+$script:evidenceUrl=$null
+$resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
+$notesLabel=New-Object Windows.Forms.Label
+$notesLabel.Location=New-Object Drawing.Point(24,676);$notesLabel.Size=New-Object Drawing.Size(796,80);$notesLabel.Text='';$form.Controls.Add($notesLabel)
+$barLink=New-Object Windows.Forms.LinkLabel;$barLink.Text='How to turn it on';$barLink.Location=New-Object Drawing.Point(24,758);$barLink.AutoSize=$true;$barLink.Visible=$false;$form.Controls.Add($barLink)
+$script:servingNotesDone=$false
+$vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$vc.Location=New-Object Drawing.Point(24,785);$vc.AutoSize=$true;$form.Controls.Add($vc)
+$amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,785);$amd.AutoSize=$true;$form.Controls.Add($amd)
+$trayButton=ButtonAt 'Minimize to tray' 440 778 175
+$driverButton=ButtonAt 'Driver guidance' 630 778 190
 $vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
 $amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
+$resultsLink.Add_LinkClicked({
+    try{
+        $checked=Get-FastLlmUiEvidenceUrl -Plan ([pscustomobject]@{recipe=[pscustomobject]@{evidenceUrl=$script:evidenceUrl}})
+        if($checked){Start-Process ([string]$checked)}
+    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the results page. Check your default browser.','Open results page','OK','Warning')}
+})
+$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the Resizable BAR page. Check your default browser.','Open Resizable BAR page','OK','Warning')}})
+$barBox.Add_SelectedIndexChanged({
+    try{Write-FastLlmUiSettings -InstallRoot ([IO.Path]::GetFullPath($pathBox.Text)) -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue)})}
+    catch{$statusLabel.Text='The Resizable BAR setting could not be saved.'}
+})
 function SetBusy([bool]$Busy) {
     $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
         $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
+    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
     foreach($control in @($doctorButton,$driverButton)){$control.Enabled=-not $Busy}
     $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
         (Test-FastLlmUiBackgroundMayStart -State $script:bgState))
@@ -214,6 +239,7 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
     $script:step=$Step
     try{$script:child.Start($info)}catch{$script:child.Dispose();$script:child=$null;$script:step='idle';SetBusy $false;throw}
     SetBusy $true;$statusLabel.Text=$Step;$output.Text=''
+    if($Step -ceq 'serving'){$script:servingNotesDone=$false;$notesLabel.Text='';$barLink.Visible=$false}
 }
 function RevealUiForAction {
     if($script:trayState.visibility -eq 'tray'){RestoreFromTray}
@@ -474,7 +500,7 @@ function LaunchUiPhase {
             LaunchStep 'model download' $args
             return
         }
-        'serving' { LaunchStep 'serving' (@('start','-Unattended')+$script:selection);return }
+        'serving' { LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+$script:selection);return }
         default { throw "The control-window workflow cannot launch phase '$($script:flow.phase)'." }
     }
 }
@@ -483,8 +509,9 @@ function ContinueUiAfterPreview($Plan) {
     $artifact=[bool]($Plan.modelPath -and (Test-Path -LiteralPath ([string]$Plan.modelPath) -PathType Leaf))
     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'preview-complete' -Plan $Plan -HasConsent:$receipt -HasArtifact:$artifact
     if($script:flow.phase -eq 'failed'){ShowFailure $script:flow.lastStartError;return}
-    $gpuNames=(@($Plan.selectedAdapters | ForEach-Object { [string]$_.name }) -join ' + ')
-    $statusLabel.Text="Selected $($Plan.model.id) on $gpuNames; context $($Plan.model.contextSize)."
+    $statusLabel.Text=Format-FastLlmUiRecipeSummary -Plan $Plan
+    $script:evidenceUrl=Get-FastLlmUiEvidenceUrl -Plan $Plan
+    $resultsLink.Visible=[bool]$script:evidenceUrl
     if($script:flow.phase -eq 'consent'){
         $approved=ShowExactModelConsent $Plan
         $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event $(if($approved){'consent-approved'}else{'consent-declined'})
@@ -546,7 +573,7 @@ function StartUiBackground {
     AssertUiBackgroundNotOccupied
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
-        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation='auto'}
+        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue)}
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
         & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation)
@@ -654,7 +681,15 @@ $timer.Add_Tick({
         $text=$script:child.Snapshot();$output.Text=$text;$output.SelectionStart=$output.TextLength;$output.ScrollToCaret()
         if(-not $script:child.Process.HasExited){
             if($script:step -eq 'serving'){
-                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text='Ready - API smoke tests passed; GPU residency/performance unqualified.';$progress.Visible=$false}}catch{}
+                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text='Ready - API smoke tests passed; GPU residency/performance unqualified.';$progress.Visible=$false}
+                    if($s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
+                        $lines=@()
+                        if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}
+                        $barNote=Get-FastLlmUiBarNote -State $s
+                        if($barNote){$lines+=$barNote;$barLink.Visible=$true}
+                        if($lines.Count){$notesLabel.Text=($lines -join [Environment]::NewLine)}
+                    }
+                }catch{}
             }
             return
         }

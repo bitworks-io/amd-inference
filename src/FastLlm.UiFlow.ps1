@@ -308,3 +308,72 @@ function Move-FastLlmUiFlow {
     }
     return $Flow
 }
+
+function Format-FastLlmUiRecipeSummary {
+    param([Parameter(Mandatory = $true)] $Plan)
+    $names = @(@($Plan.selectedAdapters) | ForEach-Object { if ($_ -and $_.PSObject.Properties['name']) { [string] $_.name } } | Where-Object { $_ } | Select-Object -Unique)
+    $card = 'GPU'
+    if ($names.Count) { $card = $names -join ' + ' }
+    $label = 'Estimated for your card'
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.label) { $label = [string] $Plan.recipe.label }
+    $quant = ''
+    if ($Plan.model.PSObject.Properties['quantization'] -and $Plan.model.quantization) { $quant = " ($($Plan.model.quantization))" }
+    $context = ([int] $Plan.model.contextSize).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+    return "Best setup for your ${card}: $($Plan.model.id)$quant, $context context. $label."
+}
+
+function Get-FastLlmUiEvidenceUrl {
+    param([Parameter(Mandatory = $true)] $Plan)
+    if (-not ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.evidenceUrl)) { return $null }
+    $url = [string] $Plan.recipe.evidenceUrl
+    if ($url.StartsWith('https://bitworks.io/', [StringComparison]::Ordinal)) { return $url }
+    return $null
+}
+
+function Format-FastLlmUiSelfTest {
+    param($SelfTest)
+    if (-not $SelfTest) { return $null }
+    switch ([string] $SelfTest.status) {
+        'pass' { return "Self-test passed: $($SelfTest.generationTokS) tok/s generation, $($SelfTest.promptTokS) tok/s prompt." }
+        'below-expected' { return "Self-test: slower than expected ($($SelfTest.generationTokS) vs $($SelfTest.expectedGenerationTokS) tok/s generation). Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run Doctor for details." }
+        default {
+            $reasons = @()
+            if ($SelfTest.PSObject.Properties['reasons']) { $reasons = @($SelfTest.reasons) }
+            return "Self-test failed ($($reasons -join ', ')). FastLLM tries the next cached setup."
+        }
+    }
+}
+
+function Get-FastLlmUiBarNote {
+    param($State)
+    if ($State -and $State.PSObject.Properties['barGuidance'] -and $State.barGuidance -and $State.barGuidance.shown) { return [string] $State.barGuidance.text }
+    return $null
+}
+
+function Read-FastLlmUiSettings {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto' }
+    $path = Join-Path $InstallRoot 'settings.json'
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($stored.PSObject.Properties['vulkanBarMitigation'] -and @('auto', 'on', 'off') -contains [string] $stored.vulkanBarMitigation) {
+                $settings.vulkanBarMitigation = [string] $stored.vulkanBarMitigation
+            }
+        }
+    }
+    catch { }
+    return $settings
+}
+
+# Plan B writes only vulkanBarMitigation; Plan C adds more keys and will make this merge instead of overwrite.
+function Write-FastLlmUiSettings {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Settings)
+    $value = [string] $Settings.vulkanBarMitigation
+    if (@('auto', 'on', 'off') -notcontains $value) { throw 'vulkanBarMitigation must be auto, on or off.' }
+    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
+    $path = Join-Path $InstallRoot 'settings.json'
+    $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
+    Set-Content -LiteralPath $temporary -Value (([pscustomobject] [ordered]@{ vulkanBarMitigation = $value }) | ConvertTo-Json) -Encoding utf8
+    Move-Item -LiteralPath $temporary -Destination $path -Force
+}
