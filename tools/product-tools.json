@@ -1,0 +1,16 @@
+{
+  "schema": "fastllm.product-tools.v1",
+  "comment": "The only files from tools/ that ship in the signed release package. A tool belongs here when fast-llm.ps1, fast-llm-ui.ps1 or a src/ file names it, or another listed tool does. Lab and bench administration tools stay out.",
+  "tools": [
+    "adlx-identity-vram.ps1",
+    "background-host.ps1",
+    "benchmark.ps1",
+    "collect-ggml-vulkan-identity.ps1",
+    "collect-prerequisite-inventory.ps1",
+    "collect-vulkan-luid-join.ps1",
+    "context-ladder.ps1",
+    "hip-candidate-native-worker.ps1",
+    "prepare-vc-runtime.ps1",
+    "vulkan-coopmat-screen.ps1"
+  ]
+}
