@@ -127,7 +127,7 @@ try {
     function Get-FastLlmCatalog { param($CatalogPath) $script:nd.log.Add('catalog');return [pscustomobject]@{engine=[pscustomobject]@{version='b-test';assets=[pscustomobject]@{vulkan=[pscustomobject]@{enabled=$true};rocm=[pscustomobject]@{enabled=$false}}}} }
     function Test-FastLlmEngineInstallation { param($InstallRoot,$EngineVersion,$BackendKey,$Asset) $script:nd.log.Add('engine-check');return $script:nd.engine }
     function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) $script:nd.log.Add('hardware');return [pscustomobject]@{} }
-    function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel)
+    function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId)
         $script:nd.log.Add('plan');$script:nd.planCalls++;$script:nd.requestedModelIds.Add([string]$ModelId)
         return [pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}} }
     function Write-FastLlmPlan { param($Plan) }
@@ -140,7 +140,7 @@ try {
     function Get-FastLlmRecoveryPlan { param($Hardware,$CatalogPath,$InstallRoot,$Profile,$FailedModelId,$RequestedModelId,$ContextSize)
         $script:nd.log.Add('recovery-plan');if($script:nd.recovery){return [pscustomobject]@{model=[pscustomobject]@{id='other-model'}}};return $null }
     function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest)
-        $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object)
+        $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object);$script:nd.startBar=$VulkanBarMitigation
         if($script:nd.startQueue.Count -gt 0){
             $next=$script:nd.startQueue.Dequeue()
             if($next -is [string]){$e=New-Object InvalidOperationException('simulated '+$next);$e.Data['FastLlmReason']=$next;throw $e}
@@ -152,7 +152,7 @@ try {
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$true;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='off';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
+        $AcceptModelLicense=$false;$Unattended=$true;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='auto';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
         $failure=$null
         try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
@@ -190,19 +190,19 @@ try {
     # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
     Reset-Nd
     $f=Invoke-NdStart $false
-    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan') 'default start: Start-FastLlmServer is called without -DeviceBinding'
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and $script:nd.startBar -ceq 'auto') 'default start: Start-FastLlmServer is called without -DeviceBinding and always forwards -VulkanBarMitigation auto'
     Reset-Nd; $script:ndSkipSelfTest=$false
     $f=Invoke-NdStart $false
-    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,SelfTest') 'start without -SkipSelfTest: Start-FastLlmServer receives -SelfTest'
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,SelfTest,VulkanBarMitigation') 'start without -SkipSelfTest: Start-FastLlmServer receives -SelfTest'
     $script:ndSkipSelfTest=$true
     Reset-Nd; $script:ndDeviceBinding='record'
     $f=Invoke-NdStart $false
-    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan') '-DeviceBinding record: Start-FastLlmServer receives it'
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation') '-DeviceBinding record: Start-FastLlmServer receives it'
     # -- W03 Phase A enforce: the CLI passes it on, and a DeviceBindingFailed failure is NEVER retried, re-planned, recovered or model-swapped
     foreach($recoveryAllowed in @($false,$true)){
         Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.recovery=$recoveryAllowed; $script:nd.startQueue.Enqueue('DeviceBindingFailed')
         $f=Invoke-NdStart $false
-        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan' -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "-DeviceBinding enforce: a DeviceBindingFailed start is rethrown after exactly one start (no retry, no re-plan, no recovery plan, no model swap; recovery available: $recoveryAllowed)"
+        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,DeviceBinding,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "-DeviceBinding enforce: a DeviceBindingFailed start is rethrown after exactly one start (no retry, no re-plan, no recovery plan, no model swap; recovery available: $recoveryAllowed)"
     }
     Reset-Nd; $script:ndDeviceBinding='enforce'; $script:nd.startQueue.Enqueue('DeviceBindingFailed')
     $f=Invoke-NdStart $true
