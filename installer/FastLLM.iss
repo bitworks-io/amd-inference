@@ -127,8 +127,11 @@ begin
   if CurUninstallStep <> usPostUninstall then Exit;
   DataDir := ExpandConstant('{localappdata}\Bitworks\FastLLM');
   if UninstallSilent or not DirExists(DataDir) then Exit;
-  if MsgBox('Also delete FastLLM''s downloaded models and engines (' + IntToStr(DirSizeBytes(DataDir) div 1048576) +
-            ' MB)?' + #13#10 + DataDir + #13#10#13#10 + 'Choose No to keep them for a later install.',
+  if MsgBox('Also delete ALL FastLLM data in this folder (' + IntToStr(DirSizeBytes(DataDir) div 1048576) + ' MB)?' + #13#10 +
+            DataDir + #13#10#13#10 +
+            'Yes deletes everything in that folder: downloaded models, engines, settings, consent records, state and logs. ' +
+            'Anything else that keeps its files there, such as the FastLLM lab app, loses them too.' + #13#10#13#10 +
+            'Choose No to keep all of it for a later install.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
     DelTree(DataDir, True, True, True);
 end;
