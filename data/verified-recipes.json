@@ -1,1 +1,65 @@
-{"schema": "bitworks.fastllm-verified-recipes/v1", "entries": []}
+{
+  "entries": [
+    {
+      "engineBuild": "b10698",
+      "evidence": {
+        "publishedAt": null,
+        "resultId": null,
+        "url": null
+      },
+      "expected": {
+        "contextTokens": 16384,
+        "engineBuild": "b10698",
+        "firstTextS": 1.01,
+        "generationTokS": 32.75,
+        "measuredAt": "2026-10-07",
+        "mitigation": "off",
+        "producer": "fastllm-benchmark-vnext vnext.2",
+        "promptTokS": 507.02,
+        "promptTokens": 512
+      },
+      "gpuCount": 1,
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
+      "model": "qwen3.8-27b-ud-iq4-xs",
+      "recommended": true,
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 16384,
+        "vulkanBarMitigation": "auto"
+      },
+      "variant": "rx-7900-xt"
+    },
+    {
+      "engineBuild": "b10698",
+      "evidence": {
+        "publishedAt": null,
+        "resultId": null,
+        "url": null
+      },
+      "expected": {
+        "contextTokens": 32768,
+        "engineBuild": "b10698",
+        "firstTextS": 0.82,
+        "generationTokS": 32.73,
+        "measuredAt": "2026-10-07",
+        "mitigation": "on",
+        "producer": "fastllm-benchmark-vnext vnext.1",
+        "promptTokS": 654.14,
+        "promptTokens": 512
+      },
+      "gpuCount": 1,
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k",
+      "model": "qwen3.8-27b-ud-q4-k-m",
+      "recommended": true,
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 32768,
+        "vulkanBarMitigation": "auto"
+      },
+      "variant": "rx-7900-xtx"
+    }
+  ],
+  "schema": "bitworks.fastllm-verified-recipes/v1"
+}
