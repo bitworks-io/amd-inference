@@ -850,9 +850,11 @@ try {
     Check ($run.state.vulkanMemoryPolicy.requested -eq 'on' -and $run.state.vulkanMemoryPolicy.effective -eq 'on' -and $run.state.vulkanMemoryPolicy.reason -eq 'explicit-on' -and $run.state.vulkanMemoryPolicy.rebarDetected -eq 'not-probed-explicit-on') 'on is recorded with its reason and no detector result'
     $run=Invoke-PolicyRun -Name 'auto-off' -Policy 'auto' -Expect '1'
     Check ($run.exit -eq 0 -and $run.diag -notmatch 'unexpected|extra-ggml' -and $run.state.vulkanMemoryPolicy.effective -eq 'on' -and $run.state.vulkanMemoryPolicy.reason -eq 'rebar-off-detected' -and $run.state.vulkanMemoryPolicy.probeStatus -eq 'ok') 'auto on a rebar-off fixture sets the variable and records why'
+    Check ($run.state.barGuidance.shown -eq $true -and $run.state.barGuidance.text -ceq "Resizable BAR (AMD Smart Access Memory) appears to be off on this PC. FastLLM applied a workaround so models run at full speed. Turning on Resizable BAR / Smart Access Memory in your BIOS is AMD's recommended setup and may help further. See docs/RESIZABLE-BAR.md.") 'a rebar-off-detected start records the exact BIOS guidance in state.barGuidance'
     $probe.report=$xtHost
     $run=Invoke-PolicyRun -Name 'auto-on' -Policy 'auto' -Expect 'absent' -Card 'AMD Radeon RX 7900 XT'
     Check ($run.exit -eq 0 -and $run.diag -notmatch 'unexpected|extra-ggml' -and $run.state.vulkanMemoryPolicy.effective -eq 'off' -and $run.state.vulkanMemoryPolicy.rebarDetected -eq 'rebar-on') 'auto on a rebar-on fixture leaves the child environment untouched'
+    Check ($run.state.barGuidance.shown -eq $false -and $null -eq $run.state.barGuidance.text) 'no BIOS guidance is shown when Resizable BAR is on'
     $probe.report=$null
     $run=Invoke-PolicyRun -Name 'auto-unknown' -Policy 'auto' -Expect 'absent'
     Check ($run.exit -eq 0 -and $run.diag -notmatch 'unexpected|extra-ggml' -and $run.state.vulkanMemoryPolicy.effective -eq 'off' -and $run.state.vulkanMemoryPolicy.rebarDetected -eq 'unknown') 'auto with an unknown detector result leaves the child environment untouched'
@@ -1036,7 +1038,10 @@ Check ($runtimeSource.Contains("reason -eq 'engine-not-verified'") -and $runtime
 Check ($runtimeSource.Contains("requested -eq 'auto' -and `$state.vulkanMemoryPolicy.reason -eq 'rebar-unknown-no-mitigation'") -and $runtimeSource.Contains('did not run or was inconclusive; no mitigation was applied')) 'auto with a failed or inconclusive check prints one console line; policy off prints none'
 Check ($policySource -notmatch '(?i)timed\? \?out\|') 'canary timeout detection never inspects message text'
 $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
-Check ($cli -match "(?s)\[ValidateSet\('off', 'on', 'auto'\)\]\s*\[string\] \`$VulkanBarMitigation = 'off'" -and $cli -match '\[switch\] \$ThroughputCanary' -and $cli -match '\[switch\] \$ProbeVulkanMemory') 'the CLI switches default to off'
+Check ($cli -match "(?s)\[ValidateSet\('off', 'on', 'auto'\)\]\s*\[string\] \`$VulkanBarMitigation = 'auto'" -and $cli -match '\[switch\] \$ThroughputCanary' -and $cli -match '\[switch\] \$ProbeVulkanMemory') 'the CLI mitigation default is auto (owner decision 12); the canary and doctor probe stay opt-in'
+Check ($cli.Contains('$startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation') -and -not $cli.Contains("ContainsKey('VulkanBarMitigation')) { $startPolicyOptions")) 'the CLI always forwards the mitigation policy to the start, so the auto default reaches it'
+Check ($runtimeSource.Contains('Write-Host $guidance') -and $runtimeSource.Contains('$guidance = "Resizable BAR (AMD Smart Access Memory) appears to be off on this PC. FastLLM applied a workaround so models run at full speed. Turning on Resizable BAR / Smart Access Memory in your BIOS is AMD's recommended setup and may help further. See docs/RESIZABLE-BAR.md."')) 'the exact BIOS guidance line is printed to the console when rebar-off is detected'
+Check ((Get-Content -LiteralPath (Join-Path $root 'docs/RESIZABLE-BAR.md') -Raw).Contains('-VulkanBarMitigation off')) 'the Resizable BAR doc names the opt-out'
 $processInfo=New-Object Diagnostics.ProcessStartInfo
 $processInfo.FileName=(Get-Process -Id $PID).Path
 $processInfo.Arguments='-NoLogo -NoProfile -NonInteractive -File "'+(Join-Path $root 'fast-llm.ps1')+'" plan -VulkanBarMitigation on'
@@ -1045,4 +1050,4 @@ $child=[Diagnostics.Process]::Start($processInfo)
 $childOut=$child.StandardOutput.ReadToEndAsync();$childErr=$child.StandardError.ReadToEndAsync()
 $childExited=$child.WaitForExit(60000)
 Check ($childExited -and $child.ExitCode -ne 0 -and (($childOut.Result+$childErr.Result) -match 'supported only by a live start')) 'the CLI rejects the mitigation switch for any action other than a live start'
-Write-Host "$count Vulkan memory-policy checks passed. Mock services only; this is not hardware qualification and every default stays off. $doctorTiming"
+Write-Host "$count Vulkan memory-policy checks passed. Mock services only; this is not hardware qualification. The CLI mitigation default is auto; the canary and doctor probe stay off. $doctorTiming"

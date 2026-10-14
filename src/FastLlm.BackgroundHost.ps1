@@ -414,6 +414,7 @@ function Start-FastLlmBackgroundHost {
           [switch]$AllowExperimentalModel,
           [ValidateRange(10,1800)][int]$LoadTimeoutSeconds=300,
           [ValidateRange(15,1800)][int]$ReadyTimeoutSeconds=420,
+          [ValidateSet('off','on','auto')][string]$VulkanBarMitigation='auto',
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     $source = [IO.Path]::GetFullPath($SourceRoot)
@@ -428,7 +429,7 @@ function Start-FastLlmBackgroundHost {
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$requestId
         sourceRoot=$source;installRoot=$install;profile=$Profile;modelId=$ModelId
         contextSize=$ContextSize;allowExperimentalModel=[bool]$AllowExperimentalModel
-        loadTimeoutSeconds=$LoadTimeoutSeconds;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
     }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
@@ -490,6 +491,10 @@ function Invoke-FastLlmBackgroundServe {
         $request.requestId -cne $RequestId -or $request.installRoot -cne $install -or $request.sourceRoot -cne $source) {
         throw 'Background request identity is invalid.'
     }
+    # vulkanBarMitigation is validated (case-sensitive); a request written before the field existed means auto.
+    $barMitigation = 'auto'
+    if ($request.PSObject.Properties['vulkanBarMitigation']) { $barMitigation = [string]$request.vulkanBarMitigation }
+    if ($barMitigation -cnotin @('off','on','auto')) { throw 'Background request vulkanBarMitigation is invalid.' }
     Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
     $lease = $null
     $operation = $null
@@ -523,7 +528,7 @@ function Invoke-FastLlmBackgroundServe {
         # then re-probes before using the normal supervised server. No install,
         # download, quarantine, or consent path is reachable here.
         $exit = Start-FastLlmServer -Plan $plan -CatalogPath $catalog -InstallRoot $install `
-            -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -SelfTest
+            -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -VulkanBarMitigation $barMitigation -SelfTest
         $record.phase = 'stopped'
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
         return $exit

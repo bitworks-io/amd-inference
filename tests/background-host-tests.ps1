@@ -133,9 +133,10 @@ try {
     }
     function Enter-FastLlmOperation { param($InstallRoot) $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
-        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[switch]$SelfTest)
+        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest)
         Assert-BackgroundTest ([bool]$SelfTest) 'Background worker did not request the post-load self-test.'
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
+        $script:mockBarPolicy = $VulkanBarMitigation
         $script:mockServerStarts++
         if ($script:throwServer) { throw 'disposable test server failure' }
         return 0
@@ -151,10 +152,11 @@ try {
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
         sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
-        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;vulkanBarMitigation='on';
         sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
     $workerExit = Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source
     Assert-BackgroundTest ($workerExit -eq 0 -and $script:mockServerStarts -eq 1 -and -not $script:mockOperation.CanRead) 'Worker failed to call supervisor exactly once or release operation lock.'
+    Assert-BackgroundTest ($script:mockBarPolicy -ceq 'on') 'Worker did not pass the request vulkanBarMitigation to the start.'
     $script:workerRequestId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
@@ -164,9 +166,23 @@ try {
         sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
     $script:throwServer = $true
     $failed = $false
+    $script:mockBarPolicy = $null
     try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null }
     catch { $failed = $_.Exception.Message -match 'disposable test server failure' }
     Assert-BackgroundTest ($failed -and -not $script:mockOperation.CanRead) 'Worker did not release operation lock after server failure.'
+    Assert-BackgroundTest ($script:mockBarPolicy -ceq 'auto') 'A request without vulkanBarMitigation must default to auto.'
+    $script:workerRequestId = 'ffffffffffffffffffffffffffffffff'
+    $badPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
+    Write-FastLlmBackgroundDocument -Path $badPath -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;vulkanBarMitigation='AUTO';
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:mockServerStarts = 0
+    $badRejected = $false
+    try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null }
+    catch { $badRejected = $_.Exception.Message -match 'vulkanBarMitigation is invalid' }
+    Assert-BackgroundTest ($badRejected -and $script:mockServerStarts -eq 0) 'An invalid vulkanBarMitigation request value must be refused before any start.'
     $failedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($failedOwner.phase -ceq 'failed' -and $failedOwner.failureCode -ceq 'background-start-or-runtime-failed') 'Worker did not retain bounded failure state.'
     # Regression: Windows PowerShell 5.1 turns a plain $null into "" for File.Replace's backup argument ("path is not of a legal form").
@@ -178,6 +194,7 @@ try {
         @(Get-ChildItem -LiteralPath $scratch -Filter 'replace-regression*' -Force).Count -eq 1) 'Atomic replace left a temp or backup file.'
     $hostSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     $replaceSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.FileReplace.ps1') -Raw
+    Assert-BackgroundTest ($hostSource.Contains('vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant()') -and $hostSource.Contains("[ValidateSet('off','on','auto')][string]`$VulkanBarMitigation='auto'")) 'The background request records vulkanBarMitigation with a default of auto.'
     Assert-BackgroundTest ($replaceSource.Contains('[IO.File]::Replace($Source,$Destination,[NullString]::Value)') -and
         -not ($replaceSource -match '\[IO\.File\]::Replace\([^)]*\$null') -and
         $hostSource.Contains('Move-FastLlmFileReplacing -Source $temp -Destination $Path') -and

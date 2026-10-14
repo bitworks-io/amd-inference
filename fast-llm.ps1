@@ -39,9 +39,9 @@ param(
     [switch] $AsJson,
 
     # Vulkan Resizable-BAR mitigation for a live start: off = none, on = set GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 on the
-    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means the module policy (default off).
+    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means auto (owner decision 12, 2026-10-14).
     [ValidateSet('off', 'on', 'auto')]
-    [string] $VulkanBarMitigation = 'off',
+    [string] $VulkanBarMitigation = 'auto',
 
     # doctor only: opt in to the live Vulkan memory-layout probe (a bounded child process). Default doctor never probes.
     [switch] $ProbeVulkanMemory,
@@ -271,9 +271,9 @@ try {
                     continue
                 }
 
-                # Passed only when the caller asked, so a default start is unchanged.
+                # The BAR policy is always passed so the auto default reaches the start; the other options only when asked.
                 $startPolicyOptions = @{}
-                if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation }
+                $startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation
                 if ($ThroughputCanary) { $startPolicyOptions.ThroughputCanary = $true }
                 if (-not $SkipSelfTest) { $startPolicyOptions.SelfTest = $true }
                 if ($DeviceBinding -ne 'off') { $startPolicyOptions.DeviceBinding = $DeviceBinding }
