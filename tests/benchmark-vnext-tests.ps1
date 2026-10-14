@@ -459,7 +459,7 @@ if(-not $Worker){
         try{& $Block|Out-Null}catch{return (& $module {param($e) Get-FastLlmBenchmarkFailureReason $e} $_)}
         return $null
     }
-    Check ((& $module {$script:FastLlmProducerVersion}) -eq 'vnext.2') 'the producer version constant is vnext.2'
+    Check ((& $module {$script:FastLlmProducerVersion}) -eq 'vnext.3') 'the producer version constant is vnext.3'
 
     # 1. a partial Vulkan enumeration never binds
     $partialEnum=New-FxUniqueSnapshot $domain0;$partialEnum.vulkanError=$true
@@ -644,7 +644,7 @@ if(-not $Worker){
         [IO.File]::WriteAllText($failurePart,'partial sidecar')
         $doc=& $module {param($e,$p) New-FastLlmBenchmarkFailureReport $e 'post-timing' ('c'*64) @($p,($p+'.absent')) ([ordered]@{completedMeasuredSamples=3})} $failureError $failurePart
         $docJson=$doc|ConvertTo-Json -Depth 8
-        Check ($doc.status -eq 'failed' -and $doc.reason -eq 'binding-changed' -and $doc.stage -eq 'post-timing' -and $doc.errorClass -eq 'other' -and $doc.producer.version -eq 'vnext.2' -and $doc.partial.completedMeasuredSamples -eq 3) 'a failure report carries status, typed reason, stage and partial evidence'
+        Check ($doc.status -eq 'failed' -and $doc.reason -eq 'binding-changed' -and $doc.stage -eq 'post-timing' -and $doc.errorClass -eq 'other' -and $doc.producer.version -eq 'vnext.3' -and $doc.partial.completedMeasuredSamples -eq 3) 'a failure report carries status, typed reason, stage and partial evidence'
         Check ($docJson -notmatch 'SENTINEL' -and $doc.sidecars[0].exists -eq $true -and $doc.sidecars[0].sha256 -eq (Get-FileHash -LiteralPath $failurePart -Algorithm SHA256).Hash.ToLowerInvariant() -and $doc.sidecars[1].exists -eq $false) 'the failure report binds sidecars by SHA-256 and carries no exception text'
     } finally { Remove-Item -LiteralPath $failurePart -Force -ErrorAction SilentlyContinue }
     $plainError=$null
@@ -1210,7 +1210,7 @@ try{
     Check ($report.binding.status -eq 'bound' -and $report.binding.snapshots.agree -eq $true -and $report.binding.snapshots.pre.fingerprintSha256 -eq $report.binding.snapshots.post.fingerprintSha256 -and $global:Fx.snapshotCalls -eq 2) 'the identity join runs before and after the window and agrees'
     Check ($report.binding.adlx.status -eq 'unknown' -and $report.telemetry.status -eq 'unknown' -and $report.telemetry.reason -eq 'not-configured' -and $global:Fx.telemetryStarts -eq 0) 'without ADLX the run proceeds with unknown ADLX facts and no telemetry'
     Check ($report.PSObject.Properties['hardwareIdentity'] -eq $null -and $report.hardwareIdentityOmitted.reason -eq 'pci-segment-unknown') 'hardwareIdentity is omitted with its reason when the PCI segment is not proven'
-    Check ($report.producer.version -eq 'vnext.2' -and $report.hostCaptureStability.status -eq 'stable' -and (@($report.hostCaptureStability.comparedFields) -join ',') -eq 'powerPlan,cpuTopology,smbiosMemory,boardBios') 'the report carries the producer version and the host capture stability result'
+    Check ($report.producer.version -eq 'vnext.3' -and $report.hostCaptureStability.status -eq 'stable' -and (@($report.hostCaptureStability.comparedFields) -join ',') -eq 'powerPlan,cpuTopology,smbiosMemory,boardBios') 'the report carries the producer version and the host capture stability result'
     Check ($report.binding.recipeAdapterCrossCheck.status -eq 'not-checked' -and $report.binding.recipeAdapterCrossCheck.reason -eq 'recipe-adapter-count-not-one') 'the binding records the recipe adapter cross-check even when it cannot run'
     Check ($report.producer.name -eq 'fastllm-benchmark-vnext' -and $report.producer.sourceSha256 -eq (Get-FileHash -LiteralPath (Join-Path $repo 'src/FastLlm.Benchmark.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'the producer is identified by its source SHA-256'
     Check ((Get-RequestCount)-$before -eq 13) 'v-next makes exactly one tokenize call plus 12 completions (no extra server calls)'
@@ -1461,7 +1461,7 @@ try{
     $r2=$run.Report
     $hashNames=@($r2.producer.inputSha256.PSObject.Properties|ForEach-Object Name)
     $classNames=@($r2.producer.inputClassification.PSObject.Properties|ForEach-Object Name)
-    Check ($r2.producer.version -eq 'vnext.2' -and $hashNames.Count -eq 31 -and $classNames.Count -eq 31 -and (($hashNames -join ',') -ceq ($classNames -join ',')) -and @($hashNames|Where-Object {$r2.producer.inputSha256.$_ -notmatch '^[0-9a-f]{64}$'}).Count -eq 0) 'the report lists 31 input hashes and classifies every one'
+    Check ($r2.producer.version -eq 'vnext.3' -and $hashNames.Count -eq 31 -and $classNames.Count -eq 31 -and (($hashNames -join ',') -ceq ($classNames -join ',')) -and @($hashNames|Where-Object {$r2.producer.inputSha256.$_ -notmatch '^[0-9a-f]{64}$'}).Count -eq 0) 'the report lists 31 input hashes and classifies every one'
     Check ($r2.producer.inputClassification.'src/ProcessHost.cs' -eq 'identity' -and $r2.producer.inputClassification.'tools/collect-vulkan-luid-join.ps1' -eq 'identity' -and $r2.producer.inputClassification.'src/FastLlm.psm1' -eq 'runtime' -and $r2.producer.inputClassification.'src/WindowsInventory.ps1' -eq 'runtime' -and $r2.producer.inputClassification.'src/FastLlm.FileReplace.ps1' -eq 'runtime' -and $r2.producer.inputClassification.'tools/benchmark.ps1' -eq 'runtime' -and $r2.producer.inputSha256.'tools/benchmark.ps1' -match '^[0-9a-f]{64}$') 'the report classifies collectors and C# as identity, the module scripts and the tools/benchmark.ps1 entry script as runtime, and pins tools/benchmark.ps1'
     $nameEvidence=$r2.binding.recipeAdapterCrossCheck.name
     Check ($nameEvidence.status -eq 'agree' -and $nameEvidence.recipe -ceq 'amd radeon rx 7900 xtx' -and $nameEvidence.bound -ceq 'amd radeon rx 7900 xtx' -and $nameEvidence.recipeRaw -ceq 'AMD Radeon RX 7900 XTX' -and $nameEvidence.boundRaw -ceq 'AMD Radeon RX 7900 XTX') 'name.recipe and name.bound are both normalized, with the raw strings kept in separate fields'
