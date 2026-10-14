@@ -441,7 +441,7 @@ function Start-FastLlmBackgroundHost {
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $powershell
-    $info.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded
+    $info.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand ' + $encoded
     $info.WorkingDirectory = $source
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true

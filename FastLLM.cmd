@@ -2,11 +2,11 @@
 setlocal
 set "FASTLLM_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "FASTLLM_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
-"%FASTLLM_PS%" -NoLogo -NoProfile -STA -File "%~dp0fast-llm-ui.ps1"
+"%FASTLLM_PS%" -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -STA -File "%~dp0fast-llm-ui.ps1"
 if errorlevel 1 (
-  echo FastLLM could not open. This unsigned lab build requires a reviewed,
-  echo unblocked source folder and a script policy permitting local scripts.
-  echo See docs\WINDOWS-LAB.md. Do not run as administrator.
+  echo FastLLM could not open. Run it as a standard user, not as administrator.
+  echo If your organization enforces a PowerShell script policy, see the FastLLM README:
+  echo https://github.com/bitworks-io/amd-inference
   pause
 )
 endlocal

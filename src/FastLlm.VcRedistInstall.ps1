@@ -260,7 +260,7 @@ function Start-FastLlmVcRedistInstall {
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($broker))
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=$powershell
-    $info.Arguments="-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+    $info.Arguments="-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand $encoded"
     $info.Verb='runas'
     $info.UseShellExecute=$true
     $process=New-Object Diagnostics.Process
