@@ -123,7 +123,7 @@ $script:FastLlmCpuRootPortDeviceIds = @{
 $script:FastLlmTelemetryMetricNames = @('gpuClockMHz','gpuVramClockMHz','gpuUsagePercent','gpuTotalBoardPowerW','gpuTemperatureC','gpuHotspotTemperatureC')
 $script:FastLlmTelemetryIntervalMs = 1000
 $script:FastLlmTelemetryPlannedCount = 7200
-$script:FastLlmProducerVersion = 'vnext.2'
+$script:FastLlmProducerVersion = 'vnext.3'
 # Host capture fields that must be identical before and after the timed window.
 $script:FastLlmHostStableFields = @('powerPlan','cpuTopology','smbiosMemory','boardBios')
 # Relative VRAM tolerance between the engine-reported recipe VRAM and the ADLX total VRAM.
