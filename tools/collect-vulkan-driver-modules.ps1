@@ -140,7 +140,7 @@ $child=New-Object Bitworks.FastLlm.ProcessHost
 try{
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
-    $workerArguments=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned','-File',$PSCommandPath,
+    $workerArguments=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',$PSCommandPath,
         '-InstallRoot',$InstallRoot,'-RunId',$RunId,'-Worker')
     $info.Arguments=& $module {param($Arguments) Join-FastLlmProcessArguments $Arguments} $workerArguments
     $child.Start($info)

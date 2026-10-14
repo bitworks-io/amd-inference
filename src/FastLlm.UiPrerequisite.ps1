@@ -3,7 +3,7 @@
 function Get-FastLlmUiVcPrepareArguments {
     param([Parameter(Mandatory=$true)][string]$ProjectRoot,
           [Parameter(Mandatory=$true)][string]$CacheRoot)
-    return @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','RemoteSigned','-File',
+    return @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',
         (Join-Path $ProjectRoot 'tools/prepare-vc-runtime.ps1'),'-Action','Prepare','-CacheRoot',$CacheRoot)
 }
 

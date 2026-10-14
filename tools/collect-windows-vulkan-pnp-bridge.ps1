@@ -54,7 +54,7 @@ Import-Module (Join-Path $repo 'src/FastLlm.psm1') -Force
 $module = Get-Module FastLlm
 $currentExe = (Get-Process -Id $PID).Path
 if (-not [IO.Path]::IsPathRooted($currentExe)) { throw 'Cannot identify the current PowerShell executable.' }
-$args = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','RemoteSigned','-File',$PSCommandPath,'-Bdf',$Bdf,'-LabOnly','-Worker')
+$args = @('-NoLogo','-NoProfile','-NonInteractive','-File',$PSCommandPath,'-Bdf',$Bdf,'-LabOnly','-Worker')
 $quoted = & $module {param($A) Join-FastLlmProcessArguments $A} $args
 $info = New-Object Diagnostics.ProcessStartInfo
 $info.FileName = $currentExe
