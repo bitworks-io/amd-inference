@@ -60,6 +60,42 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdi
 Name: "{userprograms}\FastLLM"; Filename: "{app}\FastLLM.cmd"; WorkingDir: "{app}"
 
 [Code]
+function DirHasEntries(const Dir: String): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := False;
+  if FindFirst(AddBackslash(Dir) + '*', FindRec) then
+  try
+    repeat
+      if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        Result := True;
+    until Result or not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+function IsFastLlmInstall(const Dir: String): Boolean;
+begin
+  Result := FileExists(AddBackslash(Dir) + 'FastLLM.cat') or
+            FileExists(AddBackslash(Dir) + '_uninstall\unins000.dat');
+end;
+
+// [InstallDelete] clears the top level of the app folder, so /DIR= must never point Setup at a folder that holds someone
+// else's files. An empty or missing folder and an existing FastLLM install (an upgrade) are fine. This runs before any
+// file is deleted.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Dir: String;
+begin
+  Result := '';
+  Dir := RemoveBackslash(ExpandConstant('{app}'));
+  if DirExists(Dir) and DirHasEntries(Dir) and not IsFastLlmInstall(Dir) then
+    Result := 'FastLLM was not installed. The folder ' + Dir + ' already contains files that are not part of a FastLLM installation, ' +
+              'and installing there would delete them. Choose an empty or new folder, or leave the default.';
+end;
+
 function DirSizeBytes(const Dir: String): Int64;
 var
   FindRec: TFindRec;
