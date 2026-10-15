@@ -377,15 +377,22 @@ function Remove-FastLlmUpdateWork {
     if ([string]::IsNullOrEmpty($Directory)) { return }
     try {
         if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
+        # A just-written installer can be held briefly by an anti-malware scan, so each removal retries (bounded) before giving up.
         foreach ($child in @(Get-ChildItem -LiteralPath $Directory -Force -File)) {
             foreach ($baseName in @($BaseNames)) {
                 if ($child.Name.StartsWith($baseName, [StringComparison]::Ordinal)) {
-                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                        try { [IO.File]::Delete($child.FullName); break } catch { Start-Sleep -Milliseconds 100 }
+                    }
                     break
                 }
             }
         }
-        try { [IO.Directory]::Delete($Directory) } catch { }
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { break }
+            if (@(Get-ChildItem -LiteralPath $Directory -Force).Count) { break }
+            try { [IO.Directory]::Delete($Directory); break } catch { Start-Sleep -Milliseconds 100 }
+        }
     }
     catch { }
 }

@@ -479,7 +479,9 @@ try {
                 $diagnostic.plan = Get-FastLlmPlan -Hardware $diagnostic.hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
             }
             catch {
-                $diagnostic.error = $_.Exception.Message
+                # Appended, never replacing an earlier install-integrity failure.
+                if ($diagnostic.error) { $diagnostic.error = [string]$diagnostic.error + '; ' + $_.Exception.Message }
+                else { $diagnostic.error = $_.Exception.Message }
             }
             # Configured mitigation policy; the live Resizable-BAR probe runs only with -ProbeVulkanMemory and a Vulkan plan.
             # Advisory: never changes the exit status, never creates the install root.
