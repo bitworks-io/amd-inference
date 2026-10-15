@@ -2,6 +2,20 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.4 (canary)
+
+- **Components, experimental and off by default:**
+  - FastLLM can install other engine builds side by side, under its own `components` folder.
+  - Each component is downloaded only from its listed official source, and checked against its pinned size, SHA-256 and per-file list before use.
+  - From the command line: `fast-llm.ps1 components -List`, `components -Install <id>` and `components -Remove <id>`.
+  - The FastLLM window lists installed components with their disk use and a Remove button.
+- **Experimental community recipes:**
+  - They stay hidden unless you turn on "Experimental community components" in settings.
+  - They are never picked automatically.
+  - From the command line they need `-AcceptExperimental`.
+  - This release ships none.
+- No change to the default setup for the RX 7900 XT or RX 7900 XTX.
+
 ## 2026.10.15.3 (canary)
 
 - Documentation: this changelog. No product change since 2026.10.15.2. This release also exercises the in-app update path from 2026.10.15.2.
