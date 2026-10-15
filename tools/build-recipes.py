@@ -26,6 +26,7 @@ MITIGATIONS = ("auto",)
 CACHE_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class RecipeError(Exception):
@@ -93,6 +94,19 @@ def validate(entry, origin, catalog, variants):
         source = entry.get("source") or {}
         if not all(source.get(k) for k in ("author", "url", "postedAt", "recordId")):
             raise RecipeError(f"{rid}: community entries need source author, url, postedAt and recordId")
+    if origin == "community-reproduced":
+        repro = entry.get("reproduction")
+        if not isinstance(repro, dict):
+            raise RecipeError(f"{rid}: community-reproduced entries need a reproduction block")
+        if not isinstance(repro.get("resultId"), str) or not repro["resultId"]:
+            raise RecipeError(f"{rid}: reproduction.resultId is required")
+        if not isinstance(repro.get("batchManifestSha256"), str) or not SHA_RE.match(repro["batchManifestSha256"]):
+            raise RecipeError(f"{rid}: reproduction.batchManifestSha256 must be 64 hex characters")
+        if not DATE_RE.match(str(repro.get("measuredAt") or "")):
+            raise RecipeError(f"{rid}: reproduction.measuredAt must be a date")
+        for key in ("generationTokS", "promptTokS"):
+            if not positive(repro.get(key)):
+                raise RecipeError(f"{rid}: reproduction.{key} must be a positive number")
     return model
 
 
@@ -102,18 +116,35 @@ def has_live_evidence(entry):
 
 
 def recipe_from(entry, origin):
-    return {
+    components = {"engine": f"llama.cpp-{entry['engineBuild']}-vulkan", "model": entry["model"]}
+    if origin == "community-experimental":
+        # An experimental entry may name its own engine, plus a runtime and a draft model; all are checked against components.json.
+        for key in ("engine", "runtime", "draft"):
+            ref = (entry.get("components") or {}).get(key)
+            if ref:
+                components[key] = ref
+    recipe = {
         "id": entry["id"], "origin": origin, "label": LABELS[origin],
         "gpu": {"variant": entry["variant"], "count": entry["gpuCount"]},
-        "components": {"engine": f"llama.cpp-{entry['engineBuild']}-vulkan", "model": entry["model"]},
+        "components": components,
         "runtime": entry["runtime"], "engineBuild": entry["engineBuild"], "recommended": bool(entry.get("recommended")),
         "expected": entry["expected"], "evidence": entry.get("evidence"), "source": entry.get("source"), "compelling": None,
     }
+    if origin == "community-reproduced":
+        recipe["reproduction"] = entry["reproduction"]
+    return recipe
+
+
+def measured_rates(recipe):
+    """A reproduced recipe is judged on Bitworks' reproduction numbers, never on the community claim."""
+    source = recipe["reproduction"] if recipe["origin"] == "community-reproduced" else recipe["expected"]
+    return source["generationTokS"], source["promptTokS"]
 
 
 def compelling(candidate, bitworks_recipes):
     peers = [r for r in bitworks_recipes if r["gpu"] == candidate["gpu"]]
-    exp = candidate["expected"]
+    exp = dict(candidate["expected"])
+    exp["generationTokS"], exp["promptTokS"] = measured_rates(candidate)
     if not peers:
         return {"baselineRecipe": None, "generationGainPct": None, "promptGainPct": None, "isCompelling": True}
     best = max(peers, key=lambda r: (r["expected"]["generationTokS"], r["id"]))
@@ -122,13 +153,19 @@ def compelling(candidate, bitworks_recipes):
     prompt = round(100.0 * (exp["promptTokS"] / base["promptTokS"] - 1.0), 1)
     same_or_larger = exp["contextTokens"] >= base["contextTokens"]
     return {"baselineRecipe": best["id"], "generationGainPct": gen, "promptGainPct": prompt,
-            "isCompelling": bool(same_or_larger and (gen >= 15.0 or prompt >= 50.0))}
+            "isCompelling": bool(same_or_larger and (round(exp["generationTokS"] / base["generationTokS"], 6) >= 1.15
+                                                        or round(exp["promptTokS"] / base["promptTokS"], 6) >= 1.5))}
 
 
 def check_component_refs(recipes, components):
-    """Each recipe's components.engine must be an engine component whose version is the recipe's engineBuild."""
+    """Each recipe's components.engine must be an engine component whose version is the recipe's engineBuild;
+    a runtime or draft reference must exist with the matching kind."""
     engines = {c["id"]: c for c in components["components"] if c.get("kind") == "engine"}
     for recipe in recipes:
+        for key in ("runtime", "draft"):
+            ref = recipe["components"].get(key)
+            if ref is not None and not any(c["id"] == ref and c.get("kind") == key for c in components["components"]):
+                raise RecipeError(f"{recipe['id']}: components.{key} {ref!r} is not a {key} in config/components.json")
         engine = engines.get(recipe["components"]["engine"])
         if engine is None:
             raise RecipeError(f"{recipe['id']}: components.engine {recipe['components']['engine']!r} is not an engine in config/components.json")
@@ -158,7 +195,14 @@ def build(root):
         origin = entry.get("origin")
         if origin not in ("community-reproduced", "community-experimental"):
             raise RecipeError(f"{entry.get('id')}: community origin must be community-reproduced or community-experimental")
+        if entry.get("demotedAt") is not None or entry.get("demotionReason") is not None:
+            if not DATE_RE.match(str(entry.get("demotedAt") or "")) or not str(entry.get("demotionReason") or "").strip():
+                raise RecipeError(f"{entry.get('id')}: a demotion needs both demotedAt (a date) and demotionReason")
+            skipped.append(f"{entry['id']}: demoted: {entry['demotionReason']}")
+            continue
         validate(entry, origin, catalog, variants)
+        if origin == "community-experimental" and components is None:
+            raise RecipeError(f"{entry['id']}: experimental entries need config/components.json to check their components against")
         if origin == "community-reproduced" and not has_live_evidence(entry):
             # "Reproduced by Bitworks" needs a Bitworks result page behind it, the same gate as a verified entry.
             skipped.append(f"{entry['id']}: no live evidence page (evidence.url and evidence.publishedAt are required)")
@@ -172,12 +216,12 @@ def build(root):
         if recipe["compelling"]["baselineRecipe"] is None:
             peerless.setdefault((recipe["gpu"]["variant"], recipe["gpu"]["count"]), []).append(recipe)
     for group in peerless.values():
-        fastest = min(group, key=lambda r: (-r["expected"]["generationTokS"], r["id"]))
+        fastest = min(group, key=lambda r: (-measured_rates(r)[0], r["id"]))
         for recipe in group:
             recipe["compelling"]["isCompelling"] = recipe is fastest
     for recipe in candidates:
-        if recipe["origin"] == "community-experimental" and not recipe["compelling"]["isCompelling"]:
-            skipped.append(f"{recipe['id']}: experimental entries must be compelling")
+        if not recipe["compelling"]["isCompelling"]:
+            skipped.append(f"{recipe['id']}: " + ("not-compelling" if recipe["origin"] == "community-reproduced" else "experimental entries must be compelling"))
             continue
         recipes.append(recipe)
     for recipe in recipes:
