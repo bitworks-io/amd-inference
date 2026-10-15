@@ -1388,6 +1388,14 @@ function Assert-FastLlmDownloadHost {
     throw "Download redirected to an unlisted host: $reported"
 }
 
+# The same message as a plain string throw, tagged so a caller can tell a size/SHA-256 mismatch (a replaced upstream file) from a network failure.
+function New-FastLlmDownloadMismatchException {
+    param([Parameter(Mandatory = $true)][string] $Message)
+    $exception = New-Object -TypeName System.InvalidOperationException -ArgumentList $Message
+    $exception.Data['FastLlmDownloadMismatch'] = $true
+    return $exception
+}
+
 function Save-FastLlmVerifiedFile {
     [CmdletBinding()]
     param(
@@ -1590,7 +1598,7 @@ function Save-FastLlmVerifiedFile {
                     if (Test-Path -LiteralPath $partial) {
                         Move-Item -LiteralPath $partial -Destination $oversizedPartial -ErrorAction Stop
                     }
-                    throw "Download exceeded the catalog size ceiling of $SizeBytes bytes. The oversized partial was quarantined."
+                    throw (New-FastLlmDownloadMismatchException -Message "Download exceeded the catalog size ceiling of $SizeBytes bytes. The oversized partial was quarantined.")
                 }
                 if ($curlExitCode -ne 0) {
                     throw "Download failed with curl exit code $curlExitCode. The SHA-bound partial file was retained for resume."
@@ -1626,7 +1634,7 @@ function Save-FastLlmVerifiedFile {
             $badPartial = "$partial.corrupt.$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')).$([Guid]::NewGuid().ToString('N'))"
             Move-Item -LiteralPath $partial -Destination $badPartial -ErrorAction Stop
             if (-not $resuming -or $attempt -ge 2) {
-                throw "Downloaded artifact failed exact size/SHA-256 verification for '$Destination'. The bad partial was quarantined."
+                throw (New-FastLlmDownloadMismatchException -Message "Downloaded artifact failed exact size/SHA-256 verification for '$Destination'. The bad partial was quarantined.")
             }
         }
     }
@@ -2061,55 +2069,66 @@ function Get-FastLlmComponentManifestAsset {
     return [pscustomobject] @{ manifest = $manifest; expandedSizeBytes = $expanded }
 }
 
-# The license lines of a component: license.url (titled with the SPDX id) and every license.links[] entry, in that order. A links-only license is valid,
-# so no caller reads the license URL property directly.
-function Get-FastLlmComponentLicenseLinks {
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $true)] $Component)
-
-    $links = New-Object 'System.Collections.Generic.List[object]'
-    $license = $Component.PSObject.Properties['license']
-    if ($null -eq $license -or $null -eq $license.Value) { return $links.ToArray() }
-    $licenseInfo = $license.Value
-    $urlProperty = $licenseInfo.PSObject.Properties['url']
-    if ($null -ne $urlProperty -and -not [string]::IsNullOrWhiteSpace([string] $urlProperty.Value)) {
-        $title = 'License'
-        $spdxProperty = $licenseInfo.PSObject.Properties['spdx']
-        if ($null -ne $spdxProperty -and -not [string]::IsNullOrWhiteSpace([string] $spdxProperty.Value)) { $title = [string] $spdxProperty.Value }
-        $links.Add([pscustomobject] [ordered] @{ title = $title; url = [string] $urlProperty.Value })
-    }
-    $linksProperty = $licenseInfo.PSObject.Properties['links']
-    if ($null -ne $linksProperty -and $null -ne $linksProperty.Value) {
-        foreach ($link in @($linksProperty.Value)) {
-            $links.Add([pscustomobject] [ordered] @{ title = [string] $link.title; url = [string] $link.url })
-        }
-    }
-    return $links.ToArray()
-}
-
 # The license.url of a component, or $null when its license has only links[].
 function Get-FastLlmComponentLicenseUrlOrNull {
     param([Parameter(Mandatory = $true)] $Component)
-    $licenseInfo = $Component.PSObject.Properties['license'].Value
-    $urlProperty = $licenseInfo.PSObject.Properties['url']
+    $license = $Component.PSObject.Properties['license']
+    if ($null -eq $license -or $null -eq $license.Value) { return $null }
+    $urlProperty = $license.Value.PSObject.Properties['url']
     if ($null -ne $urlProperty -and -not [string]::IsNullOrWhiteSpace([string] $urlProperty.Value)) { return [string] $urlProperty.Value }
     return $null
 }
 
-# The license.links[] entries only (what a receipt records in links[]).
+# The license.links[] entries only, as written (what a receipt records in links[]; never deduplicated).
 function Get-FastLlmComponentLicenseLinkEntries {
     param([Parameter(Mandatory = $true)] $Component)
     $entries = New-Object 'System.Collections.Generic.List[object]'
-    $linksProperty = $Component.PSObject.Properties['license'].Value.PSObject.Properties['links']
+    $license = $Component.PSObject.Properties['license']
+    if ($null -eq $license -or $null -eq $license.Value) { return $entries.ToArray() }
+    $linksProperty = $license.Value.PSObject.Properties['links']
     if ($null -ne $linksProperty -and $null -ne $linksProperty.Value) {
         foreach ($link in @($linksProperty.Value)) { $entries.Add([pscustomobject] [ordered] @{ title = [string] $link.title; url = [string] $link.url }) }
     }
     return $entries.ToArray()
 }
 
-# Exact tree equality of an installed component root against its (nested) manifest: no reparse point anywhere, the same set of relative files
-# (compared case-insensitively, '/' separated), no directory that is not an ancestor of a manifest file, and every size. Depth 'Full' also checks
-# every SHA-256 (through Test-FastLlmFileHash); 'Presence' never hashes.
+# The license lines to DISPLAY for a component, one per distinct URL (ordinal, trimmed; the first title wins). A links[] entry carries the real title,
+# so license.url (titled with the SPDX id) is listed first only when no link has the same URL. A links-only license is valid, so no caller reads the
+# license URL property directly. Receipts use the raw helpers above, not this one.
+function Get-FastLlmComponentLicenseLinks {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $Component)
+
+    $result = New-Object 'System.Collections.Generic.List[object]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $links = @(Get-FastLlmComponentLicenseLinkEntries -Component $Component)
+    $licenseUrl = Get-FastLlmComponentLicenseUrlOrNull -Component $Component
+    if ($null -ne $licenseUrl) {
+        $coveredByLink = $false
+        foreach ($link in $links) { if (([string] $link.url).Trim() -ceq $licenseUrl.Trim()) { $coveredByLink = $true } }
+        if (-not $coveredByLink) {
+            $title = 'License'
+            $license = $Component.PSObject.Properties['license'].Value
+            $spdxProperty = $license.PSObject.Properties['spdx']
+            if ($null -ne $spdxProperty -and -not [string]::IsNullOrWhiteSpace([string] $spdxProperty.Value)) { $title = [string] $spdxProperty.Value }
+            $null = $seen.Add($licenseUrl.Trim())
+            $result.Add([pscustomobject] [ordered] @{ title = $title; url = $licenseUrl })
+        }
+    }
+    foreach ($link in $links) {
+        if ($seen.Add(([string] $link.url).Trim())) { $result.Add($link) }
+    }
+    return $result.ToArray()
+}
+
+
+
+
+
+# Exact tree equality of an installed component root against its (nested) manifest: no reparse point anywhere (rejected BEFORE it is descended
+# into), the same set of relative files (compared case-insensitively, '/' separated, each manifest path found exactly once), no directory that is not
+# an ancestor of a manifest file, and every size. Depth 'Full' also checks every SHA-256 (through Test-FastLlmFileHash); 'Presence' never hashes.
+# Any enumeration error (an unreadable folder) is a $false, never an exception.
 function Test-FastLlmComponentTree {
     [CmdletBinding()]
     param(
@@ -2118,43 +2137,54 @@ function Test-FastLlmComponentTree {
         [ValidateSet('Presence', 'Full')] [string] $Depth = 'Full'
     )
 
-    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $false }
-    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
-    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-    $separator = [System.IO.Path]::DirectorySeparatorChar
-    $rootFull = $rootItem.FullName.TrimEnd([char[]] @('\', '/'))
-    $expected = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $expectedDirs = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($manifestEntry in @($Asset.manifest)) {
-        $manifestPath = [string] $manifestEntry.path
-        $expected[$manifestPath] = $manifestEntry
-        $parentPath = $manifestPath
-        while ($parentPath.Contains('/')) {
-            $parentPath = $parentPath.Substring(0, $parentPath.LastIndexOf('/'))
-            $null = $expectedDirs.Add($parentPath)
+    try {
+        if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $false }
+        $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+        if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        $separator = [System.IO.Path]::DirectorySeparatorChar
+        $rootFull = $rootItem.FullName.TrimEnd([char[]] @('\', '/'))
+        $expected = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $expectedDirs = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($manifestEntry in @($Asset.manifest)) {
+            $manifestPath = [string] $manifestEntry.path
+            $expected[$manifestPath] = $manifestEntry
+            $parentPath = $manifestPath
+            while ($parentPath.Contains('/')) {
+                $parentPath = $parentPath.Substring(0, $parentPath.LastIndexOf('/'))
+                $null = $expectedDirs.Add($parentPath)
+            }
         }
-    }
-    $toHash = New-Object 'System.Collections.Generic.List[object]'
-    $fileCount = 0
-    foreach ($item in @(Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop)) {
-        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-        $relative = $item.FullName.Substring($rootFull.Length + 1).Replace($separator, [char] '/')
-        if ($item.PSIsContainer) {
-            if (-not $expectedDirs.Contains($relative)) { return $false }
-            continue
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $toHash = New-Object 'System.Collections.Generic.List[object]'
+        $pendingDirectories = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+        $pendingDirectories.Push((New-Object System.IO.DirectoryInfo($rootFull)))
+        while ($pendingDirectories.Count -gt 0) {
+            $directory = $pendingDirectories.Pop()
+            foreach ($item in $directory.EnumerateFileSystemInfos()) {
+                if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+                $relative = $item.FullName.Substring($rootFull.Length + 1).Replace($separator, [char] '/')
+                if (($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) {
+                    if (-not $expectedDirs.Contains($relative)) { return $false }
+                    $pendingDirectories.Push((New-Object System.IO.DirectoryInfo($item.FullName)))
+                    continue
+                }
+                if (-not $expected.ContainsKey($relative)) { return $false }
+                if (-not $seen.Add($relative)) { return $false }
+                if ([int64] $item.Length -ne [int64] $expected[$relative].sizeBytes) { return $false }
+                $toHash.Add([pscustomobject] @{ path = $item.FullName; sha256 = [string] $expected[$relative].sha256 })
+            }
         }
-        if (-not $expected.ContainsKey($relative)) { return $false }
-        if ([int64] $item.Length -ne [int64] $expected[$relative].sizeBytes) { return $false }
-        $fileCount++
-        $toHash.Add([pscustomobject] @{ path = $item.FullName; sha256 = [string] $expected[$relative].sha256 })
-    }
-    if ($fileCount -ne $expected.Count) { return $false }
-    if ($Depth -ceq 'Full') {
-        foreach ($hashJob in $toHash) {
-            if (-not (Test-FastLlmFileHash -Path $hashJob.path -Sha256 $hashJob.sha256)) { return $false }
+        if ($seen.Count -ne $expected.Count) { return $false }
+        if ($Depth -ceq 'Full') {
+            foreach ($hashJob in $toHash) {
+                if (-not (Test-FastLlmFileHash -Path $hashJob.path -Sha256 $hashJob.sha256)) { return $false }
+            }
         }
+        return $true
     }
-    return $true
+    catch {
+        return $false
+    }
 }
 
 # Presence: the exact set of relative files and their sizes, no hashing. Full (the default): size and SHA-256 per file as well.
@@ -2282,27 +2312,54 @@ function Test-FastLlmSignerSubject {
     return $false
 }
 
-# True when a person can answer a prompt: an interactive session whose input is not redirected. A child process (redirected stdin, a service, a
-# scheduled task) is not, and never reaches Read-Host.
+# True when the process was started with -NonInteractive (or any prefix PowerShell accepts, such as -noni). Every FastLLM child is started this way.
+function Test-FastLlmNonInteractiveCommandLine {
+    [CmdletBinding()]
+    param([string[]] $CommandLineArgs = @([Environment]::GetCommandLineArgs()))
+    foreach ($argument in @($CommandLineArgs)) {
+        if (([string] $argument) -match '^(?i)[-/]noni') { return $true }
+    }
+    return $false
+}
+
+# True when a person can answer a prompt: not started with -NonInteractive, an interactive session, and input that is not redirected. A child process
+# (-NonInteractive, redirected stdin, a service, a scheduled task) is not, and never reaches Read-Host.
 function Test-FastLlmConsoleInteractive {
+    if (Test-FastLlmNonInteractiveCommandLine) { return $false }
     if (-not [Environment]::UserInteractive) { return $false }
     try { if ([Console]::IsInputRedirected) { return $false } } catch { return $false }
     return $true
 }
 
+# Test hooks (module scope, not parameters, so a caller of the exported functions cannot reach them):
+#   FastLlmConsentPromptHook: answers the one chain question instead of Read-Host (counts as an interactive console, but never overrides -Unattended).
+#   FastLlmDirectoryMoveHook / FastLlmDirectoryMoveDelaysMs: the directory move and its retry backoff.
+$script:FastLlmConsentPromptHook = $null
+$script:FastLlmDirectoryMoveHook = $null
+$script:FastLlmDirectoryMoveDelaysMs = @(200, 400, 800, 1600, 2000)
+
 # Windows MAX_PATH: a file path of 259 characters (260 with the terminating NUL) and a directory path of 247 characters (a directory must leave room
-# for an 8.3 file name) are the limits without a long-path opt-in, which Windows PowerShell 5.1 and .NET Framework do not have.
+# for an 8.3 file name) are the limits without a long-path opt-in, which Windows PowerShell 5.1 and .NET Framework do not have. Checked with plain
+# string arithmetic (GetFullPath itself throws on a long path in .NET Framework) for everything the install can create or rename: the final and staging
+# roots with the longest file and folder, the download cache path, the downloader's partial and quarantine names (+90) and the member quarantine (+56).
 function Assert-FastLlmComponentPathLength {
     param(
         [Parameter(Mandatory = $true)] $Component,
         [Parameter(Mandatory = $true)] [string] $InstallRoot,
-        [Parameter(Mandatory = $true)] [string[]] $CachePaths
+        # The real downloader (Save-FastLlmVerifiedFile) adds up to 90 characters to the cache path for its partial and quarantine names; a test seam does not.
+        [switch] $DownloaderNames
     )
 
     $componentId = [string] $Component.id
-    $finalRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $Component
-    $componentsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'components' -Label 'Components root'
-    $stagingRoot = Join-Path (Join-Path $componentsRoot '.s') 'xxxxxxxx'
+    try { $base = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd([char[]] @('\', '/')) }
+    catch [System.IO.PathTooLongException] {
+        throw (New-FastLlmEngineFailure -Code 'component-path-too-long' -ComponentId $componentId -Message "The install folder path is itself too long for Windows (limit 259). Nothing was downloaded. Use a shorter install folder.")
+    }
+    $kind = [string] $Component.kind
+    $version = [string] $Component.version
+    $finalRoot = $base.Length + 1 + 'components'.Length + 1 + $kind.Length + 1 + $componentId.Length + 1 + $version.Length
+    $stagingRoot = $base.Length + 1 + 'components'.Length + 1 + '.s'.Length + 1 + 8
+    $cacheRoot = $base.Length + 1 + 'downloads'.Length + 1 + 'components'.Length + 1 + $componentId.Length + 1 + $version.Length
     $longestFile = 0
     $longestDirectory = 0
     foreach ($manifestEntry in @((Get-FastLlmComponentManifestAsset -Component $Component).manifest)) {
@@ -2313,24 +2370,63 @@ function Assert-FastLlmComponentPathLength {
             if ($directoryLength -gt $longestDirectory) { $longestDirectory = $directoryLength }
         }
     }
-    foreach ($base in @($finalRoot, $stagingRoot)) {
-        $fileLength = $base.Length + 1 + $longestFile
-        $directoryTotal = $base.Length
-        if ($longestDirectory -gt 0) { $directoryTotal = $base.Length + 1 + $longestDirectory }
-        if ($fileLength -gt 259 -or $directoryTotal -gt 247) {
-            throw (New-FastLlmEngineFailure -Code 'component-path-too-long' -ComponentId $componentId -Message ("Installing '${componentId}' under '$InstallRoot' would create paths longer than Windows allows (" + $fileLength + " characters for the longest file, limit 259). Nothing was downloaded. Use a shorter install folder."))
-        }
+    $fail = {
+        param([string] $What, [int] $Length, [int] $Limit)
+        throw (New-FastLlmEngineFailure -Code 'component-path-too-long' -ComponentId $componentId -Message "Installing '${componentId}' under '$InstallRoot' would create a $What of $Length characters, over the Windows limit of $Limit. Nothing was downloaded. Use a shorter install folder.")
     }
-    foreach ($cachePath in $CachePaths) {
-        if ($cachePath.Length -gt 259) {
-            throw (New-FastLlmEngineFailure -Code 'component-path-too-long' -ComponentId $componentId -Message "The download path for '${componentId}' would be $($cachePath.Length) characters, over the Windows limit of 259. Nothing was downloaded. Use a shorter install folder.")
-        }
+    foreach ($rootLength in @($finalRoot, $stagingRoot)) {
+        if ($rootLength + 1 + $longestFile -gt 259) { & $fail 'file path' ($rootLength + 1 + $longestFile) 259 }
+        $directoryTotal = $rootLength
+        if ($longestDirectory -gt 0) { $directoryTotal = $rootLength + 1 + $longestDirectory }
+        if ($directoryTotal -gt 247) { & $fail 'folder path' $directoryTotal 247 }
     }
+    $sources = @(Get-FastLlmComponentSources -Component $Component)
+    for ($index = 0; $index -lt $sources.Count; $index++) {
+        $leaf = [System.IO.Path]::GetFileName(([System.Uri] ([string] $sources[$index].url)).AbsolutePath)
+        $leafLength = $leaf.Length
+        if ($sources.Count -gt 1) { $leafLength += ("part$($index + 1)-").Length }
+        $cachePath = $cacheRoot + 1 + $leafLength
+        if ($cachePath -gt 259) { & $fail 'download path' $cachePath 259 }
+        if ($DownloaderNames -and $cachePath + 90 -gt 259) { & $fail 'download quarantine path (the downloader adds up to 90 characters)' ($cachePath + 90) 259 }
+    }
+    # The member quarantine name is shortened by Get-FastLlmQuarantinePath when the long form would not fit, so it needs no limit of its own.
+}
+
+# <Directory>\<Name>.corrupt.<time>.<guid>, or a short <Directory>\<8 hex>.corrupt when that would pass the 259-character Windows path limit, so
+# a quarantine move can never fail on path length.
+function Get-FastLlmQuarantinePath {
+    param([Parameter(Mandatory = $true)] [string] $Directory, [Parameter(Mandatory = $true)] [string] $Name)
+    $long = Join-Path $Directory ("$Name.corrupt.$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')).$([Guid]::NewGuid().ToString('N'))")
+    if ($long.Length -le 259) { return $long }
+    return (Join-Path $Directory ("$([Guid]::NewGuid().ToString('N').Substring(0, 8)).corrupt"))
+}
+
+# Copies at most MaxBytes + 1 bytes (through an 80 KB buffer) and returns how many it copied: a result above MaxBytes means the source is larger than
+# its pin, and a bad pin can never fill the disk.
+function Copy-FastLlmBoundedStream {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [System.IO.Stream] $Source,
+        [Parameter(Mandatory = $true)] [System.IO.Stream] $Destination,
+        [Parameter(Mandatory = $true)] [int64] $MaxBytes
+    )
+
+    $buffer = New-Object byte[] 81920
+    [int64] $total = 0
+    while ($total -le $MaxBytes) {
+        $want = [int] [Math]::Min([int64] $buffer.Length, $MaxBytes + 1 - $total)
+        $read = $Source.Read($buffer, 0, $want)
+        if ($read -le 0) { break }
+        $Destination.Write($buffer, 0, $read)
+        $total += $read
+    }
+    return $total
 }
 
 # Streams the manifest members of one verified archive into the staging tree. Only manifest members (extractPrefix + path) are read; every other
-# archive member is ignored. Each member goes entry -> Open() -> CopyTo(FileStream) straight to its final relative path, so no entry or archive is
-# ever held in memory. A member that is missing, the wrong size or the wrong SHA-256 is quarantined (the partial is moved out of staging) and refused.
+# archive member is ignored. Each member goes entry -> Open() -> a bounded buffered copy to a FileStream straight at its final relative path, so no
+# entry or archive is ever held in memory. A member that is missing, the wrong size or the wrong SHA-256 is quarantined (the partial is moved out of
+# staging) and refused.
 function Expand-FastLlmComponentArchivePart {
     [CmdletBinding()]
     param(
@@ -2348,30 +2444,32 @@ function Expand-FastLlmComponentArchivePart {
     try {
         foreach ($manifestEntry in @($Source.fileManifest)) {
             $relativePath = [string] $manifestEntry.path
+            $pinnedSize = [int64] $manifestEntry.sizeBytes
             $zipEntry = $archive.GetEntry($prefix + $relativePath)
             if ($null -eq $zipEntry) {
                 throw (New-FastLlmEngineFailure -Code 'component-archive-member-missing' -ComponentId $ComponentId -Message "The verified archive for '${ComponentId}' has no member '$($prefix + $relativePath)'. Nothing was installed.")
             }
-            if ([int64] $zipEntry.Length -ne [int64] $manifestEntry.sizeBytes) {
-                throw (New-FastLlmEngineFailure -Code 'component-archive-member-mismatch' -ComponentId $ComponentId -Message "The archive member '$($prefix + $relativePath)' of '${ComponentId}' is $($zipEntry.Length) bytes, not the pinned $($manifestEntry.sizeBytes). Nothing was installed.")
+            if ([int64] $zipEntry.Length -ne $pinnedSize) {
+                throw (New-FastLlmEngineFailure -Code 'component-archive-member-mismatch' -ComponentId $ComponentId -Message "The archive member '$($prefix + $relativePath)' of '${ComponentId}' is $($zipEntry.Length) bytes, not the pinned $pinnedSize. Nothing was installed.")
             }
             $destination = Join-FastLlmContainedPath -Root $StagingRoot -Child $relativePath -Label 'Component member path'
             $null = [System.IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
             $entryStream = $null
             $fileStream = $null
+            [int64] $copied = 0
             try {
                 $entryStream = $zipEntry.Open()
                 $fileStream = New-Object System.IO.FileStream($destination, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-                $entryStream.CopyTo($fileStream)
+                $copied = Copy-FastLlmBoundedStream -Source $entryStream -Destination $fileStream -MaxBytes $pinnedSize
             }
             finally {
                 if ($null -ne $fileStream) { $fileStream.Dispose() }
                 if ($null -ne $entryStream) { $entryStream.Dispose() }
             }
             $written = Get-Item -LiteralPath $destination -Force -ErrorAction Stop
-            if ($written.Length -ne [int64] $manifestEntry.sizeBytes -or -not (Test-FastLlmFileHash -Path $destination -Sha256 ([string] $manifestEntry.sha256))) {
+            if ($copied -gt $pinnedSize -or $written.Length -ne $pinnedSize -or -not (Test-FastLlmFileHash -Path $destination -Sha256 ([string] $manifestEntry.sha256))) {
                 $null = [System.IO.Directory]::CreateDirectory($QuarantineRoot)
-                $quarantined = Join-Path $QuarantineRoot ("$($written.Name).corrupt.$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')).$([Guid]::NewGuid().ToString('N'))")
+                $quarantined = Get-FastLlmQuarantinePath -Directory $QuarantineRoot -Name $written.Name
                 Move-Item -LiteralPath $destination -Destination $quarantined -ErrorAction Stop
                 throw (New-FastLlmEngineFailure -Code 'component-archive-member-mismatch' -ComponentId $ComponentId -Message "The archive member '$($prefix + $relativePath)' of '${ComponentId}' failed its pinned size and SHA-256. The partial file was quarantined and nothing was installed.")
             }
@@ -2402,9 +2500,88 @@ function Get-FastLlmComponentCachePaths {
     return [pscustomobject] @{ root = $cacheRoot; paths = $paths.ToArray() }
 }
 
+# Walks a folder without following reparse points: false as soon as one is found (checked before it would be descended into) or when anything cannot
+# be read.
+function Test-FastLlmPlainTree {
+    param([Parameter(Mandatory = $true)] [string] $Path)
+    try {
+        $pending = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+        $top = New-Object System.IO.DirectoryInfo($Path)
+        if (($top.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        $pending.Push($top)
+        while ($pending.Count -gt 0) {
+            foreach ($item in $pending.Pop().EnumerateFileSystemInfos()) {
+                if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+                if (($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { $pending.Push((New-Object System.IO.DirectoryInfo($item.FullName))) }
+            }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
+# Removes leftovers of an install that was killed (components\.s\<8 hex> older than MaxAgeHours). Reparse points are never followed or removed.
+# The caller holds the operation lock.
+function Remove-FastLlmStaleComponentStaging {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] [string] $InstallRoot, [double] $MaxAgeHours = 1)
+
+    $componentsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'components' -Label 'Components root'
+    $stagingParent = Join-Path $componentsRoot '.s'
+    if (-not (Test-Path -LiteralPath $stagingParent -PathType Container)) { return }
+    $parentItem = Get-Item -LiteralPath $stagingParent -Force -ErrorAction Stop
+    if (($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Warning "Skipping stale-staging cleanup: '$stagingParent' is a reparse point."
+        return
+    }
+    $cutoff = (Get-Date).ToUniversalTime().AddHours(-$MaxAgeHours)
+    foreach ($child in @(Get-ChildItem -LiteralPath $stagingParent -Force -ErrorAction SilentlyContinue)) {
+        if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Write-Warning "Left '$($child.FullName)' alone: it is a reparse point."
+            continue
+        }
+        if (-not $child.PSIsContainer -or $child.LastWriteTimeUtc -gt $cutoff) { continue }
+        if (-not (Test-FastLlmPlainTree -Path $child.FullName)) {
+            Write-Warning "Left '$($child.FullName)' alone: it contains a reparse point or cannot be read."
+            continue
+        }
+        Remove-Item -LiteralPath $child.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# One directory move with a bounded retry (a virus scanner can hold a just-written file for a moment): IOException and UnauthorizedAccessException
+# are retried after 200, 400, 800, 1600 and 2000 ms; a destination that appeared meanwhile is refused at once.
+function Move-FastLlmComponentDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Source,
+        [Parameter(Mandatory = $true)] [string] $Destination,
+        [Parameter(Mandatory = $true)] [string] $ComponentId
+    )
+
+    $delays = @($script:FastLlmDirectoryMoveDelaysMs)
+    for ($attempt = 0; ; $attempt++) {
+        if (Test-Path -LiteralPath $Destination) {
+            throw (New-FastLlmEngineFailure -Code 'component-root-appeared' -ComponentId $ComponentId -Message "Component folder '$Destination' appeared during installation. It was not changed; remove it first.")
+        }
+        try {
+            if ($null -ne $script:FastLlmDirectoryMoveHook) { & $script:FastLlmDirectoryMoveHook $Source $Destination }
+            else { [System.IO.Directory]::Move($Source, $Destination) }
+            return
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ($attempt -ge $delays.Count) {
+                throw (New-FastLlmEngineFailure -Code 'component-move-failed' -ComponentId $ComponentId -Message "Could not move the verified '$ComponentId' into place after $($attempt + 1) tries: $($_.Exception.Message)")
+            }
+            Start-Sleep -Milliseconds ([int] $delays[$attempt])
+        }
+    }
+}
+
 # Downloads, verifies and installs ONE component (consent was settled by the caller): every part is downloaded and checked against its pinned size and
-# SHA-256, the manifest members are streamed into a short staging folder under components\.s, the tree must equal the manifest exactly, and one
-# directory move puts it in place. It ends with a Full check, so the caller can start the next component only after this one verified.
+# SHA-256, the manifest members are streamed into a short staging folder under components\.s (each member size- and hash-checked), the tree must equal
+# the manifest exactly, and one directory move puts it in place. A part that does not match its pin (a replaced upstream file) is a typed
+# component-source-mismatch: the partial is quarantined and nothing further is downloaded.
 function Install-FastLlmComponentFiles {
     [CmdletBinding()]
     param(
@@ -2422,17 +2599,29 @@ function Install-FastLlmComponentFiles {
         $cachePath = [string] $cache.paths[$index]
         $pinnedSha = ([string] $source.sha256).ToLowerInvariant()
         $pinnedSize = [int64] $source.sizeBytes
-        & $Downloader -Url ([string] $source.url) -Destination $cachePath -Sha256 $pinnedSha -SizeBytes $pinnedSize -AllowedRedirectHosts ([string[]] @($source.allowedRedirectHosts))
+        $partText = "part $($index + 1) of $($sources.Count) of '$componentId' ($([string] $source.url))"
+        try {
+            & $Downloader -Url ([string] $source.url) -Destination $cachePath -Sha256 $pinnedSha -SizeBytes $pinnedSize -AllowedRedirectHosts ([string[]] @($source.allowedRedirectHosts))
+        }
+        catch {
+            if ($_.Exception.Data.Contains('FastLlmDownloadMismatch')) {
+                throw (New-FastLlmEngineFailure -Code 'component-source-mismatch' -ComponentId $componentId -Message "The downloaded $partText does not match its pin (expected $pinnedSize bytes, SHA-256 $pinnedSha): $($_.Exception.Message) Nothing further in the chain was downloaded or installed.")
+            }
+            throw
+        }
         $cacheItem = $null
         if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
             $cacheItem = Get-Item -LiteralPath $cachePath -Force -ErrorAction Stop
         }
-        if ($null -eq $cacheItem -or $cacheItem.Length -ne $pinnedSize -or -not (Test-FastLlmFileHash -Path $cachePath -Sha256 $pinnedSha)) {
-            if ($null -ne $cacheItem) {
-                $badDownload = "$cachePath.corrupt.$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')).$([Guid]::NewGuid().ToString('N'))"
-                Move-Item -LiteralPath $cachePath -Destination $badDownload -ErrorAction Stop
-            }
-            throw "The downloaded component '$componentId' failed its pinned size and SHA-256. The file was quarantined."
+        if ($null -eq $cacheItem) {
+            throw (New-FastLlmEngineFailure -Code 'component-source-mismatch' -ComponentId $componentId -Message "The download of $partText produced no file (expected $pinnedSize bytes, SHA-256 $pinnedSha). Nothing further in the chain was downloaded or installed.")
+        }
+        if ($cacheItem.Length -ne $pinnedSize -or -not (Test-FastLlmFileHash -Path $cachePath -Sha256 $pinnedSha)) {
+            $actualSha = (Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $actualSize = [int64] $cacheItem.Length
+            $badDownload = Get-FastLlmQuarantinePath -Directory (Split-Path -Parent $cachePath) -Name (Split-Path -Leaf $cachePath)
+            Move-Item -LiteralPath $cachePath -Destination $badDownload -ErrorAction Stop
+            throw (New-FastLlmEngineFailure -Code 'component-source-mismatch' -ComponentId $componentId -Message "The downloaded $partText failed its pinned size and SHA-256 (expected $pinnedSize bytes, SHA-256 $pinnedSha; got $actualSize bytes, SHA-256 $actualSha). The file was quarantined. Nothing further in the chain was downloaded or installed.")
         }
         if ([string] $source.format -ceq 'zip') {
             # A flat zip holds exactly its manifest and nothing else.
@@ -2448,16 +2637,21 @@ function Install-FastLlmComponentFiles {
     $asset = Get-FastLlmComponentManifestAsset -Component $Entry
     $componentsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'components' -Label 'Components root'
     $stagingParent = Join-Path $componentsRoot '.s'
-    $stagingRoot = $null
-    do { $stagingRoot = Join-Path $stagingParent ([Guid]::NewGuid().ToString('N').Substring(0, 8)) } while (Test-Path -LiteralPath $stagingRoot)
     $null = New-Item -ItemType Directory -Path $stagingParent -Force -ErrorAction Stop
+    # A fresh folder or nothing: New-Item without -Force fails when the name exists, and the name is drawn again.
+    $stagingRoot = $null
+    for ($stagingTry = 0; $null -eq $stagingRoot; $stagingTry++) {
+        $candidate = Join-Path $stagingParent ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+        try { $null = New-Item -ItemType Directory -Path $candidate -ErrorAction Stop; $stagingRoot = $candidate }
+        catch { if ($stagingTry -ge 4 -or -not (Test-Path -LiteralPath $candidate)) { throw } }
+    }
     try {
         Assert-FastLlmFreeSpace -Path $stagingParent -RequiredBytes ([int64] [Math]::Ceiling(([int64] $asset.expandedSizeBytes * 1.10)))
-        $null = New-Item -ItemType Directory -Path $stagingRoot -Force -ErrorAction Stop
         for ($index = 0; $index -lt $sources.Count; $index++) {
             Expand-FastLlmComponentArchivePart -ArchivePath ([string] $cache.paths[$index]) -Source $sources[$index] -StagingRoot $stagingRoot -QuarantineRoot ([string] $cache.root) -ComponentId $componentId
         }
-        if (-not (Test-FastLlmComponentTree -Root $stagingRoot -Asset $asset -Depth Full)) {
+        # Every member was size- and hash-checked as it was written: the tree checks are exact-set and size checks, so no file is hashed again.
+        if (-not (Test-FastLlmComponentTree -Root $stagingRoot -Asset $asset -Depth Presence)) {
             throw "The extracted component '$componentId' failed its exact file manifest."
         }
         if ($Entry.PSObject.Properties['signer'] -and -not [string]::IsNullOrWhiteSpace([string] $Entry.signer)) {
@@ -2469,12 +2663,10 @@ function Install-FastLlmComponentFiles {
                 throw "The entry point of '$componentId' does not carry a valid signature from '$($Entry.signer)'."
             }
         }
-        if (Test-Path -LiteralPath $root) {
-            throw "Component folder '$root' appeared during installation. It was not changed; remove it first."
-        }
         $null = [System.IO.Directory]::CreateDirectory((Split-Path -Parent $root))
-        [System.IO.Directory]::Move($stagingRoot, $root)
-        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $Entry)) {
+        Move-FastLlmComponentDirectory -Source $stagingRoot -Destination $root -ComponentId $componentId
+        # A same-volume rename of files that were just hashed: the exact-set and size check is enough here; Start hashes again.
+        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $Entry -Depth Presence)) {
             throw "The promoted component '$componentId' failed its exact file manifest; remove it first."
         }
     }
@@ -2486,6 +2678,35 @@ function Install-FastLlmComponentFiles {
             Remove-Item -LiteralPath $stagingParent -Force -ErrorAction SilentlyContinue
         }
     }
+}
+
+# The installed components that require ComponentId (a requirer whose root is a reparse point is ignored, with a warning: it cannot be a FastLLM install).
+function Get-FastLlmInstalledRequirers {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [AllowEmptyCollection()] [object[]] $AllEntries,
+        [Parameter(Mandatory = $true)] [string] $InstallRoot,
+        [Parameter(Mandatory = $true)] [string] $ComponentId
+    )
+
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($other in $AllEntries) {
+        if (([string] $other.id) -ceq $ComponentId) { continue }
+        $otherRequires = $other.PSObject.Properties['requires']
+        if ($null -eq $otherRequires -or $null -eq $otherRequires.Value) { continue }
+        $names = @(@($otherRequires.Value) | ForEach-Object { ([string] $_).ToLowerInvariant() })
+        if ($names -notcontains $ComponentId.ToLowerInvariant()) { continue }
+        $otherRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $other
+        if (-not (Test-Path -LiteralPath $otherRoot)) { continue }
+        $otherItem = Get-Item -LiteralPath $otherRoot -Force -ErrorAction SilentlyContinue
+        if ($null -eq $otherItem) { continue }
+        if (($otherItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Write-Warning "Ignoring '$otherRoot' when checking what requires '$ComponentId': it is a reparse point, not an installed component."
+            continue
+        }
+        if ($otherItem.PSIsContainer) { $found.Add([string] $other.id) }
+    }
+    return $found.ToArray()
 }
 
 function Install-FastLlmComponent {
@@ -2504,12 +2725,11 @@ function Install-FastLlmComponent {
 
         [switch] $Unattended,
 
-        # Test seam. Called as & $Download -Url -Destination -Sha256 -SizeBytes -AllowedRedirectHosts. Default: Save-FastLlmVerifiedFile.
-        [scriptblock] $Download,
+        # Returns { root; installed = @({ id; version; path }) } (the components this call newly installed, required ones first) instead of the root.
+        [switch] $PassThru,
 
-        # Test seam: when given, the console counts as interactive and this answers the one chain question (called with the prompt text). Default: the console
-        # prompt on a real interactive console only; a child process never prompts.
-        [scriptblock] $ConsentPrompt
+        # Test seam. Called as & $Download -Url -Destination -Sha256 -SizeBytes -AllowedRedirectHosts. Default: Save-FastLlmVerifiedFile.
+        [scriptblock] $Download
     )
 
     $allEntries = @(Get-FastLlmComponents -ComponentsPath $ComponentsPath)
@@ -2534,23 +2754,36 @@ function Install-FastLlmComponent {
                 throw "Component '$([string] $chainEntry.id)' has format '$($chainFormats -join ', ')', which this release cannot install."
             }
         }
-        $chainRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $chainEntry
+        try { $chainRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $chainEntry }
+        catch [System.IO.PathTooLongException] {
+            throw (New-FastLlmEngineFailure -Code 'component-path-too-long' -ComponentId ([string] $chainEntry.id) -Message "The install folder path is too long for Windows. Nothing was downloaded. Use a shorter install folder.")
+        }
         if (Test-Path -LiteralPath $chainRoot) {
             if (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $chainEntry) { continue }
-            throw "Component folder '$chainRoot' exists but does not match its pinned file list. It was not changed; remove it first."
+            $requirers = @(Get-FastLlmInstalledRequirers -AllEntries $allEntries -InstallRoot $InstallRoot -ComponentId ([string] $chainEntry.id))
+            $unverifiedId = [string] $chainEntry.id
+            if ($requirers.Count -gt 0) {
+                $removeSteps = (@($requirers | ForEach-Object { "fast-llm.ps1 components -Remove $_" }) + @("fast-llm.ps1 components -Remove $unverifiedId")) -join ', then '
+                throw (New-FastLlmEngineFailure -Code 'component-root-unverified' -ComponentId $unverifiedId -Message "Component folder '$chainRoot' exists but does not match its pinned file list, and the installed component(s) '$($requirers -join "', '")' require it. It was not changed. To repair it run, in this order: $removeSteps, then fast-llm.ps1 components -Install $ComponentId -AcceptLicense. Remove what requires it first.")
+            }
+            throw (New-FastLlmEngineFailure -Code 'component-root-unverified' -ComponentId $unverifiedId -Message "Component folder '$chainRoot' exists but does not match its pinned file list. It was not changed; remove it first (fast-llm.ps1 components -Remove $unverifiedId), then install again.")
         }
         $pending.Add($chainEntry)
     }
     $root = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $entry
     if ($pending.Count -eq 0) {
+        if ($PassThru) { return [pscustomobject] @{ root = $root; installed = @() } }
         return $root
     }
     foreach ($pendingEntry in $pending) {
-        Assert-FastLlmComponentPathLength -Component $pendingEntry -InstallRoot $InstallRoot -CachePaths @((Get-FastLlmComponentCachePaths -Component $pendingEntry -InstallRoot $InstallRoot).paths)
+        Assert-FastLlmComponentPathLength -Component $pendingEntry -InstallRoot $InstallRoot -DownloaderNames:($null -eq $Download)
     }
 
     # Consent for the whole chain, settled before the first download.
-    $chainNames = (@($pending | ForEach-Object { "'$([string] $_.id)'" }) -join ', ')
+    $pendingIds = @($pending | ForEach-Object { [string] $_.id })
+    $chainDescription = (@($chain | ForEach-Object {
+                if ($pendingIds -ccontains [string] $_.id) { "'$([string] $_.id)'" } else { "'$([string] $_.id)' (already installed)" }
+            }) -join ', ')
     $needsSwitch = New-Object 'System.Collections.Generic.List[object]'
     $needsAnswer = $false
     foreach ($pendingEntry in $pending) {
@@ -2573,17 +2806,24 @@ function Install-FastLlmComponent {
     if (-not $AcceptLicense) {
         $switchHint = "To install it, run: fast-llm.ps1 components -Install $ComponentId -AcceptLicense"
         if ($needsSwitch.Count -gt 0) {
-            throw (New-FastLlmEngineFailure -Code 'component-consent-required' -ComponentId $ComponentId -Message "Installing '$ComponentId' needs you to accept the licenses of: $chainNames (links above). Nothing was downloaded. $switchHint")
+            $acceptNames = (@($needsSwitch | ForEach-Object { "'$([string] $_.id)'" }) -join ', ')
+            throw (New-FastLlmEngineFailure -Code 'component-consent-required' -ComponentId $ComponentId -Message "Installing '$ComponentId' needs you to accept the license of: $acceptNames (links above). The whole chain is: $chainDescription. Nothing was downloaded. $switchHint")
         }
-        $canAsk = ($null -ne $ConsentPrompt) -or (-not $Unattended -and (Test-FastLlmConsoleInteractive))
+        $canAsk = -not $Unattended -and (($null -ne $script:FastLlmConsentPromptHook) -or (Test-FastLlmConsoleInteractive))
         if ($needsAnswer -and -not $canAsk) {
-            throw (New-FastLlmEngineFailure -Code 'component-consent-required' -ComponentId $ComponentId -Message "Installing '$ComponentId' requires -AcceptLicense after showing the licenses of: $chainNames (links above); nothing here can ask you. Nothing was downloaded. $switchHint")
+            throw (New-FastLlmEngineFailure -Code 'component-consent-required' -ComponentId $ComponentId -Message "Installing '$ComponentId' requires -AcceptLicense after showing the licenses of the whole chain: $chainDescription (links above); nothing here can ask you. Nothing was downloaded. $switchHint")
         }
         if ($needsAnswer) {
-            $question = "Download $chainNames under the licenses listed above? [y/N]"
-            if ($null -ne $ConsentPrompt) { $answer = [string] (& $ConsentPrompt $question) } else { $answer = Read-Host $question }
+            $question = "Download $chainDescription under the licenses listed above? [y/N]"
+            if ($null -ne $script:FastLlmConsentPromptHook) { $answer = [string] (& $script:FastLlmConsentPromptHook $question) }
+            else {
+                try { $answer = Read-Host $question }
+                catch [System.Management.Automation.PSInvalidOperationException] {
+                    throw (New-FastLlmEngineFailure -Code 'component-consent-required' -ComponentId $ComponentId -Message "Installing '$ComponentId' requires -AcceptLicense after showing the licenses of the whole chain: $chainDescription (links above); this session cannot ask you. Nothing was downloaded. $switchHint")
+                }
+            }
             if ($answer -notmatch '^(?i)y(es)?$') {
-                throw (New-FastLlmEngineFailure -Code 'component-consent-declined' -ComponentId $ComponentId -Message "Component download was not approved for: $chainNames. Nothing was downloaded.")
+                throw (New-FastLlmEngineFailure -Code 'component-consent-declined' -ComponentId $ComponentId -Message "Component download was not approved for the chain: $chainDescription. Nothing was downloaded.")
             }
         }
     }
@@ -2600,10 +2840,15 @@ function Install-FastLlmComponent {
             Save-FastLlmVerifiedFile -Url $Url -Destination $Destination -Sha256 $Sha256 -SizeBytes $SizeBytes -AllowedRedirectHosts $AllowedRedirectHosts | Out-Null
         }
     }
-    # Required components first; each must verify (Install-FastLlmComponentFiles ends with a Full check) before the next one is even downloaded.
+    # Leftovers of an install that was killed (the caller holds the operation lock), then required components first: each must verify
+    # (Install-FastLlmComponentFiles) before the next one is even downloaded.
+    Remove-FastLlmStaleComponentStaging -InstallRoot $InstallRoot
+    $installed = New-Object 'System.Collections.Generic.List[object]'
     foreach ($pendingEntry in $pending) {
         Install-FastLlmComponentFiles -Entry $pendingEntry -InstallRoot $InstallRoot -Downloader $downloader
+        $installed.Add([pscustomobject] [ordered] @{ id = [string] $pendingEntry.id; version = [string] $pendingEntry.version; path = (Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $pendingEntry) })
     }
+    if ($PassThru) { return [pscustomobject] @{ root = $root; installed = $installed.ToArray() } }
     return $root
 }
 
@@ -2695,17 +2940,9 @@ function Remove-FastLlmComponent {
     }
 
     # An installed component that requires this one keeps it: remove the requiring component first.
-    $requiredBy = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($other in @(Get-FastLlmComponents -ComponentsPath $ComponentsPath)) {
-        if ([string] $other.id -ceq [string] $entry.id) { continue }
-        $otherRequires = $other.PSObject.Properties['requires']
-        if ($null -eq $otherRequires -or $null -eq $otherRequires.Value) { continue }
-        $names = @(@($otherRequires.Value) | ForEach-Object { ([string] $_).ToLowerInvariant() })
-        if ($names -notcontains ([string] $entry.id).ToLowerInvariant()) { continue }
-        if (Test-Path -LiteralPath (Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $other) -PathType Container) { $requiredBy.Add([string] $other.id) }
-    }
+    $requiredBy = @(Get-FastLlmInstalledRequirers -AllEntries @(Get-FastLlmComponents -ComponentsPath $ComponentsPath) -InstallRoot $InstallRoot -ComponentId ([string] $entry.id))
     if ($requiredBy.Count -gt 0) {
-        throw (New-FastLlmEngineFailure -Code 'component-required-by' -ComponentId ([string] $entry.id) -Message ("Component '$ComponentId' is required by the installed component(s) '" + ($requiredBy.ToArray() -join "', '") + "'. Remove them first; nothing was deleted."))
+        throw (New-FastLlmEngineFailure -Code 'component-required-by' -ComponentId ([string] $entry.id) -Message ("Component '$ComponentId' is required by the installed component(s) '" + ($requiredBy -join "', '") + "'. Remove them first; nothing was deleted."))
     }
 
     $componentsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'components' -Label 'Components root'
@@ -2722,16 +2959,22 @@ function Remove-FastLlmComponent {
     $removed = $false
     if (Test-Path -LiteralPath $root) {
         $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
-        if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or -not $rootItem.PSIsContainer) {
-            throw "Refusing to delete '$root': it is not a plain folder."
+        if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            # A link standing where the component folder should be: only the link is removed, never what it points at.
+            if (-not $rootItem.PSIsContainer) { throw "Refusing to delete '$root': it is not a plain folder." }
+            [System.IO.Directory]::Delete($root)
+            $removed = $true
         }
-        foreach ($inner in @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop)) {
-            if (($inner.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Refusing to delete '$root': it contains a reparse point."
+        else {
+            if (-not $rootItem.PSIsContainer) {
+                throw "Refusing to delete '$root': it is not a plain folder."
             }
+            if (-not (Test-FastLlmPlainTree -Path $root)) {
+                throw "Refusing to delete '$root': it contains a reparse point or cannot be read."
+            }
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+            $removed = $true
         }
-        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
-        $removed = $true
     }
     # Empty parents only, never the components folder itself.
     $parent = Split-Path -Parent $root

@@ -214,6 +214,10 @@ try {
         $operationLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
         Write-FastLlmState -InstallRoot $InstallRoot -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action=$Action })
     }
+    # components -Install and -Remove change what a start or an install relies on, so they take the same operation lock (and write no status).
+    if ($Action -eq 'components' -and ($PSBoundParameters.ContainsKey('Install') -or $PSBoundParameters.ContainsKey('Remove'))) {
+        $operationLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
+    }
     switch ($Action) {
         'models' {
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
@@ -233,9 +237,11 @@ try {
         }
         'components' {
             if ($PSBoundParameters.ContainsKey('Install')) {
-                $installedRoot = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -Unattended:$Unattended
-                if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = [string] $installedRoot } | ConvertTo-Json -Depth 4 }
-                else { Write-Host "Installed and verified component '$Install': $installedRoot" }
+                $installResult = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -Unattended:$Unattended -PassThru
+                $installedRoot = [string] $installResult.root
+                if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = $installedRoot; installedComponents = @($installResult.installed) } | ConvertTo-Json -Depth 5 }
+                elseif (@($installResult.installed).Count -eq 0) { Write-Host "Component '$Install' is already installed and verified: $installedRoot" }
+                else { foreach ($newlyInstalled in @($installResult.installed)) { Write-Host "Installed and verified component '$($newlyInstalled.id)': $($newlyInstalled.path)" } }
             }
             elseif ($PSBoundParameters.ContainsKey('Remove')) {
                 Remove-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Remove -InstallRoot $InstallRoot | Out-Null

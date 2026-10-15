@@ -644,14 +644,16 @@ try {
     }
     # One archive part: Files (path -> text) are the manifest, Extra (archive-side name -> text) are members the manifest does not list.
     # BadHashPath pins a wrong SHA-256 for that path; MissingPath pins a path the archive does not hold.
-    function New-ArchivePart([string] $Dir, [string] $Name, $Files, [string] $Prefix, $Extra = @{}, [string] $Format = 'zip-tree', [string] $BadHashPath = '', [string] $MissingPath = '') {
+    function New-ArchivePart([string] $Dir, [string] $Name, $Files, [string] $Prefix, $Extra = @{}, [string] $Format = 'zip-tree', [string] $BadHashPath = '', [string] $MissingPath = '', [string] $WrongSizePath = '') {
         $entries = [ordered] @{}
         $manifest = @()
         foreach ($filePath in $Files.Keys) {
             $entries[$Prefix + $filePath] = $Files[$filePath]
             $sha = Get-TextSha ([string] $Files[$filePath])
             if ($filePath -ceq $BadHashPath) { $sha = '1' * 64 }
-            $manifest += [ordered] @{ path = $filePath; sizeBytes = ([System.Text.Encoding]::ASCII.GetBytes([string] $Files[$filePath])).Length; sha256 = $sha }
+            $pinnedLength = ([System.Text.Encoding]::ASCII.GetBytes([string] $Files[$filePath])).Length
+            if ($filePath -ceq $WrongSizePath) { $pinnedLength = $pinnedLength + 1 }
+            $manifest += [ordered] @{ path = $filePath; sizeBytes = $pinnedLength; sha256 = $sha }
         }
         foreach ($extraName in $Extra.Keys) { $entries[$extraName] = $Extra[$extraName] }
         if ($MissingPath) { $manifest += [ordered] @{ path = $MissingPath; sizeBytes = 3; sha256 = (Get-TextSha 'abc') } }
@@ -663,13 +665,13 @@ try {
         return [pscustomobject] @{ part = $part; zip = $zipPath; url = [string] $part.url }
     }
     # A runtime (two nested zip-tree parts, a links-only license) and an engine (flat zip, url + links license) that requires it.
-    function New-ChainFixture([string] $Name, [string] $Consent = 'accept', [string] $BadHashPath = '', [string] $MissingPath = '') {
+    function New-ChainFixture([string] $Name, [string] $Consent = 'accept', [string] $BadHashPath = '', [string] $MissingPath = '', [string] $WrongSizePath = '', [string] $BadEngineHashPath = '') {
         $dir = Join-Path $work $Name
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        $part1 = New-ArchivePart -Dir $dir -Name 'rt-libs.whl' -Prefix '_sdk/' -Files ([ordered] @{ 'bin/a.dll' = 'runtime-a'; 'bin/lib/x.dat' = 'runtime-x' }) -Extra @{ '_sdk/unrelated.txt' = 'not listed'; 'other/readme.md' = 'also not listed' } -BadHashPath $BadHashPath -MissingPath $MissingPath
+        $part1 = New-ArchivePart -Dir $dir -Name 'rt-libs.whl' -Prefix '_sdk/' -Files ([ordered] @{ 'bin/a.dll' = 'runtime-a'; 'bin/lib/x.dat' = 'runtime-x' }) -Extra @{ '_sdk/unrelated.txt' = 'not listed'; 'other/readme.md' = 'also not listed' } -BadHashPath $BadHashPath -MissingPath $MissingPath -WrongSizePath $WrongSizePath
         $part2 = New-ArchivePart -Dir $dir -Name 'rt-device.whl' -Prefix '_sdk/' -Files ([ordered] @{ 'bin/b.dll' = 'runtime-b'; '.kpack/k.kpack' = 'runtime-k' })
         $engineFiles = [ordered] @{ 'server.exe' = 'engine-server'; 'engine.dll' = 'engine-dll' }
-        $enginePart = New-ArchivePart -Dir $dir -Name 'engine.zip' -Prefix '' -Files $engineFiles -Format 'zip'
+        $enginePart = New-ArchivePart -Dir $dir -Name 'engine.zip' -Prefix '' -Files $engineFiles -Format 'zip' -BadHashPath $BadEngineHashPath
         $runtimeLicense = [ordered] @{ spdx = 'proprietary'; consent = $Consent; links = @([ordered] @{ title = 'AMD EULA'; url = 'https://rocm.example.com/eula' }, [ordered] @{ title = 'Third party notices'; url = 'https://rocm.example.com/notices' }) }
         $engineLicense = [ordered] @{ spdx = 'MIT'; url = 'https://engine.example.com/LICENSE'; consent = $Consent; links = @([ordered] @{ title = 'AMD HIP terms'; url = 'https://rocm.example.com/hip' }) }
         $runtime = New-TreeComponent -Id 'rt-hip' -Parts @($part1.part, $part2.part) -PathDirs @('bin') -License $runtimeLicense
@@ -681,8 +683,10 @@ try {
         return [pscustomobject] @{ ComponentsPath = $docPath; ZipByUrl = $zipByUrl; Dir = $dir; Part1Url = $part1.url; Part2Url = $part2.url; EngineUrl = $enginePart.url }
     }
     # A download seam that serves the fixture archives and records the order (and a DOWNLOAD line in the output stream, to compare with the consent lines).
-    function New-ChainSeam($Fixture, $State) {
-        $zipByUrl = $Fixture.ZipByUrl
+    function New-ChainSeam($Fixture, $State, $Override = @{}) {
+        $zipByUrl = @{}
+        foreach ($zipKey in $Fixture.ZipByUrl.Keys) { $zipByUrl[$zipKey] = $Fixture.ZipByUrl[$zipKey] }
+        foreach ($overrideKey in $Override.Keys) { $zipByUrl[$overrideKey] = $Override[$overrideKey] }
         $stateLocal = $State
         return {
             param($Url, $Destination, $Sha256, $SizeBytes, $AllowedRedirectHosts)
@@ -694,6 +698,8 @@ try {
         }.GetNewClosure()
     }
     function New-ChainState { return @{ log = (New-Object 'System.Collections.Generic.List[string]'); probes = (New-Object 'System.Collections.Generic.List[object]') } }
+    # The module-scope console-answer hook (not a parameter): $null clears it.
+    function Set-ConsentHook($Hook) { & $module { param($h) $script:FastLlmConsentPromptHook = $h } $Hook }
     function Get-ThrownFailure([scriptblock] $Block) {
         try { & $Block | Out-Null } catch { return [pscustomobject] @{ code = [string] $_.Exception.Data['FastLlmFailureCode']; message = [string] $_.Exception.Message } }
         return $null
@@ -809,13 +815,17 @@ try {
     $declineState = New-ChainState
     $declineQuestions = New-Object 'System.Collections.Generic.List[string]'
     $declineAnswer = { param($q) $declineQuestions.Add($q); 'n' }.GetNewClosure()
-    $declined = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $declineRoot -Download (New-ChainSeam -Fixture $showFx -State $declineState) -ConsentPrompt $declineAnswer }
+    Set-ConsentHook $declineAnswer
+    try { $declined = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $declineRoot -Download (New-ChainSeam -Fixture $showFx -State $declineState) } }
+    finally { Set-ConsentHook $null }
     Check ($null -ne $declined -and $declined.code -ceq 'component-consent-declined' -and $declined.message -like "*'rt-hip'*" -and $declined.message -like "*'eng-hip'*") 'a declined chain is a typed failure naming both components'
     Check ($declineState.log.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $declineRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $declineRoot 'downloads'))) 'a declined chain downloads nothing and creates nothing'
     Check ($declineQuestions.Count -eq 1 -and $declineQuestions[0] -like "*'rt-hip'*" -and $declineQuestions[0] -like "*'eng-hip'*") 'the chain is asked once, naming every component'
     $yesRoot = New-TestRoot
     $yesState = New-ChainState
-    $null = Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $yesRoot -Download (New-ChainSeam -Fixture $showFx -State $yesState) -ConsentPrompt { param($q) 'y' }
+    Set-ConsentHook { param($q) 'y' }
+    try { $null = Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $yesRoot -Download (New-ChainSeam -Fixture $showFx -State $yesState) }
+    finally { Set-ConsentHook $null }
     Check ($yesState.log.Count -eq 3 -and (Test-FastLlmComponentInstallation -InstallRoot $yesRoot -Component (Get-ComponentEntry $showFx.ComponentsPath 'eng-hip')) -and -not (Test-Path -LiteralPath (Join-Path $yesRoot 'consents'))) 'an approved show-type chain installs both and writes no receipts (positive control)'
     $unRoot = New-TestRoot
     $unState = New-ChainState
@@ -825,7 +835,9 @@ try {
     $acceptFx = New-ChainFixture -Name 'fx-chain-accept-nosw'
     $acceptRoot = New-TestRoot
     $acceptState = New-ChainState
-    $acceptFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $acceptFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $acceptRoot -Download (New-ChainSeam -Fixture $acceptFx -State $acceptState) -ConsentPrompt { param($q) 'y' } }
+    Set-ConsentHook { param($q) 'y' }
+    try { $acceptFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $acceptFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $acceptRoot -Download (New-ChainSeam -Fixture $acceptFx -State $acceptState) } }
+    finally { Set-ConsentHook $null }
     Check ($null -ne $acceptFailure -and $acceptFailure.code -ceq 'component-consent-required' -and $acceptFailure.message -like "*'rt-hip'*" -and $acceptFailure.message -like "*'eng-hip'*" -and $acceptFailure.message -like '*fast-llm.ps1 components -Install eng-hip -AcceptLicense*' -and $acceptState.log.Count -eq 0) 'accept-type components never install on a console answer: component-consent-required names both and points at -AcceptLicense, with no download'
     Check (-not (Test-Path -LiteralPath (Join-Path $acceptRoot 'consents'))) 'a refused accept chain writes no receipt'
 
@@ -840,7 +852,8 @@ Write-Output ('INTERACTIVE=' + (& $m { Test-FastLlmConsoleInteractive }))
 try { Install-FastLlmComponent -ComponentsPath $ComponentsPath -ComponentId 'eng-hip' -InstallRoot $InstallRoot | Out-Null; Write-Output 'RESULT=installed' }
 catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
 '@)
-    $childRoot = New-TestRoot
+    # A short install root: the real downloader's derived names (no seam in a child) need room under the 259-character limit.
+    $childRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('c3c' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
     $childInfo = New-Object System.Diagnostics.ProcessStartInfo
     $childInfo.FileName = (Get-Process -Id $PID).Path
     $childInfo.Arguments = '-NoProfile -File "' + $childScript + '" -ModulePath "' + $modulePath + '" -ComponentsPath "' + $showFx.ComponentsPath + '" -InstallRoot "' + $childRoot + '"'
@@ -855,6 +868,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $childOutput = $childOutputTask.Result
     Check ($childOutput -match 'INTERACTIVE=False' -and $childOutput -match 'RESULT=component-consent-required') 'a child process with redirected input is not interactive and gets component-consent-required (no Read-Host)'
     Check (-not (Test-Path -LiteralPath (Join-Path $childRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $childRoot 'downloads'))) 'the child refusal downloaded nothing'
+    Remove-Item -LiteralPath $childRoot -Recurse -Force -ErrorAction SilentlyContinue
 
     # ---- MAX_PATH: refused before any download ----
     $deepSegments = @(1..5 | ForEach-Object { 'segment-number-' + $_ + '-xxxxxxxxxxxx' })
@@ -902,9 +916,337 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     # ---- Streaming: no whole-archive or whole-entry API on the extraction path ----
     $extractSource = [regex]::Match($moduleSourceEarly, '(?s)function Expand-FastLlmComponentArchivePart \{.*?\r?\n\}\r?\n').Value
     $filesSource = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponentFiles \{.*?\r?\n\}\r?\n').Value
-    Check ($extractSource.Length -gt 500 -and $filesSource.Length -gt 500 -and $extractSource.Contains('[System.IO.Compression.ZipFile]::OpenRead') -and $extractSource.Contains('.Open()') -and $extractSource.Contains('.CopyTo(')) 'zip-tree extraction streams: ZipFile.OpenRead, entry.Open() and CopyTo(FileStream)'
+    Check ($extractSource.Length -gt 500 -and $filesSource.Length -gt 500 -and $extractSource.Contains('[System.IO.Compression.ZipFile]::OpenRead') -and $extractSource.Contains('.Open()') -and $extractSource.Contains('Copy-FastLlmBoundedStream') -and $moduleSourceEarly.Contains('$Source.Read($buffer, 0, $want)')) 'zip-tree extraction streams: ZipFile.OpenRead, entry.Open() and a bounded buffered copy to the FileStream'
     Check (($extractSource + $filesSource + $installSource) -notmatch 'Expand-Archive|ExtractToDirectory|ExtractToFile|ReadAllBytes|ReadAllText|ReadToEnd|\.ToArray\(\)\s*\|') 'the install path calls no whole-archive or whole-entry API'
     Check (([regex]::Matches($installSource, 'Read-Host')).Count -eq 1 -and $installSource.Contains('Test-FastLlmConsoleInteractive') -and $installSource.IndexOf('Test-FastLlmConsoleInteractive') -lt $installSource.IndexOf('Read-Host')) 'Read-Host is reached only after the interactive check (M5)'
+
+    # ---- Fix round 1 ----
+    $canLink = $true
+    $linkProbeDir = New-TestRoot
+    try { New-Item -ItemType SymbolicLink -Path (Join-Path $linkProbeDir 'l') -Target $linkProbeDir -ErrorAction Stop | Out-Null } catch { $canLink = $false }
+    $isUnix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
+
+    function New-Override($Url, $Path) { $table = @{}; $table[[string] $Url] = [string] $Path; return $table }
+    # -- Review Focus 5: a replaced upstream part is a typed component-source-mismatch, quarantined, and nothing further is downloaded --
+    $rf5Fx = New-ChainFixture -Name 'fx-rf5'
+    $rf5Root = New-TestRoot
+    $rf5State = New-ChainState
+    $rf5Failure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $rf5Fx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $rf5Root -AcceptLicense -Download (New-ChainSeam -Fixture $rf5Fx -State $rf5State -Override (New-Override $rf5Fx.Part1Url $rf5Fx.ZipByUrl[$rf5Fx.EngineUrl])) }
+    Check ($null -ne $rf5Failure -and $rf5Failure.code -ceq 'component-source-mismatch') 'a replaced first runtime part is the typed component-source-mismatch'
+    Check ($rf5Failure.message -like "*'rt-hip'*" -and $rf5Failure.message -like "*$($rf5Fx.Part1Url)*" -and $rf5Failure.message -like '*expected*bytes*SHA-256*got*bytes*SHA-256*') 'the mismatch names the component, the part URL, and expected vs actual size and SHA-256'
+    Check (($rf5State.log -join ',') -ceq $rf5Fx.Part1Url) 'nothing further is requested after the mismatched part (no second part, no engine)'
+    $rf5Cache = [System.IO.Path]::Combine($rf5Root, 'downloads', 'components', 'rt-hip', '1.0')
+    Check (@(Get-ChildItem -LiteralPath $rf5Cache -Force -File | Where-Object { $_.Name -like 'part1-rt-libs.whl.corrupt.*' }).Count -eq 1 -and @(Get-ChildItem -LiteralPath $rf5Cache -Force -File | Where-Object { $_.Name -ceq 'part1-rt-libs.whl' }).Count -eq 0) 'the replaced part is quarantined, not left in the cache'
+    Check ((-not (Test-Path -LiteralPath (Join-Path $rf5Root 'components/runtime'))) -and (-not (Test-Path -LiteralPath (Join-Path $rf5Root 'components/engine'))) -and (-not (Test-Path -LiteralPath (Join-Path $rf5Root 'components/.s')))) 'a replaced part leaves no component folder and no staging'
+    $rf5bState = New-ChainState
+    $rf5bFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $rf5Fx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -AcceptLicense -Download (New-ChainSeam -Fixture $rf5Fx -State $rf5bState -Override (New-Override $rf5Fx.Part2Url $rf5Fx.ZipByUrl[$rf5Fx.EngineUrl])) }
+    Check ($null -ne $rf5bFailure -and $rf5bFailure.code -ceq 'component-source-mismatch' -and ($rf5bState.log -join ',') -ceq ($rf5Fx.Part1Url + ',' + $rf5Fx.Part2Url) -and $rf5bFailure.message -like '*part 2 of 2*') 'a replaced SECOND part is also typed, and the engine is never downloaded'
+    $rf5cState = New-ChainState
+    $taggedMismatch = & $module { New-FastLlmDownloadMismatchException -Message 'Downloaded artifact failed exact size/SHA-256 verification for x. The bad partial was quarantined.' }
+    $taggedSeam = { param($Url, $Destination, $Sha256, $SizeBytes, $AllowedRedirectHosts) throw $taggedMismatch }.GetNewClosure()
+    $rf5cFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $rf5Fx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -AcceptLicense -Download $taggedSeam }
+    Check ($null -ne $rf5cFailure -and $rf5cFailure.code -ceq 'component-source-mismatch' -and $rf5cFailure.message -like '*Downloaded artifact failed exact size/SHA-256 verification*') 'the downloader''s own tagged size/SHA-256 failure (Save-FastLlmVerifiedFile) becomes the typed failure with its message kept'
+    $networkSeam = { param($Url, $Destination, $Sha256, $SizeBytes, $AllowedRedirectHosts) throw 'Download failed with curl exit code 6.' }
+    $networkFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $rf5Fx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -AcceptLicense -Download $networkSeam }
+    Check ($null -ne $networkFailure -and $networkFailure.code -ne 'component-source-mismatch' -and $networkFailure.message -like '*curl exit code 6*') 'a network failure is not reported as a source mismatch'
+    $saveSource = [regex]::Match($moduleSourceEarly, '(?s)function Save-FastLlmVerifiedFile \{.*?\r?\n\}\r?\n').Value
+    Check ($saveSource.Contains('New-FastLlmDownloadMismatchException -Message "Downloaded artifact failed exact size/SHA-256') -and $saveSource.Contains('New-FastLlmDownloadMismatchException -Message "Download exceeded')) 'Save-FastLlmVerifiedFile tags its size and SHA-256 failures'
+
+    # -- Partial-chain resume, and an existing receipt writes no new receipt --
+    $resumeBad = New-ChainFixture -Name 'fx-resume-bad' -BadEngineHashPath 'server.exe'
+    $resumeGood = New-ChainFixture -Name 'fx-resume-good'
+    $resumeRoot = New-TestRoot
+    $resumeState1 = New-ChainState
+    $resumeFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $resumeBad.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $resumeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $resumeBad -State $resumeState1) }
+    $resumeRuntimeEntry = Get-ComponentEntry $resumeGood.ComponentsPath 'rt-hip'
+    Check ($null -ne $resumeFailure -and $resumeFailure.code -ceq 'component-archive-member-mismatch' -and (Test-FastLlmComponentInstallation -InstallRoot $resumeRoot -Component $resumeRuntimeEntry) -and -not (Test-Path -LiteralPath (Join-Path $resumeRoot 'components/engine'))) 'a failing engine leaves the already verified runtime installed and no engine folder'
+    $receiptDir = Join-Path $resumeRoot 'consents'
+    $receiptsBefore = @(Get-ChildItem -LiteralPath $receiptDir -File | Sort-Object Name | ForEach-Object { $_.Name + '=' + (Get-Content -LiteralPath $_.FullName -Raw) }) -join "`n"
+    Start-Sleep -Milliseconds 1100
+    $resumeState2 = New-ChainState
+    $null = Install-FastLlmComponent -ComponentsPath $resumeGood.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $resumeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $resumeGood -State $resumeState2)
+    Check (($resumeState2.log -join ',') -ceq $resumeGood.EngineUrl) 'rerunning the chain downloads only the missing engine (the verified runtime is not fetched again)'
+    $receiptsAfter = @(Get-ChildItem -LiteralPath $receiptDir -File | Sort-Object Name | ForEach-Object { $_.Name + '=' + (Get-Content -LiteralPath $_.FullName -Raw) }) -join "`n"
+    Check ($receiptsBefore -ceq $receiptsAfter -and @(Get-ChildItem -LiteralPath $receiptDir -File).Count -eq 2) 'with valid receipts in place, -AcceptLicense writes no new receipt (acceptedAt is unchanged)'
+
+    # -- Pre-extraction member size mismatch --
+    $sizeFx = New-ChainFixture -Name 'fx-wrongsize' -WrongSizePath 'bin/a.dll'
+    $sizeRoot = New-TestRoot
+    $sizeFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $sizeFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $sizeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $sizeFx -State (New-ChainState)) }
+    Check ($null -ne $sizeFailure -and $sizeFailure.code -ceq 'component-archive-member-mismatch' -and $sizeFailure.message -like '*bytes, not the pinned*' -and -not (Test-Path -LiteralPath (Join-Path $sizeRoot 'components/runtime'))) 'a member whose archive size differs from the pin is refused before it is extracted'
+    Check (@(Get-ChildItem -LiteralPath ([System.IO.Path]::Combine($sizeRoot, 'downloads', 'components', 'rt-hip', '1.0')) -Force -File | Where-Object { $_.Name -like '*.corrupt.*' }).Count -eq 0) 'the pre-extraction size mismatch wrote nothing to quarantine (nothing was extracted)'
+
+    # -- Bounded copy --
+    $boundedSource = New-Object System.IO.MemoryStream(, ([byte[]] (1..100 | ForEach-Object { [byte] 7 })))
+    $boundedDestination = New-Object System.IO.MemoryStream
+    $boundedCopied = & $module { param($a, $b) Copy-FastLlmBoundedStream -Source $a -Destination $b -MaxBytes 50 } $boundedSource $boundedDestination
+    Check ($boundedCopied -eq 51 -and $boundedDestination.Length -eq 51) 'the bounded copy stops at MaxBytes + 1 bytes (51 of 100), so an oversized member is detectable and never fills the disk'
+    $boundedSource2 = New-Object System.IO.MemoryStream(, ([byte[]] (1..40 | ForEach-Object { [byte] 7 })))
+    $boundedDestination2 = New-Object System.IO.MemoryStream
+    $boundedCopied2 = & $module { param($a, $b) Copy-FastLlmBoundedStream -Source $a -Destination $b -MaxBytes 50 } $boundedSource2 $boundedDestination2
+    Check ($boundedCopied2 -eq 40 -and $boundedDestination2.Length -eq 40) 'the bounded copy copies a member within its pin completely'
+
+    # -- M5: -NonInteractive --
+    $niCheck = { param($a) & $module { param($x) Test-FastLlmNonInteractiveCommandLine -CommandLineArgs $x } $a }
+    Check ((& $niCheck @('pwsh', '-NoProfile', '-NonInteractive', '-File', 'x.ps1')) -and (& $niCheck @('powershell.exe', '-noni')) -and (& $niCheck @('powershell.exe', '-NONINTERACTIVE')) -and (& $niCheck @('powershell.exe', '/NonInteractive'))) 'the command-line check sees -NonInteractive and its prefixes, in any case'
+    Check ((-not (& $niCheck @('pwsh', '-NoProfile', '-File', 'x.ps1'))) -and (-not (& $niCheck @('pwsh', '-NoExit', '-NoLogo', '-NoProfile')))) 'the command-line check does not fire on -NoProfile, -NoExit or -NoLogo'
+    $productChildRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('c3p' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+    $productInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $productInfo.FileName = (Get-Process -Id $PID).Path
+    $productInfo.Arguments = '-NoProfile -NonInteractive -File "' + $childScript + '" -ModulePath "' + $modulePath + '" -ComponentsPath "' + $showFx.ComponentsPath + '" -InstallRoot "' + $productChildRoot + '"'
+    $productInfo.UseShellExecute = $false
+    $productInfo.CreateNoWindow = $true
+    $productInfo.RedirectStandardOutput = $true
+    $productInfo.RedirectStandardError = $true
+    $productProcess = [System.Diagnostics.Process]::Start($productInfo)
+    $productOutputTask = $productProcess.StandardOutput.ReadToEndAsync()
+    if (-not $productProcess.WaitForExit(120000)) { try { $productProcess.Kill() } catch { } }
+    $productOutput = $productOutputTask.Result
+    Check ($productOutput -match 'INTERACTIVE=False' -and $productOutput -match 'RESULT=component-consent-required') 'a child started the way the product starts them (-NonInteractive, stdin NOT redirected, no window) gets component-consent-required'
+    Check (-not (Test-Path -LiteralPath (Join-Path $productChildRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $productChildRoot 'downloads'))) 'the product-shaped child refusal downloaded nothing'
+    Check ($moduleSourceEarly -match "catch \[System\.Management\.Automation\.PSInvalidOperationException\]" -and $installSource.Contains('PSInvalidOperationException')) 'Read-Host has a typed backstop for a session that cannot prompt'
+
+    # -- The console-answer hook never overrides -Unattended --
+    $hookCalls = New-Object 'System.Collections.Generic.List[string]'
+    Set-ConsentHook ({ param($q) $hookCalls.Add($q); 'y' }.GetNewClosure())
+    $hookState = New-ChainState
+    try { $hookFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -Download (New-ChainSeam -Fixture $showFx -State $hookState) } }
+    finally { Set-ConsentHook $null }
+    Check ($null -ne $hookFailure -and $hookFailure.code -ceq 'component-consent-required' -and $hookCalls.Count -eq 0 -and $hookState.log.Count -eq 0) '-Unattended wins over the console-answer hook: refused, the hook is never asked, nothing is downloaded'
+    Check (-not $installSource.Contains('[scriptblock] $ConsentPrompt') -and (Get-Command Install-FastLlmComponent).Parameters.ContainsKey('ConsentPrompt') -eq $false) 'the console-answer seam is not a public parameter'
+
+    # -- Refusal wording: who must accept, separately from the whole chain --
+    $wordFx = New-ChainFixture -Name 'fx-wording'
+    $wordRoot = New-TestRoot
+    $null = Install-FastLlmComponent -ComponentsPath $wordFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $wordRoot -AcceptLicense -Download (New-ChainSeam -Fixture $wordFx -State (New-ChainState))
+    Remove-Item -LiteralPath (Join-Path $wordRoot 'consents/component-eng-hip-1.0.json') -Force -ErrorAction SilentlyContinue
+    $wordFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $wordFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $wordRoot -Download (New-ChainSeam -Fixture $wordFx -State (New-ChainState)) }
+    Check ($null -ne $wordFailure -and $wordFailure.code -ceq 'component-consent-required' -and $wordFailure.message -like "*accept the license of: 'eng-hip'*" -and $wordFailure.message -notlike "*accept the license of: *'rt-hip'*(links above)*" -and $wordFailure.message -like "*whole chain is: 'rt-hip' (already installed), 'eng-hip'*") 'the refusal names who must accept separately from the whole chain, which lists an installed member as such'
+
+    # -- Repair guidance when a required root is tampered and something installed requires it --
+    $repairRoot = New-TestRoot
+    $repairFx = New-ChainFixture -Name 'fx-repair'
+    $null = Install-FastLlmComponent -ComponentsPath $repairFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $repairRoot -AcceptLicense -Download (New-ChainSeam -Fixture $repairFx -State (New-ChainState))
+    $repairRuntimeRoot = Get-FastLlmComponentRoot -InstallRoot $repairRoot -Component (Get-ComponentEntry $repairFx.ComponentsPath 'rt-hip')
+    Remove-Item -LiteralPath (Join-Path $repairRuntimeRoot 'bin/b.dll') -Force
+    $repairFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $repairFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $repairRoot -AcceptLicense -Download (New-ChainSeam -Fixture $repairFx -State (New-ChainState)) }
+    $removeEngineAt = if ($null -ne $repairFailure) { $repairFailure.message.IndexOf('components -Remove eng-hip') } else { -1 }
+    $removeRuntimeAt = if ($null -ne $repairFailure) { $repairFailure.message.IndexOf('components -Remove rt-hip') } else { -1 }
+    $installAt = if ($null -ne $repairFailure) { $repairFailure.message.IndexOf('components -Install eng-hip') } else { -1 }
+    Check ($null -ne $repairFailure -and $repairFailure.code -ceq 'component-root-unverified' -and $removeEngineAt -ge 0 -and $removeEngineAt -lt $removeRuntimeAt -and $removeRuntimeAt -lt $installAt) 'a tampered required runtime with the engine installed gets the whole repair sequence in one message: remove the engine, remove the runtime, install again'
+    $plainRepair = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $repairFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $repairRoot -AcceptLicense -Download (New-ChainSeam -Fixture $repairFx -State (New-ChainState)) }
+    Check ($null -ne $plainRepair -and $plainRepair.code -ceq 'component-root-unverified' -and $plainRepair.message -like '*components -Remove eng-hip*') 'the typed component-root-unverified also covers installing the runtime itself'
+
+    # -- Installed chain exposure (-PassThru) and the CLI --
+    $ptFx = New-ChainFixture -Name 'fx-passthru'
+    $ptRoot = New-TestRoot
+    $ptResult = Install-FastLlmComponent -ComponentsPath $ptFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $ptRoot -AcceptLicense -PassThru -Download (New-ChainSeam -Fixture $ptFx -State (New-ChainState)) 6>$null
+    Check ((@($ptResult.installed | ForEach-Object { $_.id }) -join ',') -ceq 'rt-hip,eng-hip' -and $ptResult.root -ceq (Get-FastLlmComponentRoot -InstallRoot $ptRoot -Component (Get-ComponentEntry $ptFx.ComponentsPath 'eng-hip')) -and $ptResult.installed[0].path -like '*rt-hip*') '-PassThru lists each newly installed component (required first) with its path, and the requested root'
+    $ptAgain = Install-FastLlmComponent -ComponentsPath $ptFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $ptRoot -AcceptLicense -PassThru -Download (New-ChainSeam -Fixture $ptFx -State (New-ChainState))
+    Check (@($ptAgain.installed).Count -eq 0 -and $ptAgain.root -ceq $ptResult.root) '-PassThru on an installed chain lists nothing as newly installed'
+    $cliText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../fast-llm.ps1') -Raw
+    Check ($cliText.Contains('-PassThru') -and $cliText.Contains('installedComponents = @($installResult.installed)') -and $cliText.Contains('foreach ($newlyInstalled in @($installResult.installed))')) 'components -Install prints one line per newly installed component and adds installedComponents to -AsJson'
+    Check ($cliText -match "\`$Action -eq 'components' -and \(\`$PSBoundParameters\.ContainsKey\('Install'\) -or \`$PSBoundParameters\.ContainsKey\('Remove'\)\)\)\s*\{\s*\`$operationLock = Enter-FastLlmOperation") 'components -Install and -Remove take the operation lock'
+
+    # -- License display: one line per distinct URL --
+    $shippedEngineLines = @(Get-FastLlmComponentLicenseLinks -Component $hipEngine)
+    $shippedRuntimeLines = @(Get-FastLlmComponentLicenseLinks -Component $hipRuntime)
+    Check ($shippedEngineLines.Count -eq 3 -and @($shippedEngineLines.url | Select-Object -Unique).Count -eq 3) 'the shipped HIP engine shows 3 distinct license lines (the duplicate URL is gone)'
+    Check ($shippedRuntimeLines.Count -eq 2 -and $shippedRuntimeLines[0].title -ceq 'AMD Software End User License Agreement' -and $shippedRuntimeLines[0].title -cne 'proprietary') 'the shipped runtime shows 2 license lines, the first titled with the link title and not "proprietary"'
+    Check (@($shippedEngineLines | Where-Object { $_.title -ceq 'MIT' }).Count -eq 0 -and $shippedEngineLines[0].title -ceq 'llama.cpp license (MIT)') 'the link title wins over the SPDX id when both carry the same URL'
+    $dupLicense = [ordered] @{ spdx = 'MIT'; url = 'https://example.com/L'; consent = 'show'; links = @([ordered] @{ title = 'Mixed'; url = 'https://example.com/L' }, [ordered] @{ title = 'Other'; url = 'https://example.com/l' }, [ordered] @{ title = 'Again'; url = 'https://example.com/L' }) }
+    $dupDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-dup' -Parts @($okPart) -License $dupLicense))
+    $dupEntry = Get-ComponentEntry $dupDoc 'rt-dup'
+    $dupLines = @(Get-FastLlmComponentLicenseLinks -Component $dupEntry)
+    Check ($dupLines.Count -eq 2 -and $dupLines[0].title -ceq 'Mixed' -and $dupLines[1].url -ceq 'https://example.com/l') 'duplicates are removed by exact (case-sensitive) URL: the first title is kept and a URL that differs only in case stays'
+    $dupReceiptLinks = @(& $module { param($c) Get-FastLlmComponentLicenseLinkEntries -Component $c } $dupEntry)
+    Check ($dupReceiptLinks.Count -eq 3 -and (& $module { param($c) Get-FastLlmComponentLicenseUrlOrNull -Component $c } $dupEntry) -ceq 'https://example.com/L') 'the receipt helpers keep the raw license.url and every link (display-only dedupe)'
+
+    # -- MAX_PATH boundaries --
+    $boundaryBase = Join-Path ([System.IO.Path]::GetTempPath()) ('c3b' + [Guid]::NewGuid().ToString('N').Substring(0, 4))
+    function New-BoundaryRoot([int] $ComponentRootLength, [string] $Id) {
+        $probeRoot = Join-Path $boundaryBase 'p'
+        $probeComponent = [pscustomobject] @{ kind = 'runtime'; id = $Id; version = '1.0' }
+        $suffix = (Get-FastLlmComponentRoot -InstallRoot $probeRoot -Component $probeComponent).Length - [System.IO.Path]::GetFullPath($probeRoot).Length
+        $installRootLength = $ComponentRootLength - $suffix
+        $fixed = [System.IO.Path]::GetFullPath($boundaryBase).Length + 1
+        $pad = $installRootLength - $fixed
+        return (Join-Path $boundaryBase ('d' * $pad))
+    }
+    $segmentList = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($segmentIndex in 1..5) { $segmentList.Add('seg' + $segmentIndex + ('x' * 21)) }
+    $fileDirectory = $segmentList -join '/'
+    $filePath = $fileDirectory + '/leafleafleaf.dll'
+    $fileComponentPart = New-ArchivePart -Dir (Join-Path $work 'fx-b-file') -Name 'b.whl' -Prefix 'p/' -Files ([ordered] @{ $filePath = 'b' })
+    $fileDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-bound-file' -Parts @($fileComponentPart.part)))
+    $fileFx = [pscustomobject] @{ ZipByUrl = @{ $fileComponentPart.url = $fileComponentPart.zip } }
+    foreach ($case in @(@{ length = 259; allowed = $true }, @{ length = 260; allowed = $false })) {
+        $boundaryInstall = New-BoundaryRoot -ComponentRootLength ($case.length - 1 - $filePath.Length) -Id 'rt-bound-file'
+        $boundaryEntry = Get-ComponentEntry $fileDoc 'rt-bound-file'
+        $actual = (Get-FastLlmComponentRoot -InstallRoot $boundaryInstall -Component $boundaryEntry).Length + 1 + $filePath.Length
+        $boundaryState = New-ChainState
+        $boundaryResult = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $fileDoc -ComponentId 'rt-bound-file' -InstallRoot $boundaryInstall -AcceptLicense -Download (New-ChainSeam -Fixture $fileFx -State $boundaryState) }
+        if ($case.allowed) { Check ($actual -eq 259 -and $null -eq $boundaryResult -and $boundaryState.log.Count -eq 1) 'a longest file path of exactly 259 characters is accepted' }
+        else { Check ($actual -eq 260 -and $null -ne $boundaryResult -and $boundaryResult.code -ceq 'component-path-too-long' -and $boundaryResult.message -like '*file path of 260 characters*limit of 259*' -and $boundaryState.log.Count -eq 0) 'a longest file path of 260 characters is refused before any download, naming the file limit' }
+        Remove-Item -LiteralPath $boundaryInstall -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $dirSegments = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($segmentIndex in 1..6) { $dirSegments.Add('dir' + $segmentIndex + ('y' * 20)) }
+    $dirOnly = $dirSegments -join '/'
+    $dirFilePath = $dirOnly + '/x'
+    $dirPart = New-ArchivePart -Dir (Join-Path $work 'fx-b-dir') -Name 'd.whl' -Prefix 'p/' -Files ([ordered] @{ $dirFilePath = 'd' })
+    $dirDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-bound-dir' -Parts @($dirPart.part)))
+    $dirFx = [pscustomobject] @{ ZipByUrl = @{ $dirPart.url = $dirPart.zip } }
+    foreach ($case in @(@{ length = 247; allowed = $true }, @{ length = 248; allowed = $false })) {
+        $boundaryInstall = New-BoundaryRoot -ComponentRootLength ($case.length - 1 - $dirOnly.Length) -Id 'rt-bound-dir'
+        $boundaryEntry = Get-ComponentEntry $dirDoc 'rt-bound-dir'
+        $actual = (Get-FastLlmComponentRoot -InstallRoot $boundaryInstall -Component $boundaryEntry).Length + 1 + $dirOnly.Length
+        $boundaryState = New-ChainState
+        $boundaryResult = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $dirDoc -ComponentId 'rt-bound-dir' -InstallRoot $boundaryInstall -AcceptLicense -Download (New-ChainSeam -Fixture $dirFx -State $boundaryState) }
+        if ($case.allowed) { Check ($actual -eq 247 -and $null -eq $boundaryResult -and $boundaryState.log.Count -eq 1) 'a deepest folder path of exactly 247 characters is accepted' }
+        else { Check ($actual -eq 248 -and $null -ne $boundaryResult -and $boundaryResult.code -ceq 'component-path-too-long' -and $boundaryResult.message -like '*folder path of 248 characters*limit of 247*' -and $boundaryState.log.Count -eq 0) 'a deepest folder path of 248 characters is refused before any download, naming the folder limit' }
+        Remove-Item -LiteralPath $boundaryInstall -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    # Derived names: with the real downloader (no -Download seam) its partial/quarantine names add up to 90 characters to the cache path.
+    $derivedPart = New-ArchivePart -Dir (Join-Path $work 'fx-b-derived') -Name 'q.whl' -Prefix 'p/' -Files ([ordered] @{ 'a.dll' = 'q' })
+    $derivedDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-bound-derived' -Parts @($derivedPart.part)))
+    $derivedEntry = Get-ComponentEntry $derivedDoc 'rt-bound-derived'
+    $probeCache = & $module { param($r, $c) @((Get-FastLlmComponentCachePaths -Component $c -InstallRoot $r).paths)[0] } (Join-Path $boundaryBase 'p') $derivedEntry
+    $cacheSuffix = $probeCache.Length - [System.IO.Path]::GetFullPath((Join-Path $boundaryBase 'p')).Length
+    foreach ($case in @(@{ total = 259; allowed = $true }, @{ total = 260; allowed = $false })) {
+        $wantRoot = $case.total - 90 - $cacheSuffix
+        $derivedInstall = Join-Path $boundaryBase ('e' * ($wantRoot - ([System.IO.Path]::GetFullPath($boundaryBase).Length + 1)))
+        $derivedResult = Get-ThrownFailure { & $module { param($c, $r) Assert-FastLlmComponentPathLength -Component $c -InstallRoot $r -DownloaderNames } $derivedEntry $derivedInstall }
+        if ($case.allowed) { Check ($null -eq $derivedResult) 'with the real downloader, a download path whose quarantine name just fits (259) is accepted' }
+        else { Check ($null -ne $derivedResult -and $derivedResult.code -ceq 'component-path-too-long' -and $derivedResult.message -like '*download quarantine path*260 characters*') 'with the real downloader, a download path whose quarantine name would be 260 is refused, naming that limit' }
+        $withoutDownloaderNames = Get-ThrownFailure { & $module { param($c, $r) Assert-FastLlmComponentPathLength -Component $c -InstallRoot $r } $derivedEntry $derivedInstall }
+        Check ($null -eq $withoutDownloaderNames) 'without the real downloader (a test seam) the downloader-name limit is not applied'
+    }
+    # The real install without a seam is refused up front (and downloads nothing) when the downloader's names would not fit.
+    $realRoot = Join-Path $boundaryBase ('e' * (260 - 90 - $cacheSuffix - ([System.IO.Path]::GetFullPath($boundaryBase).Length + 1)))
+    $realRefusal = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $derivedDoc -ComponentId 'rt-bound-derived' -InstallRoot $realRoot -AcceptLicense }
+    Check ($null -ne $realRefusal -and $realRefusal.code -ceq 'component-path-too-long' -and -not (Test-Path -LiteralPath (Join-Path $realRoot 'downloads'))) 'Install-FastLlmComponent with the real downloader enforces the derived-name limit before any download'
+    # The member quarantine name is shortened instead of failing: cache root + leaf + 56 over 259 still quarantines (and keeps the typed failure).
+    $leafName = ('m' * 60) + '.dll'
+    $memberPart = New-ArchivePart -Dir (Join-Path $work 'fx-b-member') -Name 'm.whl' -Prefix 'p/' -Files ([ordered] @{ $leafName = 'm' }) -BadHashPath $leafName
+    $memberDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-bound-member' -Parts @($memberPart.part)))
+    $memberFx = [pscustomobject] @{ ZipByUrl = @{ $memberPart.url = $memberPart.zip } }
+    $memberEntry = Get-ComponentEntry $memberDoc 'rt-bound-member'
+    $memberCacheRootProbe = Split-Path -Parent (& $module { param($r, $c) @((Get-FastLlmComponentCachePaths -Component $c -InstallRoot $r).paths)[0] } (Join-Path $boundaryBase 'p') $memberEntry)
+    $memberSuffix = $memberCacheRootProbe.Length - [System.IO.Path]::GetFullPath((Join-Path $boundaryBase 'p')).Length
+    $memberWantRoot = 260 - 56 - 1 - $leafName.Length - $memberSuffix
+    $memberInstall = Join-Path $boundaryBase ('f' * ($memberWantRoot - ([System.IO.Path]::GetFullPath($boundaryBase).Length + 1)))
+    $memberResult = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $memberDoc -ComponentId 'rt-bound-member' -InstallRoot $memberInstall -AcceptLicense -Download (New-ChainSeam -Fixture $memberFx -State (New-ChainState)) }
+    $memberCache = [System.IO.Path]::Combine($memberInstall, 'downloads', 'components', 'rt-bound-member', '1.0')
+    $memberQuarantined = @(Get-ChildItem -LiteralPath $memberCache -Force -File | Where-Object { $_.Name -like '*.corrupt*' })
+    Check ($null -ne $memberResult -and $memberResult.code -ceq 'component-archive-member-mismatch' -and $memberQuarantined.Count -eq 1 -and $memberQuarantined[0].Name -match '^[0-9a-f]{8}\.corrupt$') 'a member quarantine name that would pass 259 characters is shortened, so the typed mismatch is still raised and the partial is kept'
+    Remove-Item -LiteralPath $boundaryBase -Recurse -Force -ErrorAction SilentlyContinue
+
+    # -- Hashing passes: each file once (the member check), each archive once --
+    $hashFx = New-ChainFixture -Name 'fx-hashing'
+    $hashRoot = New-TestRoot
+    & $module { $script:FastLlmFileHashCalls = 0 }
+    $null = Install-FastLlmComponent -ComponentsPath $hashFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $hashRoot -AcceptLicense -Download (New-ChainSeam -Fixture $hashFx -State (New-ChainState)) 6>$null
+    $installHashCalls = & $module { $script:FastLlmFileHashCalls }
+    Check ($installHashCalls -eq 9) "a chain install hashes each of its 6 members once and each of its 3 archives once ($installHashCalls hash calls)"
+
+    # -- Staging: stale cleanup, a link is never followed --
+    $staleRoot = New-TestRoot
+    $stagingBase = Join-Path (Join-Path $staleRoot 'components') '.s'
+    New-Item -ItemType Directory -Path (Join-Path $stagingBase 'oldoldol/inner') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $stagingBase 'oldoldol/inner/f.bin'), 'x')
+    [System.IO.Directory]::SetLastWriteTimeUtc((Join-Path $stagingBase 'oldoldol'), (Get-Date).ToUniversalTime().AddHours(-3))
+    New-Item -ItemType Directory -Path (Join-Path $stagingBase 'freshfre') -Force | Out-Null
+    $linkTarget = New-TestRoot
+    [System.IO.File]::WriteAllText((Join-Path $linkTarget 'precious.txt'), 'keep')
+    $staleLinkMade = $false
+    if ($canLink) {
+        New-Item -ItemType SymbolicLink -Path (Join-Path $stagingBase 'linklink') -Target $linkTarget | Out-Null
+        $staleLinkMade = $true
+    }
+    $staleFx = New-ChainFixture -Name 'fx-stale'
+    $null = Install-FastLlmComponent -ComponentsPath $staleFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $staleRoot -AcceptLicense -Download (New-ChainSeam -Fixture $staleFx -State (New-ChainState)) 6>$null 3>$null
+    Check ((-not (Test-Path -LiteralPath (Join-Path $stagingBase 'oldoldol'))) -and (Test-Path -LiteralPath (Join-Path $stagingBase 'freshfre'))) 'an install removes staging leftovers older than an hour and keeps a fresh one'
+    if ($staleLinkMade) { Check ((Test-Path -LiteralPath (Join-Path $linkTarget 'precious.txt')) -and (Test-Path -LiteralPath (Join-Path $stagingBase 'linklink'))) 'a link inside the staging folder is neither followed nor removed' }
+    $filesSourceNow = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponentFiles \{.*?\r?\n\}\r?\n').Value
+    Check ($filesSourceNow.Contains('New-Item -ItemType Directory -Path $candidate -ErrorAction Stop') -and $filesSourceNow -notmatch 'New-Item -ItemType Directory -Path \$candidate[^\r\n]*-Force') 'the per-install staging folder is created without -Force, so an existing name fails and is redrawn'
+
+    # -- Directory move: bounded retry, appeared destination --
+    $moveFx = New-ChainFixture -Name 'fx-move'
+    $moveCalls = @{ n = 0 }
+    & $module { $script:FastLlmDirectoryMoveDelaysMs = @(1, 1, 1, 1, 1) }
+    try {
+        $flaky = { param($s, $d) $moveCalls.n = [int] $moveCalls.n + 1; if ($moveCalls.n -le 2) { throw (New-Object System.IO.IOException('sharing violation')) }; [System.IO.Directory]::Move($s, $d) }.GetNewClosure()
+        & $module { param($h) $script:FastLlmDirectoryMoveHook = $h } $flaky
+        $moveRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $moveFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $moveRoot -AcceptLicense -Download (New-ChainSeam -Fixture $moveFx -State (New-ChainState)) 6>$null
+        Check ($moveCalls.n -eq 3 -and (Test-FastLlmComponentInstallation -InstallRoot $moveRoot -Component (Get-ComponentEntry $moveFx.ComponentsPath 'rt-hip'))) 'a directory move that fails twice with IOException succeeds on the third try'
+        $denied = { param($s, $d) $moveCalls.n = [int] $moveCalls.n + 1; throw (New-Object System.UnauthorizedAccessException('denied')) }.GetNewClosure()
+        $moveCalls.n = 0
+        & $module { param($h) $script:FastLlmDirectoryMoveHook = $h } $denied
+        $deniedRoot = New-TestRoot
+        $deniedFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $moveFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $deniedRoot -AcceptLicense -Download (New-ChainSeam -Fixture $moveFx -State (New-ChainState)) }
+        Check ($null -ne $deniedFailure -and $deniedFailure.code -ceq 'component-move-failed' -and $moveCalls.n -eq 6 -and -not (Test-Path -LiteralPath (Join-Path $deniedRoot 'components/runtime/rt-hip/1.0')) -and -not (Test-Path -LiteralPath (Join-Path $deniedRoot 'components/.s'))) 'an always-failing move is retried 5 times (6 tries), then a typed component-move-failed with staging cleaned up'
+        $raceHook = { param($s, $d) New-Item -ItemType Directory -Path $d -Force | Out-Null; throw (New-Object System.IO.IOException('exists')) }
+        & $module { param($h) $script:FastLlmDirectoryMoveHook = $h } $raceHook
+        $raceFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $moveFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot (New-TestRoot) -AcceptLicense -Download (New-ChainSeam -Fixture $moveFx -State (New-ChainState)) }
+        Check ($null -ne $raceFailure -and $raceFailure.code -ceq 'component-root-appeared') 'a destination that appears during the install is the typed component-root-appeared, not retried'
+    }
+    finally {
+        & $module { $script:FastLlmDirectoryMoveHook = $null; $script:FastLlmDirectoryMoveDelaysMs = @(200, 400, 800, 1600, 2000) }
+    }
+
+    # -- Tree walk: links, unreadable folders --
+    $treeFx = New-ChainFixture -Name 'fx-tree'
+    $treeRoot = New-TestRoot
+    $null = Install-FastLlmComponent -ComponentsPath $treeFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $treeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $treeFx -State (New-ChainState)) 6>$null
+    $treeEntry = Get-ComponentEntry $treeFx.ComponentsPath 'rt-hip'
+    $treeComponentRoot = Get-FastLlmComponentRoot -InstallRoot $treeRoot -Component $treeEntry
+    if ($canLink) {
+        $linkOutside = New-TestRoot
+        [System.IO.File]::WriteAllText((Join-Path $linkOutside 'k.kpack'), 'runtime-k')
+        Remove-Item -LiteralPath (Join-Path $treeComponentRoot '.kpack') -Recurse -Force
+        New-Item -ItemType SymbolicLink -Path (Join-Path $treeComponentRoot '.kpack') -Target $linkOutside | Out-Null
+        Check ((-not (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry -Depth Presence)) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry))) 'a link inside the component root fails both depths'
+        Remove-Item -LiteralPath (Join-Path $treeComponentRoot '.kpack') -Force
+        New-Item -ItemType Directory -Path (Join-Path $treeComponentRoot '.kpack') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $treeComponentRoot '.kpack/k.kpack'), 'runtime-k')
+        Check (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry) 'the tree verifies again once the link is replaced by the real folder (positive control)'
+    }
+    if ($isUnix -and $canLink) {
+        & chmod 000 (Join-Path $treeComponentRoot 'bin/lib')
+        try {
+            $treeThrew = $false
+            try { $treeVerified = Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry -Depth Presence } catch { $treeThrew = $true }
+            $treeInventory = @(Get-FastLlmComponentInventory -ComponentsPath $treeFx.ComponentsPath -InstallRoot $treeRoot)
+            Check ((-not $treeThrew) -and (-not $treeVerified) -and @($treeInventory | Where-Object { $_.id -ceq 'rt-hip' -and $_.installed -and -not $_.verified }).Count -eq 1) 'an unreadable folder makes the tree unverified instead of throwing, so -List still shows the row'
+        }
+        finally { & chmod 755 (Join-Path $treeComponentRoot 'bin/lib') }
+    }
+
+    # -- Removal guard edges: a link in a requirer's place --
+    if ($canLink) {
+        $edgeFx = New-ChainFixture -Name 'fx-edge'
+        $edgeRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $edgeFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $edgeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $edgeFx -State (New-ChainState)) 6>$null
+        $edgeEngineRoot = Get-FastLlmComponentRoot -InstallRoot $edgeRoot -Component (Get-ComponentEntry $edgeFx.ComponentsPath 'eng-hip')
+        $edgeOutside = New-TestRoot
+        [System.IO.File]::WriteAllText((Join-Path $edgeOutside 'precious.txt'), 'keep')
+        Remove-Item -LiteralPath $edgeEngineRoot -Recurse -Force
+        New-Item -ItemType SymbolicLink -Path $edgeEngineRoot -Target $edgeOutside | Out-Null
+        $edgeWarnings = @()
+        $edgeRemoved = Remove-FastLlmComponent -ComponentsPath $edgeFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $edgeRoot -WarningVariable edgeWarnings 3>$null
+        Check ($edgeRemoved -and @($edgeWarnings).Count -ge 1 -and "$($edgeWarnings[0])" -like '*reparse point*') 'a link standing where the requiring component should be is ignored by the guard, with a warning'
+        $edgeRemovedLink = Remove-FastLlmComponent -ComponentsPath $edgeFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $edgeRoot
+        Check ($edgeRemovedLink -and (-not (Test-Path -LiteralPath $edgeEngineRoot)) -and (Test-Path -LiteralPath (Join-Path $edgeOutside 'precious.txt'))) 'removing a component whose root is a link unlinks it and never touches what it points at'
+        $innerFx = New-ChainFixture -Name 'fx-inner'
+        $innerRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $innerFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $innerRoot -AcceptLicense -Download (New-ChainSeam -Fixture $innerFx -State (New-ChainState)) 6>$null
+        $innerComponentRoot = Get-FastLlmComponentRoot -InstallRoot $innerRoot -Component (Get-ComponentEntry $innerFx.ComponentsPath 'rt-hip')
+        New-Item -ItemType SymbolicLink -Path (Join-Path $innerComponentRoot 'bin/sneaky') -Target $edgeOutside | Out-Null
+        $innerMessage = Get-ThrownMessage { Remove-FastLlmComponent -ComponentsPath $innerFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $innerRoot }
+        Check ($null -ne $innerMessage -and $innerMessage -like '*reparse point*' -and (Test-Path -LiteralPath (Join-Path $edgeOutside 'precious.txt')) -and (Test-Path -LiteralPath (Join-Path $innerComponentRoot 'bin/a.dll'))) 'a link inside a component refuses the removal and deletes nothing'
+    }
 
     # ---- components -List shows runtime kinds ----
     $listRoot = New-TestRoot
@@ -1156,6 +1498,11 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($null -ne $removeMessage -and $removeMessage -like '*not in the signed components list*') 'components -Remove of an unlisted id is refused'
     $null = & $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -Remove 'cli-engine-1' 6>&1
     Check (-not (Test-Path -LiteralPath (Join-Path $cliRoot 'components/engine/cli-engine-1/v1'))) 'components -Remove removes the component'
+    $null = Install-Fixture -Fixture $cliFixture -InstallRoot $cliRoot -Counter $cliCounter -AcceptLicense -Unattended
+    $installedJson = (@(& $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -Install 'cli-engine-1' -AcceptLicense -AsJson 6>&1 | ForEach-Object { [string] $_ }) -join "`n") | ConvertFrom-Json
+    Check ($installedJson.id -ceq 'cli-engine-1' -and $installedJson.installed -eq $true -and @($installedJson.installedComponents).Count -eq 0 -and $installedJson.path -like '*cli-engine-1*') 'components -Install -AsJson reports installedComponents (empty when the chain was already installed)'
+    $installedText = @(& $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -Install 'cli-engine-1' -AcceptLicense 6>&1 | ForEach-Object { [string] $_ })
+    Check (@($installedText | Where-Object { $_ -like "*'cli-engine-1' is already installed and verified*" }).Count -eq 1) 'components -Install on an installed chain says so instead of claiming an install'
 
     # recipes: experimental recipes only when the switch is on, marked with their label.
     $recipeDocument = [ordered] @{ schema = 'bitworks.fastllm-recipes/v2'; recipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'e1' 'community-experimental')) }
@@ -1202,6 +1549,14 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $result = Invoke-CliRefusal $case.args
         Check ($result.exit -ne 0 -and $result.text.Contains($case.text)) ("fast-llm.ps1 " + ($case.args[0..1] -join ' ') + ' is refused: ' + $case.text)
     }
+    # components -Install and -Remove take the operation lock.
+    $lockRoot = New-TestRoot
+    $heldLock = Enter-FastLlmOperation -InstallRoot $lockRoot
+    try { $lockResult = Invoke-CliRefusal @('components', '-Remove', 'llama.cpp-b10698-vulkan', '-InstallRoot', $lockRoot) }
+    finally { $heldLock.Dispose() }
+    Check ($lockResult.exit -ne 0 -and $lockResult.text.Contains('Another FastLLM install/start operation is active')) 'components -Remove is refused while another operation holds the lock'
+    $unlockedResult = Invoke-CliRefusal @('components', '-Remove', 'llama.cpp-b10698-vulkan', '-InstallRoot', $lockRoot)
+    Check ($unlockedResult.exit -eq 0) 'the same command runs once the lock is free (positive control)'
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
