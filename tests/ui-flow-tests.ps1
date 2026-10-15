@@ -376,6 +376,10 @@ Check ((Format-FastLlmUiUpdateConfirm -Version '2026.10.16.1') -ceq 'FastLLM wil
 Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'installed'; step = 'integrity'; reason = '' }) -Version '2026.10.16.1') -ceq 'FastLLM was updated to 2026.10.16.1. Close and reopen FastLLM.') 'the installed result text is exact'
 Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'refused'; step = 'signature'; reason = 'not-valid' }) -Version '2026.10.16.1') -ceq 'Update not installed: not-valid. Nothing was changed.') 'a refused update says nothing was changed'
 Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'failed'; step = 'stop'; reason = 'busy-loading' }) -Version '2026.10.16.1') -ceq 'Update not installed: busy-loading. Nothing was changed.') 'a failed update says nothing was changed'
+$integrityOutcome = [pscustomobject]@{ status = 'failed'; step = 'integrity'; reason = 'tree' }
+Check ((Format-FastLlmUiUpdateResult -Result $integrityOutcome -Version '2026.10.16.1') -ceq "FastLLM 2026.10.16.1 was installed, but its files don't match the signed catalog. Reinstall FastLLM from the release page.") 'an integrity failure after the installer says it was installed and to reinstall'
+Check ((Test-FastLlmUiUpdateIntegrityFailure -Result $integrityOutcome) -and -not (Test-FastLlmUiUpdateIntegrityFailure -Result ([pscustomobject]@{ status = 'failed'; step = 'install'; reason = 'exit-1' })) -and -not (Test-FastLlmUiUpdateIntegrityFailure -Result ([pscustomobject]@{ status = 'refused'; step = 'integrity'; reason = 'x' }))) 'only a failed integrity step selects the reinstall text'
+Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'failed'; step = 'install'; reason = 'installer-exit-1' }) -Version '2026.10.16.1') -ceq 'Update not installed: installer-exit-1. Nothing was changed.') 'every other failure keeps the nothing-changed text'
 
 $integrityRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-int-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $integrityRoot | Out-Null

@@ -253,6 +253,7 @@ try {
             $updateResult = Invoke-FastLlmVerifiedUpdate -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Latest $updateLatest -Silent:$Unattended
             if ($AsJson) { $updateResult | ConvertTo-Json -Depth 4 }
             elseif ([string]$updateResult.status -ceq 'installed') { Write-Host ('FastLLM {0} is installed.' -f $updateLatest.version) }
+            elseif ([string]$updateResult.status -ceq 'failed' -and [string]$updateResult.step -ceq 'integrity') { Write-Host ("FastLLM {0} was installed, but its files don't match the signed catalog ({1}). Reinstall FastLLM from https://github.com/bitworks-io/amd-inference/releases" -f $updateLatest.version, $updateResult.reason) }
             else { Write-Host ('Update {0} at {1}: {2}' -f $updateResult.status, $updateResult.step, $updateResult.reason) }
             if ([string]$updateResult.status -ceq 'refused') { $updateExit = 3 }
             elseif ([string]$updateResult.status -cne 'installed') { $updateExit = 1 }
