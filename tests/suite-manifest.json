@@ -9,7 +9,7 @@
     {
       "suite": "arithmetic-diagnostic-tests",
       "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "reason": "first hosted run 2026-10-15: 'strict imported-module integration failed'; cause not yet diagnosed; runs in the bench native gate."
     },
     {
       "suite": "backend-parity-diagnostic-tests",
@@ -378,8 +378,8 @@
     },
     {
       "suite": "vulkan-memory-policy-tests",
-      "class": "ci",
-      "reason": "Mock-only; runs on the hosted runner once its closures copy script-level fixtures locally (2026-10-15)."
+      "class": "bench-native",
+      "reason": "its doctor and live-start cases need a standard user (doctor refuses elevation); the closure-scope fix (fb61803) made its mock canary cases runner-safe; passes natively (366 checks, 2026-10-15)."
     },
     {
       "suite": "vulkan-vidmem-benchmark-tests",

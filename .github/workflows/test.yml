@@ -170,19 +170,19 @@ jobs:
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
-      # This mock suite runs in the standard-user bench native gate instead of here:
+      # These mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
       #   runner creates belong to Administrators.
+      # - tests/vulkan-memory-policy-tests.ps1: its doctor and live-start cases need a standard user, because doctor
+      #   refuses elevation.
       - name: UI background tests in Windows PowerShell 5.1 (mock only)
         shell: powershell
         run: |
           .\tests\ui-background-tests.ps1
-          .\tests\vulkan-memory-policy-tests.ps1
       - name: UI background tests in PowerShell 7 (mock only)
         shell: pwsh
         run: |
           .\tests\ui-background-tests.ps1
-          .\tests\vulkan-memory-policy-tests.ps1
 
   release-scripts:
     runs-on: windows-latest
