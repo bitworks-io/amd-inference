@@ -130,6 +130,7 @@ try {
     $options=@{Hardware=$hardware;CatalogPath=$catalog;InstallRoot=$recoveryRoot;Profile='balanced';FailedModelId='qwen3.8-27b-ud-q4-k-m'}
     $recovered=Get-FastLlmRecoveryPlan @options
     Check ($recovered.model.id -eq $cached.model.id) 'recovery chooses only the previous cached consented artifact'
+    Check ($recovered.recipe.origin -ceq 'estimated' -and $recovered.recipe.label -ceq 'Estimated for your card' -and $recovered.recovered) 'a recovered plan is labelled estimated, never Chosen by you'
     Check (-not (Test-FastLlmFileHash -Path $recovered.modelPath -Sha256 $recovered.model.sha256)) 'recovery eligibility is not an integrity bypass; startup must still hash'
     Check ($null -eq (Get-FastLlmRecoveryPlan @options -RequestedModelId 'qwen3.8-27b-ud-q4-k-m')) 'explicit selection never falls back'
     $options.FailedModelId=$cached.model.id
