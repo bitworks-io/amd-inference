@@ -3,18 +3,18 @@
   "suites": [
     {
       "suite": "adlx-identity-vram-tests",
-      "class": "ci",
-      "reason": "Mock-only parameter, digest and parse tests for the ADLX identity wrapper; PowerShell 7 only (#requires 7.0)."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "arithmetic-diagnostic-tests",
-      "class": "ci",
-      "reason": "Mock-only diagnostic over a fake supervised run state; no engine, model or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "backend-parity-diagnostic-tests",
-      "class": "ci",
-      "reason": "Mock-only parity comparison over fixtures and static source checks; no engine or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "background-host-tests",
@@ -48,18 +48,18 @@
     },
     {
       "suite": "context-ladder-tests",
-      "class": "ci",
-      "reason": "Mock-only context-ladder tool against an in-process loopback mock server; no engine, model or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "cpu-reference-lab-tests",
-      "class": "ci",
-      "reason": "Mock-only CPU-reference lab: argument construction, preflight and static checks; no engine or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "device-binding-tests",
-      "class": "ci",
-      "reason": "Mock-only device-binding record/enforce tests over synthetic fixtures and the native HTTP mock."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "download-progress-tests",
@@ -108,8 +108,8 @@
     },
     {
       "suite": "gpu-telemetry-tests",
-      "class": "ci",
-      "reason": "Parses the PDH telemetry source and static checks; no GPU counters read."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "hip-benchmark-tests",
@@ -148,8 +148,8 @@
     },
     {
       "suite": "json-format-diagnostic-tests",
-      "class": "ci",
-      "reason": "Mock-only diagnostic over a fake supervised run state; no engine, model or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "lab-access-tests",
@@ -223,8 +223,8 @@
     },
     {
       "suite": "pci-link-tests",
-      "class": "ci",
-      "reason": "Mock-only PCI link decoding via an IPciLinkSource mock; PowerShell 7 only (#requires 7.0)."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "prerequisite-diagnostics-tests",
@@ -233,8 +233,8 @@
     },
     {
       "suite": "process-host-device-list-tests",
-      "class": "ci",
-      "reason": "Disposable PowerShell children print fixture server lines; no engine, model or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "recipes-selection-tests",
@@ -253,8 +253,8 @@
     },
     {
       "suite": "sampler-diagnostic-tests",
-      "class": "ci",
-      "reason": "Mock-only diagnostic over a fake supervised run state; no engine, model or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "selected-device-identity-tests",
@@ -283,8 +283,8 @@
     },
     {
       "suite": "state-write-tests",
-      "class": "ci",
-      "reason": "Atomic state-write behaviour with disposable holder processes; Windows-only, no engine or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "task-quality-benchmark-tests",
@@ -358,8 +358,8 @@
     },
     {
       "suite": "vulkan-driver-modules-tests",
-      "class": "ci",
-      "reason": "Vulkan module process-identity assertions over fixtures; no engine started."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "vulkan-fit-benchmark-tests",
@@ -373,8 +373,8 @@
     },
     {
       "suite": "vulkan-luid-join-tests",
-      "class": "ci",
-      "reason": "LUID join logic over fixture observation rows; no Vulkan, DXGI or SetupAPI call."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "vulkan-memory-policy-tests",
@@ -383,18 +383,18 @@
     },
     {
       "suite": "vulkan-vidmem-benchmark-tests",
-      "class": "ci",
-      "reason": "Vidmem benchmark producer/parser pins over fixtures; no engine or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "vulkan-vidmem-trial-tests",
-      "class": "ci",
-      "reason": "Vidmem benchmark producer/parser pins over fixtures; no engine or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "windows-http-transport-tests",
-      "class": "ci",
-      "reason": "ProcessHost HTTP transport against a loopback mock-server child; no engine or GPU."
+      "class": "bench-native",
+      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
     },
     {
       "suite": "windows-vulkan-pnp-bridge-tests",
