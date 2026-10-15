@@ -219,6 +219,8 @@ Check ($decision.canProceed -and @($decision.advisoryWarnings).Count -eq 1) 'Amb
 
 $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
 $ui=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
+# Windows PowerShell 5.1 ConvertFrom-Json emits a JSON array as one object: the recipe list from the CLI must be unrolled into one row per recipe.
+Check ($ui.Contains('ShowRecipeChooser @((ConvertFrom-Json $text) | ForEach-Object { $_ })') -and -not $ui.Contains('ShowRecipeChooser @(ConvertFrom-Json $text)')) 'the recipe list JSON is unrolled into one row per recipe (Windows PowerShell 5.1 ConvertFrom-Json)'
 Check ($cli.Contains('Assert-FastLlmUiExpectedProvenance -Model $plan.model') -and
     $cli.IndexOf('Assert-FastLlmUiExpectedProvenance -Model $plan.model') -lt $cli.IndexOf('Install-FastLlmModel -Plan $plan')) 'CLI checks freshly resolved exact provenance before acquisition.'
 Check ($cli.IndexOf('Assert-FastLlmUiExpectedProvenance -Model $reviewModel[0]') -lt
@@ -468,7 +470,7 @@ $chooserRecipes = @(Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.j
 function New-ChooserDetailRows([object[]]$Inventory = @()) {
     # What `recipes -Detail -AsJson` prints, through the same JSON round trip the window reads.
     $built = @(Get-FastLlmRecipeChooserRows -Recipes $chooserRecipes -Components $chooserComponents -Inventory $Inventory -Catalog $chooserCatalog)
-    return @((ConvertTo-Json -InputObject $built -Depth 8) | ConvertFrom-Json)
+    return @(((ConvertTo-Json -InputObject $built -Depth 8) | ConvertFrom-Json) | ForEach-Object { $_ })
 }
 $detailRows = @(New-ChooserDetailRows)
 $experimentalLabel = 'Experimental Bitworks setup, not yet measured by Bitworks on this card'
@@ -484,7 +486,7 @@ Check ($null -ne $hipRow -and $hipRow.label -ceq $experimentalLabel -and $hipRow
 Check ($hipRow.engineText -like 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; not installed); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; not installed)') 'a HIP row names the engine, its required runtime and their source hosts'
 $vulkanRow = @($offRows | Where-Object { $_.origin -ceq 'bitworks' })[0]
 Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card' -and -not $vulkanRow.consentRequired -and $vulkanRow.engineText -like 'llama.cpp b10698 (Vulkan) (from github.com;*') 'a Bitworks row shows its origin label and needs no consent'
-$communityDetail = @(ConvertTo-Json -InputObject @($detailRows[0]) -Depth 8 | ConvertFrom-Json)[0]
+$communityDetail = @((ConvertTo-Json -InputObject @($detailRows[0]) -Depth 8 | ConvertFrom-Json) | ForEach-Object { $_ })[0]
 $communityDetail.origin = 'community-experimental'
 Check (@(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'off').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'on').Count -eq 1) 'a community-experimental row is hidden with the switch off and shown with it on'
 $cardRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant 'rx-7900-xt')
@@ -505,11 +507,11 @@ foreach ($consentRow in $consentRows) {
     }
     Check ($consentRow.acceptText -like 'I accept*' -and @($consentRow.PSObject.Properties.Name | Where-Object { $_ -like '*text*' -and $_ -notin @('sourceText', 'acceptText') }).Count -eq 0) "the consent row for $($consentRow.id) carries links and an accept box, never license text"
 }
-$installedRuntimeChain = @(ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json)
+$installedRuntimeChain = @((ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json) | ForEach-Object { $_ })
 $installedRuntimeChain[0].installed = $true
 $partRows = @(Get-FastLlmUiConsentRows -Chain $installedRuntimeChain)
 Check ($partRows.Count -eq 1 -and $partRows[0].id -ceq 'llama.cpp-hip-b11658') 'a component that is already installed gets no consent row'
-$unsafeChain = @(ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json)
+$unsafeChain = @((ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json) | ForEach-Object { $_ })
 $unsafeChain[1].licenseLinks[0].url = 'javascript:alert(1)'
 $unsafeChain[1].licenseLinks[1].url = 'http://example.com/license'
 Check ($null -eq (@(Get-FastLlmUiConsentRows -Chain $unsafeChain)[1].links[0].url) -and $null -eq (@(Get-FastLlmUiConsentRows -Chain $unsafeChain)[1].links[1].url)) 'a license link that is not https is never offered to the browser'

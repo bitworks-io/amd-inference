@@ -1833,7 +1833,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $detailRoot = New-TestRoot
     function Get-DetailRows([string] $Root) {
         $text = (@(& $recipesFunction -InstallRoot $Root -recipesPath $shippedRecipesPath -componentsFilePath $shippedComponentsPath -catalogPath $shippedCatalogPath -AsJson -Detail 6>&1 | ForEach-Object { [string] $_ }) -join "`n")
-        return @($text | ConvertFrom-Json)
+        # Windows PowerShell 5.1 ConvertFrom-Json emits a JSON array as ONE object; unroll it so callers see one row per recipe.
+        return @(($text | ConvertFrom-Json) | ForEach-Object { $_ })
     }
     $detailOff = Get-DetailRows $detailRoot
     Check ($detailOff.Count -ge 1 -and @($detailOff | Where-Object { $_.origin -like '*experimental' }).Count -eq 0) 'recipes -Detail -AsJson hides experimental recipes when the switch is off'

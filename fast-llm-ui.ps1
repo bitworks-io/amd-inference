@@ -1147,7 +1147,7 @@ $timer.Add_Tick({
             }
             'engine'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'engine-complete';LaunchUiPhase}
             'preview'{ContinueUiAfterPreview (ConvertFrom-Json $text)}
-            'recipe list'{SetBusy $false;$statusLabel.Text='Choose another setup.';ContinueWithChosenRecipe (ShowRecipeChooser @(ConvertFrom-Json $text))}
+            'recipe list'{SetBusy $false;$statusLabel.Text='Choose another setup.';ContinueWithChosenRecipe (ShowRecipeChooser @((ConvertFrom-Json $text) | ForEach-Object { $_ }))}
             'component install'{$chosen=$script:pendingRecipeRow;$script:pendingRecipeRow=$null;$output.Text=$text;BeginChosenRecipe $chosen}
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
             'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
