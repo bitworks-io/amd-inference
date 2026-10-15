@@ -30,6 +30,7 @@ PUBLIC_DOCS = (
     "docs/PUBLIC-README.md",
     "docs/PUBLIC-LAB-GUIDE.md",
     "docs/BENCHMARK-METHODOLOGY.md",
+    "docs/RESIZABLE-BAR.md",
 )
 SOURCE_EXTENSIONS = frozenset({
     ".c", ".cmd", ".cs", ".json", ".md", ".ps1", ".psm1",

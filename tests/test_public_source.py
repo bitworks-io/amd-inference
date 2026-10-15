@@ -80,6 +80,7 @@ class PublicSourceTests(unittest.TestCase):
             "tests/helpers/mock-api.ps1", "tools/benchmark.ps1",
             "tools/stage-public-source.py",
         })
+        self.assertIn("docs/RESIZABLE-BAR.md", paths)   # packaged by build-release, so the SBOM source manifest must list it
         self.assertEqual((output / "README.md").read_bytes(),
                          (self.source / "docs/PUBLIC-README.md").read_bytes())
         self.assertNotEqual((output / "README.md").read_bytes(), b"internal README\n")
