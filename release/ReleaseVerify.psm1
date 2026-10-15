@@ -1,41 +1,29 @@
 Set-StrictMode -Version 2
-$script:DefaultRoot = 'F40042E2E5F7E8EF8189FED15519AECE42C3BFA2'
-$script:DefaultEkus = @('1.3.6.1.4.1.311.97.1.0', '1.3.6.1.4.1.311.97.990689314.800187930.133508941.234438932')
-$script:TolerableChainStatus = @('NoError', 'NotTimeValid', 'NotTimeNested')
+. (Join-Path $PSScriptRoot '../src/FastLlm.Trust.ps1')
 
 function Test-FastLlmReleaseSignature {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
-        [string]$ExpectedOrganization = 'Bitworks LLC',
-        [string]$ExpectedRootThumbprint = $script:DefaultRoot,
-        [string[]]$RequiredEkus = $script:DefaultEkus,
+        [string]$ExpectedOrganization = $script:FastLlmTrustOrganization,
+        [string]$ExpectedRootThumbprint = $script:FastLlmTrustRootThumbprint,
+        [string[]]$RequiredEkus = $script:FastLlmTrustEkus,
         [switch]$AllowUntrustedRootForTests
     )
-    $sig = Get-AuthenticodeSignature -LiteralPath $Path
-    $statusOk = $sig.Status -eq 'Valid' -or ($AllowUntrustedRootForTests -and $sig.Status -eq 'UnknownError' -and $sig.SignerCertificate)
-    if (-not $statusOk) { throw "signature not valid for ${Path}: $($sig.Status)" }
-    $leaf = $sig.SignerCertificate
-    if ($leaf.Subject -notmatch ('(^|, )O=' + [regex]::Escape($ExpectedOrganization) + '(,|$)')) { throw "unexpected signer for ${Path}: $($leaf.Subject)" }
-    if (-not $sig.TimeStamperCertificate) { throw "no timestamp on ${Path}" }
-    $ekus = @($leaf.Extensions | Where-Object { $_ -is [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] } |
-        ForEach-Object { $_.EnhancedKeyUsages } | ForEach-Object { $_.Value })
-    foreach ($eku in $RequiredEkus) { if ($ekus -notcontains $eku) { throw "missing EKU $eku on ${Path}" } }
-    $chain = New-Object Security.Cryptography.X509Certificates.X509Chain
-    try {
-        $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-        if ($AllowUntrustedRootForTests) {
-            $chain.ChainPolicy.VerificationFlags = [Security.Cryptography.X509Certificates.X509VerificationFlags]::AllowUnknownCertificateAuthority
+    $pinned = Test-FastLlmPinnedSignature -Path $Path -ExpectedOrganization $ExpectedOrganization -ExpectedRootThumbprint $ExpectedRootThumbprint `
+        -RequiredEkus $RequiredEkus -AllowUntrustedRootForTests:$AllowUntrustedRootForTests
+    if (-not $pinned.ok) {
+        switch ($pinned.reason) {
+            'not-valid' { throw "signature not valid for ${Path}: $($pinned.detail)" }
+            'wrong-publisher' { throw "unexpected signer for ${Path}: $($pinned.detail)" }
+            'wrong-root' { throw "unexpected root for ${Path}: $($pinned.detail)" }
+            'missing-eku' { throw "missing EKU $($pinned.detail) on ${Path}" }
+            'bad-chain-status' { throw "chain status not allowed for ${Path}: $($pinned.detail)" }
+            default { throw "${Path}: $($pinned.reason)" }
         }
-        [void]$chain.Build($leaf)
-        $bad = @($chain.ChainStatus | Where-Object {
-                $status = [string]$_.Status
-                ($script:TolerableChainStatus -notcontains $status) -and -not ($AllowUntrustedRootForTests -and $status -eq 'UntrustedRoot') })
-        if ($bad.Count) { throw "chain status not allowed for ${Path}: $(($bad | ForEach-Object { [string]$_.Status }) -join ',')" }
-        $root = $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate
-        if ($root.Thumbprint -ne $ExpectedRootThumbprint) { throw "unexpected root for ${Path}: $($root.Thumbprint)" }
-    } finally { $chain.Dispose() }
-    return $sig
+    }
+    if (-not $pinned.signature.TimeStamperCertificate) { throw "no timestamp on ${Path}" }
+    return $pinned.signature
 }
 
 function Read-FastLlmSha256Sums {
@@ -131,18 +119,10 @@ function Test-FastLlmPackageScriptsSigned {
     return $scripts.Count
 }
 
-function ConvertTo-FastLlmVersionInfoText {
-    [CmdletBinding()]
-    param([string]$Text)
-    if ($null -eq $Text) { return '' }
-    # Inno Setup patches the setup loader's version resource in place, so its strings come back padded with trailing spaces and NULs.
-    return $Text.TrimEnd([char]' ', [char]0)
-}
-
 function Get-FastLlmInstallerProductVersion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
-    return ConvertTo-FastLlmVersionInfoText ((Get-Item -LiteralPath $Path).VersionInfo.ProductVersion)
+    return Get-FastLlmFileProductVersion -Path $Path
 }
 
 Export-ModuleMember -Function Test-FastLlmReleaseSignature, Read-FastLlmSha256Sums, Resolve-FastLlmReleaseTag, Test-FastLlmCatalogTree, ConvertTo-FastLlmVersionInfoText, Get-FastLlmInstallerProductVersion, Get-FastLlmTreeHashList, Test-FastLlmTreeMatchesPackage, Test-FastLlmFileHashEqual, Test-FastLlmPackageScriptsSigned
