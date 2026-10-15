@@ -1,0 +1,405 @@
+{
+  "schema": "bitworks.fastllm-suite-manifest/v1",
+  "suites": [
+    {
+      "suite": "adlx-identity-vram-tests",
+      "class": "ci",
+      "reason": "Mock-only parameter, digest and parse tests for the ADLX identity wrapper; PowerShell 7 only (#requires 7.0)."
+    },
+    {
+      "suite": "arithmetic-diagnostic-tests",
+      "class": "ci",
+      "reason": "Mock-only diagnostic over a fake supervised run state; no engine, model or GPU."
+    },
+    {
+      "suite": "backend-parity-diagnostic-tests",
+      "class": "ci",
+      "reason": "Mock-only parity comparison over fixtures and static source checks; no engine or GPU."
+    },
+    {
+      "suite": "background-host-tests",
+      "class": "bench-native",
+      "reason": "The background host refuses state owned by Administrators, and files an elevated runner creates belong to Administrators."
+    },
+    {
+      "suite": "benchmark-integration-tests",
+      "class": "bench-native",
+      "reason": "Throws when run elevated (production guard needs a standard Windows user); mock HTTP benchmark integration."
+    },
+    {
+      "suite": "benchmark-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "benchmark-vnext-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "card-identity-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "concurrency-benchmark-tests",
+      "class": "ci",
+      "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."
+    },
+    {
+      "suite": "context-ladder-tests",
+      "class": "ci",
+      "reason": "Mock-only context-ladder tool against an in-process loopback mock server; no engine, model or GPU."
+    },
+    {
+      "suite": "cpu-reference-lab-tests",
+      "class": "ci",
+      "reason": "Mock-only CPU-reference lab: argument construction, preflight and static checks; no engine or GPU."
+    },
+    {
+      "suite": "device-binding-tests",
+      "class": "ci",
+      "reason": "Mock-only device-binding record/enforce tests over synthetic fixtures and the native HTTP mock."
+    },
+    {
+      "suite": "download-progress-tests",
+      "class": "ci",
+      "reason": "Download progress reporting over a loopback mock; already wired in test.yml."
+    },
+    {
+      "suite": "driver-guidance-tests",
+      "class": "ci",
+      "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "driver-guidance-view-tests",
+      "class": "ci",
+      "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "first-model-cancel-resume-native-tests",
+      "class": "bench-physical",
+      "reason": "Opt-in physical cancel/resume check that downloads the approved Qwen3.5-4B artifact into a new root; refuses elevation."
+    },
+    {
+      "suite": "first-model-native-tests",
+      "class": "bench-physical",
+      "reason": "Opt-in physical lab acquisition of the first model; refuses elevation."
+    },
+    {
+      "suite": "first-run-native-tests",
+      "class": "bench-physical",
+      "reason": "Opt-in physical first-run check that downloads the pinned Vulkan engine into a retained fresh root; refuses elevation."
+    },
+    {
+      "suite": "ggml-vulkan-capabilities-tests",
+      "class": "ci",
+      "reason": "Vulkan/ggml identity and capability parsing over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "ggml-vulkan-identity-tests",
+      "class": "ci",
+      "reason": "Vulkan/ggml identity and capability parsing over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "gpu-identity-tests",
+      "class": "bench-native",
+      "reason": "Read-only standard-user probe of the host's real display-class PnP records."
+    },
+    {
+      "suite": "gpu-telemetry-tests",
+      "class": "ci",
+      "reason": "Parses the PDH telemetry source and static checks; no GPU counters read."
+    },
+    {
+      "suite": "hip-benchmark-tests",
+      "class": "ci",
+      "reason": "HIP candidate/trial/benchmark/smoke/soak logic against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "hip-candidate-probe-tests",
+      "class": "ci",
+      "reason": "HIP candidate/trial/benchmark/smoke/soak logic against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "hip-model-trial-tests",
+      "class": "ci",
+      "reason": "HIP candidate/trial/benchmark/smoke/soak logic against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "hip-semantic-smoke-tests",
+      "class": "ci",
+      "reason": "HIP candidate/trial/benchmark/smoke/soak logic against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "hip-soak-tests",
+      "class": "ci",
+      "reason": "HIP candidate/trial/benchmark/smoke/soak logic against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "installer-tests",
+      "class": "ci",
+      "reason": "Builds and installs the unsigned installer per-user; skips unless CI=true, has its own installer job in test.yml."
+    },
+    {
+      "suite": "inventory-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "json-format-diagnostic-tests",
+      "class": "ci",
+      "reason": "Mock-only diagnostic over a fake supervised run state; no engine, model or GPU."
+    },
+    {
+      "suite": "lab-access-tests",
+      "class": "ci",
+      "reason": "Lab-access/launcher/app helpers with no setup execution; already wired in test.yml."
+    },
+    {
+      "suite": "lab-app-lifecycle-tests",
+      "class": "ci",
+      "reason": "Lab-access/launcher/app helpers with no setup execution; already wired in test.yml."
+    },
+    {
+      "suite": "lab-app-native-tests",
+      "class": "bench-native",
+      "reason": "Standard-user, 64-bit, STA Windows PowerShell 5.1 only; needs -AllowNativeLabInstallTest with a reviewed local ZIP."
+    },
+    {
+      "suite": "lab-app-open-native-tests",
+      "class": "bench-native",
+      "reason": "Standard-user disposable canary for the guarded Open; needs -AllowNativeLabOpenCanary; never launches the real UI or engine."
+    },
+    {
+      "suite": "lab-app-tests",
+      "class": "ci",
+      "reason": "Lab-access/launcher/app helpers with no setup execution; already wired in test.yml."
+    },
+    {
+      "suite": "lab-app-ui-tests",
+      "class": "ci",
+      "reason": "Lab-access/launcher/app helpers with no setup execution; already wired in test.yml."
+    },
+    {
+      "suite": "lab-launcher-tests",
+      "class": "ci",
+      "reason": "Lab-access/launcher/app helpers with no setup execution; already wired in test.yml."
+    },
+    {
+      "suite": "lab-package-download-tests",
+      "class": "ci",
+      "reason": "Lab-access/launcher/app helpers with no setup execution; already wired in test.yml."
+    },
+    {
+      "suite": "launcher-tests",
+      "class": "ci",
+      "reason": "Executes FastLLM.cmd under each script policy; own launcher job in test.yml."
+    },
+    {
+      "suite": "native-host-inventory-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "native-host-parent-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "offload-benchmark-tests",
+      "class": "ci",
+      "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."
+    },
+    {
+      "suite": "offload-lab-tests",
+      "class": "ci",
+      "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."
+    },
+    {
+      "suite": "pci-identity-join-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "pci-link-tests",
+      "class": "ci",
+      "reason": "Mock-only PCI link decoding via an IPciLinkSource mock; PowerShell 7 only (#requires 7.0)."
+    },
+    {
+      "suite": "prerequisite-diagnostics-tests",
+      "class": "ci",
+      "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "process-host-device-list-tests",
+      "class": "ci",
+      "reason": "Disposable PowerShell children print fixture server lines; no engine, model or GPU."
+    },
+    {
+      "suite": "recipes-selection-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "run-tests",
+      "class": "ci",
+      "reason": "Planner/parser tests; mock-only, already wired in test.yml."
+    },
+    {
+      "suite": "runtime-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "sampler-diagnostic-tests",
+      "class": "ci",
+      "reason": "Mock-only diagnostic over a fake supervised run state; no engine, model or GPU."
+    },
+    {
+      "suite": "selected-device-identity-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "selftest-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "semantic-smoke-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "smbios-memory-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "start-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "state-write-tests",
+      "class": "ci",
+      "reason": "Atomic state-write behaviour with disposable holder processes; Windows-only, no engine or GPU."
+    },
+    {
+      "suite": "task-quality-benchmark-tests",
+      "class": "ci",
+      "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."
+    },
+    {
+      "suite": "task-wave-tests",
+      "class": "ci",
+      "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."
+    },
+    {
+      "suite": "task-workload-tests",
+      "class": "ci",
+      "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."
+    },
+    {
+      "suite": "trust-tests",
+      "class": "ci",
+      "reason": "Release trust and update logic (Plan C) against fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "ui-background-tests",
+      "class": "ci",
+      "reason": "UI background flow against mocks; already wired in test.yml (the background host itself is bench-native)."
+    },
+    {
+      "suite": "ui-cli-native-tests",
+      "class": "bench-native",
+      "reason": "Standard-user native CLI consent boundary; Windows PowerShell 5.1 only; refuses elevation; no acquisition or GPU."
+    },
+    {
+      "suite": "ui-flow-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "ui-prerequisite-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "ui-setup-native-tests",
+      "class": "bench-physical",
+      "reason": "Setup-to-flow integration against an existing engine-only root on a real Windows host; standard user, 5.1 only."
+    },
+    {
+      "suite": "update-tests",
+      "class": "ci",
+      "reason": "Release trust and update logic (Plan C) against fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "vc-redist-install-tests",
+      "class": "ci",
+      "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "vc-redist-tests",
+      "class": "ci",
+      "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "vulkan-capabilities-tests",
+      "class": "ci",
+      "reason": "Vulkan/ggml identity and capability parsing over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "vulkan-coopmat-screen-tests",
+      "class": "ci",
+      "reason": "Vulkan/ggml identity and capability parsing over fixtures; already wired in test.yml."
+    },
+    {
+      "suite": "vulkan-driver-modules-tests",
+      "class": "ci",
+      "reason": "Vulkan module process-identity assertions over fixtures; no engine started."
+    },
+    {
+      "suite": "vulkan-fit-benchmark-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "vulkan-fit-trial-tests",
+      "class": "ci",
+      "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
+    },
+    {
+      "suite": "vulkan-luid-join-tests",
+      "class": "ci",
+      "reason": "LUID join logic over fixture observation rows; no Vulkan, DXGI or SetupAPI call."
+    },
+    {
+      "suite": "vulkan-memory-policy-tests",
+      "class": "bench-native",
+      "reason": "No AMD adapter on the runner, so the throughput-canary case diverges; it passes natively on the benches."
+    },
+    {
+      "suite": "vulkan-vidmem-benchmark-tests",
+      "class": "ci",
+      "reason": "Vidmem benchmark producer/parser pins over fixtures; no engine or GPU."
+    },
+    {
+      "suite": "vulkan-vidmem-trial-tests",
+      "class": "ci",
+      "reason": "Vidmem benchmark producer/parser pins over fixtures; no engine or GPU."
+    },
+    {
+      "suite": "windows-http-transport-tests",
+      "class": "ci",
+      "reason": "ProcessHost HTTP transport against a loopback mock-server child; no engine or GPU."
+    },
+    {
+      "suite": "windows-vulkan-pnp-bridge-tests",
+      "class": "ci",
+      "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
+    }
+  ]
+}

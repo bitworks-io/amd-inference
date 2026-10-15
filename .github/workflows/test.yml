@@ -151,6 +151,21 @@ jobs:
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
+          .\tests\arithmetic-diagnostic-tests.ps1
+          .\tests\backend-parity-diagnostic-tests.ps1
+          .\tests\context-ladder-tests.ps1
+          .\tests\cpu-reference-lab-tests.ps1
+          .\tests\device-binding-tests.ps1
+          .\tests\gpu-telemetry-tests.ps1
+          .\tests\json-format-diagnostic-tests.ps1
+          .\tests\process-host-device-list-tests.ps1
+          .\tests\sampler-diagnostic-tests.ps1
+          .\tests\state-write-tests.ps1
+          .\tests\vulkan-driver-modules-tests.ps1
+          .\tests\vulkan-luid-join-tests.ps1
+          .\tests\vulkan-vidmem-benchmark-tests.ps1
+          .\tests\vulkan-vidmem-trial-tests.ps1
+          .\tests\windows-http-transport-tests.ps1
       - name: Behavioral lifecycle and benchmark tests in PowerShell 7
         shell: pwsh
         run: |
@@ -170,6 +185,23 @@ jobs:
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
+          .\tests\adlx-identity-vram-tests.ps1
+          .\tests\arithmetic-diagnostic-tests.ps1
+          .\tests\backend-parity-diagnostic-tests.ps1
+          .\tests\context-ladder-tests.ps1
+          .\tests\cpu-reference-lab-tests.ps1
+          .\tests\device-binding-tests.ps1
+          .\tests\gpu-telemetry-tests.ps1
+          .\tests\json-format-diagnostic-tests.ps1
+          .\tests\pci-link-tests.ps1
+          .\tests\process-host-device-list-tests.ps1
+          .\tests\sampler-diagnostic-tests.ps1
+          .\tests\state-write-tests.ps1
+          .\tests\vulkan-driver-modules-tests.ps1
+          .\tests\vulkan-luid-join-tests.ps1
+          .\tests\vulkan-vidmem-benchmark-tests.ps1
+          .\tests\vulkan-vidmem-trial-tests.ps1
+          .\tests\windows-http-transport-tests.ps1
       # Two mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
       #   runner creates belong to Administrators.
