@@ -644,22 +644,22 @@ function Invoke-FastLlmSupervisedServer {
             if ($Plan.model.PSObject.Properties['contextSize']) { $contextForTest = [int] $Plan.model.contextSize }
             $mitigation = 'off'
             if ($state.vulkanMemoryPolicy -and $state.vulkanMemoryPolicy.effective -eq 'on') { $mitigation = 'on' }
-            $selfTest = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation
+            $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation
             $recipeId = $null
             if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) { $recipeId = $Plan.recipe.id }
-            $state.selfTest = $selfTest
+            $state.selfTest = $selfTestResult
             try { Write-FastLlmState -InstallRoot $InstallRoot -FileName 'selftest.json' -State ([ordered]@{ schemaVersion = 1; recipeId = $recipeId; modelId = [string] $Plan.model.id
-                        engineBuild = [string] $Plan.engineVersion; result = $selfTest }) } catch { }
+                        engineBuild = [string] $Plan.engineVersion; result = $selfTestResult }) } catch { }
             try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { }
-            if ($selfTest.status -eq 'pass') { Write-Host "Self-test passed: $($selfTest.generationTokS) tok/s generation, $($selfTest.promptTokS) tok/s prompt." }
-            elseif ($selfTest.status -eq 'skipped') {
-                Write-Host "Self-test skipped: the context size is too small for the performance check ($(@($selfTest.reasons) -join ', ')). The server keeps running."
+            if ($selfTestResult.status -eq 'pass') { Write-Host "Self-test passed: $($selfTestResult.generationTokS) tok/s generation, $($selfTestResult.promptTokS) tok/s prompt." }
+            elseif ($selfTestResult.status -eq 'skipped') {
+                Write-Host "Self-test skipped: the context size is too small for the performance check ($(@($selfTestResult.reasons) -join ', ')). The server keeps running."
             }
-            elseif ($selfTest.status -eq 'below-expected') {
-                Write-Host "Self-test: generation $($selfTest.generationTokS) tok/s is below 70% of the $($selfTest.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
+            elseif ($selfTestResult.status -eq 'below-expected') {
+                Write-Host "Self-test: generation $($selfTestResult.generationTokS) tok/s is below 70% of the $($selfTestResult.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
             }
             else {
-                $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message "Self-test failed ($(@($selfTest.reasons) -join ', ')). The server was stopped; FastLLM tries the next cached setup."
+                $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message "Self-test failed ($(@($selfTestResult.reasons) -join ', ')). The server was stopped; FastLLM tries the next cached setup."
                 $failure.Data['FastLlmReason'] = 'RuntimeCheckFailed'
                 throw $failure
             }
