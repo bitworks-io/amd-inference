@@ -125,6 +125,13 @@ function Invoke-FastLlmUpdateHttp {
     param([string]$Url, [string]$Etag)
     $headers = @{ 'User-Agent' = 'Bitworks-FastLLM'; 'Accept' = 'application/vnd.github+json' }
     if (-not [string]::IsNullOrEmpty($Etag)) { $headers['If-None-Match'] = $Etag }
+    # Windows PowerShell 5.1 may default to protocols api.github.com refuses; enable TLS 1.2 (and 1.3 where defined). Never throws.
+    try {
+        $protocols = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        if ([Enum]::IsDefined([Net.SecurityProtocolType], 'Tls13')) { $protocols = $protocols -bor [Net.SecurityProtocolType]::Tls13 }
+        [Net.ServicePointManager]::SecurityProtocol = $protocols
+    }
+    catch { $null = $_ }
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 10 -Headers $headers
     }

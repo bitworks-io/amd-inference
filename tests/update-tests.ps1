@@ -349,4 +349,10 @@ try {
 }
 finally { if (Test-Path -LiteralPath $nRoot) { Remove-Item -LiteralPath $nRoot -Recurse -Force } }
 
+# The default request seam enables TLS 1.2 before it calls Invoke-WebRequest (Windows PowerShell 5.1 may not by default).
+$httpSource = (Get-Command Invoke-FastLlmUpdateHttp).ScriptBlock.ToString()
+$tlsAt = $httpSource.IndexOf('[Net.SecurityProtocolType]::Tls12', [StringComparison]::Ordinal)
+$webAt = $httpSource.IndexOf('Invoke-WebRequest', [StringComparison]::Ordinal)
+Check ($tlsAt -ge 0 -and $webAt -gt $tlsAt -and $httpSource.Contains('[Net.ServicePointManager]::SecurityProtocol = ') -and $httpSource.Contains("IsDefined([Net.SecurityProtocolType], 'Tls13')")) 'the default request seam enables TLS 1.2 (and 1.3 when defined) before Invoke-WebRequest'
+
 Write-Host 'update-tests: PASS'
