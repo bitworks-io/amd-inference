@@ -165,7 +165,7 @@ class TreeTests(unittest.TestCase):
         self.assertEqual([len(p["fileManifest"]) for p in runtime["sources"]], [16, 252])
         self.assertEqual(runtime["runtimePathDirs"], ["bin"])
         self.assertEqual(engine["requires"], ["amd-rocm-gfx1100-10.0.0"])
-        self.assertEqual(self.errors(), [])
+        self.assertEqual(cc.validate(GOOD, CATALOG), [])
         self.assertEqual(cc.main([]), 0)
 
     def test_valid_tree(self):
@@ -174,15 +174,23 @@ class TreeTests(unittest.TestCase):
 
     def test_nested_paths_are_refused(self):
         for bad in ("bin/../x.dll", "../x.dll", "bin/x:y.dll", "C:/x.dll", "/abs/x.dll", "bin\\x.dll", "bin//x.dll", "bin/./x.dll",
-                    "bin/x.", "bin/x ", "bin/con", "NUL/x.dll", "bin/com1.txt", "bin/.."):
+                    "bin/x.", "bin/x ", "bin/con", "NUL/x.dll", "bin/com1.txt", "bin/..",
+                    "bin/..a", "bin/._a", "bin/__a", "bin/...", "bin/" + "a" * 201, "bin/x.dll\n", "bin/x.\n", "bin/\u212a.dll", "bin/con\n"):
             self.assertRefused([comp("rt", [part(["bin/ok.dll", bad])])], "unsafe path")
-        self.assertEqual(self.errors(comp("rt", [part(["bin/console.dll", "bin/com10.dll"])])), [])
+        self.assertEqual(self.errors(comp("rt", [part(["bin/console.dll", "bin/com10.dll", "bin/" + "a" * 200, "_a/.b/c.d"])])), [])
 
     def test_flat_zip_stays_flat(self):
         self.assertRefused([comp("rt", [part(["sub/x.dll"], fmt="zip", prefix=None)])], "unsafe path")
+        for bad in (".hidden", "_x.dll", "a b.dll", "x.dll\n", "\u212a.dll", "con", "x.", "a" * 201):
+            self.assertRefused([comp("rt", [part([bad], fmt="zip", prefix=None)])], "unsafe path")
+
+    def test_version_is_a_simple_leaf_name(self):
+        for bad in (".x", "_x", "../x", "v1\n", "a b", "\u212a1"):
+            errors = self.errors(dict(comp("rt", [part(["bin/a.dll"])]), version=bad))
+            self.assertTrue(any("version" in e for e in errors), (bad, errors))
 
     def test_extract_prefix(self):
-        for bad in (None, "pre", "../pre/", "/pre/", "c:/pre/", "con/", "pre//"):
+        for bad in (None, "pre", "pre//", "../pre/", "/pre/", "c:/pre/", "con/", "pre//"):
             self.assertRefused([comp("rt", [part(["bin/a.dll"], prefix=bad)])], "extractPrefix")
         self.assertRefused([comp("rt", [part(["a.dll"], fmt="zip", prefix="pre/")])], "only for zip-tree")
 
@@ -223,9 +231,13 @@ class TreeTests(unittest.TestCase):
         empty = copy.deepcopy(links); empty["links"] = []
         self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=empty)], "non-empty list")
 
-    def test_accept_needs_url_or_links(self):
-        none = {"spdx": "p", "consent": "accept"}
-        self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=none)], "accept consent needs")
+    def test_every_consent_needs_url_or_links(self):
+        for consent in ("accept", "show"):
+            none = {"spdx": "p", "consent": consent}
+            self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=none)], "needs license.url or license.links")
+            empty_url = {"spdx": "p", "consent": consent, "url": "",
+                         "links": [{"title": "EULA", "url": "https://example.com/e"}]}
+            self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=empty_url)], "license.url must be an https URL")
 
     def test_runtime_path_dirs(self):
         self.assertRefused([comp("aa", [part(["bin/a.dll"])], kind="engine", path_dirs=["bin"])], "only for runtime")

@@ -205,18 +205,38 @@ try {
             @{ path = 'bin//x.dll'; text = '*not a simple name*' }, @{ path = 'bin/./x.dll'; text = '*not a simple name*' },
             @{ path = 'bin/x.'; text = '*end with a dot or a space*' }, @{ path = 'bin/x '; text = '*not a simple name*' },
             @{ path = 'bin/con'; text = '*reserved Windows device name*' }, @{ path = 'NUL/x.dll'; text = '*reserved Windows device name*' },
-            @{ path = 'bin/com1.txt'; text = '*reserved Windows device name*' })) {
+            @{ path = 'bin/com1.txt'; text = '*reserved Windows device name*' },
+            @{ path = 'bin/..a'; text = '*not a simple name*' }, @{ path = 'bin/._a'; text = '*not a simple name*' },
+            @{ path = 'bin/__a'; text = '*not a simple name*' }, @{ path = 'bin/...'; text = '*not a simple name*' },
+            @{ path = ('bin/' + ('a' * 201)); text = '*not a simple name*' },
+            @{ path = "bin/x.dll`n"; text = '*not a simple name*' }, @{ path = "bin/x.`n"; text = '*not a simple name*' },
+            @{ path = "bin/con`n"; text = '*not a simple name*' },
+            @{ path = ('bin/' + [char] 0x212A + '.dll'); text = '*not a simple name*' })) {
         $badComponent = New-TreeComponent -Id 'rt-bad' -Parts @((New-TreePart -Paths @('bin/ok.dll', $case.path)))
         $msg = Load-TreeDoc @($badComponent)
-        Check ($null -ne $msg -and $msg -like $case.text) "the zip-tree path '$($case.path)' is refused"
+        Check ($null -ne $msg -and $msg -like $case.text) ("the zip-tree path '" + ($case.path -replace "`n", '\n') + "' is refused")
     }
-    Check ($null -eq (Load-TreeDoc @((New-TreeComponent -Id 'rt-near' -Parts @((New-TreePart -Paths @('bin/console.dll', 'bin/com10.dll', '.kpack/a.b')))))) ) 'zip-tree paths that merely look like device names (console, com10) are accepted'
+    Check ($null -eq (Load-TreeDoc @((New-TreeComponent -Id 'rt-near' -Parts @((New-TreePart -Paths @('bin/console.dll', 'bin/com10.dll', '.kpack/a.b', ('bin/' + ('a' * 200)), '_a/.b/c.d')))))) ) 'zip-tree paths that merely look like device names (console, com10) are accepted'
     $flat = New-TreeComponent -Id 'rt-flat' -Parts @((New-TreePart -Paths @('sub/x.dll') -Format 'zip' -Prefix $null))
     $msg = Load-TreeDoc @($flat)
     Check ($null -ne $msg -and $msg -like '*manifest path*') 'a flat zip manifest still refuses a nested path'
 
+    # Flat zip names and versions keep the simple leaf rule: no leading dot or underscore, ASCII only, nothing after the last character.
+    foreach ($flatName in @('.hidden', '_x.dll', 'a b.dll', "x.dll`n", ([string] [char] 0x212A + '.dll'), 'con', 'x.')) {
+        $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-flatname' -Parts @((New-TreePart -Paths @($flatName) -Format 'zip' -Prefix $null))))
+        Check ($null -ne $msg -and $msg -like '*manifest path*') ("the flat zip name '" + ($flatName -replace "`n", '\n') + "' is refused")
+    }
+    foreach ($badVersion in @('.x', '_x', "v1`n", ([string] [char] 0x212A + '1'))) {
+        $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('abc') -EntryVersion $badVersion) }
+        Check ($null -ne $msg -and $msg -like '*version*') ("the version '" + ($badVersion -replace "`n", '\n') + "' is refused")
+    }
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @("abc`n")) }
+    Check ($null -ne $msg -and $msg -like '*Component id*') 'an id with a trailing line feed is refused'
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @(([string] [char] 0x212A + 'abc'))) }
+    Check ($null -ne $msg -and $msg -like '*Component id*') 'an id with a Kelvin sign is refused'
+
     # extractPrefix.
-    foreach ($case in @(@{ prefix = $null; text = '*extractPrefix ending in*' }, @{ prefix = 'pre'; text = '*extractPrefix ending in*' },
+    foreach ($case in @(@{ prefix = $null; text = '*extractPrefix ending in*' }, @{ prefix = 'pre'; text = '*extractPrefix ending in*' }, @{ prefix = 'pre//'; text = '*extractPrefix*not a simple name*' },
             @{ prefix = '../pre/'; text = '*extractPrefix*not a simple name*' }, @{ prefix = '/pre/'; text = '*extractPrefix*not a simple name*' },
             @{ prefix = 'c:/pre/'; text = '*extractPrefix*not a simple name*' }, @{ prefix = 'con/'; text = '*extractPrefix*reserved*' })) {
         $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-pre' -Parts @((New-TreePart -Paths @('bin/a.dll') -Prefix $case.prefix))))
@@ -284,6 +304,12 @@ try {
     Check ($null -eq (Load-TreeDoc @((New-TreeComponent -Id 'lic-links' -Parts @($okPart) -License $linksLicense)))) 'an accept component with license.links and no license.url loads'
     $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-none' -Parts @($okPart) -License ([ordered] @{ spdx = 'proprietary'; consent = 'accept' })))
     Check ($null -ne $msg -and $msg -like '*license needs a url or links*') 'an accept component with neither license.url nor license.links is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-none-show' -Parts @($okPart) -License ([ordered] @{ spdx = 'MIT'; consent = 'show' })))
+    Check ($null -ne $msg -and $msg -like '*license needs a url or links*') 'a show component with neither license.url nor license.links is refused too'
+    foreach ($emptyUrlConsent in @('accept', 'show')) {
+        $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-empty-url' -Parts @($okPart) -License ([ordered] @{ spdx = 'x'; url = ''; consent = $emptyUrlConsent; links = @([ordered] @{ title = 'EULA'; url = 'https://example.com/eula' }) })))
+        Check ($null -ne $msg -and $msg -like '*license URL must be an https URL*') "an empty license.url is refused ($emptyUrlConsent), even with links"
+    }
     $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-http' -Parts @($okPart) -License ([ordered] @{ spdx = 'x'; url = 'https://example.com/l'; consent = 'accept'; links = @([ordered] @{ title = 'EULA'; url = 'http://example.com/eula' }) })))
     Check ($null -ne $msg -and $msg -like '*license link URL*') 'a license link that is not https is refused'
     $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-title' -Parts @($okPart) -License ([ordered] @{ spdx = 'x'; url = 'https://example.com/l'; consent = 'accept'; links = @([ordered] @{ title = ''; url = 'https://example.com/eula' }) })))
@@ -318,6 +344,10 @@ try {
     Check ($hipRuntimeSources.Count -eq 2 -and @($hipRuntimeSources[0].fileManifest).Count -eq 16 -and @($hipRuntimeSources[1].fileManifest).Count -eq 252 -and $hipRuntimeSources[0].extractPrefix -ceq '_rocm_sdk_libraries/' -and $hipRuntimeSources[1].extractPrefix -ceq '_rocm_sdk_libraries/') 'the shipped runtime is two zip-tree parts of 16 and 252 files'
     Check ((@($hipRuntime.runtimePathDirs) -join ',') -ceq 'bin' -and $hipRuntime.kind -ceq 'runtime') 'the shipped runtime declares runtimePathDirs bin'
     Check ($hipEngine.license.consent -ceq 'accept' -and $hipRuntime.license.consent -ceq 'accept' -and @($hipEngine.license.links).Count -eq 3 -and @($hipRuntime.license.links).Count -eq 2) 'both shipped HIP components need an accept and carry their license links'
+    $runtimeAsset = & $module { param($c) Get-FastLlmComponentManifestAsset -Component $c } $hipRuntime
+    $runtimePartSum = [int64] 0
+    foreach ($runtimePart in $hipRuntimeSources) { foreach ($runtimeFile in @($runtimePart.fileManifest)) { $runtimePartSum += [int64] $runtimeFile.sizeBytes } }
+    Check (@($runtimeAsset.manifest).Count -eq 268 -and @($runtimeAsset.manifest).Count -eq (@($hipRuntimeSources[0].fileManifest).Count + @($hipRuntimeSources[1].fileManifest).Count) -and $runtimeAsset.expandedSizeBytes -eq $runtimePartSum) 'Get-FastLlmComponentManifestAsset unions the manifests of all parts (268 files, summed size)'
     Check ($hipEngine.entryPoint -ceq 'llama-server.exe' -and @($hipEngineSources[0].fileManifest | Where-Object { $_.path -ceq 'llama-server.exe' }).Count -eq 1 -and [string] $hipEngine.platform.backend -ceq 'hip' -and @($hipEngine.requires) -ccontains 'amd-rocm-gfx1100-10.0.0') 'the shipped HIP engine names llama-server.exe in its manifest, backend hip and requires the runtime'
 
     # ---- Happy install (consent: show) ----

@@ -14,7 +14,7 @@ Shape (spec 2.1):
     "sources": [ source, ... ]      # instead of "source" (exactly one of the two); a non-empty list of parts
     "runtimePathDirs": [dir, ...]   # runtime only: directories inside the component root that hold DLLs
     "license": { "spdx": str, "url": https url (optional with links), "consent": "show"|"accept",
-                 "links": [ { "title", "url": https url }, ... ] },     # an accept consent needs url or links
+                 "links": [ { "title", "url": https url }, ... ] },     # every consent needs url or links
     "platform": { "os": "windows", "arch": "x64", "backend": str },
     "adapter": str,                 # engine only
     "entryPoint": str,              # engine only; must be a fileManifest path
@@ -33,9 +33,9 @@ from urllib.parse import urlparse
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA = "bitworks.fastllm-components/v1"
-ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
-RESERVED_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
-SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+ID_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{1,120}")
+RESERVED_RE = re.compile(r"(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?", re.IGNORECASE)
+SHA_RE = re.compile(r"[0-9a-f]{64}")
 KINDS = ("engine", "runtime", "model", "draft")
 FORMATS = ("zip", "zip-tree", "gguf", "vendor-installer")
 MAX_CHAIN_DEPTH = 4
@@ -47,7 +47,9 @@ LICENSE_KEYS = {"spdx", "url", "consent", "links"}
 LINK_KEYS = {"title", "url"}
 # A zip-tree path segment: the component leaf character set, optionally with ONE leading dot or underscore (".kpack", "_rocm_sdk_libraries").
 # This is the only extension of the leaf rule; "." and ".." never match.
-SEGMENT_RE = re.compile(r"^[._]?[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+SEGMENT_RE = re.compile(r"[._]?[A-Za-z0-9][A-Za-z0-9._+-]{0,199}")
+# Flat zip names, versions: the simple leaf rule (no leading dot or underscore). Matched with fullmatch: no trailing line feed.
+LEAF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}")
 PLATFORM_KEYS = {"os", "arch", "backend"}
 MANIFEST_KEYS = {"path", "sizeBytes", "sha256"}
 
@@ -74,27 +76,21 @@ def check_keys(label, obj, expected, errors, optional=()):
     return not missing and not extra
 
 
-def safe_path(path):
-    if not is_str(path) or path.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", path):
-        return False
-    return ".." not in re.split(r"[\\/]", path)
-
-
 def leaf_problem(value):
     """Ids and versions are folder names: no trailing dot or space, no Windows reserved device name (mirrors FastLlm.psm1)."""
     if value.endswith((".", " ")):
         return "must not end with a dot or a space"
-    if RESERVED_RE.match(value):
+    if RESERVED_RE.fullmatch(value):
         return "must not be a reserved Windows device name"
     return None
 
 
 def tree_path_problem(path):
-    """A nested, forward-slash, relative path: every segment passes the leaf rules (mirrors Assert-FastLlmComponentPathSegment)."""
+    """A nested, forward-slash, relative path: every segment passes the leaf rules (mirrors Assert-FastLlmComponentTreePath)."""
     if not is_str(path):
         return "must be a non-empty string"
     for segment in path.split("/"):
-        if not SEGMENT_RE.match(segment):
+        if not SEGMENT_RE.fullmatch(segment):
             return f"segment {segment!r} is not a simple name (no empty, '..', ':', backslash or other special characters)"
         problem = leaf_problem(segment)
         if problem:
@@ -116,8 +112,8 @@ def check_manifest(label, manifest, errors, tree=False):
             if problem:
                 errors.append(f"{where}: unsafe path {item['path']!r}: {problem}")
                 continue
-        elif not safe_path(item["path"]) or "/" in item["path"] or "\\" in item["path"]:
-            errors.append(f"{where}: unsafe path {item['path']!r}")
+        elif not is_str(item["path"]) or not LEAF_RE.fullmatch(item["path"]) or leaf_problem(item["path"]):
+            errors.append(f"{where}: unsafe path {item['path']!r} (a flat zip name is a simple leaf name)")
             continue
         if item["path"] in paths:
             errors.append(f"{where}: duplicate path {item['path']!r}")
@@ -125,7 +121,7 @@ def check_manifest(label, manifest, errors, tree=False):
             paths.add(item["path"])
         if not is_int(item["sizeBytes"]) or item["sizeBytes"] < 0:
             errors.append(f"{where}: sizeBytes must be a non-negative integer")
-        if not isinstance(item["sha256"], str) or not SHA_RE.match(item["sha256"]):
+        if not isinstance(item["sha256"], str) or not SHA_RE.fullmatch(item["sha256"]):
             errors.append(f"{where}: sha256 must be 64 lowercase hex characters")
     return paths
 
@@ -146,7 +142,7 @@ def check_source(label, source, errors):
         github_release = parsed.hostname == "github.com" and "/releases/" in parsed.path
         if parsed.hostname not in hosts and not github_release:
             errors.append(f"{label}: source.url host {parsed.hostname!r} is not in allowedRedirectHosts or a GitHub release")
-    if not isinstance(source["sha256"], str) or not SHA_RE.match(source["sha256"]):
+    if not isinstance(source["sha256"], str) or not SHA_RE.fullmatch(source["sha256"]):
         errors.append(f"{label}: source.sha256 must be 64 lowercase hex characters")
     if not is_int(source["sizeBytes"]) or source["sizeBytes"] <= 0:
         errors.append(f"{label}: source.sizeBytes must be a positive integer")
@@ -216,10 +212,12 @@ def check_component(comp, errors):
     label = f"component {cid!r}"
     if not check_keys(label, comp, COMPONENT_KEYS, errors, optional=("adapter", "entryPoint", "source", "sources", "runtimePathDirs")):
         return
-    if not isinstance(cid, str) or not ID_RE.match(cid):
+    if not isinstance(cid, str) or not ID_RE.fullmatch(cid):
         errors.append(f"{label}: id must match {ID_RE.pattern}")
     if isinstance(cid, str) and leaf_problem(cid):
         errors.append(f"{label}: id {leaf_problem(cid)}")
+    if isinstance(comp["version"], str) and not LEAF_RE.fullmatch(comp["version"]):
+        errors.append(f"{label}: version must be a simple leaf name")
     if isinstance(comp["version"], str) and leaf_problem(comp["version"]):
         errors.append(f"{label}: version {leaf_problem(comp['version'])}")
     if comp["kind"] not in KINDS:
@@ -248,8 +246,8 @@ def check_component(comp, errors):
                             errors.append(f"{where}: title must be a non-empty string")
                         if not (isinstance(link["url"], str) and link["url"].startswith("https://")):
                             errors.append(f"{where}: url must be an https URL")
-        if lic["consent"] == "accept" and not (is_str(lic.get("url")) or (isinstance(links, list) and links)):
-            errors.append(f"{label}: an accept consent needs license.url or license.links")
+        if not (is_str(lic.get("url")) or (isinstance(links, list) and links)):
+            errors.append(f"{label}: a license needs license.url or license.links")
     if check_keys(f"{label}: platform", comp["platform"], PLATFORM_KEYS, errors):
         for key in PLATFORM_KEYS:
             if not is_str(comp["platform"][key]):

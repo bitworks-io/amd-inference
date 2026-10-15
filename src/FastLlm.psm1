@@ -1757,10 +1757,15 @@ function Install-FastLlmEngines {
 # 'abc' would be one folder) and no reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9), with or without an extension.
 function Assert-FastLlmComponentLeafName {
     param([Parameter(Mandatory = $true)][string] $Value, [Parameter(Mandatory = $true)][string] $Label)
+    # Component code only (the global Assert-FastLlmLeafName is unchanged): ASCII-only, case-sensitive, and nothing after the last character
+    # (no trailing line feed, no U+212A Kelvin sign standing in for K).
+    if ($Value -cnotmatch '^[A-Za-z0-9._+-]+\z') {
+        throw "$Label must use only ASCII letters, digits, dot, underscore, plus, or hyphen."
+    }
     if ($Value.EndsWith('.') -or $Value.EndsWith(' ')) {
         throw "$Label must not end with a dot or a space."
     }
-    if ($Value -imatch '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$') {
+    if ($Value -imatch '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?\z') {
         throw "$Label must not be a reserved Windows device name."
     }
 }
@@ -1774,7 +1779,7 @@ function Assert-FastLlmComponentTreePath {
         throw "$Label must not be empty."
     }
     foreach ($segment in $Value.Split('/')) {
-        if ($segment -notmatch '^[._]?[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$') {
+        if ($segment -cnotmatch '^[._]?[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\z') {
             throw "$Label '$Value' has a segment that is not a simple name (no empty segment, '..', ':', backslash or other special character)."
         }
         Assert-FastLlmComponentLeafName -Value $segment -Label "$Label segment '$segment'"
@@ -1907,7 +1912,7 @@ function Get-FastLlmComponents {
                 if ($null -eq $source.extractPrefix -or -not ([string] $source.extractPrefix).EndsWith('/')) {
                     throw "$label zip-tree source needs an extractPrefix ending in '/'."
                 }
-                Assert-FastLlmComponentTreePath -Value ([string] $source.extractPrefix).TrimEnd('/') -Label "$label extractPrefix"
+                Assert-FastLlmComponentTreePath -Value ([string] $source.extractPrefix).Substring(0, ([string] $source.extractPrefix).Length - 1) -Label "$label extractPrefix"
             }
             elseif ($null -ne $source.extractPrefix) {
                 throw "$label extractPrefix is only for zip-tree sources."
@@ -1923,6 +1928,7 @@ function Get-FastLlmComponents {
                 }
                 else {
                     Assert-FastLlmLeafName -Value $manifestPath -Label "$label manifest path"
+                    Assert-FastLlmComponentLeafName -Value $manifestPath -Label "$label manifest path"
                 }
                 if (-not $installedPaths.Add($manifestPath)) {
                     throw "$label manifest path '$manifestPath' appears more than once (paths are compared case-insensitively, across all sources)."
@@ -1979,8 +1985,11 @@ function Get-FastLlmComponents {
             throw "$label license consent must be 'show' or 'accept'."
         }
         $licenseUrlProperty = $licenseInfo.PSObject.Properties['url']
-        $hasLicenseUrl = $null -ne $licenseUrlProperty -and -not [string]::IsNullOrWhiteSpace([string] $licenseUrlProperty.Value)
+        $hasLicenseUrl = $null -ne $licenseUrlProperty -and $null -ne $licenseUrlProperty.Value
         if ($hasLicenseUrl) {
+            if ([string]::IsNullOrWhiteSpace([string] $licenseUrlProperty.Value)) {
+                throw "$label license URL must be an https URL."
+            }
             Assert-FastLlmHttpsUrl -Value ([string] $licenseUrlProperty.Value) -Label "$label license URL"
         }
         $licenseLinks = @()
