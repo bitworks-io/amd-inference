@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the unsigned FastLLM release package. Signing happens in .github/workflows/release.yml.
 
-Writes <out>/package-unsigned.zip and <out>/package-unsigned.sha256. The zip holds the app files, FASTLLM-VERSION.json,
+Writes <out>/package-unsigned.zip and <out>/package-unsigned.sha256. The zip holds the app files (plus the individual docs the product references), FASTLLM-VERSION.json,
 MANIFEST.json (every file with bytes and sha256, except itself and RELEASE.json) and RELEASE.json (last). Offline: no
 network, no keys. Refuses to run inside the private workspace (a tree with ops/).
 
@@ -25,6 +25,8 @@ VERSION_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]{0,3}$")
 MIN_AGENT_RE = re.compile(r"^[0-9]{1,4}(\.[0-9]{1,6}){1,3}$")
 BUILT_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 ROOT_FILES = ("fast-llm.ps1", "fast-llm-ui.ps1", "FastLLM.cmd", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "README.md", "SECURITY.md")
+# Individual docs the product points users at (the CLI Resizable BAR note says "See docs/RESIZABLE-BAR.md."). Not the whole docs/ tree.
+DOC_FILES = ("docs/RESIZABLE-BAR.md",)
 TREES = ("src", "tools", "config", "licenses")
 PRODUCT_TOOLS_FILE = "tools/product-tools.json"             # the explicit allowlist of tools/ files that ship
 PRODUCT_TOOLS_SCHEMA = "fastllm.product-tools.v1"
@@ -71,8 +73,8 @@ def sha256_hex(data):
 def collect(root):
     """{relative POSIX path: bytes} for the package source files."""
     files = {}
-    for name in ROOT_FILES:
-        path = os.path.join(root, name)
+    for name in ROOT_FILES + DOC_FILES:
+        path = os.path.join(root, *name.split("/"))
         if not os.path.isfile(path) or os.path.islink(path):
             raise BuildError("required root file is missing: " + name)
         with open(path, "rb") as handle:
