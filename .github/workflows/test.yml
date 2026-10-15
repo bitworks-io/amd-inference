@@ -149,6 +149,7 @@ jobs:
           .\tests\recipes-selection-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
+          .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
       - name: Behavioral lifecycle and benchmark tests in PowerShell 7
         shell: pwsh
@@ -167,6 +168,7 @@ jobs:
           .\tests\recipes-selection-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
+          .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
       # Two mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
