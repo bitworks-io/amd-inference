@@ -34,20 +34,22 @@ function Assert-Signer([string]$Path, [string]$CommonName) {
 # (at 'Inno Setup 6') can never be the one that compiles or signs.
 function Get-InnoDir($Pins) { Join-Path ${env:ProgramFiles(x86)} ('Inno Setup ' + $Pins.inno.version) }
 
-function Get-NumericFileVersion([string]$Path) {
-    $vi = (Get-Item -LiteralPath $Path).VersionInfo
-    '{0}.{1}.{2}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart
-}
-
-# ISCC.exe carries no version resource (it reads 0.0.0), so the installed version is read from the Inno binaries that
-# do: at least one must carry a version, and every one that does must equal the pin.
+# Inno's binaries report no numeric file version (0.0.0), so the installed version is read from the uninstall entry
+# the pinned installer writes: its InstallLocation must be exactly $Dir and its DisplayVersion must equal the pin.
 function Assert-InnoVersion([string]$Dir, [string]$Pinned) {
-    $seen = @(foreach ($name in 'Compil32.exe', 'ISCmplr.dll', 'ISCC.exe') {
-        $path = Join-Path $Dir $name
-        if (Test-Path -LiteralPath $path) { $v = Get-NumericFileVersion $path; Write-Host "  $name version $v"; if ($v -ne '0.0.0') { $v } }
+    $want = $Dir.TrimEnd('\')
+    $roots = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+    $entries = @(foreach ($root in $roots) {
+        if (Test-Path -LiteralPath $root) {
+            Get-ChildItem -LiteralPath $root | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } |
+                Where-Object { $_.PSObject.Properties['InstallLocation'] -and $_.InstallLocation -and ([string]$_.InstallLocation).TrimEnd('\') -ieq $want }
+        }
     })
-    if (-not $seen.Count) { throw "no Inno binary in $Dir carries a version resource" }
-    if (@($seen | Where-Object { $_ -ne $Pinned }).Count) { throw "Inno in $Dir is version $($seen -join '/'), pinned $Pinned" }
+    if ($entries.Count -ne 1) { throw "expected one uninstall entry for $want, found $($entries.Count)" }
+    $got = [string]$entries[0].DisplayVersion
+    Write-Host "  Inno uninstall entry: $($entries[0].DisplayName) $got at $want"
+    if ($got -ne $Pinned) { throw "Inno in $want is version '$got', pinned $Pinned" }
 }
 
 function Install-Tools([bool]$WithModule) {
