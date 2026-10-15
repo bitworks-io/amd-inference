@@ -1,6 +1,6 @@
 # Security policy
 
-FastLLM is pre-release software and is not yet suitable for untrusted network exposure.
+FastLLM is Preview software and is not suitable for untrusted network exposure.
 
 ## Safe defaults
 
@@ -21,10 +21,34 @@ FastLLM is pre-release software and is not yet suitable for untrusted network ex
 
 Do not change the host to `0.0.0.0` without adding authentication, restrictive CORS, firewall consent, and TLS or a trusted reverse proxy.
 
+## Release signing
+
+Installers are signed with Microsoft's Azure Artifact Signing and carry a timestamp. FastLLM accepts a signature only when all of these hold:
+
+- The signer's organization is Bitworks LLC (`O=Bitworks LLC`).
+- The chain ends at Microsoft's Azure Artifact Signing root, thumbprint `F40042E2E5F7E8EF8189FED15519AECE42C3BFA2`.
+- The leaf certificate carries both required EKUs: `1.3.6.1.4.1.311.97.1.0` and `1.3.6.1.4.1.311.97.990689314.800187930.133508941.234438932`.
+- The signature is timestamped, so a certificate that has since expired still verifies.
+
+The pins live in `src/FastLlm.Trust.ps1`.
+
+## Update security
+
+FastLLM checks for updates once a day, with one unauthenticated request to the GitHub API, and never installs without a click. Before an update runs it passes these six steps, and any failure stops it:
+
+1. The server is stopped and confirmed stopped.
+2. `SHA256SUMS` is downloaded (size-capped) and parsed strictly.
+3. The installer is downloaded from the release and its SHA-256 and size must match.
+4. The installer's signature must pass the pins above.
+5. The installer's ProductVersion must equal the release version and be newer than the installed one.
+6. The per-user installer runs, then the installed files are checked for integrity.
+
+Download URLs must come from the project's GitHub release assets. `fast-llm.ps1 doctor` reports `installIntegrity` at any time.
+
 ## Reporting
 
 Do not open a public issue for a vulnerability that could expose local files, execute code, bypass artifact verification, or expose the inference API. Until Bitworks publishes a dedicated security address/process, contact the repository owner privately. A public GA release is blocked on publishing a complete coordinated-disclosure contact and response policy.
 
 ## Supply-chain expectations
 
-Release builds must include signed targets, checksums, SBOM, provenance, and third-party notices. The alpha's hash checks do not provide publisher authentication and are not a substitute for signing. A future updater must accept only narrow, signed release targets and must not provide a privileged arbitrary-command path.
+Releases include a signed installer, `SHA256SUMS`, an SBOM (`.cdx.json`) and `THIRD_PARTY_NOTICES.md`. Hash checks alone do not authenticate the publisher; the signature pins above do. The updater accepts only the signed installer for a newer release and has no privileged arbitrary-command path.

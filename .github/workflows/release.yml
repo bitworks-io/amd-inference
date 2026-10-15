@@ -228,6 +228,11 @@ jobs:
       CHANNEL: ${{ needs.build.outputs.channel }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # The tag annotation becomes the release notes, so this job needs the repository's tags.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-assets
@@ -235,7 +240,9 @@ jobs:
       - name: Create the GitHub release
         run: |
           set -euo pipefail
+          annotation="$(git tag -l --format='%(contents)' "$TAG")"
+          fixed="FastLLM $VER, Preview, for Windows PCs with AMD Radeon graphics. Install with FastLLM-Setup-$VER.exe; checksums are in SHA256SUMS."
           flags=(--verify-tag --generate-notes --title "FastLLM $VER (Preview)" \
-                 --notes "FastLLM $VER, Preview, for Windows PCs with AMD Radeon graphics. Install with FastLLM-Setup-$VER.exe; checksums are in SHA256SUMS.")
+                 --notes "$(printf '%s\n\n%s' "$annotation" "$fixed")")
           if [ "$CHANNEL" = "canary" ]; then flags+=(--prerelease); fi
           gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" "${flags[@]}"

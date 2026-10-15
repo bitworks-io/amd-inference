@@ -19,6 +19,8 @@ SPEC = importlib.util.spec_from_file_location("fastllm_public_stage", SCRIPT)
 STAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(STAGE)
 
+REPO = Path(__file__).resolve().parents[1]
+
 
 class PublicSourceTests(unittest.TestCase):
     def setUp(self):
@@ -74,16 +76,14 @@ class PublicSourceTests(unittest.TestCase):
         manifest = STAGE.stage(self.source, output)
         paths = {entry["path"] for entry in manifest["files"]}
         self.assertEqual(paths, {
-            *STAGE.ROOT_FILES, *STAGE.PUBLIC_DOCS, "README.md",
+            *STAGE.ROOT_FILES, *STAGE.PUBLIC_DOCS,
             "src/core.psm1", "config/catalog.json", "linux/serve.py",
             "tests/fixtures/llama-list-devices.txt", "tests/fixtures/catalog-shape.json",
             "tests/helpers/mock-api.ps1", "tools/benchmark.ps1",
             "tools/stage-public-source.py",
         })
         self.assertIn("docs/RESIZABLE-BAR.md", paths)   # packaged by build-release, so the SBOM source manifest must list it
-        self.assertEqual((output / "README.md").read_bytes(),
-                         (self.source / "docs/PUBLIC-README.md").read_bytes())
-        self.assertNotEqual((output / "README.md").read_bytes(), b"internal README\n")
+        self.assertEqual((output / "README.md").read_bytes(), (self.source / "README.md").read_bytes())
         self.assertFalse((output / "docs/private-notes").exists())
         self.assertEqual(manifest["files"], sorted(manifest["files"], key=lambda item: item["path"]))
         self.assertEqual(json.loads((output / STAGE.MANIFEST_NAME).read_text()), manifest)
@@ -413,6 +413,49 @@ class PublicSourceTests(unittest.TestCase):
             payload = (checked_out / item["path"]).read_bytes()
             self.assertEqual(len(payload), item["sizeBytes"], item["path"])
             self.assertEqual(hashlib.sha256(payload).hexdigest(), item["sha256"], item["path"])
+
+
+class PublicDocsTests(unittest.TestCase):
+    HEADINGS = (
+        "# FastLLM for AMD Radeon (Preview)", "## What it does", "## Requirements", "## Install",
+        "## Verify a download", "## Updates", "## Privacy", "## Resizable BAR", "## Uninstall",
+        "## Building from source and tests", "## License",
+    )
+    LABELS = (
+        "Measured by Bitworks on this card", "Community recipe, reproduced by Bitworks",
+        "Experimental community recipe, not reproduced by Bitworks", "Estimated for your card", "Chosen by you",
+    )
+
+    def setUp(self):
+        self.readme = (REPO / "README.md").read_text(encoding="utf-8")
+        self.security = (REPO / "SECURITY.md").read_text(encoding="utf-8")
+
+    def test_readme_has_every_heading(self):
+        lines = self.readme.splitlines()
+        for heading in self.HEADINGS:
+            self.assertIn(heading, lines)
+
+    def test_readme_is_marked_preview_at_the_top(self):
+        self.assertIn("Preview", "\n".join(self.readme.splitlines()[:5]))
+
+    def test_readme_uses_each_evidence_label_verbatim(self):
+        for label in self.LABELS:
+            self.assertIn(label, self.readme)
+
+    def test_qualified_appears_only_as_not_fully_qualified(self):
+        import re
+        for match in re.finditer(r"(?i)\bqualified\b", self.readme):
+            self.assertEqual(self.readme[max(0, match.start() - len("not fully ")):match.end()].lower(), "not fully qualified")
+
+    def test_duplicate_public_readme_is_gone(self):
+        self.assertFalse((REPO / "docs/PUBLIC-README.md").exists())
+
+    def test_security_lists_the_pins(self):
+        self.assertIn("1.3.6.1.4.1.311.97.1.0", self.security)
+        self.assertIn("1.3.6.1.4.1.311.97.990689314.800187930.133508941.234438932", self.security)
+        self.assertIn("F40042E2E5F7E8EF8189FED15519AECE42C3BFA2", self.security)
+        for heading in ("## Release signing", "## Update security", "## Reporting"):
+            self.assertIn(heading, self.security.splitlines())
 
 
 if __name__ == "__main__":
