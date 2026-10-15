@@ -322,6 +322,7 @@ try {
             }
             $maximumPlanAttempts = 3
             $serverCompleted = $false
+            $updateNoticeShown = $false
             $recoveryAttempted = $false
             for ($planAttempt = 1; $planAttempt -le $maximumPlanAttempts; $planAttempt++) {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
@@ -343,6 +344,12 @@ try {
                     continue
                 }
 
+                # Cached notice only (no network, state\update-check.json): once, after the plan and before the foreground server launches.
+                if (-not $updateNoticeShown) {
+                    $updateNoticeShown = $true
+                    $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
+                    if ($cachedNotice) { Write-Host $cachedNotice }
+                }
                 # The BAR policy is always passed so the auto default reaches the start; the other options only when asked.
                 $startPolicyOptions = @{}
                 $startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation
@@ -392,9 +399,7 @@ try {
             if (-not $serverCompleted) {
                 throw "Hardware/model selection did not stabilize within $maximumPlanAttempts attempts. Close GPU-heavy applications and run start again."
             }
-            # Cached notice only (no network): after a successful start, from state\update-check.json.
-            $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
-            if ($cachedNotice) { Write-Host $cachedNotice }
+
         }
         'doctor' {
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
