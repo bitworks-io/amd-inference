@@ -30,4 +30,9 @@ try {
   Remove-Item -LiteralPath (Join-Path $tmp 'b.txt')
   Check ((Test-FastLlmInstallIntegrity -AppRoot $tmp -SkipSignatureForTest).status -eq 'ok') '_uninstall\ is excluded'
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }
+# The pin overrides and the untrusted-root switch exist only for release/ReleaseVerify.psm1's tests: no product file may pass them.
+$productFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter *.ps1 | Where-Object { $_.Name -ne 'FastLlm.Trust.ps1' }) +
+    @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Filter *.ps1) + @(Get-Item -LiteralPath (Join-Path $root 'fast-llm.ps1'), (Join-Path $root 'fast-llm-ui.ps1'))
+$overrideUsers = @($productFiles | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match '-(ExpectedOrganization|ExpectedRootThumbprint|RequiredEkus|AllowUntrustedRootForTests)\b' } | ForEach-Object { $_.Name })
+Check ($overrideUsers.Count -eq 0) ("no product file passes a pin override or the untrusted-root switch (found: " + ($overrideUsers -join ', ') + ")")
 Write-Host "$count trust checks passed."
