@@ -461,36 +461,69 @@ Check ($ui.Contains("ButtonAt 'Components'") -and $ui.Contains('Remove-FastLlmCo
 Check ($ui.Contains('src/FastLlm.Components.ps1') -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Components')) 'the UI dot-sources the components script'
 $removeHandler = [regex]::Match($ui, '(?s)function RemoveComponentFromWindow.*?\r?\n\}').Value
 Check ($removeHandler.Contains('$view.dialog.BeginInvoke([Action]{FillComponentsPanel})') -and -not [regex]::IsMatch($removeHandler, '(?m)^\s*FillComponentsPanel\s*$')) 'the Components window rebuilds its panel after the Remove click returns, never disposing the clicked button inside its own Click handler'
-Check (-not $ui.Contains("'-AcceptExperimental'")) 'the window never passes -AcceptExperimental (the CLI is the path to an experimental recipe)'
+$flowSourceText = Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFlow.ps1') -Raw
+Check (-not $ui.Contains("'-AcceptExperimental'") -and [regex]::Matches($flowSourceText, "'-AcceptExperimental'").Count -eq 2 -and $ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe') -and $ui.Contains('Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan -ChosenRecipe $script:chosenRecipe')) 'the experimental acceptance reaches the CLI only through the two argument helpers (preview and start), each fed the recipe the user picked in the chooser'
 
 # ---- "Choose another setup": the chooser rows ----
 $chooserCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
 $chooserComponents = @(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
 $chooserRecipes = @(Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.json'))
-function New-ChooserDetailRows([object[]]$Inventory = @()) {
+$chooserRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-chooser-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $chooserRoot | Out-Null
+function New-ChooserDetailRows([object[]]$Inventory = @(), [string]$Root = $chooserRoot) {
     # What `recipes -Detail -AsJson` prints, through the same JSON round trip the window reads.
-    $built = @(Get-FastLlmRecipeChooserRows -Recipes $chooserRecipes -Components $chooserComponents -Inventory $Inventory -Catalog $chooserCatalog)
+    $built = @(Get-FastLlmRecipeChooserRows -Recipes $chooserRecipes -Components $chooserComponents -Inventory $Inventory -Catalog $chooserCatalog -InstallRoot $Root)
     return @(((ConvertTo-Json -InputObject $built -Depth 8) | ConvertFrom-Json) | ForEach-Object { $_ })
 }
 $detailRows = @(New-ChooserDetailRows)
 $experimentalLabel = 'Experimental Bitworks setup, not yet measured by Bitworks on this card'
-$offRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'off')
-$onRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on')
-$expectedHidden = @($chooserRecipes | Where-Object { Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin) }).Count
-Check ($expectedHidden -ge 2 -and $detailRows.Count -eq $chooserRecipes.Count) 'the shipped recipes include the experimental HIP recipes, and each recipe has a detail row'
-Check ($offRows.Count -eq ($detailRows.Count - $expectedHidden) -and @($offRows | Where-Object { $_.experimental }).Count -eq 0) 'with the switch off the chooser hides every experimental row, even when the list holds them'
-Check ($onRows.Count -eq $detailRows.Count -and @($onRows | Where-Object { $_.experimental }).Count -eq $expectedHidden) 'with the switch on the chooser shows the experimental rows too'
-Check (@(Get-FastLlmUiChooserRows -Rows $detailRows).Count -eq $offRows.Count -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'ON').Count -eq $offRows.Count) 'the switch defaults to off and only the exact value on shows experimental rows'
+$xtxVariant = 'rx-7900-xtx'
+$offRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'off' -Variant $xtxVariant)
+$onRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant $xtxVariant)
+$expectedHidden = @($chooserRecipes | Where-Object { (Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin)) -and [string]$_.gpu.variant -ceq $xtxVariant }).Count
+Check ($expectedHidden -eq 1 -and @($chooserRecipes | Where-Object { Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin) }).Count -ge 2 -and $detailRows.Count -eq $chooserRecipes.Count) 'the shipped recipes include the experimental HIP recipes, and each recipe has a detail row'
+Check ($offRows.Count -ge 1 -and @($offRows | Where-Object { $_.experimental }).Count -eq 0 -and $onRows.Count -eq $offRows.Count + $expectedHidden) 'with the switch off the chooser hides every experimental row, even when the list holds them; with it on it shows them'
+Check (@(Get-FastLlmUiChooserRows -Rows $detailRows -Variant $xtxVariant).Count -eq $offRows.Count -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'ON' -Variant $xtxVariant).Count -eq $offRows.Count) 'the switch defaults to off and only the exact value on shows experimental rows'
 $hipRow = @($onRows | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
 Check ($null -ne $hipRow -and $hipRow.label -ceq $experimentalLabel -and $hipRow.origin -ceq 'bitworks-experimental' -and $hipRow.model -ceq 'qwen3.8-27b-ud-q4-k-m' -and $hipRow.contextText -ceq '32,768 tokens') 'a HIP row shows the experimental Bitworks label, the model and the context'
-Check ($hipRow.engineText -like 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; not installed); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; not installed)') 'a HIP row names the engine, its required runtime and their source hosts'
+Check ($hipRow.engineText -ceq 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; missing); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; missing)') 'a HIP row names the engine, its required runtime, their source hosts and the exact state "missing"'
+Check ($hipRow.installRequired -eq $true -and $hipRow.consentRequired -eq $true) 'a HIP row with its chain missing needs the install'
 $vulkanRow = @($offRows | Where-Object { $_.origin -ceq 'bitworks' })[0]
-Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card' -and -not $vulkanRow.consentRequired -and $vulkanRow.engineText -like 'llama.cpp b10698 (Vulkan) (from github.com;*') 'a Bitworks row shows its origin label and needs no consent'
-$communityDetail = @((ConvertTo-Json -InputObject @($detailRows[0]) -Depth 8 | ConvertFrom-Json) | ForEach-Object { $_ })[0]
+Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card' -and -not $vulkanRow.consentRequired -and -not $vulkanRow.installRequired -and $vulkanRow.engineText -ceq 'llama.cpp b10698 (Vulkan) (from github.com; missing)') 'a Bitworks row with no engine installed says the built-in engine is missing, and needs no component install'
+# The built-in engine lives under engines\<version>\vulkan, not under components\.
+$vulkanDir = Join-Path $chooserRoot 'engines/b10698/vulkan'
+New-Item -ItemType Directory -Path $vulkanDir -Force | Out-Null
+[IO.File]::WriteAllText((Join-Path $vulkanDir 'llama-server.exe'), 'x')
+$builtInRows = @(Get-FastLlmUiChooserRows -Rows @(New-ChooserDetailRows) -ExperimentalComponents 'off' -Variant $xtxVariant)
+Check ($builtInRows[0].engineText -ceq 'llama.cpp b10698 (Vulkan) (from github.com; built in)' -and $builtInRows[0].chain[0].builtIn -eq $true -and $builtInRows[0].chain[0].state -ceq 'built in') 'with the engine present the built-in engine row says "built in"'
+# Another component counts as installed only when the inventory says installed AND verified.
+$unverifiedInventory = @([pscustomobject]@{ id = 'amd-rocm-gfx1100-10.0.0'; kind = 'runtime'; version = '10.0.0'; installed = $true; bytes = 1; verified = $false })
+$unverifiedHip = @(New-ChooserDetailRows $unverifiedInventory | Where-Object { $_.id -like '*.hip' })[0]
+Check ($unverifiedHip.chain[0].state -ceq 'missing' -and $unverifiedHip.chain[0].installed -eq $false) 'a component that is present but not verified is missing'
+$verifiedInventory = @([pscustomobject]@{ id = 'amd-rocm-gfx1100-10.0.0'; kind = 'runtime'; version = '10.0.0'; installed = $true; bytes = 1; verified = $true })
+$verifiedHip = @(Get-FastLlmUiChooserRows -Rows @(New-ChooserDetailRows $verifiedInventory) -ExperimentalComponents 'on' -Variant $xtxVariant | Where-Object { $_.id -like '*.hip' })[0]
+Check ($verifiedHip.engineText -ceq 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; missing); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; installed)' -and $verifiedHip.installRequired -eq $true) 'an installed and verified runtime is "installed" while the engine is still "missing"'
+$communityDetail = @((ConvertTo-Json -InputObject @($detailRows | Where-Object { $_.variant -ceq $xtxVariant })[0] -Depth 8 | ConvertFrom-Json) | ForEach-Object { $_ })[0]
 $communityDetail.origin = 'community-experimental'
-Check (@(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'off').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'on').Count -eq 1) 'a community-experimental row is hidden with the switch off and shown with it on'
-$cardRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant 'rx-7900-xt')
-Check ($cardRows.Count -ge 1 -and @($cardRows | Where-Object { $_.variant -cne 'rx-7900-xt' }).Count -eq 0 -and $cardRows.Count -lt $onRows.Count) 'an identified card limits the chooser to that card''s recipes'
+Check (@(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'off' -Variant $xtxVariant).Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'on' -Variant $xtxVariant).Count -eq 1) 'a community-experimental row is hidden with the switch off and shown with it on'
+$xtRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant 'rx-7900-xt')
+Check ($xtRows.Count -ge 1 -and @($xtRows | Where-Object { $_.variant -cne 'rx-7900-xt' }).Count -eq 0 -and @($onRows | Where-Object { $_.variant -cne $xtxVariant }).Count -eq 0) 'the chooser lists only the identified card''s recipes'
+Check (@(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant '').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant 'rx-9999').Count -eq 0) 'a card that is not identified (or has no recipes) gets no rows, never every card''s'
+Check ((Get-FastLlmUiChooserNotice -Shown @() -ExperimentalComponents 'on' -Variant '') -ceq 'This card was not identified, so no setup can be offered for it. Nothing was changed.') 'an unidentified card is explained'
+Check ((Get-FastLlmUiChooserNotice -Shown @() -ExperimentalComponents 'off' -Variant 'rx-9999') -ceq 'No other setup is available for this card.') 'no setup for the card is explained'
+Check ((Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'on' -Variant $xtxVariant) -ceq 'Experimental community components is on, but no experimental setup is listed for this card.' -and (Get-FastLlmUiChooserNotice -Shown $onRows -ExperimentalComponents 'on' -Variant $xtxVariant) -ceq '' -and (Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'off' -Variant $xtxVariant) -ceq '') 'the switch on without any experimental row is said so; otherwise there is no notice'
+
+# ---- the experimental switch is mirrored to the install folder the children are given ----
+$mirrorSource = Join-Path $chooserRoot 'launch'
+$mirrorTarget = Join-Path $chooserRoot 'other-folder'
+Set-FastLlmComponentSettings -InstallRoot $mirrorSource -ExperimentalComponents 'on'
+Check ((Sync-FastLlmExperimentalSwitch -SourceRoot $mirrorSource -TargetRoot $mirrorTarget) -eq $true -and (Get-FastLlmComponentSettings -InstallRoot $mirrorTarget).experimentalComponents -ceq 'on') 'the switch stored under the launch root is mirrored into a different install folder'
+Check ((Sync-FastLlmExperimentalSwitch -SourceRoot $mirrorSource -TargetRoot $mirrorTarget) -eq $false) 'an install folder that already agrees is not written again'
+Set-FastLlmComponentSettings -InstallRoot $mirrorSource -ExperimentalComponents 'off'
+Check ((Sync-FastLlmExperimentalSwitch -SourceRoot $mirrorSource -TargetRoot $mirrorTarget) -eq $true -and (Get-FastLlmComponentSettings -InstallRoot $mirrorTarget).experimentalComponents -ceq 'off') 'turning the switch off is mirrored too'
+Check ((Sync-FastLlmExperimentalSwitch -SourceRoot $mirrorSource -TargetRoot $mirrorSource) -eq $false -and -not (Test-Path -LiteralPath (Join-Path $chooserRoot 'never-created'))) 'the same root is left alone'
+$freshTarget = Join-Path $chooserRoot 'fresh-folder'
+Check ((Sync-FastLlmExperimentalSwitch -SourceRoot $mirrorSource -TargetRoot $freshTarget) -eq $false -and -not (Test-Path -LiteralPath $freshTarget)) 'a switch that is off writes nothing into a folder that has no settings'
 
 # ---- the per-component consent rows and the enable rule ----
 $hipChain = @($hipRow.chain)
@@ -505,16 +538,29 @@ foreach ($consentRow in $consentRows) {
     for ($i = 0; $i -lt $expectedLinks.Count; $i++) {
         Check ($consentRow.links[$i].url -ceq [string]$expectedLinks[$i].url -and $consentRow.links[$i].title -ceq [string]$expectedLinks[$i].title) "link $i of $($consentRow.id) is the component's license link"
     }
-    Check ($consentRow.acceptText -like 'I accept*' -and @($consentRow.PSObject.Properties.Name | Where-Object { $_ -like '*text*' -and $_ -notin @('sourceText', 'acceptText') }).Count -eq 0) "the consent row for $($consentRow.id) carries links and an accept box, never license text"
+    Check ($consentRow.acceptText -like 'I accept*' -and @($consentRow.PSObject.Properties.Name | Where-Object { $_ -like '*text*' -and $_ -notin @('sourceText', 'acceptText', 'statusText') }).Count -eq 0) "the consent row for $($consentRow.id) carries links and an accept box, never license text"
 }
+Check (@($consentRows | Where-Object { $_.needsAccept }).Count -eq 2 -and $consentRows[0].statusText -ceq 'will be downloaded' -and @($consentRows | Where-Object { $_.blocked }).Count -eq 0) 'every missing component needs its own accept box'
 $installedRuntimeChain = @((ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json) | ForEach-Object { $_ })
 $installedRuntimeChain[0].installed = $true
+$installedRuntimeChain[0].state = 'installed'
 $partRows = @(Get-FastLlmUiConsentRows -Chain $installedRuntimeChain)
-Check ($partRows.Count -eq 1 -and $partRows[0].id -ceq 'llama.cpp-hip-b11658') 'a component that is already installed gets no consent row'
+Check ($partRows.Count -eq 2 -and -not $partRows[0].needsAccept -and $partRows[0].statusText -ceq 'installed; license accepted earlier' -and $partRows[1].needsAccept -and $partRows[1].id -ceq 'llama.cpp-hip-b11658') 'an installed component stays in the dialog as a read-only row; only the missing one needs a box'
+$builtInChain = @((ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json) | ForEach-Object { $_ })
+$builtInChain[0].state = 'built in'
+Check (@(Get-FastLlmUiConsentRows -Chain $builtInChain)[0].statusText -ceq 'built in' -and -not @(Get-FastLlmUiConsentRows -Chain $builtInChain)[0].needsAccept) 'a built-in component is a read-only row saying built in'
+$showChain = @((ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json) | ForEach-Object { $_ })
+$showChain[0].consent = 'show'; $showChain[1].consent = 'show'
+Check (@(Get-FastLlmUiConsentRows -Chain $showChain | Where-Object { $_.needsAccept }).Count -eq 2) 'a chain whose licenses are all show-type still has rows to accept, so it has an install path'
+foreach ($consentRow in $consentRows) {
+    Check ($consentRow.links[0].linkText -ceq ('{0} ({1})' -f $consentRow.links[0].title, ([Uri]$consentRow.links[0].url).Host)) "the license link of $($consentRow.id) shows its destination host"
+}
 $unsafeChain = @((ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json) | ForEach-Object { $_ })
 $unsafeChain[1].licenseLinks[0].url = 'javascript:alert(1)'
 $unsafeChain[1].licenseLinks[1].url = 'http://example.com/license'
-Check ($null -eq (@(Get-FastLlmUiConsentRows -Chain $unsafeChain)[1].links[0].url) -and $null -eq (@(Get-FastLlmUiConsentRows -Chain $unsafeChain)[1].links[1].url)) 'a license link that is not https is never offered to the browser'
+$unsafeRows = @(Get-FastLlmUiConsentRows -Chain $unsafeChain)
+Check ($null -eq $unsafeRows[1].links[0].url -and $null -eq $unsafeRows[1].links[1].url) 'a license link that is not https is never offered to the browser'
+Check ($unsafeRows[1].blocked -eq $true -and $unsafeRows[0].blocked -eq $false) 'a component with a link that cannot be opened cannot be accepted'
 Check ((Get-FastLlmUiSafeLicenseUrl -Url 'https://www.amd.com/en/developer/resources/rocm-hub/eula/licenses.html') -ceq 'https://www.amd.com/en/developer/resources/rocm-hub/eula/licenses.html' -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url 'file:///C:/x') -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url 'https://a b') -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url '') -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url 'not a url')) 'only a plain https URL passes the link check'
 Check ((Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($true, $true))) 'Install is enabled when every row is ticked'
 Check (-not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($true, $false)) -and -not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($false, $true)) -and -not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($false, $false))) 'Install stays disabled while any row is unticked'
@@ -528,19 +574,27 @@ Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658'
 Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658' -InstallRoot $installRootArg -Confirmed $true -RowCount 2 -Ticked @($true, $false)).Count -eq 0) 'Install without every box ticked produces no install command'
 Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'x y; evil' -InstallRoot $installRootArg -Confirmed $true -RowCount 1 -Ticked @($true)).Count -eq 0) 'an unsafe engine id never reaches the child'
 $expPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'; origin = 'bitworks-experimental' } }
-Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip -AcceptExperimental') 'the start of a bitworks-experimental recipe passes -Recipe and -AcceptExperimental'
+$expChosen = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'; origin = 'bitworks-experimental' }
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $expChosen) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip -AcceptExperimental') 'the start of the experimental recipe the user picked passes -Recipe and -AcceptExperimental'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' -and (@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $null) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip') 'an experimental origin in a plan alone never adds -AcceptExperimental'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe ([pscustomobject]@{ id = 'another-recipe'; origin = 'bitworks-experimental' })) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip') 'a chosen recipe with a different id than the plan''s does not carry the acceptance'
 $communityPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'c1'; origin = 'community-experimental' } }
-Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $communityPlan) -join ' ') -ceq '-Recipe c1 -AcceptExperimental') 'the start of a community-experimental recipe passes -AcceptExperimental'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $communityPlan -ChosenRecipe ([pscustomobject]@{ id = 'c1'; origin = 'community-experimental' })) -join ' ') -ceq '-Recipe c1 -AcceptExperimental') 'the start of a chosen community-experimental recipe passes -AcceptExperimental'
 foreach ($plainOrigin in @('bitworks', 'community-reproduced')) {
     Check ((@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = 'r1'; origin = $plainOrigin } })) -join ' ') -ceq '-Recipe r1') "the start of a $plainOrigin recipe passes -Recipe only"
 }
-Check ((@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'c1'; origin = 'community-experimental' })) -join ' ') -ceq '-Recipe c1 -AcceptExperimental' -and (@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'r1'; origin = 'bitworks' })) -join ' ') -ceq '-Recipe r1' -and @(Get-FastLlmUiPreviewRecipeArguments -Recipe $null).Count -eq 0 -and @(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'bad id'; origin = 'bitworks' })).Count -eq 0) 'the preview of a chosen recipe passes -Recipe, plus -AcceptExperimental only for an experimental origin'
+Check ((@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'c1'; origin = 'community-experimental' })) -join ' ') -ceq '-Recipe c1 -AcceptExperimental' -and (@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'r1'; origin = 'bitworks' })) -join ' ') -ceq '-Recipe r1' -and @(Get-FastLlmUiPreviewRecipeArguments -Recipe $null).Count -eq 0) 'the preview of a chosen recipe passes -Recipe, plus -AcceptExperimental only for an experimental origin'
+$malformedThrew = $false
+try { [void](Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'bad id'; origin = 'bitworks' })) } catch { $malformedThrew = $true }
+Check $malformedThrew 'a malformed chosen recipe id stops the preview instead of silently running the default plan'
 $pickerSelection = @('-InstallRoot', 'C:\r', '-ContextSize', '16384', '-ModelId', 'm1')
 Check ((@(Get-FastLlmUiRecipeSelection -Selection $pickerSelection -Recipe ([pscustomobject]@{ id = 'r1'; origin = 'bitworks' })) -join '|') -ceq '-InstallRoot|C:\r' -and (@(Get-FastLlmUiRecipeSelection -Selection $pickerSelection -Recipe $null) -join '|') -ceq ($pickerSelection -join '|')) 'a chosen recipe drops the model and context pickers (they cannot be combined with -Recipe); no chosen recipe keeps the selection'
 foreach ($typedCode in @('hip-backend-unavailable', 'hip-dll-blocked', 'hip-device-not-found', 'hip-device-ambiguous', 'needs-setup-component-missing')) {
     Check (Test-FastLlmUiTypedHipFailure -Code $typedCode) "$typedCode is a typed failure the window shows without retrying"
 }
 Check (-not (Test-FastLlmUiTypedHipFailure -Code '') -and -not (Test-FastLlmUiTypedHipFailure -Code 'plan-changed') -and -not (Test-FastLlmUiTypedHipFailure -Code 'xhip-dll-blocked')) 'other or empty failure codes are not treated as typed HIP failures'
+Check ((Get-FastLlmUiFailureCode -Status ([pscustomobject]@{ runId = 'b'; failureCode = 'hip-dll-blocked' }) -PreviousRunId 'a') -ceq 'hip-dll-blocked') 'a failure code written by this run is trusted'
+Check ((Get-FastLlmUiFailureCode -Status ([pscustomobject]@{ runId = 'a'; failureCode = 'hip-dll-blocked' }) -PreviousRunId 'a') -ceq '' -and (Get-FastLlmUiFailureCode -Status ([pscustomobject]@{ runId = 'b' }) -PreviousRunId 'a') -ceq '' -and (Get-FastLlmUiFailureCode -Status $null -PreviousRunId 'a') -ceq '') 'a failure code left by an earlier run, or none, is not trusted'
 Check ((Format-FastLlmUiTypedFailure -Code 'hip-dll-blocked' -Text "Blocked.`r`n") -ceq "Blocked.`r`n(failure code: hip-dll-blocked)") 'a typed failure shows its own message and its code'
 
 # ---- source assertions on the window ----
@@ -571,13 +625,35 @@ $consentDisposal = Test-NoDisposeInHandlers $consentFn
 $chooserDisposal = Test-NoDisposeInHandlers $chooserFn
 Check ($consentDisposal.handlers -ge 2 -and $consentDisposal.disposes -eq 0) 'the consent dialog disposes nothing inside its own Click, LinkClicked or CheckedChanged handlers'
 Check ($chooserDisposal.handlers -ge 2 -and $chooserDisposal.disposes -eq 0) 'the chooser disposes nothing inside its own handlers'
-Check ([regex]::Matches($consentText, '\.Dispose\(\)').Count -eq 1 -and $consentText -match '(?s)finally\{[^}]*\$dialog\.Dispose\(\)' -and [regex]::Matches($chooserFn.Extent.Text, '\.Dispose\(\)').Count -eq 1 -and $chooserFn.Extent.Text -match '(?s)finally\{\$dialog\.Dispose\(\)') 'each dialog is disposed once, in a finally after ShowDialog returns'
+function Get-DisposeCounts($FunctionAst) {
+    $all = @($FunctionAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$n.Member.Value) -ceq 'Dispose' }, $true)).Count
+    $inFinally = 0
+    foreach ($tryAst in @($FunctionAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $null -ne $n.Finally }, $true))) {
+        $inFinally += @($tryAst.Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$n.Member.Value) -ceq 'Dispose' }, $true)).Count
+    }
+    return [pscustomobject]@{ all = $all; inFinally = $inFinally }
+}
+$consentCounts = Get-DisposeCounts $consentFn
+$chooserCounts = Get-DisposeCounts $chooserFn
+Check ($consentCounts.all -ge 1 -and $consentCounts.all -eq $consentCounts.inFinally -and $chooserCounts.all -ge 1 -and $chooserCounts.all -eq $chooserCounts.inFinally) 'each dialog (and the font it made) is disposed only in a finally after ShowDialog returns'
+Check ($chooserFn.Extent.Text.Contains('$dialog.AcceptButton=$choose') -and $chooserFn.Extent.Text.Contains('$dialog.CancelButton=$cancel') -and $chooserFn.Extent.Text.Contains('-Variant $variant') -and $chooserFn.Extent.Text.Contains('Get-FastLlmUiChooserNotice')) 'the chooser is filtered to the plan''s identified card, says what is missing, and Enter chooses the selected row'
+Check ($ui.Contains('$previewed.recipe.variant')) 'the chooser reads the identified card from the previewed plan'
+$continueAst = Get-UiFunctionText 'ContinueWithChosenRecipe'
+Check ($continueAst.Extent.Text.Contains('if($Row.installRequired){') -and $continueAst.Extent.Text.Contains('-not $script:chooserNotice') -and -not $continueAst.Extent.Text.Contains('consentRequired')) 'the install dialog opens whenever any chain member is missing, and keeps the chooser''s notice in the status line'
+Check ($consentText.Contains('$box.Enabled=(-not $consentRow.blocked)') -and $consentText.Contains('if($consentRow.needsAccept)') -and $consentText.Contains('$consentRow.statusText') -and $consentText.Contains('$linkText') -eq $false -and $consentText.Contains('$licenseLink.linkText')) 'the consent dialog lists every component, with only the missing ones tickable, and shows each link with its host'
+$launchStepText = (Get-UiFunctionText 'LaunchStep').Extent.Text
+Check ($launchStepText.Contains('if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}') -and $launchStepText.IndexOf('Sync-FastLlmExperimentalSwitch') -lt $launchStepText.IndexOf('$script:child.Start($info)')) 'every child is given an install folder that carries the experimental switch the user set'
+Check ($ui.Contains('Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text))')) 'toggling the switch mirrors it into the install folder shown in the window'
+Check ($launchStepText.Contains('$script:servingPreviousRunId') -and $ui.Contains('Get-FastLlmUiFailureCode -Status (Get-FastLlmStatus $script:installPath) -PreviousRunId ([string]$script:servingPreviousRunId)')) 'a typed failure code is trusted only when this start wrote it'
+foreach ($planButton in @(@('installButton', 'install'), @('startButton', 'start'))) {
+    Check ([regex]::IsMatch($ui, ('\$' + $planButton[0] + '\.Add_Click\(\{try\{ReadSelection;AssertUiBackgroundNotOccupied;\$script:chosenRecipe=\$null;\$script:flow=New-FastLlmUiFlow -Mode ' + $planButton[1]))) "the $($planButton[1]) button clears a chosen recipe before it starts"
+}
 $continueText = (Get-UiFunctionText 'ContinueWithChosenRecipe').Extent.Text
 Check ($continueText.Contains('Get-FastLlmUiComponentInstallArguments') -and $continueText.Contains("LaunchStep 'component install' `$installArgs") -and $continueText.Contains('$Row.experimental -and -not $experimentalBox.Checked')) 'choosing a recipe installs through the argument builder and refuses an experimental row while the switch is off'
 Check (-not $ui.Contains("'-Install'") -and -not $ui.Contains("'-AcceptLicense'")) 'the window builds no install or license-acceptance argument itself'
 Check ($ui.Contains("'recipes','-Detail','-AsJson'") -and $ui.Contains('$chooseButton.Add_Click') -and $ui.Contains("ButtonAt 'Choose another setup'") -and $ui.Contains('$script:previewReady')) 'a Choose another setup button asks the CLI for the recipe list and is tied to a preview'
 Check ($ui.Contains('$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)')) 'the button is enabled only when a preview exists and nothing else is running'
 Check ($ui.Contains("'component install'{") -and $ui.Contains('Test-FastLlmUiTypedHipFailure -Code $failureCode') -and $ui.Contains('Format-FastLlmUiTypedFailure')) 'a finished component install starts the chosen recipe, and a typed start failure is shown as its message'
-Check ($ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe') -and $ui.Contains('$script:chosenRecipe=$null;$script:flow=New-FastLlmUiFlow -Mode start')) 'the chosen recipe is pinned for the preview and cleared by the plain Start'
+Check ($ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe')) 'the chosen recipe is pinned for the preview'
 
 Write-Output "UI flow tests passed: $checks"

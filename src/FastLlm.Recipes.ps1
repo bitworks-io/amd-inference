@@ -302,8 +302,21 @@ function Select-FastLlmRecipeForPlacements {
     return [pscustomobject]@{ recipe = $pick.recipe; model = $pick.model; placement = $pick.placement; variant = $pick.variant; skipped = @($skipped) }
 }
 
+# The card variant of this PC when every eligible card resolves to the same one, whatever the plan picked (an estimated or manual plan too);
+# $null when a card is not identified or the cards differ. Nothing is guessed.
+function Get-FastLlmIdentifiedCardVariant {
+    param([object[]] $EligibleAdapters, [object[]] $DxgiAdapters, [object[]] $Variants)
+    $cards = @($EligibleAdapters | Where-Object { $_ })
+    if ($cards.Count -eq 0 -or @($Variants | Where-Object { $_ }).Count -eq 0) { return $null }
+    $keys = @($cards | ForEach-Object {
+            $match = Resolve-FastLlmAdapterVariant -PlannerAdapter $_ -DxgiAdapters $DxgiAdapters -Variants $Variants
+            if ($match.status -eq 'matched') { [string] $match.variant } else { '<unidentified>' } } | Sort-Object -Unique)
+    if ($keys.Count -eq 1 -and $keys[0] -ne '<unidentified>') { return [string] $keys[0] }
+    return $null
+}
+
 function New-FastLlmPlanRecipeBlock {
-    param($Pick, [string] $ModelId, [string[]] $Skipped, [switch] $Recovered, [switch] $HipBackend)
+    param($Pick, [string] $ModelId, [string[]] $Skipped, [switch] $Recovered, [switch] $HipBackend, [string] $IdentifiedVariant)
     if ($Pick) {
         $recipe = $Pick.recipe
         $url = $null
@@ -319,6 +332,9 @@ function New-FastLlmPlanRecipeBlock {
     }
     $origin = 'estimated'
     if ($ModelId -and -not $Recovered) { $origin = 'manual' }   # a model picked by recovery is not the user's choice
-    return [pscustomobject] [ordered] @{ id = $null; origin = $origin; label = (Get-FastLlmRecipeLabel $origin); variant = $null
+    # variant is the identified card variant even without a recipe (the window offers only that card's setups); $null when the card is not identified.
+    $planVariant = $null
+    if (-not [string]::IsNullOrWhiteSpace($IdentifiedVariant)) { $planVariant = $IdentifiedVariant }
+    return [pscustomobject] [ordered] @{ id = $null; origin = $origin; label = (Get-FastLlmRecipeLabel $origin); variant = $planVariant
         evidenceUrl = $null; expected = $null; vulkanBarMitigation = $null; skipped = @($Skipped) }
 }

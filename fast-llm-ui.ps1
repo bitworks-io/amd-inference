@@ -87,6 +87,8 @@ $chooseButton=ButtonAt 'Choose another setup' 636 303 184
 $script:previewReady=$false
 $script:chosenRecipe=$null
 $script:pendingRecipeRow=$null
+$script:servingPreviousRunId=''
+$script:chooserNotice=''
 $chooseButton.Enabled=$false
 $backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
 $statusLabel=LabelAt 'Stopped. Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first.' 24 382
@@ -171,6 +173,8 @@ $experimentalBox.Add_CheckedChanged({
             Set-FastLlmComponentSettings -InstallRoot $script:settingsRoot -ExperimentalComponents 'on'
         }
         else{Set-FastLlmComponentSettings -InstallRoot $script:settingsRoot -ExperimentalComponents 'off'}
+        # The CLI children read the switch from the install folder shown in the window, so it is mirrored there too.
+        [void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text)))
     }
     catch{
         $statusLabel.Text='The experimental components setting could not be saved.'
@@ -304,6 +308,8 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
     if($Step -in @('engine','model download','serving','component install')){AssertUiBackgroundNotOccupied}
+    # The experimental switch is stored under the launch root, but the child reads it from the install folder it is given: mirror it there first.
+    if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{throw "The experimental components setting could not be applied to the install folder: $($_.Exception.Message)"}}
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
     if($Step -ceq 'vc prepare'){
@@ -313,6 +319,11 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
         $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $PSScriptRoot 'fast-llm.ps1'))+$Arguments
     }
     $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
+    if($Step -ceq 'serving'){
+        # Remember the previous run so a failure code left by an earlier run is never blamed on this start.
+        $script:servingPreviousRunId=''
+        try{$previousStatus=Get-FastLlmStatus $script:installPath;if($previousStatus.PSObject.Properties['runId']){$script:servingPreviousRunId=[string]$previousStatus.runId}}catch{}
+    }
     $script:child=New-Object Bitworks.FastLlm.ProcessHost
     $script:step=$Step
     try{$script:child.Start($info)}catch{$script:child.Dispose();$script:child=$null;$script:step='idle';SetBusy $false;throw}
@@ -582,7 +593,7 @@ function LaunchUiPhase {
             # The preview's label and link describe the preview only; clear them until the running plan reports its own.
             $resultsLink.Visible=$false;$script:evidenceUrl=$null
             $statusLabel.Text='Starting the server...'
-            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan)+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe));return
+            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan -ChosenRecipe $script:chosenRecipe)+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe));return
         }
         default { throw "The control-window workflow cannot launch phase '$($script:flow.phase)'." }
     }
@@ -783,15 +794,16 @@ function ShowRecipeChooser($Rows) {
     if($script:flow -and $script:flow.PSObject.Properties['pendingPlan']){$previewed=$script:flow.pendingPlan}
     if($previewed -and $previewed.PSObject.Properties['recipe'] -and $previewed.recipe -and $previewed.recipe.PSObject.Properties['variant']){$variant=[string]$previewed.recipe.variant}
     $shown=@(Get-FastLlmUiChooserRows -Rows @($Rows) -ExperimentalComponents $switchValue -Variant $variant)
-    if($shown.Count -eq 0){
-        $statusLabel.Text='No other setup is available for this card.'
-        return $null
-    }
+    # What the list lacks is said out loud (an unidentified card, no setup for this card, the switch on without any experimental setup).
+    $script:chooserNotice=[string](Get-FastLlmUiChooserNotice -Shown $shown -ExperimentalComponents $switchValue -Variant $variant)
+    if($script:chooserNotice){$statusLabel.Text=$script:chooserNotice}
+    if($shown.Count -eq 0){return $null}
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='Choose another setup';$dialog.Size=New-Object Drawing.Size(960,470)
     $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
     $intro=New-Object Windows.Forms.Label
-    $intro.Text='Pick a setup, then Choose. Experimental setups are shown only while Experimental community components is on. Nothing is downloaded until you confirm.'
+    $intro.Text='Setups for your card. Pick one, then Choose. Experimental setups are shown only while Experimental community components is on. Nothing is downloaded until you confirm.'
+    if($script:chooserNotice){$intro.Text+=" $($script:chooserNotice)"}
     $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(900,40)
     $list=New-Object Windows.Forms.ListView
     $list.Location=New-Object Drawing.Point(20,60);$list.Size=New-Object Drawing.Size(900,290);$list.View='Details'
@@ -812,7 +824,8 @@ function ShowRecipeChooser($Rows) {
     $list.Add_SelectedIndexChanged({$choose.Enabled=($list.SelectedItems.Count -eq 1)}.GetNewClosure())
     $list.Add_DoubleClick({if($list.SelectedItems.Count -eq 1){$dialog.DialogResult=[Windows.Forms.DialogResult]::OK}}.GetNewClosure())
     $dialog.Controls.Add($intro);$dialog.Controls.Add($list);$dialog.Controls.Add($choose);$dialog.Controls.Add($cancel)
-    $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
+    # Enter chooses the selected row (the Choose button is disabled until a row is selected); Esc cancels.
+    $dialog.AcceptButton=$choose;$dialog.CancelButton=$cancel
     $picked=$null
     SetTrayMenuAvailable $false
     try{
@@ -837,8 +850,9 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows) {
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='Install community components';$dialog.Size=New-Object Drawing.Size(800,620)
     $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $boldFont=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold)
     $intro=New-Object Windows.Forms.Label
-    $intro.Text="The setup '$([string]$Row.label)' needs the components below. They are downloaded from the sources shown, not from Bitworks. Open each license link, read it, and tick I accept for every component to enable Install."
+    $intro.Text="You chose the $([string]$Row.model) setup ($([string]$Row.contextText)). It needs the components below. Missing ones are downloaded from the sources shown, not from Bitworks. Open each license link, read it, and tick I accept for every missing component to enable Install."
     $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(740,58)
     $panel=New-Object Windows.Forms.Panel
     $panel.Location=New-Object Drawing.Point(20,80);$panel.Size=New-Object Drawing.Size(740,420);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
@@ -846,7 +860,7 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows) {
     $top=10
     foreach($consentRow in $ConsentRows){
         $nameLabel=New-Object Windows.Forms.Label
-        $nameLabel.Text=("{0} ({1})" -f [string]$consentRow.name,[string]$consentRow.version);$nameLabel.Font=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold)
+        $nameLabel.Text=("{0} ({1}) - {2}" -f [string]$consentRow.name,[string]$consentRow.version,[string]$consentRow.statusText);$nameLabel.Font=$boldFont
         $nameLabel.Location=New-Object Drawing.Point(10,$top);$nameLabel.Size=New-Object Drawing.Size(700,24)
         $sourceText="Source: $([string]$consentRow.sourceText)"
         if(@($consentRow.redirectHosts).Count -gt 0){$sourceText+="; the download may be redirected via $(@($consentRow.redirectHosts) -join ', ')"}
@@ -857,7 +871,7 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows) {
         foreach($licenseLink in @($consentRow.links)){
             if($licenseLink.url){
                 $link=New-Object Windows.Forms.LinkLabel
-                $link.Text=[string]$licenseLink.title;$link.Tag=[string]$licenseLink.url
+                $link.Text=[string]$licenseLink.linkText;$link.Tag=[string]$licenseLink.url
                 $link.Location=New-Object Drawing.Point(24,$top);$link.AutoSize=$true
                 $link.Add_LinkClicked({param($sender,$clickArgs)
                     try{
@@ -868,16 +882,19 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows) {
                 $panel.Controls.Add($link)
             }else{
                 $plain=New-Object Windows.Forms.Label
-                $plain.Text=("{0} (this link cannot be opened from here)" -f [string]$licenseLink.title);$plain.Location=New-Object Drawing.Point(24,$top);$plain.AutoSize=$true
+                $plain.Text=("{0} (this link cannot be opened from here, so this component cannot be accepted)" -f [string]$licenseLink.title);$plain.Location=New-Object Drawing.Point(24,$top);$plain.AutoSize=$true
                 $panel.Controls.Add($plain)
             }
             $top+=24
         }
-        $box=New-Object Windows.Forms.CheckBox
-        $box.Text=[string]$consentRow.acceptText;$box.Tag=[string]$consentRow.id
-        $box.Location=New-Object Drawing.Point(10,($top+4));$box.Size=New-Object Drawing.Size(700,26)
-        $box.Add_CheckedChanged({UpdateConsentInstallState})
-        $panel.Controls.Add($box);$boxes.Add($box)
+        # An installed or built-in component is a read-only row; only a missing one has a box, and a blocked one cannot be ticked.
+        if($consentRow.needsAccept){
+            $box=New-Object Windows.Forms.CheckBox
+            $box.Text=[string]$consentRow.acceptText;$box.Tag=[string]$consentRow.id;$box.Enabled=(-not $consentRow.blocked)
+            $box.Location=New-Object Drawing.Point(10,($top+4));$box.Size=New-Object Drawing.Size(700,26)
+            $box.Add_CheckedChanged({UpdateConsentInstallState})
+            $panel.Controls.Add($box);$boxes.Add($box)
+        }
         $top+=48
     }
     $install=New-Object Windows.Forms.Button
@@ -896,7 +913,7 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows) {
     try{
         $confirmed=[bool]($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK)
         $ticked=@($boxes|ForEach-Object{[bool]$_.Checked})
-    }finally{$script:consentView=$null;$dialog.Dispose();SetTrayMenuAvailable $true}
+    }finally{$script:consentView=$null;$boldFont.Dispose();$dialog.Dispose();SetTrayMenuAvailable $true}
     return [pscustomobject]@{confirmed=$confirmed;ticked=$ticked}
 }
 function BeginChosenRecipe($Row) {
@@ -907,13 +924,19 @@ function BeginChosenRecipe($Row) {
     LaunchUiPhase
 }
 function ContinueWithChosenRecipe($Row) {
-    if(-not $Row){$statusLabel.Text='No other setup chosen. Nothing was changed.';return}
+    if(-not $Row){
+        # A notice the chooser already put in the status line (no setup for this card, ...) stays visible.
+        if(-not $script:chooserNotice){$statusLabel.Text='No other setup chosen. Nothing was changed.'}
+        return
+    }
     if($Row.experimental -and -not $experimentalBox.Checked){throw 'This setup is experimental. Turn on Experimental community components to use it. Nothing was changed.'}
     if(-not [string]::IsNullOrEmpty([string]$Row.chainError)){throw "This setup cannot be prepared: $([string]$Row.chainError) Nothing was changed."}
-    $consentRows=@(Get-FastLlmUiConsentRows -Chain @($Row.chain))
-    if($Row.consentRequired -and $consentRows.Count -gt 0){
+    if($Row.installRequired){
+        # Some component of the engine chain is missing: show the whole chain; Install needs every missing component accepted.
+        $consentRows=@(Get-FastLlmUiConsentRows -Chain @($Row.chain))
         $answer=ShowComponentConsent $Row $consentRows
-        $installArgs=@(Get-FastLlmUiComponentInstallArguments -EngineId ([string]$Row.engineId) -InstallRoot $script:installPath -Confirmed ([bool]$answer.confirmed) -RowCount $consentRows.Count -Ticked @($answer.ticked))
+        $pendingCount=@($consentRows|Where-Object{$_.needsAccept}).Count
+        $installArgs=@(Get-FastLlmUiComponentInstallArguments -EngineId ([string]$Row.engineId) -InstallRoot $script:installPath -Confirmed ([bool]$answer.confirmed) -RowCount $pendingCount -Ticked @($answer.ticked))
         if($installArgs.Count -eq 0){$statusLabel.Text='Component install cancelled. Nothing was downloaded.';return}
         $script:pendingRecipeRow=$Row
         LaunchStep 'component install' $installArgs
@@ -1118,7 +1141,7 @@ $timer.Add_Tick({
                 # A typed failure (HIP backend unavailable, blocked DLL, device not found or ambiguous, a missing component) is shown as its own
                 # message and is not retried: the window never falls back to another setup.
                 $failureCode=''
-                try{$failedStatus=Get-FastLlmStatus $script:installPath;if($failedStatus.PSObject.Properties['failureCode']){$failureCode=[string]$failedStatus.failureCode}}catch{}
+                try{$failureCode=Get-FastLlmUiFailureCode -Status (Get-FastLlmStatus $script:installPath) -PreviousRunId ([string]$script:servingPreviousRunId)}catch{}
                 if(Test-FastLlmUiTypedHipFailure -Code $failureCode){
                     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'error' -ErrorMessage $text
                     ShowFailure (Format-FastLlmUiTypedFailure -Code $failureCode -Text $text);return

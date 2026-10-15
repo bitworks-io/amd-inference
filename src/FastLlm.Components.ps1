@@ -214,16 +214,22 @@ function Get-FastLlmComponentSourceHosts {
 }
 
 # One row per recipe for the window's "Choose another setup" list: the recipe, its label, model and context, and the engine's whole requires chain
-# (requires first, the engine last) with install state, license consent kind, source hosts and license links. Read-only and offline: the
-# inventory is presence-only. The caller passes the recipes it wants listed (Select-FastLlmVisibleRecipes has already hidden experimental ones).
+# (requires first, the engine last) with its state, license consent kind, source hosts and license links. Read-only and offline.
+# State: the recipe's built-in engine is "built in" when its executable is under engines\ and "missing" otherwise (the window's start installs it);
+# every other member is "installed" only when the inventory says installed AND verified (presence and size), else "missing".
+# The caller passes the recipes it wants listed (Select-FastLlmVisibleRecipes has already hidden experimental ones).
 function Get-FastLlmRecipeChooserRows {
-    param([object[]] $Recipes, [object[]] $Components, [object[]] $Inventory, [Parameter(Mandatory = $true)] $Catalog)
+    param([object[]] $Recipes, [object[]] $Components, [object[]] $Inventory, [Parameter(Mandatory = $true)] $Catalog, [Parameter(Mandatory = $true)][string] $InstallRoot)
     $installedIds = @{}
-    foreach ($inventoryRow in @($Inventory | Where-Object { $_ })) { if ([bool] $inventoryRow.installed) { $installedIds[[string] $inventoryRow.id] = $true } }
+    foreach ($inventoryRow in @($Inventory | Where-Object { $_ })) { if ([bool] $inventoryRow.installed -and [bool] $inventoryRow.verified) { $installedIds[[string] $inventoryRow.id] = $true } }
+    $builtInEngineId = 'llama.cpp-' + [string] $Catalog.engine.version + '-vulkan'
+    $builtInEntryPoint = 'llama-server.exe'
+    if ($Catalog.engine.PSObject.Properties['assets'] -and $Catalog.engine.assets -and $Catalog.engine.assets.PSObject.Properties['vulkan'] -and
+        $Catalog.engine.assets.vulkan.PSObject.Properties['entryPoint'] -and $Catalog.engine.assets.vulkan.entryPoint) { $builtInEntryPoint = [string] $Catalog.engine.assets.vulkan.entryPoint }
     $rows = New-Object 'System.Collections.Generic.List[object]'
     foreach ($recipe in @($Recipes | Where-Object { $_ })) {
         # Same rule as the recipe selection: the recipe's named engine component, else the built-in Vulkan engine of the catalog.
-        $engineId = 'llama.cpp-' + [string] $Catalog.engine.version + '-vulkan'
+        $engineId = $builtInEngineId
         if ($recipe.PSObject.Properties['components'] -and $recipe.components -and $recipe.components.PSObject.Properties['engine'] -and $recipe.components.engine) { $engineId = [string] $recipe.components.engine }
         $chainError = ''
         $members = @()
@@ -234,16 +240,23 @@ function Get-FastLlmRecipeChooserRows {
         else { $chainError = "The engine '$engineId' is not in this release's component list." }
         $chain = New-Object 'System.Collections.Generic.List[object]'
         $consentRequired = $false
+        $installRequired = $false
         foreach ($member in $members) {
             $consent = ''
             if ($member.PSObject.Properties['license'] -and $member.license -and $member.license.PSObject.Properties['consent']) { $consent = [string] $member.license.consent }
-            $isInstalled = $installedIds.ContainsKey([string] $member.id)
+            $isBuiltIn = ([string] $member.id -ceq $builtInEngineId)
+            if ($isBuiltIn) { $isInstalled = [bool] (Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $Catalog.engine.version) -BackendKey 'vulkan' -EntryPoint $builtInEntryPoint) }
+            else { $isInstalled = $installedIds.ContainsKey([string] $member.id) }
+            $state = 'missing'
+            if ($isInstalled -and $isBuiltIn) { $state = 'built in' } elseif ($isInstalled) { $state = 'installed' }
             if (-not $isInstalled -and $consent -ceq 'accept') { $consentRequired = $true }
+            # The built-in engine is installed by the start itself; any other missing member needs the window's install first.
+            if (-not $isInstalled -and -not $isBuiltIn) { $installRequired = $true }
             $displayName = [string] $member.id
             if ($member.PSObject.Properties['displayName'] -and $member.displayName) { $displayName = [string] $member.displayName }
             $chain.Add([pscustomobject] [ordered] @{
                     id = [string] $member.id; displayName = $displayName; kind = [string] $member.kind; version = [string] $member.version
-                    installed = [bool] $isInstalled; consent = $consent
+                    builtIn = [bool] $isBuiltIn; installed = [bool] $isInstalled; state = $state; consent = $consent
                     sourceHosts = @(Get-FastLlmComponentSourceHosts -Listed $member); redirectHosts = @(Get-FastLlmComponentSourceHosts -Listed $member -Redirect)
                     licenseLinks = @(Get-FastLlmComponentLicenseLinks -Component $member)
                 })
@@ -254,8 +267,21 @@ function Get-FastLlmRecipeChooserRows {
                 id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
                 variant = [string] $recipe.gpu.variant; gpuCount = [int] $recipe.gpu.count
                 model = [string] $recipe.components.model; contextSize = $contextSize
-                engineId = $engineId; chain = $chain.ToArray(); consentRequired = [bool] $consentRequired; chainError = $chainError
+                engineId = $engineId; chain = $chain.ToArray(); consentRequired = [bool] $consentRequired; installRequired = [bool] $installRequired; chainError = $chainError
             })
     }
     return $rows.ToArray()
+}
+
+# The experimental switch lives in the settings of the root the window was launched from, but every child is given the install folder shown in the
+# window. Mirror the stored value into that folder's settings when it differs, so the CLI the child runs sees the switch the user set. Returns $true
+# when it wrote. Never writes when the two already agree (so a default root is not touched).
+function Sync-FastLlmExperimentalSwitch {
+    param([Parameter(Mandatory = $true)][string] $SourceRoot, [Parameter(Mandatory = $true)][string] $TargetRoot)
+    if ([IO.Path]::GetFullPath($SourceRoot).TrimEnd('\', '/') -ieq [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\', '/')) { return $false }
+    $wanted = [string] (Get-FastLlmComponentSettings -InstallRoot $SourceRoot).experimentalComponents
+    $stored = [string] (Get-FastLlmComponentSettings -InstallRoot $TargetRoot).experimentalComponents
+    if ($wanted -ceq $stored) { return $false }
+    Set-FastLlmComponentSettings -InstallRoot $TargetRoot -ExperimentalComponents $wanted
+    return $true
 }

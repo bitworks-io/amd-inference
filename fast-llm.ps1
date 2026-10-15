@@ -238,7 +238,7 @@ try {
                 $detailCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
                 $detailComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath)
                 $detailInventory = @(Get-FastLlmComponentInventory -ComponentsPath $componentsFilePath -InstallRoot $InstallRoot)
-                ConvertTo-Json -InputObject @(Get-FastLlmRecipeChooserRows -Recipes $recipeList -Components $detailComponents -Inventory $detailInventory -Catalog $detailCatalog) -Depth 8
+                ConvertTo-Json -InputObject @(Get-FastLlmRecipeChooserRows -Recipes $recipeList -Components $detailComponents -Inventory $detailInventory -Catalog $detailCatalog -InstallRoot $InstallRoot) -Depth 8
             }
             elseif ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
             elseif ($recipeList.Count -eq 0) { Write-Host 'This release has no published recipes.' }

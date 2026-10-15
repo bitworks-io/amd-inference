@@ -1308,6 +1308,21 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $shippedCases = @(
         @{ Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; Args = $expectedXtx; EnginePath = 'C:\FastLLM\vulkan\llama-server.exe' },
         @{ Hardware = $xtHardware; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k'; Args = $expectedXt; EnginePath = 'C:\FastLLM\rocm\llama-server.exe' })
+    # The plan reports the identified card in recipe.variant even when no recipe was picked (estimated and manual plans), $null when it is not identified.
+    $noIdentityHardware = Read-FastLlmJson -Path (Join-Path $fixtureDir 'rx-7900-xtx-24gb.json')
+    $identityCases = @(
+        @{ Name = 'estimated xtx'; Hardware = $xtxHardware; Extra = @{ Profile = 'fast' }; Variant = 'rx-7900-xtx'; Origin = 'estimated' },
+        @{ Name = 'manual xtx'; Hardware = $xtxHardware; Extra = @{ ModelId = 'qwen3.8-27b-ud-q4-k-m' }; Variant = 'rx-7900-xtx'; Origin = 'manual' },
+        @{ Name = 'estimated xt'; Hardware = $xtHardware; Extra = @{ Profile = 'fast' }; Variant = 'rx-7900-xt'; Origin = 'estimated' },
+        @{ Name = 'recipe xtx'; Hardware = $xtxHardware; Extra = @{}; Variant = 'rx-7900-xtx'; Origin = 'bitworks' },
+        @{ Name = 'no card identity'; Hardware = $noIdentityHardware; Extra = @{ Profile = 'fast' }; Variant = $null; Origin = 'estimated' })
+    foreach ($identityCase in $identityCases) {
+        $identityParams = @{ Hardware = $identityCase.Hardware; CatalogPath = $shippedCatalogPath; InstallRoot = $planRoot; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+        foreach ($extraKey in $identityCase.Extra.Keys) { $identityParams[$extraKey] = $identityCase.Extra[$extraKey] }
+        $identityPlan = Get-FastLlmPlan @identityParams
+        $reportedVariant = $identityPlan.recipe.variant
+        Check ($identityPlan.recipe.origin -ceq $identityCase.Origin -and (($null -eq $identityCase.Variant -and $null -eq $reportedVariant) -or ([string] $reportedVariant -ceq [string] $identityCase.Variant))) "the plan reports the identified card for the $($identityCase.Name) plan"
+    }
     foreach ($case in $shippedCases) {
         foreach ($recipeMode in @('auto', 'named')) {
             $planParams = @{ Hardware = $case.Hardware; CatalogPath = $shippedCatalogPath; InstallRoot = $planRoot; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
@@ -1851,14 +1866,17 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $listedLinks = @(Get-FastLlmComponentLicenseLinks -Component $listedHip)
     Check ($listedLinks.Count -ge 2 -and @($hipDetail.chain[1].licenseLinks).Count -eq $listedLinks.Count -and $hipDetail.chain[1].licenseLinks[1].url -ceq [string] $listedLinks[1].url) 'the Detail chain carries the component''s license links'
     $listedRuntime = @(Get-FastLlmComponents -ComponentsPath $shippedComponentsPath | Where-Object { $_.id -ceq 'amd-rocm-gfx1100-10.0.0' })[0]
+    # A component directory alone is not "installed": the inventory must also verify it (presence and size).
     New-Item -ItemType Directory -Path (Get-FastLlmComponentRoot -InstallRoot $detailRoot -Component $listedRuntime) -Force | Out-Null
     $detailPartial = @(Get-DetailRows $detailRoot | Where-Object { $_.id -like '*.hip' })[0]
-    Check ($detailPartial.chain[0].installed -eq $true -and $detailPartial.chain[1].installed -eq $false -and $detailPartial.consentRequired -eq $true) 'Detail reads the installed state per component from the inventory'
-    New-Item -ItemType Directory -Path (Get-FastLlmComponentRoot -InstallRoot $detailRoot -Component $listedHip) -Force | Out-Null
-    $detailFull = @(Get-DetailRows $detailRoot | Where-Object { $_.id -like '*.hip' })[0]
-    Check ($detailFull.consentRequired -eq $false) 'a fully installed chain needs no consent'
+    Check ($detailPartial.chain[0].installed -eq $false -and $detailPartial.chain[0].state -ceq 'missing' -and $detailPartial.consentRequired -eq $true -and $detailPartial.installRequired -eq $true) 'Detail reports a component directory that does not verify as missing'
     $detailVulkan = @($detailOff | Where-Object { $_.engineId -ceq 'llama.cpp-b10698-vulkan' })[0]
-    Check ($null -ne $detailVulkan -and $detailVulkan.consentRequired -eq $false -and $detailVulkan.chain[0].consent -ceq 'show') 'a built-in Vulkan recipe lists its engine and needs no consent'
+    Check ($null -ne $detailVulkan -and $detailVulkan.consentRequired -eq $false -and $detailVulkan.installRequired -eq $false -and $detailVulkan.chain[0].consent -ceq 'show' -and $detailVulkan.chain[0].builtIn -eq $true -and $detailVulkan.chain[0].state -ceq 'missing') 'a built-in Vulkan recipe lists its engine as built in and missing before the engine is installed, and needs no component install'
+    $builtInDir = Join-Path $detailRoot 'engines/b10698/vulkan'
+    New-Item -ItemType Directory -Path $builtInDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $builtInDir 'llama-server.exe'), 'x')
+    $detailVulkanReady = @(Get-DetailRows $detailRoot | Where-Object { $_.engineId -ceq 'llama.cpp-b10698-vulkan' })[0]
+    Check ($detailVulkanReady.chain[0].state -ceq 'built in' -and $detailVulkanReady.chain[0].installed -eq $true) 'the built-in engine under engines\ reads as built in'
     $hostsSample = @(Get-FastLlmComponentSourceHosts -Listed $listedRuntime)
     Check ($hostsSample.Count -eq 1 -and $hostsSample[0] -ceq 'stable.repo.amd.com') 'the source host of a multi-part component is read from its source URLs'
 

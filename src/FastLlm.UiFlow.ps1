@@ -333,16 +333,16 @@ function Get-FastLlmUiEvidenceUrl {
 # The preview's measured recipe is passed to the start as -Recipe, so a start that can no longer apply it fails closed
 # ("does not apply to this PC") instead of silently running as estimated under the preview's measured label.
 function Get-FastLlmUiStartRecipeArguments {
-    param($Plan)
+    param($Plan, $ChosenRecipe)
     if (-not $Plan -or -not $Plan.PSObject.Properties['recipe'] -or -not $Plan.recipe) { return @() }
     $origin = [string] $Plan.recipe.origin
     $id = $null
     if ($Plan.recipe.PSObject.Properties['id']) { $id = [string] $Plan.recipe.id }
     if (-not $id -or @('estimated', 'manual', '') -contains $origin) { return @() }
     if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
-    # A plan only reports an experimental origin when the user named that recipe in the chooser with the switch on; passing the acceptance
-    # on to the start is that explicit choice, and the CLI still checks the switch.
-    if (Test-FastLlmExperimentalOrigin -Origin $origin) { return @('-Recipe', $id, '-AcceptExperimental') }
+    # The experimental acceptance is passed on only for the recipe the user explicitly picked in the chooser (its id equals the plan's), never because a
+    # plan happens to report an experimental origin.
+    if ((Test-FastLlmExperimentalOrigin -Origin $origin) -and $ChosenRecipe -and [string] $ChosenRecipe.id -ceq $id) { return @('-Recipe', $id, '-AcceptExperimental') }
     return @('-Recipe', $id)
 }
 
@@ -351,7 +351,7 @@ function Get-FastLlmUiPreviewRecipeArguments {
     param($Recipe)
     if (-not $Recipe) { return @() }
     $id = [string] $Recipe.id
-    if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
+    if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { throw 'The chosen setup has an invalid id; nothing was started.' }
     if (Test-FastLlmExperimentalOrigin -Origin ([string] $Recipe.origin)) { return @('-Recipe', $id, '-AcceptExperimental') }
     return @('-Recipe', $id)
 }
@@ -378,18 +378,27 @@ function Format-FastLlmUiHostList {
     return ($names -join ', ')
 }
 
+# "built in", "installed" or "missing", exactly as the CLI reported it.
+function Get-FastLlmUiMemberState {
+    param($Member)
+    $state = ''
+    if ($Member.PSObject.Properties['state']) { $state = [string] $Member.state }
+    if (@('built in', 'installed', 'missing') -ccontains $state) { return $state }
+    return 'missing'
+}
+
 # The recipes the chooser shows, from the detail rows of `recipes -Detail -AsJson`. Experimental rows (community-experimental and
 # bitworks-experimental) are shown only when the switch is on, whatever the list contained.
 function Get-FastLlmUiChooserRows {
     param([object[]] $Rows, [string] $ExperimentalComponents = 'off', [string] $Variant)
+    # Only the identified card's recipes are ever offered; without an identified card nothing is (fail closed).
+    if ([string]::IsNullOrWhiteSpace($Variant)) { return @() }
     $shown = New-Object 'System.Collections.Generic.List[object]'
     foreach ($row in @($Rows | Where-Object { $_ })) {
         $origin = [string] $row.origin
         $isExperimental = Test-FastLlmExperimentalOrigin -Origin $origin
         if ($isExperimental -and $ExperimentalComponents -cne 'on') { continue }
-        # When the preview identified the card, only that card's recipes are offered; without an identified card every listed recipe is, and
-        # a recipe that does not apply is refused by the plan with its own message.
-        if (-not [string]::IsNullOrWhiteSpace($Variant) -and [string] $row.variant -cne $Variant) { continue }
+        if ([string] $row.variant -cne $Variant) { continue }
         $chain = @($row.chain | Where-Object { $_ })
         # The chain is requires first, the engine last; the text names the engine first, then what it requires, each with its source host.
         $engineText = [string] $row.engineId
@@ -397,9 +406,7 @@ function Get-FastLlmUiChooserRows {
             $parts = @($chain | ForEach-Object {
                     $name = [string] $_.displayName
                     if ([string]::IsNullOrWhiteSpace($name)) { $name = [string] $_.id }
-                    $state = 'not installed'
-                    if ([bool] $_.installed) { $state = 'installed' }
-                    '{0} (from {1}; {2})' -f $name, (Format-FastLlmUiHostList -Hosts @($_.sourceHosts)), $state
+                    '{0} (from {1}; {2})' -f $name, (Format-FastLlmUiHostList -Hosts @($_.sourceHosts)), (Get-FastLlmUiMemberState -Member $_)
                 })
             $engineText = $parts[$parts.Count - 1]
             if ($parts.Count -gt 1) { $engineText += '; requires ' + (@($parts[0..($parts.Count - 2)]) -join '; ') }
@@ -412,6 +419,7 @@ function Get-FastLlmUiChooserRows {
                 engineId = [string] $row.engineId; engineText = $engineText
                 chain = $chain
                 consentRequired = [bool] $row.consentRequired
+                installRequired = [bool] $row.installRequired
                 chainError = $(if ($row.PSObject.Properties['chainError']) { [string] $row.chainError } else { '' })
             })
     }
@@ -428,21 +436,31 @@ function Get-FastLlmUiSafeLicenseUrl {
     return $Url
 }
 
-# One consent row per component the install would download (the chain members that are not installed): name, version, source host and the
-# license links as they are listed for the component. There is no license text: the user reads the linked page.
+# One consent row per component in the chain. A component that is already installed (or built in) is a read-only row; one that is missing needs
+# its "I accept" box. Each row has the component's name, version, source host and license links as listed (no license text); a link is shown with
+# its host so the destination is visible. A row with a link that cannot be opened from here is blocked: its box cannot be ticked.
 function Get-FastLlmUiConsentRows {
     param([object[]] $Chain)
     $rows = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($member in @($Chain | Where-Object { $_ -and -not [bool] $_.installed })) {
+    foreach ($member in @($Chain | Where-Object { $_ })) {
+        $state = Get-FastLlmUiMemberState -Member $member
         $links = New-Object 'System.Collections.Generic.List[object]'
+        $blocked = $false
         foreach ($link in @($member.licenseLinks | Where-Object { $_ })) {
             $safe = Get-FastLlmUiSafeLicenseUrl -Url ([string] $link.url)
-            $links.Add([pscustomobject] [ordered] @{ title = [string] $link.title; url = $safe })
+            $linkText = [string] $link.title
+            if ($safe) { $linkText = '{0} ({1})' -f [string] $link.title, ([Uri] $safe).Host } else { $blocked = $true }
+            $links.Add([pscustomobject] [ordered] @{ title = [string] $link.title; url = $safe; linkText = $linkText })
         }
         $name = [string] $member.displayName
         if ([string]::IsNullOrWhiteSpace($name)) { $name = [string] $member.id }
+        $needsAccept = ($state -ceq 'missing')
+        $statusText = 'built in'
+        if ($state -ceq 'installed') { $statusText = 'installed; license accepted earlier' }
+        elseif ($needsAccept) { $statusText = 'will be downloaded' }
         $rows.Add([pscustomobject] [ordered] @{
                 id = [string] $member.id; name = $name; version = [string] $member.version
+                state = $state; needsAccept = [bool] $needsAccept; blocked = [bool]($needsAccept -and $blocked); statusText = $statusText
                 sourceHosts = @($member.sourceHosts); sourceText = (Format-FastLlmUiHostList -Hosts @($member.sourceHosts))
                 redirectHosts = @($member.redirectHosts)
                 links = $links.ToArray()
@@ -450,6 +468,28 @@ function Get-FastLlmUiConsentRows {
             })
     }
     return $rows.ToArray()
+}
+
+# What the chooser tells the user when it has fewer rows than they expect (or none).
+function Get-FastLlmUiChooserNotice {
+    param([object[]] $Shown, [string] $ExperimentalComponents = 'off', [string] $Variant)
+    if ([string]::IsNullOrWhiteSpace($Variant)) { return 'This card was not identified, so no setup can be offered for it. Nothing was changed.' }
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    $rows = @($Shown | Where-Object { $_ })
+    if ($ExperimentalComponents -ceq 'on' -and @($rows | Where-Object { $_.experimental }).Count -eq 0) {
+        $parts.Add('Experimental community components is on, but no experimental setup is listed for this card.')
+    }
+    if ($rows.Count -eq 0) { $parts.Add('No other setup is available for this card.') }
+    return ($parts -join ' ')
+}
+
+# The failure code to trust after a failed start: the one the CLI recorded for THIS run. An unchanged run id means the start failed before it
+# wrote its own status, so a code left by an earlier run is ignored.
+function Get-FastLlmUiFailureCode {
+    param($Status, [string] $PreviousRunId)
+    if (-not $Status -or -not $Status.PSObject.Properties['failureCode'] -or -not $Status.PSObject.Properties['runId']) { return '' }
+    if ([string] $Status.runId -ceq $PreviousRunId) { return '' }
+    return [string] $Status.failureCode
 }
 
 # Install is enabled only when there is at least one row and EVERY row's box is ticked.

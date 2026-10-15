@@ -1049,6 +1049,16 @@ function Get-FastLlmPlan {
     }
     if ($RecipeId -and -not $recipePick) { throw "Recipe '$RecipeId' does not apply to this PC. No other recipe was substituted." }
     $recipeSkipped = @($recipeSkippedSink)
+    # The identified card variant is reported on every plan, so the window can limit "Choose another setup" to this card.
+    $identifiedVariant = $null
+    if ($GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
+        try {
+            $identityDxgi = @()
+            if ($Hardware.PSObject.Properties['dxgiAdapters']) { $identityDxgi = @($Hardware.dxgiAdapters) }
+            $identifiedVariant = Get-FastLlmIdentifiedCardVariant -EligibleAdapters $allEligible -DxgiAdapters $identityDxgi -Variants (Get-FastLlmGpuVariants -Path $GpuVariantsPath)
+        }
+        catch { $identifiedVariant = $null }
+    }
 
     if ($recipePick) {
         $selected = [pscustomobject] @{ model = $recipePick.model; placement = $recipePick.placement; score = 0; gpuCount = @($recipePick.placement.adapters).Count }
@@ -1266,7 +1276,7 @@ function Get-FastLlmPlan {
         tensorSplit         = $tensorSplit
         endpoint            = "http://$($catalog.hardwarePolicy.serverHost):$($catalog.hardwarePolicy.serverPort)/v1"
         serverArguments     = $arguments
-        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)) -HipBackend:($planBackend -ceq 'hip'))
+        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)) -HipBackend:($planBackend -ceq 'hip') -IdentifiedVariant $identifiedVariant)
         warnings            = $warnings
     }
     # Present only for an engine component, so a plan on the built-in engine has exactly the fields it always had.

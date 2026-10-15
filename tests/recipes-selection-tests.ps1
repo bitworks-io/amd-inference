@@ -71,6 +71,18 @@ $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'ex
 Check ($pick.recipe.id -eq 'b1') 'an auto-eligible recipe is still picked next to a not auto-eligible one'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced' -RecipeId 'e2'
 Check ($pick.recipe.id -eq 'e2') 'a not auto-eligible model is reachable by naming its recipe'
+# The identified card is reported even when no recipe is picked (estimated and manual plans), and only when every eligible card agrees.
+$oneXtx = @((Placement 1).adapters[0])
+Check ((Get-FastLlmIdentifiedCardVariant -EligibleAdapters $oneXtx -DxgiAdapters $xtxDxgi -Variants $variants) -eq 'rx-7900-xtx') 'a matched card is identified without any recipe'
+Check ($null -eq (Get-FastLlmIdentifiedCardVariant -EligibleAdapters $oneXtx -DxgiAdapters @() -Variants $variants)) 'a card with no identity is not identified'
+Check ($null -eq (Get-FastLlmIdentifiedCardVariant -EligibleAdapters $mixedCards -DxgiAdapters $mixedDxgi -Variants $variants)) 'two different identified cards give no single identified card'
+Check ((Get-FastLlmIdentifiedCardVariant -EligibleAdapters $twoXtxCards -DxgiAdapters @($xtxDxgi[0], $xtxDxgi[0]) -Variants $variants) -eq 'rx-7900-xtx') 'two identical identified cards are the same variant'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x') -IdentifiedVariant 'rx-7900-xtx'
+Check ($block.origin -eq 'estimated' -and $block.variant -eq 'rx-7900-xtx') 'an estimated block carries the identified card variant'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @() -IdentifiedVariant 'rx-7900-xt'
+Check ($block.origin -eq 'manual' -and $block.variant -eq 'rx-7900-xt') 'a manual block carries the identified card variant'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x')
+Check ($null -eq $block.variant) 'a block without an identified card has no variant'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x')
 Check ($block.origin -eq 'estimated' -and $block.label -eq 'Estimated for your card') 'no pick is labelled estimated'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @()
