@@ -3,7 +3,9 @@
 
 Verified and community-reproduced entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and
 evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation OR >=50% prompt over the
-best Bitworks recipe for the same card and GPU count, at the same or larger context). Deterministic output.
+best Bitworks recipe for the same card and GPU count, at the same or larger context; with no Bitworks recipe to compare
+against, only the fastest community record for that card and GPU count). Only verified Bitworks recipes may be
+recommended. Deterministic output.
 Usage: build-recipes.py [--root R] [--check]   (exit 0 ok, 1 drift, 2 refused)
 """
 import argparse
@@ -72,6 +74,8 @@ def validate(entry, origin, catalog, variants):
     if url is not None and not str(url).startswith("https://bitworks.io/"):
         raise RecipeError(f"{rid}: evidence.url must be on https://bitworks.io/")
     if origin != "bitworks":
+        if entry.get("recommended"):
+            raise RecipeError(f"{rid}: recommended is for verified Bitworks recipes only")
         source = entry.get("source") or {}
         if not all(source.get(k) for k in ("author", "url", "postedAt", "recordId")):
             raise RecipeError(f"{rid}: community entries need source author, url, postedAt and recordId")
@@ -122,6 +126,7 @@ def build(root):
             continue
         recipes.append(recipe_from(entry, "bitworks"))
     bitworks_recipes = list(recipes)
+    candidates = []
     for entry in community["records"]:
         origin = entry.get("origin")
         if origin not in ("community-reproduced", "community-experimental"):
@@ -133,8 +138,19 @@ def build(root):
             continue
         recipe = recipe_from(entry, origin)
         recipe["compelling"] = compelling(recipe, bitworks_recipes)
-        if origin == "community-experimental" and not recipe["compelling"]["isCompelling"]:
-            skipped.append(f"{entry['id']}: experimental entries must be compelling")
+        candidates.append(recipe)
+    # With no Bitworks recipe for a card and GPU count to compare against, only the fastest community record is compelling.
+    peerless = {}
+    for recipe in candidates:
+        if recipe["compelling"]["baselineRecipe"] is None:
+            peerless.setdefault((recipe["gpu"]["variant"], recipe["gpu"]["count"]), []).append(recipe)
+    for group in peerless.values():
+        fastest = min(group, key=lambda r: (-r["expected"]["generationTokS"], r["id"]))
+        for recipe in group:
+            recipe["compelling"]["isCompelling"] = recipe is fastest
+    for recipe in candidates:
+        if recipe["origin"] == "community-experimental" and not recipe["compelling"]["isCompelling"]:
+            skipped.append(f"{recipe['id']}: experimental entries must be compelling")
             continue
         recipes.append(recipe)
     for recipe in recipes:

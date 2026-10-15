@@ -110,6 +110,36 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertEqual(skipped, [])
         self.assertEqual(sorted(r["origin"] for r in document["recipes"]), ["bitworks", "community-experimental"])
 
+    def test_recommended_is_for_verified_bitworks_recipes_only(self):
+        for origin in ("community-reproduced", "community-experimental"):
+            with self.subTest(origin=origin):
+                record = community(origin, generationTokS=40.0)
+                record["recommended"] = True
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.tree([ENTRY], [record]))
+
+    def test_without_a_bitworks_peer_only_the_fastest_record_is_compelling(self):
+        slow, fast, tie = community(rid="c-slow", generationTokS=20.0), community(rid="c-fast", generationTokS=30.0), community(rid="b-tie", generationTokS=30.0)
+        document, skipped = br.build(self.tree([], [slow, fast, tie]))
+        flags = {r["id"]: r["compelling"]["isCompelling"] for r in document["recipes"]}
+        self.assertEqual(flags, {"c-slow": False, "c-fast": False, "b-tie": True})
+        self.assertEqual(skipped, [])
+
+    def test_without_a_bitworks_peer_a_slower_experimental_record_is_skipped(self):
+        fast = community(rid="c-fast", generationTokS=30.0)
+        slow = community("community-experimental", rid="e-slow", generationTokS=10.0)
+        document, skipped = br.build(self.tree([], [fast, slow]))
+        self.assertEqual([r["id"] for r in document["recipes"]], ["c-fast"])
+        self.assertTrue(document["recipes"][0]["compelling"]["isCompelling"])
+        self.assertEqual(skipped, ["e-slow: experimental entries must be compelling"])
+
+    def test_the_peerless_rule_is_per_card_and_gpu_count(self):
+        xt = community(rid="x1", generationTokS=15.0)
+        xt["variant"] = "rx-7900-xt"; xt["model"] = "qwen3.8-27b-ud-iq4-xs"
+        xt["runtime"] = dict(ENTRY["runtime"], contextSize=16384)
+        document, _ = br.build(self.tree([], [community(rid="c-xtx", generationTokS=30.0), xt]))
+        self.assertTrue(all(r["compelling"]["isCompelling"] for r in document["recipes"]))
+
     def test_output_is_deterministic_and_check_detects_drift(self):
         root = self.tree([ENTRY])
         self.assertEqual(subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--root", str(root)]).returncode, 0)
