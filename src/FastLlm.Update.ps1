@@ -7,6 +7,12 @@ if (-not (Get-Command Move-FastLlmFileReplacing -ErrorAction SilentlyContinue)) 
     . (Join-Path $PSScriptRoot 'FastLlm.FileReplace.ps1')
 }
 
+if (-not (Get-Command Test-FastLlmPinnedSignature -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'FastLlm.Trust.ps1')
+}
+
+$script:FastLlmReleasePageUrlPrefix = 'https://github.com/bitworks-io/amd-inference/releases/tag/'
+$script:FastLlmUpdateSumsMaxBytes = 65536
 $script:FastLlmReleaseApiBase = 'https://api.github.com/repos/bitworks-io/amd-inference/releases'
 $script:FastLlmAssetUrlPrefix = 'https://github.com/bitworks-io/amd-inference/releases/download/'
 
@@ -178,7 +184,10 @@ function Select-FastLlmLatestRelease {
         if ($null -eq $best -or (Compare-FastLlmVersion $tagInfo.version $bestParsed.version) -gt 0) { $best = $item; $bestParsed = $tagInfo }
     }
     if ($null -eq $best) { return $null }
-    return ConvertTo-FastLlmUpdateLatest -Release $best -Parsed $bestParsed
+    $candidate = ConvertTo-FastLlmUpdateLatest -Release $best -Parsed $bestParsed
+    # A release page outside this repository's tag path is no eligible release at all.
+    if (-not ([string]$candidate.htmlUrl).StartsWith($script:FastLlmReleasePageUrlPrefix, [StringComparison]::Ordinal)) { return $null }
+    return $candidate
 }
 
 function ConvertTo-FastLlmUtcDate {
@@ -215,6 +224,7 @@ function Read-FastLlmUpdateState {
                 assets  = $assets
             }
             if ($null -eq (ConvertTo-FastLlmVersionNumbers $latest.version)) { $latest = $null }
+            elseif (-not ([string]$latest.htmlUrl).StartsWith($script:FastLlmReleasePageUrlPrefix, [StringComparison]::Ordinal)) { $latest = $null }
         }
         return [pscustomobject]@{
             lastCheckUtc = (ConvertTo-FastLlmUtcDate (Get-FastLlmUpdateProp $stored 'lastCheckUtc'))
@@ -305,4 +315,209 @@ function Invoke-FastLlmUpdateCheck {
     Write-FastLlmUpdateState -Path $statePath -CheckedUtc $now -Etag $responseEtag -Channel $channelName -Latest $latestRelease
     if ($null -ne $latestRelease -and (Compare-FastLlmVersion $latestRelease.version $installedVersion) -gt 0) { return (& $make 'available' $latestRelease $stamp) }
     return (& $make 'up-to-date' $latestRelease $stamp)
+}
+
+
+# --- Verified update flow ---
+
+function Get-FastLlmUpdateFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $hasher.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    finally { $hasher.Dispose(); $stream.Dispose() }
+}
+
+# The same line rules as release/ReleaseVerify.psm1 Read-FastLlmSha256Sums, on a size-capped file: two spaces, 64 lowercase hex, a bare file name.
+function Read-FastLlmUpdateSums {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $info = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($info.Length -gt $script:FastLlmUpdateSumsMaxBytes) { throw 'SHA256SUMS is over the size cap.' }
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    foreach ($byte in $bytes) { if ($byte -gt 126 -or ($byte -lt 32 -and $byte -ne 10 -and $byte -ne 13)) { throw 'SHA256SUMS is not plain ASCII text.' } }
+    $text = [Text.Encoding]::ASCII.GetString($bytes)
+    $sums = @{}
+    foreach ($rawLine in $text.Split([char]10)) {
+        $line = $rawLine
+        if ($line.EndsWith("`r")) { $line = $line.Substring(0, $line.Length - 1) }
+        if ($line -eq '') { continue }
+        $m = [regex]::Match($line, '^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$')
+        if (-not $m.Success) { throw 'SHA256SUMS has a malformed line.' }
+        if ($sums.ContainsKey($m.Groups[2].Value)) { throw 'SHA256SUMS has a duplicate entry.' }
+        $sums[$m.Groups[2].Value] = $m.Groups[1].Value
+    }
+    return $sums
+}
+
+# Deletes only what this call created: the exact download names (and the sibling lock, partial and quarantine names Save-FastLlmVerifiedFile derives from them) inside the fresh directory, then the directory if it is empty.
+function Remove-FastLlmUpdateWork {
+    param([string]$Directory, [string[]]$BaseNames)
+    if ([string]::IsNullOrEmpty($Directory)) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
+        foreach ($child in @(Get-ChildItem -LiteralPath $Directory -Force -File)) {
+            foreach ($baseName in @($BaseNames)) {
+                if ($child.Name.StartsWith($baseName, [StringComparison]::Ordinal)) {
+                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                    break
+                }
+            }
+        }
+        try { [IO.Directory]::Delete($Directory) } catch { }
+    }
+    catch { }
+}
+
+function Save-FastLlmUpdateCappedFile {
+    param([string]$Url, [string]$Destination, [int64]$MaxBytes)
+    if (-not $Url.StartsWith($script:FastLlmAssetUrlPrefix, [StringComparison]::Ordinal)) { throw 'The asset URL is outside the release download path.' }
+    $curlPath = $null
+    if ($env:OS -eq 'Windows_NT' -and $env:SystemRoot) {
+        $systemCurl = Join-Path (Join-Path $env:SystemRoot 'System32') 'curl.exe'
+        if (Test-Path -LiteralPath $systemCurl -PathType Leaf) { $curlPath = $systemCurl }
+    }
+    elseif ($env:OS -ne 'Windows_NT') {
+        $curlCommand = Get-Command 'curl' -CommandType Application -ErrorAction SilentlyContinue
+        if ($curlCommand) { $curlPath = $curlCommand.Source }
+    }
+    if (-not $curlPath) { throw 'The trusted Windows System32 curl.exe is required for HTTPS-only downloads.' }
+    $curlArguments = @('--disable', '--silent', '--show-error', '--location', '--fail', '--max-time', '60',
+        '--max-filesize', [string]$MaxBytes, '--proto', '=https', '--proto-redir', '=https', '--output', $Destination, $Url)
+    & $curlPath @curlArguments
+    if ($LASTEXITCODE -ne 0) { throw "Download failed with curl exit code $LASTEXITCODE." }
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { throw 'The download produced no file.' }
+    if ((Get-Item -LiteralPath $Destination).Length -gt $MaxBytes) { throw 'The download is over the size cap.' }
+}
+
+function Stop-FastLlmServerForUpdate {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, [int]$TimeoutSeconds = 60)
+    try {
+        $state = Get-FastLlmStatus -InstallRoot $InstallRoot
+        if (-not [bool](Get-FastLlmUpdateProp $state 'active')) { return [pscustomobject]@{ ok = $true; reason = 'already-stopped' } }
+        $phase = [string](Get-FastLlmUpdateProp $state 'phase')
+        if (@('loading', 'checking', 'ready') -cnotcontains $phase) { return [pscustomobject]@{ ok = $false; reason = "busy-${phase}" } }
+        Request-FastLlmStop -InstallRoot $InstallRoot | Out-Null
+        $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
+        while ([datetime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $after = Get-FastLlmStatus -InstallRoot $InstallRoot
+            if (-not [bool](Get-FastLlmUpdateProp $after 'active')) { return [pscustomobject]@{ ok = $true; reason = 'stopped' } }
+        }
+        return [pscustomobject]@{ ok = $false; reason = 'stop-timeout' }
+    }
+    catch { return [pscustomobject]@{ ok = $false; reason = [string]$_.Exception.Message } }
+}
+
+# Seams are scriptblocks whose defaults are the real implementations; tests pass mocks.
+#   StopServer  { param($InstallRoot) }                       -> { ok; reason }
+#   Download    { param($Url, $Destination, $Sha256, $SizeBytes) }  throws on failure; an empty Sha256 means the capped SHA256SUMS fetch, with SizeBytes as the cap
+#   Verify      { param($Path) }                              -> { ok; reason; detail }
+#   GetProductVersion { param($Path) }                        -> string
+#   RunInstaller { param($Setup, $Silent) }                   -> exit code
+#   Integrity   { param($AppRoot) }                           -> { status; reason }
+function Invoke-FastLlmVerifiedUpdate {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$AppRoot,
+        [Parameter(Mandatory = $true)]$Latest,
+        [scriptblock]$StopServer = { param($Root) Stop-FastLlmServerForUpdate -InstallRoot $Root },
+        [scriptblock]$Download = {
+            param($Url, $Destination, $Sha256, $SizeBytes)
+            if ([string]::IsNullOrEmpty($Sha256)) { Save-FastLlmUpdateCappedFile -Url $Url -Destination $Destination -MaxBytes $SizeBytes }
+            else { Save-FastLlmVerifiedFile -Url $Url -Destination $Destination -Sha256 $Sha256 -SizeBytes $SizeBytes | Out-Null }
+        },
+        [scriptblock]$Verify = { param($Path) Test-FastLlmPinnedSignature -Path $Path },
+        [scriptblock]$GetProductVersion = { param($Path) Get-FastLlmFileProductVersion -Path $Path },
+        [scriptblock]$RunInstaller = {
+            param($Setup, $QuietMode)
+            $installerSwitch = '/SILENT'
+            if ($QuietMode) { $installerSwitch = '/VERYSILENT' }
+            $process = Start-Process -FilePath $Setup -ArgumentList @($installerSwitch, '/CURRENTUSER', '/NORESTART') -Wait -PassThru
+            $process.ExitCode
+        },
+        [scriptblock]$Integrity = { param($Root) Test-FastLlmInstallIntegrity -AppRoot $Root },
+        [switch]$Silent
+    )
+    $freshDir = $null
+    $workNames = @()
+    $finish = {
+        param([string]$Status, [string]$Step, [string]$Reason)
+        if ($Status -cne 'installed') { Remove-FastLlmUpdateWork -Directory $freshDir -BaseNames $workNames }
+        [pscustomobject]@{ status = $Status; step = $Step; reason = $Reason }
+    }
+
+    $newVersion = [string](Get-FastLlmUpdateProp $Latest 'version')
+    if ($null -eq (ConvertTo-FastLlmVersionNumbers $newVersion)) { return (& $finish 'refused' 'version' 'invalid-latest-version') }
+    $assets = Get-FastLlmUpdateProp $Latest 'assets'
+    $installerName = "FastLLM-Setup-${newVersion}.exe"
+
+    # 1. stop, verify stopped
+    try { $stopped = & $StopServer $InstallRoot } catch { return (& $finish 'failed' 'stop' ([string]$_.Exception.Message)) }
+    if (-not [bool](Get-FastLlmUpdateProp $stopped 'ok')) { return (& $finish 'failed' 'stop' ([string](Get-FastLlmUpdateProp $stopped 'reason'))) }
+
+    # 2. SHA256SUMS (capped), parsed strictly
+    $sumsAsset = $null
+    $installerAsset = $null
+    if ($null -ne $assets) {
+        if ($assets.Contains('SHA256SUMS')) { $sumsAsset = $assets['SHA256SUMS'] }
+        if ($assets.Contains($installerName)) { $installerAsset = $assets[$installerName] }
+    }
+    if ($null -eq $sumsAsset) { return (& $finish 'refused' 'sums' 'no-sums-asset') }
+    $sumsUrl = [string](Get-FastLlmUpdateProp $sumsAsset 'url')
+    if (-not $sumsUrl.StartsWith($script:FastLlmAssetUrlPrefix, [StringComparison]::Ordinal)) { return (& $finish 'refused' 'sums' 'bad-asset-url') }
+    $sumsSize = [int64](Get-FastLlmUpdateProp $sumsAsset 'size')
+    if ($sumsSize -gt $script:FastLlmUpdateSumsMaxBytes) { return (& $finish 'refused' 'sums' 'sums-too-large') }
+
+    $freshDir = Join-Path (Join-Path $InstallRoot 'updates') ("${newVersion}-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $workNames = @('SHA256SUMS', $installerName)
+    try { [IO.Directory]::CreateDirectory($freshDir) | Out-Null } catch { return (& $finish 'failed' 'sums' 'cannot-create-download-directory') }
+    $sumsPath = Join-Path $freshDir 'SHA256SUMS'
+    try { & $Download $sumsUrl $sumsPath '' ([int64]$script:FastLlmUpdateSumsMaxBytes) | Out-Null }
+    catch { return (& $finish 'failed' 'sums' ([string]$_.Exception.Message)) }
+    try {
+        if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { throw 'missing-sums-file' }
+        $sums = Read-FastLlmUpdateSums -Path $sumsPath
+    }
+    catch { return (& $finish 'refused' 'sums' ([string]$_.Exception.Message)) }
+    if (-not $sums.ContainsKey($installerName)) { return (& $finish 'refused' 'sums' 'no-installer-entry') }
+    $installerSha = [string]$sums[$installerName]
+
+    # 3. the installer: sha from SUMS, size from the release asset
+    if ($null -eq $installerAsset) { return (& $finish 'refused' 'download' 'no-installer-asset') }
+    $installerUrl = [string](Get-FastLlmUpdateProp $installerAsset 'url')
+    $installerSize = [int64](Get-FastLlmUpdateProp $installerAsset 'size')
+    if (-not $installerUrl.StartsWith($script:FastLlmAssetUrlPrefix, [StringComparison]::Ordinal) -or $installerSize -le 0) { return (& $finish 'refused' 'download' 'bad-installer-asset') }
+    $setupPath = Join-Path $freshDir $installerName
+    try { & $Download $installerUrl $setupPath $installerSha $installerSize | Out-Null }
+    catch { return (& $finish 'failed' 'download' ([string]$_.Exception.Message)) }
+    if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) { return (& $finish 'failed' 'download' 'missing-installer-file') }
+    try { $actualSha = Get-FastLlmUpdateFileSha256 -Path $setupPath } catch { return (& $finish 'failed' 'hash' ([string]$_.Exception.Message)) }
+    if ($actualSha -cne $installerSha) { return (& $finish 'failed' 'hash' 'sha256-mismatch') }
+
+    # 4. pinned signature
+    try { $signature = & $Verify $setupPath } catch { return (& $finish 'failed' 'signature' ([string]$_.Exception.Message)) }
+    if (-not [bool](Get-FastLlmUpdateProp $signature 'ok')) { return (& $finish 'refused' 'signature' ([string](Get-FastLlmUpdateProp $signature 'reason'))) }
+
+    # 5. ProductVersion equals the release version and is newer than the installed one
+    try { $productVersion = [string](& $GetProductVersion $setupPath) } catch { return (& $finish 'failed' 'version' ([string]$_.Exception.Message)) }
+    if ($productVersion -cne $newVersion) { return (& $finish 'refused' 'version' 'product-version-mismatch') }
+    $installedRelease = Read-FastLlmInstalledRelease -AppRoot $AppRoot
+    if ($null -eq $installedRelease) { return (& $finish 'refused' 'version' 'not-a-release') }
+    if ((Compare-FastLlmVersion $newVersion $installedRelease.version) -ne 1) { return (& $finish 'refused' 'version' 'not-newer') }
+
+    # 6. run the per-user installer
+    try { $exitCode = & $RunInstaller $setupPath ([bool]$Silent) } catch { return (& $finish 'failed' 'install' ([string]$_.Exception.Message)) }
+    if ([int]$exitCode -ne 0) { return (& $finish 'failed' 'install' "installer-exit-${exitCode}") }
+
+    # 7. integrity of the installed tree
+    try { $integrity = & $Integrity $AppRoot } catch { return (& $finish 'failed' 'integrity' ([string]$_.Exception.Message)) }
+    if ([string](Get-FastLlmUpdateProp $integrity 'status') -cne 'ok') {
+        $why = [string](Get-FastLlmUpdateProp $integrity 'reason')
+        if ([string]::IsNullOrEmpty($why)) { $why = [string](Get-FastLlmUpdateProp $integrity 'status') }
+        return (& $finish 'failed' 'integrity' $why)
+    }
+    return (& $finish 'installed' 'integrity' '')
 }
