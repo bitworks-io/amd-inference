@@ -2325,11 +2325,22 @@ function Test-FastLlmNonInteractiveCommandLine {
 }
 
 # True when a person can answer a prompt: not started with -NonInteractive, an interactive session, and input that is not redirected. A child process
-# (-NonInteractive, redirected stdin, a service, a scheduled task) is not, and never reaches Read-Host.
+# (-NonInteractive, redirected stdin, a service, a scheduled task) is not, and never reaches Read-Host. The parameters are test seams; by default
+# they read the real process.
 function Test-FastLlmConsoleInteractive {
-    if (Test-FastLlmNonInteractiveCommandLine) { return $false }
-    if (-not [Environment]::UserInteractive) { return $false }
-    try { if ([Console]::IsInputRedirected) { return $false } } catch { return $false }
+    [CmdletBinding()]
+    param(
+        [string[]] $CommandLineArgs = @([Environment]::GetCommandLineArgs()),
+        [object] $UserInteractive = $null,
+        [object] $InputRedirected = $null
+    )
+    if (Test-FastLlmNonInteractiveCommandLine -CommandLineArgs $CommandLineArgs) { return $false }
+    if ($null -eq $UserInteractive) { $UserInteractive = [Environment]::UserInteractive }
+    if (-not [bool] $UserInteractive) { return $false }
+    if ($null -eq $InputRedirected) {
+        try { $InputRedirected = [Console]::IsInputRedirected } catch { return $false }
+    }
+    if ([bool] $InputRedirected) { return $false }
     return $true
 }
 
@@ -2361,7 +2372,7 @@ function Assert-FastLlmComponentPathLength {
     $version = [string] $Component.version
     $finalRoot = $base.Length + 1 + 'components'.Length + 1 + $kind.Length + 1 + $componentId.Length + 1 + $version.Length
     $stagingRoot = $base.Length + 1 + 'components'.Length + 1 + '.s'.Length + 1 + 8
-    $cacheRoot = $base.Length + 1 + 'downloads'.Length + 1 + 'components'.Length + 1 + $componentId.Length + 1 + $version.Length
+    $cacheRoot = $base.Length + 1 + 'downloads'.Length + 1 + 'c'.Length
     $longestFile = 0
     $longestDirectory = 0
     foreach ($manifestEntry in @((Get-FastLlmComponentManifestAsset -Component $Component).manifest)) {
@@ -2384,9 +2395,7 @@ function Assert-FastLlmComponentPathLength {
     }
     $sources = @(Get-FastLlmComponentSources -Component $Component)
     for ($index = 0; $index -lt $sources.Count; $index++) {
-        $leaf = [System.IO.Path]::GetFileName(([System.Uri] ([string] $sources[$index].url)).AbsolutePath)
-        $leafLength = $leaf.Length
-        if ($sources.Count -gt 1) { $leafLength += ("part$($index + 1)-").Length }
+        $leafLength = 16 + [System.IO.Path]::GetExtension([System.IO.Path]::GetFileName(([System.Uri] ([string] $sources[$index].url)).AbsolutePath)).Length
         $cachePath = $cacheRoot + 1 + $leafLength
         if ($cachePath -gt 259) { & $fail 'download path' $cachePath 259 }
         if ($DownloaderNames -and $cachePath + 90 -gt 259) { & $fail 'download quarantine path (the downloader adds up to 90 characters)' ($cachePath + 90) 259 }
@@ -2482,21 +2491,19 @@ function Expand-FastLlmComponentArchivePart {
     }
 }
 
-# The cache path of each source part: downloads\components\<id>\<version>\<file>. A component with several parts prefixes the part number, so two parts
-# that share a leaf name never share (or quarantine) a file.
+# The cache path of each source part: downloads\c\<first 16 hex of the part's pinned SHA-256><extension of the URL file>. Short on purpose (every character
+# counts against the 259-character path limit) and never built from the URL file name; two different parts never share (or quarantine) a file.
 function Get-FastLlmComponentCachePaths {
     param([Parameter(Mandatory = $true)] $Component, [Parameter(Mandatory = $true)] [string] $InstallRoot)
 
     $downloadsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'downloads' -Label 'Downloads root'
-    $cacheRoot = Join-FastLlmContainedPath -Root $downloadsRoot -Child 'components' -Label 'Component downloads root'
-    $cacheRoot = Join-FastLlmContainedPath -Root $cacheRoot -Child ([string] $Component.id) -Label 'Component download folder'
-    $cacheRoot = Join-FastLlmContainedPath -Root $cacheRoot -Child ([string] $Component.version) -Label 'Component download folder'
+    $cacheRoot = Join-FastLlmContainedPath -Root $downloadsRoot -Child 'c' -Label 'Component downloads root'
     $sources = @(Get-FastLlmComponentSources -Component $Component)
     $paths = New-Object 'System.Collections.Generic.List[string]'
     for ($index = 0; $index -lt $sources.Count; $index++) {
-        $fileName = [System.IO.Path]::GetFileName(([System.Uri] ([string] $sources[$index].url)).AbsolutePath)
+        $extension = [System.IO.Path]::GetExtension([System.IO.Path]::GetFileName(([System.Uri] ([string] $sources[$index].url)).AbsolutePath)).ToLowerInvariant()
+        $fileName = ([string] $sources[$index].sha256).ToLowerInvariant().Substring(0, 16) + $extension
         Assert-FastLlmLeafName -Value $fileName -Label 'Component download file name'
-        if ($sources.Count -gt 1) { $fileName = "part$($index + 1)-$fileName" }
         $paths.Add((Join-FastLlmContainedPath -Root $cacheRoot -Child $fileName -Label 'Component download path'))
     }
     return [pscustomobject] @{ root = $cacheRoot; paths = $paths.ToArray() }
@@ -2928,7 +2935,11 @@ function Remove-FastLlmComponent {
         [string] $ComponentId,
 
         [Parameter(Mandatory = $true)]
-        [string] $InstallRoot
+        [string] $InstallRoot,
+
+        # The caller (the CLI) already holds the operation lock. A supervised server holds that lock for its whole lifetime, so a lock the caller
+        # holds proves none is serving: the status-based in-use check (which would see the caller's own lock as "running") is skipped.
+        [switch] $OperationLockHeld
     )
 
     $entry = $null
@@ -2954,7 +2965,7 @@ function Remove-FastLlmComponent {
     if (-not $root.StartsWith($componentsPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'Component folder is not under the components folder; nothing was deleted.'
     }
-    if (Test-FastLlmComponentInUse -InstallRoot $InstallRoot -ComponentRoot $root) {
+    if (-not $OperationLockHeld -and (Test-FastLlmComponentInUse -InstallRoot $InstallRoot -ComponentRoot $root)) {
         throw "FastLLM is running and may be using '$ComponentId'. Stop FastLLM first; nothing was deleted."
     }
 

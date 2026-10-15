@@ -364,8 +364,8 @@ try {
     $component = @(Get-FastLlmComponents -ComponentsPath $fx.ComponentsPath)[0]
     Check ((Test-Path -LiteralPath (Join-Path $root 'server.exe')) -and (Test-Path -LiteralPath (Join-Path $root 'engine.dll'))) 'happy install: the files land in the component root'
     Check (Test-FastLlmComponentInstallation -InstallRoot $installRoot -Component $component) 'happy install: the installed root verifies against the manifest'
-    $expectedCache = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($installRoot, 'downloads', 'components', 'test-engine-1', 'v1', 'test-engine-1-v1.zip'))
-    Check ([string] $counter.destination -ceq $expectedCache) 'the component download is cached at downloads\components\<id>\<version>\<file>, never the shared downloads\<file>'
+    $expectedCache = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($installRoot, 'downloads', 'c', ((Get-HexSha $fx.Zip).Substring(0, 16) + '.zip')))
+    Check ([string] $counter.destination -ceq $expectedCache) 'the component download is cached at downloads\c\<first 16 hex of the pinned SHA-256>.<ext>, never under the URL file name or the shared downloads\<file>'
     Check ($counter.count -eq 1 -and $counter.url -eq 'https://example.com/downloads/test-engine-1-v1.zip') 'happy install: one download of the pinned URL'
     Check ((@($counter.hosts) -join ',') -eq 'example.com,cdn.example.com') 'happy install: the download receives the component allowedRedirectHosts'
     Check (-not (Test-Path -LiteralPath (Join-Path $installRoot 'consents'))) 'consent show: no receipt is written'
@@ -439,8 +439,9 @@ try {
     $msg = Get-ThrownMessage { Install-FastLlmComponent -ComponentsPath $fxPin.ComponentsPath -ComponentId $fxPin.Id -InstallRoot $badRoot -AcceptLicense -Unattended -Download $wrongSeam }
     Check ($null -ne $msg -and $msg -like '*failed its pinned size and SHA-256*') 'a download whose bytes differ from the pins is refused'
     Check (-not (Test-Path -LiteralPath (Join-Path $badRoot 'components'))) 'hash mismatch: no component directory is created'
-    $downloadsDir = [System.IO.Path]::Combine($badRoot, 'downloads', 'components', 'test-engine-1', 'v1')
-    Check (@(Get-ChildItem -LiteralPath $downloadsDir -Force | Where-Object { $_.Name -like '*.corrupt.*' }).Count -eq 1 -and @(Get-ChildItem -LiteralPath $downloadsDir -Force | Where-Object { $_.Name -eq 'test-engine-1-v1.zip' }).Count -eq 0) 'hash mismatch: the bad download is quarantined, not left in place'
+    $downloadsDir = [System.IO.Path]::Combine($badRoot, 'downloads', 'c')
+    $badCacheName = (Get-HexSha $fxPin.Zip).Substring(0, 16) + '.zip'
+    Check (@(Get-ChildItem -LiteralPath $downloadsDir -Force | Where-Object { $_.Name -like '*.corrupt.*' }).Count -eq 1 -and @(Get-ChildItem -LiteralPath $downloadsDir -Force | Where-Object { $_.Name -eq $badCacheName }).Count -eq 0) 'hash mismatch: the bad download is quarantined, not left in place'
     Check (@(Get-ChildItem -LiteralPath (Join-Path $badRoot 'downloads') -Force -File).Count -eq 0) 'hash mismatch: nothing is written to the shared downloads folder'
 
     # ---- Extra file in the archive: refused ----
@@ -726,10 +727,10 @@ try {
     $chainState.probe = { param($u) [pscustomobject] @{ url = $u; runtimeServer = (Test-Path -LiteralPath (Join-Path $probeRuntimeRoot 'bin/b.dll')) } }.GetNewClosure()
     $chainSeam = New-ChainSeam -Fixture $linksFx -State $chainState
     $chainOut = Install-FastLlmComponent -ComponentsPath $linksFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $chainRoot -AcceptLicense -Download $chainSeam 6>&1
-    $chainReturn = @($chainOut | Where-Object { $_ -is [string] })
+    $chainReturn = @($chainOut | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
     $chainLines = @($chainOut | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string] $_ })
     $engineRootActual = Get-FastLlmComponentRoot -InstallRoot $chainRoot -Component $linksEngine
-    Check ($chainReturn.Count -eq 1 -and $chainReturn[0] -ceq $engineRootActual) 'a chain install returns exactly the requested component root'
+    Check ($chainReturn.Count -eq 1 -and $chainReturn[0] -is [string] -and $chainReturn[0] -ceq $engineRootActual) 'a chain install returns exactly the requested component root'
     Check (($chainState.log -join ',') -ceq ($linksFx.Part1Url + ',' + $linksFx.Part2Url + ',' + $linksFx.EngineUrl)) 'the chain installs the required runtime (both parts) before the engine'
     $firstDownload = [array]::IndexOf($chainLines, ($chainLines | Where-Object { $_ -like 'DOWNLOAD *' } | Select-Object -First 1))
     $runtimeLine = [array]::IndexOf($chainLines, 'Component: rt-hip (rt-hip 1.0)')
@@ -800,7 +801,7 @@ try {
     $badState = New-ChainState
     $badFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $badFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $badRoot -AcceptLicense -Download (New-ChainSeam -Fixture $badFx -State $badState) }
     Check ($null -ne $badFailure -and $badFailure.code -ceq 'component-archive-member-mismatch') 'a member whose SHA-256 differs from the pin is refused with a typed failure'
-    $quarantineDir = [System.IO.Path]::Combine($badRoot, 'downloads', 'components', 'rt-hip', '1.0')
+    $quarantineDir = [System.IO.Path]::Combine($badRoot, 'downloads', 'c')
     Check (@(Get-ChildItem -LiteralPath $quarantineDir -Force -File | Where-Object { $_.Name -like 'x.dat.corrupt.*' }).Count -eq 1) 'the bad member is quarantined next to the download cache (it survives the refusal)'
     Check ((-not (Test-Path -LiteralPath (Join-Path $badRoot 'components/runtime'))) -and -not (Test-Path -LiteralPath (Join-Path $badRoot 'components/.s'))) 'a mismatched member leaves no component folder and no staging'
     Check (-not ($badState.log -contains $badFx.EngineUrl)) 'the engine is never downloaded when its required runtime fails'
@@ -921,9 +922,15 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check (([regex]::Matches($installSource, 'Read-Host')).Count -eq 1 -and $installSource.Contains('Test-FastLlmConsoleInteractive') -and $installSource.IndexOf('Test-FastLlmConsoleInteractive') -lt $installSource.IndexOf('Read-Host')) 'Read-Host is reached only after the interactive check (M5)'
 
     # ---- Fix round 1 ----
-    $canLink = $true
+    # A reparse point for the link tests: a symbolic link, or (a standard Windows user cannot create those) a directory junction.
+    function New-TestLink([string] $Path, [string] $Target) {
+        try { New-Item -ItemType SymbolicLink -Path $Path -Target $Target -ErrorAction Stop | Out-Null; return $true } catch { }
+        try { New-Item -ItemType Junction -Path $Path -Target $Target -ErrorAction Stop | Out-Null; return $true } catch { }
+        return $false
+    }
     $linkProbeDir = New-TestRoot
-    try { New-Item -ItemType SymbolicLink -Path (Join-Path $linkProbeDir 'l') -Target $linkProbeDir -ErrorAction Stop | Out-Null } catch { $canLink = $false }
+    $canLink = New-TestLink -Path (Join-Path $linkProbeDir 'l') -Target $linkProbeDir
+    if (-not $canLink) { Write-Host 'SKIP: the reparse-point tests (links in the staging folder, the component tree, requirers and removal) - neither a symbolic link nor a junction could be created here' }
     $isUnix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
 
     function New-Override($Url, $Path) { $table = @{}; $table[[string] $Url] = [string] $Path; return $table }
@@ -935,8 +942,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($null -ne $rf5Failure -and $rf5Failure.code -ceq 'component-source-mismatch') 'a replaced first runtime part is the typed component-source-mismatch'
     Check ($rf5Failure.message -like "*'rt-hip'*" -and $rf5Failure.message -like "*$($rf5Fx.Part1Url)*" -and $rf5Failure.message -like '*expected*bytes*SHA-256*got*bytes*SHA-256*') 'the mismatch names the component, the part URL, and expected vs actual size and SHA-256'
     Check (($rf5State.log -join ',') -ceq $rf5Fx.Part1Url) 'nothing further is requested after the mismatched part (no second part, no engine)'
-    $rf5Cache = [System.IO.Path]::Combine($rf5Root, 'downloads', 'components', 'rt-hip', '1.0')
-    Check (@(Get-ChildItem -LiteralPath $rf5Cache -Force -File | Where-Object { $_.Name -like 'part1-rt-libs.whl.corrupt.*' }).Count -eq 1 -and @(Get-ChildItem -LiteralPath $rf5Cache -Force -File | Where-Object { $_.Name -ceq 'part1-rt-libs.whl' }).Count -eq 0) 'the replaced part is quarantined, not left in the cache'
+    $rf5Cache = [System.IO.Path]::Combine($rf5Root, 'downloads', 'c')
+    $rf5Name = (Get-HexSha $rf5Fx.ZipByUrl[$rf5Fx.Part1Url]).Substring(0, 16) + '.whl'
+    Check (@(Get-ChildItem -LiteralPath $rf5Cache -Force -File | Where-Object { $_.Name -like ($rf5Name + '.corrupt.*') }).Count -eq 1 -and @(Get-ChildItem -LiteralPath $rf5Cache -Force -File | Where-Object { $_.Name -ceq $rf5Name }).Count -eq 0) 'the replaced part is quarantined, not left in the cache'
     Check ((-not (Test-Path -LiteralPath (Join-Path $rf5Root 'components/runtime'))) -and (-not (Test-Path -LiteralPath (Join-Path $rf5Root 'components/engine'))) -and (-not (Test-Path -LiteralPath (Join-Path $rf5Root 'components/.s')))) 'a replaced part leaves no component folder and no staging'
     $rf5bState = New-ChainState
     $rf5bFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $rf5Fx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -AcceptLicense -Download (New-ChainSeam -Fixture $rf5Fx -State $rf5bState -Override (New-Override $rf5Fx.Part2Url $rf5Fx.ZipByUrl[$rf5Fx.EngineUrl])) }
@@ -974,7 +982,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $sizeRoot = New-TestRoot
     $sizeFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $sizeFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $sizeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $sizeFx -State (New-ChainState)) }
     Check ($null -ne $sizeFailure -and $sizeFailure.code -ceq 'component-archive-member-mismatch' -and $sizeFailure.message -like '*bytes, not the pinned*' -and -not (Test-Path -LiteralPath (Join-Path $sizeRoot 'components/runtime'))) 'a member whose archive size differs from the pin is refused before it is extracted'
-    Check (@(Get-ChildItem -LiteralPath ([System.IO.Path]::Combine($sizeRoot, 'downloads', 'components', 'rt-hip', '1.0')) -Force -File | Where-Object { $_.Name -like '*.corrupt.*' }).Count -eq 0) 'the pre-extraction size mismatch wrote nothing to quarantine (nothing was extracted)'
+    Check (@(Get-ChildItem -LiteralPath ([System.IO.Path]::Combine($sizeRoot, 'downloads', 'c')) -Force -File | Where-Object { $_.Name -like '*.corrupt.*' }).Count -eq 0) 'the pre-extraction size mismatch wrote nothing to quarantine (nothing was extracted)'
 
     # -- Bounded copy --
     $boundedSource = New-Object System.IO.MemoryStream(, ([byte[]] (1..100 | ForEach-Object { [byte] 7 })))
@@ -990,6 +998,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $niCheck = { param($a) & $module { param($x) Test-FastLlmNonInteractiveCommandLine -CommandLineArgs $x } $a }
     Check ((& $niCheck @('pwsh', '-NoProfile', '-NonInteractive', '-File', 'x.ps1')) -and (& $niCheck @('powershell.exe', '-noni')) -and (& $niCheck @('powershell.exe', '-NONINTERACTIVE')) -and (& $niCheck @('powershell.exe', '/NonInteractive'))) 'the command-line check sees -NonInteractive and its prefixes, in any case'
     Check ((-not (& $niCheck @('pwsh', '-NoProfile', '-File', 'x.ps1'))) -and (-not (& $niCheck @('pwsh', '-NoExit', '-NoLogo', '-NoProfile')))) 'the command-line check does not fire on -NoProfile, -NoExit or -NoLogo'
+    $interactiveWith = { param($a) & $module { param($x) Test-FastLlmConsoleInteractive -CommandLineArgs $x -UserInteractive $true -InputRedirected $false } $a }
+    Check ((& $interactiveWith @('pwsh', '-NoProfile', '-File', 'x.ps1')) -eq $true) 'with an interactive session and a console input, the console counts as interactive (control)'
+    Check (((& $interactiveWith @('pwsh', '-NonInteractive', '-File', 'x.ps1')) -eq $false) -and ((& $interactiveWith @('powershell.exe', '-NoProfile', '-noni')) -eq $false) -and ((& $interactiveWith @('powershell.exe', '-NONI')) -eq $false)) 'Test-FastLlmConsoleInteractive is false whenever the command line has -NonInteractive or -noni, even with an interactive session and a console input'
     $productChildRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('c3p' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
     $productInfo = New-Object System.Diagnostics.ProcessStartInfo
     $productInfo.FileName = (Get-Process -Id $PID).Path
@@ -1046,7 +1057,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check (@($ptAgain.installed).Count -eq 0 -and $ptAgain.root -ceq $ptResult.root) '-PassThru on an installed chain lists nothing as newly installed'
     $cliText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../fast-llm.ps1') -Raw
     Check ($cliText.Contains('-PassThru') -and $cliText.Contains('installedComponents = @($installResult.installed)') -and $cliText.Contains('foreach ($newlyInstalled in @($installResult.installed))')) 'components -Install prints one line per newly installed component and adds installedComponents to -AsJson'
-    Check ($cliText -match "\`$Action -eq 'components' -and \(\`$PSBoundParameters\.ContainsKey\('Install'\) -or \`$PSBoundParameters\.ContainsKey\('Remove'\)\)\)\s*\{\s*\`$operationLock = Enter-FastLlmOperation") 'components -Install and -Remove take the operation lock'
+    Check ($cliText -match "\`$Action -eq 'components' -and \(\`$PSBoundParameters\.ContainsKey\('Install'\) -or \`$PSBoundParameters\.ContainsKey\('Remove'\)\)\)\s*\{\s*\`$componentsLock = Enter-FastLlmOperation") 'components -Install and -Remove take the operation lock'
 
     # -- License display: one line per distinct URL --
     $shippedEngineLines = @(Get-FastLlmComponentLicenseLinks -Component $hipEngine)
@@ -1137,10 +1148,19 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $memberWantRoot = 260 - 56 - 1 - $leafName.Length - $memberSuffix
     $memberInstall = Join-Path $boundaryBase ('f' * ($memberWantRoot - ([System.IO.Path]::GetFullPath($boundaryBase).Length + 1)))
     $memberResult = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $memberDoc -ComponentId 'rt-bound-member' -InstallRoot $memberInstall -AcceptLicense -Download (New-ChainSeam -Fixture $memberFx -State (New-ChainState)) }
-    $memberCache = [System.IO.Path]::Combine($memberInstall, 'downloads', 'components', 'rt-bound-member', '1.0')
+    $memberCache = [System.IO.Path]::Combine($memberInstall, 'downloads', 'c')
     $memberQuarantined = @(Get-ChildItem -LiteralPath $memberCache -Force -File | Where-Object { $_.Name -like '*.corrupt*' })
     Check ($null -ne $memberResult -and $memberResult.code -ceq 'component-archive-member-mismatch' -and $memberQuarantined.Count -eq 1 -and $memberQuarantined[0].Name -match '^[0-9a-f]{8}\.corrupt$') 'a member quarantine name that would pass 259 characters is shortened, so the typed mismatch is still raised and the partial is kept'
     Remove-Item -LiteralPath $boundaryBase -Recurse -Force -ErrorAction SilentlyContinue
+
+    # The shipped AMD runtime with the real downloader: the longest manifest file path binds at an install root of 76 characters.
+    $tempFull = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([char[]] @('\', '/'))
+    foreach ($case in @(@{ length = 76; allowed = $true }, @{ length = 77; allowed = $false })) {
+        $shippedRootAt = Join-Path $tempFull ('r' * ($case.length - $tempFull.Length - 1))
+        $shippedLimit = Get-ThrownFailure { & $module { param($c, $r) Assert-FastLlmComponentPathLength -Component $c -InstallRoot $r -DownloaderNames } $hipRuntime $shippedRootAt }
+        if ($case.allowed) { Check ([System.IO.Path]::GetFullPath($shippedRootAt).Length -eq 76 -and $null -eq $shippedLimit) 'the shipped AMD runtime installs under an install root of 76 characters' }
+        else { Check ([System.IO.Path]::GetFullPath($shippedRootAt).Length -eq 77 -and $null -ne $shippedLimit -and $shippedLimit.code -ceq 'component-path-too-long') 'the shipped AMD runtime is refused at 77 characters (the longest file path would pass 259)' }
+    }
 
     # -- Hashing passes: each file once (the member check), each archive once --
     $hashFx = New-ChainFixture -Name 'fx-hashing'
@@ -1161,7 +1181,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     [System.IO.File]::WriteAllText((Join-Path $linkTarget 'precious.txt'), 'keep')
     $staleLinkMade = $false
     if ($canLink) {
-        New-Item -ItemType SymbolicLink -Path (Join-Path $stagingBase 'linklink') -Target $linkTarget | Out-Null
+        $null = New-TestLink -Path (Join-Path $stagingBase 'linklink') -Target $linkTarget
         $staleLinkMade = $true
     }
     $staleFx = New-ChainFixture -Name 'fx-stale'
@@ -1206,7 +1226,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $linkOutside = New-TestRoot
         [System.IO.File]::WriteAllText((Join-Path $linkOutside 'k.kpack'), 'runtime-k')
         Remove-Item -LiteralPath (Join-Path $treeComponentRoot '.kpack') -Recurse -Force
-        New-Item -ItemType SymbolicLink -Path (Join-Path $treeComponentRoot '.kpack') -Target $linkOutside | Out-Null
+        $null = New-TestLink -Path (Join-Path $treeComponentRoot '.kpack') -Target $linkOutside
         Check ((-not (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry -Depth Presence)) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry))) 'a link inside the component root fails both depths'
         Remove-Item -LiteralPath (Join-Path $treeComponentRoot '.kpack') -Force
         New-Item -ItemType Directory -Path (Join-Path $treeComponentRoot '.kpack') -Force | Out-Null
@@ -1233,7 +1253,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $edgeOutside = New-TestRoot
         [System.IO.File]::WriteAllText((Join-Path $edgeOutside 'precious.txt'), 'keep')
         Remove-Item -LiteralPath $edgeEngineRoot -Recurse -Force
-        New-Item -ItemType SymbolicLink -Path $edgeEngineRoot -Target $edgeOutside | Out-Null
+        $null = New-TestLink -Path $edgeEngineRoot -Target $edgeOutside
         $edgeWarnings = @()
         $edgeRemoved = Remove-FastLlmComponent -ComponentsPath $edgeFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $edgeRoot -WarningVariable edgeWarnings 3>$null
         Check ($edgeRemoved -and @($edgeWarnings).Count -ge 1 -and "$($edgeWarnings[0])" -like '*reparse point*') 'a link standing where the requiring component should be is ignored by the guard, with a warning'
@@ -1243,7 +1263,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $innerRoot = New-TestRoot
         $null = Install-FastLlmComponent -ComponentsPath $innerFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $innerRoot -AcceptLicense -Download (New-ChainSeam -Fixture $innerFx -State (New-ChainState)) 6>$null
         $innerComponentRoot = Get-FastLlmComponentRoot -InstallRoot $innerRoot -Component (Get-ComponentEntry $innerFx.ComponentsPath 'rt-hip')
-        New-Item -ItemType SymbolicLink -Path (Join-Path $innerComponentRoot 'bin/sneaky') -Target $edgeOutside | Out-Null
+        $null = New-TestLink -Path (Join-Path $innerComponentRoot 'bin/sneaky') -Target $edgeOutside
         $innerMessage = Get-ThrownMessage { Remove-FastLlmComponent -ComponentsPath $innerFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $innerRoot }
         Check ($null -ne $innerMessage -and $innerMessage -like '*reparse point*' -and (Test-Path -LiteralPath (Join-Path $edgeOutside 'precious.txt')) -and (Test-Path -LiteralPath (Join-Path $innerComponentRoot 'bin/a.dll'))) 'a link inside a component refuses the removal and deletes nothing'
     }
@@ -1552,6 +1572,30 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $result = Invoke-CliRefusal $case.args
         Check ($result.exit -ne 0 -and $result.text.Contains($case.text)) ("fast-llm.ps1 " + ($case.args[0..1] -join ' ') + ' is refused: ' + $case.text)
     }
+    # components commands hold the lock for mutual exclusion only: status.json is never written, and -Remove is not blocked by the CLI's own lock.
+    $statusRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('c3s' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path $statusRoot -Force | Out-Null
+    $statusFile = Join-Path (& $module { param($r) Get-FastLlmStateRoot -InstallRoot $r -Create } $statusRoot) 'status.json'
+    $shippedVulkan = @(Get-FastLlmComponents -ComponentsPath (Join-Path $PSScriptRoot '../config/components.json') | Where-Object { $_.id -ceq 'llama.cpp-b10698-vulkan' })[0]
+    $vulkanRoot = Get-FastLlmComponentRoot -InstallRoot $statusRoot -Component $shippedVulkan
+    New-Item -ItemType Directory -Path $vulkanRoot -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $vulkanRoot 'llama-server.exe'), 'x')
+    Write-FastLlmState -InstallRoot $statusRoot -State ([ordered] @{ schemaVersion = 1; runId = ('c' * 32); phase = 'installed' })
+    $statusBefore = [System.IO.File]::ReadAllBytes($statusFile)
+    $failedInstall = Invoke-CliRefusal @('components', '-Install', 'llama.cpp-hip-b11658', '-Unattended', '-InstallRoot', $statusRoot)
+    Check ($failedInstall.exit -ne 0 -and $failedInstall.text.Contains('component-consent-required')) 'a components -Install that needs consent fails with the typed refusal'
+    Check ((@([System.IO.File]::ReadAllBytes($statusFile)) -join ',') -ceq ($statusBefore -join ',')) 'a failed components command leaves status.json byte-identical'
+    $removeAfter = Invoke-CliRefusal @('components', '-Remove', 'llama.cpp-b10698-vulkan', '-InstallRoot', $statusRoot)
+    Check ($removeAfter.exit -eq 0 -and -not (Test-Path -LiteralPath $vulkanRoot)) 'components -Remove of an installed component succeeds under the CLI''s own lock after an install (status phase installed, nothing running) and after a failed components command'
+    Check ((@([System.IO.File]::ReadAllBytes($statusFile)) -join ',') -ceq ($statusBefore -join ',')) 'a successful components -Remove leaves status.json byte-identical too'
+    New-Item -ItemType Directory -Path $vulkanRoot -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $vulkanRoot 'llama-server.exe'), 'x')
+    Write-FastLlmState -InstallRoot $statusRoot -State ([ordered] @{ schemaVersion = 1; runId = ('d' * 32); phase = 'stopped'; engineExecutable = (Join-Path $vulkanRoot 'llama-server.exe'); engineComponentId = 'llama.cpp-b10698-vulkan' })
+    $removeStopped = Invoke-CliRefusal @('components', '-Remove', 'llama.cpp-b10698-vulkan', '-InstallRoot', $statusRoot)
+    Check ($removeStopped.exit -eq 0 -and -not (Test-Path -LiteralPath $vulkanRoot)) 'components -Remove succeeds for the engine recorded in a stopped status (nothing is running)'
+    Remove-Item -LiteralPath $statusRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $cliSource = Get-Content -LiteralPath $cliPath -Raw
+    Check ($cliSource.Contains('$componentsLock = Enter-FastLlmOperation') -and $cliSource.Contains('-OperationLockHeld:') -and $cliSource -match 'if \(\$componentsLock\) \{ \$componentsLock\.Dispose\(\) \}') 'the components lock is its own variable (the failure writer only knows $operationLock), is passed to Remove, and is disposed'
     # components -Install and -Remove take the operation lock.
     $lockRoot = New-TestRoot
     $heldLock = Enter-FastLlmOperation -InstallRoot $lockRoot

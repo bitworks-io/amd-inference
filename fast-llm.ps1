@@ -202,6 +202,9 @@ function Write-FastLlmPlan {
 }
 
 $operationLock = $null
+# components -Install/-Remove take the same lock for mutual exclusion only: it is a separate variable so the failure writer below never records a component
+# command in status.json.
+$componentsLock = $null
 try {
     # An experimental recipe is refused before anything is planned, locked or downloaded.
     if ($Recipe -and $Action -in @('plan', 'start', 'install', 'doctor')) {
@@ -216,7 +219,7 @@ try {
     }
     # components -Install and -Remove change what a start or an install relies on, so they take the same operation lock (and write no status).
     if ($Action -eq 'components' -and ($PSBoundParameters.ContainsKey('Install') -or $PSBoundParameters.ContainsKey('Remove'))) {
-        $operationLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
+        $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
     }
     switch ($Action) {
         'models' {
@@ -244,7 +247,7 @@ try {
                 else { foreach ($newlyInstalled in @($installResult.installed)) { Write-Host "Installed and verified component '$($newlyInstalled.id)': $($newlyInstalled.path)" } }
             }
             elseif ($PSBoundParameters.ContainsKey('Remove')) {
-                Remove-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Remove -InstallRoot $InstallRoot | Out-Null
+                Remove-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Remove -InstallRoot $InstallRoot -OperationLockHeld:([bool] (Get-Variable -Name componentsLock -ValueOnly -ErrorAction SilentlyContinue)) | Out-Null
                 if ($AsJson) { [pscustomobject]@{ id = $Remove; removed = $true } | ConvertTo-Json -Depth 4 }
                 else { Write-Host "Removed component '$Remove'." }
             }
@@ -609,6 +612,6 @@ catch {
     Write-Error $failureMessage -ErrorAction Continue
     exit 1
 }
-finally { if ($operationLock) { $operationLock.Dispose() } }
+finally { if ($operationLock) { $operationLock.Dispose() }; if ($componentsLock) { $componentsLock.Dispose() } }
 }
 finally { if ($labAppLifetime) { $labAppLifetime.Dispose() } }
