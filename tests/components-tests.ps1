@@ -243,7 +243,7 @@ try {
     $normalized = $argumentBlock.Groups['body'].Value -replace '\s+', ''
     $expectedArguments = '''--disable'',''--silent'',''--show-error'',''--location'',''--fail'',''--retry'',''3'',''--connect-timeout'',''30'',''--speed-limit'',''1024'',''--speed-time'',''60'',''--max-filesize'',[string]$SizeBytes,''--proto'',''=https'',''--proto-redir'',''=https'',''--continue-at'',''-'',''--output'',$partial,$Url'
     Check ($normalized -ceq $expectedArguments) 'the curl argument literal is byte-for-byte what it was before -AllowedRedirectHosts'
-    Check ([regex]::Matches($moduleSource, '--write-out').Count -eq 1) '--write-out appears exactly once in the module'
+    Check ([regex]::Matches($moduleSource, "'--write-out'").Count -eq 1) 'the quoted --write-out curl argument appears exactly once in the module (comments excluded)'
     Check ($moduleSource -cmatch '(?s)if \(\$checkRedirectHosts\) \{\s*\$curlArguments = @\(''--write-out'', ''%\{url_effective\}''\) \+ \$curlArguments\s*\}') '--write-out is added only inside the -AllowedRedirectHosts branch'
     Check ($moduleSource -cmatch '\$checkRedirectHosts = \$PSBoundParameters\.ContainsKey\(''AllowedRedirectHosts''\)') 'the redirect check is keyed on the parameter being bound'
 
