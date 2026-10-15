@@ -456,7 +456,8 @@ Check ($script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*
 # The window: the checkbox, its confirmation (Yes/No, default No), the Components list with Remove, and no recipe chooser.
 Check ($ui.Contains("Text='Experimental community components'") -and $ui.Contains('$experimentalBox.Add_CheckedChanged')) 'the settings area has an Experimental community components checkbox'
 Check ($ui.Contains("`$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2'")) 'turning the switch on shows the paragraph in a Yes/No confirmation whose default is No'
-Check ($ui.Contains("Set-FastLlmComponentSettings -InstallRoot `$script:settingsRoot -ExperimentalComponents 'on'") -and $ui.Contains("-ExperimentalComponents 'off'")) 'the checkbox writes the switch through Set-FastLlmComponentSettings'
+$componentsSourceText = Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Components.ps1') -Raw
+Check ($ui.Contains("`$wanted=if(`$experimentalBox.Checked){'on'}else{'off'}") -and $ui.Contains('Set-FastLlmExperimentalSwitchMirrored -SourceRoot $script:settingsRoot') -and $ui.Contains('-Value $wanted') -and $componentsSourceText.Contains('Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $Value')) 'the checkbox writes the switch through Set-FastLlmComponentSettings (via the mirroring helper)'
 Check ($ui.Contains('$removeLock=Enter-FastLlmOperation -InstallRoot $view.root') -and $ui.Contains('-InstallRoot $view.root -OperationLockHeld)') -and $ui.Contains('finally{if($removeLock){$removeLock.Dispose()}}') -and $ui.IndexOf('Enter-FastLlmOperation -InstallRoot $view.root') -lt $ui.IndexOf('-InstallRoot $view.root -OperationLockHeld)')) 'removing a component from the window takes the operation lock first, passes it to the removal and releases it'
 Check ($ui.Contains("ButtonAt 'Components'") -and $ui.Contains('Remove-FastLlmComponent -ComponentsPath') -and $ui.Contains("Text='Remove'") -and $ui.Contains('Get-FastLlmInstalledComponentRows')) 'a Components button lists installed components with a Remove action per row'
 Check ($ui.Contains('src/FastLlm.Components.ps1') -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Components')) 'the UI dot-sources the components script'
@@ -638,13 +639,14 @@ $consentCounts = Get-DisposeCounts $consentFn
 $chooserCounts = Get-DisposeCounts $chooserFn
 Check ($consentCounts.all -ge 1 -and $consentCounts.all -eq $consentCounts.inFinally -and $chooserCounts.all -ge 1 -and $chooserCounts.all -eq $chooserCounts.inFinally) 'each dialog (and the font it made) is disposed only in a finally after ShowDialog returns'
 Check ($chooserFn.Extent.Text.Contains('$dialog.AcceptButton=$choose') -and $chooserFn.Extent.Text.Contains('$dialog.CancelButton=$cancel') -and $chooserFn.Extent.Text.Contains('-Variant $variant') -and $chooserFn.Extent.Text.Contains('Get-FastLlmUiChooserNotice')) 'the chooser is filtered to the plan''s identified card, says what is missing, and Enter chooses the selected row'
-Check ($ui.Contains('$previewed.recipe.variant')) 'the chooser reads the identified card from the previewed plan'
+$continuePreviewText = (Get-UiFunctionText 'ContinueUiAfterPreview').Extent.Text
+Check ($chooserFn.Extent.Text.Contains('$variant=[string]$script:identifiedVariant') -and -not $chooserFn.Extent.Text.Contains('pendingPlan') -and $continuePreviewText.Contains('$script:identifiedVariant=Get-FastLlmUiIdentifiedVariant -Plan $Plan') -and $continuePreviewText.IndexOf('$script:identifiedVariant=') -lt $continuePreviewText.IndexOf('ShowExactModelConsent')) 'the chooser reads the identified card captured when the preview completed (before any consent dialog), never the flow''s plan'
 $continueAst = Get-UiFunctionText 'ContinueWithChosenRecipe'
 Check ($continueAst.Extent.Text.Contains('if($Row.installRequired){') -and $continueAst.Extent.Text.Contains('-not $script:chooserNotice') -and -not $continueAst.Extent.Text.Contains('consentRequired')) 'the install dialog opens whenever any chain member is missing, and keeps the chooser''s notice in the status line'
 Check ($consentText.Contains('$box.Enabled=(-not $consentRow.blocked)') -and $consentText.Contains('if($consentRow.needsAccept)') -and $consentText.Contains('$consentRow.statusText') -and $consentText.Contains('$linkText') -eq $false -and $consentText.Contains('$licenseLink.linkText')) 'the consent dialog lists every component, with only the missing ones tickable, and shows each link with its host'
 $launchStepText = (Get-UiFunctionText 'LaunchStep').Extent.Text
 Check ($launchStepText.Contains('if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}') -and $launchStepText.IndexOf('Sync-FastLlmExperimentalSwitch') -lt $launchStepText.IndexOf('$script:child.Start($info)')) 'every child is given an install folder that carries the experimental switch the user set'
-Check ($ui.Contains('Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text))')) 'toggling the switch mirrors it into the install folder shown in the window'
+Check ($ui.Contains('Set-FastLlmExperimentalSwitchMirrored -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text))')) 'toggling the switch mirrors it into the install folder shown in the window'
 Check ($launchStepText.Contains('$script:servingPreviousRunId') -and $ui.Contains('Get-FastLlmUiFailureCode -Status (Get-FastLlmStatus $script:installPath) -PreviousRunId ([string]$script:servingPreviousRunId)')) 'a typed failure code is trusted only when this start wrote it'
 foreach ($planButton in @(@('installButton', 'install'), @('startButton', 'start'))) {
     Check ([regex]::IsMatch($ui, ('\$' + $planButton[0] + '\.Add_Click\(\{try\{ReadSelection;AssertUiBackgroundNotOccupied;\$script:chosenRecipe=\$null;\$script:flow=New-FastLlmUiFlow -Mode ' + $planButton[1]))) "the $($planButton[1]) button clears a chosen recipe before it starts"
@@ -656,5 +658,51 @@ Check ($ui.Contains("'recipes','-Detail','-AsJson'") -and $ui.Contains('$chooseB
 Check ($ui.Contains('$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)')) 'the button is enabled only when a preview exists and nothing else is running'
 Check ($ui.Contains("'component install'{") -and $ui.Contains('Test-FastLlmUiTypedHipFailure -Code $failureCode') -and $ui.Contains('Format-FastLlmUiTypedFailure')) 'a finished component install starts the chosen recipe, and a typed start failure is shown as its message'
 Check ($ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe')) 'the chosen recipe is pinned for the preview'
+
+# ---- the identified card outlives a declined consent and Stop (the window keeps its own copy) ----
+$estimatedXtxPlan = [pscustomobject]@{ model = $large; hardwareFingerprint = 'xtx'; selectedAdapters = @([pscustomobject]@{ device = 'Vulkan0'; name = 'AMD Radeon RX 7900 XTX' })
+    recipe = [pscustomobject]@{ id = $null; origin = 'estimated'; label = 'Estimated for your card'; variant = 'rx-7900-xtx'; evidenceUrl = $null } }
+$unidentifiedPlan = [pscustomobject]@{ model = $large; hardwareFingerprint = 'x'; selectedAdapters = @()
+    recipe = [pscustomobject]@{ id = $null; origin = 'estimated'; label = 'Estimated for your card'; variant = $null; evidenceUrl = $null } }
+Check ((Get-FastLlmUiIdentifiedVariant -Plan $estimatedXtxPlan) -ceq 'rx-7900-xtx' -and (Get-FastLlmUiIdentifiedVariant -Plan $unidentifiedPlan) -ceq '' -and (Get-FastLlmUiIdentifiedVariant -Plan $null) -ceq '' -and (Get-FastLlmUiIdentifiedVariant -Plan ([pscustomobject]@{ model = $large })) -ceq '') 'the identified card is read from the plan''s recipe block; none gives an empty value'
+$keptVariant = ''
+$declineFlow = New-FastLlmUiFlow -Mode start
+$declineFlow = Move-FastLlmUiFlow -Flow $declineFlow -Event 'setup-complete' -SetupDecision (ReadySetup $true)
+$declineFlow = Move-FastLlmUiFlow -Flow $declineFlow -Event 'preview-complete' -Plan $estimatedXtxPlan -HasConsent:$false -HasArtifact:$false
+$keptVariant = Get-FastLlmUiIdentifiedVariant -Plan $declineFlow.pendingPlan
+$declineFlow = Move-FastLlmUiFlow -Flow $declineFlow -Event 'consent-declined'
+Check ($null -eq $declineFlow.pendingPlan -and $keptVariant -ceq 'rx-7900-xtx') 'the flow drops its plan when the model license is declined, but the variant captured at preview completion survives'
+Check (@(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'off' -Variant $keptVariant).Count -eq $offRows.Count -and $offRows.Count -ge 1 -and (Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'off' -Variant $keptVariant) -ceq '') 'after a declined consent the chooser still lists the card''s setups'
+$stopFlow = New-FastLlmUiFlow -Mode start
+$stopFlow = Move-FastLlmUiFlow -Flow $stopFlow -Event 'setup-complete' -SetupDecision (ReadySetup $true)
+$stopFlow = Move-FastLlmUiFlow -Flow $stopFlow -Event 'preview-complete' -Plan $estimatedXtxPlan -HasConsent:$true -HasArtifact:$true
+$stopKept = Get-FastLlmUiIdentifiedVariant -Plan $stopFlow.pendingPlan
+$stopFlow = Move-FastLlmUiFlow -Flow $stopFlow -Event 'stop'
+Check ($null -eq $stopFlow.pendingPlan -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant $stopKept).Count -eq $onRows.Count) 'after Stop the chooser still lists the card''s setups'
+$replacedVariant = Get-FastLlmUiIdentifiedVariant -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = $null; origin = 'estimated'; variant = 'rx-7900-xt' } })
+Check ($replacedVariant -ceq 'rx-7900-xt' -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant $replacedVariant | Where-Object { $_.variant -cne 'rx-7900-xt' }).Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant $replacedVariant).Count -ge 1) 'a new preview replaces the captured variant'
+Check (@(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant (Get-FastLlmUiIdentifiedVariant -Plan $unidentifiedPlan)).Count -eq 0 -and (Get-FastLlmUiChooserNotice -Shown @() -ExperimentalComponents 'on' -Variant (Get-FastLlmUiIdentifiedVariant -Plan $unidentifiedPlan)) -like 'This card was not identified*') 'a card the preview did not identify is still fail-closed'
+
+# ---- the pending-consent count wiring ----
+Check ((Get-FastLlmUiPendingConsentCount -ConsentRows $consentRows) -eq 2 -and (Get-FastLlmUiPendingConsentCount -ConsentRows $partRows) -eq 1 -and (Get-FastLlmUiPendingConsentCount -ConsentRows @()) -eq 0) 'the pending count is the number of missing components, not the number of rows'
+Check ($continueAst.Extent.Text.Contains('$pendingCount=Get-FastLlmUiPendingConsentCount -ConsentRows $consentRows') -and $continueAst.Extent.Text.Contains('-RowCount $pendingCount') -and -not $continueAst.Extent.Text.Contains('-RowCount $consentRows.Count')) 'Install is enabled and run against the missing components only (a partly installed chain)'
+
+# ---- mirror failures ----
+$mirrorFailSource = Join-Path $chooserRoot 'toggle-launch'
+Set-FastLlmComponentSettings -InstallRoot $mirrorFailSource -ExperimentalComponents 'off'
+$blockingFile = Join-Path $chooserRoot 'a-file-not-a-folder'
+[IO.File]::WriteAllText($blockingFile, 'x')
+$toggleError = ''
+try { Set-FastLlmExperimentalSwitchMirrored -SourceRoot $mirrorFailSource -TargetRoot $blockingFile -Value 'on' } catch { $toggleError = $_.Exception.Message }
+Check ($toggleError -like 'The experimental components setting could not be applied*' -and (Get-FastLlmComponentSettings -InstallRoot $mirrorFailSource).experimentalComponents -ceq 'off') 'a failed mirror rolls the stored switch back to its previous value and reports the error'
+Set-FastLlmComponentSettings -InstallRoot $mirrorFailSource -ExperimentalComponents 'on'
+$goodTarget = Join-Path $chooserRoot 'toggle-ok-folder'
+Set-FastLlmExperimentalSwitchMirrored -SourceRoot $mirrorFailSource -TargetRoot $goodTarget -Value 'off'
+Check ((Get-FastLlmComponentSettings -InstallRoot $mirrorFailSource).experimentalComponents -ceq 'off' -and (Get-FastLlmComponentSettings -InstallRoot $goodTarget).experimentalComponents -ceq 'off') 'a successful toggle stores the value in both places'
+$toggleHandler = [regex]::Match($ui, '(?s)\$experimentalBox\.Add_CheckedChanged\(\{.*?\r?\n\}\)').Value
+Check ($toggleHandler.Contains('$previousValue') -and $toggleHandler.Contains("`$experimentalBox.Checked=(`$previousValue -ceq 'on')") -and $toggleHandler.Contains("could not be saved: '+`$_.Exception.Message")) 'a failed toggle puts the box back to its previous value and shows the error'
+Check ((Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('recipes', '-Detail', '-AsJson', '-InstallRoot', 'C:\r')) -and (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments (@('plan', '-AsJson') + @(Get-FastLlmUiPreviewRecipeArguments -Recipe $expChosen))) -and (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments (@('start', '-Unattended') + @(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $expChosen)))) 'the recipe list and a plan or start naming an experimental recipe read the switch'
+Check (-not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('doctor', '-InstallRoot', 'C:\r')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('install', '-EngineOnly', '-InstallRoot', 'C:\r')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('plan', '-AsJson', '-InstallRoot', 'C:\r')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('start', '-Unattended', '-Recipe', 'r1')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('components', '-Install', 'x', '-AcceptLicense')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @()) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('recipes', '-AsJson'))) 'diagnostics, installs, a plain plan or start and the component install never depend on the switch'
+Check ($launchStepText.Contains('catch{if(Test-FastLlmUiStepReadsExperimentalSwitch -Arguments $Arguments){throw') -and $launchStepText.IndexOf('Test-FastLlmUiStepReadsExperimentalSwitch') -lt $launchStepText.IndexOf('$script:child.Start($info)')) 'a mirror failure in LaunchStep blocks only the steps that read the switch'
 
 Write-Output "UI flow tests passed: $checks"

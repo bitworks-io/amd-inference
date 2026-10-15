@@ -710,3 +710,28 @@ function Set-FastLlmUiIntegrityChecked {
     }
     catch { return $false }
 }
+
+# The card variant a preview identified ('' when it did not). The window keeps it from the moment the preview completes, so it outlives the plan
+# the flow clears when the model license is declined or the workflow is stopped.
+function Get-FastLlmUiIdentifiedVariant {
+    param($Plan)
+    if (-not $Plan -or -not $Plan.PSObject.Properties['recipe'] -or -not $Plan.recipe -or -not $Plan.recipe.PSObject.Properties['variant']) { return '' }
+    return [string] $Plan.recipe.variant
+}
+
+# How many consent rows still need an accept box (the components that are missing).
+function Get-FastLlmUiPendingConsentCount {
+    param([object[]] $ConsentRows)
+    return @($ConsentRows | Where-Object { $_ -and $_.needsAccept }).Count
+}
+
+# Only a step whose CLI reads the experimental switch is blocked when the switch could not be applied to the install folder: the recipe list, and a
+# plan or start that names an experimental recipe. Diagnostics, downloads and the rest never read it.
+function Test-FastLlmUiStepReadsExperimentalSwitch {
+    param([object[]] $Arguments)
+    $items = @($Arguments | ForEach-Object { [string] $_ })
+    if ($items.Count -eq 0) { return $false }
+    if ($items[0] -ceq 'recipes') { return [bool] ($items -ccontains '-Detail') }
+    if ($items[0] -ceq 'plan' -or $items[0] -ceq 'start') { return [bool] (@($items | Where-Object { $_ -ceq ('-Accept' + 'Experimental') }).Count -gt 0) }
+    return $false
+}

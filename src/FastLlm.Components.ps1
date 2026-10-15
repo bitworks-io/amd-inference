@@ -285,3 +285,21 @@ function Sync-FastLlmExperimentalSwitch {
     Set-FastLlmComponentSettings -InstallRoot $TargetRoot -ExperimentalComponents $wanted
     return $true
 }
+
+# Stores the switch under the launch root and mirrors it into the install folder. When the mirror fails the launch-root value goes back to what it
+# was, so the stored switch, the checkbox the caller restores and the folder all agree; the error is rethrown for the caller to show.
+function Set-FastLlmExperimentalSwitchMirrored {
+    param(
+        [Parameter(Mandatory = $true)][string] $SourceRoot,
+        [Parameter(Mandatory = $true)][string] $TargetRoot,
+        [Parameter(Mandatory = $true)][ValidateSet('on', 'off')][string] $Value
+    )
+    $previous = [string] (Get-FastLlmComponentSettings -InstallRoot $SourceRoot).experimentalComponents
+    Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $Value
+    try { [void](Sync-FastLlmExperimentalSwitch -SourceRoot $SourceRoot -TargetRoot $TargetRoot) }
+    catch {
+        $failure = $_.Exception.Message
+        try { Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $previous } catch { }
+        throw "The experimental components setting could not be applied to the install folder, so it was not changed: $failure"
+    }
+}

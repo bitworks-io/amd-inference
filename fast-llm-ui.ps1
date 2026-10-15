@@ -88,6 +88,7 @@ $script:previewReady=$false
 $script:chosenRecipe=$null
 $script:pendingRecipeRow=$null
 $script:servingPreviousRunId=''
+$script:identifiedVariant=''
 $script:chooserNotice=''
 $chooseButton.Enabled=$false
 $backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
@@ -163,22 +164,23 @@ $updateBox.Add_CheckedChanged({
 # Turning the switch on shows the spec 2.7 paragraph in a Yes/No confirmation (default No); No leaves it off. Turning it off needs no confirmation.
 $experimentalBox.Add_CheckedChanged({
     if($script:experimentalRevert){return}
+    $wanted=if($experimentalBox.Checked){'on'}else{'off'}
+    # What the box showed before this change; the stored value is rolled back to it with the box when the setting cannot be applied.
+    $previousValue=if($wanted -ceq 'on'){'off'}else{'on'}
     try{
-        if($experimentalBox.Checked){
+        if($wanted -ceq 'on'){
             $answer=[Windows.Forms.MessageBox]::Show($form,$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2')
             if($answer -ne [Windows.Forms.DialogResult]::Yes){
                 $script:experimentalRevert=$true;$experimentalBox.Checked=$false;$script:experimentalRevert=$false
                 return
             }
-            Set-FastLlmComponentSettings -InstallRoot $script:settingsRoot -ExperimentalComponents 'on'
         }
-        else{Set-FastLlmComponentSettings -InstallRoot $script:settingsRoot -ExperimentalComponents 'off'}
-        # The CLI children read the switch from the install folder shown in the window, so it is mirrored there too.
-        [void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text)))
+        # The CLI children read the switch from the install folder shown in the window, so it is stored under the launch root and mirrored there.
+        Set-FastLlmExperimentalSwitchMirrored -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text)) -Value $wanted
     }
     catch{
-        $statusLabel.Text='The experimental components setting could not be saved.'
-        $script:experimentalRevert=$true;$experimentalBox.Checked=$false;$script:experimentalRevert=$false
+        $statusLabel.Text='The experimental components setting could not be saved: '+$_.Exception.Message
+        $script:experimentalRevert=$true;$experimentalBox.Checked=($previousValue -ceq 'on');$script:experimentalRevert=$false
     }
 })
 function SetBusy([bool]$Busy) {
@@ -309,7 +311,8 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
     if($Step -in @('engine','model download','serving','component install')){AssertUiBackgroundNotOccupied}
     # The experimental switch is stored under the launch root, but the child reads it from the install folder it is given: mirror it there first.
-    if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{throw "The experimental components setting could not be applied to the install folder: $($_.Exception.Message)"}}
+    # A mirror failure blocks only the steps that read the switch.
+    if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{if(Test-FastLlmUiStepReadsExperimentalSwitch -Arguments $Arguments){throw "The experimental components setting could not be applied to the install folder: $($_.Exception.Message)"}}}
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
     if($Step -ceq 'vc prepare'){
@@ -604,6 +607,8 @@ function ContinueUiAfterPreview($Plan) {
     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'preview-complete' -Plan $Plan -HasConsent:$receipt -HasArtifact:$artifact
     if($script:flow.phase -eq 'failed'){ShowFailure $script:flow.lastStartError;return}
     $script:previewReady=$true
+    # Kept for "Choose another setup" even if the flow later drops its plan (model license declined, Stop); a new preview replaces it.
+    $script:identifiedVariant=Get-FastLlmUiIdentifiedVariant -Plan $Plan
     $statusLabel.Text=Format-FastLlmUiRecipeSummary -Plan $Plan
     $script:evidenceUrl=Get-FastLlmUiEvidenceUrl -Plan $Plan
     $resultsLink.Visible=[bool]$script:evidenceUrl
@@ -794,10 +799,7 @@ function StartRecipeList {
 function ShowRecipeChooser($Rows) {
     RevealUiForAction
     $switchValue=if($experimentalBox.Checked){'on'}else{'off'}
-    $variant=''
-    $previewed=$null
-    if($script:flow -and $script:flow.PSObject.Properties['pendingPlan']){$previewed=$script:flow.pendingPlan}
-    if($previewed -and $previewed.PSObject.Properties['recipe'] -and $previewed.recipe -and $previewed.recipe.PSObject.Properties['variant']){$variant=[string]$previewed.recipe.variant}
+    $variant=[string]$script:identifiedVariant
     $shown=@(Get-FastLlmUiChooserRows -Rows @($Rows) -ExperimentalComponents $switchValue -Variant $variant)
     # What the list lacks is said out loud (an unidentified card, no setup for this card, the switch on without any experimental setup).
     $script:chooserNotice=[string](Get-FastLlmUiChooserNotice -Shown $shown -ExperimentalComponents $switchValue -Variant $variant)
@@ -940,7 +942,7 @@ function ContinueWithChosenRecipe($Row) {
         # Some component of the engine chain is missing: show the whole chain; Install needs every missing component accepted.
         $consentRows=@(Get-FastLlmUiConsentRows -Chain @($Row.chain))
         $answer=ShowComponentConsent $Row $consentRows
-        $pendingCount=@($consentRows|Where-Object{$_.needsAccept}).Count
+        $pendingCount=Get-FastLlmUiPendingConsentCount -ConsentRows $consentRows
         $installArgs=@(Get-FastLlmUiComponentInstallArguments -EngineId ([string]$Row.engineId) -InstallRoot $script:installPath -Confirmed ([bool]$answer.confirmed) -RowCount $pendingCount -Ticked @($answer.ticked))
         if($installArgs.Count -eq 0){$statusLabel.Text='Component install cancelled. Nothing was downloaded.';return}
         $script:pendingRecipeRow=$Row
