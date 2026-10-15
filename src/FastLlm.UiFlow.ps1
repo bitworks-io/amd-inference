@@ -377,9 +377,14 @@ function Get-FastLlmUiBarNote {
     return $null
 }
 
+# The update keys come from Get-FastLlmUpdateSettings (src/FastLlm.Update.ps1), the one source of their defaults.
 function Read-FastLlmUiSettings {
-    param([Parameter(Mandatory = $true)][string] $InstallRoot)
-    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto' }
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $AppRoot)
+    if (-not (Get-Command Get-FastLlmUpdateSettings -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot 'FastLlm.Update.ps1')
+    }
+    $update = Get-FastLlmUpdateSettings -InstallRoot $InstallRoot -AppRoot $AppRoot
+    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel }
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -393,14 +398,107 @@ function Read-FastLlmUiSettings {
     return $settings
 }
 
-# Plan B writes only vulkanBarMitigation; Plan C adds more keys and will make this merge instead of overwrite.
+# Read-modify-write: every key already in settings.json (including ones this window does not know) is kept.
+# updateCheck and updateChannel are written only when the caller supplies them; the window itself writes them with Set-FastLlmUpdateSettings.
 function Write-FastLlmUiSettings {
     param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Settings)
     $value = [string] $Settings.vulkanBarMitigation
     if (@('auto', 'on', 'off') -notcontains $value) { throw 'vulkanBarMitigation must be auto, on or off.' }
-    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
+    $merged = [ordered]@{}
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($null -ne $stored -and $stored -is [pscustomobject]) {
+                foreach ($property in $stored.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+            }
+        }
+    }
+    catch { $merged = [ordered]@{} }
+    $merged['vulkanBarMitigation'] = $value
+    $checkProperty = $Settings.PSObject.Properties['updateCheck']
+    if ($checkProperty -and $null -ne $checkProperty.Value) {
+        if (@('on', 'off') -cnotcontains [string] $checkProperty.Value) { throw 'updateCheck must be on or off.' }
+        $merged['updateCheck'] = [string] $checkProperty.Value
+    }
+    $channelProperty = $Settings.PSObject.Properties['updateChannel']
+    if ($channelProperty -and $null -ne $channelProperty.Value) {
+        if (@('stable', 'canary') -cnotcontains [string] $channelProperty.Value) { throw 'updateChannel must be stable or canary.' }
+        $merged['updateChannel'] = [string] $channelProperty.Value
+    }
+    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
-    Set-Content -LiteralPath $temporary -Value (([pscustomobject] [ordered]@{ vulkanBarMitigation = $value }) | ConvertTo-Json) -Encoding utf8
+    [IO.File]::WriteAllText($temporary, (([pscustomobject] $merged) | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $path -Force
+}
+
+$script:FastLlmUiReleasesUrlPrefix = 'https://github.com/bitworks-io/amd-inference/releases'
+
+function Get-FastLlmUiValue {
+    param($Object, [string] $Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [Collections.IDictionary]) { if ($Object.Contains($Name)) { return $Object[$Name] }; return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+# The banner for an update check result: $null unless a newer release is available. The link is shown only for this repository's release pages.
+function Format-FastLlmUiUpdateBanner {
+    param($Check)
+    if ([string] (Get-FastLlmUiValue $Check 'status') -cne 'available') { return $null }
+    $latest = Get-FastLlmUiValue $Check 'latest'
+    $version = [string] (Get-FastLlmUiValue $latest 'version')
+    if ($version -cnotmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { return $null }
+    $url = [string] (Get-FastLlmUiValue $latest 'htmlUrl')
+    if (-not $url.StartsWith($script:FastLlmUiReleasesUrlPrefix, [StringComparison]::Ordinal)) { $url = $null }
+    return @{ text = "FastLLM $version is available."; url = $url }
+}
+
+# The red banner for a failed first-launch integrity check; ok, not-installed and an unusable result show nothing.
+function Format-FastLlmUiIntegrityBanner {
+    param($Result)
+    if ([string] (Get-FastLlmUiValue $Result 'status') -cne 'failed') { return $null }
+    return @{ text = "FastLLM's files don't match its signed catalog. Reinstall FastLLM from the release page."; url = $script:FastLlmUiReleasesUrlPrefix }
+}
+
+function Format-FastLlmUiUpdateConfirm {
+    param([Parameter(Mandatory = $true)][string] $Version)
+    return "FastLLM will stop the server, download $Version, check its Bitworks signature, and run the installer. Continue?"
+}
+
+function Format-FastLlmUiUpdateResult {
+    param($Result, [string] $Version)
+    if ([string] (Get-FastLlmUiValue $Result 'status') -ceq 'installed') { return "FastLLM was updated to $Version. Close and reopen FastLLM." }
+    $reason = [string] (Get-FastLlmUiValue $Result 'reason')
+    if ([string]::IsNullOrEmpty($reason)) { $reason = [string] (Get-FastLlmUiValue $Result 'status') }
+    if ([string]::IsNullOrEmpty($reason)) { $reason = 'the update did not complete' }
+    return "Update not installed: $reason. Nothing was changed."
+}
+
+# True once per installed version: the first call for a version records it in <InstallRoot>\state\integrity-checked.json and returns $true.
+function Test-FastLlmUiIntegrityDue {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $InstalledVersion)
+    if ($InstalledVersion -cnotmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { return $false }
+    $path = Join-Path (Join-Path $InstallRoot 'state') 'integrity-checked.json'
+    $recorded = [ordered]@{}
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($null -ne $stored -and $stored -is [pscustomobject]) {
+                foreach ($property in $stored.PSObject.Properties) { $recorded[$property.Name] = $property.Value }
+            }
+        }
+    }
+    catch { $recorded = [ordered]@{} }
+    if ($recorded.Contains($InstalledVersion)) { return $false }
+    $recorded[$InstalledVersion] = [datetime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    try {
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+        $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
+        [IO.File]::WriteAllText($temporary, (([pscustomobject] $recorded) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $temporary -Destination $path -Force
+    }
+    catch { }
+    return $true
 }

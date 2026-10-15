@@ -3,6 +3,7 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
 $root=Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
+. (Join-Path $root 'src/FastLlm.Update.ps1')
 $checks=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
 function Clone($Value){return ($Value|ConvertTo-Json -Depth 16|ConvertFrom-Json)}
@@ -354,5 +355,59 @@ $writeRoots = @([regex]::Matches($ui, '(?m)Write-FastLlmUiSettings -InstallRoot 
 Check ($readRoots.Count -eq 1 -and $writeRoots.Count -eq 1 -and $readRoots[0] -ceq $writeRoots[0] -and $readRoots[0] -ceq '$script:settingsRoot') 'the BAR setting is read and written under one root'
 Check ($ui.Contains('$script:settingsRoot=$InstallRoot') -and -not [regex]::IsMatch($ui, '(?:Read|Write)-FastLlmUiSettings[^\r\n]*pathBox')) 'the settings root is the launch root, not the folder box'
 Remove-Item -LiteralPath $uiRoot -Recurse -Force
+
+# Update banner, first-launch integrity, settings round trip and the Preview title (Plan C task 6).
+$releaseUrl = 'https://github.com/bitworks-io/amd-inference/releases/tag/v2026.10.16.1'
+$availableCheck = [pscustomobject]@{ status = 'available'; installed = '2026.10.15.1'; latest = @{ version = '2026.10.16.1'; htmlUrl = $releaseUrl; assets = @{} } }
+$banner = Format-FastLlmUiUpdateBanner -Check $availableCheck
+Check ($banner.text -ceq 'FastLLM 2026.10.16.1 is available.' -and $banner.url -ceq $releaseUrl) 'an available update gives the banner text and release url'
+foreach ($quietStatus in @('up-to-date', 'failed', 'disabled', 'skipped-recent', 'not-a-release')) {
+    Check ($null -eq (Format-FastLlmUiUpdateBanner -Check ([pscustomobject]@{ status = $quietStatus; installed = '2026.10.15.1'; latest = $availableCheck.latest }))) "no banner for $quietStatus"
+}
+Check ($null -eq (Format-FastLlmUiUpdateBanner -Check $null)) 'no banner without a check result'
+$foreignCheck = [pscustomobject]@{ status = 'available'; latest = [pscustomobject]@{ version = '2026.10.16.1'; htmlUrl = 'https://evil.example/x' } }
+Check ($null -eq (Format-FastLlmUiUpdateBanner -Check $foreignCheck).url) 'a release page outside this repository is never offered as a link'
+Check ($null -eq (Format-FastLlmUiUpdateBanner -Check ([pscustomobject]@{ status = 'available'; latest = @{ version = 'evil; calc'; htmlUrl = $releaseUrl } }))) 'an invalid version gives no banner'
+$integrityBanner = Format-FastLlmUiIntegrityBanner -Result ([pscustomobject]@{ status = 'failed'; reason = 'tree' })
+Check ($integrityBanner.text -ceq "FastLLM's files don't match its signed catalog. Reinstall FastLLM from the release page." -and $integrityBanner.url -ceq 'https://github.com/bitworks-io/amd-inference/releases') 'a failed integrity check gives the red banner text and the releases link'
+foreach ($quietIntegrity in @('ok', 'not-installed')) { Check ($null -eq (Format-FastLlmUiIntegrityBanner -Result ([pscustomobject]@{ status = $quietIntegrity }))) "no integrity banner for $quietIntegrity" }
+Check ($null -eq (Format-FastLlmUiIntegrityBanner -Result $null)) 'no integrity banner without a result'
+Check ((Format-FastLlmUiUpdateConfirm -Version '2026.10.16.1') -ceq 'FastLLM will stop the server, download 2026.10.16.1, check its Bitworks signature, and run the installer. Continue?') 'the update confirmation text is exact'
+Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'installed'; step = 'integrity'; reason = '' }) -Version '2026.10.16.1') -ceq 'FastLLM was updated to 2026.10.16.1. Close and reopen FastLLM.') 'the installed result text is exact'
+Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'refused'; step = 'signature'; reason = 'not-valid' }) -Version '2026.10.16.1') -ceq 'Update not installed: not-valid. Nothing was changed.') 'a refused update says nothing was changed'
+Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'failed'; step = 'stop'; reason = 'busy-loading' }) -Version '2026.10.16.1') -ceq 'Update not installed: busy-loading. Nothing was changed.') 'a failed update says nothing was changed'
+
+$integrityRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-int-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $integrityRoot | Out-Null
+Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1') 'integrity is due on the first launch of a version'
+Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1')) 'integrity is not due again for the same version'
+Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.16.1') 'integrity is due again for a new version'
+Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1')) 'an earlier version stays recorded'
+Check (Test-Path -LiteralPath (Join-Path (Join-Path $integrityRoot 'state') 'integrity-checked.json') -PathType Leaf) 'the record is state\integrity-checked.json'
+Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '')) 'no installed version means no check'
+Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion 'not-a-version')) 'a malformed version means no check'
+Remove-Item -LiteralPath $integrityRoot -Recurse -Force
+
+$roundRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-round-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $roundRoot | Out-Null
+$defaults = Read-FastLlmUiSettings -InstallRoot $roundRoot
+Check ($defaults.vulkanBarMitigation -ceq 'auto' -and $defaults.updateCheck -ceq 'on' -and $defaults.updateChannel -ceq 'stable') 'settings default to auto, on and stable'
+Set-FastLlmUpdateSettings -InstallRoot $roundRoot -UpdateCheck off -UpdateChannel canary
+Write-FastLlmUiSettings -InstallRoot $roundRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on' })
+$roundTrip = Read-FastLlmUiSettings -InstallRoot $roundRoot
+Check ($roundTrip.vulkanBarMitigation -ceq 'on' -and $roundTrip.updateCheck -ceq 'off' -and $roundTrip.updateChannel -ceq 'canary') 'the BAR write keeps both update keys'
+Set-FastLlmUpdateSettings -InstallRoot $roundRoot -UpdateCheck on
+$roundTrip = Read-FastLlmUiSettings -InstallRoot $roundRoot
+Check ($roundTrip.vulkanBarMitigation -ceq 'on' -and $roundTrip.updateCheck -ceq 'on' -and $roundTrip.updateChannel -ceq 'canary') 'the update write keeps the BAR key and the channel'
+Set-Content -LiteralPath (Join-Path $roundRoot 'settings.json') -Value '{"vulkanBarMitigation":"off","updateCheck":"off","updateChannel":"canary","futureKey":"keep"}' -Encoding ascii
+Write-FastLlmUiSettings -InstallRoot $roundRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'auto' })
+$rawSettings = Get-Content -LiteralPath (Join-Path $roundRoot 'settings.json') -Raw | ConvertFrom-Json
+Check ($rawSettings.vulkanBarMitigation -ceq 'auto' -and $rawSettings.updateCheck -ceq 'off' -and $rawSettings.updateChannel -ceq 'canary' -and $rawSettings.futureKey -ceq 'keep') 'a UI write preserves update keys and unknown keys'
+Remove-Item -LiteralPath $roundRoot -Recurse -Force
+
+Check ($ui.Contains("`$form.Text='Bitworks FastLLM (Preview)'") -and -not $ui.Contains('Windows lab alpha')) 'the window title is Bitworks FastLLM (Preview)'
+Check ($ui.Contains("src/FastLlm.Update.ps1") -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Update')) 'the UI dot-sources the update script'
+Check ($ui.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot') -and -not [regex]::IsMatch($ui, '(?i)-Silent(?!ly)')) 'the UI runs the verified update without -Silent'
+Check ($ui.Contains('Test-FastLlmUiIntegrityDue') -and $ui.Contains('Set-FastLlmUpdateSettings') -and $ui.Contains("'Check for updates'")) 'the UI has the first-launch integrity check and the update setting'
 
 Write-Output "UI flow tests passed: $checks"

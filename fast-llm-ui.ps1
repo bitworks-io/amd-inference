@@ -15,6 +15,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiPrerequisite.ps1')
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiBackground.ps1')
+# Update and Trust are dot-sourced here, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.Update.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
@@ -28,9 +30,10 @@ $script:trayState=New-FastLlmUiTrayState; $script:trayIcon=$null; $script:trayMe
 $script:bgState=New-FastLlmUiBackgroundState; $script:bgNextPollUtc=[DateTime]::MinValue
 $script:bgStopRequested=$false
 $script:bgPoll=$null
+$script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
 $form=New-Object Windows.Forms.Form
-$form.Text='Bitworks FastLLM - Windows lab alpha'
-$form.Size=New-Object Drawing.Size(880,875)
+$form.Text='Bitworks FastLLM (Preview)'
+$form.Size=New-Object Drawing.Size(880,911)
 $form.MinimumSize=$form.Size
 $form.StartPosition='CenterScreen'
 $form.Font=New-Object Drawing.Font('Segoe UI',10)
@@ -61,7 +64,8 @@ $barBox=New-Object Windows.Forms.ComboBox
 $barBox.Location=New-Object Drawing.Point(560,208);$barBox.Size=New-Object Drawing.Size(260,30);$barBox.DropDownStyle='DropDownList'
 $script:barValues=@('auto','on','off')
 foreach($barItem in @('Auto (recommended)','On','Off')){[void]$barBox.Items.Add($barItem)}
-$barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string](Read-FastLlmUiSettings -InstallRoot $script:settingsRoot).vulkanBarMitigation)
+$script:uiSettings=Read-FastLlmUiSettings -InstallRoot $script:settingsRoot -AppRoot $PSScriptRoot
+$barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string]$script:uiSettings.vulkanBarMitigation)
 $form.Controls.Add($barBox)
 function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.SelectedIndex)] }
 function ButtonAt($Text,$X,$Y,$Width=150) {
@@ -91,6 +95,33 @@ $vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$v
 $amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,785);$amd.AutoSize=$true;$form.Controls.Add($amd)
 $trayButton=ButtonAt 'Minimize to tray' 440 778 175
 $driverButton=ButtonAt 'Driver guidance' 630 778 190
+$updateBox=New-Object Windows.Forms.CheckBox
+$updateBox.Text='Check for updates';$updateBox.Location=New-Object Drawing.Point(300,757);$updateBox.AutoSize=$true
+$updateBox.Checked=([string]$script:uiSettings.updateCheck -ceq 'on');$form.Controls.Add($updateBox)
+# The top row is reserved for the banner, so everything above is shifted down by its height. Banner controls are added after the shift.
+$script:bannerHeight=36
+foreach($shifted in @($form.Controls)){$shifted.Top+=$script:bannerHeight}
+$bannerLabel=New-Object Windows.Forms.Label
+$bannerLabel.Location=New-Object Drawing.Point(24,6);$bannerLabel.Size=New-Object Drawing.Size(300,26);$bannerLabel.TextAlign='MiddleLeft';$bannerLabel.Visible=$false;$form.Controls.Add($bannerLabel)
+$bannerNotes=New-Object Windows.Forms.LinkLabel
+$bannerNotes.Text='Release notes';$bannerNotes.Location=New-Object Drawing.Point(340,11);$bannerNotes.AutoSize=$true;$bannerNotes.Visible=$false;$form.Controls.Add($bannerNotes)
+$bannerButton=New-Object Windows.Forms.Button
+$bannerButton.Text='Update';$bannerButton.Location=New-Object Drawing.Point(480,4);$bannerButton.Size=New-Object Drawing.Size(110,28);$bannerButton.Visible=$false;$form.Controls.Add($bannerButton)
+function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate) {
+    $script:bannerUrl=$Url
+    if([string]::IsNullOrEmpty($Text)){$bannerLabel.Visible=$false;$bannerNotes.Visible=$false;$bannerButton.Visible=$false;return}
+    $bannerLabel.Text=$Text
+    $bannerLabel.Width=[Windows.Forms.TextRenderer]::MeasureText($Text,$bannerLabel.Font).Width+10
+    $bannerLabel.ForeColor=if($IsError){[Drawing.Color]::Firebrick}else{[Drawing.SystemColors]::ControlText}
+    $bannerLabel.Visible=$true
+    $next=$bannerLabel.Right+8
+    $bannerNotes.Text=if($IsError){'Releases page'}else{'Release notes'}
+    $bannerNotes.Left=$next
+    $bannerNotes.Visible=[bool]$Url
+    if($Url){$next=$next+[Windows.Forms.TextRenderer]::MeasureText($bannerNotes.Text,$bannerNotes.Font).Width+24}
+    $bannerButton.Left=$next
+    $bannerButton.Visible=$CanUpdate
+}
 $vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
 $amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
 $resultsLink.Add_LinkClicked({
@@ -104,7 +135,18 @@ $barBox.Add_SelectedIndexChanged({
     try{Write-FastLlmUiSettings -InstallRoot $script:settingsRoot -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue)})}
     catch{$statusLabel.Text='The Resizable BAR setting could not be saved.'}
 })
+$bannerNotes.Add_LinkClicked({
+    try{
+        $target=[string]$script:bannerUrl
+        if($target.StartsWith('https://github.com/bitworks-io/amd-inference/releases',[StringComparison]::Ordinal)){Start-Process $target}
+    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the release page. Check your default browser.','Open release page','OK','Warning')}
+})
+$updateBox.Add_CheckedChanged({
+    try{Set-FastLlmUpdateSettings -InstallRoot $script:settingsRoot -UpdateCheck $(if($updateBox.Checked){'on'}else{'off'})}
+    catch{$statusLabel.Text='The update setting could not be saved.'}
+})
 function SetBusy([bool]$Busy) {
+    $Busy=[bool]($Busy -or $script:updateRun)
     $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
         $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
     foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
@@ -225,6 +267,7 @@ function ReadSelection {
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
 }
 function LaunchStep([string]$Step,[object[]]$Arguments) {
+    $script:updateOutcome=$false
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
     if($Step -in @('engine','model download','serving')){AssertUiBackgroundNotOccupied}
@@ -637,6 +680,86 @@ $backgroundCheckButton.Add_Click({
 })
 $doctorButton.Add_Click({try{ReadSelection;LaunchStep 'diagnostics' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 $driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
+# Launch checks run on a background runspace (the same pattern as the background-host poll); the timer collects the result, so the window never waits on the network.
+function StartUiStartupChecks {
+    if($script:startupRun){return}
+    $release=Read-FastLlmInstalledRelease -AppRoot $PSScriptRoot
+    $runIntegrity=$false
+    if($release){$runIntegrity=[bool](Test-FastLlmUiIntegrityDue -InstallRoot $script:settingsRoot -InstalledVersion ([string]$release.version))}
+    $source=@'
+param($Project,$Install,$App,$RunIntegrity)
+$ErrorActionPreference='Stop'
+. (Join-Path $Project 'src/FastLlm.Update.ps1')
+$integrity=$null;$update=$null
+if($RunIntegrity){try{$integrity=Test-FastLlmInstallIntegrity -AppRoot $App}catch{$integrity=$null}}
+try{$update=Invoke-FastLlmUpdateCheck -InstallRoot $Install -AppRoot $App}catch{$update=$null}
+[pscustomobject]@{integrity=$integrity;update=$update}
+'@
+    $pipeline=[Management.Automation.PowerShell]::Create()
+    try{
+        $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument($runIntegrity)
+        $script:startupRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke()}
+    }catch{$pipeline.Dispose();throw}
+}
+function CompleteUiStartupChecks {
+    if(-not $script:startupRun -or -not $script:startupRun.handle.IsCompleted){return}
+    $run=$script:startupRun;$script:startupRun=$null
+    try{
+        $values=@($run.pipeline.EndInvoke($run.handle))
+        if($values.Count -eq 1){
+            $failedIntegrity=Format-FastLlmUiIntegrityBanner -Result $values[0].integrity
+            $offer=Format-FastLlmUiUpdateBanner -Check $values[0].update
+            if($failedIntegrity){SetUiBanner $failedIntegrity.text $failedIntegrity.url $true $false}
+            elseif($offer){
+                $script:updateOffer=[pscustomobject]@{version=[string]$values[0].update.latest.version;latest=$values[0].update.latest}
+                SetUiBanner $offer.text $offer.url $false $true
+            }
+        }
+    }catch{}
+    finally{try{$run.pipeline.Dispose()}catch{}}
+}
+function InvokeUiUpdate {
+    if(-not $script:updateOffer -or $script:updateRun){return}
+    if($script:child -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before updating.';return}
+    $version=[string]$script:updateOffer.version
+    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiUpdateConfirm -Version $version),'Update FastLLM','YesNo','Question','Button2')
+    if($choice -ne 'Yes'){return}
+    $source=@'
+param($Project,$Install,$App,$Latest)
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $Project 'src/FastLlm.psm1') -Force
+. (Join-Path $Project 'src/FastLlm.Update.ps1')
+Invoke-FastLlmVerifiedUpdate -InstallRoot $Install -AppRoot $App -Latest $Latest
+'@
+    $pipeline=[Management.Automation.PowerShell]::Create()
+    try{
+        $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument($script:updateOffer.latest)
+        $script:updateOutcome=$false
+        $script:updateRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke();version=$version}
+    }catch{$pipeline.Dispose();$statusLabel.Text=Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{status='failed';reason=$_.Exception.Message}) -Version $version;return}
+    $bannerButton.Enabled=$false
+    $statusLabel.Text='Updating...'
+    SetBusy $false
+}
+function CompleteUiUpdate {
+    if(-not $script:updateRun -or -not $script:updateRun.handle.IsCompleted){return}
+    $run=$script:updateRun
+    $result=[pscustomobject]@{status='failed';reason='the update did not complete'}
+    try{
+        $values=@($run.pipeline.EndInvoke($run.handle))
+        if($values.Count -ge 1){$result=$values[$values.Count-1]}
+    }catch{$result=[pscustomobject]@{status='failed';reason=$_.Exception.Message}}
+    finally{try{$run.pipeline.Dispose()}catch{};$script:updateRun=$null}
+    # The stop inside the update ended any server this window supervised, so re-read ownership before showing the outcome.
+    try{RefreshUiBackgroundStatus}catch{}
+    SetBusy ([bool]($script:child -or $script:vcBroker))
+    $script:updateOutcome=$true
+    $statusLabel.Text=Format-FastLlmUiUpdateResult -Result $result -Version $run.version
+    if([string]$result.status -ceq 'installed'){$script:updateOffer=$null;SetUiBanner '' '' $false $false}
+    else{$bannerButton.Enabled=$true}
+}
+$bannerButton.Add_Click({try{InvokeUiUpdate}catch{$statusLabel.Text='Update not installed: '+$_.Exception.Message+'. Nothing was changed.'}})
+$form.Add_Shown({try{StartUiStartupChecks}catch{}})
 $copyButton.Add_Click({[Windows.Forms.Clipboard]::SetText('http://127.0.0.1:8080/v1')})
 $stopButton.Add_Click({try{StopUiOperation}catch{ShowFailure $_.Exception.Message}})
 $trayButton.Add_Click({
@@ -647,6 +770,7 @@ $trayButton.Add_Click({
 })
 $timer=New-Object Windows.Forms.Timer;$timer.Interval=250
 $timer.Add_Tick({
+    try{CompleteUiStartupChecks;CompleteUiUpdate}catch{}
     if($script:vcBroker){
         $observation=Get-FastLlmUiVcBrokerObservation -Process $script:vcBroker
         if($observation -ne 'terminal'){
@@ -771,7 +895,7 @@ $timer.Add_Tick({
             'engine'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'engine-complete';LaunchUiPhase}
             'preview'{ContinueUiAfterPreview (ConvertFrom-Json $text)}
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
-            'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;$statusLabel.Text='Service stopped.'}
+            'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
             default{SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'}
         }
     }catch{
@@ -792,6 +916,12 @@ $form.Add_FormClosing({param($sender,$event)
         SetTrayMenuAvailable $true
         return
     }
+    if($script:updateRun){
+        $event.Cancel=$true
+        $statusLabel.Text='An update is running. Wait for it to finish before closing FastLLM.'
+        SetTrayMenuAvailable $true
+        return
+    }
     if($script:child){
         if([Windows.Forms.MessageBox]::Show($form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){
             $event.Cancel=$true;SetTrayMenuAvailable $true;return
@@ -804,6 +934,8 @@ $form.Add_FormClosing({param($sender,$event)
     $timer.Stop()
     Close-FastLlmUiBackgroundPoll $script:bgPoll
     $script:bgPoll=$null
+    Close-FastLlmUiBackgroundPoll $script:startupRun
+    $script:startupRun=$null
 })
 $timer.Start()
 try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application]::Run($form)}finally{
