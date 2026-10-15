@@ -757,6 +757,7 @@ function CompleteUiUpdate {
     $script:updateOutcome=$true
     $statusLabel.Text=Format-FastLlmUiUpdateResult -Result $result -Version $run.version
     if([string]$result.status -ceq 'installed'){$script:updateOffer=$null;SetUiBanner '' '' $false $false}
+    elseif(Test-FastLlmUiUpdateIntegrityFailure -Result $result){$script:updateOffer=$null;SetUiBanner $statusLabel.Text $script:FastLlmUiReleasesUrlPrefix $true $false}
     else{$bannerButton.Enabled=$true}
 }
 $bannerButton.Add_Click({try{InvokeUiUpdate}catch{$statusLabel.Text='Update not installed: '+$_.Exception.Message+'. Nothing was changed.'}})

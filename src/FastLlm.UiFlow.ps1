@@ -467,9 +467,16 @@ function Format-FastLlmUiUpdateConfirm {
     return "FastLLM will stop the server, download $Version, check its Bitworks signature, and run the installer. Continue?"
 }
 
+# True only for the outcome where the installer ran and the installed files then failed the catalog check.
+function Test-FastLlmUiUpdateIntegrityFailure {
+    param($Result)
+    return ([string] (Get-FastLlmUiValue $Result 'status') -ceq 'failed' -and [string] (Get-FastLlmUiValue $Result 'step') -ceq 'integrity')
+}
+
 function Format-FastLlmUiUpdateResult {
     param($Result, [string] $Version)
     if ([string] (Get-FastLlmUiValue $Result 'status') -ceq 'installed') { return "FastLLM was updated to $Version. Close and reopen FastLLM." }
+    if ((Test-FastLlmUiUpdateIntegrityFailure -Result $Result)) { return "FastLLM $Version was installed, but its files don't match the signed catalog. Reinstall FastLLM from the release page." }
     $reason = [string] (Get-FastLlmUiValue $Result 'reason')
     if ([string]::IsNullOrEmpty($reason)) { $reason = [string] (Get-FastLlmUiValue $Result 'status') }
     if ([string]::IsNullOrEmpty($reason)) { $reason = 'the update did not complete' }
