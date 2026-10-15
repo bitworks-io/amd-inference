@@ -151,7 +151,7 @@ try {
     Check ($caught -and -not $state.events.Contains('supervisor')) 'a component plan that points at the built-in engine instead is refused before launch'
     $state.fresh=$savedFresh;$state.componentOk=$true;$state.events.Clear()
 
-    # ---- C3 Task 3: a HIP component plan. M7 start order: no built-in engine check and no catalog asset check; every component in the chain verified (Full), the first
+    # ---- a HIP component plan. Start order: no built-in engine check and no catalog asset check; every component in the chain verified (Full), the first
     # failure named; the resolved backend must equal the plan backend; device binding enforce is refused before anything runs. ----
     $hipEngineEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq 'llama.cpp-hip-b11658' })[0]
     $hipExe=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $hipEngineEntry) ([string]$hipEngineEntry.entryPoint)
@@ -163,7 +163,7 @@ try {
     $state.fresh=$freshHip;$state.componentOk=$true;$state.failComponent='';$state.events.Clear();$state.componentCalls.Clear();$state.observed=$null;$engineChecksBefore=$state.engineChecks
     $result=Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp
     Check ($result -eq 0 -and $state.events.Contains('supervisor') -and $state.observed.backend -ceq 'hip' -and $state.observed.enginePath -ceq $hipExe) 'a HIP component plan launches on the component executable with backend hip, although the catalog rocm asset is disabled'
-    Check ($state.engineChecks -eq $engineChecksBefore) 'the verification inside Start-FastLlmServer for a HIP component plan never runs the built-in engine installation check (M7; the hardware probe of the re-plan is separate)'
+    Check ($state.engineChecks -eq $engineChecksBefore) 'the verification inside Start-FastLlmServer for a HIP component plan never runs the built-in engine installation check (the hardware probe of the re-plan is separate)'
     Check (($state.componentCalls -join ',') -ceq 'amd-rocm-gfx1100-10.0.0:Full,llama.cpp-hip-b11658:Full') 'a HIP start verifies the runtime and then the engine, each at Depth Full'
     $state.fresh=$savedFresh;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks
     Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null

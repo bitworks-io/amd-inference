@@ -434,7 +434,7 @@ try {
         try { [Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/stall",$null,200,1000) } catch { $caught=$true }
         Check ($caught -and $elapsed.Elapsed.TotalSeconds -lt 5) 'a stalled HTTP request is bounded by its whole-request deadline'
     } finally { $stallHost.Dispose() }
-    # ================= C3 Task 3: the one child-environment builder, the HIP device list, and the typed HIP failures =================
+    # ================= the one child-environment builder, the HIP device list, and the typed HIP failures =================
     $envSandbox=[pscustomobject]@{appData='C:\sandbox\appdata';programData='C:\sandbox\programdata'}
     $inherited=@('PATH','HOME','HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','VK_ICD_FILENAMES','HF_TOKEN','CUDA_VISIBLE_DEVICES','GPU_DEVICE_ORDINAL','HIPBLASLT_TENSILE_LIBPATH','AMD_LOG_LEVEL','GPU_MAX_HW_QUEUES','Hip_Path_Lower','USERPROFILE')
     $vulkanEnvPlan=[pscustomobject]@{backend='Vulkan';enginePath='C:\fl\engines\b10698\vulkan\llama-server.exe'}
@@ -475,7 +475,7 @@ try {
     $runtimeText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.Runtime.ps1'))
     Check ($moduleText.Contains('Initialize-FastLlmEngineStartInfo -StartInfo $startInfo -Plan $probePlan') -and $runtimeText.Contains('Initialize-FastLlmEngineStartInfo -StartInfo $info -Plan $Plan') -and -not $moduleText.Contains("EnvironmentVariables['PATH']") -and -not $moduleText.Contains("EnvironmentVariables['APPDATA']") -and -not $runtimeText.Contains('$info.EnvironmentVariables[''PATH'']')) 'the device probe and the server launch both build their environment through the one function (no second copy of the PATH or scrub code)'
 
-    # The real b11658 device list on an RX 7900 XTX bench, parsed by the existing parser and matched by name and VRAM.
+    # The real b11658 device list on an RX 7900 XTX PC, parsed by the existing parser and matched by name and VRAM.
     $realList="Available devices:`r`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`r`n"
     $realDevices=@(ConvertFrom-LlamaDeviceList -Text $realList -Backend ROCm)
     Check ($realDevices.Count -eq 1 -and $realDevices[0].device -ceq 'ROCm0' -and $realDevices[0].name -ceq 'AMD Radeon RX 7900 XTX' -and $realDevices[0].vramMiB -eq 24560 -and $realDevices[0].freeVramMiB -eq 24411 -and $realDevices[0].isAmd -and -not $realDevices[0].isIntegrated) 'the real b11658 --list-devices line parses to ROCm0 with name, total and free VRAM'

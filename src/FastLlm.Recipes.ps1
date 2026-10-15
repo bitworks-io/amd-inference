@@ -25,10 +25,11 @@ function Read-FastLlmRecipes {
     return @($document.recipes)
 }
 
-# The origins that are gated behind the experimental switch and -AcceptExperimental, and never auto-selected.
+# The origins that are gated behind the experimental switch and -AcceptExperimental, and never auto-selected. The one list: exported, so the
+# entry-script component helpers use it too.
 function Test-FastLlmExperimentalOrigin {
     param([string] $Origin)
-    return [bool] (@('community-experimental', 'bitworks-experimental') -ccontains $Origin)
+    return [bool] (@('community-experimental', 'bitworks-experimental') -contains $Origin)
 }
 
 function Get-FastLlmRecipeRank {
@@ -263,7 +264,7 @@ function Select-FastLlmRecipeForPlacements {
                 if (-not $skipped.Contains($countReason)) { $skipped.Add($countReason) }
                 continue
             }
-            # Ruling 2: a recipe whose engine chain needs an accepted license is never auto-selected, whatever its origin; -Recipe is the way to it.
+            # An AMD license cannot be accepted silently, so a recipe whose engine chain needs an accepted license is never auto-selected, whatever its origin; -Recipe is the way to it.
             if (-not $RecipeId -and (Test-FastLlmRecipeNeedsLicenseAcceptance -Recipe $recipe -Catalog $Catalog -Components $Components)) {
                 $licenseReason = "$($recipe.id): needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)"
                 if (-not $skipped.Contains($licenseReason)) { $skipped.Add($licenseReason) }

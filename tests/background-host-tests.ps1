@@ -127,7 +127,7 @@ try {
     function Assert-FastLlmBackgroundNativeHost {}
     function Import-Module { param($Name,[switch]$Force) }
     function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) $script:mockOrder.Add('hardware'); [pscustomobject]@{kind='mock'} }
-    # M2: the order of lock, first status write and first probe is recorded; the status writes themselves are kept for inspection.
+    # The order of lock, first status write and first probe is recorded; the status writes themselves are kept for inspection.
     $script:mockOrder = New-Object 'System.Collections.Generic.List[string]'
     $script:mockStateWrites = New-Object 'System.Collections.Generic.List[object]'
     function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
@@ -169,7 +169,7 @@ try {
     $workerExit = Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source
     Assert-BackgroundTest ($workerExit -eq 0 -and $script:mockServerStarts -eq 1 -and -not $script:mockOperation.CanRead) 'Worker failed to call supervisor exactly once or release operation lock.'
     Assert-BackgroundTest ($script:mockBarPolicy -ceq 'on') 'Worker did not pass the request vulkanBarMitigation to the start.'
-    # M2: status.json says 'preparing' (the shape fast-llm.ps1 writes) right after the operation lock and before the first hardware probe.
+    # status.json says 'preparing' (the shape fast-llm.ps1 writes) right after the operation lock and before the first hardware probe.
     Assert-BackgroundTest (($script:mockOrder -join ',') -ceq 'lock,status:preparing,hardware') ('The background worker must write a preparing status right after taking the lock, before probing (observed: ' + ($script:mockOrder -join ',') + ').')
     $preparingState = $script:mockStateWrites[0]
     Assert-BackgroundTest ($preparingState.schemaVersion -eq 1 -and $preparingState.phase -ceq 'preparing' -and $preparingState.action -ceq 'start' -and [string]$preparingState.runId -cmatch '^[0-9a-f]{32}$' -and @($preparingState.Keys).Count -eq 4) 'The preparing status has the shape the CLI writes (schemaVersion, runId, phase, action).'

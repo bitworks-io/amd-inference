@@ -83,7 +83,7 @@ param(
     # components -Install only: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
     [switch] $AcceptLicense,
 
-    # plan, start and install with -Recipe of a community-experimental recipe: required in addition to the experimental switch being on.
+    # plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: required in addition to the experimental switch being on.
     [switch] $AcceptExperimental
 )
 

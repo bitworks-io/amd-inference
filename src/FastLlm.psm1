@@ -1280,7 +1280,7 @@ function Get-FastLlmPlan {
     return $planDocument
 }
 
-# Counts every SHA-256 computed through Test-FastLlmFileHash (read by tests: the M8 presence checks must never hash).
+# Counts every SHA-256 computed through Test-FastLlmFileHash (read by tests: the presence checks must never hash).
 $script:FastLlmFileHashCalls = 0
 
 function Test-FastLlmFileHash {
@@ -3287,7 +3287,7 @@ function Start-FastLlmServer {
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     $backendKey = ([string] $Plan.backend).ToLowerInvariant()
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) {
-        # A plan on an engine component (M7) never consults the catalog backend asset or the built-in engine installation: it runs the component's
+        # A plan on an engine component never consults the catalog backend asset or the built-in engine installation: it runs the component's
         # verified executable. Every required component is verified in full first, naming the first one that fails; nothing falls back or installs.
         $planComponentId = [string] $Plan.engineComponentId
         $startComponentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
@@ -3459,6 +3459,7 @@ Export-ModuleMember -Function @(
     'Read-FastLlmJson',
     'Read-FastLlmRecipes',
     'Get-FastLlmRecipeLabel',
+    'Test-FastLlmExperimentalOrigin',
     'Remove-FastLlmDeviceBindingPrivateFields',
     'Save-FastLlmVerifiedFile',
     'Start-FastLlmServer',

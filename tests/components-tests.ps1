@@ -622,7 +622,7 @@ try {
     try { & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $unknownRecipe $resolveCatalog $engineList $engineRoot | Out-Null } catch { $unknownFailure = $_.Exception }
     Check ($null -ne $unknownFailure -and $unknownFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown') 'an unknown engine id is a typed error'
 
-    # ---- C3 Task 2: streaming zip-tree install, requires chains with per-component consent, removal guard, presence checks ----
+    # ---- streaming zip-tree install, requires chains with per-component consent, removal guard, presence checks ----
     . (Join-Path $PSScriptRoot '../src/FastLlm.Components.ps1')
 
     # Builds <Path> from an ordered name -> text table with explicit entry names (forward slashes), so a nested archive is the same on every platform.
@@ -895,19 +895,19 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $shallowOk = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $shallowDoc -ComponentId 'rt-shallow' -InstallRoot $shortRoot -AcceptLicense -Download (New-ChainSeam -Fixture $shallowFx -State $shallowState) }
     Check ($null -eq $shallowOk -and $shallowState.log.Count -eq 1) 'a component with short paths installs under a short install root (positive control)'
 
-    # ---- M8: inventory and resolution never hash; Full still does ----
-    $m8Fx = New-Fixture -Dir (Join-Path $work 'fx-m8') -Id 'm8-engine'
-    $m8Root = New-TestRoot
-    $null = Install-Fixture -Fixture $m8Fx -InstallRoot $m8Root -Counter @{ count = 0 } -AcceptLicense -Unattended
-    $m8List = @(Get-FastLlmComponents -ComponentsPath $m8Fx.ComponentsPath)
-    $m8Recipe = [pscustomobject] @{ id = 'rm'; components = [pscustomobject] @{ engine = 'm8-engine'; model = 'm' } }
+    # ---- inventory and resolution never hash; Full still does ----
+    $presenceFx = New-Fixture -Dir (Join-Path $work 'fx-presence') -Id 'presence-engine'
+    $presenceRoot = New-TestRoot
+    $null = Install-Fixture -Fixture $presenceFx -InstallRoot $presenceRoot -Counter @{ count = 0 } -AcceptLicense -Unattended
+    $presenceList = @(Get-FastLlmComponents -ComponentsPath $presenceFx.ComponentsPath)
+    $presenceRecipe = [pscustomobject] @{ id = 'rm'; components = [pscustomobject] @{ engine = 'presence-engine'; model = 'm' } }
     & $module { $script:FastLlmFileHashCalls = 0 }
-    $m8Inventory = @(Get-FastLlmComponentInventory -ComponentsPath $m8Fx.ComponentsPath -InstallRoot $m8Root)
-    $m8Resolved = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $m8Recipe $resolveCatalog $m8List $m8Root
+    $presenceInventory = @(Get-FastLlmComponentInventory -ComponentsPath $presenceFx.ComponentsPath -InstallRoot $presenceRoot)
+    $presenceResolved = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $presenceRecipe $resolveCatalog $presenceList $presenceRoot
     $hashCallsAfterPresence = & $module { $script:FastLlmFileHashCalls }
-    Check ($m8Inventory[0].installed -and $m8Inventory[0].verified -and $m8Resolved.installed) 'inventory and recipe resolution report an installed component as verified'
+    Check ($presenceInventory[0].installed -and $presenceInventory[0].verified -and $presenceResolved.installed) 'inventory and recipe resolution report an installed component as verified'
     Check ($hashCallsAfterPresence -eq 0) 'inventory and recipe resolution perform no hashing (the hash counter stays at 0)'
-    Check (Test-FastLlmComponentInstallation -InstallRoot $m8Root -Component $m8List[0]) 'the Full check passes on the same root (positive control)'
+    Check (Test-FastLlmComponentInstallation -InstallRoot $presenceRoot -Component $presenceList[0]) 'the Full check passes on the same root (positive control)'
     $hashCallsAfterFull = & $module { $script:FastLlmFileHashCalls }
     Check ($hashCallsAfterFull -eq 2) 'the Full check hashes every file (2 of 2): the counter proves it is the thing being counted'
     $recipesSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/FastLlm.Recipes.ps1') -Raw
@@ -920,7 +920,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $filesSource = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponentFiles \{.*?\r?\n\}\r?\n').Value
     Check ($extractSource.Length -gt 500 -and $filesSource.Length -gt 500 -and $extractSource.Contains('[System.IO.Compression.ZipFile]::OpenRead') -and $extractSource.Contains('.Open()') -and $extractSource.Contains('Copy-FastLlmBoundedStream') -and $moduleSourceEarly.Contains('$Source.Read($buffer, 0, $want)')) 'zip-tree extraction streams: ZipFile.OpenRead, entry.Open() and a bounded buffered copy to the FileStream'
     Check (($extractSource + $filesSource + $installSource) -notmatch 'Expand-Archive|ExtractToDirectory|ExtractToFile|ReadAllBytes|ReadAllText|ReadToEnd|\.ToArray\(\)\s*\|') 'the install path calls no whole-archive or whole-entry API'
-    Check (([regex]::Matches($installSource, 'Read-Host')).Count -eq 1 -and $installSource.Contains('Test-FastLlmConsoleInteractive') -and $installSource.IndexOf('Test-FastLlmConsoleInteractive') -lt $installSource.IndexOf('Read-Host')) 'Read-Host is reached only after the interactive check (M5)'
+    Check (([regex]::Matches($installSource, 'Read-Host')).Count -eq 1 -and $installSource.Contains('Test-FastLlmConsoleInteractive') -and $installSource.IndexOf('Test-FastLlmConsoleInteractive') -lt $installSource.IndexOf('Read-Host')) 'Read-Host is reached only after the interactive check'
 
     # ---- Fix round 1 ----
     # A reparse point for the link tests: a symbolic link, or (a standard Windows user cannot create those) a directory junction.
@@ -937,7 +937,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $isUnix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
 
     function New-Override($Url, $Path) { $table = @{}; $table[[string] $Url] = [string] $Path; return $table }
-    # -- Review Focus 5: a replaced upstream part is a typed component-source-mismatch, quarantined, and nothing further is downloaded --
+    # -- a replaced upstream part is a typed component-source-mismatch, quarantined, and nothing further is downloaded --
     $rf5Fx = New-ChainFixture -Name 'fx-rf5'
     $rf5Root = New-TestRoot
     $rf5State = New-ChainState
@@ -997,7 +997,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $boundedCopied2 = & $module { param($a, $b) Copy-FastLlmBoundedStream -Source $a -Destination $b -MaxBytes 50 } $boundedSource2 $boundedDestination2
     Check ($boundedCopied2 -eq 40 -and $boundedDestination2.Length -eq 40) 'the bounded copy copies a member within its pin completely'
 
-    # -- M5: -NonInteractive --
+    # -- -NonInteractive --
     $niCheck = { param($a) & $module { param($x) Test-FastLlmNonInteractiveCommandLine -CommandLineArgs $x } $a }
     Check ((& $niCheck @('pwsh', '-NoProfile', '-NonInteractive', '-File', 'x.ps1')) -and (& $niCheck @('powershell.exe', '-noni')) -and (& $niCheck @('powershell.exe', '-NONINTERACTIVE')) -and (& $niCheck @('powershell.exe', '/NonInteractive'))) 'the command-line check sees -NonInteractive and its prefixes, in any case'
     Check ((-not (& $niCheck @('pwsh', '-NoProfile', '-File', 'x.ps1'))) -and (-not (& $niCheck @('pwsh', '-NoExit', '-NoLogo', '-NoProfile')))) 'the command-line check does not fire on -NoProfile, -NoExit or -NoLogo'
@@ -1374,7 +1374,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $builtInNoRoot = Get-FastLlmPlan @builtInNoRootParams
     Check ($builtInNoRoot.recipe.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' -and -not $builtInNoRoot.PSObject.Properties['engineComponentId']) 'a built-in-engine recipe still plans without -InstallRoot'
 
-    # ---- C3 Task 3: a HIP engine that requires a runtime. Resolution, the plan (device probe, ROCm<N>), and the shipped HIP engine's manifest ----
+    # ---- a HIP engine that requires a runtime. Resolution, the plan (device probe, ROCm<N>), and the shipped HIP engine's manifest ----
     $hipShippedEngine = @($shipped | Where-Object { [string] $_.id -ceq 'llama.cpp-hip-b11658' })[0]
     $hipShippedManifest = @((Get-FastLlmComponentSources -Component $hipShippedEngine)[0].fileManifest)
     Check (@($hipShippedManifest | Where-Object { $_.path -ceq 'amdhip64_7.dll' }).Count -eq 1 -and @($hipShippedManifest | Where-Object { $_.path -ceq 'llama-server.exe' }).Count -eq 1) 'the shipped HIP engine carries its own amdhip64_7.dll next to llama-server.exe (the engine-dir copy that wins the PATH order over the driver copy)'
@@ -1409,7 +1409,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $hipRecipesPath = Join-Path $hipPlanDir 'recipes.json'
     [System.IO.File]::WriteAllText($hipRecipesPath, (ConvertTo-Json -InputObject $hipRecipeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
     $hipPlanParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath; GpuVariantsPath = $shippedVariantsPath
-        # The HIP fixture chain needs accept consent, so (Ruling 2) it is reached only by naming the recipe, never by automatic selection.
+        # The HIP fixture chain needs accept consent, so it is reached only by naming the recipe, never by automatic selection.
         RecipeId = 'fixture.hip-engine' }
     $hipProbe = @{ calls = (New-Object 'System.Collections.Generic.List[object]'); devices = @(); failure = $null }
     $savedHipProbe = & $module { (Get-Command Invoke-FastLlmDeviceProbe).ScriptBlock }
@@ -1662,7 +1662,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $emptyRoleRecipe.components | Add-Member -NotePropertyName 'draft' -NotePropertyValue ''
     Check ($null -ne (Select-FastLlmRecipeForPlacements -Recipes @($emptyRoleRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced')) 'an empty draft role does not block a recipe'
 
-    # ---- C3 Task 4: bitworks-experimental origin, the accept-license rule and the shipped HIP recipes ----
+    # ---- bitworks-experimental origin, the accept-license rule and the shipped HIP recipes ----
     Check ((Get-FastLlmRecipeLabel 'bitworks-experimental') -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card') 'the bitworks-experimental label is the exact experimental Bitworks wording'
     $chainRecipe = $autoBitworks | ConvertTo-Json -Depth 8 | ConvertFrom-Json
     $chainRecipe.id = 'chain1'
@@ -1697,6 +1697,20 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($null -eq (& $chainSelect $bwExpRecipe $showList $null '' $false) -and $null -eq (& $chainSelect $bwExpRecipe $showList $null '' $true) -and $null -eq (& $chainSelect $bwExpRecipe $acceptList $null '' $true)) 'a bitworks-experimental recipe is never auto-selected, with or without the experimental inclusion, with or without accept'
     $bwExpNamed = & $chainSelect $bwExpRecipe $acceptList $null 'chain1' $false
     Check ($null -ne $bwExpNamed -and $bwExpNamed.recipe.origin -ceq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
+    # The ENGINE's own accept is the only accept in the chain (runtime show), with requires and without any requires.
+    $engineOnlyAccept = @($showList | ForEach-Object { $copy = $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json; if ($copy.id -ceq 'eng-hip') { $copy.license.consent = 'accept' }; $copy })
+    Check (@($engineOnlyAccept | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 1 -and $null -eq (& $chainSelect $chainRecipe $engineOnlyAccept $null '' $false) -and $null -ne (& $chainSelect $chainRecipe $engineOnlyAccept $null 'chain1' $false)) 'an accept consent on the ENGINE alone (its required runtime is show) blocks auto-selection, and naming the recipe selects it'
+    $soloEngine = $showList | Where-Object { $_.id -ceq 'eng-hip' } | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json }
+    $soloEngine.requires = @()
+    $soloEngine.license.consent = 'accept'
+    $soloShow = $soloEngine | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $soloShow.license.consent = 'show'
+    Check ($null -eq (& $chainSelect $chainRecipe @($soloEngine) $null '' $false) -and $null -ne (& $chainSelect $chainRecipe @($soloShow) $null '' $false)) 'a single engine with accept consent and no requires is blocked (control: the same engine with show consent is picked)'
+    # An unresolvable chain fails closed: the recipe is not auto-selected (control: the same list with a listed requires and show consent is picked).
+    $unknownRequires = $soloShow | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $unknownRequires.requires = @('no-such-runtime')
+    $unknownSink = New-Object 'System.Collections.Generic.List[string]'
+    Check ($null -eq (& $chainSelect $chainRecipe @($unknownRequires) $unknownSink '' $false) -and @($unknownSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'an engine whose requires cannot be resolved fails closed: not auto-selected, with the license-acceptance reason'
 
     # Visibility and the gate, for both experimental origins.
     $bwGateRecipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'x1' 'bitworks-experimental'))
@@ -1707,6 +1721,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $hipGateOff = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'x2' -Recipes @($hipGateRecipe) -Components $acceptList -AcceptExperimental }
     Check ($null -ne $hipGateOff -and $hipGateOff -like '*switch is off*' -and $hipGateOff -like '*experimental Bitworks setup*') 'a bitworks-experimental recipe with the switch off is refused even with -AcceptExperimental'
     Check ($hipGateOff -like "*runtime rt-hip ($($hipFx.Part1Url), $($hipFx.Part2Url)*" -and $hipGateOff -like "*engine eng-hip ($($hipFx.EngineUrl)*" -and $hipGateOff.IndexOf('runtime rt-hip') -lt $hipGateOff.IndexOf('engine eng-hip') -and $hipGateOff -like '*model big-model (comes with this release)*') 'the refusal lists EVERY component of the engine chain (the required runtime and the engine) with all their source URLs, then the model'
+    $hipGateUpper = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'X2' -Recipes @($hipGateRecipe) -Components $acceptList -AcceptExperimental }
+    Check ($null -ne $hipGateUpper -and $hipGateUpper -like "*engine eng-hip*") 'a bitworks-experimental recipe named in another case (X2 for x2) is refused too'
+    Check (Test-FastLlmExperimentalOrigin -Origin 'Bitworks-Experimental') 'the experimental-origin test ignores case, so a mixed-case origin is still gated'
     Set-FastLlmComponentSettings -InstallRoot $hipGateRoot -ExperimentalComponents 'on'
     $hipGateNoAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'x2' -Recipes @($hipGateRecipe) -Components $acceptList }
     Check ($null -ne $hipGateNoAccept -and $hipGateNoAccept -like '*-AcceptExperimental was not given*' -and $hipGateNoAccept -like "*runtime rt-hip ($($hipFx.Part1Url)*" -and $hipGateNoAccept -like "*engine eng-hip ($($hipFx.EngineUrl)*") 'switch on without -AcceptExperimental is refused and still lists the whole chain'

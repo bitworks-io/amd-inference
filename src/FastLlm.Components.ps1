@@ -98,14 +98,13 @@ function Select-FastLlmVisibleRecipes {
     param([object[]] $Recipes, [string] $ExperimentalComponents = 'off')
     $visible = New-Object 'System.Collections.Generic.List[object]'
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if (@('community-experimental', 'bitworks-experimental') -ccontains [string] $candidate.origin -and $ExperimentalComponents -cne 'on') { continue }
+        if ((Test-FastLlmExperimentalOrigin -Origin ([string] $candidate.origin)) -and $ExperimentalComponents -cne 'on') { continue }
         $visible.Add($candidate)
     }
     return $visible.ToArray()
 }
 
-# Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component. A listed engine is expanded to its
-# whole requires chain (requires first, the engine last), so a component that only the engine pulls in (the AMD runtime) is listed too.
+# The display text of a component's sources: every URL, plus the redirect hosts a download may be served from.
 function Get-FastLlmComponentSourceText {
     param([Parameter(Mandatory = $true)] $Listed)
     # Display only (the loader has already validated the list): every source URL of the component, single 'source' or multi-part 'sources',
@@ -126,6 +125,8 @@ function Get-FastLlmComponentSourceText {
     return $text
 }
 
+# Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component. A listed engine is expanded to its
+# whole requires chain (requires first, the engine last), so a component that only the engine pulls in (the AMD runtime) is listed too.
 function Get-FastLlmRecipeComponentSources {
     param([Parameter(Mandatory = $true)] $Recipe, [object[]] $Components)
     $rows = New-Object 'System.Collections.Generic.List[object]'
@@ -174,7 +175,7 @@ function Assert-FastLlmExperimentalRecipeAllowed {
     # Same case-insensitive id match as the recipe selection: any match that is community-experimental or bitworks-experimental is gated.
     $found = $null
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if ([string] $candidate.id -ieq $RecipeId -and @('community-experimental', 'bitworks-experimental') -ccontains [string] $candidate.origin) { $found = $candidate }
+        if ([string] $candidate.id -ieq $RecipeId -and (Test-FastLlmExperimentalOrigin -Origin ([string] $candidate.origin))) { $found = $candidate }
     }
     if ($null -eq $found) { return }
     $switchValue = [string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents
@@ -186,7 +187,7 @@ function Assert-FastLlmExperimentalRecipeAllowed {
             if ($_.listed) { '{0} {1} ({2})' -f $_.role, $_.id, $_.sourceUrl } else { '{0} {1} (comes with this release)' -f $_.role, $_.id }
         })
     $refusedKind = 'an experimental community recipe, not reproduced by Bitworks'
-    if ([string] $found.origin -ceq 'bitworks-experimental') { $refusedKind = 'an experimental Bitworks setup, not yet measured by Bitworks on this card' }
+    if ([string] $found.origin -ieq 'bitworks-experimental') { $refusedKind = 'an experimental Bitworks setup, not yet measured by Bitworks on this card' }
     throw ("Recipe '$RecipeId' is $refusedKind, and was refused: " + ($reasons -join '; and ') +
         ". It would use: " + ($named -join '; ') + '. Nothing was changed.')
 }

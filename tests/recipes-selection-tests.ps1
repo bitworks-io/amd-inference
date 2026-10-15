@@ -125,7 +125,7 @@ $caughtFailure = $null
 try { Resolve-FastLlmRecipeEngine -Recipe $componentRecipe -Catalog $catalog -Components @() -InstallRoot 'C:\unused' | Out-Null } catch { $caughtFailure = $_.Exception }
 Check ($null -ne $caughtFailure -and $caughtFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown' -and $caughtFailure.Message -like "*llama.cpp-b10800-vulkan*") 'an unknown engine id is a typed error that names the id'
 
-# ---- C3 Task 3: HIP engine components are engines; the selected card is matched to the HIP device by exact name and VRAM, never guessed ----
+# ---- HIP engine components are engines; the selected card is matched to the HIP device by exact name and VRAM, never guessed ----
 $hipComponent = EngineComponent 'llama.cpp-hip-b11658' 'b11658' 'engine' 'hip'
 Check ($null -ne (Find-FastLlmEngineComponent -Components @($hipComponent) -EngineId 'llama.cpp-hip-b11658')) 'a listed hip engine component is an engine'
 Check ($null -eq (Find-FastLlmEngineComponent -Components @((EngineComponent 'llama.cpp-hip-b11658' 'b11658' 'runtime' 'hip')) -EngineId 'llama.cpp-hip-b11658')) 'a hip runtime component is not an engine'
@@ -162,7 +162,7 @@ $suffixed = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((Selecte
 Check ($null -ne $suffixed -and $suffixed.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found' -and $suffixed.Message -like '*AMD Radeon RX 7900 XTX (gfx1100)*' -and $suffixed.Message -like '*Vulkan setup*') 'a HIP device name that differs by a suffix fails closed, reports the name it saw and points at the Vulkan setup'
 Check ($twin.Message -like '*Vulkan setup*') 'the ambiguous message also points at the Vulkan setup'
 
-# ---- C3 Task 4: bitworks-experimental is gated and never auto-selected like community-experimental ----
+# ---- bitworks-experimental is gated and never auto-selected like community-experimental ----
 Check ((Get-FastLlmRecipeLabel 'bitworks-experimental') -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card') 'the bitworks-experimental label'
 $bwExp = Recipe 'bx1' 'bitworks-experimental' 'big' 30 $false
 $pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced'
@@ -174,4 +174,4 @@ $pick = Select-FastLlmRecipeForPlacements -Recipes @($bwControl) -Variants $vari
 Check ($pick -and $pick.recipe.id -eq 'bx1') 'control: the same recipe from Bitworks is picked under the same inputs'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -RecipeId 'bx1'
 Check ($pick -and $pick.recipe.origin -eq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
-Write-Host 'recipes-selection-tests (task 4): PASS'
+Write-Host 'recipes-selection-tests (bitworks-experimental): PASS'

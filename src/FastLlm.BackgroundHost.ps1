@@ -514,7 +514,7 @@ function Invoke-FastLlmBackgroundServe {
             sourceRoot=$source;
             sourcePinSha256=(Get-FileHash -LiteralPath (Join-Path $source 'src\FastLlm.BackgroundHost.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()}
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
-        # M2: status.json says 'preparing' (the shape fast-llm.ps1 writes) once the lock is held and the host record exists, before the first probe.
+        # status.json says 'preparing' (the shape fast-llm.ps1 writes) once the lock is held and the host record exists, before the first probe.
         Write-FastLlmState -InstallRoot $install -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action='start' })
         $catalog = Join-Path $source 'config\catalog.json'
         $hardware = Get-FastLlmHardware -CatalogPath $catalog -InstallRoot $install
