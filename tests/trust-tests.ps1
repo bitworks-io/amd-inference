@@ -21,6 +21,7 @@ try {
   New-FileCatalog -Path $tmp -CatalogFilePath (Join-Path $tmp 'FastLLM.cat') -CatalogVersion 2 | Out-Null
   $r=Test-FastLlmInstallIntegrity -AppRoot $tmp
   Check ($r.status -eq 'failed' -and $r.reason -eq 'catalog-signature' -and $r.catalogSignature.reason -eq 'not-valid') 'an unsigned catalog fails integrity on its signature'
+  Check ($r.catalogSignature.detail -ceq 'NotSigned') 'an unsigned catalog reports the Authenticode status NotSigned as its detail'
   $r=Test-FastLlmInstallIntegrity -AppRoot $tmp -SkipSignatureForTest
   Check ($r.status -eq 'ok') 'the tree matches its catalog (signature check skipped only by the test switch)'
   Set-Content -LiteralPath (Join-Path $tmp 'b.txt') -Value 'b' -Encoding ascii
@@ -30,6 +31,9 @@ try {
   Remove-Item -LiteralPath (Join-Path $tmp 'b.txt')
   Check ((Test-FastLlmInstallIntegrity -AppRoot $tmp -SkipSignatureForTest).status -eq 'ok') '_uninstall\ is excluded'
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }
+# doctor honours the test-only catalog-signature skip only for an unsigned catalog (detail exactly NotSigned).
+$doctorSource = Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
+Check ($doctorSource.Contains("catalogSignature.detail -ceq 'NotSigned'") -and $doctorSource.Contains("FASTLLM_TEST_SKIP_CATALOG_SIGNATURE -ceq '1'")) 'doctor skips the catalog signature only when the detail is exactly NotSigned and the test variable is set'
 # The pin overrides and the untrusted-root switch exist only for release/ReleaseVerify.psm1's tests: no product file may pass them.
 $productFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter *.ps1 | Where-Object { $_.Name -ne 'FastLlm.Trust.ps1' }) +
     @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Filter *.ps1) + @(Get-Item -LiteralPath (Join-Path $root 'fast-llm.ps1'), (Join-Path $root 'fast-llm-ui.ps1'))
