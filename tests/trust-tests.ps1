@@ -41,7 +41,7 @@ if ($env:OS -eq 'Windows_NT') {
   function Invoke-DoctorChild([string]$AppDir, [string]$InstallRoot) {
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
-    $info.Arguments='-NoLogo -NoProfile -NonInteractive -File "'+(Join-Path $AppDir 'fast-llm.ps1')+'" doctor -HardwareFile "'+(Join-Path $root 'tests\fixtures\rx-7900-xtx-24gb.json')+'" -InstallRoot "'+$InstallRoot+'"'
+    $info.Arguments='-NoLogo -NoProfile -NonInteractive -File "'+(Join-Path $AppDir 'fast-llm.ps1')+'" doctor -InstallRoot "'+$InstallRoot+'"'
     $info.UseShellExecute=$false;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
     $child=[Diagnostics.Process]::Start($info)
     $out=$child.StandardOutput.ReadToEndAsync();$err=$child.StandardError.ReadToEndAsync()
