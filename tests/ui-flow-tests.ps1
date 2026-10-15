@@ -380,9 +380,15 @@ Check ((Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{ status = 'faile
 $integrityRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-int-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $integrityRoot | Out-Null
 Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1') 'integrity is due on the first launch of a version'
-Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1')) 'integrity is not due again for the same version'
-Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.16.1') 'integrity is due again for a new version'
-Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1')) 'an earlier version stays recorded'
+Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1') 'asking does not record anything'
+Check (-not (Set-FastLlmUiIntegrityChecked -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1' -Result ([pscustomobject]@{ status = 'failed' }))) 'a failed result is not recorded'
+Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1') 'integrity is due again after a failed result'
+Check (Set-FastLlmUiIntegrityChecked -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1' -Result ([pscustomobject]@{ status = 'ok' })) 'an ok result is recorded'
+Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1')) 'integrity is not due again after ok for the same version'
+Check (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.16.1') 'integrity is due for a new version'
+Check (Set-FastLlmUiIntegrityChecked -InstallRoot $integrityRoot -InstalledVersion '2026.10.16.1' -Result ([pscustomobject]@{ status = 'not-installed' })) 'not-installed is recorded'
+Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.16.1') -and -not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '2026.10.15.1')) 'both versions stay recorded'
+Check (-not (Set-FastLlmUiIntegrityChecked -InstallRoot $integrityRoot -InstalledVersion '2026.10.17.1' -Result $null)) 'an unknown result is not recorded'
 Check (Test-Path -LiteralPath (Join-Path (Join-Path $integrityRoot 'state') 'integrity-checked.json') -PathType Leaf) 'the record is state\integrity-checked.json'
 Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion '')) 'no installed version means no check'
 Check (-not (Test-FastLlmUiIntegrityDue -InstallRoot $integrityRoot -InstalledVersion 'not-a-version')) 'a malformed version means no check'
@@ -405,7 +411,7 @@ $rawSettings = Get-Content -LiteralPath (Join-Path $roundRoot 'settings.json') -
 Check ($rawSettings.vulkanBarMitigation -ceq 'auto' -and $rawSettings.updateCheck -ceq 'off' -and $rawSettings.updateChannel -ceq 'canary' -and $rawSettings.futureKey -ceq 'keep') 'a UI write preserves update keys and unknown keys'
 Remove-Item -LiteralPath $roundRoot -Recurse -Force
 
-Check ($ui.Contains("`$form.Text='Bitworks FastLLM (Preview)'") -and -not $ui.Contains('Windows lab alpha')) 'the window title is Bitworks FastLLM (Preview)'
+Check ($ui.Contains("`$form.Text='Bitworks FastLLM (Preview)'") -and -not $ui.Contains('lab alpha')) 'the window title is Bitworks FastLLM (Preview)'
 Check ($ui.Contains("src/FastLlm.Update.ps1") -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Update')) 'the UI dot-sources the update script'
 Check ($ui.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot') -and -not [regex]::IsMatch($ui, '(?i)-Silent(?!ly)')) 'the UI runs the verified update without -Silent'
 Check ($ui.Contains('Test-FastLlmUiIntegrityDue') -and $ui.Contains('Set-FastLlmUpdateSettings') -and $ui.Contains("'Check for updates'")) 'the UI has the first-launch integrity check and the update setting'

@@ -476,13 +476,11 @@ function Format-FastLlmUiUpdateResult {
     return "Update not installed: $reason. Nothing was changed."
 }
 
-# True once per installed version: the first call for a version records it in <InstallRoot>\state\integrity-checked.json and returns $true.
-function Test-FastLlmUiIntegrityDue {
-    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $InstalledVersion)
-    if ($InstalledVersion -cnotmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { return $false }
-    $path = Join-Path (Join-Path $InstallRoot 'state') 'integrity-checked.json'
+function Read-FastLlmUiIntegrityRecord {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
     $recorded = [ordered]@{}
     try {
+        $path = Join-Path (Join-Path $InstallRoot 'state') 'integrity-checked.json'
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
             if ($null -ne $stored -and $stored -is [pscustomobject]) {
@@ -491,14 +489,30 @@ function Test-FastLlmUiIntegrityDue {
         }
     }
     catch { $recorded = [ordered]@{} }
-    if ($recorded.Contains($InstalledVersion)) { return $false }
+    return $recorded
+}
+
+# Due until a version has been recorded as checked (read-only). Only an ok or not-installed result is recorded, so a failed install is re-checked every launch.
+function Test-FastLlmUiIntegrityDue {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $InstalledVersion)
+    if ($InstalledVersion -cnotmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { return $false }
+    return (-not (Read-FastLlmUiIntegrityRecord -InstallRoot $InstallRoot).Contains($InstalledVersion))
+}
+
+# Records the result in <InstallRoot>\state\integrity-checked.json; a failed (or unknown) result is never recorded.
+function Set-FastLlmUiIntegrityChecked {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $InstalledVersion, $Result)
+    if ($InstalledVersion -cnotmatch '^\d{4}\.\d{2}\.\d{2}\.[1-9]\d{0,3}$') { return $false }
+    if (@('ok', 'not-installed') -cnotcontains [string] (Get-FastLlmUiValue $Result 'status')) { return $false }
+    $recorded = Read-FastLlmUiIntegrityRecord -InstallRoot $InstallRoot
     $recorded[$InstalledVersion] = [datetime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
     try {
+        $path = Join-Path (Join-Path $InstallRoot 'state') 'integrity-checked.json'
         [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
         $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
         [IO.File]::WriteAllText($temporary, (([pscustomobject] $recorded) | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
         Move-Item -LiteralPath $temporary -Destination $path -Force
+        return $true
     }
-    catch { }
-    return $true
+    catch { return $false }
 }
