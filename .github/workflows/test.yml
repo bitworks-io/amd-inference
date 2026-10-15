@@ -1,13 +1,21 @@
 name: test
 
 on:
+  # One run per change: pushes to main, and pull requests (not both for the same PR push). No path filters: branch
+  # protection requires these checks on every PR, and a skipped workflow would leave a docs-only PR blocked.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_call:
 
 permissions:
   contents: read
+
+# A newer push to the same PR or branch cancels the run still in progress (release calls via workflow_call are unaffected:
+# they run in the caller's concurrency group).
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   catalog:
