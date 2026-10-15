@@ -56,7 +56,8 @@ class RecipeBuilderTests(unittest.TestCase):
                  (("runtime", "vulkanBarMitigation"), "maybe"), (("runtime", "vulkanBarMitigation"), "on"), (("runtime", "vulkanBarMitigation"), "off"),
                  (("runtime", "parallel"), 2), (("runtime", "parallel"), 0), (("runtime", "cacheTypeK"), "q2_k"), (("runtime", "cacheTypeV"), "--evil"),
                  (("runtime", "fitTargetMiB"), 0), (("runtime", "contextSize"), 65536),
-                 (("expected", "generationTokS"), 0), (("evidence", "url"), "http://example.com/x")]
+                 (("expected", "generationTokS"), 0), (("expected", "engineBuild"), None), (("expected", "engineBuild"), "b1"),
+                 (("evidence", "url"), "http://example.com/x")]
         for key, value in cases:
             with self.subTest(key=key):
                 entry = copy.deepcopy(ENTRY)

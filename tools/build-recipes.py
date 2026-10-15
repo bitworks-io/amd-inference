@@ -80,6 +80,9 @@ def validate(entry, origin, catalog, variants):
             raise RecipeError(f"{rid}: expected.{key} must be a positive number")
     if expected.get("mitigation") not in ("on", "off"):
         raise RecipeError(f"{rid}: expected.mitigation must be on or off")
+    # The self-test's below-expected comparison reads expected.engineBuild; a recipe without it would fail every self-test.
+    if expected.get("engineBuild") != entry.get("engineBuild"):
+        raise RecipeError(f"{rid}: expected.engineBuild must equal the recipe's engineBuild")
     evidence = entry.get("evidence") or {}
     url = evidence.get("url")
     if url is not None and not str(url).startswith("https://bitworks.io/"):
