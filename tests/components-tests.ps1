@@ -1408,7 +1408,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $hipRecipeDocument.recipes = @($hipRecipeEntry)
     $hipRecipesPath = Join-Path $hipPlanDir 'recipes.json'
     [System.IO.File]::WriteAllText($hipRecipesPath, (ConvertTo-Json -InputObject $hipRecipeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
-    $hipPlanParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    $hipPlanParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath; GpuVariantsPath = $shippedVariantsPath
+        # The HIP fixture chain needs accept consent, so (Ruling 2) it is reached only by naming the recipe, never by automatic selection.
+        RecipeId = 'fixture.hip-engine' }
     $hipProbe = @{ calls = (New-Object 'System.Collections.Generic.List[object]'); devices = @(); failure = $null }
     $savedHipProbe = & $module { (Get-Command Invoke-FastLlmDeviceProbe).ScriptBlock }
     & $module {
@@ -1435,6 +1437,25 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $hipProbe.calls.Clear()
         $vulkanAgain = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $shippedCatalogPath -InstallRoot $planRoot -RecipesPath $shippedRecipesPath -GpuVariantsPath $shippedVariantsPath
         Check ($hipProbe.calls.Count -eq 0 -and $vulkanAgain.backend -ceq 'Vulkan' -and -not $vulkanAgain.PSObject.Properties['runtimeRoots'] -and -not $vulkanAgain.PSObject.Properties['engineComponentId']) 'a shipped Vulkan recipe plans without any HIP probe, with backend Vulkan and no HIP fields'
+        # A named shipped-shape HIP recipe plans on the HIP engine with no Vulkan-only argument.
+        $hipRecipeDoc2 = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
+        $hipNamedEntry = @($hipRecipeDoc2.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
+        $hipNamedEntry.components.engine = 'eng-hip'
+        $hipNamedEntry.engineBuild = '1.0'
+        $hipRecipeDoc2.recipes = @($hipNamedEntry)
+        $hipRecipesPath2 = Join-Path $hipPlanDir 'recipes-hip-shipped.json'
+        [System.IO.File]::WriteAllText($hipRecipesPath2, (ConvertTo-Json -InputObject $hipRecipeDoc2 -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+        $hipNamedParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath2; GpuVariantsPath = $shippedVariantsPath }
+        $hipAutoPlan = Get-FastLlmPlan @hipNamedParams
+        Check ($hipAutoPlan.recipe.origin -ceq 'estimated') 'without -Recipe the HIP recipe is not picked: the plan stays estimated (no silent HIP promotion)'
+        $hipNamedPlan = Get-FastLlmPlan @hipNamedParams -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'
+        Check ($hipNamedPlan.recipe.origin -ceq 'bitworks-experimental' -and $hipNamedPlan.backend -ceq 'hip' -and $hipNamedPlan.engineComponentId -ceq 'eng-hip' -and $hipNamedPlan.selectionMode -ceq 'recipe') 'naming the HIP recipe yields a HIP plan on the engine component'
+        $vulkanFlagText = (@($hipNamedPlan.serverArguments) -join ' ')
+        Check ($vulkanFlagText -cnotmatch '(?i)vulkan|GGML_VK|--vk' -and @($hipNamedPlan.serverArguments) -cnotcontains 'Vulkan0') 'the HIP plan arguments contain nothing Vulkan-specific'
+        $hipNamedArguments = @($hipNamedPlan.serverArguments | ForEach-Object { if ($_ -ceq $hipNamedPlan.modelPath) { 'MODEL' } else { $_ } })
+        Check (($hipNamedArguments -join [char]31) -ceq (($expectedXtx | ForEach-Object { if ($_ -ceq 'Vulkan0') { 'ROCm0' } else { $_ } }) -join [char]31)) 'the HIP plan arguments equal the shipped Vulkan recipe arguments with only the device changed to ROCm0'
+        Check ($hipNamedPlan.recipe.vulkanBarMitigation -ceq 'not-applicable' -and $null -eq $hipNamedPlan.recipe.expected -and $null -eq $hipNamedPlan.recipe.evidenceUrl -and $hipNamedPlan.recipe.label -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card') 'the HIP plan records the BAR mitigation as not-applicable and carries no expected or evidence'
         # iGPU first, dGPU second: matched by name and VRAM.
         $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon(TM) Graphics (512 MiB, 400 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
         $hipSecond = Get-FastLlmPlan @hipPlanParams
@@ -1607,6 +1628,82 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $emptyRoleRecipe = $autoBitworks | ConvertTo-Json -Depth 8 | ConvertFrom-Json
     $emptyRoleRecipe.components | Add-Member -NotePropertyName 'draft' -NotePropertyValue ''
     Check ($null -ne (Select-FastLlmRecipeForPlacements -Recipes @($emptyRoleRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced')) 'an empty draft role does not block a recipe'
+
+    # ---- C3 Task 4: bitworks-experimental origin, the accept-license rule and the shipped HIP recipes ----
+    Check ((Get-FastLlmRecipeLabel 'bitworks-experimental') -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card') 'the bitworks-experimental label is the exact experimental Bitworks wording'
+    $chainRecipe = $autoBitworks | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $chainRecipe.id = 'chain1'
+    $chainRecipe.components.engine = 'eng-hip'
+    $chainRecipe.engineBuild = '1.0'
+    $acceptList = $hipList
+    $showFx = New-ChainFixture -Name 'fx-show-chain' -Consent 'show'
+    $showList = @(Get-FastLlmComponents -ComponentsPath $showFx.ComponentsPath)
+    Check (@($acceptList | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 2 -and @($showList | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 0) 'the two chain fixtures differ only in license consent (accept versus show)'
+    $chainSelect = { param($Recipe, $List, $Sink, [string] $Named, [bool] $Experimental)
+        $selectParams = @{ Recipes = @($Recipe); Variants = $autoVariants; Placements = @($autoPlacement); DxgiAdapters = $autoDxgi; Catalog = $autoCatalog; Profile = 'balanced'; Components = $List }
+        if ($null -ne $Sink) { $selectParams.SkippedSink = $Sink }
+        if ($Named) { $selectParams.RecipeId = $Named }
+        if ($Experimental) { $selectParams.IncludeExperimental = $true }
+        return (Select-FastLlmRecipeForPlacements @selectParams) }
+    # Positive control: the same recipe on an engine chain WITHOUT accept consent is picked under the same inputs.
+    $showPick = & $chainSelect $chainRecipe $showList $null '' $false
+    Check ($null -ne $showPick -and $showPick.recipe.id -ceq 'chain1') 'a bitworks recipe whose engine chain has no accept consent is auto-picked (the control for the rule below)'
+    $acceptSink = New-Object 'System.Collections.Generic.List[string]'
+    $acceptPick = & $chainSelect $chainRecipe $acceptList $acceptSink '' $false
+    Check ($null -eq $acceptPick -and @($acceptSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'a bitworks recipe whose engine chain needs accept (engine and runtime) is not auto-selected, with the reason needs-license-acceptance'
+    $namedPick = & $chainSelect $chainRecipe $acceptList $null 'chain1' $false
+    Check ($null -ne $namedPick -and $namedPick.recipe.id -ceq 'chain1') 'the same accept-chain recipe is selected when named with -Recipe'
+    $runtimeOnlyAccept = @($showList | ForEach-Object { $copy = $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json; if ($copy.id -ceq 'rt-hip') { $copy.license.consent = 'accept' }; $copy })
+    Check ($null -eq (& $chainSelect $chainRecipe $runtimeOnlyAccept $null '' $false)) 'an accept consent on a REQUIRED component alone also blocks auto-selection (the whole chain is checked, not just the engine)'
+    $reproRecipe = $chainRecipe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $reproRecipe.origin = 'community-reproduced'
+    Check ($null -eq (& $chainSelect $reproRecipe $acceptList $null '' $false) -and $null -ne (& $chainSelect $reproRecipe $showList $null '' $false)) 'the accept rule applies to a community-reproduced recipe too (control: picked without accept)'
+    # bitworks-experimental: never auto-selected, with the switch on or off, even on a chain without accept.
+    $bwExpRecipe = $chainRecipe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $bwExpRecipe.origin = 'bitworks-experimental'
+    Check ($null -eq (& $chainSelect $bwExpRecipe $showList $null '' $false) -and $null -eq (& $chainSelect $bwExpRecipe $showList $null '' $true) -and $null -eq (& $chainSelect $bwExpRecipe $acceptList $null '' $true)) 'a bitworks-experimental recipe is never auto-selected, with or without the experimental inclusion, with or without accept'
+    $bwExpNamed = & $chainSelect $bwExpRecipe $acceptList $null 'chain1' $false
+    Check ($null -ne $bwExpNamed -and $bwExpNamed.recipe.origin -ceq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
+
+    # Visibility and the gate, for both experimental origins.
+    $bwGateRecipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'x1' 'bitworks-experimental'))
+    Check (@(Select-FastLlmVisibleRecipes -Recipes $bwGateRecipes -ExperimentalComponents 'off').Count -eq 1 -and @(Select-FastLlmVisibleRecipes -Recipes $bwGateRecipes).Count -eq 1 -and @(Select-FastLlmVisibleRecipes -Recipes $bwGateRecipes -ExperimentalComponents 'on').Count -eq 2) 'a bitworks-experimental recipe is hidden unless the switch is on'
+    $hipGateRecipe = New-GateRecipe 'x2' 'bitworks-experimental'
+    $hipGateRecipe.components.engine = 'eng-hip'
+    $hipGateRoot = New-TestRoot
+    $hipGateOff = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'x2' -Recipes @($hipGateRecipe) -Components $acceptList -AcceptExperimental }
+    Check ($null -ne $hipGateOff -and $hipGateOff -like '*switch is off*' -and $hipGateOff -like '*experimental Bitworks setup*') 'a bitworks-experimental recipe with the switch off is refused even with -AcceptExperimental'
+    Check ($hipGateOff -like "*runtime rt-hip ($($hipFx.Part1Url), $($hipFx.Part2Url)*" -and $hipGateOff -like "*engine eng-hip ($($hipFx.EngineUrl)*" -and $hipGateOff.IndexOf('runtime rt-hip') -lt $hipGateOff.IndexOf('engine eng-hip') -and $hipGateOff -like '*model big-model (comes with this release)*') 'the refusal lists EVERY component of the engine chain (the required runtime and the engine) with all their source URLs, then the model'
+    Set-FastLlmComponentSettings -InstallRoot $hipGateRoot -ExperimentalComponents 'on'
+    $hipGateNoAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'x2' -Recipes @($hipGateRecipe) -Components $acceptList }
+    Check ($null -ne $hipGateNoAccept -and $hipGateNoAccept -like '*-AcceptExperimental was not given*' -and $hipGateNoAccept -like "*runtime rt-hip ($($hipFx.Part1Url)*" -and $hipGateNoAccept -like "*engine eng-hip ($($hipFx.EngineUrl)*") 'switch on without -AcceptExperimental is refused and still lists the whole chain'
+    Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'x2' -Recipes @($hipGateRecipe) -Components $acceptList -AcceptExperimental })) 'switch on plus -AcceptExperimental passes the gate for a bitworks-experimental recipe'
+    $shippedRecipeDocument = Get-Content -LiteralPath (Join-Path $repoRoot 'config/recipes.json') -Raw | ConvertFrom-Json
+    $shippedHipGate = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })
+    $shippedHipRefusal = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot (New-TestRoot) -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' -Recipes $shippedHipGate -Components $shipped }
+    Check ($null -ne $shippedHipRefusal -and $shippedHipRefusal -like '*runtime amd-rocm-gfx1100-10.0.0 (https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-libraries/*, https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1100/*' -and $shippedHipRefusal -like '*engine llama.cpp-hip-b11658 (https://github.com/ggml-org/llama.cpp/releases/download/b11658/*release-assets.githubusercontent.com*') 'the shipped HIP recipe refusal lists the AMD runtime (both wheels) and the engine, with the redirect hosts'
+
+    # The shipped HIP recipes: the Vulkan recipe of each card with the HIP engine, experimental, unmeasured.
+    foreach ($hipPair in @(@('rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k', 'rx-7900-xt'), @('rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k', 'rx-7900-xtx'))) {
+        $vulkanTwin = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq $hipPair[0] })[0]
+        $hipTwin = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq ($hipPair[0] + '.hip') })
+        Check ($hipTwin.Count -eq 1) "the shipped list has $($hipPair[0]).hip"
+        $hipTwin = $hipTwin[0]
+        Check ($hipTwin.origin -ceq 'bitworks-experimental' -and $hipTwin.label -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card' -and $hipTwin.components.engine -ceq 'llama.cpp-hip-b11658' -and $hipTwin.engineBuild -ceq 'b11658') "$($hipPair[0]).hip is bitworks-experimental on the HIP engine"
+        Check ($hipTwin.components.model -ceq $vulkanTwin.components.model -and $hipTwin.runtime.contextSize -eq $vulkanTwin.runtime.contextSize -and $hipTwin.runtime.cacheTypeK -ceq $vulkanTwin.runtime.cacheTypeK -and $hipTwin.runtime.cacheTypeV -ceq $vulkanTwin.runtime.cacheTypeV -and $hipTwin.gpu.variant -ceq $vulkanTwin.gpu.variant -and $hipTwin.gpu.count -eq $vulkanTwin.gpu.count) "$($hipPair[0]).hip has the same model, context size, KV cache types and card as its Vulkan recipe"
+        Check (-not $hipTwin.runtime.PSObject.Properties['vulkanBarMitigation'] -and $null -eq $hipTwin.expected -and $null -eq $hipTwin.evidence -and $hipTwin.recommended -eq $false) "$($hipPair[0]).hip has no BAR mitigation, no expected or evidence block, and is not recommended"
+    }
+    # Shipped data, end to end through the recipe list a PC sees.
+    $shippedVisibleOff = @(Select-FastLlmVisibleRecipes -Recipes @($shippedRecipeDocument.recipes) -ExperimentalComponents 'off')
+    $shippedVisibleOn = @(Select-FastLlmVisibleRecipes -Recipes @($shippedRecipeDocument.recipes) -ExperimentalComponents 'on')
+    Check (@($shippedVisibleOff | Where-Object { $_.id -like '*.hip' }).Count -eq 0 -and @($shippedVisibleOn | Where-Object { $_.id -like '*.hip' }).Count -eq 2) 'the shipped HIP recipes are hidden with the switch off and listed with it on'
+    foreach ($hipHardware in @($xtxHardware, $xtHardware)) {
+        $hipAutoDxgi = @($hipHardware.dxgiAdapters)
+        $hipAutoPlacement = [pscustomobject] @{ adapters = @([pscustomobject] @{ name = 'n'; vramMiB = [int] $hipHardware.adapters[0].vramMiB }); selectionCapacity = 23000 }
+        $shippedCatalogObject = Get-Content -LiteralPath $shippedCatalogPath -Raw | ConvertFrom-Json
+        $shippedAuto = Select-FastLlmRecipeForPlacements -Recipes @($shippedRecipeDocument.recipes) -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -IncludeExperimental
+        Check ($null -ne $shippedAuto -and $shippedAuto.recipe.origin -ceq 'bitworks' -and $shippedAuto.recipe.id -notlike '*.hip') "automatic selection on $($hipHardware.adapters[0].name) keeps the shipped Vulkan recipe, even with the experimental inclusion on and the HIP components listed"
+    }
 
     # Listing format.
     $listRows = @(

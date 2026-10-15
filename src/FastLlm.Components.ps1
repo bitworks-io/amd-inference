@@ -98,13 +98,34 @@ function Select-FastLlmVisibleRecipes {
     param([object[]] $Recipes, [string] $ExperimentalComponents = 'off')
     $visible = New-Object 'System.Collections.Generic.List[object]'
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if ([string] $candidate.origin -ceq 'community-experimental' -and $ExperimentalComponents -cne 'on') { continue }
+        if (@('community-experimental', 'bitworks-experimental') -ccontains [string] $candidate.origin -and $ExperimentalComponents -cne 'on') { continue }
         $visible.Add($candidate)
     }
     return $visible.ToArray()
 }
 
-# Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component.
+# Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component. A listed engine is expanded to its
+# whole requires chain (requires first, the engine last), so a component that only the engine pulls in (the AMD runtime) is listed too.
+function Get-FastLlmComponentSourceText {
+    param([Parameter(Mandatory = $true)] $Listed)
+    # Display only (the loader has already validated the list): every source URL of the component, single 'source' or multi-part 'sources',
+    # and the redirect hosts the download may be served from.
+    $entries = @()
+    if ($Listed.PSObject.Properties['sources'] -and $Listed.sources) { $entries = @($Listed.sources) }
+    elseif ($Listed.PSObject.Properties['source'] -and $Listed.source) { $entries = @($Listed.source) }
+    $urls = @($entries | ForEach-Object { [string] $_.url } | Where-Object { $_ })
+    if ($urls.Count -eq 0) { return $null }
+    $text = ($urls -join ', ')
+    $redirectHosts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($entry in $entries) {
+        if ($entry.PSObject.Properties['allowedRedirectHosts'] -and $entry.allowedRedirectHosts) {
+            foreach ($redirectHost in @($entry.allowedRedirectHosts)) { if ($redirectHost -and -not $redirectHosts.Contains([string] $redirectHost)) { $redirectHosts.Add([string] $redirectHost) } }
+        }
+    }
+    if ($redirectHosts.Count -gt 0) { $text += '; downloads may be redirected via ' + ($redirectHosts -join ', ') }
+    return $text
+}
+
 function Get-FastLlmRecipeComponentSources {
     param([Parameter(Mandatory = $true)] $Recipe, [object[]] $Components)
     $rows = New-Object 'System.Collections.Generic.List[object]'
@@ -113,23 +134,33 @@ function Get-FastLlmRecipeComponentSources {
         $roleProperty = $Recipe.components.PSObject.Properties[$role]
         if (-not $roleProperty -or [string]::IsNullOrWhiteSpace([string] $roleProperty.Value)) { continue }
         $componentId = [string] $roleProperty.Value
-        $sourceUrl = $null
-        foreach ($listed in @($Components | Where-Object { $_ })) {
-            if ([string] $listed.id -ceq $componentId) {
-                # Display only (the loader has already validated the list): every source URL of the component, single 'source' or multi-part 'sources'.
-                $listedUrls = @()
-                if ($listed.PSObject.Properties['sources'] -and $listed.sources) { $listedUrls = @($listed.sources | ForEach-Object { [string] $_.url }) }
-                elseif ($listed.PSObject.Properties['source'] -and $listed.source) { $listedUrls = @([string] $listed.source.url) }
-                $sourceUrl = (@($listedUrls | Where-Object { $_ }) -join ', ')
-                if (-not $sourceUrl) { $sourceUrl = $null }
+        $members = @()
+        if ($role -ceq 'engine' -or $role -ceq 'runtime') {
+            $listedRoot = @($Components | Where-Object { $_ -and [string] $_.id -ceq $componentId })
+            if ($listedRoot.Count -gt 0) {
+                # An unresolvable chain falls back to the named component alone; the install and the plan refuse it with a typed failure of their own.
+                try { $members = @(Get-FastLlmComponentChain -Components $Components -Id $componentId) } catch { $members = @() }
             }
         }
-        $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
+        if ($members.Count -eq 0) {
+            $found = @($Components | Where-Object { $_ -and [string] $_.id -ceq $componentId })
+            if ($found.Count -gt 0) { $members = @($found[0]) }
+        }
+        if ($members.Count -eq 0) {
+            $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $null; listed = $false })
+            continue
+        }
+        foreach ($member in $members) {
+            $memberRole = $role
+            if ([string] $member.id -cne $componentId -and $member.PSObject.Properties['kind'] -and $member.kind) { $memberRole = [string] $member.kind }
+            $sourceUrl = Get-FastLlmComponentSourceText -Listed $member
+            $rows.Add([pscustomobject] [ordered] @{ role = $memberRole; id = [string] $member.id; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
+        }
     }
     return $rows.ToArray()
 }
 
-# plan, start and install with -Recipe of a community-experimental recipe: refused unless the switch is on AND -AcceptExperimental is given.
+# plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: refused unless the switch is on AND -AcceptExperimental is given.
 # Other origins and a missing recipe pass through here (an unknown id is refused later by the recipe selection itself).
 function Assert-FastLlmExperimentalRecipeAllowed {
     param(
@@ -140,10 +171,10 @@ function Assert-FastLlmExperimentalRecipeAllowed {
         [switch] $AcceptExperimental
     )
     if ([string]::IsNullOrWhiteSpace($RecipeId)) { return }
-    # Same case-insensitive id match as the recipe selection: any match that is community-experimental is gated.
+    # Same case-insensitive id match as the recipe selection: any match that is community-experimental or bitworks-experimental is gated.
     $found = $null
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if ([string] $candidate.id -ieq $RecipeId -and [string] $candidate.origin -ceq 'community-experimental') { $found = $candidate }
+        if ([string] $candidate.id -ieq $RecipeId -and @('community-experimental', 'bitworks-experimental') -ccontains [string] $candidate.origin) { $found = $candidate }
     }
     if ($null -eq $found) { return }
     $switchValue = [string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents
@@ -154,6 +185,8 @@ function Assert-FastLlmExperimentalRecipeAllowed {
     $named = @(Get-FastLlmRecipeComponentSources -Recipe $found -Components $Components | ForEach-Object {
             if ($_.listed) { '{0} {1} ({2})' -f $_.role, $_.id, $_.sourceUrl } else { '{0} {1} (comes with this release)' -f $_.role, $_.id }
         })
-    throw ("Recipe '$RecipeId' is an experimental community recipe, not reproduced by Bitworks, and was refused: " + ($reasons -join '; and ') +
+    $refusedKind = 'an experimental community recipe, not reproduced by Bitworks'
+    if ([string] $found.origin -ceq 'bitworks-experimental') { $refusedKind = 'an experimental Bitworks setup, not yet measured by Bitworks on this card' }
+    throw ("Recipe '$RecipeId' is $refusedKind, and was refused: " + ($reasons -join '; and ') +
         ". It would use: " + ($named -join '; ') + '. Nothing was changed.')
 }

@@ -1266,7 +1266,7 @@ function Get-FastLlmPlan {
         tensorSplit         = $tensorSplit
         endpoint            = "http://$($catalog.hardwarePolicy.serverHost):$($catalog.hardwarePolicy.serverPort)/v1"
         serverArguments     = $arguments
-        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)))
+        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)) -HipBackend:($planBackend -ceq 'hip'))
         warnings            = $warnings
     }
     # Present only for an engine component, so a plan on the built-in engine has exactly the fields it always had.

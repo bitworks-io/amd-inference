@@ -1,11 +1,12 @@
 # Per-card recipes (config/recipes.json, bitworks.fastllm-recipes/v2). Matching uses card variants from
-# FastLlm.CardIdentity.ps1, never names. community-experimental recipes are never auto-selected.
+# FastLlm.CardIdentity.ps1, never names. community-experimental and bitworks-experimental recipes are never auto-selected.
 Set-StrictMode -Version 2
 
 $script:FastLlmRecipeLabels = @{
     'bitworks'               = 'Measured by Bitworks on this card'
     'community-reproduced'   = 'Community recipe, reproduced by Bitworks'
     'community-experimental' = 'Experimental community recipe, not reproduced by Bitworks'
+    'bitworks-experimental'  = 'Experimental Bitworks setup, not yet measured by Bitworks on this card'
     'estimated'              = 'Estimated for your card'
     'manual'                 = 'Chosen by you'
 }
@@ -24,11 +25,17 @@ function Read-FastLlmRecipes {
     return @($document.recipes)
 }
 
+# The origins that are gated behind the experimental switch and -AcceptExperimental, and never auto-selected.
+function Test-FastLlmExperimentalOrigin {
+    param([string] $Origin)
+    return [bool] (@('community-experimental', 'bitworks-experimental') -ccontains $Origin)
+}
+
 function Get-FastLlmRecipeRank {
     param($Recipe)
     if ($Recipe.origin -eq 'community-reproduced' -and $Recipe.PSObject.Properties['compelling'] -and $Recipe.compelling -and
         $Recipe.compelling.PSObject.Properties['isCompelling'] -and $Recipe.compelling.isCompelling) { return 0 }
-    if ($Recipe.origin -eq 'community-experimental') { return 2 }
+    if (Test-FastLlmExperimentalOrigin -Origin ([string] $Recipe.origin)) { return 2 }
     return 1
 }
 
@@ -171,6 +178,26 @@ function Resolve-FastLlmHipSelectedAdapters {
     return $resolved.ToArray()
 }
 
+# True when the recipe's engine chain (requires first, the engine last) holds a component whose license consent is 'accept' (an AMD license cannot be
+# accepted silently). The built-in engine is not a component, so it never needs this. A chain that cannot be resolved fails closed: it needs acceptance.
+function Test-FastLlmRecipeNeedsLicenseAcceptance {
+    param([Parameter(Mandatory = $true)] $Recipe, [Parameter(Mandatory = $true)] $Catalog, [object[]] $Components)
+    $engineId = Get-FastLlmRecipeEngineId -Recipe $Recipe -Catalog $Catalog
+    if ($engineId -ceq (Get-FastLlmBuiltInEngineId -Catalog $Catalog)) { return $false }
+    $engine = Find-FastLlmEngineComponent -Components $Components -EngineId $engineId
+    if ($null -eq $engine) { return $false }   # not listed: the version check skips the recipe, and nothing can install
+    $chain = @($engine)
+    $requiresProperty = $engine.PSObject.Properties['requires']
+    if ($null -ne $requiresProperty -and @($requiresProperty.Value | Where-Object { $_ }).Count -gt 0) {
+        try { $chain = @(Get-FastLlmComponentChain -Components $Components -Id $engineId) }
+        catch { return $true }
+    }
+    foreach ($member in $chain) {
+        if ($member.PSObject.Properties['license'] -and $member.license -and $member.license.PSObject.Properties['consent'] -and [string] $member.license.consent -ceq 'accept') { return $true }
+    }
+    return $false
+}
+
 function Select-FastLlmRecipeForPlacements {
     param([object[]] $Recipes, [object[]] $Variants, [object[]] $Placements, [object[]] $DxgiAdapters,
           [Parameter(Mandatory = $true)] $Catalog, [Parameter(Mandatory = $true)][string] $Profile,
@@ -178,7 +205,7 @@ function Select-FastLlmRecipeForPlacements {
           [object[]] $EligibleAdapters,
           [object[]] $Components,
           [System.Collections.Generic.List[string]] $SkippedSink)
-    $usable = @($Recipes | Where-Object { $_ -and ($_.origin -ne 'community-experimental' -or $IncludeExperimental -or ($RecipeId -and $_.id -eq $RecipeId)) })
+    $usable = @($Recipes | Where-Object { $_ -and (-not (Test-FastLlmExperimentalOrigin -Origin ([string] $_.origin)) -or $IncludeExperimental -or ($RecipeId -and $_.id -eq $RecipeId)) })
     if ($RecipeId) {
         $usable = @($usable | Where-Object { $_.id -eq $RecipeId })
         if ($usable.Count -eq 0) { throw "Recipe '$RecipeId' is not in this release's recipe list. No other recipe was substituted." }
@@ -236,6 +263,12 @@ function Select-FastLlmRecipeForPlacements {
                 if (-not $skipped.Contains($countReason)) { $skipped.Add($countReason) }
                 continue
             }
+            # Ruling 2: a recipe whose engine chain needs an accepted license is never auto-selected, whatever its origin; -Recipe is the way to it.
+            if (-not $RecipeId -and (Test-FastLlmRecipeNeedsLicenseAcceptance -Recipe $recipe -Catalog $Catalog -Components $Components)) {
+                $licenseReason = "$($recipe.id): needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)"
+                if (-not $skipped.Contains($licenseReason)) { $skipped.Add($licenseReason) }
+                continue
+            }
             $model = $models[[string] $recipe.components.model]
             if (-not $model) { $skipped.Add("$($recipe.id): model not in the catalog"); continue }
             # The build is compared with the engine the recipe actually resolves to: the catalog's for the built-in id, the component's otherwise.
@@ -264,12 +297,12 @@ function Select-FastLlmRecipeForPlacements {
     if ($RecipeId -and $sorted.Count -eq 0) { throw "Recipe '$RecipeId' does not apply to this PC: $(@($skipped) -join '; '). No other recipe was substituted." }
     if ($sorted.Count -eq 0) { return $null }
     $pick = $sorted[0]
-    if ($pick.recipe.origin -eq 'community-experimental' -and -not $RecipeId) { return $null }
+    if ((Test-FastLlmExperimentalOrigin -Origin ([string] $pick.recipe.origin)) -and -not $RecipeId) { return $null }
     return [pscustomobject]@{ recipe = $pick.recipe; model = $pick.model; placement = $pick.placement; variant = $pick.variant; skipped = @($skipped) }
 }
 
 function New-FastLlmPlanRecipeBlock {
-    param($Pick, [string] $ModelId, [string[]] $Skipped, [switch] $Recovered)
+    param($Pick, [string] $ModelId, [string[]] $Skipped, [switch] $Recovered, [switch] $HipBackend)
     if ($Pick) {
         $recipe = $Pick.recipe
         $url = $null
@@ -278,6 +311,8 @@ function New-FastLlmPlanRecipeBlock {
         if ($recipe.PSObject.Properties['expected']) { $expected = $recipe.expected }
         $mitigation = $null
         if ($recipe.PSObject.Properties['runtime'] -and $recipe.runtime -and $recipe.runtime.PSObject.Properties['vulkanBarMitigation']) { $mitigation = [string] $recipe.runtime.vulkanBarMitigation }
+        # The Vulkan BAR mitigation does not apply to the HIP engine; a HIP plan records that instead of a blank.
+        if ($HipBackend -and $null -eq $mitigation) { $mitigation = 'not-applicable' }
         return [pscustomobject] [ordered] @{ id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
             variant = $Pick.variant; evidenceUrl = $url; expected = $expected; vulkanBarMitigation = $mitigation; skipped = @($Pick.skipped) }
     }

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Build config/recipes.json (bitworks.fastllm-recipes/v2) from data/verified-recipes.json and data/community-records.json.
 
+Bitworks-authored experimental setups (data/bitworks-experimental-recipes.json, origin bitworks-experimental) need no evidence and are never
+recommended; every component they name must be listed in config/components.json, and they name their own engine. They are gated like
+community-experimental recipes and never auto-selected by the product.
 Verified and community-reproduced entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and
 evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation OR >=50% prompt over the
 best Bitworks recipe for the same card and GPU count, at the same or larger context; with no Bitworks recipe to compare
@@ -15,11 +18,13 @@ import os
 import re
 import sys
 
+EXPERIMENTAL_FILE = "data/bitworks-experimental-recipes.json"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LABELS = {
     "bitworks": "Measured by Bitworks on this card",
     "community-reproduced": "Community recipe, reproduced by Bitworks",
     "community-experimental": "Experimental community recipe, not reproduced by Bitworks",
+    "bitworks-experimental": "Experimental Bitworks setup, not yet measured by Bitworks on this card",
 }
 # The recipe never forces the Vulkan BAR mitigation; the start applies the user or UI policy (auto by default).
 MITIGATIONS = ("auto",)
@@ -110,12 +115,72 @@ def validate(entry, origin, catalog, variants):
     return model
 
 
+def validate_bitworks_experimental(entry, catalog, variants, components):
+    """A Bitworks setup that is shipped so Bitworks can measure it through the product: no evidence yet, never recommended, and its own
+    engine and other components must all be listed in config/components.json. The engine build is the component's, not the catalog's."""
+    rid = entry.get("id")
+    if not isinstance(rid, str) or not ID_RE.match(rid):
+        raise RecipeError(f"bad recipe id: {rid!r}")
+    if components is None:
+        raise RecipeError(f"{rid}: bitworks-experimental entries need config/components.json to check their components against")
+    if entry.get("recommended"):
+        raise RecipeError(f"{rid}: recommended is for verified Bitworks recipes only")
+    for forbidden in ("expected", "evidence", "source", "reproduction"):
+        if entry.get(forbidden):
+            raise RecipeError(f"{rid}: a bitworks-experimental entry carries no {forbidden} block (it has not been measured)")
+    if entry.get("variant") not in variants:
+        raise RecipeError(f"{rid}: unknown card variant {entry.get('variant')!r}")
+    model = {m["id"]: m for m in catalog["models"]}.get(entry.get("model"))
+    if model is None:
+        raise RecipeError(f"{rid}: model {entry.get('model')!r} is not in the catalog")
+    if not isinstance(entry.get("gpuCount"), int) or isinstance(entry.get("gpuCount"), bool) or entry["gpuCount"] not in (1, 2):
+        raise RecipeError(f"{rid}: gpuCount must be 1 or 2")
+    refs = entry.get("components") or {}
+    engine_id = refs.get("engine")
+    by_id = {c["id"]: c for c in components["components"]}
+    engine = by_id.get(engine_id)
+    if engine is None or engine.get("kind") != "engine":
+        raise RecipeError(f"{rid}: components.engine {engine_id!r} is not an engine in config/components.json")
+    if entry.get("engineBuild") != engine.get("version"):
+        raise RecipeError(f"{rid}: engineBuild {entry.get('engineBuild')!r} is not the engine component's version {engine.get('version')!r}")
+    for key in ("runtime", "draft"):
+        if refs.get(key) is not None and (refs[key] not in by_id or by_id[refs[key]].get("kind") != key):
+            raise RecipeError(f"{rid}: components.{key} {refs[key]!r} is not a {key} in config/components.json")
+    for required in engine.get("requires") or []:
+        if required not in by_id:
+            raise RecipeError(f"{rid}: the engine requires {required!r}, which is not in config/components.json")
+    runtime = entry.get("runtime") or {}
+    if "vulkanBarMitigation" in runtime:
+        if (engine.get("platform") or {}).get("backend") != "vulkan":
+            raise RecipeError(f"{rid}: runtime.vulkanBarMitigation is for Vulkan engines only")
+        if runtime["vulkanBarMitigation"] not in MITIGATIONS:
+            raise RecipeError(f"{rid}: runtime.vulkanBarMitigation must be one of {MITIGATIONS}")
+    if not isinstance(runtime.get("contextSize"), int) or isinstance(runtime.get("contextSize"), bool) or not 0 < runtime["contextSize"] <= int(model["contextSize"]):
+        raise RecipeError(f"{rid}: runtime.contextSize must be 1..{model['contextSize']}")
+    if "parallel" in runtime and (isinstance(runtime["parallel"], bool) or runtime["parallel"] != 1):
+        raise RecipeError(f"{rid}: runtime.parallel must be 1 (the API check requires a single slot)")
+    for field in ("cacheTypeK", "cacheTypeV"):
+        if field in runtime and runtime[field] not in CACHE_TYPES:
+            raise RecipeError(f"{rid}: runtime.{field} must be one of {CACHE_TYPES}")
+    if "fitTargetMiB" in runtime and (not isinstance(runtime["fitTargetMiB"], int) or isinstance(runtime["fitTargetMiB"], bool) or runtime["fitTargetMiB"] <= 0):
+        raise RecipeError(f"{rid}: runtime.fitTargetMiB must be a positive integer")
+
+
 def has_live_evidence(entry):
     evidence = entry.get("evidence") or {}
     return bool(evidence.get("url")) and bool(DATE_RE.match(str(evidence.get("publishedAt") or "")))
 
 
 def recipe_from(entry, origin):
+    if origin == "bitworks-experimental":
+        components = {"engine": entry["components"]["engine"], "model": entry["model"]}
+        for key in ("runtime", "draft"):
+            if entry["components"].get(key):
+                components[key] = entry["components"][key]
+        return {"id": entry["id"], "origin": origin, "label": LABELS[origin],
+                "gpu": {"variant": entry["variant"], "count": entry["gpuCount"]}, "components": components,
+                "runtime": entry["runtime"], "engineBuild": entry["engineBuild"], "recommended": False,
+                "expected": None, "evidence": None, "source": None, "compelling": None}
     components = {"engine": f"llama.cpp-{entry['engineBuild']}-vulkan", "model": entry["model"]}
     if origin == "community-experimental":
         # An experimental entry may name its own engine, plus a runtime and a draft model; all are checked against components.json.
@@ -190,6 +255,16 @@ def build(root):
             continue
         recipes.append(recipe_from(entry, "bitworks"))
     bitworks_recipes = list(recipes)
+    # Optional input: Bitworks setups that ship before they are measured (no evidence, never recommended, never a compelling-rule baseline).
+    experimental = load(root, EXPERIMENTAL_FILE) if os.path.exists(os.path.join(root, EXPERIMENTAL_FILE)) else None
+    if experimental is not None:
+        if experimental.get("schema") != "bitworks.fastllm-bitworks-experimental-recipes/v1":
+            raise RecipeError("unexpected data schema in " + EXPERIMENTAL_FILE)
+        for entry in experimental["entries"]:
+            if entry.get("origin") != "bitworks-experimental":
+                raise RecipeError(f"{entry.get('id')}: origin must be bitworks-experimental in {EXPERIMENTAL_FILE}")
+            validate_bitworks_experimental(entry, catalog, variants, components)
+            recipes.append(recipe_from(entry, "bitworks-experimental"))
     candidates = []
     for entry in community["records"]:
         origin = entry.get("origin")
@@ -241,6 +316,8 @@ def build(root):
     input_files = ["config/catalog.json", "config/gpu-variants.json", "data/verified-recipes.json", "data/community-records.json"]
     if components is not None:
         input_files.append("config/components.json")
+    if experimental is not None:
+        input_files.append(EXPERIMENTAL_FILE)
     inputs = {rel: sha256_file(root, rel) for rel in input_files}
     return {"schema": "bitworks.fastllm-recipes/v2", "inputs": inputs, "recipes": recipes}, skipped
 

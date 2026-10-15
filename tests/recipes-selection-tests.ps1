@@ -161,3 +161,17 @@ Check ($null -ne $wrongFamily -and $wrongFamily.Data['FastLlmFailureCode'] -ceq 
 $suffixed = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX (gfx1100)' 24560)) -ComponentId 'x' }
 Check ($null -ne $suffixed -and $suffixed.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found' -and $suffixed.Message -like '*AMD Radeon RX 7900 XTX (gfx1100)*' -and $suffixed.Message -like '*Vulkan setup*') 'a HIP device name that differs by a suffix fails closed, reports the name it saw and points at the Vulkan setup'
 Check ($twin.Message -like '*Vulkan setup*') 'the ambiguous message also points at the Vulkan setup'
+
+# ---- C3 Task 4: bitworks-experimental is gated and never auto-selected like community-experimental ----
+Check ((Get-FastLlmRecipeLabel 'bitworks-experimental') -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card') 'the bitworks-experimental label'
+$bwExp = Recipe 'bx1' 'bitworks-experimental' 'big' 30 $false
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced'
+Check ($null -eq $pick) 'a bitworks-experimental recipe is not considered without the experimental inclusion'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -IncludeExperimental
+Check ($null -eq $pick) 'a bitworks-experimental recipe is never auto-selected, even with the experimental inclusion'
+$bwControl = Recipe 'bx1' 'bitworks' 'big' 30 $false
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwControl) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced'
+Check ($pick -and $pick.recipe.id -eq 'bx1') 'control: the same recipe from Bitworks is picked under the same inputs'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -RecipeId 'bx1'
+Check ($pick -and $pick.recipe.origin -eq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
+Write-Host 'recipes-selection-tests (task 4): PASS'
