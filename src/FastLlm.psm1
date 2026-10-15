@@ -1796,7 +1796,8 @@ function Get-FastLlmComponents {
         }
         $entries.Add($item)
     }
-    return , @($entries.ToArray())
+    # Emitted one entry at a time: callers collect with @(...). A comma-wrapped return would hand @() a single nested array.
+    return $entries.ToArray()
 }
 
 function Get-FastLlmComponentRoot {
@@ -2112,7 +2113,7 @@ function Get-FastLlmComponentInventory {
                 verified  = [bool] $verified
             })
     }
-    return , @($rows.ToArray())
+    return $rows.ToArray()
 }
 
 # True when a running FastLLM can reach into the component root. A running server whose status records no engine path

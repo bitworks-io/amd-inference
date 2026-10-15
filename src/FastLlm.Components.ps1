@@ -76,7 +76,7 @@ function Format-FastLlmComponentList {
         }
         $lines.Add(('{0,-34} {1,-8} {2,-10} {3,-10} {4,12} {5,-8}' -f [string] $row.id, [string] $row.kind, [string] $row.version, $installedText, $sizeText, $verifiedText))
     }
-    return , @($lines.ToArray())
+    return $lines.ToArray()
 }
 
 # Only what is installed, for the Components window: id, version, kind and size, one row each.
@@ -90,7 +90,7 @@ function Get-FastLlmInstalledComponentRows {
                 label = ('{0} ({1}, {2}) - {3}' -f [string] $row.id, [string] $row.kind, [string] $row.version, (Format-FastLlmComponentSize -Bytes ([int64] $row.bytes)))
             })
     }
-    return , @($rows.ToArray())
+    return $rows.ToArray()
 }
 
 # Experimental recipes are hidden unless the switch is on. Other recipes are always listed. Installed components never change this.
@@ -101,14 +101,14 @@ function Select-FastLlmVisibleRecipes {
         if ([string] $candidate.origin -ceq 'community-experimental' -and $ExperimentalComponents -cne 'on') { continue }
         $visible.Add($candidate)
     }
-    return , @($visible.ToArray())
+    return $visible.ToArray()
 }
 
 # Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component.
 function Get-FastLlmRecipeComponentSources {
     param([Parameter(Mandatory = $true)] $Recipe, [object[]] $Components)
     $rows = New-Object 'System.Collections.Generic.List[object]'
-    if (-not $Recipe.PSObject.Properties['components'] -or -not $Recipe.components) { return , @($rows.ToArray()) }
+    if (-not $Recipe.PSObject.Properties['components'] -or -not $Recipe.components) { return $rows.ToArray() }
     foreach ($role in @('engine', 'runtime', 'model', 'draft')) {
         $roleProperty = $Recipe.components.PSObject.Properties[$role]
         if (-not $roleProperty -or [string]::IsNullOrWhiteSpace([string] $roleProperty.Value)) { continue }
@@ -119,20 +119,7 @@ function Get-FastLlmRecipeComponentSources {
         }
         $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
     }
-    return , @($rows.ToArray())
-}
-
-# The warning shown before an experimental recipe is chosen: names each component and its source.
-function Format-FastLlmExperimentalWarning {
-    param([Parameter(Mandatory = $true)] $Recipe, [object[]] $Components)
-    $lines = New-Object 'System.Collections.Generic.List[string]'
-    $lines.Add("Recipe '$([string] $Recipe.id)' is an experimental community recipe, not reproduced by Bitworks.")
-    $lines.Add('It uses these components, each checked against its pinned hash:')
-    foreach ($row in @(Get-FastLlmRecipeComponentSources -Recipe $Recipe -Components $Components)) {
-        if ($row.listed) { $lines.Add(('  {0}: {1} from {2}' -f $row.role, $row.id, $row.sourceUrl)) }
-        else { $lines.Add(('  {0}: {1} (not a downloadable component; it comes with this release or its model catalog)' -f $row.role, $row.id)) }
-    }
-    return , @($lines.ToArray())
+    return $rows.ToArray()
 }
 
 # plan, start and install with -Recipe of a community-experimental recipe: refused unless the switch is on AND -AcceptExperimental is given.

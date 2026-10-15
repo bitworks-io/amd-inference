@@ -111,6 +111,7 @@ try {
     }
     $shipped = @(Get-FastLlmComponents -ComponentsPath (Join-Path $PSScriptRoot '../config/components.json'))
     Check ($shipped.Count -ge 1 -and [string] $shipped[0].id -ceq 'llama.cpp-b10698-vulkan') 'the shipped components.json loads and lists the b10698 Vulkan engine'
+    Check ($shipped[0] -isnot [System.Array] -and $null -ne $shipped[0].PSObject.Properties['adapter']) '@(Get-FastLlmComponents) yields the component entries themselves, not one nested array'
     $shippedRoot = Get-FastLlmComponentRoot -InstallRoot (Join-Path $work 'shipped') -Component $shipped[0]
     $expectedTail = [System.IO.Path]::Combine('components', 'engine', 'llama.cpp-b10698-vulkan', 'b10698')
     Check ($shippedRoot.EndsWith($expectedTail, [System.StringComparison]::OrdinalIgnoreCase)) 'the component root is components\<kind>\<id>\<version>'
@@ -185,8 +186,9 @@ try {
     $accRootPath = Install-Fixture -Fixture $fxAcc -InstallRoot $accRoot -Counter $counterAcc -AcceptLicense
     $receiptPath = Join-Path (Join-Path $accRoot 'consents') 'component-test-engine-1-v1.json'
     Check (Test-Path -LiteralPath $receiptPath -PathType Leaf) 'consent accept writes consents\component-<id>-<version>.json'
-    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-    Check ([int] $receipt.schemaVersion -eq 1 -and $receipt.id -ceq 'test-engine-1' -and $receipt.version -ceq 'v1' -and $receipt.licenseUrl -ceq 'https://example.com/LICENSE' -and $receipt.mode -ceq 'explicit-switch' -and $receipt.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the receipt carries schemaVersion, id, version, license url, acceptedAt and mode'
+    $receiptText = Get-Content -LiteralPath $receiptPath -Raw
+    $receipt = $receiptText | ConvertFrom-Json
+    Check ([int] $receipt.schemaVersion -eq 1 -and $receipt.id -ceq 'test-engine-1' -and $receipt.version -ceq 'v1' -and $receipt.licenseUrl -ceq 'https://example.com/LICENSE' -and $receipt.mode -ceq 'explicit-switch' -and $receiptText -match '"acceptedAt"\s*:\s*"\d{4}-\d\d-\d\dT') 'the receipt carries schemaVersion, id, version, license url, acceptedAt and mode'
     Check (Test-Path -LiteralPath (Join-Path $accRootPath 'server.exe')) 'consent accept with -AcceptLicense installs the component'
 
     # ---- Hash mismatch: refused, nothing created (Review Focus 1) ----
@@ -351,7 +353,7 @@ try {
     $resolvedBuiltIn = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $resolveRecipe $resolveCatalog $shadowList $resolveRoot
     $expectedBuiltIn = Get-FastLlmEngineExecutable -InstallRoot $resolveRoot -EngineVersion 'b10698' -BackendKey 'vulkan' -EntryPoint 'llama-server.exe'
     Check ($resolvedBuiltIn.builtIn -and $resolvedBuiltIn.installed -and $resolvedBuiltIn.executable -ceq $expectedBuiltIn -and $resolvedBuiltIn.version -ceq 'b10698' -and $resolvedBuiltIn.id -ceq 'llama.cpp-b10698-vulkan') 'the built-in id resolves to the existing engines\<version>\vulkan executable, builtIn true, even when components.json also lists that id'
-    Check ($resolvedBuiltIn.executable -notlike '*components*') 'the built-in id never resolves into the components folder'
+    Check (-not $resolvedBuiltIn.executable.StartsWith((Join-Path $resolveRoot 'components'), [System.StringComparison]::OrdinalIgnoreCase)) 'the built-in id never resolves into the components folder'
     $resolvedBuiltInEmpty = & $module { param($R, $C, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components @() -InstallRoot $I } $resolveRecipe $resolveCatalog (New-TestRoot)
     Check ($resolvedBuiltInEmpty.builtIn -and -not $resolvedBuiltInEmpty.installed -and $null -eq $resolvedBuiltInEmpty.executable) 'the built-in id on a root without the engine resolves as not installed, without consulting any component'
 
@@ -509,6 +511,7 @@ try {
     $gateRoot = New-TestRoot
     $gateOffAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents -AcceptExperimental }
     Check ($null -ne $gateOffAccept -and $gateOffAccept -like '*switch is off*' -and $gateOffAccept -like '*test-engine-1*' -and $gateOffAccept -like '*https://example.com/downloads/test-engine-1-v1.zip*' -and $gateOffAccept -like '*big-model*') 'switch off plus -AcceptExperimental is refused, naming each component and its source URL'
+    Check ($gateOffAccept -like '*It would use: engine test-engine-1 (https://example.com/downloads/test-engine-1-v1.zip); model big-model (comes with this release).*') 'the refusal names each component in its own entry, with its own source'
     Set-FastLlmComponentSettings -InstallRoot $gateRoot -ExperimentalComponents 'on'
     $gateOnNoAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents }
     Check ($null -ne $gateOnNoAccept -and $gateOnNoAccept -like '*-AcceptExperimental was not given*' -and $gateOnNoAccept -like '*https://example.com/downloads/test-engine-1-v1.zip*') 'switch on without -AcceptExperimental is refused'
