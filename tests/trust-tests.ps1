@@ -35,4 +35,39 @@ $productFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter *.p
     @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Filter *.ps1) + @(Get-Item -LiteralPath (Join-Path $root 'fast-llm.ps1'), (Join-Path $root 'fast-llm-ui.ps1'))
 $overrideUsers = @($productFiles | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match '-(ExpectedOrganization|ExpectedRootThumbprint|RequiredEkus|AllowUntrustedRootForTests)\b' } | ForEach-Object { $_.Name })
 Check ($overrideUsers.Count -eq 0) ("no product file passes a pin override or the untrusted-root switch (found: " + ($overrideUsers -join ', ') + ")")
+# doctor as a child process, against a temp copy of the entry script, src and config (Windows only: doctor reads Windows state).
+if ($env:OS -eq 'Windows_NT') {
+  function Invoke-DoctorChild([string]$AppDir, [string]$InstallRoot) {
+    $info=New-Object Diagnostics.ProcessStartInfo
+    $info.FileName=(Get-Process -Id $PID).Path
+    $info.Arguments='-NoLogo -NoProfile -NonInteractive -File "'+(Join-Path $AppDir 'fast-llm.ps1')+'" doctor -HardwareFile "'+(Join-Path $root 'tests\fixtures\rx-7900-xtx-24gb.json')+'" -InstallRoot "'+$InstallRoot+'"'
+    $info.UseShellExecute=$false;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+    $child=[Diagnostics.Process]::Start($info)
+    $out=$child.StandardOutput.ReadToEndAsync();$err=$child.StandardError.ReadToEndAsync()
+    if(-not $child.WaitForExit(120000)){$child.Kill(); throw 'doctor child timed out'}
+    return [pscustomobject]@{exit=$child.ExitCode;json=($out.Result|ConvertFrom-Json);err=$err.Result}
+  }
+  $doctorTmp=Join-Path ([IO.Path]::GetTempPath()) ('trust-doctor-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $doctorTmp | Out-Null
+  try {
+    $appDir=Join-Path $doctorTmp 'app'; New-Item -ItemType Directory -Path $appDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'fast-llm.ps1') -Destination $appDir
+    foreach($d in 'src','config'){ Copy-Item -LiteralPath (Join-Path $root $d) -Destination (Join-Path $appDir $d) -Recurse }
+    $instRoot=Join-Path $doctorTmp 'data'
+    $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=$null
+    $d=Invoke-DoctorChild $appDir $instRoot
+    Check ($d.exit -eq 0 -and $d.json.installIntegrity.status -eq 'not-installed' -and $d.json.installIntegrity.appRoot -eq $appDir) 'doctor: no FastLLM.cat reports not-installed and exits 0'
+    Check ($d.json.installIntegrity.summary -eq 'Install integrity: not an installed release (no FastLLM.cat)') 'doctor: the not-installed line'
+    New-FileCatalog -Path $appDir -CatalogFilePath (Join-Path $appDir 'FastLLM.cat') -CatalogVersion 2 | Out-Null
+    Set-Content -LiteralPath (Join-Path $appDir 'added.txt') -Value 'x' -Encoding ascii
+    $d=Invoke-DoctorChild $appDir $instRoot
+    Check ($d.exit -eq 2 -and $d.json.installIntegrity.status -eq 'failed' -and $d.json.installIntegrity.reason -eq 'catalog-signature') 'doctor: an unsigned catalog fails on its signature without the test variable'
+    $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE='1'
+    $d=Invoke-DoctorChild $appDir $instRoot
+    Check ($d.exit -eq 2 -and $d.json.installIntegrity.status -eq 'failed' -and $d.json.installIntegrity.reason -eq 'tree' -and $d.json.installIntegrity.catalogSignature.reason -eq 'skipped-for-test' -and (@($d.json.installIntegrity.mismatches) -contains 'added.txt')) 'doctor: with the test variable, the added file is named and the exit is 2'
+    Check ($d.json.installIntegrity.summary -like 'Install integrity: FAILED (tree): *added.txt*') 'doctor: the failed line names the path'
+    Remove-Item -LiteralPath (Join-Path $appDir 'added.txt')
+    $d=Invoke-DoctorChild $appDir $instRoot
+    Check ($d.exit -eq 0 -and $d.json.installIntegrity.status -eq 'ok' -and $d.json.installIntegrity.summary -eq 'Install integrity: ok') 'doctor: a matching tree reports ok (signature skipped only by the test variable)'
+  } finally { $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=$null; Remove-Item -LiteralPath $doctorTmp -Recurse -Force }
+}
 Write-Host "$count trust checks passed."
