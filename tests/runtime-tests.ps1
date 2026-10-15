@@ -307,10 +307,8 @@ try {
                     & $script:selfTestOriginalWrite -InstallRoot $InstallRoot -State $State -FileName $FileName
                 }
                 # Console lines go into the same ordered log (a start that throws would otherwise lose its captured output).
-                function script:Write-Host {
-                    param([Parameter(Position = 0)] $Object, [Parameter(ValueFromRemainingArguments = $true)] $Remaining)
-                    $script:selfTestWriteLog.Add('host:' + [string] $Object)
-                }
+                # A plain (non-advanced) function so any Write-Host argument form is accepted.
+                function script:Write-Host { $script:selfTestWriteLog.Add('host:' + [string] $args[0]) }
             } $writeLog $savedWriteState
             $stopper=$null
             if ($expectPass -or $expectSkip) {
@@ -368,7 +366,7 @@ try {
             $lock.Dispose();$lock=$null
         }
     } finally {
-        & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original } $savedWriteState
+        & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original; Remove-Item -Path 'Function:script:Write-Host' -ErrorAction SilentlyContinue } $savedWriteState
     }
 
     $httpHost=New-Object Bitworks.FastLlm.ProcessHost

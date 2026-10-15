@@ -41,4 +41,18 @@ $r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1
 Check ($r.status -eq 'skipped' -and $script:requests -eq 0) 'a skipped self-test sends no request (647 is one token under the 648 needed)'
 $r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 648 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $counting
 Check ($r.status -eq 'pass' -and $script:requests -gt 0) 'a context of exactly 648 runs the self-test'
+# Workload pin (the brief: workload, limits and metrics stay exactly as reviewed): one tokenize, then one warm-up and two measured completions.
+$script:calls = New-Object 'System.Collections.Generic.List[object]'
+$recording = { param($Path, $Body, $TimeoutMs) $script:calls.Add([pscustomobject]@{ Path = $Path; Body = $Body; TimeoutMs = $TimeoutMs }); if ($Path -eq '/tokenize') { [pscustomobject]@{ Status = 200; Body = (@{ tokens = $tokens } | ConvertTo-Json -Compress) } } else { Stream 128 } }
+$r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 8192 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $recording
+$tokenizeCalls = @($script:calls | Where-Object { $_.Path -eq '/tokenize' })
+$completionCalls = @($script:calls | Where-Object { $_.Path -eq '/completion' })
+Check ($r.status -eq 'pass' -and $tokenizeCalls.Count -eq 1 -and $completionCalls.Count -eq 3 -and $script:calls.Count -eq 4) 'the workload is one tokenize and three completions (one warm-up, two measured)'
+Check ($tokenizeCalls[0].Body.add_special -eq $false -and $tokenizeCalls[0].TimeoutMs -eq 20000) 'the tokenize request adds no special tokens and keeps its 20 s limit'
+$pinned = $true
+foreach ($call in $completionCalls) {
+    $body = $call.Body
+    if (-not ($body.n_predict -eq 128 -and $body.temperature -eq 0 -and $body.seed -eq 42 -and $body.cache_prompt -eq $false -and $body.ignore_eos -eq $true -and $body.stream -eq $true -and @($body.prompt).Count -eq 512 -and $call.TimeoutMs -eq 120000)) { $pinned = $false }
+}
+Check $pinned 'every completion asks for 128 tokens, temperature 0, seed 42, no prompt cache, ignore_eos, streaming, a 512-token prompt, within 120000 ms'
 Write-Host 'selftest-tests: PASS'
