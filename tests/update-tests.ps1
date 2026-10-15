@@ -210,6 +210,9 @@ function New-Seams($Opts) {
     $o = @{ Sums = ($setupSha + '  ' + $setupName + "`n"); StopOk = $true; DownloadFail = $false; PartialOnFail = $true; SigOk = $true; SigReason = $null
             ProductVersion = $ver; Exit = 0; IntegrityStatus = 'ok'; IntegrityReason = $null }
     if ($Opts) { foreach ($k in $Opts.Keys) { $o[$k] = $Opts[$k] } }
+    # GetNewClosure copies only this function's locals: a script-level variable read inside a closure is $null when the
+    # suite is invoked from another script (CI) rather than with -File (the bench gate), so copy it here.
+    $bytes = $setupBytes
     $seams = @{ Order = $order }
     $seams.StopServer = { param($Root) $order.Add('stop'); [pscustomobject]@{ ok = $o.StopOk; reason = 'mock-stop' } }.GetNewClosure()
     $seams.Download = {
@@ -221,7 +224,7 @@ function New-Seams($Opts) {
             [IO.File]::WriteAllText("$Destination.$($Sha256.Substring(0, 16)).lock", '')
             throw 'Downloaded artifact failed exact size/SHA-256 verification'
         }
-        [IO.File]::WriteAllBytes($Destination, $setupBytes)
+        [IO.File]::WriteAllBytes($Destination, $bytes)
     }.GetNewClosure()
     $seams.Verify = { param($Path) $order.Add('verify'); [pscustomobject]@{ ok = $o.SigOk; reason = $o.SigReason; detail = $null } }.GetNewClosure()
     $seams.GetProductVersion = { param($Path) $order.Add('version'); $o.ProductVersion }.GetNewClosure()
