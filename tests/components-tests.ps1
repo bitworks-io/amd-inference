@@ -422,7 +422,7 @@ try {
     Check (Test-Path -LiteralPath $receiptPath -PathType Leaf) 'consent accept writes consents\component-<id>-<version>.json'
     $accShownRoot = New-TestRoot
     $accShown = @(Install-Fixture -Fixture $fxAcc -InstallRoot $accShownRoot -Counter @{ count = 0 } -AcceptLicense 6>&1 | ForEach-Object { [string] $_ })
-    Check (@($accShown | Where-Object { $_ -ceq 'Component:  Test engine v1 v1' }).Count -eq 1 -and @($accShown | Where-Object { $_ -ceq 'License:    MIT (https://example.com/LICENSE)' }).Count -eq 1) 'an accept-type install with -AcceptLicense prints the Component: and License: lines'
+    Check (@($accShown | Where-Object { $_ -ceq 'Component: Test engine v1 (test-engine-1 v1)' }).Count -eq 1 -and @($accShown | Where-Object { $_ -ceq 'License: MIT https://example.com/LICENSE' }).Count -eq 1) 'an accept-type install with -AcceptLicense prints the Component: and License: lines'
     $installSource = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponent \{.*?\r?\n\}\r?\n').Value
     Check ($installSource.IndexOf('Write-Host "Component:') -ge 0 -and $installSource.IndexOf('Write-Host "Component:') -lt $installSource.IndexOf('Write-FastLlmComponentConsentReceipt -Component')) 'the license lines are printed before the consent receipt is written'
     $receiptText = Get-Content -LiteralPath $receiptPath -Raw
@@ -620,6 +620,297 @@ try {
     $unknownFailure = $null
     try { & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $unknownRecipe $resolveCatalog $engineList $engineRoot | Out-Null } catch { $unknownFailure = $_.Exception }
     Check ($null -ne $unknownFailure -and $unknownFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown') 'an unknown engine id is a typed error'
+
+    # ---- C3 Task 2: streaming zip-tree install, requires chains with per-component consent, removal guard, presence checks ----
+    . (Join-Path $PSScriptRoot '../src/FastLlm.Components.ps1')
+
+    # Builds <Path> from an ordered name -> text table with explicit entry names (forward slashes), so a nested archive is the same on every platform.
+    function New-NamedZip([string] $Path, $Entries) {
+        if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+        $zipArchive = [System.IO.Compression.ZipFile]::Open($Path, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($name in $Entries.Keys) {
+                $zipEntry = $zipArchive.CreateEntry([string] $name)
+                $zipStream = $zipEntry.Open()
+                try { $bytes = [System.Text.Encoding]::ASCII.GetBytes([string] $Entries[$name]); $zipStream.Write($bytes, 0, $bytes.Length) } finally { $zipStream.Dispose() }
+            }
+        }
+        finally { $zipArchive.Dispose() }
+    }
+    function Get-TextSha([string] $Text) {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($Text)))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+    }
+    # One archive part: Files (path -> text) are the manifest, Extra (archive-side name -> text) are members the manifest does not list.
+    # BadHashPath pins a wrong SHA-256 for that path; MissingPath pins a path the archive does not hold.
+    function New-ArchivePart([string] $Dir, [string] $Name, $Files, [string] $Prefix, $Extra = @{}, [string] $Format = 'zip-tree', [string] $BadHashPath = '', [string] $MissingPath = '') {
+        $entries = [ordered] @{}
+        $manifest = @()
+        foreach ($filePath in $Files.Keys) {
+            $entries[$Prefix + $filePath] = $Files[$filePath]
+            $sha = Get-TextSha ([string] $Files[$filePath])
+            if ($filePath -ceq $BadHashPath) { $sha = '1' * 64 }
+            $manifest += [ordered] @{ path = $filePath; sizeBytes = ([System.Text.Encoding]::ASCII.GetBytes([string] $Files[$filePath])).Length; sha256 = $sha }
+        }
+        foreach ($extraName in $Extra.Keys) { $entries[$extraName] = $Extra[$extraName] }
+        if ($MissingPath) { $manifest += [ordered] @{ path = $MissingPath; sizeBytes = 3; sha256 = (Get-TextSha 'abc') } }
+        $zipPath = Join-Path $Dir $Name
+        New-NamedZip -Path $zipPath -Entries $entries
+        $part = [ordered] @{ url = "https://downloads.example.com/$Name"; allowedRedirectHosts = @('downloads.example.com'); sha256 = (Get-HexSha $zipPath); sizeBytes = (Get-Item -LiteralPath $zipPath).Length; format = $Format }
+        if ($Format -ceq 'zip-tree') { $part.extractPrefix = $Prefix }
+        $part.fileManifest = @($manifest)
+        return [pscustomobject] @{ part = $part; zip = $zipPath; url = [string] $part.url }
+    }
+    # A runtime (two nested zip-tree parts, a links-only license) and an engine (flat zip, url + links license) that requires it.
+    function New-ChainFixture([string] $Name, [string] $Consent = 'accept', [string] $BadHashPath = '', [string] $MissingPath = '') {
+        $dir = Join-Path $work $Name
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $part1 = New-ArchivePart -Dir $dir -Name 'rt-libs.whl' -Prefix '_sdk/' -Files ([ordered] @{ 'bin/a.dll' = 'runtime-a'; 'bin/lib/x.dat' = 'runtime-x' }) -Extra @{ '_sdk/unrelated.txt' = 'not listed'; 'other/readme.md' = 'also not listed' } -BadHashPath $BadHashPath -MissingPath $MissingPath
+        $part2 = New-ArchivePart -Dir $dir -Name 'rt-device.whl' -Prefix '_sdk/' -Files ([ordered] @{ 'bin/b.dll' = 'runtime-b'; '.kpack/k.kpack' = 'runtime-k' })
+        $engineFiles = [ordered] @{ 'server.exe' = 'engine-server'; 'engine.dll' = 'engine-dll' }
+        $enginePart = New-ArchivePart -Dir $dir -Name 'engine.zip' -Prefix '' -Files $engineFiles -Format 'zip'
+        $runtimeLicense = [ordered] @{ spdx = 'proprietary'; consent = $Consent; links = @([ordered] @{ title = 'AMD EULA'; url = 'https://rocm.example.com/eula' }, [ordered] @{ title = 'Third party notices'; url = 'https://rocm.example.com/notices' }) }
+        $engineLicense = [ordered] @{ spdx = 'MIT'; url = 'https://engine.example.com/LICENSE'; consent = $Consent; links = @([ordered] @{ title = 'AMD HIP terms'; url = 'https://rocm.example.com/hip' }) }
+        $runtime = New-TreeComponent -Id 'rt-hip' -Parts @($part1.part, $part2.part) -PathDirs @('bin') -License $runtimeLicense
+        $engine = New-TreeComponent -Id 'eng-hip' -Parts @($enginePart.part) -Kind 'engine' -Requires @('rt-hip') -License $engineLicense -LegacySource
+        $engine.entryPoint = 'server.exe'
+        $docPath = Write-ComponentsDoc @($engine, $runtime)
+        $zipByUrl = @{}
+        foreach ($archive in @($part1, $part2, $enginePart)) { $zipByUrl[$archive.url] = $archive.zip }
+        return [pscustomobject] @{ ComponentsPath = $docPath; ZipByUrl = $zipByUrl; Dir = $dir; Part1Url = $part1.url; Part2Url = $part2.url; EngineUrl = $enginePart.url }
+    }
+    # A download seam that serves the fixture archives and records the order (and a DOWNLOAD line in the output stream, to compare with the consent lines).
+    function New-ChainSeam($Fixture, $State) {
+        $zipByUrl = $Fixture.ZipByUrl
+        $stateLocal = $State
+        return {
+            param($Url, $Destination, $Sha256, $SizeBytes, $AllowedRedirectHosts)
+            Write-Host "DOWNLOAD $Url"
+            $stateLocal.log.Add([string] $Url)
+            if ($stateLocal.ContainsKey('probe')) { $stateLocal.probes.Add((& $stateLocal.probe ([string] $Url))) }
+            [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Destination)) | Out-Null
+            Copy-Item -LiteralPath $zipByUrl[[string] $Url] -Destination $Destination -Force
+        }.GetNewClosure()
+    }
+    function New-ChainState { return @{ log = (New-Object 'System.Collections.Generic.List[string]'); probes = (New-Object 'System.Collections.Generic.List[object]') } }
+    function Get-ThrownFailure([scriptblock] $Block) {
+        try { & $Block | Out-Null } catch { return [pscustomobject] @{ code = [string] $_.Exception.Data['FastLlmFailureCode']; message = [string] $_.Exception.Message } }
+        return $null
+    }
+    function Get-ComponentEntry([string] $ComponentsPath, [string] $Id) { return @(Get-FastLlmComponents -ComponentsPath $ComponentsPath | Where-Object { $_.id -ceq $Id })[0] }
+
+    # ---- License links helper ----
+    $linksFx = New-ChainFixture -Name 'fx-chain'
+    $linksRuntime = Get-ComponentEntry $linksFx.ComponentsPath 'rt-hip'
+    $linksEngine = Get-ComponentEntry $linksFx.ComponentsPath 'eng-hip'
+    $runtimeLinks = @(Get-FastLlmComponentLicenseLinks -Component $linksRuntime)
+    $engineLinks = @(Get-FastLlmComponentLicenseLinks -Component $linksEngine)
+    Check ($runtimeLinks.Count -eq 2 -and $runtimeLinks[0].title -ceq 'AMD EULA' -and $runtimeLinks[1].url -ceq 'https://rocm.example.com/notices') 'Get-FastLlmComponentLicenseLinks lists a links-only license (no license.url) as its links'
+    Check ($engineLinks.Count -eq 2 -and $engineLinks[0].title -ceq 'MIT' -and $engineLinks[0].url -ceq 'https://engine.example.com/LICENSE' -and $engineLinks[1].title -ceq 'AMD HIP terms') 'Get-FastLlmComponentLicenseLinks lists license.url first (titled with its SPDX id), then the links'
+    Check ($moduleSourceEarly -notmatch '\.license\.url') 'no code reads .license.url directly: every license read goes through the links helper'
+
+    # ---- Chain install: order, consent lines before the first download, receipts, nested trees ----
+    $chainRoot = New-TestRoot
+    $chainState = New-ChainState
+    $runtimeRootExpected = Get-FastLlmComponentRoot -InstallRoot $chainRoot -Component $linksRuntime
+    # The seam can only see its own locals, so the probe closes over the runtime root to prove the runtime verified before the engine download started.
+    $probeRuntimeRoot = $runtimeRootExpected
+    $probeModule = $module
+    $chainState.probe = { param($u) [pscustomobject] @{ url = $u; runtimeServer = (Test-Path -LiteralPath (Join-Path $probeRuntimeRoot 'bin/b.dll')) } }.GetNewClosure()
+    $chainSeam = New-ChainSeam -Fixture $linksFx -State $chainState
+    $chainOut = Install-FastLlmComponent -ComponentsPath $linksFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $chainRoot -AcceptLicense -Download $chainSeam 6>&1
+    $chainReturn = @($chainOut | Where-Object { $_ -is [string] })
+    $chainLines = @($chainOut | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string] $_ })
+    $engineRootActual = Get-FastLlmComponentRoot -InstallRoot $chainRoot -Component $linksEngine
+    Check ($chainReturn.Count -eq 1 -and $chainReturn[0] -ceq $engineRootActual) 'a chain install returns exactly the requested component root'
+    Check (($chainState.log -join ',') -ceq ($linksFx.Part1Url + ',' + $linksFx.Part2Url + ',' + $linksFx.EngineUrl)) 'the chain installs the required runtime (both parts) before the engine'
+    $firstDownload = [array]::IndexOf($chainLines, ($chainLines | Where-Object { $_ -like 'DOWNLOAD *' } | Select-Object -First 1))
+    $runtimeLine = [array]::IndexOf($chainLines, 'Component: rt-hip (rt-hip 1.0)')
+    $engineLine = [array]::IndexOf($chainLines, 'Component: eng-hip (eng-hip 1.0)')
+    Check ($runtimeLine -ge 0 -and $engineLine -ge 0 -and $runtimeLine -lt $firstDownload -and $engineLine -lt $firstDownload -and $firstDownload -ge 0) 'the Component: lines of BOTH components print before the first download'
+    foreach ($expectedLine in @('Source: downloads.example.com', 'License: AMD EULA https://rocm.example.com/eula', 'License: Third party notices https://rocm.example.com/notices', 'License: MIT https://engine.example.com/LICENSE', 'License: AMD HIP terms https://rocm.example.com/hip')) {
+        $position = [array]::IndexOf($chainLines, $expectedLine)
+        Check ($position -ge 0 -and $position -lt $firstDownload) "the consent line '$expectedLine' prints before the first download"
+    }
+    Check (@($chainLines | Where-Object { $_ -ceq 'Source: downloads.example.com' }).Count -eq 2) 'one Source: line per component (a repeated host inside one component is shown once)'
+    Check ($chainState.probes[2].runtimeServer -eq $true) 'the runtime was installed before the engine download started'
+    foreach ($receiptName in @('component-rt-hip-1.0.json', 'component-eng-hip-1.0.json')) {
+        Check (Test-Path -LiteralPath (Join-Path (Join-Path $chainRoot 'consents') $receiptName) -PathType Leaf) "an accept-consent component gets its own receipt ($receiptName)"
+    }
+    $runtimeReceipt = Get-Content -LiteralPath (Join-Path (Join-Path $chainRoot 'consents') 'component-rt-hip-1.0.json') -Raw | ConvertFrom-Json
+    Check ($null -eq $runtimeReceipt.licenseUrl -and @($runtimeReceipt.links).Count -eq 2 -and $runtimeReceipt.links[0].url -ceq 'https://rocm.example.com/eula' -and $runtimeReceipt.schemaVersion -eq 1) 'a links-only receipt keeps schemaVersion 1, a null licenseUrl and records links[]'
+    Check (Test-Path -LiteralPath (Join-Path $runtimeRootExpected 'bin/lib/x.dat')) 'the nested two-part zip-tree lands under the component root (part one)'
+    Check ((Test-Path -LiteralPath (Join-Path $runtimeRootExpected '.kpack/k.kpack')) -and (Test-Path -LiteralPath (Join-Path $runtimeRootExpected 'bin/b.dll'))) 'the nested two-part zip-tree lands under the component root (part two, a leading-dot folder)'
+    Check ((Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime) -and (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime -Depth Presence)) 'the installed nested runtime verifies at both Full and Presence'
+    Check ((Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksEngine) -and (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksEngine -Depth Presence)) 'the installed engine verifies at both Full and Presence'
+    $runtimeFiles = @(Get-ChildItem -LiteralPath $runtimeRootExpected -Force -Recurse -File)
+    Check ($runtimeFiles.Count -eq 4 -and @($runtimeFiles | Where-Object { $_.Name -like 'unrelated*' -or $_.Name -like 'readme*' }).Count -eq 0) 'archive members outside the manifest are ignored (only the 4 manifest files are installed)'
+    Check (-not (Test-Path -LiteralPath (Join-Path (Join-Path $chainRoot 'components') '.s'))) 'the short staging folder is gone after the install'
+    $againState = New-ChainState
+    $againRoot = Install-FastLlmComponent -ComponentsPath $linksFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $chainRoot -AcceptLicense -Download (New-ChainSeam -Fixture $linksFx -State $againState)
+    Check ($againRoot -ceq $engineRootActual -and $againState.log.Count -eq 0) 'installing an installed chain again is a no-op without a download'
+
+    # An old receipt (before links[]) matches a component without license links and no other.
+    $plainReceiptFx = New-Fixture -Dir (Join-Path $work 'fx-old-receipt') -Consent 'accept'
+    $plainEntry = @(Get-FastLlmComponents -ComponentsPath $plainReceiptFx.ComponentsPath)[0]
+    $oldRoot = New-TestRoot
+    New-Item -ItemType Directory -Path (Join-Path $oldRoot 'consents') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path (Join-Path $oldRoot 'consents') 'component-test-engine-1-v1.json'), '{"schemaVersion":1,"id":"test-engine-1","version":"v1","licenseUrl":"https://example.com/LICENSE","acceptedAt":"2026-01-01T00:00:00.0000000Z","mode":"explicit-switch"}')
+    Check ((& $module { param($C, $R) Test-FastLlmComponentConsentReceipt -Component $C -InstallRoot $R } $plainEntry $oldRoot)) 'a receipt written before links[] still matches a component without license links'
+    New-Item -ItemType Directory -Path (Join-Path $oldRoot 'consents') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path (Join-Path $oldRoot 'consents') 'component-eng-hip-1.0.json'), '{"schemaVersion":1,"id":"eng-hip","version":"1.0","licenseUrl":"https://engine.example.com/LICENSE","acceptedAt":"2026-01-01T00:00:00.0000000Z","mode":"explicit-switch"}')
+    Check (-not (& $module { param($C, $R) Test-FastLlmComponentConsentReceipt -Component $C -InstallRoot $R } $linksEngine $oldRoot)) 'a receipt without links[] does not cover a component that now carries license links'
+
+    # ---- Full vs Presence: extra, missing and same-size tampered files ----
+    $extraFile = Join-Path $runtimeRootExpected 'bin/extra.txt'
+    [System.IO.File]::WriteAllText($extraFile, 'extra')
+    Check ((-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime)) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime -Depth Presence))) 'an extra installed file fails both Full and Presence'
+    Remove-Item -LiteralPath $extraFile -Force
+    $emptyExtraDir = Join-Path $runtimeRootExpected 'bin/empty-extra'
+    New-Item -ItemType Directory -Path $emptyExtraDir -Force | Out-Null
+    Check ((-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime)) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime -Depth Presence))) 'an extra installed folder fails both Full and Presence'
+    Remove-Item -LiteralPath $emptyExtraDir -Force
+    $sameSizeFile = Join-Path $runtimeRootExpected 'bin/a.dll'
+    $originalBytes = [System.IO.File]::ReadAllBytes($sameSizeFile)
+    [System.IO.File]::WriteAllBytes($sameSizeFile, [System.Text.Encoding]::ASCII.GetBytes('runtime-Z'))
+    Check ((Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime -Depth Presence) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime))) 'a same-size content change passes Presence (it never hashes) and fails Full'
+    [System.IO.File]::WriteAllBytes($sameSizeFile, $originalBytes)
+    Remove-Item -LiteralPath (Join-Path $runtimeRootExpected '.kpack/k.kpack') -Force
+    Check ((-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime)) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime -Depth Presence))) 'a missing installed file fails both Full and Presence'
+    [System.IO.File]::WriteAllBytes((Join-Path $runtimeRootExpected '.kpack/k.kpack'), [System.Text.Encoding]::ASCII.GetBytes('runtime-k'))
+    Check (Test-FastLlmComponentInstallation -InstallRoot $chainRoot -Component $linksRuntime) 'the runtime verifies again once the file is restored (positive control)'
+
+    # ---- Removal guard ----
+    $guardFailure = Get-ThrownFailure { Remove-FastLlmComponent -ComponentsPath $linksFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $chainRoot }
+    Check ($null -ne $guardFailure -and $guardFailure.code -ceq 'component-required-by' -and $guardFailure.message -like "*'eng-hip'*") 'removing a required runtime while the engine is installed is the typed component-required-by, naming the engine'
+    Check ((Test-Path -LiteralPath (Join-Path $runtimeRootExpected 'bin/a.dll')) -and (Test-Path -LiteralPath (Join-Path $chainRoot 'consents/component-rt-hip-1.0.json'))) 'the refused removal deleted nothing (files and receipt stay)'
+    Check ((Remove-FastLlmComponent -ComponentsPath $linksFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $chainRoot) -and -not (Test-Path -LiteralPath $engineRootActual)) 'the engine can be removed while its runtime stays'
+    Check ((Remove-FastLlmComponent -ComponentsPath $linksFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $chainRoot) -and -not (Test-Path -LiteralPath $runtimeRootExpected)) 'after the engine is removed the runtime can be removed'
+
+    # ---- Failures: member hash mismatch, missing manifest member, required install fails first ----
+    $badFx = New-ChainFixture -Name 'fx-chain-badhash' -BadHashPath 'bin/lib/x.dat'
+    $badRoot = New-TestRoot
+    $badState = New-ChainState
+    $badFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $badFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $badRoot -AcceptLicense -Download (New-ChainSeam -Fixture $badFx -State $badState) }
+    Check ($null -ne $badFailure -and $badFailure.code -ceq 'component-archive-member-mismatch') 'a member whose SHA-256 differs from the pin is refused with a typed failure'
+    $quarantineDir = [System.IO.Path]::Combine($badRoot, 'downloads', 'components', 'rt-hip', '1.0')
+    Check (@(Get-ChildItem -LiteralPath $quarantineDir -Force -File | Where-Object { $_.Name -like 'x.dat.corrupt.*' }).Count -eq 1) 'the bad member is quarantined next to the download cache (it survives the refusal)'
+    Check ((-not (Test-Path -LiteralPath (Join-Path $badRoot 'components/runtime'))) -and -not (Test-Path -LiteralPath (Join-Path $badRoot 'components/.s'))) 'a mismatched member leaves no component folder and no staging'
+    Check (-not ($badState.log -contains $badFx.EngineUrl)) 'the engine is never downloaded when its required runtime fails'
+    $missingFx = New-ChainFixture -Name 'fx-chain-missing' -MissingPath 'bin/not-in-archive.dll'
+    $missingRoot = New-TestRoot
+    $missingFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $missingFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $missingRoot -AcceptLicense -Download (New-ChainSeam -Fixture $missingFx -State (New-ChainState)) }
+    Check ($null -ne $missingFailure -and $missingFailure.code -ceq 'component-archive-member-missing' -and -not (Test-Path -LiteralPath (Join-Path $missingRoot 'components/runtime'))) 'a manifest member missing from the archive is a typed failure and installs nothing'
+
+    # ---- Consent: declined and unattended chains download nothing ----
+    $showFx = New-ChainFixture -Name 'fx-chain-show' -Consent 'show'
+    $declineRoot = New-TestRoot
+    $declineState = New-ChainState
+    $declineQuestions = New-Object 'System.Collections.Generic.List[string]'
+    $declineAnswer = { param($q) $declineQuestions.Add($q); 'n' }.GetNewClosure()
+    $declined = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $declineRoot -Download (New-ChainSeam -Fixture $showFx -State $declineState) -ConsentPrompt $declineAnswer }
+    Check ($null -ne $declined -and $declined.code -ceq 'component-consent-declined' -and $declined.message -like "*'rt-hip'*" -and $declined.message -like "*'eng-hip'*") 'a declined chain is a typed failure naming both components'
+    Check ($declineState.log.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $declineRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $declineRoot 'downloads'))) 'a declined chain downloads nothing and creates nothing'
+    Check ($declineQuestions.Count -eq 1 -and $declineQuestions[0] -like "*'rt-hip'*" -and $declineQuestions[0] -like "*'eng-hip'*") 'the chain is asked once, naming every component'
+    $yesRoot = New-TestRoot
+    $yesState = New-ChainState
+    $null = Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $yesRoot -Download (New-ChainSeam -Fixture $showFx -State $yesState) -ConsentPrompt { param($q) 'y' }
+    Check ($yesState.log.Count -eq 3 -and (Test-FastLlmComponentInstallation -InstallRoot $yesRoot -Component (Get-ComponentEntry $showFx.ComponentsPath 'eng-hip')) -and -not (Test-Path -LiteralPath (Join-Path $yesRoot 'consents'))) 'an approved show-type chain installs both and writes no receipts (positive control)'
+    $unRoot = New-TestRoot
+    $unState = New-ChainState
+    $unFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $unRoot -Unattended -Download (New-ChainSeam -Fixture $showFx -State $unState) }
+    Check ($null -ne $unFailure -and $unFailure.code -ceq 'component-consent-required' -and $unFailure.message -like "*'rt-hip'*" -and $unFailure.message -like "*'eng-hip'*" -and $unFailure.message -like '*-AcceptLicense*') 'an unattended chain without -AcceptLicense is component-consent-required, naming both components'
+    Check ($unState.log.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $unRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $unRoot 'consents'))) 'an unattended refusal downloads nothing and writes nothing'
+    $acceptFx = New-ChainFixture -Name 'fx-chain-accept-nosw'
+    $acceptRoot = New-TestRoot
+    $acceptState = New-ChainState
+    $acceptFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $acceptFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $acceptRoot -Download (New-ChainSeam -Fixture $acceptFx -State $acceptState) -ConsentPrompt { param($q) 'y' } }
+    Check ($null -ne $acceptFailure -and $acceptFailure.code -ceq 'component-consent-required' -and $acceptFailure.message -like "*'rt-hip'*" -and $acceptFailure.message -like "*'eng-hip'*" -and $acceptFailure.message -like '*fast-llm.ps1 components -Install eng-hip -AcceptLicense*' -and $acceptState.log.Count -eq 0) 'accept-type components never install on a console answer: component-consent-required names both and points at -AcceptLicense, with no download'
+    Check (-not (Test-Path -LiteralPath (Join-Path $acceptRoot 'consents'))) 'a refused accept chain writes no receipt'
+
+    # A real child process (redirected stdin) never prompts: it gets the typed refusal instead of Read-Host.
+    $childScript = Join-Path $work 'child-consent.ps1'
+    [System.IO.File]::WriteAllText($childScript, @'
+param([string] $ModulePath, [string] $ComponentsPath, [string] $InstallRoot)
+$ErrorActionPreference = 'Stop'
+Import-Module $ModulePath -Force
+$m = Get-Module FastLlm
+Write-Output ('INTERACTIVE=' + (& $m { Test-FastLlmConsoleInteractive }))
+try { Install-FastLlmComponent -ComponentsPath $ComponentsPath -ComponentId 'eng-hip' -InstallRoot $InstallRoot | Out-Null; Write-Output 'RESULT=installed' }
+catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
+'@)
+    $childRoot = New-TestRoot
+    $childInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $childInfo.FileName = (Get-Process -Id $PID).Path
+    $childInfo.Arguments = '-NoProfile -File "' + $childScript + '" -ModulePath "' + $modulePath + '" -ComponentsPath "' + $showFx.ComponentsPath + '" -InstallRoot "' + $childRoot + '"'
+    $childInfo.UseShellExecute = $false
+    $childInfo.RedirectStandardInput = $true
+    $childInfo.RedirectStandardOutput = $true
+    $childInfo.RedirectStandardError = $true
+    $childProcess = [System.Diagnostics.Process]::Start($childInfo)
+    $childProcess.StandardInput.Close()
+    $childOutputTask = $childProcess.StandardOutput.ReadToEndAsync()
+    if (-not $childProcess.WaitForExit(120000)) { try { $childProcess.Kill() } catch { } }
+    $childOutput = $childOutputTask.Result
+    Check ($childOutput -match 'INTERACTIVE=False' -and $childOutput -match 'RESULT=component-consent-required') 'a child process with redirected input is not interactive and gets component-consent-required (no Read-Host)'
+    Check (-not (Test-Path -LiteralPath (Join-Path $childRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $childRoot 'downloads'))) 'the child refusal downloaded nothing'
+
+    # ---- MAX_PATH: refused before any download ----
+    $deepSegments = @(1..5 | ForEach-Object { 'segment-number-' + $_ + '-xxxxxxxxxxxx' })
+    $deepPath = ($deepSegments -join '/') + '/lib.dll'
+    $deepDir = Join-Path $work 'fx-deep'
+    $deepPart = New-ArchivePart -Dir $deepDir -Name 'deep.whl' -Prefix 'p/' -Files ([ordered] @{ $deepPath = 'deep' })
+    $deepComponent = New-TreeComponent -Id 'rt-deep' -Parts @($deepPart.part)
+    $deepDoc = Write-ComponentsDoc @($deepComponent)
+    $deepEntry = Get-ComponentEntry $deepDoc 'rt-deep'
+    $deepState = New-ChainState
+    $deepFx = [pscustomobject] @{ ZipByUrl = @{ $deepPart.url = $deepPart.zip } }
+    $longRoot = Join-Path $work (('long-install-folder-' * 4))
+    $tooLong = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $deepDoc -ComponentId 'rt-deep' -InstallRoot $longRoot -AcceptLicense -Download (New-ChainSeam -Fixture $deepFx -State $deepState) }
+    Check ($deepPath.Length -ge 140 -and $null -ne $tooLong -and $tooLong.code -ceq 'component-path-too-long') 'a long manifest path under a long install root is refused as component-path-too-long'
+    Check ($deepState.log.Count -eq 0 -and -not (Test-Path -LiteralPath $longRoot)) 'the path-too-long refusal happens before any download and creates nothing'
+    $shallowDir = Join-Path $work 'fx-shallow'
+    $shallowPart = New-ArchivePart -Dir $shallowDir -Name 'shallow.whl' -Prefix 'p/' -Files ([ordered] @{ 'a/b.dll' = 'shallow' })
+    $shallowDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-shallow' -Parts @($shallowPart.part)))
+    $shallowFx = [pscustomobject] @{ ZipByUrl = @{ $shallowPart.url = $shallowPart.zip } }
+    $shallowState = New-ChainState
+    $shortRoot = Join-Path $work 's'
+    $shallowOk = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $shallowDoc -ComponentId 'rt-shallow' -InstallRoot $shortRoot -AcceptLicense -Download (New-ChainSeam -Fixture $shallowFx -State $shallowState) }
+    Check ($null -eq $shallowOk -and $shallowState.log.Count -eq 1) 'a component with short paths installs under a short install root (positive control)'
+
+    # ---- M8: inventory and resolution never hash; Full still does ----
+    $m8Fx = New-Fixture -Dir (Join-Path $work 'fx-m8') -Id 'm8-engine'
+    $m8Root = New-TestRoot
+    $null = Install-Fixture -Fixture $m8Fx -InstallRoot $m8Root -Counter @{ count = 0 } -AcceptLicense -Unattended
+    $m8List = @(Get-FastLlmComponents -ComponentsPath $m8Fx.ComponentsPath)
+    $m8Recipe = [pscustomobject] @{ id = 'rm'; components = [pscustomobject] @{ engine = 'm8-engine'; model = 'm' } }
+    & $module { $script:FastLlmFileHashCalls = 0 }
+    $m8Inventory = @(Get-FastLlmComponentInventory -ComponentsPath $m8Fx.ComponentsPath -InstallRoot $m8Root)
+    $m8Resolved = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $m8Recipe $resolveCatalog $m8List $m8Root
+    $hashCallsAfterPresence = & $module { $script:FastLlmFileHashCalls }
+    Check ($m8Inventory[0].installed -and $m8Inventory[0].verified -and $m8Resolved.installed) 'inventory and recipe resolution report an installed component as verified'
+    Check ($hashCallsAfterPresence -eq 0) 'inventory and recipe resolution perform no hashing (the hash counter stays at 0)'
+    Check (Test-FastLlmComponentInstallation -InstallRoot $m8Root -Component $m8List[0]) 'the Full check passes on the same root (positive control)'
+    $hashCallsAfterFull = & $module { $script:FastLlmFileHashCalls }
+    Check ($hashCallsAfterFull -eq 2) 'the Full check hashes every file (2 of 2): the counter proves it is the thing being counted'
+    $recipesSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/FastLlm.Recipes.ps1') -Raw
+    Check ($recipesSource -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$component -Depth Presence') 'Resolve-FastLlmRecipeEngine checks components at Depth Presence'
+    Check ($moduleSourceEarly -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$entry -Depth Presence') 'Get-FastLlmComponentInventory checks components at Depth Presence'
+    Check ($moduleSourceEarly -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$startComponent\)') 'Start-FastLlmServer keeps the default Full check'
+
+    # ---- Streaming: no whole-archive or whole-entry API on the extraction path ----
+    $extractSource = [regex]::Match($moduleSourceEarly, '(?s)function Expand-FastLlmComponentArchivePart \{.*?\r?\n\}\r?\n').Value
+    $filesSource = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponentFiles \{.*?\r?\n\}\r?\n').Value
+    Check ($extractSource.Length -gt 500 -and $filesSource.Length -gt 500 -and $extractSource.Contains('[System.IO.Compression.ZipFile]::OpenRead') -and $extractSource.Contains('.Open()') -and $extractSource.Contains('.CopyTo(')) 'zip-tree extraction streams: ZipFile.OpenRead, entry.Open() and CopyTo(FileStream)'
+    Check (($extractSource + $filesSource + $installSource) -notmatch 'Expand-Archive|ExtractToDirectory|ExtractToFile|ReadAllBytes|ReadAllText|ReadToEnd|\.ToArray\(\)\s*\|') 'the install path calls no whole-archive or whole-entry API'
+    Check (([regex]::Matches($installSource, 'Read-Host')).Count -eq 1 -and $installSource.Contains('Test-FastLlmConsoleInteractive') -and $installSource.IndexOf('Test-FastLlmConsoleInteractive') -lt $installSource.IndexOf('Read-Host')) 'Read-Host is reached only after the interactive check (M5)'
+
+    # ---- components -List shows runtime kinds ----
+    $listRoot = New-TestRoot
+    $listInventory = @(Get-FastLlmComponentInventory -ComponentsPath $linksFx.ComponentsPath -InstallRoot $listRoot)
+    $listText = (@(Format-FastLlmComponentList -Inventory $listInventory) -join "`n")
+    Check ($listInventory.Count -eq 2 -and $listText -match 'rt-hip\s+runtime\s' -and $listText -match 'eng-hip\s+engine\s') 'components -List lists each component, runtime kinds included'
 
     # ---- Get-FastLlmPlan: shipped recipes keep exactly the plan they always had; a component recipe plans on its component ----
     $repoRoot = Split-Path -Parent $PSScriptRoot

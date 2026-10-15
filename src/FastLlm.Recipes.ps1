@@ -100,7 +100,7 @@ function Resolve-FastLlmRecipeEngine {
     $componentRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $component
     Assert-FastLlmLeafName -Value $componentEntryPoint -Label 'Engine component entry point'
     $componentExecutable = Join-FastLlmContainedPath -Root $componentRoot -Child $componentEntryPoint -Label 'Engine component executable path'
-    $componentInstalled = [bool] ((Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $component) -and (Test-Path -LiteralPath $componentExecutable -PathType Leaf))
+    $componentInstalled = [bool] ((Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $component -Depth Presence) -and (Test-Path -LiteralPath $componentExecutable -PathType Leaf))
     return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $component.version; backend = 'vulkan'
         executable = $componentExecutable; installed = $componentInstalled; builtIn = $false }
 }
