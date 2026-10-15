@@ -27,9 +27,9 @@ Do not change the host to `0.0.0.0` without adding authentication, restrictive C
 Installers are signed with Microsoft's Azure Artifact Signing and carry a timestamp. FastLLM accepts a signature only when all of these hold:
 
 - The signer's organization is Bitworks LLC (`O=Bitworks LLC`).
-- The chain ends at Microsoft's Azure Artifact Signing root, thumbprint `F40042E2E5F7E8EF8189FED15519AECE42C3BFA2`.
+- The chain ends at the Microsoft Identity Verification Root Certificate Authority 2020, thumbprint `F40042E2E5F7E8EF8189FED15519AECE42C3BFA2`.
 - The leaf certificate carries both required EKUs: `1.3.6.1.4.1.311.97.1.0` and `1.3.6.1.4.1.311.97.990689314.800187930.133508941.234438932`.
-- The signature is timestamped, so a certificate that has since expired still verifies.
+- A certificate that is outside its validity period (`NotTimeValid` or `NotTimeNested`) is tolerated only when the signature carries a timestamp. A certificate that is still valid needs no timestamp.
 
 The pins live in `src/FastLlm.Trust.ps1`.
 
