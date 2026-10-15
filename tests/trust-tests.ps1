@@ -17,6 +17,10 @@ Check ((ConvertTo-FastLlmVersionInfoText ('2026.10.15.1' + (' ' * 40))) -ceq '20
 $tmp=Join-Path ([IO.Path]::GetTempPath()) ('trust-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   Check ((Test-FastLlmInstallIntegrity -AppRoot $tmp).status -eq 'not-installed') 'no FastLLM.cat means not-installed, not a failure'
+  Set-Content -LiteralPath (Join-Path $tmp 'RELEASE.json') -Value '{"version":"2026.10.15.1","channel":"stable"}' -Encoding ascii
+  $r=Test-FastLlmInstallIntegrity -AppRoot $tmp
+  Check ($r.status -eq 'failed' -and $r.reason -eq 'catalog-missing') 'an installed release (RELEASE.json) with no FastLLM.cat fails as catalog-missing'
+  Remove-Item -LiteralPath (Join-Path $tmp 'RELEASE.json')
   Set-Content -LiteralPath (Join-Path $tmp 'a.txt') -Value 'a' -Encoding ascii
   New-FileCatalog -Path $tmp -CatalogFilePath (Join-Path $tmp 'FastLLM.cat') -CatalogVersion 2 | Out-Null
   $r=Test-FastLlmInstallIntegrity -AppRoot $tmp
