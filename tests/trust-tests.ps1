@@ -37,7 +37,12 @@ $overrideUsers = @($productFiles | Where-Object { (Get-Content -LiteralPath $_.F
 Check ($overrideUsers.Count -eq 0) ("no product file passes a pin override or the untrusted-root switch (found: " + ($overrideUsers -join ', ') + ")")
 # doctor as a child process, against a temp copy of the entry script, src, config and tools (Windows only: doctor reads Windows state).
 # These cases assert what the install-integrity check owns; doctor's hardware, plan and inventory checks are not under test here.
-if ($env:OS -eq 'Windows_NT') {
+# doctor refuses to run elevated (by design), so these cases run only as a standard user: in the bench native gate, never on
+# the elevated hosted runner, where they print an explicit SKIP.
+$elevated = $false
+if ($env:OS -eq 'Windows_NT') { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+if ($env:OS -eq 'Windows_NT' -and $elevated) { Write-Host 'SKIP: doctor integrity child cases (doctor refuses elevation; they run as a standard user in the bench native gate)' }
+if ($env:OS -eq 'Windows_NT' -and -not $elevated) {
   function Invoke-DoctorChild([string]$AppDir, [string]$InstallRoot) {
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
