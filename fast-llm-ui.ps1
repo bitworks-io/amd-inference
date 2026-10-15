@@ -740,7 +740,8 @@ function RemoveComponentFromWindow([string]$ComponentId) {
         $view.message.Text="Removed '$ComponentId'."
     }
     catch{$view.message.Text=[string]$_.Exception.Message}
-    FillComponentsPanel
+    # Rebuilt after this Click handler returns: FillComponentsPanel disposes the clicked button, which must not happen inside its own Click.
+    [void]$view.dialog.BeginInvoke([Action]{FillComponentsPanel})
 }
 function ShowComponentsWindow {
     $dialog=New-Object Windows.Forms.Form

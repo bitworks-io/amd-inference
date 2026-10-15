@@ -204,7 +204,7 @@ function Write-FastLlmPlan {
 $operationLock = $null
 try {
     # An experimental recipe is refused before anything is planned, locked or downloaded.
-    if ($Recipe -and $Action -in @('plan', 'start', 'install')) {
+    if ($Recipe -and $Action -in @('plan', 'start', 'install', 'doctor')) {
         $gateComponents = @()
         if (Test-Path -LiteralPath $componentsFilePath -PathType Leaf) { $gateComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath) }
         Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $InstallRoot -RecipeId $Recipe -Recipes @(Read-FastLlmRecipes -Path $recipesPath) -Components $gateComponents -AcceptExperimental:$AcceptExperimental

@@ -133,11 +133,12 @@ function Assert-FastLlmExperimentalRecipeAllowed {
         [switch] $AcceptExperimental
     )
     if ([string]::IsNullOrWhiteSpace($RecipeId)) { return }
+    # Same case-insensitive id match as the recipe selection: any match that is community-experimental is gated.
     $found = $null
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if ([string] $candidate.id -ceq $RecipeId) { $found = $candidate }
+        if ([string] $candidate.id -ieq $RecipeId -and [string] $candidate.origin -ceq 'community-experimental') { $found = $candidate }
     }
-    if ($null -eq $found -or [string] $found.origin -cne 'community-experimental') { return }
+    if ($null -eq $found) { return }
     $switchValue = [string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents
     if ($switchValue -ceq 'on' -and $AcceptExperimental) { return }
     $reasons = New-Object 'System.Collections.Generic.List[string]'

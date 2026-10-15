@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA = "bitworks.fastllm-components/v1"
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
+RESERVED_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 KINDS = ("engine", "runtime", "model", "draft")
 FORMATS = ("zip", "gguf", "vendor-installer")
@@ -70,6 +71,15 @@ def safe_path(path):
     return ".." not in re.split(r"[\\/]", path)
 
 
+def leaf_problem(value):
+    """Ids and versions are folder names: no trailing dot or space, no Windows reserved device name (mirrors FastLlm.psm1)."""
+    if value.endswith((".", " ")):
+        return "must not end with a dot or a space"
+    if RESERVED_RE.match(value):
+        return "must not be a reserved Windows device name"
+    return None
+
+
 def check_manifest(label, manifest, errors):
     if not isinstance(manifest, list) or not manifest:
         errors.append(f"{label}: fileManifest must be a non-empty list")
@@ -99,6 +109,10 @@ def check_component(comp, errors):
         return
     if not isinstance(cid, str) or not ID_RE.match(cid):
         errors.append(f"{label}: id must match {ID_RE.pattern}")
+    if isinstance(cid, str) and leaf_problem(cid):
+        errors.append(f"{label}: id {leaf_problem(cid)}")
+    if isinstance(comp["version"], str) and leaf_problem(comp["version"]):
+        errors.append(f"{label}: version {leaf_problem(comp['version'])}")
     if comp["kind"] not in KINDS:
         errors.append(f"{label}: kind must be one of {KINDS}")
     for key in ("displayName", "version"):
@@ -183,9 +197,10 @@ def validate(document, catalog):
     for comp in components:
         check_component(comp, errors)
         cid = comp.get("id") if isinstance(comp, dict) else None
-        if cid in ids:
-            errors.append(f"duplicate component id {cid!r}")
-        ids.add(cid)
+        key = cid.lower() if isinstance(cid, str) else cid
+        if key in ids:
+            errors.append(f"duplicate component id {cid!r} (ids are compared case-insensitively)")
+        ids.add(key)
     for comp in components:
         if isinstance(comp, dict) and isinstance(comp.get("requires"), list):
             for req in comp["requires"]:

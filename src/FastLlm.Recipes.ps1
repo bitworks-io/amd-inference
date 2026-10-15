@@ -123,6 +123,25 @@ function Select-FastLlmRecipeForPlacements {
     # Reasons go straight into the caller's sink when there is one, so a plan keeps them even if a later step throws or no recipe is picked.
     $skipped = $SkippedSink
     if ($null -eq $skipped) { $skipped = New-Object System.Collections.Generic.List[string] }
+    # Fail closed until runtime and draft components can run: a recipe naming one would otherwise be planned without it. Skipped with a reason,
+    # or a typed failure when it was named with -Recipe.
+    $runnable = New-Object System.Collections.Generic.List[object]
+    foreach ($candidate in $usable) {
+        $unsupportedRole = $null
+        if ($candidate.PSObject.Properties['components'] -and $candidate.components) {
+            foreach ($role in @('runtime', 'draft')) {
+                $roleProperty = $candidate.components.PSObject.Properties[$role]
+                if ($roleProperty -and -not [string]::IsNullOrWhiteSpace([string] $roleProperty.Value)) { $unsupportedRole = $role; break }
+            }
+        }
+        if ($null -eq $unsupportedRole) { $runnable.Add($candidate); continue }
+        if ($RecipeId) {
+            throw (New-FastLlmEngineFailure -Code 'recipe-component-role-unsupported' -Message "Recipe '$($candidate.id)' names a $unsupportedRole component, which this release cannot run. No other recipe was substituted.")
+        }
+        $roleReason = "$($candidate.id): needs a runtime or draft component this release cannot run"
+        if (-not $skipped.Contains($roleReason)) { $skipped.Add($roleReason) }
+    }
+    $usable = $runnable.ToArray()
     # A recipe is for a card count: it applies only when gpu.count equals the number of IDENTIFIED eligible cards of that variant in this PC,
     # on the placement that uses all of them. Without the explicit list, the eligible cards are the single-card placements (as the planner builds them).
     $eligible = @($EligibleAdapters | Where-Object { $_ })

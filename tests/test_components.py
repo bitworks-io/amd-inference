@@ -59,6 +59,24 @@ class ComponentsTests(unittest.TestCase):
         for bad in ("Bad_Id", "-x", "a", "x" * 130):
             self.assertRefused(mutated(lambda c, b=bad: c.update(id=b)), "id must match")
 
+    def test_ids_are_folder_names(self):
+        for bad in ("con", "nul", "com1", "lpt9", "aux.txt", "abc."):
+            errors = self.errors(mutated(lambda c, b=bad: c.update(id=b)))
+            self.assertTrue(any("id must not" in e for e in errors), (bad, errors))
+        for bad in ("v1.", "nul", "v1 "):
+            errors = self.errors(mutated(lambda c, b=bad: c.update(version=b)))
+            self.assertTrue(any("version must not" in e for e in errors), (bad, errors))
+        for good in ("console", "com10", "abc-1.2"):
+            errors = self.errors(mutated(lambda c, g=good: c.update(id=g)))
+            self.assertFalse(any("id must not" in e for e in errors), (good, errors))
+
+    def test_ids_duplicate_case_insensitively(self):
+        doc = copy.deepcopy(GOOD)
+        twin = copy.deepcopy(doc["components"][0])
+        twin["id"] = twin["id"].upper()
+        doc["components"].append(twin)
+        self.assertRefused(doc, "duplicate")
+
     def test_enums(self):
         self.assertRefused(mutated(lambda c: c.update(kind="plugin")), "kind")
         self.assertRefused(mutated(lambda c: c["license"].update(consent="maybe")), "consent")

@@ -1138,6 +1138,9 @@ function Get-FastLlmPlan {
     $planEngineVersion = [string] $catalog.engine.version
     $planEngineComponentId = $null
     # The built-in id is recognised by name alone, so a plan on the built-in engine does no engine resolution at all.
+    if ($recipePick -and -not $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
+        throw (New-FastLlmEngineFailure -Code 'recipe-engine-needs-install-root' -Message "Recipe '$($recipePick.recipe.id)' runs on an engine component, which cannot be resolved without an install root. The built-in engine is not used instead.")
+    }
     if ($recipePick -and $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
         $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
         if (-not $resolvedEngine.builtIn) {
@@ -1301,6 +1304,36 @@ function Format-FastLlmDownloadProgress {
         }
     }
     return "$message."
+}
+
+# The curl arguments for a verified download. --disable stays the first argument (curl reads a curlrc unless -q/--disable comes first);
+# -WriteEffectiveUrl adds --write-out %{url_effective} right after it so the final host can be checked.
+function Get-FastLlmCurlArguments {
+    param([Parameter(Mandatory = $true)][string] $Url, [Parameter(Mandatory = $true)][string] $Partial, [Parameter(Mandatory = $true)][int64] $SizeBytes, [switch] $WriteEffectiveUrl)
+    $arguments = New-Object 'System.Collections.Generic.List[string]'
+    $arguments.Add('--disable')
+    if ($WriteEffectiveUrl) {
+        $arguments.Add('--write-out')
+        $arguments.Add('%{url_effective}')
+    }
+    foreach ($argument in @(
+            '--silent',
+            '--show-error',
+            '--location',
+            '--fail',
+            '--retry', '3',
+            '--connect-timeout', '30',
+            '--speed-limit', '1024',
+            '--speed-time', '60',
+            '--max-filesize', [string] $SizeBytes,
+            '--proto', '=https',
+            '--proto-redir', '=https',
+            '--continue-at', '-',
+            '--output', $Partial,
+            $Url)) {
+        $arguments.Add([string] $argument)
+    }
+    return $arguments.ToArray()
 }
 
 # Checks the final URL curl reported (--write-out %{url_effective}) against the allowed hosts. A mismatch quarantines the
@@ -1480,26 +1513,7 @@ function Save-FastLlmVerifiedFile {
                 Write-Host ([string]::Format([System.Globalization.CultureInfo]::InvariantCulture,
                     '{0} download ({1:F2}/{2:F2} GiB present); verification required. Progress updates every 10 seconds.',
                     $verb, ([double] $existingBytes / 1GB), ([double] $SizeBytes / 1GB)))
-                $curlArguments = @(
-                    '--disable',
-                    '--silent',
-                    '--show-error',
-                    '--location',
-                    '--fail',
-                    '--retry', '3',
-                    '--connect-timeout', '30',
-                    '--speed-limit', '1024',
-                    '--speed-time', '60',
-                    '--max-filesize', [string] $SizeBytes,
-                    '--proto', '=https',
-                    '--proto-redir', '=https',
-                    '--continue-at', '-',
-                    '--output', $partial,
-                    $Url
-                )
-                if ($checkRedirectHosts) {
-                    $curlArguments = @('--write-out', '%{url_effective}') + $curlArguments
-                }
+                $curlArguments = Get-FastLlmCurlArguments -Url $Url -Partial $partial -SizeBytes $SizeBytes -WriteEffectiveUrl:$checkRedirectHosts
                 $curlProcess = New-Object System.Diagnostics.Process
                 $curlStarted = $false
                 $curlExceededSize = $false
@@ -1739,6 +1753,18 @@ function Install-FastLlmEngines {
 
 # ---- Community components (C1): verified side-by-side install, inventory and removal ----
 
+# Component ids and versions become folder names. On top of the simple leaf rule: no trailing dot or space (Windows strips them, so 'abc.' and
+# 'abc' would be one folder) and no reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9), with or without an extension.
+function Assert-FastLlmComponentLeafName {
+    param([Parameter(Mandatory = $true)][string] $Value, [Parameter(Mandatory = $true)][string] $Label)
+    if ($Value.EndsWith('.') -or $Value.EndsWith(' ')) {
+        throw "$Label must not end with a dot or a space."
+    }
+    if ($Value -imatch '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$') {
+        throw "$Label must not be a reserved Windows device name."
+    }
+}
+
 function Get-FastLlmComponents {
     [CmdletBinding()]
     param(
@@ -1751,11 +1777,12 @@ function Get-FastLlmComponents {
     if ($schema -cne 'bitworks.fastllm-components/v1') {
         throw "Components file schema '$schema' is not supported."
     }
-    $seenIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $seenIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $entries = New-Object 'System.Collections.Generic.List[object]'
     foreach ($item in @($document.components)) {
         $itemId = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'id' -Label 'Component')
         Assert-FastLlmLeafName -Value $itemId -Label 'Component id'
+        Assert-FastLlmComponentLeafName -Value $itemId -Label 'Component id'
         if (-not $seenIds.Add($itemId)) {
             throw "Components file lists '$itemId' more than once."
         }
@@ -1764,7 +1791,9 @@ function Get-FastLlmComponents {
         if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft')) {
             throw "$label has an unsupported kind '$itemKind'."
         }
-        Assert-FastLlmLeafName -Value ([string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)) -Label "$label version"
+        $itemVersion = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)
+        Assert-FastLlmLeafName -Value $itemVersion -Label "$label version"
+        Assert-FastLlmComponentLeafName -Value $itemVersion -Label "$label version"
         $source = Get-FastLlmRequiredProperty -Object $item -Name 'source' -Label $label
         Assert-FastLlmHttpsUrl -Value ([string] (Get-FastLlmRequiredProperty -Object $source -Name 'url' -Label "$label source")) -Label "$label source URL"
         if ([string] (Get-FastLlmRequiredProperty -Object $source -Name 'sha256' -Label "$label source") -notmatch '^[0-9a-fA-F]{64}$') {
@@ -1994,8 +2023,11 @@ function Install-FastLlmComponent {
     if ($consentMode -ceq 'accept') {
         if (-not (Test-FastLlmComponentConsentReceipt -Component $entry -InstallRoot $InstallRoot)) {
             if (-not $AcceptLicense) {
-                throw "Component '$ComponentId' requires accepting its license ($($entry.license.url)); pass -AcceptLicense."
+                throw "Component '$ComponentId' requires accepting its license ($($entry.license.url)). To install it, run: fast-llm.ps1 components -Install $ComponentId -AcceptLicense"
             }
+            # The same lines the refusal shows, before the receipt is written, so the license is on screen when it is accepted.
+            Write-Host "Component:  $($entry.displayName) $($entry.version)"
+            Write-Host "License:    $($entry.license.spdx) ($($entry.license.url))"
             $newAcceptanceMode = 'explicit-switch'
         }
     }
@@ -2026,7 +2058,11 @@ function Install-FastLlmComponent {
     $fileName = [System.IO.Path]::GetFileName(([System.Uri] ([string] $entry.source.url)).AbsolutePath)
     Assert-FastLlmLeafName -Value $fileName -Label 'Component download file name'
     $downloadsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'downloads' -Label 'Downloads root'
-    $cachePath = Join-FastLlmContainedPath -Root $downloadsRoot -Child $fileName -Label 'Component download path'
+    # Cached per component and version, so another artifact with the same upstream file name never shares (or quarantines) this file.
+    $componentCacheRoot = Join-FastLlmContainedPath -Root $downloadsRoot -Child 'components' -Label 'Component downloads root'
+    $componentCacheRoot = Join-FastLlmContainedPath -Root $componentCacheRoot -Child ([string] $entry.id) -Label 'Component download folder'
+    $componentCacheRoot = Join-FastLlmContainedPath -Root $componentCacheRoot -Child ([string] $entry.version) -Label 'Component download folder'
+    $cachePath = Join-FastLlmContainedPath -Root $componentCacheRoot -Child $fileName -Label 'Component download path'
     $pinnedSha = ([string] $entry.source.sha256).ToLowerInvariant()
     $pinnedSize = [int64] $entry.source.sizeBytes
     & $downloader -Url ([string] $entry.source.url) -Destination $cachePath -Sha256 $pinnedSha -SizeBytes $pinnedSize -AllowedRedirectHosts ([string[]] @($entry.source.allowedRedirectHosts))

@@ -456,6 +456,8 @@ Check ($ui.Contains("`$script:FastLlmExperimentalParagraph,'Experimental communi
 Check ($ui.Contains("Set-FastLlmComponentSettings -InstallRoot `$script:settingsRoot -ExperimentalComponents 'on'") -and $ui.Contains("-ExperimentalComponents 'off'")) 'the checkbox writes the switch through Set-FastLlmComponentSettings'
 Check ($ui.Contains("ButtonAt 'Components'") -and $ui.Contains('Remove-FastLlmComponent -ComponentsPath') -and $ui.Contains("Text='Remove'") -and $ui.Contains('Get-FastLlmInstalledComponentRows')) 'a Components button lists installed components with a Remove action per row'
 Check ($ui.Contains('src/FastLlm.Components.ps1') -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Components')) 'the UI dot-sources the components script'
+$removeHandler = [regex]::Match($ui, '(?s)function RemoveComponentFromWindow.*?\r?\n\}').Value
+Check ($removeHandler.Contains('$view.dialog.BeginInvoke([Action]{FillComponentsPanel})') -and -not [regex]::IsMatch($removeHandler, '(?m)^\s*FillComponentsPanel\s*$')) 'the Components window rebuilds its panel after the Remove click returns, never disposing the clicked button inside its own Click handler'
 Check (-not $ui.Contains("'-AcceptExperimental'")) 'the window never passes -AcceptExperimental (the CLI is the path to an experimental recipe)'
 
 Write-Output "UI flow tests passed: $checks"

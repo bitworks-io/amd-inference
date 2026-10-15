@@ -91,6 +91,7 @@ function New-CopySeam([string] $Zip, [hashtable] $Counter) {
         $counterLocal.count = [int] $counterLocal.count + 1
         $counterLocal.hosts = @($AllowedRedirectHosts)
         $counterLocal.url = [string] $Url
+        $counterLocal.destination = [string] $Destination
         [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Destination)) | Out-Null
         Copy-Item -LiteralPath $zipLocal -Destination $Destination -Force
     }.GetNewClosure()
@@ -103,6 +104,8 @@ function Install-Fixture($Fixture, [string] $InstallRoot, [hashtable] $Counter, 
     if ($Unattended) { $params.Unattended = $true }
     return Install-FastLlmComponent @params
 }
+
+$moduleSourceEarly = Get-Content -LiteralPath $modulePath -Raw
 
 try {
     # ---- Exports and the shipped components.json ----
@@ -125,6 +128,37 @@ try {
     $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath $badFixture.ComponentsPath }
     Check ($null -ne $msg -and $msg -like '*Component id*') 'a components file with a traversing id is refused'
 
+    # Ids and versions are folder names: case-duplicates, trailing dot or space and reserved device names are refused.
+    function New-IdVariantFile([string] $SourceFile, [string[]] $EntryIds, [string] $EntryVersion) {
+        $variantDocument = Get-Content -LiteralPath $SourceFile -Raw | ConvertFrom-Json
+        $variantFirst = @($variantDocument.components)[0]
+        $variantList = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($variantId in $EntryIds) {
+            $variantCopy = $variantFirst | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+            $variantCopy.id = $variantId
+            if ($EntryVersion) { $variantCopy.version = $EntryVersion }
+            $variantList.Add($variantCopy)
+        }
+        $variantDocument.components = $variantList.ToArray()
+        $variantPath = Join-Path (New-TestRoot) 'components.json'
+        [System.IO.File]::WriteAllText($variantPath, (ConvertTo-Json -InputObject $variantDocument -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+        return $variantPath
+    }
+    $variantSource = (New-Fixture -Dir (Join-Path $work 'fx-variant')).ComponentsPath
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('dup-a', 'DUP-A')) }
+    Check ($null -ne $msg -and $msg -like '*more than once*') 'two ids that differ only in case are refused as duplicates'
+    foreach ($reservedId in @('con', 'NUL', 'com1', 'LPT9', 'aux.txt', 'prn')) {
+        $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @($reservedId)) }
+        Check ($null -ne $msg -and $msg -like '*reserved Windows device name*') "the reserved device name '$reservedId' is refused as a component id"
+    }
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('abc.')) }
+    Check ($null -ne $msg -and $msg -like '*Component id*end with a dot or a space*') 'an id with a trailing dot is refused'
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('abc') -EntryVersion 'v1.') }
+    Check ($null -ne $msg -and $msg -like '*version*end with a dot or a space*') 'a version with a trailing dot is refused'
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('abc') -EntryVersion 'nul') }
+    Check ($null -ne $msg -and $msg -like '*version*reserved Windows device name*') 'a reserved device name is refused as a version'
+    Check ($null -eq (Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('console', 'com10', 'abc-1.2')) })) 'ids that merely start like a device name (console, com10) are accepted'
+
     # ---- Happy install (consent: show) ----
     $fx = New-Fixture -Dir (Join-Path $work 'fx-happy')
     $installRoot = New-TestRoot
@@ -133,6 +167,8 @@ try {
     $component = @(Get-FastLlmComponents -ComponentsPath $fx.ComponentsPath)[0]
     Check ((Test-Path -LiteralPath (Join-Path $root 'server.exe')) -and (Test-Path -LiteralPath (Join-Path $root 'engine.dll'))) 'happy install: the files land in the component root'
     Check (Test-FastLlmComponentInstallation -InstallRoot $installRoot -Component $component) 'happy install: the installed root verifies against the manifest'
+    $expectedCache = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($installRoot, 'downloads', 'components', 'test-engine-1', 'v1', 'test-engine-1-v1.zip'))
+    Check ([string] $counter.destination -ceq $expectedCache) 'the component download is cached at downloads\components\<id>\<version>\<file>, never the shared downloads\<file>'
     Check ($counter.count -eq 1 -and $counter.url -eq 'https://example.com/downloads/test-engine-1-v1.zip') 'happy install: one download of the pinned URL'
     Check ((@($counter.hosts) -join ',') -eq 'example.com,cdn.example.com') 'happy install: the download receives the component allowedRedirectHosts'
     Check (-not (Test-Path -LiteralPath (Join-Path $installRoot 'consents'))) 'consent show: no receipt is written'
@@ -182,10 +218,16 @@ try {
     $counterAcc = @{ count = 0 }
     $msg = Get-ThrownMessage { Install-Fixture -Fixture $fxAcc -InstallRoot $accRoot -Counter $counterAcc }
     Check ($null -ne $msg -and $msg -like '*-AcceptLicense*' -and $counterAcc.count -eq 0) 'consent accept without -AcceptLicense is refused before any download'
+    Check ($msg -like '*fast-llm.ps1 components -Install test-engine-1 -AcceptLicense*') 'the accept refusal points at fast-llm.ps1 components -Install <id> -AcceptLicense'
     $accEntry = @(Get-FastLlmComponents -ComponentsPath $fxAcc.ComponentsPath)[0]
     $accRootPath = Install-Fixture -Fixture $fxAcc -InstallRoot $accRoot -Counter $counterAcc -AcceptLicense
     $receiptPath = Join-Path (Join-Path $accRoot 'consents') 'component-test-engine-1-v1.json'
     Check (Test-Path -LiteralPath $receiptPath -PathType Leaf) 'consent accept writes consents\component-<id>-<version>.json'
+    $accShownRoot = New-TestRoot
+    $accShown = @(Install-Fixture -Fixture $fxAcc -InstallRoot $accShownRoot -Counter @{ count = 0 } -AcceptLicense 6>&1 | ForEach-Object { [string] $_ })
+    Check (@($accShown | Where-Object { $_ -ceq 'Component:  Test engine v1 v1' }).Count -eq 1 -and @($accShown | Where-Object { $_ -ceq 'License:    MIT (https://example.com/LICENSE)' }).Count -eq 1) 'an accept-type install with -AcceptLicense prints the Component: and License: lines'
+    $installSource = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponent \{.*?\r?\n\}\r?\n').Value
+    Check ($installSource.IndexOf('Write-Host "Component:') -ge 0 -and $installSource.IndexOf('Write-Host "Component:') -lt $installSource.IndexOf('Write-FastLlmComponentConsentReceipt -Component')) 'the license lines are printed before the consent receipt is written'
     $receiptText = Get-Content -LiteralPath $receiptPath -Raw
     $receipt = $receiptText | ConvertFrom-Json
     Check ([int] $receipt.schemaVersion -eq 1 -and $receipt.id -ceq 'test-engine-1' -and $receipt.version -ceq 'v1' -and $receipt.licenseUrl -ceq 'https://example.com/LICENSE' -and $receipt.mode -ceq 'explicit-switch' -and $receiptText -match '"acceptedAt"\s*:\s*"\d{4}-\d\d-\d\dT') 'the receipt carries schemaVersion, id, version, license url, acceptedAt and mode'
@@ -200,8 +242,9 @@ try {
     $msg = Get-ThrownMessage { Install-FastLlmComponent -ComponentsPath $fxPin.ComponentsPath -ComponentId $fxPin.Id -InstallRoot $badRoot -AcceptLicense -Unattended -Download $wrongSeam }
     Check ($null -ne $msg -and $msg -like '*failed its pinned size and SHA-256*') 'a download whose bytes differ from the pins is refused'
     Check (-not (Test-Path -LiteralPath (Join-Path $badRoot 'components'))) 'hash mismatch: no component directory is created'
-    $downloadsDir = Join-Path $badRoot 'downloads'
+    $downloadsDir = [System.IO.Path]::Combine($badRoot, 'downloads', 'components', 'test-engine-1', 'v1')
     Check (@(Get-ChildItem -LiteralPath $downloadsDir -Force | Where-Object { $_.Name -like '*.corrupt.*' }).Count -eq 1 -and @(Get-ChildItem -LiteralPath $downloadsDir -Force | Where-Object { $_.Name -eq 'test-engine-1-v1.zip' }).Count -eq 0) 'hash mismatch: the bad download is quarantined, not left in place'
+    Check (@(Get-ChildItem -LiteralPath (Join-Path $badRoot 'downloads') -Force -File).Count -eq 0) 'hash mismatch: nothing is written to the shared downloads folder'
 
     # ---- Extra file in the archive: refused ----
     $fxExtra = New-Fixture -Dir (Join-Path $work 'fx-extra') -ExtraFile
@@ -238,16 +281,21 @@ try {
     $msg = Get-ThrownMessage { Install-FastLlmComponent -ComponentsPath $fxPin.ComponentsPath -ComponentId $fxPin.Id -InstallRoot $redirectRoot -AcceptLicense -Unattended -Download $redirectSeam }
     Check ($msg -like '*unlisted host*' -and -not (Test-Path -LiteralPath (Join-Path $redirectRoot 'components'))) 'install through a redirecting download is refused and creates no component directory'
 
-    # ---- Save-FastLlmVerifiedFile: curl arguments are unchanged without -AllowedRedirectHosts ----
+    # ---- Save-FastLlmVerifiedFile: curl arguments are unchanged without -AllowedRedirectHosts, and --disable is always first ----
     $moduleSource = Get-Content -LiteralPath $modulePath -Raw
-    $argumentBlock = [regex]::Match($moduleSource, '\$curlArguments = @\((?<body>.*?)\r?\n\s*\)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
-    Check $argumentBlock.Success 'the curl argument list is found in the module source'
-    $normalized = $argumentBlock.Groups['body'].Value -replace '\s+', ''
-    $expectedArguments = '''--disable'',''--silent'',''--show-error'',''--location'',''--fail'',''--retry'',''3'',''--connect-timeout'',''30'',''--speed-limit'',''1024'',''--speed-time'',''60'',''--max-filesize'',[string]$SizeBytes,''--proto'',''=https'',''--proto-redir'',''=https'',''--continue-at'',''-'',''--output'',$partial,$Url'
-    Check ($normalized -ceq $expectedArguments) 'the curl argument literal is byte-for-byte what it was before -AllowedRedirectHosts'
-    Check ([regex]::Matches($moduleSource, "'--write-out'").Count -eq 1) 'the quoted --write-out curl argument appears exactly once in the module (comments excluded)'
-    Check ($moduleSource -cmatch '(?s)if \(\$checkRedirectHosts\) \{\s*\$curlArguments = @\(''--write-out'', ''%\{url_effective\}''\) \+ \$curlArguments\s*\}') '--write-out is added only inside the -AllowedRedirectHosts branch'
+    $curlPlain = @(& $module { Get-FastLlmCurlArguments -Url 'https://example.test/f.zip' -Partial 'C:\d\f.zip.partial' -SizeBytes 1234 })
+    $curlChecked = @(& $module { Get-FastLlmCurlArguments -Url 'https://example.test/f.zip' -Partial 'C:\d\f.zip.partial' -SizeBytes 1234 -WriteEffectiveUrl })
+    $curlExpected = @('--disable', '--silent', '--show-error', '--location', '--fail', '--retry', '3', '--connect-timeout', '30', '--speed-limit', '1024',
+        '--speed-time', '60', '--max-filesize', '1234', '--proto', '=https', '--proto-redir', '=https', '--continue-at', '-',
+        '--output', 'C:\d\f.zip.partial', 'https://example.test/f.zip')
+    Check (($curlPlain -join "`n") -ceq ($curlExpected -join "`n")) 'the curl arguments without -WriteEffectiveUrl are exactly what they were before -AllowedRedirectHosts'
+    Check ($curlPlain[0] -ceq '--disable' -and $curlChecked[0] -ceq '--disable') 'curl --disable is the first argument with and without -WriteEffectiveUrl'
+    Check ($curlChecked.Count -eq $curlPlain.Count + 2 -and $curlChecked[1] -ceq '--write-out' -and $curlChecked[2] -ceq '%{url_effective}') '-WriteEffectiveUrl adds exactly --write-out %{url_effective}'
+    $curlWithoutWriteOut = @($curlChecked[0]) + @($curlChecked[3..($curlChecked.Count - 1)])
+    Check (($curlWithoutWriteOut -join "`n") -ceq ($curlPlain -join "`n")) 'the only difference with -WriteEffectiveUrl is the two --write-out elements'
     Check ($moduleSource -cmatch '\$checkRedirectHosts = \$PSBoundParameters\.ContainsKey\(''AllowedRedirectHosts''\)') 'the redirect check is keyed on the parameter being bound'
+    Check ($moduleSource -cmatch 'Get-FastLlmCurlArguments -Url \$Url -Partial \$partial -SizeBytes \$SizeBytes -WriteEffectiveUrl:\$checkRedirectHosts') 'the curl arguments are built by the helper, with the write-out switch keyed on the redirect check'
+    Check ($moduleSource -cmatch 'Assert-FastLlmDownloadHost -EffectiveUrl \$effectiveUrl') 'Save-FastLlmVerifiedFile still checks the effective URL host after curl'
 
     # ---- Signer subject matching ----
     Check (& $module { Test-FastLlmSignerSubject -Subject 'CN=Vendor Inc, O=Vendor Inc, C=US' -Signer 'Vendor Inc' }) 'signer: the subject CN matches'
@@ -455,6 +503,16 @@ try {
     Check ($mismatchPlan.recipe.origin -ceq 'estimated' -and -not $mismatchPlan.PSObject.Properties['engineComponentId']) 'a recipe whose engineBuild is not its component version is skipped (estimated plan)'
     Check (@($mismatchPlan.recipe.skipped | Where-Object { $_ -like 'fixture.component-engine: engine build differs' }).Count -eq 1) 'the skipped list says the engine build differs'
 
+    # A component recipe cannot be planned without an install root: typed failure, no silent plan on the built-in engine path.
+    $noRootParams = @{} + $componentPlanParams
+    $noRootParams.Remove('InstallRoot')
+    $noRootFailure = $null
+    try { Get-FastLlmPlan @noRootParams | Out-Null } catch { $noRootFailure = $_.Exception }
+    Check ($null -ne $noRootFailure -and $noRootFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-needs-install-root') 'a component-engine recipe planned without -InstallRoot fails typed with recipe-engine-needs-install-root'
+    $builtInNoRootParams = @{ Hardware = $xtxHardware; CatalogPath = $shippedCatalogPath; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    $builtInNoRoot = Get-FastLlmPlan @builtInNoRootParams
+    Check ($builtInNoRoot.recipe.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' -and -not $builtInNoRoot.PSObject.Properties['engineComponentId']) 'a built-in-engine recipe still plans without -InstallRoot'
+
     # ---- Experimental switch, CLI components action and the experimental gate (src/FastLlm.Components.ps1; entry scripts only) ----
     . (Join-Path $PSScriptRoot '../src/FastLlm.Components.ps1')
     $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -521,6 +579,8 @@ try {
     Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -RecipeId 'b1' -Recipes $gateRecipes -Components $gateComponents })) 'a Bitworks recipe passes with the switch off'
     Check ($null -ne (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents })) 'an experimental recipe with the switch off and no acceptance is refused'
     Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -Recipes $gateRecipes -Components $gateComponents })) 'no -Recipe means no gate'
+    Check ($null -ne (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -RecipeId 'E1' -Recipes $gateRecipes -Components $gateComponents })) "an experimental recipe named in another case ('E1' for 'e1') is refused, as the recipe selection matches case-insensitively"
+    Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -RecipeId 'B1' -Recipes $gateRecipes -Components $gateComponents })) "a Bitworks recipe named in another case still passes"
 
     # An installed experimental component with the switch off: its recipes stay hidden and nothing auto-selects it.
     . (Join-Path $repoRoot 'src/FastLlm.CardIdentity.ps1')
@@ -536,6 +596,26 @@ try {
     $autoOff = Select-FastLlmRecipeForPlacements -Recipes @($autoRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced'
     $autoOn = Select-FastLlmRecipeForPlacements -Recipes @($autoRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced' -IncludeExperimental
     Check ($null -eq $autoOff -and $null -eq $autoOn) 'an experimental recipe is never auto-selected, with the switch off or on'
+    # Positive control: the same recipe from Bitworks IS picked under the same inputs, so the null above is about the origin and not the inputs.
+    $autoBitworks = $autoRecipe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $autoBitworks.origin = 'bitworks'
+    $autoControl = Select-FastLlmRecipeForPlacements -Recipes @($autoBitworks) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced'
+    Check ($null -ne $autoControl -and $autoControl.recipe.id -ceq 'e1') 'the same recipe with origin bitworks is picked under the same inputs'
+
+    # Runtime and draft components cannot run in this release: skipped with a reason, and a typed failure when named.
+    foreach ($unsupportedRole in @('runtime', 'draft')) {
+        $roleRecipe = $autoBitworks | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $roleRecipe.components | Add-Member -NotePropertyName $unsupportedRole -NotePropertyValue "$unsupportedRole-1"
+        $roleSink = New-Object 'System.Collections.Generic.List[string]'
+        $roleAuto = Select-FastLlmRecipeForPlacements -Recipes @($roleRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced' -SkippedSink $roleSink
+        Check ($null -eq $roleAuto -and @($roleSink | Where-Object { $_ -like '*needs a runtime or draft component this release cannot run' }).Count -eq 1) "a recipe naming a $unsupportedRole component is skipped with the reason"
+        $roleFailure = $null
+        try { Select-FastLlmRecipeForPlacements -Recipes @($roleRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced' -RecipeId 'e1' | Out-Null } catch { $roleFailure = $_.Exception }
+        Check ($null -ne $roleFailure -and $roleFailure.Data['FastLlmFailureCode'] -ceq 'recipe-component-role-unsupported' -and $roleFailure.Message -like "*$unsupportedRole*") "naming a recipe with a $unsupportedRole component throws recipe-component-role-unsupported naming the role"
+    }
+    $emptyRoleRecipe = $autoBitworks | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $emptyRoleRecipe.components | Add-Member -NotePropertyName 'draft' -NotePropertyValue ''
+    Check ($null -ne (Select-FastLlmRecipeForPlacements -Recipes @($emptyRoleRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced')) 'an empty draft role does not block a recipe'
 
     # Listing format.
     $listRows = @(
@@ -607,7 +687,7 @@ try {
     Check ($cliText.Contains("'update-check', 'update', 'components')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense and -AcceptExperimental'
     Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
     $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
-    Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install')")) 'the experimental gate runs for plan, start and install before the operation lock'
+    Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
     $assignedNames = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
     # InstallRoot (default resolution) and DeviceBinding (lower-casing) are the two pre-existing, deliberate assignments to a parameter.
