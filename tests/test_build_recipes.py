@@ -31,6 +31,15 @@ def repro(gen, prompt):
     return {"resultId": "res-1", "batchManifestSha256": "ab" * 32, "measuredAt": "2026-10-14", "generationTokS": gen, "promptTokS": prompt}
 
 
+HIP_COMPONENTS = {"components": [
+    {"id": "llama.cpp-b10698-vulkan", "kind": "engine", "version": "b10698", "platform": {"backend": "vulkan"}},
+    {"id": "llama.cpp-hip-b11658", "kind": "engine", "version": "b11658", "platform": {"backend": "hip"}, "requires": ["amd-rt"]},
+    {"id": "amd-rt", "kind": "runtime", "version": "10.0.0"}]}
+HIP_ENTRY = {"id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip", "origin": "bitworks-experimental", "variant": "rx-7900-xtx", "gpuCount": 1,
+             "model": "qwen3.8-27b-ud-q4-k-m", "components": {"engine": "llama.cpp-hip-b11658"}, "engineBuild": "b11658",
+             "runtime": {"contextSize": 32768, "cacheTypeK": "f16", "cacheTypeV": "f16"}}
+
+
 class RecipeBuilderTests(unittest.TestCase):
     def tree(self, entries=None, records=None):
         root = Path(tempfile.mkdtemp())
@@ -292,6 +301,78 @@ class RecipeBuilderTests(unittest.TestCase):
     def test_repo_recipes_are_current(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--check"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def hip_tree(self, entry=None, comps=None, entries=None):
+        root = self.tree(entries if entries is not None else [ENTRY])
+        (root / "config" / "components.json").write_text(json.dumps(comps or HIP_COMPONENTS))
+        (root / "data" / "bitworks-experimental-recipes.json").write_text(json.dumps(
+            {"schema": "bitworks.fastllm-bitworks-experimental-recipes/v1", "entries": [entry or copy.deepcopy(HIP_ENTRY)]}))
+        return root
+
+    def test_bitworks_experimental_is_accepted_without_evidence(self):
+        document, skipped = br.build(self.hip_tree())
+        self.assertEqual(skipped, [])
+        recipe = [r for r in document["recipes"] if r["origin"] == "bitworks-experimental"][0]
+        self.assertEqual(recipe["label"], "Experimental Bitworks setup, not yet measured by Bitworks on this card")
+        self.assertEqual(recipe["components"], {"engine": "llama.cpp-hip-b11658", "model": "qwen3.8-27b-ud-q4-k-m"})
+        self.assertEqual(recipe["engineBuild"], "b11658")
+        self.assertIs(recipe["recommended"], False)
+        self.assertEqual((recipe["expected"], recipe["evidence"], recipe["source"], recipe["compelling"]), (None, None, None, None))
+        self.assertNotIn("vulkanBarMitigation", recipe["runtime"])
+        self.assertIn("data/bitworks-experimental-recipes.json", document["inputs"])
+        # The existing Bitworks recipe is unchanged, and the experimental one is not a baseline for the compelling rule.
+        self.assertEqual([r["origin"] for r in document["recipes"]], ["bitworks", "bitworks-experimental"])
+
+    def test_bitworks_experimental_refuses_recommended(self):
+        for value in (True, 1, "yes"):
+            with self.subTest(value=value):
+                entry = copy.deepcopy(HIP_ENTRY); entry["recommended"] = value
+                with self.assertRaisesRegex(br.RecipeError, "recommended is for verified Bitworks recipes only"):
+                    br.build(self.hip_tree(entry))
+        entry = copy.deepcopy(HIP_ENTRY); entry["recommended"] = False
+        br.build(self.hip_tree(entry))
+
+    def test_bitworks_experimental_components_must_all_be_listed(self):
+        no_hip = {"components": [HIP_COMPONENTS["components"][0]]}
+        no_runtime = {"components": HIP_COMPONENTS["components"][:2]}
+        wrong_kind = {"components": [HIP_COMPONENTS["components"][0], dict(HIP_COMPONENTS["components"][1], kind="runtime"), HIP_COMPONENTS["components"][2]]}
+        wrong_version = {"components": [HIP_COMPONENTS["components"][0], dict(HIP_COMPONENTS["components"][1], version="b1"), HIP_COMPONENTS["components"][2]]}
+        for label, comps in (("engine unlisted", no_hip), ("required runtime unlisted", no_runtime), ("engine of the wrong kind", wrong_kind), ("engine version differs", wrong_version)):
+            with self.subTest(label):
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.hip_tree(comps=comps))
+        entry = copy.deepcopy(HIP_ENTRY); entry["components"]["runtime"] = "missing"
+        with self.assertRaises(br.RecipeError):
+            br.build(self.hip_tree(entry))
+        entry = copy.deepcopy(HIP_ENTRY); entry["components"]["runtime"] = "amd-rt"
+        shipped = [r for r in br.build(self.hip_tree(entry))[0]["recipes"] if r["origin"] == "bitworks-experimental"][0]
+        self.assertEqual(shipped["components"]["runtime"], "amd-rt")
+
+    def test_bitworks_experimental_needs_components_json_and_a_clean_entry(self):
+        root = self.hip_tree()
+        (root / "config" / "components.json").unlink()
+        with self.assertRaises(br.RecipeError):
+            br.build(root)
+        for key, value in (("variant", "rx-9999"), ("model", "missing-model"), ("gpuCount", 3), ("origin", "bitworks"), ("id", "Bad Id"),
+                           ("expected", {"generationTokS": 30}), ("evidence", {"url": "https://bitworks.io/x"}), ("source", {"author": "a"})):
+            with self.subTest(key=key):
+                entry = copy.deepcopy(HIP_ENTRY); entry[key] = value
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.hip_tree(entry))
+        for field, value in (("contextSize", 65536), ("parallel", 2), ("cacheTypeK", "--evil"), ("fitTargetMiB", 0), ("vulkanBarMitigation", "auto")):
+            with self.subTest(field=field):
+                entry = copy.deepcopy(HIP_ENTRY); entry["runtime"][field] = value
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.hip_tree(entry))
+
+    def test_the_existing_origins_are_unchanged_by_bitworks_experimental(self):
+        # Without the experimental file the output is exactly what it was, and the community file still refuses the new origin.
+        document, _ = br.build(self.tree([ENTRY]))
+        self.assertNotIn("data/bitworks-experimental-recipes.json", document["inputs"])
+        self.assertEqual([r["origin"] for r in document["recipes"]], ["bitworks"])
+        record = community("bitworks-experimental", generationTokS=40.0)
+        with self.assertRaises(br.RecipeError):
+            br.build(self.tree([ENTRY], [record]))
 
 
 if __name__ == "__main__":

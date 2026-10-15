@@ -24,15 +24,15 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]')}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
         param($S)
         $script:startTestState=$S
         function script:Assert-FastLlmWindowsPrerequisites { }
-        function script:Test-FastLlmEngineInstallation { return $true }
-        function script:Test-FastLlmComponentInstallation { param($InstallRoot,$Component) $script:startTestState.events.Add('component-check');return $script:startTestState.componentOk }
+        function script:Test-FastLlmEngineInstallation { $script:startTestState.engineChecks++;return $true }
+        function script:Test-FastLlmComponentInstallation { param($InstallRoot,$Component,$Depth) $script:startTestState.events.Add('component-check');$script:startTestState.componentCalls.Add(([string]$Component.id)+':'+[string]$Depth);if([string]$Component.id -ceq $script:startTestState.failComponent){return $false};return $script:startTestState.componentOk }
         function script:Install-FastLlmComponent { param($ComponentsPath,$ComponentId,$InstallRoot) $script:startTestState.events.Add('INSTALL-COMPONENT');return $null }
         function script:Test-FastLlmFileHash { $script:startTestState.events.Add('hash');return $script:startTestState.hash }
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
@@ -99,7 +99,7 @@ try {
         Check ($reason -eq 'PlanChanged' -and -not $state.events.Contains('supervisor')) "changed model $property cannot reach native launch"
         $fresh.model.$property=$original
     }
-    # Final review M9: a measured (recipe-origin) plan whose start re-plan lost the card identity or the recipe must re-plan, never run as estimated.
+    # A measured (recipe-origin) plan whose start re-plan lost the card identity or the recipe must re-plan, never run as estimated.
     $savedRecipe=$plan.recipe;$savedFreshRecipe=$fresh.recipe
     $plan.recipe=[pscustomobject]@{id='r1';origin='bitworks';label='Measured by Bitworks on this card'}
     $fresh.recipe=[pscustomobject]@{id=$null;origin='estimated';label='Estimated for your card'}
@@ -129,7 +129,7 @@ try {
     Check ($caught -and -not $state.events.Contains('supervisor')) 'missing consent cannot reach native launch'
     $state.consent=$true
 
-    # Engine component plans (Task 3): the verified component executable is what runs; a missing component is a typed failure, with no install and no fallback.
+    # Engine component plans: the verified component executable is what runs; a missing component is a typed failure, with no install and no fallback.
     $shippedComponents=@(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
     $componentEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq 'llama.cpp-b10698-vulkan' })[0]
     $componentExe=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $componentEntry) ([string]$componentEntry.entryPoint)
@@ -150,6 +150,58 @@ try {
     try{Start-FastLlmServer -Plan $wrongExe -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match 'does not match the verified installed engine'}
     Check ($caught -and -not $state.events.Contains('supervisor')) 'a component plan that points at the built-in engine instead is refused before launch'
     $state.fresh=$savedFresh;$state.componentOk=$true;$state.events.Clear()
+
+    # ---- a HIP component plan. Start order: no built-in engine check and no catalog asset check; every component in the chain verified (Full), the first
+    # failure named; the resolved backend must equal the plan backend; device binding enforce is refused before anything runs. ----
+    $hipEngineEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq 'llama.cpp-hip-b11658' })[0]
+    $hipExe=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $hipEngineEntry) ([string]$hipEngineEntry.entryPoint)
+    $hipPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $hipPlan.enginePath=$hipExe;$hipPlan.backend='hip'
+    $hipPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-hip-b11658'
+    $hipPlan | Add-Member -NotePropertyName runtimeRoots -NotePropertyValue @('C:\rt\bin')
+    $freshHip=$hipPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $state.fresh=$freshHip;$state.componentOk=$true;$state.failComponent='';$state.events.Clear();$state.componentCalls.Clear();$state.observed=$null;$engineChecksBefore=$state.engineChecks
+    $result=Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp
+    Check ($result -eq 0 -and $state.events.Contains('supervisor') -and $state.observed.backend -ceq 'hip' -and $state.observed.enginePath -ceq $hipExe) 'a HIP component plan launches on the component executable with backend hip, although the catalog rocm asset is disabled'
+    Check ($state.engineChecks -eq $engineChecksBefore) 'the verification inside Start-FastLlmServer for a HIP component plan never runs the built-in engine installation check (the hardware probe of the re-plan is separate)'
+    Check (($state.componentCalls -join ',') -ceq 'amd-rocm-gfx1100-10.0.0:Full,llama.cpp-hip-b11658:Full') 'a HIP start verifies the runtime and then the engine, each at Depth Full'
+    $state.fresh=$savedFresh;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.engineChecks -eq $engineChecksBefore + 1) 'positive control: a built-in (non-component) plan still runs the built-in engine installation check exactly once'
+    foreach($missingCase in @(@{id='amd-rocm-gfx1100-10.0.0';expected='amd-rocm-gfx1100-10.0.0'},@{id='llama.cpp-hip-b11658';expected='llama.cpp-hip-b11658'})){
+        $state.fresh=$freshHip;$state.failComponent=$missingCase.id;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks;$code=$null;$message='';$named=$null;$unavailableNamed=$null
+        try{Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode'];$message=$_.Exception.Message;$named=$_.Exception.Data['FastLlmComponentId'];$unavailableNamed=$_.Exception.Data['FastLlmUnavailableComponentId']}
+        Check ($code -ceq 'needs-setup-component-missing' -and $named -ceq 'llama.cpp-hip-b11658' -and $unavailableNamed -ceq $missingCase.expected -and $message -like "*'$($missingCase.expected)'*" -and -not $state.events.Contains('supervisor') -and -not $state.events.Contains('hash') -and -not $state.events.Contains('INSTALL-COMPONENT') -and $state.engineChecks -eq $engineChecksBefore) "a HIP start whose $($missingCase.id) fails its check is needs-setup-component-missing naming it (the install target stays the engine), before any hash, install, probe or launch"
+    }
+    $state.failComponent='amd-rocm-gfx1100-10.0.0';$state.componentCalls.Clear()
+    try{Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{}
+    Check (($state.componentCalls -join ',') -ceq 'amd-rocm-gfx1100-10.0.0:Full') 'the chain stops at the first failing component (the runtime), so the engine is not reported as the cause'
+    $state.failComponent=''
+    # Backend mismatch: the plan backend must equal the resolved engine component's backend, in both directions.
+    foreach($mismatch in @(@{label='a Vulkan plan on the HIP engine component';backend='Vulkan';component='llama.cpp-hip-b11658'},@{label='a hip plan on the Vulkan engine component';backend='hip';component='llama.cpp-b10698-vulkan'})){
+        $mismatchPlan=$componentPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $mismatchPlan.backend=$mismatch.backend;$mismatchPlan.engineComponentId=$mismatch.component
+        $mismatchEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq $mismatch.component })[0]
+        $mismatchPlan.enginePath=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $mismatchEntry) ([string]$mismatchEntry.entryPoint)
+        $state.fresh=$mismatchPlan;$state.events.Clear();$code=$null
+        try{Start-FastLlmServer -Plan $mismatchPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode']}
+        Check ($code -ceq 'recipe-engine-backend-mismatch' -and -not $state.events.Contains('supervisor') -and -not $state.events.Contains('hash')) "$($mismatch.label) is refused as recipe-engine-backend-mismatch before any hash or launch"
+    }
+    # A hip plan with no engine component is not a thing: it stays refused (and never reaches the catalog rocm asset).
+    $bareHip=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $bareHip.backend='hip';$state.fresh=$bareHip;$state.events.Clear();$caught=$false
+    try{Start-FastLlmServer -Plan $bareHip -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match "unknown backend 'hip'"}
+    Check ($caught -and -not $state.events.Contains('supervisor')) 'a hip plan without an engine component is refused'
+    # Device binding is Vulkan-only: enforce is refused before any check, record and off are not.
+    $state.fresh=$freshHip;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks;$code=$null;$reason=$null;$message=''
+    try{Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding enforce | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode'];$reason=$_.Exception.Data['FastLlmReason'];$message=$_.Exception.Message}
+    Check ($code -ceq 'device-binding-unsupported-backend' -and $reason -ceq 'DeviceBindingFailed' -and $message -like 'device-binding-unsupported-backend:*' -and $state.events.Count -eq 0 -and $state.componentCalls.Count -eq 0 -and $state.engineChecks -eq $engineChecksBefore) '-DeviceBinding enforce on a HIP plan is device-binding-unsupported-backend (never recovered), before any verification or launch'
+    foreach($allowed in @('record','off')){
+        $state.events.Clear();$state.observed=$null;$state.supervisorBinding=$null
+        $allowedResult=Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding $allowed
+        Check ($allowedResult -eq 0 -and $state.events.Contains('supervisor')) "-DeviceBinding $allowed on a HIP plan still starts"
+    }
+    $state.fresh=$savedFresh;$state.componentOk=$true;$state.failComponent='';$state.events.Clear()
 
     # ================= fast-llm.ps1 start -NoDownload: every acquisition path is blocked with a typed failure code =================
     # The real 'start' branch of fast-llm.ps1 is extracted from its AST and run with every I/O boundary replaced by a recorder, so no
@@ -177,7 +229,10 @@ try {
     function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId)
         $script:nd.log.Add('plan');$script:nd.planCalls++;$script:nd.requestedModelIds.Add([string]$ModelId)
         if($script:nd.planFailure){throw $script:nd.planFailure}
-        return [pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}} }
+        $ndPlan=[pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}}
+        if($script:ndPlanComponent){$ndPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-hip-b11658'}
+        if($script:ndPlanHip){$ndPlan | Add-Member -NotePropertyName backend -NotePropertyValue 'hip'}
+        return $ndPlan }
     function Write-FastLlmPlan { param($Plan) }
     function Test-FastLlmModelConsentReceipt { param($Model,$InstallRoot) $script:nd.log.Add('consent-check');return $script:nd.consent }
     function Install-FastLlmModel { param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:nd.log.Add('INSTALL-MODEL');Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true;return $ndModel }
@@ -198,13 +253,15 @@ try {
         }
         return 0 }
     $script:ndDeviceBinding='off'
+    $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false;$script:ndBar='auto';$script:ndHost=New-Object 'Collections.Generic.List[string]'
     $script:ndUnattended=$true
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='auto';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
-        $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
+        $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
+        function Write-Host { $script:ndHost.Add(($args -join ' ')) }
         try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
         return $failure
     }
@@ -303,6 +360,34 @@ try {
     Reset-Nd; $script:nd.consent=$false
     $f=Invoke-NdStart $false
     Check ($null -ne $f -and $null -eq (Get-NdCode $f) -and $script:nd.log.Contains('INSTALL-MODEL')) 'default start, no consent receipt: still provisions (and the failure carries no typed -NoDownload code)'
+
+    # -- a plan on an engine component (HIP) never recovers onto another recipe or engine, whatever the user typed; a built-in Vulkan recipe start keeps its recovery
+    foreach($componentCase in @(
+            @{label='a component-engine plan, no -Recipe, self-test failure';recipe=$null;component=$true;queued=@{reason='RuntimeCheckFailed';code='self-test-failed'};code='self-test-failed'},
+            @{label='a component-engine plan with -Recipe, load timeout (no code)';recipe='fixture.hip-recipe';component=$true;queued='RuntimeCheckFailed';code=$null},
+            @{label='a hip-backend plan with -Recipe, self-test failure';recipe='fixture.hip-recipe';component=$false;hipBackend=$true;queued=@{reason='RuntimeCheckFailed';code='self-test-failed'};code='self-test-failed'})){
+        Reset-Nd; $script:ndRecipe=$componentCase.recipe; $script:ndPlanComponent=$componentCase.component; $script:ndPlanHip=$componentCase.ContainsKey("hipBackend"); $script:nd.startQueue.Enqueue($componentCase.queued)
+        $f=Invoke-NdStart $false
+        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and (Get-NdCode $f) -ceq $componentCase.code -and -not $script:nd.log.Contains('recovery-plan') -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "$($componentCase.label): rethrown with its own code, no model recovery, re-plan or substitution"
+    }
+    $script:ndPlanComponent=$false;$script:ndPlanHip=$false
+    foreach($vulkanRecipe in @($null,'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k')){
+        Reset-Nd; $script:ndRecipe=$vulkanRecipe; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+        $f=Invoke-NdStart $false
+        $recipeLabel=if($vulkanRecipe){'a UI-forwarded Vulkan -Recipe'}else{'an auto-selected'}
+        Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan') -and $script:nd.requestedModelIds[$script:nd.requestedModelIds.Count-1] -ceq 'other-model') "$recipeLabel built-in Vulkan start: a runtime failure still recovers exactly as before"
+    }
+    $script:ndRecipe=$null
+    Check ($cliSource.Contains('$planOnEngineComponent') -and $cliSource.Contains('-not $planOnEngineComponent -and -not $NoDownload -and -not $recoveryAttempted') -and -not $cliSource.Contains('-not $selectionOptions.RecipeId')) 'fast-llm.ps1 keys the recovery guard on the plan (engine component or hip backend), not on the typed -Recipe'
+
+    # -- an explicit -VulkanBarMitigation on|off with a HIP plan is not silently ignored (one line); Vulkan plans and the auto default print nothing
+    $barLine='Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
+    foreach($barCase in @(@{bar='on';hip=$true;expect=1},@{bar='off';hip=$true;expect=1},@{bar='auto';hip=$true;expect=0},@{bar='on';hip=$false;expect=0})){
+        Reset-Nd; $script:ndBar=$barCase.bar; $script:ndPlanHip=$barCase.hip; $script:ndHost.Clear()
+        $f=Invoke-NdStart $false
+        Check ($null -eq $f -and @($script:ndHost | Where-Object { $_ -ceq $barLine }).Count -eq $barCase.expect) "-VulkanBarMitigation $($barCase.bar) with a $(if($barCase.hip){'HIP'}else{'Vulkan'}) plan prints the not-applicable line $($barCase.expect) time(s)"
+    }
+    $script:ndBar='auto';$script:ndPlanHip=$false
 
     # -- update-check / update: argument validation and the cached notice wiring (static; no PowerShell can run a real start here)
     $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]

@@ -448,7 +448,7 @@ try {
             $r=ResolveAt 'auto' (CachePlan '32.0.2') $cacheRoot
             Check ($r.detectionCache -eq 'hit' -and $r.sleepDeltaSource -ceq $pathName) "the $pathName entry is a cache hit"
         }
-        # N1: an entry written by the other sleep path is a MISS (never reused, never invalidated), and is replaced by the current path's entry.
+        # An entry written by the other sleep path is a MISS (never reused, never invalidated), and is replaced by the current path's entry.
         $sleepBox.source='interrupt-time'
         Remove-Item -LiteralPath $cachePath -Force -ErrorAction SilentlyContinue
         $r=ResolveAt 'auto' (CachePlan '32.0.2') $cacheRoot
@@ -536,7 +536,7 @@ try {
         $d=Get-FastLlmVulkanMemoryDiagnostic -AdapterNames @($XTX) -Backend 'Vulkan' -Probe -Adapters @((CachePlan).selectedAdapters)
         $d2=Get-FastLlmVulkanMemoryDiagnostic -AdapterNames @($XTX) -Backend 'Vulkan'
         Check ($d.detectorVersion -ceq 'rebar-heap-layout-v2' -and $d.rebarDetected -eq 'rebar-off' -and $d2.rebarDetected -eq 'not-probed' -and -not (Test-Path -LiteralPath $coldRoot)) 'doctor reports the detector version; its opt-in probe is never cached and creates nothing'
-        # ---- M2: a corrupted detector cache can never fail a start; every field is validated, never cast ----
+        # ---- A corrupted detector cache can never fail a start; every field is validated, never cast ----
         $corruptPath=Join-Path (Join-Path $corruptRoot 'state') 'vulkan-rebar-detection-cache.json'
         $probe.report=$xtxHost;$probe.calls=0
         $r=ResolveAt 'auto' (CachePlan) $corruptRoot
@@ -1022,11 +1022,18 @@ Write-Host $doctorTiming
 
 # ---- static guards: default path, ordering, catalog, CLI ----
 $runtimeSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Runtime.ps1') -Raw
-$pathIndex=$runtimeSource.IndexOf("`$info.EnvironmentVariables['PATH']")
-$setIndex=$runtimeSource.IndexOf('$script:FastLlmVulkanBarMitigationVariable] =')
-$clearIndex=$runtimeSource.IndexOf('Test-FastLlmEnvironmentNameRequiresClearing $name')
+# The child environment is built by Get-FastLlmEngineEnvironment (scrub, then PATH, then the BAR variable) and applied by
+# Initialize-FastLlmEngineStartInfo (removals before sets), which the launch calls before it starts the child.
+$envBuilderIndex=$runtimeSource.IndexOf('function Get-FastLlmEngineEnvironment')
+$clearIndex=$runtimeSource.IndexOf('Test-FastLlmEnvironmentNameRequiresClearing -Name',$envBuilderIndex)
+$pathIndex=$runtimeSource.IndexOf("`$set['PATH'] =",$envBuilderIndex)
+$setIndex=$runtimeSource.IndexOf('$set[$script:FastLlmVulkanBarMitigationVariable] =',$envBuilderIndex)
+$applyIndex=$runtimeSource.IndexOf('function Initialize-FastLlmEngineStartInfo')
+$applyRemoveIndex=$runtimeSource.IndexOf('$StartInfo.EnvironmentVariables.Remove($name)',$applyIndex)
+$applySetIndex=$runtimeSource.IndexOf('$StartInfo.EnvironmentVariables[[string] $name] =',$applyIndex)
+$launchApplyIndex=$runtimeSource.IndexOf('Initialize-FastLlmEngineStartInfo -StartInfo $info')
 $startIndex=$runtimeSource.IndexOf('$hostProcess.Start($info)')
-Check ($clearIndex -gt 0 -and $clearIndex -lt $setIndex -and $pathIndex -lt $setIndex -and $setIndex -lt $startIndex) 'the mitigation variable is set after sanitisation and before the child starts'
+Check ($envBuilderIndex -gt 0 -and $clearIndex -gt $envBuilderIndex -and $clearIndex -lt $pathIndex -and $pathIndex -lt $setIndex -and $setIndex -lt $applyIndex -and $applyRemoveIndex -gt $applyIndex -and $applyRemoveIndex -lt $applySetIndex -and $launchApplyIndex -gt 0 -and $launchApplyIndex -lt $startIndex) 'the mitigation variable is set after sanitisation and before the child starts'
 Check ($runtimeSource.Contains("`$state.vulkanMemoryPolicy.effective -eq 'on'")) 'only the resolved effective decision can set the variable'
 $readyIndex=$runtimeSource.IndexOf("Write-Host `"Ready:")
 $canaryIndex=$runtimeSource.IndexOf('Invoke-FastLlmThroughputCanary -BaseUrl')
@@ -1040,7 +1047,7 @@ Check ($runtimeSource.Contains("reason -eq 'engine-not-verified'") -and $runtime
 Check ($runtimeSource.Contains("requested -eq 'auto' -and `$state.vulkanMemoryPolicy.reason -eq 'rebar-unknown-no-mitigation'") -and $runtimeSource.Contains('did not run or was inconclusive; no mitigation was applied')) 'auto with a failed or inconclusive check prints one console line; policy off prints none'
 Check ($policySource -notmatch '(?i)timed\? \?out\|') 'canary timeout detection never inspects message text'
 $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
-Check ($cli -match "(?s)\[ValidateSet\('off', 'on', 'auto'\)\]\s*\[string\] \`$VulkanBarMitigation = 'auto'" -and $cli -match '\[switch\] \$ThroughputCanary' -and $cli -match '\[switch\] \$ProbeVulkanMemory') 'the CLI mitigation default is auto (owner decision 12); the canary and doctor probe stay opt-in'
+Check ($cli -match "(?s)\[ValidateSet\('off', 'on', 'auto'\)\]\s*\[string\] \`$VulkanBarMitigation = 'auto'" -and $cli -match '\[switch\] \$ThroughputCanary' -and $cli -match '\[switch\] \$ProbeVulkanMemory') 'the CLI mitigation default is auto; the canary and doctor probe stay opt-in'
 Check ($cli.Contains('$startPolicyOptions.VulkanBarMitigation = $VulkanBarMitigation') -and -not $cli.Contains('ContainsKey(''VulkanBarMitigation'')) { $startPolicyOptions')) 'the CLI always forwards the mitigation policy to the start, so the auto default reaches it'
 Check ($runtimeSource.Contains('Write-Host $guidance') -and $runtimeSource.Contains('$guidance = "Resizable BAR (AMD Smart Access Memory) appears to be off on this PC. FastLLM applied a workaround so models run at full speed. Turning on Resizable BAR / Smart Access Memory in your BIOS is AMD''s recommended setup and may help further. See docs/RESIZABLE-BAR.md."')) 'the exact BIOS guidance line is printed to the console when rebar-off is detected'
 Check ((Get-Content -LiteralPath (Join-Path $root 'docs/RESIZABLE-BAR.md') -Raw).Contains('-VulkanBarMitigation off')) 'the Resizable BAR doc names the opt-out'

@@ -98,13 +98,35 @@ function Select-FastLlmVisibleRecipes {
     param([object[]] $Recipes, [string] $ExperimentalComponents = 'off')
     $visible = New-Object 'System.Collections.Generic.List[object]'
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if ([string] $candidate.origin -ceq 'community-experimental' -and $ExperimentalComponents -cne 'on') { continue }
+        if ((Test-FastLlmExperimentalOrigin -Origin ([string] $candidate.origin)) -and $ExperimentalComponents -cne 'on') { continue }
         $visible.Add($candidate)
     }
     return $visible.ToArray()
 }
 
-# Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component.
+# The display text of a component's sources: every URL, plus the redirect hosts a download may be served from.
+function Get-FastLlmComponentSourceText {
+    param([Parameter(Mandatory = $true)] $Listed)
+    # Display only (the loader has already validated the list): every source URL of the component, single 'source' or multi-part 'sources',
+    # and the redirect hosts the download may be served from.
+    $entries = @()
+    if ($Listed.PSObject.Properties['sources'] -and $Listed.sources) { $entries = @($Listed.sources) }
+    elseif ($Listed.PSObject.Properties['source'] -and $Listed.source) { $entries = @($Listed.source) }
+    $urls = @($entries | ForEach-Object { [string] $_.url } | Where-Object { $_ })
+    if ($urls.Count -eq 0) { return $null }
+    $text = ($urls -join ', ')
+    $redirectHosts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($entry in $entries) {
+        if ($entry.PSObject.Properties['allowedRedirectHosts'] -and $entry.allowedRedirectHosts) {
+            foreach ($redirectHost in @($entry.allowedRedirectHosts)) { if ($redirectHost -and -not $redirectHosts.Contains([string] $redirectHost)) { $redirectHosts.Add([string] $redirectHost) } }
+        }
+    }
+    if ($redirectHosts.Count -gt 0) { $text += '; downloads may be redirected via ' + ($redirectHosts -join ', ') }
+    return $text
+}
+
+# Every component a recipe names (engine, runtime, model, draft) with its source URL when it is a listed component. A listed engine is expanded to its
+# whole requires chain (requires first, the engine last), so a component that only the engine pulls in (the AMD runtime) is listed too.
 function Get-FastLlmRecipeComponentSources {
     param([Parameter(Mandatory = $true)] $Recipe, [object[]] $Components)
     $rows = New-Object 'System.Collections.Generic.List[object]'
@@ -113,16 +135,33 @@ function Get-FastLlmRecipeComponentSources {
         $roleProperty = $Recipe.components.PSObject.Properties[$role]
         if (-not $roleProperty -or [string]::IsNullOrWhiteSpace([string] $roleProperty.Value)) { continue }
         $componentId = [string] $roleProperty.Value
-        $sourceUrl = $null
-        foreach ($listed in @($Components | Where-Object { $_ })) {
-            if ([string] $listed.id -ceq $componentId) { $sourceUrl = [string] $listed.source.url }
+        $members = @()
+        if ($role -ceq 'engine' -or $role -ceq 'runtime') {
+            $listedRoot = @($Components | Where-Object { $_ -and [string] $_.id -ceq $componentId })
+            if ($listedRoot.Count -gt 0) {
+                # An unresolvable chain falls back to the named component alone; the install and the plan refuse it with a typed failure of their own.
+                try { $members = @(Get-FastLlmComponentChain -Components $Components -Id $componentId) } catch { $members = @() }
+            }
         }
-        $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
+        if ($members.Count -eq 0) {
+            $found = @($Components | Where-Object { $_ -and [string] $_.id -ceq $componentId })
+            if ($found.Count -gt 0) { $members = @($found[0]) }
+        }
+        if ($members.Count -eq 0) {
+            $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $null; listed = $false })
+            continue
+        }
+        foreach ($member in $members) {
+            $memberRole = $role
+            if ([string] $member.id -cne $componentId -and $member.PSObject.Properties['kind'] -and $member.kind) { $memberRole = [string] $member.kind }
+            $sourceUrl = Get-FastLlmComponentSourceText -Listed $member
+            $rows.Add([pscustomobject] [ordered] @{ role = $memberRole; id = [string] $member.id; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
+        }
     }
     return $rows.ToArray()
 }
 
-# plan, start and install with -Recipe of a community-experimental recipe: refused unless the switch is on AND -AcceptExperimental is given.
+# plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: refused unless the switch is on AND -AcceptExperimental is given.
 # Other origins and a missing recipe pass through here (an unknown id is refused later by the recipe selection itself).
 function Assert-FastLlmExperimentalRecipeAllowed {
     param(
@@ -133,10 +172,10 @@ function Assert-FastLlmExperimentalRecipeAllowed {
         [switch] $AcceptExperimental
     )
     if ([string]::IsNullOrWhiteSpace($RecipeId)) { return }
-    # Same case-insensitive id match as the recipe selection: any match that is community-experimental is gated.
+    # Same case-insensitive id match as the recipe selection: any match that is community-experimental or bitworks-experimental is gated.
     $found = $null
     foreach ($candidate in @($Recipes | Where-Object { $_ })) {
-        if ([string] $candidate.id -ieq $RecipeId -and [string] $candidate.origin -ceq 'community-experimental') { $found = $candidate }
+        if ([string] $candidate.id -ieq $RecipeId -and (Test-FastLlmExperimentalOrigin -Origin ([string] $candidate.origin))) { $found = $candidate }
     }
     if ($null -eq $found) { return }
     $switchValue = [string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents
@@ -147,6 +186,120 @@ function Assert-FastLlmExperimentalRecipeAllowed {
     $named = @(Get-FastLlmRecipeComponentSources -Recipe $found -Components $Components | ForEach-Object {
             if ($_.listed) { '{0} {1} ({2})' -f $_.role, $_.id, $_.sourceUrl } else { '{0} {1} (comes with this release)' -f $_.role, $_.id }
         })
-    throw ("Recipe '$RecipeId' is an experimental community recipe, not reproduced by Bitworks, and was refused: " + ($reasons -join '; and ') +
+    $refusedKind = 'an experimental community recipe, not reproduced by Bitworks'
+    if ([string] $found.origin -ieq 'bitworks-experimental') { $refusedKind = 'an experimental Bitworks setup, not yet measured by Bitworks on this card' }
+    throw ("Recipe '$RecipeId' is $refusedKind, and was refused: " + ($reasons -join '; and ') +
         ". It would use: " + ($named -join '; ') + '. Nothing was changed.')
+}
+
+# The hosts a listed component downloads from (the host of each source URL), and separately the hosts a download may be redirected to.
+function Get-FastLlmComponentSourceHosts {
+    param([Parameter(Mandatory = $true)] $Listed, [switch] $Redirect)
+    $entries = @()
+    if ($Listed.PSObject.Properties['sources'] -and $Listed.sources) { $entries = @($Listed.sources) }
+    elseif ($Listed.PSObject.Properties['source'] -and $Listed.source) { $entries = @($Listed.source) }
+    $hosts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($entry in $entries) {
+        $candidates = @()
+        if ($Redirect) {
+            if ($entry.PSObject.Properties['allowedRedirectHosts'] -and $entry.allowedRedirectHosts) { $candidates = @($entry.allowedRedirectHosts | ForEach-Object { [string] $_ }) }
+        }
+        else {
+            $parsed = $null
+            if ([Uri]::TryCreate([string] $entry.url, [UriKind]::Absolute, [ref] $parsed)) { $candidates = @($parsed.Host) }
+        }
+        foreach ($candidate in $candidates) { if ($candidate -and -not $hosts.Contains($candidate)) { $hosts.Add($candidate) } }
+    }
+    return $hosts.ToArray()
+}
+
+# One row per recipe for the window's "Choose another setup" list: the recipe, its label, model and context, and the engine's whole requires chain
+# (requires first, the engine last) with its state, license consent kind, source hosts and license links. Read-only and offline.
+# State: the recipe's built-in engine is "built in" when its executable is under engines\ and "missing" otherwise (the window's start installs it);
+# every other member is "installed" only when the inventory says installed AND verified (presence and size), else "missing".
+# The caller passes the recipes it wants listed (Select-FastLlmVisibleRecipes has already hidden experimental ones).
+function Get-FastLlmRecipeChooserRows {
+    param([object[]] $Recipes, [object[]] $Components, [object[]] $Inventory, [Parameter(Mandatory = $true)] $Catalog, [Parameter(Mandatory = $true)][string] $InstallRoot)
+    $installedIds = @{}
+    foreach ($inventoryRow in @($Inventory | Where-Object { $_ })) { if ([bool] $inventoryRow.installed -and [bool] $inventoryRow.verified) { $installedIds[[string] $inventoryRow.id] = $true } }
+    $builtInEngineId = 'llama.cpp-' + [string] $Catalog.engine.version + '-vulkan'
+    $builtInEntryPoint = 'llama-server.exe'
+    if ($Catalog.engine.PSObject.Properties['assets'] -and $Catalog.engine.assets -and $Catalog.engine.assets.PSObject.Properties['vulkan'] -and
+        $Catalog.engine.assets.vulkan.PSObject.Properties['entryPoint'] -and $Catalog.engine.assets.vulkan.entryPoint) { $builtInEntryPoint = [string] $Catalog.engine.assets.vulkan.entryPoint }
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($recipe in @($Recipes | Where-Object { $_ })) {
+        # Same rule as the recipe selection: the recipe's named engine component, else the built-in Vulkan engine of the catalog.
+        $engineId = $builtInEngineId
+        if ($recipe.PSObject.Properties['components'] -and $recipe.components -and $recipe.components.PSObject.Properties['engine'] -and $recipe.components.engine) { $engineId = [string] $recipe.components.engine }
+        $chainError = ''
+        $members = @()
+        if (@($Components | Where-Object { $_ -and [string] $_.id -ceq $engineId }).Count -gt 0) {
+            try { $members = @(Get-FastLlmComponentChain -Components $Components -Id $engineId) }
+            catch { $chainError = [string] $_.Exception.Message }
+        }
+        else { $chainError = "The engine '$engineId' is not in this release's component list." }
+        $chain = New-Object 'System.Collections.Generic.List[object]'
+        $consentRequired = $false
+        $installRequired = $false
+        foreach ($member in $members) {
+            $consent = ''
+            if ($member.PSObject.Properties['license'] -and $member.license -and $member.license.PSObject.Properties['consent']) { $consent = [string] $member.license.consent }
+            $isBuiltIn = ([string] $member.id -ceq $builtInEngineId)
+            if ($isBuiltIn) { $isInstalled = [bool] (Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $Catalog.engine.version) -BackendKey 'vulkan' -EntryPoint $builtInEntryPoint) }
+            else { $isInstalled = $installedIds.ContainsKey([string] $member.id) }
+            $state = 'missing'
+            if ($isInstalled -and $isBuiltIn) { $state = 'built in' } elseif ($isInstalled) { $state = 'installed' }
+            if (-not $isInstalled -and $consent -ceq 'accept') { $consentRequired = $true }
+            # The built-in engine is installed by the start itself; any other missing member needs the window's install first.
+            if (-not $isInstalled -and -not $isBuiltIn) { $installRequired = $true }
+            $displayName = [string] $member.id
+            if ($member.PSObject.Properties['displayName'] -and $member.displayName) { $displayName = [string] $member.displayName }
+            $chain.Add([pscustomobject] [ordered] @{
+                    id = [string] $member.id; displayName = $displayName; kind = [string] $member.kind; version = [string] $member.version
+                    builtIn = [bool] $isBuiltIn; installed = [bool] $isInstalled; state = $state; consent = $consent
+                    sourceHosts = @(Get-FastLlmComponentSourceHosts -Listed $member); redirectHosts = @(Get-FastLlmComponentSourceHosts -Listed $member -Redirect)
+                    licenseLinks = @(Get-FastLlmComponentLicenseLinks -Component $member)
+                })
+        }
+        $contextSize = 0
+        if ($recipe.PSObject.Properties['runtime'] -and $recipe.runtime -and $recipe.runtime.PSObject.Properties['contextSize']) { $contextSize = [int] $recipe.runtime.contextSize }
+        $rows.Add([pscustomobject] [ordered] @{
+                id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
+                variant = [string] $recipe.gpu.variant; gpuCount = [int] $recipe.gpu.count
+                model = [string] $recipe.components.model; contextSize = $contextSize
+                engineId = $engineId; chain = $chain.ToArray(); consentRequired = [bool] $consentRequired; installRequired = [bool] $installRequired; chainError = $chainError
+            })
+    }
+    return $rows.ToArray()
+}
+
+# The experimental switch lives in the settings of the root the window was launched from, but every child is given the install folder shown in the
+# window. Mirror the stored value into that folder's settings when it differs, so the CLI the child runs sees the switch the user set. Returns $true
+# when it wrote. Never writes when the two already agree (so a default root is not touched).
+function Sync-FastLlmExperimentalSwitch {
+    param([Parameter(Mandatory = $true)][string] $SourceRoot, [Parameter(Mandatory = $true)][string] $TargetRoot)
+    if ([IO.Path]::GetFullPath($SourceRoot).TrimEnd('\', '/') -ieq [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\', '/')) { return $false }
+    $wanted = [string] (Get-FastLlmComponentSettings -InstallRoot $SourceRoot).experimentalComponents
+    $stored = [string] (Get-FastLlmComponentSettings -InstallRoot $TargetRoot).experimentalComponents
+    if ($wanted -ceq $stored) { return $false }
+    Set-FastLlmComponentSettings -InstallRoot $TargetRoot -ExperimentalComponents $wanted
+    return $true
+}
+
+# Stores the switch under the launch root and mirrors it into the install folder. When the mirror fails the launch-root value goes back to what it
+# was, so the stored switch, the checkbox the caller restores and the folder all agree; the error is rethrown for the caller to show.
+function Set-FastLlmExperimentalSwitchMirrored {
+    param(
+        [Parameter(Mandatory = $true)][string] $SourceRoot,
+        [Parameter(Mandatory = $true)][string] $TargetRoot,
+        [Parameter(Mandatory = $true)][ValidateSet('on', 'off')][string] $Value
+    )
+    $previous = [string] (Get-FastLlmComponentSettings -InstallRoot $SourceRoot).experimentalComponents
+    Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $Value
+    try { [void](Sync-FastLlmExperimentalSwitch -SourceRoot $SourceRoot -TargetRoot $TargetRoot) }
+    catch {
+        $failure = $_.Exception.Message
+        try { Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $previous } catch { }
+        throw "The experimental components setting could not be applied to the install folder, so it was not changed: $failure"
+    }
 }

@@ -126,18 +126,26 @@ try {
     # available, and the worker must release its operation handle on success.
     function Assert-FastLlmBackgroundNativeHost {}
     function Import-Module { param($Name,[switch]$Force) }
-    function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) [pscustomobject]@{kind='mock'} }
+    function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) $script:mockOrder.Add('hardware'); [pscustomobject]@{kind='mock'} }
+    # The order of lock, first status write and first probe is recorded; the status writes themselves are kept for inspection.
+    $script:mockOrder = New-Object 'System.Collections.Generic.List[string]'
+    $script:mockStateWrites = New-Object 'System.Collections.Generic.List[object]'
+    function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
     function Get-FastLlmPlan {
         param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel)
+        if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         [pscustomobject]@{model=[pscustomobject]@{id='test-model'}}
     }
-    function Enter-FastLlmOperation { param($InstallRoot) $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
+    # The status the host would read back: the last document written (as the CLI-visible object, with the run id and action it was given).
+    function Get-FastLlmStatus { param($InstallRoot) $last = $script:mockStateWrites[$script:mockStateWrites.Count - 1]; $copy = [pscustomobject]@{}; foreach ($key in $last.Keys) { $copy | Add-Member -NotePropertyName $key -NotePropertyValue $last[$key] }; $copy }
+    function Enter-FastLlmOperation { param($InstallRoot) $script:mockOrder.Add('lock'); $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
         param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest)
         Assert-BackgroundTest ([bool]$SelfTest) 'Background worker did not request the post-load self-test.'
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
         $script:mockBarPolicy = $VulkanBarMitigation
         $script:mockServerStarts++
+        if ($script:serverMovesStatus) { $script:mockStateWrites.Add([ordered]@{ schemaVersion = 1; runId = 'supervisor'; phase = 'failed'; failureCode = 'startup-or-runtime-check-failed' }) }
         if ($script:throwServer) { throw 'disposable test server failure' }
         if ($script:throwPlanChanged) { $changed = New-Object System.InvalidOperationException("The measured recipe 'r1' no longer applies at start.`r`nSecond line."); $changed.Data['FastLlmReason'] = 'PlanChanged'; throw $changed }
         return 0
@@ -150,6 +158,8 @@ try {
     $script:mockServerStarts = 0
     $script:throwServer = $false
     $script:throwPlanChanged = $false
+    $script:throwPlan = $false
+    $script:serverMovesStatus = $false
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
@@ -159,6 +169,10 @@ try {
     $workerExit = Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source
     Assert-BackgroundTest ($workerExit -eq 0 -and $script:mockServerStarts -eq 1 -and -not $script:mockOperation.CanRead) 'Worker failed to call supervisor exactly once or release operation lock.'
     Assert-BackgroundTest ($script:mockBarPolicy -ceq 'on') 'Worker did not pass the request vulkanBarMitigation to the start.'
+    # status.json says 'preparing' (the shape fast-llm.ps1 writes) right after the operation lock and before the first hardware probe.
+    Assert-BackgroundTest (($script:mockOrder -join ',') -ceq 'lock,status:preparing,hardware') ('The background worker must write a preparing status right after taking the lock, before probing (observed: ' + ($script:mockOrder -join ',') + ').')
+    $preparingState = $script:mockStateWrites[0]
+    Assert-BackgroundTest ($preparingState.schemaVersion -eq 1 -and $preparingState.phase -ceq 'preparing' -and $preparingState.action -ceq 'start' -and [string]$preparingState.runId -cmatch '^[0-9a-f]{32}$' -and @($preparingState.Keys).Count -eq 4) 'The preparing status has the shape the CLI writes (schemaVersion, runId, phase, action).'
     $script:workerRequestId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
@@ -188,7 +202,7 @@ try {
     $failedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($failedOwner.phase -ceq 'failed' -and $failedOwner.failureCode -ceq 'background-start-or-runtime-failed') 'Worker did not retain bounded failure state.'
     Assert-BackgroundTest ($failedOwner.failureReason -eq $null -or [string]$failedOwner.failureReason -eq '') 'An ordinary failure must not persist its message.'
-    # A PlanChanged failure keeps its reason (final review N2), single line and bounded.
+    # A PlanChanged failure keeps its reason, single line and bounded.
     $script:workerRequestId = 'abababababababababababababababab'
     $changedPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $changedPath -CreateNew -Value ([ordered]@{
@@ -202,6 +216,31 @@ try {
     $script:throwPlanChanged = $false
     $changedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($changedOwner.failureCode -ceq 'PlanChanged' -and [string]$changedOwner.failureReason -like "The measured recipe 'r1' no longer applies*" -and [string]$changedOwner.failureReason -notmatch "[\x00-\x1f]") 'A PlanChanged failure must persist its single-line reason.'
+    # A failure before the supervisor runs: the 'preparing' status becomes failed with the typed code (the shape fast-llm.ps1 writes).
+    $script:workerRequestId = 'bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc'
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:mockStateWrites.Clear(); $script:mockServerStarts = 0; $script:throwServer = $false; $script:throwPlan = $true
+    try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+    $script:throwPlan = $false
+    $failedStatus = $script:mockStateWrites[$script:mockStateWrites.Count - 1]
+    Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $script:mockStateWrites.Count -eq 2 -and $failedStatus.phase -ceq 'failed' -and $failedStatus.failureCode -ceq 'hip-device-not-found' -and $failedStatus.runId -ceq $script:mockStateWrites[0].runId -and $failedStatus.action -ceq 'start') 'A background failure before the supervisor must rewrite the preparing status to failed with the typed failure code.'
+    $typedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($typedOwner.failureCode -ceq 'hip-device-not-found' -and [string]$typedOwner.failureReason -like 'hip-device-not-found:*') 'The background host record must keep the typed failure code (and its bounded message), not only the reason.'
+    # A supervisor that already moved the status on is not overwritten.
+    $script:workerRequestId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:mockStateWrites.Clear(); $script:throwServer = $true; $script:serverMovesStatus = $true
+    try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+    $script:throwServer = $false; $script:serverMovesStatus = $false
+    Assert-BackgroundTest ($script:mockStateWrites.Count -eq 2 -and $script:mockStateWrites[1].runId -ceq 'supervisor') 'A failure after the supervisor moved the status on must not rewrite it.'
     # Regression: Windows PowerShell 5.1 turns a plain $null into "" for File.Replace's backup argument ("path is not of a legal form").
     $replaceDoc = Join-Path $scratch 'replace-regression.json'
     Write-FastLlmBackgroundDocument -Path $replaceDoc -Value ([ordered]@{generation=1})
@@ -211,6 +250,10 @@ try {
         @(Get-ChildItem -LiteralPath $scratch -Filter 'replace-regression*' -Force).Count -eq 1) 'Atomic replace left a temp or backup file.'
     $hostSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     $replaceSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.FileReplace.ps1') -Raw
+    $hostRecordAt = $hostSource.IndexOf('Write-FastLlmBackgroundDocument -Path $recordPath -Value $record')
+    $preparingAt = $hostSource.IndexOf("phase='preparing'; action='start'")
+    $firstProbeAt = $hostSource.IndexOf('$hardware = Get-FastLlmHardware')
+    Assert-BackgroundTest ($hostRecordAt -gt 0 -and $preparingAt -gt $hostRecordAt -and $firstProbeAt -gt $preparingAt) 'The preparing status must be written after the host record and before the first hardware probe (a failure between the lock and the record must not leave a bare preparing status).'
     Assert-BackgroundTest ($hostSource.Contains('vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant()') -and $hostSource.Contains("[ValidateSet('off','on','auto')][string]`$VulkanBarMitigation='auto'")) 'The background request records vulkanBarMitigation with a default of auto.'
     Assert-BackgroundTest ($replaceSource.Contains('[IO.File]::Replace($Source,$Destination,[NullString]::Value)') -and
         -not ($replaceSource -match '\[IO\.File\]::Replace\([^)]*\$null') -and

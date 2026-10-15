@@ -49,7 +49,7 @@ try { Select-FastLlmRecipeForPlacements -Recipes @() -Variants $variants -Placem
 Check ($threw -like "*not in this release*") '-Recipe for an unknown id refuses'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'd1' 'bitworks' 'big' 31 $true $false 'rx-7900-xtx' 2)) -Variants $variants -Placements @((Placement 23000), (Placement 23000), (Placement 46000 2)) -EligibleAdapters @((Placement 1).adapters[0], (Placement 1).adapters[0]) -DxgiAdapters @($xtxDxgi[0], $xtxDxgi[0]) -Catalog $catalog -Profile 'balanced'
 Check ($pick.recipe.id -eq 'd1' -and @($pick.placement.adapters).Count -eq 2) 'a dual-card recipe applies only to the two-card placement'
-# Card count (final review I3): a recipe applies only when gpu.count equals the identified eligible cards of its variant, on the placement using all of them.
+# Card count: a recipe applies only when gpu.count equals the identified eligible cards of its variant, on the placement using all of them.
 $twoXtxPlacements = @((Placement 23000), (Placement 23000), (Placement 46000 2))
 $twoXtxCards = @((Placement 1).adapters[0], (Placement 1).adapters[0])
 $sink = New-Object 'System.Collections.Generic.List[string]'
@@ -62,7 +62,7 @@ $mixedCards = @((Placement 1).adapters[0], (Placement 1 1 20480).adapters[0])
 $mixedDxgi = @($xtxDxgi[0], $xtDxgi[0])
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'x1' 'bitworks' 'small' 25 $true $false 'rx-7900-xt' 1)) -Variants $variants -Placements @((Placement 23000), (Placement 19000 1 20480)) -EligibleAdapters $mixedCards -DxgiAdapters $mixedDxgi -Catalog $catalog -Profile 'balanced'
 Check ($pick.recipe.id -eq 'x1' -and $pick.variant -eq 'rx-7900-xt') 'a one-card recipe still applies when the PC has one card of its variant next to another variant'
-# Not auto-eligible models (final review M3): never auto-picked by a recipe; reachable only by naming the recipe.
+# Not auto-eligible models: never auto-picked by a recipe; reachable only by naming the recipe.
 $catalogWithExperimental = [pscustomobject]@{ engine = $catalog.engine; models = @($catalog.models) + @([pscustomobject]@{ id = 'exp'; requiredFreeVramMiB = 7300; autoEligible = $false; scores = [pscustomobject]@{ balanced = 90 } }) }
 $sink = New-Object 'System.Collections.Generic.List[string]'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced' -SkippedSink $sink
@@ -71,6 +71,18 @@ $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'ex
 Check ($pick.recipe.id -eq 'b1') 'an auto-eligible recipe is still picked next to a not auto-eligible one'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced' -RecipeId 'e2'
 Check ($pick.recipe.id -eq 'e2') 'a not auto-eligible model is reachable by naming its recipe'
+# The identified card is reported even when no recipe is picked (estimated and manual plans), and only when every eligible card agrees.
+$oneXtx = @((Placement 1).adapters[0])
+Check ((Get-FastLlmIdentifiedCardVariant -EligibleAdapters $oneXtx -DxgiAdapters $xtxDxgi -Variants $variants) -eq 'rx-7900-xtx') 'a matched card is identified without any recipe'
+Check ($null -eq (Get-FastLlmIdentifiedCardVariant -EligibleAdapters $oneXtx -DxgiAdapters @() -Variants $variants)) 'a card with no identity is not identified'
+Check ($null -eq (Get-FastLlmIdentifiedCardVariant -EligibleAdapters $mixedCards -DxgiAdapters $mixedDxgi -Variants $variants)) 'two different identified cards give no single identified card'
+Check ((Get-FastLlmIdentifiedCardVariant -EligibleAdapters $twoXtxCards -DxgiAdapters @($xtxDxgi[0], $xtxDxgi[0]) -Variants $variants) -eq 'rx-7900-xtx') 'two identical identified cards are the same variant'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x') -IdentifiedVariant 'rx-7900-xtx'
+Check ($block.origin -eq 'estimated' -and $block.variant -eq 'rx-7900-xtx') 'an estimated block carries the identified card variant'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @() -IdentifiedVariant 'rx-7900-xt'
+Check ($block.origin -eq 'manual' -and $block.variant -eq 'rx-7900-xt') 'a manual block carries the identified card variant'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x')
+Check ($null -eq $block.variant) 'a block without an identified card has no variant'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x')
 Check ($block.origin -eq 'estimated' -and $block.label -eq 'Estimated for your card') 'no pick is labelled estimated'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @()
@@ -100,7 +112,7 @@ $block = New-FastLlmPlanRecipeBlock -Pick $pick -ModelId '' -Skipped @()
 Check ($block.origin -eq 'estimated') 'an unknown revision leaves the plan estimated'
 Write-Host 'recipes-selection-tests: PASS'
 
-# Engine component (Task 3): a recipe's engineBuild is compared with the engine the recipe RESOLVES to: the catalog build for the built-in id, the component version otherwise.
+# Engine component: a recipe's engineBuild is compared with the engine the recipe RESOLVES to: the catalog build for the built-in id, the component version otherwise.
 function EngineComponent($id, $version, $kind = 'engine', $backend = 'vulkan', $adapter = 'llama.cpp') {
     [pscustomobject]@{ id = $id; kind = $kind; version = $version; adapter = $adapter; platform = [pscustomobject]@{ os = 'windows'; arch = 'x64'; backend = $backend }; entryPoint = 'llama-server.exe' }
 }
@@ -124,3 +136,54 @@ foreach ($badComponent in @((EngineComponent 'llama.cpp-b10800-vulkan' 'b10800' 
 $caughtFailure = $null
 try { Resolve-FastLlmRecipeEngine -Recipe $componentRecipe -Catalog $catalog -Components @() -InstallRoot 'C:\unused' | Out-Null } catch { $caughtFailure = $_.Exception }
 Check ($null -ne $caughtFailure -and $caughtFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown' -and $caughtFailure.Message -like "*llama.cpp-b10800-vulkan*") 'an unknown engine id is a typed error that names the id'
+
+# ---- HIP engine components are engines; the selected card is matched to the HIP device by exact name and VRAM, never guessed ----
+$hipComponent = EngineComponent 'llama.cpp-hip-b11658' 'b11658' 'engine' 'hip'
+Check ($null -ne (Find-FastLlmEngineComponent -Components @($hipComponent) -EngineId 'llama.cpp-hip-b11658')) 'a listed hip engine component is an engine'
+Check ($null -eq (Find-FastLlmEngineComponent -Components @((EngineComponent 'llama.cpp-hip-b11658' 'b11658' 'runtime' 'hip')) -EngineId 'llama.cpp-hip-b11658')) 'a hip runtime component is not an engine'
+function HipDevice($device, $name, $total, $free = 1000) { [pscustomobject]@{ device = $device; name = $name; vramMiB = [int64]$total; freeVramMiB = [int64]$free; backend = 'ROCm' } }
+function SelectedCard($name = 'AMD Radeon RX 7900 XTX', $vram = 24560, $device = 'Vulkan0') { [pscustomobject]@{ device = $device; name = $name; vramMiB = [int64]$vram; freeVramMiB = 23737; isAmd = $true } }
+function HipFailure([scriptblock]$Block) { try { & $Block | Out-Null } catch { return $_.Exception }; return $null }
+$one = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560 24411)) -ComponentId 'llama.cpp-hip-b11658')
+Check ($one.Count -eq 1 -and $one[0].device -ceq 'ROCm0' -and $one[0].name -ceq 'AMD Radeon RX 7900 XTX' -and $one[0].freeVramMiB -eq 23737) 'one card: the selected adapter keeps its fields and gets the HIP device name'
+$selectedOriginal = SelectedCard
+$null = Resolve-FastLlmHipSelectedAdapters -Adapters @($selectedOriginal) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x'
+Check ($selectedOriginal.device -ceq 'Vulkan0') 'the hardware adapter object is not modified (the result is a copy)'
+$igpuFirst = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon(TM) Graphics' 512 400), (HipDevice 'ROCm1' 'AMD Radeon RX 7900 XTX' 24560 24411)) -ComponentId 'x')
+Check ($igpuFirst[0].device -ceq 'ROCm1') 'an iGPU listed first and the dGPU second: the dGPU is matched by name and VRAM, not by index'
+$igpuLast = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560), (HipDevice 'ROCm1' 'AMD Radeon(TM) Graphics' 24576 400)) -ComponentId 'x')
+Check ($igpuLast[0].device -ceq 'ROCm0') 'an iGPU with a similar VRAM total but another name is never matched'
+$twin = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560), (HipDevice 'ROCm1' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'llama.cpp-hip-b11658' }
+Check ($null -ne $twin -and $twin.Data['FastLlmFailureCode'] -ceq 'hip-device-ambiguous' -and $twin.Data['FastLlmComponentId'] -ceq 'llama.cpp-hip-b11658') 'two identical cards: hip-device-ambiguous, nothing is guessed'
+$twinPair = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'AMD Radeon RX 7900 XTX' 24560 'Vulkan0'), (SelectedCard 'AMD Radeon RX 7900 XTX' 24560 'Vulkan1')) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560), (HipDevice 'ROCm1' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x' }
+Check ($null -ne $twinPair -and $twinPair.Data['FastLlmFailureCode'] -ceq 'hip-device-ambiguous') 'a selected pair of identical cards is ambiguous too (HIP names cannot be assigned to them)'
+$none = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @() -ComponentId 'x' }
+Check ($null -ne $none -and $none.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'an empty HIP device list: hip-device-not-found'
+$otherName = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XT' 24560)) -ComponentId 'x' }
+Check ($null -ne $otherName -and $otherName.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'a different card name with the same VRAM is not a match'
+$edgeIn = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'AMD Radeon RX 7900 XTX' 24000)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 25200)) -ComponentId 'x')
+Check ($edgeIn[0].device -ceq 'ROCm0') 'a total exactly 5% above the selected card still matches'
+$edgeOut = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'AMD Radeon RX 7900 XTX' 24000)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 25201)) -ComponentId 'x' }
+Check ($null -ne $edgeOut -and $edgeOut.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'a total just over 5% away does not match'
+$caseName = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'amd radeon rx 7900 xtx')) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x')
+Check ($caseName[0].device -ceq 'ROCm0') 'the name comparison ignores case but nothing else'
+$wrongFamily = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'Vulkan0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x' }
+Check ($null -ne $wrongFamily -and $wrongFamily.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'only ROCm<N> devices count as HIP devices'
+
+$suffixed = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX (gfx1100)' 24560)) -ComponentId 'x' }
+Check ($null -ne $suffixed -and $suffixed.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found' -and $suffixed.Message -like '*AMD Radeon RX 7900 XTX (gfx1100)*' -and $suffixed.Message -like '*Vulkan setup*') 'a HIP device name that differs by a suffix fails closed, reports the name it saw and points at the Vulkan setup'
+Check ($twin.Message -like '*Vulkan setup*') 'the ambiguous message also points at the Vulkan setup'
+
+# ---- bitworks-experimental is gated and never auto-selected like community-experimental ----
+Check ((Get-FastLlmRecipeLabel 'bitworks-experimental') -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card') 'the bitworks-experimental label'
+$bwExp = Recipe 'bx1' 'bitworks-experimental' 'big' 30 $false
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced'
+Check ($null -eq $pick) 'a bitworks-experimental recipe is not considered without the experimental inclusion'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -IncludeExperimental
+Check ($null -eq $pick) 'a bitworks-experimental recipe is never auto-selected, even with the experimental inclusion'
+$bwControl = Recipe 'bx1' 'bitworks' 'big' 30 $false
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwControl) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced'
+Check ($pick -and $pick.recipe.id -eq 'bx1') 'control: the same recipe from Bitworks is picked under the same inputs'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -RecipeId 'bx1'
+Check ($pick -and $pick.recipe.origin -eq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
+Write-Host 'recipes-selection-tests (bitworks-experimental): PASS'

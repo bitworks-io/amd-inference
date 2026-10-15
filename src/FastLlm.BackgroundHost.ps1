@@ -514,6 +514,8 @@ function Invoke-FastLlmBackgroundServe {
             sourceRoot=$source;
             sourcePinSha256=(Get-FileHash -LiteralPath (Join-Path $source 'src\FastLlm.BackgroundHost.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()}
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
+        # status.json says 'preparing' (the shape fast-llm.ps1 writes) once the lock is held and the host record exists, before the first probe.
+        Write-FastLlmState -InstallRoot $install -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action='start' })
         $catalog = Join-Path $source 'config\catalog.json'
         $hardware = Get-FastLlmHardware -CatalogPath $catalog -InstallRoot $install
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
@@ -534,12 +536,24 @@ function Invoke-FastLlmBackgroundServe {
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
         return $exit
     } catch {
+        # A failure before the supervisor took over leaves the 'preparing' status behind: rewrite it to failed with the typed code, the shape
+        # fast-llm.ps1 writes. A supervisor that already moved the status on (loading, failed) is left alone.
+        if ($record) {
+            try {
+                $failedStatus = Get-FastLlmStatus -InstallRoot $install
+                if ([string]$failedStatus.phase -ceq 'preparing') {
+                    $failedStatus.phase = 'failed'
+                    if ($_.Exception.Data['FastLlmFailureCode']) { $failedStatus | Add-Member -NotePropertyName failureCode -NotePropertyValue ([string]$_.Exception.Data['FastLlmFailureCode']) -Force }
+                    Write-FastLlmState -InstallRoot $install -State $failedStatus
+                }
+            } catch { }
+        }
         if ($record) {
             $record.phase='failed'
-            $record.failureCode = if ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }
+            $record.failureCode = if ($_.Exception.Data['FastLlmFailureCode']) { [string]$_.Exception.Data['FastLlmFailureCode'] } elseif ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }
             # A plan change or a recipe refusal carries its reason (our own fixed wording, bounded, single line); other failures keep the code only.
             $failureText = [string]$_.Exception.Message
-            if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal)) {
+            if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal) -or $_.Exception.Data['FastLlmFailureCode']) {
                 $record.failureReason = [regex]::Replace($failureText, '[\x00-\x1f\x7f]', ' ')
                 if ($record.failureReason.Length -gt 400) { $record.failureReason = $record.failureReason.Substring(0, 400) }
             }

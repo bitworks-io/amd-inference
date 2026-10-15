@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "components": {
+        "engine": "llama.cpp-hip-b11658"
+      },
+      "engineBuild": "b11658",
+      "gpuCount": 1,
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
+      "model": "qwen3.8-27b-ud-iq4-xs",
+      "origin": "bitworks-experimental",
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 16384
+      },
+      "variant": "rx-7900-xt"
+    },
+    {
+      "components": {
+        "engine": "llama.cpp-hip-b11658"
+      },
+      "engineBuild": "b11658",
+      "gpuCount": 1,
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip",
+      "model": "qwen3.8-27b-ud-q4-k-m",
+      "origin": "bitworks-experimental",
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 32768
+      },
+      "variant": "rx-7900-xtx"
+    }
+  ],
+  "schema": "bitworks.fastllm-bitworks-experimental-recipes/v1"
+}

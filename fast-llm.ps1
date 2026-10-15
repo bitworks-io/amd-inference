@@ -39,7 +39,7 @@ param(
     [switch] $AsJson,
 
     # Vulkan Resizable-BAR mitigation for a live start: off = none, on = set GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 on the
-    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means auto (owner decision 12, 2026-10-14).
+    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means auto.
     [ValidateSet('off', 'on', 'auto')]
     [string] $VulkanBarMitigation = 'auto',
 
@@ -83,8 +83,11 @@ param(
     # components -Install only: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
     [switch] $AcceptLicense,
 
-    # plan, start and install with -Recipe of a community-experimental recipe: required in addition to the experimental switch being on.
-    [switch] $AcceptExperimental
+    # plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: required in addition to the experimental switch being on.
+    [switch] $AcceptExperimental,
+
+    # recipes only, with -AsJson: each listed recipe with its engine's requires chain (install state, license consent kind, source hosts, license links). Read-only and offline.
+    [switch] $Detail
 )
 
 Set-StrictMode -Version 2.0
@@ -122,6 +125,7 @@ if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { t
 if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
 if ($AcceptLicense -and $Action -ne 'components') { throw '-AcceptLicense is supported only by components.' }
 if ($AcceptExperimental -and $Action -notin @('plan', 'start', 'install')) { throw '-AcceptExperimental is supported only by plan, start and install.' }
+if ($Detail -and ($Action -ne 'recipes' -or -not $AsJson)) { throw '-Detail is supported only by recipes with -AsJson.' }
 if ($Action -eq 'components') {
     if (@(@([bool] $List, $PSBoundParameters.ContainsKey('Install'), $PSBoundParameters.ContainsKey('Remove')) | Where-Object { $_ }).Count -gt 1) {
         throw 'components takes one of -List, -Install <id> or -Remove <id>.'
@@ -174,6 +178,9 @@ $selectionOptions = @{
     RecipesPath = $recipesPath; GpuVariantsPath = (Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'); RecipeId = $Recipe
 }
 
+# A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
+if ($HardwareFile) { $selectionOptions.NoEngineExecution = $true }
+
 function Write-FastLlmPlan {
     param($Plan)
 
@@ -202,6 +209,9 @@ function Write-FastLlmPlan {
 }
 
 $operationLock = $null
+# components -Install/-Remove take the same lock for mutual exclusion only: it is a separate variable so the failure writer below never records a component
+# command in status.json.
+$componentsLock = $null
 try {
     # An experimental recipe is refused before anything is planned, locked or downloaded.
     if ($Recipe -and $Action -in @('plan', 'start', 'install', 'doctor')) {
@@ -214,6 +224,10 @@ try {
         $operationLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
         Write-FastLlmState -InstallRoot $InstallRoot -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action=$Action })
     }
+    # components -Install and -Remove change what a start or an install relies on, so they take the same operation lock (and write no status).
+    if ($Action -eq 'components' -and ($PSBoundParameters.ContainsKey('Install') -or $PSBoundParameters.ContainsKey('Remove'))) {
+        $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
+    }
     switch ($Action) {
         'models' {
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
@@ -223,7 +237,13 @@ try {
         'recipes' {
             # Experimental recipes are listed only when the experimental switch is on; each is marked with its label.
             $recipeList = @(Select-FastLlmVisibleRecipes -Recipes @(Read-FastLlmRecipes -Path $recipesPath) -ExperimentalComponents ([string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents))
-            if ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
+            if ($AsJson -and $Detail) {
+                $detailCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
+                $detailComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath)
+                $detailInventory = @(Get-FastLlmComponentInventory -ComponentsPath $componentsFilePath -InstallRoot $InstallRoot)
+                ConvertTo-Json -InputObject @(Get-FastLlmRecipeChooserRows -Recipes $recipeList -Components $detailComponents -Inventory $detailInventory -Catalog $detailCatalog -InstallRoot $InstallRoot) -Depth 8
+            }
+            elseif ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
             elseif ($recipeList.Count -eq 0) { Write-Host 'This release has no published recipes.' }
             else {
                 foreach ($listed in $recipeList) {
@@ -233,12 +253,14 @@ try {
         }
         'components' {
             if ($PSBoundParameters.ContainsKey('Install')) {
-                $installedRoot = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -Unattended:$Unattended
-                if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = [string] $installedRoot } | ConvertTo-Json -Depth 4 }
-                else { Write-Host "Installed and verified component '$Install': $installedRoot" }
+                $installResult = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -Unattended:$Unattended -PassThru
+                $installedRoot = [string] $installResult.root
+                if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = $installedRoot; installedComponents = @($installResult.installed) } | ConvertTo-Json -Depth 5 }
+                elseif (@($installResult.installed).Count -eq 0) { Write-Host "Component '$Install' is already installed and verified: $installedRoot" }
+                else { foreach ($newlyInstalled in @($installResult.installed)) { Write-Host "Installed and verified component '$($newlyInstalled.id)': $($newlyInstalled.path)" } }
             }
             elseif ($PSBoundParameters.ContainsKey('Remove')) {
-                Remove-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Remove -InstallRoot $InstallRoot | Out-Null
+                Remove-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Remove -InstallRoot $InstallRoot -OperationLockHeld:([bool] (Get-Variable -Name componentsLock -ValueOnly -ErrorAction SilentlyContinue)) | Out-Null
                 if ($AsJson) { [pscustomobject]@{ id = $Remove; removed = $true } | ConvertTo-Json -Depth 4 }
                 else { Write-Host "Removed component '$Remove'." }
             }
@@ -397,6 +419,9 @@ try {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
                 $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
                 Write-FastLlmPlan -Plan $plan
+                if ($VulkanBarMitigation -in @('on', 'off') -and $plan.PSObject.Properties['backend'] -and [string] $plan.backend -ieq 'hip') {
+                    Write-Host 'Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
+                }
                 $modelReady = (Test-Path -LiteralPath ([string] $plan.modelPath) -PathType Leaf) -and
                     (Test-FastLlmModelConsentReceipt -Model $plan.model -InstallRoot $InstallRoot)
                 if (-not $modelReady) {
@@ -439,7 +464,10 @@ try {
                     if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
                         throw (New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.')
                     }
-                    if ($_.Exception.Data['FastLlmReason'] -eq 'RuntimeCheckFailed' -and -not $NoDownload -and -not $recoveryAttempted -and $planAttempt -lt $maximumPlanAttempts) {
+                    # A plan on an engine component (HIP) never recovers onto another recipe or engine: the failure is rethrown with its own code.
+                    # Keyed on the PLAN, so a built-in Vulkan recipe start (including a UI-forwarded -Recipe) keeps its recovery.
+                    $planOnEngineComponent = [bool](($plan.PSObject.Properties['engineComponentId'] -and $plan.engineComponentId) -or ($plan.PSObject.Properties['backend'] -and [string]$plan.backend -ieq 'hip'))
+                    if ($_.Exception.Data['FastLlmReason'] -eq 'RuntimeCheckFailed' -and -not $planOnEngineComponent -and -not $NoDownload -and -not $recoveryAttempted -and $planAttempt -lt $maximumPlanAttempts) {
                         $recoveryAttempted = $true
                         $recoveryHardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
                         $recovery = Get-FastLlmRecoveryPlan -Hardware $recoveryHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot -Profile $Profile -FailedModelId $plan.model.id -RequestedModelId $ModelId -ContextSize $ContextSize
@@ -603,6 +631,6 @@ catch {
     Write-Error $failureMessage -ErrorAction Continue
     exit 1
 }
-finally { if ($operationLock) { $operationLock.Dispose() } }
+finally { if ($operationLock) { $operationLock.Dispose() }; if ($componentsLock) { $componentsLock.Dispose() } }
 }
 finally { if ($labAppLifetime) { $labAppLifetime.Dispose() } }
