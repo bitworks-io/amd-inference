@@ -1,0 +1,196 @@
+{
+ "schema": "bitworks.community-export/v0",
+ "byVariant": {
+  "rx-7900-xt-20gb": {
+   "count": 12,
+   "records": [
+    {
+     "id": "s-freetext-hip-mtp",
+     "gpuCount": null,
+     "card": "GPU; two installed on host",
+     "model": {
+      "name": "M",
+      "provider": null,
+      "fileUrl": null,
+      "sha256": null
+     },
+     "engine": {
+      "name": null,
+      "build": null,
+      "backend": "ROCm/HIP as author describes"
+     },
+     "serving": {
+      "clients": 1,
+      "topology": null,
+      "topologyDetail": "Two cards installed.",
+      "speculative": "MTP3 as author describes"
+     },
+     "generationTps": [
+      {
+       "kind": "generation-tps",
+       "value": 66.5,
+       "unit": "tok/s",
+       "scope": "per-request",
+       "bench": "unspecified",
+       "clients": 1,
+       "speculative": "MTP3"
+      }
+     ]
+    },
+    {
+     "id": "s-two-copies-c16",
+     "gpuCount": null,
+     "card": "GPU; two installed on host",
+     "model": {
+      "name": "M",
+      "provider": null,
+      "fileUrl": null,
+      "sha256": null
+     },
+     "engine": {
+      "name": null,
+      "build": null,
+      "backend": null
+     },
+     "serving": {
+      "clients": 16,
+      "topology": null,
+      "speculative": null
+     },
+     "generationTps": [
+      {
+       "kind": "generation-tps",
+       "value": 103.5,
+       "unit": "tok/s",
+       "scope": "aggregate",
+       "bench": "unspecified",
+       "clients": 16,
+       "topology": "other"
+      }
+     ]
+    },
+    {
+     "id": "s-build-text",
+     "gpuCount": 1,
+     "model": {
+      "name": "M",
+      "provider": null,
+      "fileUrl": null,
+      "sha256": null
+     },
+     "engine": {
+      "name": "llama.cpp",
+      "build": "0.4.0-dev build 10817; Clang",
+      "backend": "Vulkan"
+     },
+     "serving": {
+      "topology": "single"
+     },
+     "generationTps": [],
+     "promptTps": []
+    },
+    {
+     "id": "s-via-wrapper",
+     "gpuCount": 1,
+     "model": {
+      "name": "M",
+      "provider": null,
+      "fileUrl": null,
+      "sha256": null
+     },
+     "engine": {
+      "name": "llama.cpp via wrapper",
+      "build": "wrapper 1.1.9; build unreported",
+      "backend": "RADV/Vulkan"
+     },
+     "serving": {
+      "topology": "single"
+     }
+    },
+    {
+     "id": "s-vllm",
+     "gpuCount": 2,
+     "model": {
+      "name": "M",
+      "provider": null,
+      "fileUrl": null,
+      "sha256": null
+     },
+     "engine": {
+      "name": "vLLM",
+      "build": "0.23 patched",
+      "backend": "ROCm"
+     },
+     "serving": {
+      "clients": 1,
+      "topology": "dual-split"
+     },
+     "generationTps": [
+      {
+       "kind": "generation-tps",
+       "value": 12.3,
+       "unit": "tok/s",
+       "scope": "per-request",
+       "bench": "api-server",
+       "clients": 1
+      }
+     ]
+    },
+    {
+     "id": "s-nulls",
+     "gpuCount": null,
+     "model": null,
+     "engine": null,
+     "serving": null,
+     "draftModel": null,
+     "generationTps": null,
+     "promptTps": null,
+     "context": null
+    },
+    {
+     "id": "s-string-blocks",
+     "model": "Some model name",
+     "engine": "llama.cpp b10698",
+     "serving": "unreported",
+     "generationTps": "fast"
+    },
+    {
+     "id": "s-odd-metrics",
+     "model": {
+      "name": "M",
+      "provider": null,
+      "fileUrl": null,
+      "sha256": null
+     },
+     "engine": {
+      "name": "llama.cpp",
+      "build": "b10698",
+      "backend": "Vulkan"
+     },
+     "generationTps": [
+      "x",
+      null,
+      5,
+      {
+       "value": "n/a"
+      },
+      {
+       "tps": 31.0,
+       "approximate": true,
+       "valueMax": 40
+      }
+     ]
+    },
+    "a bare string record",
+    42,
+    null,
+    []
+   ]
+  },
+  "rx-7900-xtx-24gb": {
+   "count": 0,
+   "records": null
+  },
+  "odd": "not a group"
+ }
+}
