@@ -993,7 +993,9 @@ function Get-FastLlmPlan {
 
     $recipePick = $null
     $recipeSkippedSink = New-Object System.Collections.Generic.List[string]
-    if (-not $ModelId -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
+    # Recipes auto-apply only under the default balanced profile (the UI's fixed profile) or when -Recipe names one; an explicit fast or quality
+    # profile keeps the estimated planner exactly as before recipes existed (spec 4.2: the profiles keep working as today).
+    if (-not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
         # Recipe data never fails an automatic plan; only an explicit -Recipe refuses.
         try {
             $dxgi = @()
