@@ -494,6 +494,14 @@ function Invoke-FastLlmSupervisedServer {
         if ($backgroundRequestId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid background request correlation.' }
         $state.backgroundRequestId = $backgroundRequestId
     }
+    # What the plan said about its recipe, recorded so a UI shows the label and results link of the plan that actually runs.
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) {
+        $planRecipeFields = [ordered]@{ id = $null; origin = $null; label = $null; evidenceUrl = $null }
+        foreach ($planRecipeField in @($planRecipeFields.Keys)) {
+            if ($Plan.recipe.PSObject.Properties[$planRecipeField] -and $null -ne $Plan.recipe.$planRecipeField) { $planRecipeFields[$planRecipeField] = [string] $Plan.recipe.$planRecipeField }
+        }
+        $state.planRecipe = $planRecipeFields
+    }
     if ($Plan.PSObject.Properties['catalogVersion']) {
         if (-not $CatalogPath) { throw 'A real runtime recipe requires the verified catalog path.' }
         $state.recipe = [ordered]@{

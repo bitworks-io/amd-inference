@@ -291,6 +291,7 @@ try {
                 endpoint="http://127.0.0.1:$port/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
                 hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=$selfTestCase.context;sha256=('0'*64)}
                 catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
+                recipe=[pscustomobject]@{id='r1';origin='bitworks';label='Measured by Bitworks on this card';evidenceUrl='https://bitworks.io/amd/results/x';expected=$null}
             }
             $plan.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
             $priorRecord=[ordered]@{kind='api-smoke-only';hardwareFingerprint='synthetic';modelId='prior-model';modelSha256=('1'*64);catalogSha256=('2'*64)}
@@ -337,6 +338,7 @@ try {
                 if ($iReadyLine -lt 0 -and $log[$k] -like 'host:Ready:*') { $iReadyLine=$k }
             }
             $finalStatus=Get-FastLlmStatus $runRoot
+            Check ($finalStatus.planRecipe.id -ceq 'r1' -and $finalStatus.planRecipe.origin -ceq 'bitworks' -and $finalStatus.planRecipe.evidenceUrl -ceq 'https://bitworks.io/amd/results/x') "self-test case $($selfTestCase.label): the status records the running plan's recipe"
             $selfTestFile=Read-FastLlmJson (Join-Path $runRoot 'state/selftest.json')
             if ($expectSkip) {
                 Check ($null -eq $failure -and $exit -eq 0) 'self-test skip: a context too small for the workload does not fail the start'

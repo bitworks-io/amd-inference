@@ -360,6 +360,7 @@ function Get-FastLlmBackgroundHostStatus {
         endpoint = if ($active) { [string]$status.endpoint } else { $null }
         modelId = if ($active) { [string]$status.modelId } else { [string]$owner.modelId }
         failureCode = if (-not $alive) { [string]$owner.failureCode } else { $null }
+        failureReason = if (-not $alive -and $owner.PSObject.Properties['failureReason'] -and $owner.failureReason) { [string]$owner.failureReason } else { $null }
         performanceQualified = $false
     }
 }
@@ -509,7 +510,7 @@ function Invoke-FastLlmBackgroundServe {
         try { $hostIdentity = [ordered]@{pid=[int]$self.Id;startUtcTicks=[long]$self.StartTime.ToUniversalTime().Ticks} }
         finally { $self.Dispose() }
         $record = [ordered]@{schemaVersion=1;kind='fastllm-private-background-host';requestId=$RequestId;
-            hostIdentity=$hostIdentity;phase='preparing';modelId=$null;failureCode=$null;
+            hostIdentity=$hostIdentity;phase='preparing';modelId=$null;failureCode=$null;failureReason=$null;
             sourceRoot=$source;
             sourcePinSha256=(Get-FileHash -LiteralPath (Join-Path $source 'src\FastLlm.BackgroundHost.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()}
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
@@ -536,6 +537,12 @@ function Invoke-FastLlmBackgroundServe {
         if ($record) {
             $record.phase='failed'
             $record.failureCode = if ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }
+            # A plan change or a recipe refusal carries its reason (our own fixed wording, bounded, single line); other failures keep the code only.
+            $failureText = [string]$_.Exception.Message
+            if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal)) {
+                $record.failureReason = [regex]::Replace($failureText, '[\x00-\x1f\x7f]', ' ')
+                if ($record.failureReason.Length -gt 400) { $record.failureReason = $record.failureReason.Substring(0, 400) }
+            }
             try { Write-FastLlmBackgroundDocument -Path $recordPath -Value $record } catch {}
         }
         throw

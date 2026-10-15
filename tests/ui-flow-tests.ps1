@@ -336,6 +336,18 @@ Write-FastLlmUiSettings -InstallRoot $uiRoot -Settings ([pscustomobject]@{ vulka
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'off') 'BAR setting persists'
 Set-Content -LiteralPath (Join-Path $uiRoot 'settings.json') -Value '{"vulkanBarMitigation":"sideways"}' -Encoding ascii
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'auto') 'an invalid stored value falls back to auto'
+# The preview's measured recipe is passed to the start (final review N2), and the running plan's recipe drives the label and link.
+$measuredPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; origin = 'bitworks'; label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $measuredPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k') 'a measured preview passes its recipe id to the start'
+foreach ($quiet in @('estimated', 'manual')) { Check (@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = $null; origin = $quiet } })).Count -eq 0) "a $quiet preview passes no recipe" }
+Check (@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = 'x y; evil'; origin = 'bitworks' } })).Count -eq 0) 'an unsafe recipe id is never passed to the child'
+Check (@(Get-FastLlmUiStartRecipeArguments -Plan $null).Count -eq 0) 'no preview plan passes no recipe'
+$runState = [pscustomobject]@{ planRecipe = [pscustomobject]@{ id = 'r1'; origin = 'bitworks'; label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
+Check ((Get-FastLlmUiRunEvidenceUrl -State $runState) -eq 'https://bitworks.io/amd/results/x' -and (Get-FastLlmUiRunSetupLine -State $runState) -ceq 'Setup: Measured by Bitworks on this card') 'the results link and setup line come from the running plan'
+$estimatedRun = [pscustomobject]@{ planRecipe = [pscustomobject]@{ id = $null; origin = 'estimated'; label = 'Estimated for your card'; evidenceUrl = $null } }
+Check ($null -eq (Get-FastLlmUiRunEvidenceUrl -State $estimatedRun) -and (Get-FastLlmUiRunSetupLine -State $estimatedRun) -ceq 'Setup: Estimated for your card') 'a run that is estimated shows no results link, whatever the preview said'
+Check ($null -eq (Get-FastLlmUiRunEvidenceUrl -State ([pscustomobject]@{ planRecipe = [pscustomobject]@{ evidenceUrl = 'https://evil.example/x' } })) -and $null -eq (Get-FastLlmUiRunEvidenceUrl -State ([pscustomobject]@{ phase = 'ready' }))) 'a run without a safe recorded link shows none'
+Check ($ui.Contains('Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan') -and $ui.Contains('$resultsLink.Visible=$false;$script:evidenceUrl=$null') -and $ui.Contains('Get-FastLlmUiRunEvidenceUrl -State $s')) 'the UI passes the recipe, clears the preview link at start and re-shows it from the running plan'
 # The BAR setting is read and written under the same launch root, never the editable folder box (final review M8).
 $readRoots = @([regex]::Matches($ui, '(?m)Read-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
 $writeRoots = @([regex]::Matches($ui, '(?m)Write-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
