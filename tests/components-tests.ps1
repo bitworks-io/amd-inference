@@ -109,7 +109,7 @@ $moduleSourceEarly = Get-Content -LiteralPath $modulePath -Raw
 
 try {
     # ---- Exports and the shipped components.json ----
-    foreach ($name in @('Get-FastLlmComponents', 'Get-FastLlmComponentRoot', 'Test-FastLlmComponentInstallation', 'Install-FastLlmComponent', 'Get-FastLlmComponentInventory', 'Remove-FastLlmComponent')) {
+    foreach ($name in @('Get-FastLlmComponents', 'Get-FastLlmComponentRoot', 'Get-FastLlmComponentSources', 'Get-FastLlmComponentChain', 'Test-FastLlmComponentInstallation', 'Install-FastLlmComponent', 'Get-FastLlmComponentInventory', 'Remove-FastLlmComponent')) {
         Check ($null -ne (Get-Command -Name $name -Module FastLlm -ErrorAction SilentlyContinue)) "$name is exported"
     }
     $shipped = @(Get-FastLlmComponents -ComponentsPath (Join-Path $PSScriptRoot '../config/components.json'))
@@ -158,6 +158,167 @@ try {
     $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('abc') -EntryVersion 'nul') }
     Check ($null -ne $msg -and $msg -like '*version*reserved Windows device name*') 'a reserved device name is refused as a version'
     Check ($null -eq (Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (New-IdVariantFile -SourceFile $variantSource -EntryIds @('console', 'com10', 'abc-1.2')) })) 'ids that merely start like a device name (console, com10) are accepted'
+
+    # ---- C3: multi-source zip-tree, requires chains, license links, runtimePathDirs ----
+    function Get-ThrownCode([scriptblock] $Block) {
+        try { & $Block | Out-Null } catch { return [string] $_.Exception.Data['FastLlmFailureCode'] }
+        return $null
+    }
+    $zeroSha = '0' * 64
+    function New-TreePart([string[]] $Paths, [string] $Format = 'zip-tree', $Prefix = 'pre/', [string] $HostName = 'example.com') {
+        $files = @()
+        foreach ($treePath in $Paths) { $files += [ordered] @{ path = $treePath; sizeBytes = 3; sha256 = $zeroSha } }
+        $part = [ordered] @{ url = "https://$HostName/$([guid]::NewGuid().ToString('N')).zip"; allowedRedirectHosts = @($HostName); sha256 = $zeroSha; sizeBytes = 10; format = $Format }
+        if ($null -ne $Prefix) { $part.extractPrefix = $Prefix }
+        $part.fileManifest = @($files)
+        return $part
+    }
+    function New-TreeComponent([string] $Id, $Parts, [string[]] $Requires = @(), [string] $Kind = 'runtime', $PathDirs = $null, $License = $null, [switch] $LegacySource) {
+        if ($null -eq $License) { $License = [ordered] @{ spdx = 'proprietary'; url = 'https://example.com/license'; consent = 'accept' } }
+        $component = [ordered] @{ id = $Id; kind = $Kind; displayName = $Id; version = '1.0' }
+        if ($LegacySource) { $component.source = @($Parts)[0] } else { $component.sources = @($Parts) }
+        $component.license = $License
+        $component.platform = [ordered] @{ os = 'windows'; arch = 'x64'; backend = 'hip' }
+        if ($null -ne $PathDirs) { $component.runtimePathDirs = @($PathDirs) }
+        $component.requires = @($Requires)
+        $component.signer = $null
+        return $component
+    }
+    function Write-ComponentsDoc($Components) {
+        $docPath = Join-Path (New-TestRoot) 'components.json'
+        $docObject = [ordered] @{ schema = 'bitworks.fastllm-components/v1'; components = @($Components) }
+        [System.IO.File]::WriteAllText($docPath, (ConvertTo-Json -InputObject $docObject -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+        return $docPath
+    }
+    function Load-TreeDoc($Components) { return Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (Write-ComponentsDoc $Components) } }
+
+    $okPart = New-TreePart -Paths @('bin/a.dll', 'bin/rocblas/library/x.dat', '.kpack/blas.kpack') -Prefix '_rocm_sdk_libraries/'
+    $okRuntime = New-TreeComponent -Id 'rt-ok' -Parts @($okPart) -PathDirs @('bin')
+    $okLoaded = @(Get-FastLlmComponents -ComponentsPath (Write-ComponentsDoc @($okRuntime)))
+    Check ($okLoaded.Count -eq 1 -and @(Get-FastLlmComponentSources -Component $okLoaded[0])[0].extractPrefix -ceq '_rocm_sdk_libraries/') 'a zip-tree runtime with nested paths, a leading-dot segment (.kpack) and a leading-underscore prefix loads'
+
+    # Nested paths: every segment passes the leaf rules.
+    foreach ($case in @(
+            @{ path = 'bin/../x.dll'; text = '*not a simple name*' }, @{ path = '../x.dll'; text = '*not a simple name*' },
+            @{ path = 'bin/x:y.dll'; text = '*not a simple name*' }, @{ path = 'C:/x.dll'; text = '*not a simple name*' },
+            @{ path = '/abs/x.dll'; text = '*not a simple name*' }, @{ path = 'bin\x.dll'; text = '*not a simple name*' },
+            @{ path = 'bin//x.dll'; text = '*not a simple name*' }, @{ path = 'bin/./x.dll'; text = '*not a simple name*' },
+            @{ path = 'bin/x.'; text = '*end with a dot or a space*' }, @{ path = 'bin/x '; text = '*not a simple name*' },
+            @{ path = 'bin/con'; text = '*reserved Windows device name*' }, @{ path = 'NUL/x.dll'; text = '*reserved Windows device name*' },
+            @{ path = 'bin/com1.txt'; text = '*reserved Windows device name*' })) {
+        $badComponent = New-TreeComponent -Id 'rt-bad' -Parts @((New-TreePart -Paths @('bin/ok.dll', $case.path)))
+        $msg = Load-TreeDoc @($badComponent)
+        Check ($null -ne $msg -and $msg -like $case.text) "the zip-tree path '$($case.path)' is refused"
+    }
+    Check ($null -eq (Load-TreeDoc @((New-TreeComponent -Id 'rt-near' -Parts @((New-TreePart -Paths @('bin/console.dll', 'bin/com10.dll', '.kpack/a.b')))))) ) 'zip-tree paths that merely look like device names (console, com10) are accepted'
+    $flat = New-TreeComponent -Id 'rt-flat' -Parts @((New-TreePart -Paths @('sub/x.dll') -Format 'zip' -Prefix $null))
+    $msg = Load-TreeDoc @($flat)
+    Check ($null -ne $msg -and $msg -like '*manifest path*') 'a flat zip manifest still refuses a nested path'
+
+    # extractPrefix.
+    foreach ($case in @(@{ prefix = $null; text = '*extractPrefix ending in*' }, @{ prefix = 'pre'; text = '*extractPrefix ending in*' },
+            @{ prefix = '../pre/'; text = '*extractPrefix*not a simple name*' }, @{ prefix = '/pre/'; text = '*extractPrefix*not a simple name*' },
+            @{ prefix = 'c:/pre/'; text = '*extractPrefix*not a simple name*' }, @{ prefix = 'con/'; text = '*extractPrefix*reserved*' })) {
+        $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-pre' -Parts @((New-TreePart -Paths @('bin/a.dll') -Prefix $case.prefix))))
+        Check ($null -ne $msg -and $msg -like $case.text) "the extractPrefix '$($case.prefix)' is refused"
+    }
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-pre2' -Parts @((New-TreePart -Paths @('a.dll') -Format 'zip' -Prefix 'pre/'))))
+    Check ($null -ne $msg -and $msg -like '*extractPrefix is only for zip-tree*') 'an extractPrefix on a flat zip source is refused'
+
+    # source / sources shape.
+    $both = New-TreeComponent -Id 'rt-both' -Parts @($okPart)
+    $both.source = $okPart
+    $msg = Load-TreeDoc @($both)
+    Check ($null -ne $msg -and $msg -like "*exactly one of 'source' or 'sources'*") 'a component with both source and sources is refused'
+    $neither = New-TreeComponent -Id 'rt-neither' -Parts @($okPart)
+    $neither.Remove('sources')
+    $msg = Load-TreeDoc @($neither)
+    Check ($null -ne $msg -and $msg -like "*exactly one of 'source' or 'sources'*") 'a component with neither source nor sources is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-empty' -Parts @()))
+    Check ($null -ne $msg -and $msg -like '*lists no sources*') 'an empty sources list is refused'
+
+    # Disjoint paths, case-insensitively, within and across parts.
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-ov1' -Parts @((New-TreePart -Paths @('bin/a.dll')), (New-TreePart -Paths @('bin/a.dll', 'bin/b.dll')))))
+    Check ($null -ne $msg -and $msg -like '*appears more than once*') 'overlapping part paths are refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-ov2' -Parts @((New-TreePart -Paths @('bin/a.dll')), (New-TreePart -Paths @('BIN/A.DLL')))))
+    Check ($null -ne $msg -and $msg -like '*appears more than once*') 'part paths that differ only in case are refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-ov3' -Parts @((New-TreePart -Paths @('bin/a.dll', 'bin/A.dll')))))
+    Check ($null -ne $msg -and $msg -like '*appears more than once*') 'case-only duplicates inside one part are refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'rt-ov4' -Parts @((New-TreePart -Paths @('bin')), (New-TreePart -Paths @('bin/a.dll')))))
+    Check ($null -ne $msg -and $msg -like '*both a file and a directory*') 'a path that is a file in one part and a directory in another is refused'
+    Check ($null -eq (Load-TreeDoc @((New-TreeComponent -Id 'rt-dj' -Parts @((New-TreePart -Paths @('bin/a.dll')), (New-TreePart -Paths @('bin/b.dll'))))))) 'disjoint parts load'
+
+    # requires.
+    $mk = { param($id, $reqs) New-TreeComponent -Id $id -Parts @((New-TreePart -Paths @("bin/$id.dll"))) -Requires $reqs }
+    # The chain functions take loaded components (objects), not the hashtables the document builder makes.
+    $mkObj = { param($id, $reqs) [pscustomobject] (& $mk $id $reqs) }
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (Write-ComponentsDoc @((& $mk 'ra' @('nope')))) }
+    Check ($null -ne $msg -and $msg -like "*'nope'*not in the signed components list*") 'a requires naming an unlisted id is refused'
+    Check ((Get-ThrownCode { Get-FastLlmComponents -ComponentsPath (Write-ComponentsDoc @((& $mk 'ra' @('nope')))) }) -ceq 'component-requires-unknown') 'an unknown requires is the typed failure component-requires-unknown'
+    $msg = Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath (Write-ComponentsDoc @((& $mk 'ra' @('RA')))) }
+    Check ($null -ne $msg -and $msg -like '*requires itself*') 'a self-referential requires is refused'
+    $cycleDoc = Write-ComponentsDoc @((& $mk 'ca' @('cb')), (& $mk 'cb' @('cc')), (& $mk 'cc' @('ca')))
+    Check ((Get-ThrownCode { Get-FastLlmComponents -ComponentsPath $cycleDoc }) -ceq 'component-requires-cycle') 'a requires cycle is the typed failure component-requires-cycle at load time'
+    $deepOk = Write-ComponentsDoc @((& $mk 'd1' @('d2')), (& $mk 'd2' @('d3')), (& $mk 'd3' @('d4')), (& $mk 'd4' @()))
+    Check ($null -eq (Get-ThrownMessage { Get-FastLlmComponents -ComponentsPath $deepOk })) 'a requires chain of 4 loads'
+    $deepBad = Write-ComponentsDoc @((& $mk 'd1' @('d2')), (& $mk 'd2' @('d3')), (& $mk 'd3' @('d4')), (& $mk 'd4' @('d5')), (& $mk 'd5' @()))
+    Check ((Get-ThrownCode { Get-FastLlmComponents -ComponentsPath $deepBad }) -ceq 'component-requires-too-deep') 'a requires chain of 5 is the typed failure component-requires-too-deep'
+
+    # Get-FastLlmComponentChain.
+    $diamond = @((& $mkObj 'top' @('left', 'right')), (& $mkObj 'left' @('base')), (& $mkObj 'right' @('base')), (& $mkObj 'base' @()), (& $mkObj 'other' @()))
+    $diamondChain = @(Get-FastLlmComponentChain -Components $diamond -Id 'top')
+    Check ((($diamondChain | ForEach-Object { $_.id }) -join ',') -ceq 'base,left,right,top') 'the chain lists required components first, the named one last, each once'
+    Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components $diamond -Id 'missing' }) -ceq 'component-requires-unknown') 'Get-FastLlmComponentChain on an unknown id is component-requires-unknown'
+    Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components @((& $mkObj 'x1' @('x2')), (& $mkObj 'x2' @('x1'))) -Id 'x1' }) -ceq 'component-requires-cycle') 'Get-FastLlmComponentChain on a cycle is component-requires-cycle'
+    Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components @((& $mkObj 'y1' @('y2')), (& $mkObj 'y2' @('y3')), (& $mkObj 'y3' @('y4')), (& $mkObj 'y4' @('y5')), (& $mkObj 'y5' @())) -Id 'y1' }) -ceq 'component-requires-too-deep') 'Get-FastLlmComponentChain on a chain of 5 is component-requires-too-deep'
+    Check (@(Get-FastLlmComponentChain -Components @((& $mkObj 'solo' @())) -Id 'solo').Count -eq 1) 'a component without requires is a chain of one'
+
+    # Get-FastLlmComponentSources.
+    $legacyList = @(Get-FastLlmComponentSources -Component $shipped[0])
+    Check ($legacyList.Count -eq 1 -and $legacyList[0].format -ceq 'zip' -and $null -eq $legacyList[0].extractPrefix -and $legacyList[0].url -ceq [string] $shipped[0].source.url -and @($legacyList[0].fileManifest).Count -eq @($shipped[0].source.fileManifest).Count) 'Get-FastLlmComponentSources turns a legacy source into a one-element list'
+    $multiList = @(Get-FastLlmComponentSources -Component $okLoaded[0])
+    Check ($multiList.Count -eq 1 -and $multiList[0].format -ceq 'zip-tree') 'Get-FastLlmComponentSources returns a sources list as it is'
+
+    # license.links and the accept rule.
+    $linksLicense = [ordered] @{ spdx = 'proprietary'; consent = 'accept'; links = @([ordered] @{ title = 'EULA'; url = 'https://example.com/eula' }) }
+    Check ($null -eq (Load-TreeDoc @((New-TreeComponent -Id 'lic-links' -Parts @($okPart) -License $linksLicense)))) 'an accept component with license.links and no license.url loads'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-none' -Parts @($okPart) -License ([ordered] @{ spdx = 'proprietary'; consent = 'accept' })))
+    Check ($null -ne $msg -and $msg -like '*license needs a url or links*') 'an accept component with neither license.url nor license.links is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-http' -Parts @($okPart) -License ([ordered] @{ spdx = 'x'; url = 'https://example.com/l'; consent = 'accept'; links = @([ordered] @{ title = 'EULA'; url = 'http://example.com/eula' }) })))
+    Check ($null -ne $msg -and $msg -like '*license link URL*') 'a license link that is not https is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-title' -Parts @($okPart) -License ([ordered] @{ spdx = 'x'; url = 'https://example.com/l'; consent = 'accept'; links = @([ordered] @{ title = ''; url = 'https://example.com/eula' }) })))
+    Check ($null -ne $msg -and $msg -like '*license link title*') 'a license link without a title is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'lic-notitle' -Parts @($okPart) -License ([ordered] @{ spdx = 'x'; url = 'https://example.com/l'; consent = 'accept'; links = @([ordered] @{ url = 'https://example.com/eula' }) })))
+    Check ($null -ne $msg -and $msg -like '*missing required property*title*') 'a license link with no title property is refused'
+
+    # runtimePathDirs.
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'pd-engine' -Kind 'engine' -Parts @($okPart) -PathDirs @('bin')))
+    Check ($null -ne $msg -and $msg -like '*runtimePathDirs is only for runtime*') 'runtimePathDirs on a non-runtime component is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'pd-empty' -Parts @($okPart) -PathDirs @('lib')))
+    Check ($null -ne $msg -and $msg -like "*runtimePathDirs entry 'lib' has no manifest files*") 'a runtimePathDirs entry with no manifest files under it is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'pd-dotdot' -Parts @($okPart) -PathDirs @('bin/..')))
+    Check ($null -ne $msg -and $msg -like '*runtimePathDirs entry*not a simple name*') 'a runtimePathDirs entry with .. is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'pd-abs' -Parts @($okPart) -PathDirs @('/bin')))
+    Check ($null -ne $msg -and $msg -like '*runtimePathDirs entry*') 'a rooted runtimePathDirs entry is refused'
+    $msg = Load-TreeDoc @((New-TreeComponent -Id 'pd-case' -Parts @($okPart) -PathDirs @('BIN')))
+    Check ($null -eq $msg) 'runtimePathDirs matches manifest directories case-insensitively'
+
+    # The shipped file.
+    $shippedById = @{}
+    foreach ($shippedEntry in $shipped) { $shippedById[[string] $shippedEntry.id] = $shippedEntry }
+    $hipEngine = $shippedById['llama.cpp-hip-b11658']
+    $hipRuntime = $shippedById['amd-rocm-gfx1100-10.0.0']
+    Check ($null -ne $hipEngine -and $null -ne $hipRuntime) 'the shipped file lists the HIP engine and the AMD ROCm 10.0 runtime'
+    $hipChain = @(Get-FastLlmComponentChain -Components $shipped -Id 'llama.cpp-hip-b11658')
+    Check ((($hipChain | ForEach-Object { $_.id }) -join ',') -ceq 'amd-rocm-gfx1100-10.0.0,llama.cpp-hip-b11658') 'the shipped HIP engine chain is runtime then engine'
+    Check (@(Get-FastLlmComponentChain -Components $shipped -Id 'llama.cpp-b10698-vulkan').Count -eq 1) 'the shipped Vulkan engine has a chain of one'
+    $hipEngineSources = @(Get-FastLlmComponentSources -Component $hipEngine)
+    $hipRuntimeSources = @(Get-FastLlmComponentSources -Component $hipRuntime)
+    Check ($hipEngineSources.Count -eq 1 -and $hipEngineSources[0].format -ceq 'zip' -and @($hipEngineSources[0].fileManifest).Count -eq 55) 'the shipped HIP engine is one flat zip of 55 files'
+    Check ($hipRuntimeSources.Count -eq 2 -and @($hipRuntimeSources[0].fileManifest).Count -eq 16 -and @($hipRuntimeSources[1].fileManifest).Count -eq 252 -and $hipRuntimeSources[0].extractPrefix -ceq '_rocm_sdk_libraries/' -and $hipRuntimeSources[1].extractPrefix -ceq '_rocm_sdk_libraries/') 'the shipped runtime is two zip-tree parts of 16 and 252 files'
+    Check ((@($hipRuntime.runtimePathDirs) -join ',') -ceq 'bin' -and $hipRuntime.kind -ceq 'runtime') 'the shipped runtime declares runtimePathDirs bin'
+    Check ($hipEngine.license.consent -ceq 'accept' -and $hipRuntime.license.consent -ceq 'accept' -and @($hipEngine.license.links).Count -eq 3 -and @($hipRuntime.license.links).Count -eq 2) 'both shipped HIP components need an accept and carry their license links'
+    Check ($hipEngine.entryPoint -ceq 'llama-server.exe' -and @($hipEngineSources[0].fileManifest | Where-Object { $_.path -ceq 'llama-server.exe' }).Count -eq 1 -and [string] $hipEngine.platform.backend -ceq 'hip' -and @($hipEngine.requires) -ccontains 'amd-rocm-gfx1100-10.0.0') 'the shipped HIP engine names llama-server.exe in its manifest, backend hip and requires the runtime'
 
     # ---- Happy install (consent: show) ----
     $fx = New-Fixture -Dir (Join-Path $work 'fx-happy')

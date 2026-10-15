@@ -115,7 +115,7 @@ function Get-FastLlmRecipeComponentSources {
         $componentId = [string] $roleProperty.Value
         $sourceUrl = $null
         foreach ($listed in @($Components | Where-Object { $_ })) {
-            if ([string] $listed.id -ceq $componentId) { $sourceUrl = [string] $listed.source.url }
+            if ([string] $listed.id -ceq $componentId) { $sourceUrl = [string] @(Get-FastLlmComponentSources -Component $listed)[0].url }
         }
         $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
     }

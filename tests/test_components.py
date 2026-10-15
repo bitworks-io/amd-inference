@@ -123,5 +123,118 @@ class ComponentsTests(unittest.TestCase):
         self.assertEqual(cc.main(["--root", str(root)]), 1)
 
 
+# ---- C3: zip-tree, sources[], requires chains, license links, runtimePathDirs ----
+ZERO = "0" * 64
+
+
+def part(paths, fmt="zip-tree", prefix="pre/", host="example.com"):
+    out = {"url": f"https://{host}/x.zip", "allowedRedirectHosts": [host], "sha256": ZERO, "sizeBytes": 10, "format": fmt,
+           "fileManifest": [{"path": p, "sizeBytes": 3, "sha256": ZERO} for p in paths]}
+    if prefix is not None:
+        out["extractPrefix"] = prefix
+    return out
+
+
+def comp(cid, parts, requires=(), kind="runtime", path_dirs=None, license=None):
+    out = {"id": cid, "kind": kind, "displayName": cid, "version": "1.0", "sources": parts,
+           "license": license or {"spdx": "proprietary", "url": "https://example.com/l", "consent": "accept"},
+           "platform": {"os": "windows", "arch": "x64", "backend": "hip"}, "requires": list(requires), "signer": None}
+    if path_dirs is not None:
+        out["runtimePathDirs"] = path_dirs
+    return out
+
+
+def with_base(*extra):
+    doc = copy.deepcopy(GOOD)
+    doc["components"] = [doc["components"][0]] + [copy.deepcopy(c) for c in extra]
+    return doc
+
+
+class TreeTests(unittest.TestCase):
+    def errors(self, *components):
+        return cc.validate(with_base(*components), CATALOG)
+
+    def assertRefused(self, components, text):
+        errors = self.errors(*components)
+        self.assertTrue(any(text in e for e in errors), errors)
+
+    def test_shipped_hip_components(self):
+        by_id = {c["id"]: c for c in GOOD["components"]}
+        engine, runtime = by_id["llama.cpp-hip-b11658"], by_id["amd-rocm-gfx1100-10.0.0"]
+        self.assertEqual(len(engine["source"]["fileManifest"]), 55)
+        self.assertEqual([len(p["fileManifest"]) for p in runtime["sources"]], [16, 252])
+        self.assertEqual(runtime["runtimePathDirs"], ["bin"])
+        self.assertEqual(engine["requires"], ["amd-rocm-gfx1100-10.0.0"])
+        self.assertEqual(self.errors(), [])
+        self.assertEqual(cc.main([]), 0)
+
+    def test_valid_tree(self):
+        ok = comp("rt", [part(["bin/a.dll", ".kpack/x.kpack", "bin/rocblas/library/y.dat"], prefix="_rocm_sdk_libraries/")], path_dirs=["bin"])
+        self.assertEqual(self.errors(ok), [])
+
+    def test_nested_paths_are_refused(self):
+        for bad in ("bin/../x.dll", "../x.dll", "bin/x:y.dll", "C:/x.dll", "/abs/x.dll", "bin\\x.dll", "bin//x.dll", "bin/./x.dll",
+                    "bin/x.", "bin/x ", "bin/con", "NUL/x.dll", "bin/com1.txt", "bin/.."):
+            self.assertRefused([comp("rt", [part(["bin/ok.dll", bad])])], "unsafe path")
+        self.assertEqual(self.errors(comp("rt", [part(["bin/console.dll", "bin/com10.dll"])])), [])
+
+    def test_flat_zip_stays_flat(self):
+        self.assertRefused([comp("rt", [part(["sub/x.dll"], fmt="zip", prefix=None)])], "unsafe path")
+
+    def test_extract_prefix(self):
+        for bad in (None, "pre", "../pre/", "/pre/", "c:/pre/", "con/", "pre//"):
+            self.assertRefused([comp("rt", [part(["bin/a.dll"], prefix=bad)])], "extractPrefix")
+        self.assertRefused([comp("rt", [part(["a.dll"], fmt="zip", prefix="pre/")])], "only for zip-tree")
+
+    def test_source_shape(self):
+        both = comp("rt", [part(["bin/a.dll"])]); both["source"] = part(["bin/b.dll"])
+        self.assertRefused([both], "exactly one of source or sources")
+        neither = comp("rt", [part(["bin/a.dll"])]); del neither["sources"]
+        self.assertRefused([neither], "exactly one of source or sources")
+        self.assertRefused([comp("rt", [])], "sources must be a non-empty list")
+
+    def test_parts_must_be_disjoint(self):
+        self.assertRefused([comp("rt", [part(["bin/a.dll"]), part(["bin/a.dll"])])], "more than once")
+        self.assertRefused([comp("rt", [part(["bin/a.dll"]), part(["BIN/A.DLL"])])], "more than once")
+        self.assertRefused([comp("rt", [part(["bin/a.dll", "bin/A.dll"])])], "more than once")
+        self.assertRefused([comp("rt", [part(["bin/a.dll", "bin/a.dll"])])], "duplicate path")
+        self.assertRefused([comp("rt", [part(["bin"]), part(["bin/a.dll"])])], "both a file and a directory")
+        self.assertEqual(self.errors(comp("rt", [part(["bin/a.dll"]), part(["bin/b.dll"])])), [])
+
+    def test_requires(self):
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], requires=["nope"])], "unknown component")
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], requires=["AA"])], "requires itself")
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], requires=["bb"]), comp("bb", [part(["bin/b.dll"])], requires=["cc"]),
+                            comp("cc", [part(["bin/c.dll"])], requires=["aa"])], "cycle")
+        chain4 = [comp(f"d{i}", [part([f"bin/d{i}.dll"])], requires=[f"d{i + 1}"] if i < 4 else []) for i in range(1, 5)]
+        self.assertEqual(self.errors(*chain4), [])
+        chain5 = [comp(f"d{i}", [part([f"bin/d{i}.dll"])], requires=[f"d{i + 1}"] if i < 5 else []) for i in range(1, 6)]
+        self.assertRefused(chain5, "deeper than 4")
+
+    def test_license_links(self):
+        links = {"spdx": "p", "consent": "accept", "url": "https://example.com/l", "links": [{"title": "EULA", "url": "https://example.com/e"}]}
+        self.assertEqual(self.errors(comp("aa", [part(["bin/a.dll"])], license=links)), [])
+        only_links = {k: v for k, v in links.items() if k != "url"}
+        self.assertEqual(self.errors(comp("aa", [part(["bin/a.dll"])], license=only_links)), [])
+        http = copy.deepcopy(links); http["links"][0]["url"] = "http://example.com/e"
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=http)], "url must be an https URL")
+        notitle = copy.deepcopy(links); notitle["links"][0]["title"] = ""
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=notitle)], "title must be a non-empty string")
+        empty = copy.deepcopy(links); empty["links"] = []
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=empty)], "non-empty list")
+
+    def test_accept_needs_url_or_links(self):
+        none = {"spdx": "p", "consent": "accept"}
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], license=none)], "accept consent needs")
+
+    def test_runtime_path_dirs(self):
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], kind="engine", path_dirs=["bin"])], "only for runtime")
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], path_dirs=["lib"])], "no manifest files")
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], path_dirs=["bin/.."])], "unsafe")
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], path_dirs=["/bin"])], "unsafe")
+        self.assertRefused([comp("aa", [part(["bin/a.dll"])], path_dirs=[])], "non-empty list")
+        self.assertEqual(self.errors(comp("aa", [part(["bin/a.dll"])], path_dirs=["BIN"])), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,13 @@ Shape (spec 2.1):
     "kind": "engine"|"runtime"|"model"|"draft",
     "displayName": str, "version": str,
     "source": { "url": https url, "allowedRedirectHosts": [host, ...], "sha256": 64 hex, "sizeBytes": int > 0,
-                "format": "zip"|"gguf"|"vendor-installer",
-                "fileManifest": [ { "path", "sizeBytes", "sha256" }, ... ] },   # required for zip
-    "license": { "spdx": str, "url": https url, "consent": "show"|"accept" },
+                "format": "zip"|"zip-tree"|"gguf"|"vendor-installer",
+                "extractPrefix": "dir/",                                         # zip-tree only, required there
+                "fileManifest": [ { "path", "sizeBytes", "sha256" }, ... ] },   # required for zip and zip-tree
+    "sources": [ source, ... ]      # instead of "source" (exactly one of the two); a non-empty list of parts
+    "runtimePathDirs": [dir, ...]   # runtime only: directories inside the component root that hold DLLs
+    "license": { "spdx": str, "url": https url (optional with links), "consent": "show"|"accept",
+                 "links": [ { "title", "url": https url }, ... ] },     # an accept consent needs url or links
     "platform": { "os": "windows", "arch": "x64", "backend": str },
     "adapter": str,                 # engine only
     "entryPoint": str,              # engine only; must be a fileManifest path
@@ -33,12 +37,17 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
 RESERVED_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 KINDS = ("engine", "runtime", "model", "draft")
-FORMATS = ("zip", "gguf", "vendor-installer")
+FORMATS = ("zip", "zip-tree", "gguf", "vendor-installer")
+MAX_CHAIN_DEPTH = 4
 CONSENTS = ("show", "accept")
 BASE_ENGINE_ID = "llama.cpp-b10698-vulkan"
-COMPONENT_KEYS = {"id", "kind", "displayName", "version", "source", "license", "platform", "adapter", "entryPoint", "requires", "signer"}
-SOURCE_KEYS = {"url", "allowedRedirectHosts", "sha256", "sizeBytes", "format", "fileManifest"}
-LICENSE_KEYS = {"spdx", "url", "consent"}
+COMPONENT_KEYS = {"id", "kind", "displayName", "version", "source", "sources", "runtimePathDirs", "license", "platform", "adapter", "entryPoint", "requires", "signer"}
+SOURCE_KEYS = {"url", "allowedRedirectHosts", "sha256", "sizeBytes", "format", "fileManifest", "extractPrefix"}
+LICENSE_KEYS = {"spdx", "url", "consent", "links"}
+LINK_KEYS = {"title", "url"}
+# A zip-tree path segment: the component leaf character set, optionally with ONE leading dot or underscore (".kpack", "_rocm_sdk_libraries").
+# This is the only extension of the leaf rule; "." and ".." never match.
+SEGMENT_RE = re.compile(r"^[._]?[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
 PLATFORM_KEYS = {"os", "arch", "backend"}
 MANIFEST_KEYS = {"path", "sizeBytes", "sha256"}
 
@@ -80,7 +89,20 @@ def leaf_problem(value):
     return None
 
 
-def check_manifest(label, manifest, errors):
+def tree_path_problem(path):
+    """A nested, forward-slash, relative path: every segment passes the leaf rules (mirrors Assert-FastLlmComponentPathSegment)."""
+    if not is_str(path):
+        return "must be a non-empty string"
+    for segment in path.split("/"):
+        if not SEGMENT_RE.match(segment):
+            return f"segment {segment!r} is not a simple name (no empty, '..', ':', backslash or other special characters)"
+        problem = leaf_problem(segment)
+        if problem:
+            return f"segment {segment!r} {problem}"
+    return None
+
+
+def check_manifest(label, manifest, errors, tree=False):
     if not isinstance(manifest, list) or not manifest:
         errors.append(f"{label}: fileManifest must be a non-empty list")
         return set()
@@ -89,9 +111,15 @@ def check_manifest(label, manifest, errors):
         where = f"{label}: fileManifest[{i}]"
         if not check_keys(where, item, MANIFEST_KEYS, errors):
             continue
-        if not safe_path(item["path"]):
+        if tree:
+            problem = tree_path_problem(item["path"])
+            if problem:
+                errors.append(f"{where}: unsafe path {item['path']!r}: {problem}")
+                continue
+        elif not safe_path(item["path"]) or "/" in item["path"] or "\\" in item["path"]:
             errors.append(f"{where}: unsafe path {item['path']!r}")
-        elif item["path"] in paths:
+            continue
+        if item["path"] in paths:
             errors.append(f"{where}: duplicate path {item['path']!r}")
         else:
             paths.add(item["path"])
@@ -102,10 +130,91 @@ def check_manifest(label, manifest, errors):
     return paths
 
 
+def check_source(label, source, errors):
+    """Validates one source entry; returns its manifest paths (as a list, in order)."""
+    paths = []
+    if not check_keys(f"{label}: source", source, SOURCE_KEYS, errors, optional=("fileManifest", "extractPrefix")):
+        return paths
+    parsed = urlparse(source["url"]) if isinstance(source["url"], str) else None
+    hosts = source["allowedRedirectHosts"]
+    if not isinstance(hosts, list) or not all(is_str(h) for h in hosts):
+        errors.append(f"{label}: source.allowedRedirectHosts must be a list of hosts")
+        hosts = []
+    if parsed is None or parsed.scheme != "https" or not parsed.hostname:
+        errors.append(f"{label}: source.url must be an https URL")
+    else:
+        github_release = parsed.hostname == "github.com" and "/releases/" in parsed.path
+        if parsed.hostname not in hosts and not github_release:
+            errors.append(f"{label}: source.url host {parsed.hostname!r} is not in allowedRedirectHosts or a GitHub release")
+    if not isinstance(source["sha256"], str) or not SHA_RE.match(source["sha256"]):
+        errors.append(f"{label}: source.sha256 must be 64 lowercase hex characters")
+    if not is_int(source["sizeBytes"]) or source["sizeBytes"] <= 0:
+        errors.append(f"{label}: source.sizeBytes must be a positive integer")
+    fmt = source["format"]
+    if fmt not in FORMATS:
+        errors.append(f"{label}: source.format must be one of {FORMATS}")
+    if fmt == "zip-tree":
+        prefix = source.get("extractPrefix")
+        if not (is_str(prefix) and prefix.endswith("/")) or tree_path_problem(prefix[:-1]):
+            errors.append(f"{label}: a zip-tree source needs a safe relative extractPrefix ending in '/'")
+    elif "extractPrefix" in source:
+        errors.append(f"{label}: extractPrefix is only for zip-tree sources")
+    if "fileManifest" in source:
+        paths = check_manifest(label, source["fileManifest"], errors, tree=(fmt == "zip-tree"))
+    elif fmt in ("zip", "zip-tree"):
+        errors.append(f"{label}: a {fmt} source needs a fileManifest")
+    return paths
+
+
+def check_sources(label, comp, errors):
+    """Exactly one of source / sources. Returns the set of installed file paths across all parts; parts must be disjoint."""
+    if ("source" in comp) == ("sources" in comp):
+        errors.append(f"{label}: needs exactly one of source or sources")
+        return set()
+    parts = [comp["source"]] if "source" in comp else comp["sources"]
+    if not isinstance(parts, list) or not parts:
+        errors.append(f"{label}: sources must be a non-empty list")
+        return set()
+    seen = {}
+    originals = set()
+    for part in parts:
+        for path in check_source(label, part, errors):
+            originals.add(path)
+            key = path.lower()
+            if key in seen:
+                errors.append(f"{label}: path {path!r} appears more than once (case-insensitively, across all source parts)")
+            seen[key] = part
+    # A file and a directory of the same name (a, a/b) cannot both be installed.
+    for key in seen:
+        parent = key.rsplit("/", 1)[0] if "/" in key else None
+        while parent:
+            if parent in seen:
+                errors.append(f"{label}: path {parent!r} is both a file and a directory")
+            parent = parent.rsplit("/", 1)[0] if "/" in parent else None
+    return originals
+
+
+def check_runtime_path_dirs(label, comp, installed, errors):
+    installed = {path.lower() for path in installed}
+    dirs = comp["runtimePathDirs"]
+    if comp["kind"] != "runtime":
+        errors.append(f"{label}: runtimePathDirs is only for runtime components")
+        return
+    if not isinstance(dirs, list) or not dirs:
+        errors.append(f"{label}: runtimePathDirs must be a non-empty list")
+        return
+    for entry in dirs:
+        problem = tree_path_problem(entry) if isinstance(entry, str) else "must be a string"
+        if problem:
+            errors.append(f"{label}: runtimePathDirs entry {entry!r} is unsafe: {problem}")
+        elif not any(path.startswith(entry.lower() + "/") for path in installed):
+            errors.append(f"{label}: runtimePathDirs entry {entry!r} has no manifest files under it")
+
+
 def check_component(comp, errors):
     cid = comp.get("id") if isinstance(comp, dict) else None
     label = f"component {cid!r}"
-    if not check_keys(label, comp, COMPONENT_KEYS, errors, optional=("adapter", "entryPoint")):
+    if not check_keys(label, comp, COMPONENT_KEYS, errors, optional=("adapter", "entryPoint", "source", "sources", "runtimePathDirs")):
         return
     if not isinstance(cid, str) or not ID_RE.match(cid):
         errors.append(f"{label}: id must match {ID_RE.pattern}")
@@ -118,44 +227,39 @@ def check_component(comp, errors):
     for key in ("displayName", "version"):
         if not is_str(comp[key]):
             errors.append(f"{label}: {key} must be a non-empty string")
-    source = comp["source"]
-    manifest_paths = set()
-    if check_keys(f"{label}: source", source, SOURCE_KEYS, errors, optional=("fileManifest",)):
-        parsed = urlparse(source["url"]) if isinstance(source["url"], str) else None
-        hosts = source["allowedRedirectHosts"]
-        if not isinstance(hosts, list) or not all(is_str(h) for h in hosts):
-            errors.append(f"{label}: source.allowedRedirectHosts must be a list of hosts")
-            hosts = []
-        if parsed is None or parsed.scheme != "https" or not parsed.hostname:
-            errors.append(f"{label}: source.url must be an https URL")
-        else:
-            github_release = parsed.hostname == "github.com" and "/releases/" in parsed.path
-            if parsed.hostname not in hosts and not github_release:
-                errors.append(f"{label}: source.url host {parsed.hostname!r} is not in allowedRedirectHosts or a GitHub release")
-        if not isinstance(source["sha256"], str) or not SHA_RE.match(source["sha256"]):
-            errors.append(f"{label}: source.sha256 must be 64 lowercase hex characters")
-        if not is_int(source["sizeBytes"]) or source["sizeBytes"] <= 0:
-            errors.append(f"{label}: source.sizeBytes must be a positive integer")
-        if source["format"] not in FORMATS:
-            errors.append(f"{label}: source.format must be one of {FORMATS}")
-        if "fileManifest" in source:
-            manifest_paths = check_manifest(label, source["fileManifest"], errors)
-        elif source["format"] == "zip":
-            errors.append(f"{label}: a zip source needs a fileManifest")
+    manifest_paths = check_sources(label, comp, errors)
     lic = comp["license"]
-    if check_keys(f"{label}: license", lic, LICENSE_KEYS, errors):
+    if check_keys(f"{label}: license", lic, LICENSE_KEYS, errors, optional=("url", "links")):
         if not is_str(lic["spdx"]):
             errors.append(f"{label}: license.spdx must be a non-empty string")
-        if not (isinstance(lic["url"], str) and lic["url"].startswith("https://")):
+        if "url" in lic and not (isinstance(lic["url"], str) and lic["url"].startswith("https://")):
             errors.append(f"{label}: license.url must be an https URL")
         if lic["consent"] not in CONSENTS:
             errors.append(f"{label}: license.consent must be one of {CONSENTS}")
+        links = lic.get("links")
+        if "links" in lic:
+            if not isinstance(links, list) or not links:
+                errors.append(f"{label}: license.links must be a non-empty list")
+            else:
+                for i, link in enumerate(links):
+                    where = f"{label}: license.links[{i}]"
+                    if check_keys(where, link, LINK_KEYS, errors):
+                        if not is_str(link["title"]):
+                            errors.append(f"{where}: title must be a non-empty string")
+                        if not (isinstance(link["url"], str) and link["url"].startswith("https://")):
+                            errors.append(f"{where}: url must be an https URL")
+        if lic["consent"] == "accept" and not (is_str(lic.get("url")) or (isinstance(links, list) and links)):
+            errors.append(f"{label}: an accept consent needs license.url or license.links")
     if check_keys(f"{label}: platform", comp["platform"], PLATFORM_KEYS, errors):
         for key in PLATFORM_KEYS:
             if not is_str(comp["platform"][key]):
                 errors.append(f"{label}: platform.{key} must be a non-empty string")
     if not isinstance(comp["requires"], list) or not all(isinstance(r, str) for r in comp["requires"]):
         errors.append(f"{label}: requires must be a list of component ids")
+    elif isinstance(cid, str) and any(r.lower() == cid.lower() for r in comp["requires"]):
+        errors.append(f"{label}: requires itself")
+    if "runtimePathDirs" in comp:
+        check_runtime_path_dirs(label, comp, manifest_paths, errors)
     if comp["signer"] is not None and not is_str(comp["signer"]):
         errors.append(f"{label}: signer must be null or a publisher name")
     if comp["kind"] == "engine":
@@ -184,6 +288,23 @@ def check_base_engine(components, catalog, errors):
         errors.append(f"base engine {BASE_ENGINE_ID!r}: entryPoint differs from the catalog")
 
 
+def chain_problem(by_id, cid, stack):
+    """Walks requires depth-first. Returns a problem string for a cycle or a chain deeper than MAX_CHAIN_DEPTH, else None."""
+    if cid in stack:
+        return "requires form a cycle: " + " -> ".join(stack + [cid])
+    if len(stack) + 1 > MAX_CHAIN_DEPTH:
+        return f"requires chain is deeper than {MAX_CHAIN_DEPTH}"
+    comp = by_id.get(cid)
+    if comp is None or not isinstance(comp.get("requires"), list):
+        return None
+    for req in comp["requires"]:
+        if isinstance(req, str) and req.lower() in by_id:
+            problem = chain_problem(by_id, req.lower(), stack + [cid])
+            if problem:
+                return problem
+    return None
+
+
 def validate(document, catalog):
     errors = []
     if not isinstance(document, dict) or document.get("schema") != SCHEMA:
@@ -206,6 +327,12 @@ def validate(document, catalog):
             for req in comp["requires"]:
                 if req not in ids:
                     errors.append(f"component {comp.get('id')!r}: requires unknown component {req!r}")
+    by_id = {c["id"].lower(): c for c in components if isinstance(c, dict) and isinstance(c.get("id"), str)}
+    for comp in components:
+        if isinstance(comp, dict) and isinstance(comp.get("id"), str) and isinstance(comp.get("requires"), list):
+            problem = chain_problem(by_id, comp["id"].lower(), [])
+            if problem:
+                errors.append(f"component {comp['id']!r}: {problem}")
     if catalog is not None:
         check_base_engine(components, catalog, errors)
     return errors

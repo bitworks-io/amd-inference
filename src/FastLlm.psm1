@@ -1765,6 +1765,98 @@ function Assert-FastLlmComponentLeafName {
     }
 }
 
+# Paths inside a zip-tree component (manifest paths and the archive-side extractPrefix) are relative, forward-slash and nested. Every segment passes the
+# component leaf rules above. The one extension of the simple leaf rule, scoped to these path segments only: a segment may begin with a single dot or
+# underscore (".kpack", "_rocm_sdk_libraries"); "." and ".." never match.
+function Assert-FastLlmComponentTreePath {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $Value, [Parameter(Mandatory = $true)][string] $Label)
+    if ([string]::IsNullOrEmpty($Value)) {
+        throw "$Label must not be empty."
+    }
+    foreach ($segment in $Value.Split('/')) {
+        if ($segment -notmatch '^[._]?[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$') {
+            throw "$Label '$Value' has a segment that is not a simple name (no empty segment, '..', ':', backslash or other special character)."
+        }
+        Assert-FastLlmComponentLeafName -Value $segment -Label "$Label segment '$segment'"
+    }
+}
+
+# The component's download parts as one list, whatever the schema shape: a single legacy 'source' is a one-element list. Each entry is
+# { url, allowedRedirectHosts, sha256, sizeBytes, format, extractPrefix (zip-tree only, else $null), fileManifest[] }.
+function Get-FastLlmComponentSources {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $Component)
+
+    $raw = New-Object 'System.Collections.Generic.List[object]'
+    $label = "Component '$([string] $Component.id)'"
+    $sourceProperty = $Component.PSObject.Properties['source']
+    $sourcesProperty = $Component.PSObject.Properties['sources']
+    $hasSource = $null -ne $sourceProperty -and $null -ne $sourceProperty.Value
+    $hasSources = $null -ne $sourcesProperty -and $null -ne $sourcesProperty.Value
+    if ($hasSource -eq $hasSources) {
+        throw "$label needs exactly one of 'source' or 'sources'."
+    }
+    if ($hasSource) { $raw.Add($sourceProperty.Value) }
+    else { foreach ($part in @($sourcesProperty.Value)) { $raw.Add($part) } }
+    if ($raw.Count -eq 0) {
+        throw "$label lists no sources."
+    }
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($part in $raw) {
+        $prefix = $null
+        $prefixProperty = $part.PSObject.Properties['extractPrefix']
+        if ($null -ne $prefixProperty -and $null -ne $prefixProperty.Value) { $prefix = [string] $prefixProperty.Value }
+        $partLabel = "$label source"
+        $list.Add([pscustomobject] [ordered] @{
+                url                  = [string] (Get-FastLlmRequiredProperty -Object $part -Name 'url' -Label $partLabel)
+                allowedRedirectHosts = @(Get-FastLlmRequiredProperty -Object $part -Name 'allowedRedirectHosts' -Label $partLabel)
+                sha256               = [string] (Get-FastLlmRequiredProperty -Object $part -Name 'sha256' -Label $partLabel)
+                sizeBytes            = [int64] (Get-FastLlmRequiredProperty -Object $part -Name 'sizeBytes' -Label $partLabel)
+                format               = [string] (Get-FastLlmRequiredProperty -Object $part -Name 'format' -Label $partLabel)
+                extractPrefix        = $prefix
+                fileManifest         = @(Get-FastLlmRequiredProperty -Object $part -Name 'fileManifest' -Label $partLabel)
+            })
+    }
+    return $list.ToArray()
+}
+
+# The components to install for -Id, in install order: required components first, the named one last. Duplicates appear once. An unknown id,
+# a cycle or a chain deeper than 4 is a typed failure.
+function Get-FastLlmComponentChain {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Components, [Parameter(Mandatory = $true)][string] $Id)
+
+    $byId = @{}
+    foreach ($candidate in @($Components | Where-Object { $_ })) { $byId[([string] $candidate.id).ToLowerInvariant()] = $candidate }
+    $ordered = New-Object 'System.Collections.Generic.List[object]'
+    $done = New-Object 'System.Collections.Generic.HashSet[string]'
+    $visit = $null
+    $visit = {
+        param([string] $CurrentId, [string[]] $Stack)
+        $key = $CurrentId.ToLowerInvariant()
+        if ($Stack -contains $key) {
+            throw (New-FastLlmEngineFailure -Code 'component-requires-cycle' -ComponentId $CurrentId -Message ("Component requirements form a cycle: " + ((@($Stack) + $key) -join ' -> ') + '.'))
+        }
+        if (@($Stack).Count + 1 -gt 4) {
+            throw (New-FastLlmEngineFailure -Code 'component-requires-too-deep' -ComponentId $CurrentId -Message "Component requirements are nested deeper than 4 levels at '$CurrentId'.")
+        }
+        if (-not $byId.ContainsKey($key)) {
+            throw (New-FastLlmEngineFailure -Code 'component-requires-unknown' -ComponentId $CurrentId -Message "Component '$CurrentId' is not in the signed components list.")
+        }
+        if ($done.Contains($key)) { return }
+        $node = $byId[$key]
+        $requiresProperty = $node.PSObject.Properties['requires']
+        if ($null -ne $requiresProperty -and $null -ne $requiresProperty.Value) {
+            foreach ($requiredId in @($requiresProperty.Value)) {
+                & $visit ([string] $requiredId) (@($Stack) + $key)
+            }
+        }
+        if ($done.Add($key)) { $ordered.Add($node) }
+    }
+    & $visit $Id @()
+    return $ordered.ToArray()
+}
+
 function Get-FastLlmComponents {
     [CmdletBinding()]
     param(
@@ -1794,36 +1886,126 @@ function Get-FastLlmComponents {
         $itemVersion = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)
         Assert-FastLlmLeafName -Value $itemVersion -Label "$label version"
         Assert-FastLlmComponentLeafName -Value $itemVersion -Label "$label version"
-        $source = Get-FastLlmRequiredProperty -Object $item -Name 'source' -Label $label
-        Assert-FastLlmHttpsUrl -Value ([string] (Get-FastLlmRequiredProperty -Object $source -Name 'url' -Label "$label source")) -Label "$label source URL"
-        if ([string] (Get-FastLlmRequiredProperty -Object $source -Name 'sha256' -Label "$label source") -notmatch '^[0-9a-fA-F]{64}$') {
-            throw "$label source sha256 is invalid."
+        $sources = @(Get-FastLlmComponentSources -Component $item)
+        $installedPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $installedPathList = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($source in $sources) {
+            Assert-FastLlmHttpsUrl -Value ([string] (Get-FastLlmRequiredProperty -Object $source -Name 'url' -Label "$label source")) -Label "$label source URL"
+            if ([string] (Get-FastLlmRequiredProperty -Object $source -Name 'sha256' -Label "$label source") -notmatch '^[0-9a-fA-F]{64}$') {
+                throw "$label source sha256 is invalid."
+            }
+            if ([int64] (Get-FastLlmRequiredProperty -Object $source -Name 'sizeBytes' -Label "$label source") -le 0) {
+                throw "$label source sizeBytes is invalid."
+            }
+            $sourceFormat = [string] (Get-FastLlmRequiredProperty -Object $source -Name 'format' -Label "$label source")
+            $hosts = @(Get-FastLlmRequiredProperty -Object $source -Name 'allowedRedirectHosts' -Label "$label source")
+            if ($hosts.Count -eq 0) {
+                throw "$label lists no allowed redirect hosts."
+            }
+            $isTree = $sourceFormat -ceq 'zip-tree'
+            if ($isTree) {
+                if ($null -eq $source.extractPrefix -or -not ([string] $source.extractPrefix).EndsWith('/')) {
+                    throw "$label zip-tree source needs an extractPrefix ending in '/'."
+                }
+                Assert-FastLlmComponentTreePath -Value ([string] $source.extractPrefix).TrimEnd('/') -Label "$label extractPrefix"
+            }
+            elseif ($null -ne $source.extractPrefix) {
+                throw "$label extractPrefix is only for zip-tree sources."
+            }
+            $manifest = @(Get-FastLlmRequiredProperty -Object $source -Name 'fileManifest' -Label "$label source")
+            if ($manifest.Count -eq 0) {
+                throw "$label has an empty file manifest."
+            }
+            foreach ($manifestEntry in $manifest) {
+                $manifestPath = [string] (Get-FastLlmRequiredProperty -Object $manifestEntry -Name 'path' -Label "$label manifest entry")
+                if ($isTree) {
+                    Assert-FastLlmComponentTreePath -Value $manifestPath -Label "$label manifest path"
+                }
+                else {
+                    Assert-FastLlmLeafName -Value $manifestPath -Label "$label manifest path"
+                }
+                if (-not $installedPaths.Add($manifestPath)) {
+                    throw "$label manifest path '$manifestPath' appears more than once (paths are compared case-insensitively, across all sources)."
+                }
+                $installedPathList.Add($manifestPath)
+                if ([int64] (Get-FastLlmRequiredProperty -Object $manifestEntry -Name 'sizeBytes' -Label "$label manifest entry") -lt 0 -or
+                    [string] (Get-FastLlmRequiredProperty -Object $manifestEntry -Name 'sha256' -Label "$label manifest entry") -notmatch '^[0-9a-fA-F]{64}$') {
+                    throw "$label manifest entry is invalid."
+                }
+            }
         }
-        if ([int64] (Get-FastLlmRequiredProperty -Object $source -Name 'sizeBytes' -Label "$label source") -le 0) {
-            throw "$label source sizeBytes is invalid."
+        # A path that is a file in one place and a directory in another (a, a/b) cannot both be installed.
+        foreach ($installedPath in $installedPathList) {
+            $parentPath = $installedPath
+            while ($parentPath.Contains('/')) {
+                $parentPath = $parentPath.Substring(0, $parentPath.LastIndexOf('/'))
+                if ($installedPaths.Contains($parentPath)) {
+                    throw "$label path '$parentPath' is both a file and a directory."
+                }
+            }
         }
-        Get-FastLlmRequiredProperty -Object $source -Name 'format' -Label "$label source" | Out-Null
-        $hosts = @(Get-FastLlmRequiredProperty -Object $source -Name 'allowedRedirectHosts' -Label "$label source")
-        if ($hosts.Count -eq 0) {
-            throw "$label lists no allowed redirect hosts."
+        $pathDirsProperty = $item.PSObject.Properties['runtimePathDirs']
+        if ($null -ne $pathDirsProperty -and $null -ne $pathDirsProperty.Value) {
+            if ($itemKind -cne 'runtime') {
+                throw "$label runtimePathDirs is only for runtime components."
+            }
+            $pathDirs = @($pathDirsProperty.Value)
+            if ($pathDirs.Count -eq 0) {
+                throw "$label runtimePathDirs must not be empty."
+            }
+            foreach ($pathDir in $pathDirs) {
+                Assert-FastLlmComponentTreePath -Value ([string] $pathDir) -Label "$label runtimePathDirs entry"
+                $dirPrefix = ([string] $pathDir) + '/'
+                $hasFiles = $false
+                foreach ($installedPath in $installedPathList) {
+                    if ($installedPath.StartsWith($dirPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { $hasFiles = $true; break }
+                }
+                if (-not $hasFiles) {
+                    throw "$label runtimePathDirs entry '$pathDir' has no manifest files under it."
+                }
+            }
         }
-        $manifest = @(Get-FastLlmRequiredProperty -Object $source -Name 'fileManifest' -Label "$label source")
-        if ($manifest.Count -eq 0) {
-            throw "$label has an empty file manifest."
-        }
-        foreach ($manifestEntry in $manifest) {
-            Assert-FastLlmLeafName -Value ([string] (Get-FastLlmRequiredProperty -Object $manifestEntry -Name 'path' -Label "$label manifest entry")) -Label "$label manifest path"
-            if ([int64] (Get-FastLlmRequiredProperty -Object $manifestEntry -Name 'sizeBytes' -Label "$label manifest entry") -lt 0 -or
-                [string] (Get-FastLlmRequiredProperty -Object $manifestEntry -Name 'sha256' -Label "$label manifest entry") -notmatch '^[0-9a-fA-F]{64}$') {
-                throw "$label manifest entry is invalid."
+        $requiresProperty = $item.PSObject.Properties['requires']
+        if ($null -ne $requiresProperty -and $null -ne $requiresProperty.Value) {
+            foreach ($requiredId in @($requiresProperty.Value)) {
+                if (([string] $requiredId) -ieq $itemId) {
+                    throw "$label requires itself."
+                }
             }
         }
         $licenseInfo = Get-FastLlmRequiredProperty -Object $item -Name 'license' -Label $label
-        Assert-FastLlmHttpsUrl -Value ([string] (Get-FastLlmRequiredProperty -Object $licenseInfo -Name 'url' -Label "$label license")) -Label "$label license URL"
-        if ([string] (Get-FastLlmRequiredProperty -Object $licenseInfo -Name 'consent' -Label "$label license") -cnotin @('show', 'accept')) {
+        $licenseConsent = [string] (Get-FastLlmRequiredProperty -Object $licenseInfo -Name 'consent' -Label "$label license")
+        if ($licenseConsent -cnotin @('show', 'accept')) {
             throw "$label license consent must be 'show' or 'accept'."
         }
+        $licenseUrlProperty = $licenseInfo.PSObject.Properties['url']
+        $hasLicenseUrl = $null -ne $licenseUrlProperty -and -not [string]::IsNullOrWhiteSpace([string] $licenseUrlProperty.Value)
+        if ($hasLicenseUrl) {
+            Assert-FastLlmHttpsUrl -Value ([string] $licenseUrlProperty.Value) -Label "$label license URL"
+        }
+        $licenseLinks = @()
+        $linksProperty = $licenseInfo.PSObject.Properties['links']
+        if ($null -ne $linksProperty -and $null -ne $linksProperty.Value) {
+            $licenseLinks = @($linksProperty.Value)
+            if ($licenseLinks.Count -eq 0) {
+                throw "$label license links must not be empty."
+            }
+            foreach ($licenseLink in $licenseLinks) {
+                if ([string]::IsNullOrWhiteSpace([string] (Get-FastLlmRequiredProperty -Object $licenseLink -Name 'title' -Label "$label license link"))) {
+                    throw "$label license link title is empty."
+                }
+                Assert-FastLlmHttpsUrl -Value ([string] (Get-FastLlmRequiredProperty -Object $licenseLink -Name 'url' -Label "$label license link")) -Label "$label license link URL"
+            }
+        }
+        if (-not $hasLicenseUrl -and $licenseLinks.Count -eq 0) {
+            throw "$label license needs a url or links."
+        }
         $entries.Add($item)
+    }
+    # requires: every id is listed, none is cyclic or deeper than 4 (Get-FastLlmComponentChain throws a typed failure).
+    $listedComponents = $entries.ToArray()
+    foreach ($listedComponent in $listedComponents) {
+        Get-FastLlmComponentChain -Components $listedComponents -Id ([string] $listedComponent.id) | Out-Null
     }
     # Emitted one entry at a time: callers collect with @(...). A comma-wrapped return would hand @() a single nested array.
     return $entries.ToArray()
@@ -1854,7 +2036,11 @@ function Get-FastLlmComponentRoot {
 function Get-FastLlmComponentManifestAsset {
     param([Parameter(Mandatory = $true)] $Component)
 
-    $manifest = @($Component.source.fileManifest)
+    $manifest = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($part in @(Get-FastLlmComponentSources -Component $Component)) {
+        foreach ($partEntry in @($part.fileManifest)) { $manifest.Add($partEntry) }
+    }
+    $manifest = $manifest.ToArray()
     $expanded = [int64] 0
     foreach ($manifestEntry in $manifest) {
         $expanded += [int64] $manifestEntry.sizeBytes
@@ -2005,8 +2191,9 @@ function Install-FastLlmComponent {
     if ($null -eq $entry) {
         throw "Component '$ComponentId' is not in the signed components list."
     }
-    if ([string] $entry.source.format -cne 'zip') {
-        throw "Component '$ComponentId' has format '$($entry.source.format)', which this release cannot install."
+    $entryFormats = @(@(Get-FastLlmComponentSources -Component $entry) | ForEach-Object { [string] $_.format } | Select-Object -Unique)
+    if ($entryFormats.Count -ne 1 -or $entryFormats[0] -cne 'zip') {
+        throw "Component '$ComponentId' has format '$($entryFormats -join ', ')', which this release cannot install."
     }
 
     # Side by side, never in place: an existing root that verifies is a no-op; one that does not verify is refused untouched.
@@ -2588,6 +2775,8 @@ Export-ModuleMember -Function @(
     'Install-FastLlmEngines',
     'Get-FastLlmComponents',
     'Get-FastLlmComponentRoot',
+    'Get-FastLlmComponentSources',
+    'Get-FastLlmComponentChain',
     'Test-FastLlmComponentInstallation',
     'Install-FastLlmComponent',
     'Get-FastLlmComponentInventory',
