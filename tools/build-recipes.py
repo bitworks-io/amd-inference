@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build config/recipes.json (bitworks.fastllm-recipes/v2) from data/verified-recipes.json and data/community-records.json.
 
-Verified entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and evidence.publishedAt);
-others are skipped and reported. Community entries get the compelling rule (>=15% generation OR >=50% prompt over the
+Verified and community-reproduced entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and
+evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation OR >=50% prompt over the
 best Bitworks recipe for the same card and GPU count, at the same or larger context). Deterministic output.
 Usage: build-recipes.py [--root R] [--check]   (exit 0 ok, 1 drift, 2 refused)
 """
@@ -78,6 +78,11 @@ def validate(entry, origin, catalog, variants):
     return model
 
 
+def has_live_evidence(entry):
+    evidence = entry.get("evidence") or {}
+    return bool(evidence.get("url")) and bool(DATE_RE.match(str(evidence.get("publishedAt") or "")))
+
+
 def recipe_from(entry, origin):
     return {
         "id": entry["id"], "origin": origin, "label": LABELS[origin],
@@ -112,8 +117,7 @@ def build(root):
     recipes, skipped, ids = [], [], set()
     for entry in verified["entries"]:
         validate(entry, "bitworks", catalog, variants)
-        evidence = entry.get("evidence") or {}
-        if not evidence.get("url") or not DATE_RE.match(str(evidence.get("publishedAt") or "")):
+        if not has_live_evidence(entry):
             skipped.append(f"{entry['id']}: no live evidence page (evidence.url and evidence.publishedAt are required)")
             continue
         recipes.append(recipe_from(entry, "bitworks"))
@@ -123,6 +127,10 @@ def build(root):
         if origin not in ("community-reproduced", "community-experimental"):
             raise RecipeError(f"{entry.get('id')}: community origin must be community-reproduced or community-experimental")
         validate(entry, origin, catalog, variants)
+        if origin == "community-reproduced" and not has_live_evidence(entry):
+            # "Reproduced by Bitworks" needs a Bitworks result page behind it, the same gate as a verified entry.
+            skipped.append(f"{entry['id']}: no live evidence page (evidence.url and evidence.publishedAt are required)")
+            continue
         recipe = recipe_from(entry, origin)
         recipe["compelling"] = compelling(recipe, bitworks_recipes)
         if origin == "community-experimental" and not recipe["compelling"]["isCompelling"]:
