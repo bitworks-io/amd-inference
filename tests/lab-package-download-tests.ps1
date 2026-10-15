@@ -165,6 +165,10 @@ function ProbeRealHttp([string]$Headers,[byte[]]$Body,[int]$Delay,[long]$Limit,[
 }
 try{
     $body=@([byte]97,[byte]98,[byte]99)
+    # Warm-up outside any timed probe: the first Invoke-FastLlmLabHttpGet compiles its C# helper with Add-Type, which can
+    # take more than the 2 s budgets below on a cold Windows PowerShell 5.1 runner. The timed probes keep their budgets.
+    $null=ProbeRealHttp -Headers "HTTP/1.1 200 OK`r`nContent-Length: 3`r`nConnection: close`r`n`r`n" -Body $body `
+        -Delay 0 -Limit 3 -CancelMs 60000 -Leaf 'warmup.bin'
     $ok=ProbeRealHttp -Headers "HTTP/1.1 200 OK`r`nContent-Length: 3`r`nConnection: close`r`n`r`n" -Body $body `
         -Delay 0 -Limit 3 -CancelMs 2000 -Leaf 'ok.bin'
     Check ($ok.status -eq 200 -and $ok.bytes -eq 3 -and [IO.File]::ReadAllText((Join-Path $transportRoot 'ok.bin')) -ceq 'abc') 'real HTTP streamed exact body'
