@@ -336,6 +336,13 @@ Write-FastLlmUiSettings -InstallRoot $uiRoot -Settings ([pscustomobject]@{ vulka
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'off') 'BAR setting persists'
 Set-Content -LiteralPath (Join-Path $uiRoot 'settings.json') -Value '{"vulkanBarMitigation":"sideways"}' -Encoding ascii
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'auto') 'an invalid stored value falls back to auto'
+# The BAR setting is read and written under the same launch root, never the editable folder box (final review M8).
+$settingsCalls = @([regex]::Matches($ui, '(?m)(?:Read|Write)-FastLlmUiSettings -InstallRoot (\S+)') | ForEach-Object { $_.Groups[1].Value })
+Check ($settingsCalls.Count -eq 2 -and @($settingsCalls | Select-Object -Unique).Count -eq 1 -and $settingsCalls[0] -eq '$script:settingsRoot') 'the BAR setting is read and written under one root'
+Check ($ui.Contains('$script:settingsRoot=$InstallRoot') -and -not [regex]::IsMatch($ui, 'Write-FastLlmUiSettings[^\r\n]*pathBox')) 'the settings root is the launch root, not the folder box'
+$editedRoot = Join-Path $uiRoot 'typed-folder'
+Write-FastLlmUiSettings -InstallRoot $uiRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on' })
+Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'on' -and -not (Test-Path -LiteralPath $editedRoot)) 'saving the setting creates no other folder'
 Remove-Item -LiteralPath $uiRoot -Recurse -Force
 
 Write-Output "UI flow tests passed: $checks"
