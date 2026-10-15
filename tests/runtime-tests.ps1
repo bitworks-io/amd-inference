@@ -306,6 +306,11 @@ try {
                     if ($FileName -ceq 'status.json') { $script:selfTestWriteLog.Add('status:'+[string]$State.phase) } else { $script:selfTestWriteLog.Add($FileName) }
                     & $script:selfTestOriginalWrite -InstallRoot $InstallRoot -State $State -FileName $FileName
                 }
+                # Console lines go into the same ordered log (a start that throws would otherwise lose its captured output).
+                function script:Write-Host {
+                    param([Parameter(Position = 0)] $Object, [Parameter(ValueFromRemainingArguments = $true)] $Remaining)
+                    $script:selfTestWriteLog.Add('host:' + [string] $Object)
+                }
             } $writeLog $savedWriteState
             $stopper=$null
             if ($expectPass -or $expectSkip) {
@@ -323,15 +328,15 @@ try {
                     foreach ($item in $out) { if ($item -is [Management.Automation.InformationRecord]) { $console += [string]$item } elseif ($item -is [int]) { $exit = $item } }
                 } catch { $failure=$_.Exception }
             } finally {
-                & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original } $savedWriteState
+                & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original; Remove-Item -Path 'Function:script:Write-Host' -ErrorAction SilentlyContinue } $savedWriteState
                 if ($stopper) { if (-not $stopper.HasExited) { $stopper.Kill() }; $stopper.Dispose() }
             }
             $log=@($writeLog)
             $iSelfTest=$log.IndexOf('selftest.json');$iReady=$log.IndexOf('status:ready');$iRecord=$log.IndexOf('synthetic.last-ready.json')
             $iSelfTestLine=-1;$iReadyLine=-1
-            for ($k=0;$k -lt $console.Count;$k++) {
-                if ($iSelfTestLine -lt 0 -and $console[$k] -like 'Self-test*') { $iSelfTestLine=$k }
-                if ($iReadyLine -lt 0 -and $console[$k] -like 'Ready:*') { $iReadyLine=$k }
+            for ($k=0;$k -lt $log.Count;$k++) {
+                if ($iSelfTestLine -lt 0 -and $log[$k] -like 'host:Self-test*') { $iSelfTestLine=$k }
+                if ($iReadyLine -lt 0 -and $log[$k] -like 'host:Ready:*') { $iReadyLine=$k }
             }
             $finalStatus=Get-FastLlmStatus $runRoot
             $selfTestFile=Read-FastLlmJson (Join-Path $runRoot 'state/selftest.json')
@@ -339,18 +344,18 @@ try {
                 Check ($null -eq $failure -and $exit -eq 0) 'self-test skip: a context too small for the workload does not fail the start'
                 Check ($selfTestFile.result.status -ceq 'skipped' -and @($selfTestFile.result.reasons) -contains 'context-too-small') 'self-test skip: selftest.json records skipped with the reason context-too-small'
                 Check ($iSelfTest -ge 0 -and $iReady -gt $iSelfTest -and $iRecord -gt $iReady -and $iReadyLine -gt $iSelfTestLine -and $iSelfTestLine -ge 0) 'self-test skip: the skip is recorded before ready and the Ready line follows it'
-                Check ($console -like 'Self-test skipped*') 'self-test skip: the console says the self-test was skipped'
+                Check (@($log | Where-Object { $_ -like 'host:Self-test skipped*' }).Count -eq 1) 'self-test skip: the console says the self-test was skipped'
             } elseif ($expectPass) {
                 Check ($null -eq $failure -and $exit -eq 0) 'self-test pass: the supervised start completes and obeys stop'
                 Check ($iSelfTest -ge 0 -and $iReady -gt $iSelfTest -and $iRecord -gt $iReady) 'self-test pass: the verdict is written before the ready status and the last-ready record'
-                Check ($iSelfTestLine -ge 0 -and $iReadyLine -gt $iSelfTestLine) 'self-test pass: the Ready line is printed after the self-test line'
+                Check ($iSelfTestLine -ge 0 -and $iReadyLine -gt $iSelfTestLine -and $iReadyLine -gt $iSelfTest -and $iReady -lt $iReadyLine) 'self-test pass: the Ready line is printed after the self-test line and after the ready status'
                 Check ($selfTestFile.result.status -ceq 'pass' -and $selfTestFile.schemaVersion -eq 1) 'self-test pass: selftest.json records the verdict'
                 $newRecord=Read-FastLlmJson $recordPath
                 Check ($newRecord.modelId -ceq 'test-model') 'self-test pass: the last-ready record is rewritten for the model that passed'
             } else {
                 Check ($null -ne $failure -and $failure.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and $failure.Message -match 'Self-test failed') 'self-test hard fail: the start raises RuntimeCheckFailed so recovery runs'
                 Check ($iSelfTest -ge 0 -and $iReady -eq -1 -and $iRecord -eq -1) 'self-test hard fail: no ready status and no last-ready write ever happened'
-                Check ($iReadyLine -eq -1 -and @($console | Where-Object { $_ -like 'Ready:*' }).Count -eq 0) 'self-test hard fail: the Ready line is never printed'
+                Check ($iReadyLine -eq -1 -and $iSelfTest -ge 0) 'self-test hard fail: the Ready line is never printed'
                 Check ($finalStatus.phase -ceq 'failed' -and $selfTestFile.result.status -ceq 'fail') 'self-test hard fail: the run ends failed and the verdict is recorded'
                 Check ([IO.File]::ReadAllText($recordPath) -ceq $priorText) 'self-test hard fail: the previous last-ready record survives byte for byte'
                 Check ((Read-FastLlmJson $recordPath).modelId -cne $plan.model.id) 'self-test hard fail: recovery can still use the previous record (it does not name the failed model)'
