@@ -119,13 +119,24 @@ function Resolve-FastLlmRecipeEngine {
         executable = $componentExecutable; installed = $componentInstalled; builtIn = $false; runtimeRoots = $runtimeRoots.ToArray() }
 }
 
+# needs-setup-component-missing. FastLlmComponentId stays the engine (the chain root): the install action installs that one id and its whole requires
+# chain. The member that actually failed is named in the message and in FastLlmUnavailableComponentId.
+function New-FastLlmComponentUnavailableFailure {
+    param([Parameter(Mandatory = $true)][string] $EngineId, [Parameter(Mandatory = $true)][string] $UnavailableId, [Parameter(Mandatory = $true)][string] $Message)
+    $failure = New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId $EngineId -Message $Message
+    $failure.Data['FastLlmUnavailableComponentId'] = $UnavailableId
+    return $failure
+}
+
 # The first component of an engine's chain (requires first, the engine last) that fails the installation check at the given depth, or $null when
 # all pass. Used to name the right component in a needs-setup-component-missing failure.
 function Get-FastLlmFirstUnavailableComponent {
     param([object[]] $Components, [Parameter(Mandatory = $true)][string] $EngineId, [Parameter(Mandatory = $true)][string] $InstallRoot,
           [ValidateSet('Presence', 'Full')][string] $Depth = 'Full')
     foreach ($chained in @(Get-FastLlmComponentChain -Components $Components -Id $EngineId)) {
-        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $chained -Depth $Depth)) { return [string] $chained.id }
+        if ($Depth -ceq 'Full') { $chainPasses = Test-FastLlmComponentVerifiedFull -InstallRoot $InstallRoot -Component $chained }
+        else { $chainPasses = Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $chained -Depth $Depth }
+        if (-not $chainPasses) { return [string] $chained.id }
     }
     return $null
 }
@@ -147,10 +158,10 @@ function Resolve-FastLlmHipSelectedAdapters {
                 [Math]::Abs([int64] $_.vramMiB - $adapterVram) -le ([double] $adapterVram * 0.05)
             })
         if ($candidates.Count -eq 0) {
-            throw (New-FastLlmEngineFailure -Code 'hip-device-not-found' -ComponentId $ComponentId -Message "The HIP engine '${ComponentId}' reports no device that matches the selected card '$adapterName' ($adapterVram MiB). It reports: $listed. Nothing was guessed.")
+            throw (New-FastLlmEngineFailure -Code 'hip-device-not-found' -ComponentId $ComponentId -Message "The HIP engine '${ComponentId}' reports no device that matches the selected card '$adapterName' ($adapterVram MiB). It reports: $listed. Nothing was guessed. Choose the Vulkan setup instead; FastLLM does not switch to it on its own.")
         }
         if ($candidates.Count -gt 1 -or $claimed.Contains([string] $candidates[0].device)) {
-            throw (New-FastLlmEngineFailure -Code 'hip-device-ambiguous' -ComponentId $ComponentId -Message "The selected card '$adapterName' ($adapterVram MiB) matches more than one HIP device ($listed), for example two identical cards. FastLLM cannot tell which one is the selected card, so nothing was guessed.")
+            throw (New-FastLlmEngineFailure -Code 'hip-device-ambiguous' -ComponentId $ComponentId -Message "The selected card '$adapterName' ($adapterVram MiB) matches more than one HIP device ($listed), for example two identical cards. FastLLM cannot tell which one is the selected card, so nothing was guessed. Choose the Vulkan setup instead; FastLLM does not switch to it on its own.")
         }
         $claimed.Add([string] $candidates[0].device)
         $copy = $adapter.PSObject.Copy()

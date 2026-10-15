@@ -1455,8 +1455,39 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         try { Get-FastLlmPlan @hipPlanParams | Out-Null } catch { $blockedPlan = $_.Exception }
         Check ($null -ne $blockedPlan -and $blockedPlan.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked' -and $blockedPlan.Data['FastLlmReason'] -ceq 'HipDllFailed') 'a blocked DLL during the device probe fails the plan hip-dll-blocked (never a silent fallback to Vulkan)'
         $hipProbe.failure = $null
+        # Verify before execute: a SAME-SIZE content tamper of a runtime DLL (Presence cannot see it) stops the plan before the probe runs anything,
+        # naming the runtime. The CLI order is plan, then Start's check: both refuse. The unchanged tree is hashed once per process.
+        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+        $hipProbe.calls.Clear()
+        $tamperTarget = Join-Path (Join-Path $hipRuntimeRootPath 'bin') 'a.dll'
+        $tamperOriginal = [System.IO.File]::ReadAllBytes($tamperTarget)
+        $tamperStamp = (Get-Item -LiteralPath $tamperTarget).LastWriteTimeUtc
+        $hashCallsBefore = & $module { $script:FastLlmFileHashCalls }
+        $null = Get-FastLlmPlan @hipPlanParams
+        $hashCallsAfterPlan = & $module { $script:FastLlmFileHashCalls }
+        $null = Get-FastLlmPlan @hipPlanParams
+        Check ((& $module { $script:FastLlmFileHashCalls }) -eq $hashCallsAfterPlan) 'an unchanged HIP chain is hashed once per process: the second plan hashes nothing (memoised Full verdict)'
+        $touchStamp = $tamperStamp.AddSeconds(30)
+        [System.IO.File]::SetLastWriteTimeUtc($tamperTarget, $touchStamp)
+        $hashCallsBeforeTouch = & $module { $script:FastLlmFileHashCalls }
+        $null = Get-FastLlmPlan @hipPlanParams
+        Check ((& $module { $script:FastLlmFileHashCalls }) -gt $hashCallsBeforeTouch) 'a changed newest write time changes the memo key, so the chain is hashed again'
+        $tampered = [byte[]] $tamperOriginal.Clone()
+        $tampered[$tampered.Length - 1] = [byte] ($tampered[$tampered.Length - 1] -bxor 1)
+        [System.IO.File]::WriteAllBytes($tamperTarget, $tampered)
+        [System.IO.File]::SetLastWriteTimeUtc($tamperTarget, $touchStamp.AddSeconds(30))
+        Check ((Get-Item -LiteralPath $tamperTarget).Length -eq $tamperOriginal.Length) 'the tamper keeps the file size (a presence/size check cannot see it)'
+        $hipProbe.calls.Clear()
+        $tamperPlan = $null
+        try { Get-FastLlmPlan @hipPlanParams | Out-Null } catch { $tamperPlan = $_.Exception }
+        Check ($null -ne $tamperPlan -and $tamperPlan.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and $tamperPlan.Data['FastLlmComponentId'] -ceq 'eng-hip' -and $tamperPlan.Data['FastLlmUnavailableComponentId'] -ceq 'rt-hip' -and $tamperPlan.Message -like "*'rt-hip'*" -and $hipProbe.calls.Count -eq 0) 'a same-size tamper of the runtime stops the CLI plan with needs-setup-component-missing naming the runtime, before the probe runs any component code'
+        Check ((& $module { param($L, $I) Get-FastLlmFirstUnavailableComponent -Components $L -EngineId 'eng-hip' -InstallRoot $I -Depth Full } $hipList $hipInstallRoot) -ceq 'rt-hip') 'and Start-FastLlmServer verification (Full, the next step of the CLI order) refuses the same tamper, naming the runtime'
+        [System.IO.File]::WriteAllBytes($tamperTarget, $tamperOriginal)
+        [System.IO.File]::SetLastWriteTimeUtc($tamperTarget, $touchStamp.AddSeconds(60))
+        $null = Get-FastLlmPlan @hipPlanParams
+        Check ($hipProbe.calls.Count -eq 1) 'restoring the content makes the plan pass again (and probe once)'
         # The runtime is removed while the engine is installed: the plan names the RUNTIME.
-        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text 'Available devices:  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)' -Backend ROCm)
+        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
         $hipProbe.calls.Clear()
         Remove-Item -LiteralPath (Join-Path (Join-Path $hipRuntimeRootPath 'bin') 'a.dll') -Force
         $missingRuntimePlan = $null

@@ -694,6 +694,7 @@ function Invoke-FastLlmDeviceProbe {
         $process.StartInfo = $startInfo
 
         if (-not $process.Start()) {
+            if ($Hip) { throw (New-FastLlmHipBackendFailure -ComponentId $ComponentId -Cause start) }
             return @()
         }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
@@ -706,12 +707,14 @@ function Invoke-FastLlmDeviceProbe {
             catch {
                 # A failed or wedged probe is simply unusable; the caller can try the next backend.
             }
+            if ($Hip) { throw (New-FastLlmHipBackendFailure -ComponentId $ComponentId -Cause timeout) }
             return @()
         }
         if ($process.ExitCode -ne 0) {
             if ($Hip) {
                 $hipProbeFailure = New-FastLlmHipLaunchFailure -ComponentId $ComponentId -ExitCode ([int] $process.ExitCode)
                 if ($hipProbeFailure) { throw $hipProbeFailure }
+                throw (New-FastLlmHipBackendFailure -ComponentId $ComponentId -Cause exit -ExitCode ([int] $process.ExitCode))
             }
             return @()
         }
@@ -726,6 +729,7 @@ function Invoke-FastLlmDeviceProbe {
             if ($_.Exception.Data['FastLlmFailureCode']) { throw }
             $hipStartFailure = New-FastLlmHipLaunchFailure -ComponentId $ComponentId -NativeErrorCode (Get-FastLlmNativeErrorCode -Exception $_.Exception)
             if ($hipStartFailure) { throw $hipStartFailure }
+            throw (New-FastLlmHipBackendFailure -ComponentId $ComponentId -Cause start)
         }
         return @()
     }
@@ -734,7 +738,12 @@ function Invoke-FastLlmDeviceProbe {
         Remove-FastLlmRuntimeSandbox -Sandbox $sandbox
     }
 
-    return @(ConvertFrom-LlamaDeviceList -Text $output -Backend $Backend)
+    $probedDevices = @(ConvertFrom-LlamaDeviceList -Text $output -Backend $Backend)
+    # Exit 0 with no ROCm<N> line (upstream prints "(none)") is a failed backend, not "no matching device".
+    if ($Hip -and @($probedDevices | Where-Object { [string] $_.device -cmatch '^ROCm[0-9]{1,2}$' }).Count -eq 0) {
+        throw (New-FastLlmHipBackendFailure -ComponentId $ComponentId -Cause no-device)
+    }
+    return $probedDevices
 }
 
 function Add-FastLlmDriverVersions {
@@ -1167,11 +1176,7 @@ function Get-FastLlmPlan {
                 else {
                     $unavailableMessage = "The component '${unavailableId}', which the engine component '$($resolvedEngine.id)' requires, is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
                 }
-                # FastLlmComponentId stays the engine (the chain root): the install action installs that one id and its whole requires chain.
-                # The member that actually failed is named in the message and in FastLlmUnavailableComponentId.
-                $unavailableFailure = New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId ([string] $resolvedEngine.id) -Message $unavailableMessage
-                $unavailableFailure.Data['FastLlmUnavailableComponentId'] = $unavailableId
-                throw $unavailableFailure
+                throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $unavailableId -Message $unavailableMessage)
             }
             $planEnginePath = [string] $resolvedEngine.executable
             $planEngineVersion = [string] $resolvedEngine.version
@@ -1180,6 +1185,12 @@ function Get-FastLlmPlan {
                 # The HIP engine names its own devices (ROCm<N>): the selected card is matched by exact name and VRAM, or the plan fails closed.
                 $planBackend = 'hip'
                 $planRuntimeRoots = @($resolvedEngine.runtimeRoots)
+                # Verify before execute: the probe runs the engine and loads every AMD DLL, so the whole chain is hashed (Full, memoised in-process) first.
+                $fullUnavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Full
+                if ($fullUnavailableId) {
+                    throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $fullUnavailableId `
+                        -Message "The component '${fullUnavailableId}' (for the engine component '$($resolvedEngine.id)') failed its file check, so recipe '$($recipePick.recipe.id)' was not started and nothing was run. The built-in engine is not used instead. Reinstall the component.")
+                }
                 $hipDevices = @(Invoke-FastLlmDeviceProbe -EnginePath $planEnginePath -Backend 'ROCm' -InstallRoot $InstallRoot `
                         -TimeoutSeconds ([int] $catalog.hardwarePolicy.deviceProbeTimeoutSeconds) -Hip -RuntimeRoots $planRuntimeRoots -ComponentId $planEngineComponentId)
                 $selectedAdapters = @(Resolve-FastLlmHipSelectedAdapters -Adapters $selectedAdapters -Devices $hipDevices -ComponentId $planEngineComponentId)
@@ -2246,6 +2257,34 @@ function Test-FastLlmComponentInstallation {
     return [bool] (Test-FastLlmComponentTree -Root $root -Asset (Get-FastLlmComponentManifestAsset -Component $Component) -Depth $Depth)
 }
 
+# In-process memo of Full verdicts (never persisted). A component is hashed once per process while its tree is unchanged: the key is the component id,
+# its root, the file count, the total size and the newest write time. Only a passing verdict is remembered, and a missing root is never memoised.
+$script:FastLlmFullVerdictMemo = @{}
+function Test-FastLlmComponentVerifiedFull {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Component)
+    $root = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $Component
+    $key = $null
+    if (Test-Path -LiteralPath $root -PathType Container) {
+        try {
+            $fileCount = 0
+            $totalSize = [int64] 0
+            $newestTicks = [int64] 0
+            foreach ($treeFile in @(Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction Stop)) {
+                $fileCount++
+                $totalSize += [int64] $treeFile.Length
+                if ([int64] $treeFile.LastWriteTimeUtc.Ticks -gt $newestTicks) { $newestTicks = [int64] $treeFile.LastWriteTimeUtc.Ticks }
+            }
+            $key = '{0}|{1}|{2}|{3}|{4}' -f ([string] $Component.id), $root, $fileCount, $totalSize, $newestTicks
+        }
+        catch { $key = $null }
+    }
+    if ($key -and $script:FastLlmFullVerdictMemo.ContainsKey($key)) { return $true }
+    $verdict = [bool] (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $Component -Depth Full)
+    if ($verdict -and $key) { $script:FastLlmFullVerdictMemo[$key] = $true }
+    return $verdict
+}
+
 function Get-FastLlmComponentConsentPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -3256,9 +3295,7 @@ function Start-FastLlmServer {
         }
         $unavailableComponentId = Get-FastLlmFirstUnavailableComponent -Components $startComponents -EngineId $planComponentId -InstallRoot $InstallRoot -Depth Full
         if ($unavailableComponentId) {
-            $startUnavailableFailure = New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId $planComponentId -Message "The component '${unavailableComponentId}' (for the engine component '${planComponentId}') is not installed or failed its file check. The built-in engine is not used instead."
-            $startUnavailableFailure.Data['FastLlmUnavailableComponentId'] = $unavailableComponentId
-            throw $startUnavailableFailure
+            throw (New-FastLlmComponentUnavailableFailure -EngineId $planComponentId -UnavailableId $unavailableComponentId -Message "The component '${unavailableComponentId}' (for the engine component '${planComponentId}') is not installed or failed its file check. The built-in engine is not used instead.")
         }
         if (([string] $startComponent.platform.backend) -ine ([string] $Plan.backend)) {
             throw (New-FastLlmEngineFailure -Code 'recipe-engine-backend-mismatch' -ComponentId $planComponentId -Message "The plan backend '$($Plan.backend)' does not match the engine component '${planComponentId}', which is a $($startComponent.platform.backend) engine. Nothing was started.")

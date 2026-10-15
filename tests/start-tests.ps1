@@ -163,7 +163,7 @@ try {
     $state.fresh=$freshHip;$state.componentOk=$true;$state.failComponent='';$state.events.Clear();$state.componentCalls.Clear();$state.observed=$null;$engineChecksBefore=$state.engineChecks
     $result=Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp
     Check ($result -eq 0 -and $state.events.Contains('supervisor') -and $state.observed.backend -ceq 'hip' -and $state.observed.enginePath -ceq $hipExe) 'a HIP component plan launches on the component executable with backend hip, although the catalog rocm asset is disabled'
-    Check ($state.engineChecks -eq $engineChecksBefore) 'a HIP component plan never runs the built-in engine installation check (M7)'
+    Check ($state.engineChecks -eq $engineChecksBefore) 'the verification inside Start-FastLlmServer for a HIP component plan never runs the built-in engine installation check (M7; the hardware probe of the re-plan is separate)'
     Check (($state.componentCalls -join ',') -ceq 'amd-rocm-gfx1100-10.0.0:Full,llama.cpp-hip-b11658:Full') 'a HIP start verifies the runtime and then the engine, each at Depth Full'
     $state.fresh=$savedFresh;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks
     Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
@@ -229,7 +229,10 @@ try {
     function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId)
         $script:nd.log.Add('plan');$script:nd.planCalls++;$script:nd.requestedModelIds.Add([string]$ModelId)
         if($script:nd.planFailure){throw $script:nd.planFailure}
-        return [pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}} }
+        $ndPlan=[pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}}
+        if($script:ndPlanComponent){$ndPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-hip-b11658'}
+        if($script:ndPlanHip){$ndPlan | Add-Member -NotePropertyName backend -NotePropertyValue 'hip'}
+        return $ndPlan }
     function Write-FastLlmPlan { param($Plan) }
     function Test-FastLlmModelConsentReceipt { param($Model,$InstallRoot) $script:nd.log.Add('consent-check');return $script:nd.consent }
     function Install-FastLlmModel { param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:nd.log.Add('INSTALL-MODEL');Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true;return $ndModel }
@@ -250,7 +253,7 @@ try {
         }
         return 0 }
     $script:ndDeviceBinding='off'
-    $script:ndRecipe=$null
+    $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false
     $script:ndUnattended=$true
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
@@ -357,17 +360,24 @@ try {
     $f=Invoke-NdStart $false
     Check ($null -ne $f -and $null -eq (Get-NdCode $f) -and $script:nd.log.Contains('INSTALL-MODEL')) 'default start, no consent receipt: still provisions (and the failure carries no typed -NoDownload code)'
 
-    # -- explicit -Recipe (any origin): a runtime failure after spawn is rethrown with its own code and NEVER recovers onto another recipe or engine
-    foreach($explicitCase in @(@{label='a self-test failure';queued=@{reason='RuntimeCheckFailed';code='self-test-failed'};code='self-test-failed'},@{label='a load timeout (no code)';queued='RuntimeCheckFailed';code=$null})){
-        Reset-Nd; $script:ndRecipe='fixture.hip-recipe'; $script:nd.startQueue.Enqueue($explicitCase.queued)
+    # -- a plan on an engine component (HIP) never recovers onto another recipe or engine, whatever the user typed; a built-in Vulkan recipe start keeps its recovery
+    foreach($componentCase in @(
+            @{label='a component-engine plan, no -Recipe, self-test failure';recipe=$null;component=$true;queued=@{reason='RuntimeCheckFailed';code='self-test-failed'};code='self-test-failed'},
+            @{label='a component-engine plan with -Recipe, load timeout (no code)';recipe='fixture.hip-recipe';component=$true;queued='RuntimeCheckFailed';code=$null},
+            @{label='a hip-backend plan with -Recipe, self-test failure';recipe='fixture.hip-recipe';component=$false;hipBackend=$true;queued=@{reason='RuntimeCheckFailed';code='self-test-failed'};code='self-test-failed'})){
+        Reset-Nd; $script:ndRecipe=$componentCase.recipe; $script:ndPlanComponent=$componentCase.component; $script:ndPlanHip=$componentCase.ContainsKey("hipBackend"); $script:nd.startQueue.Enqueue($componentCase.queued)
         $f=Invoke-NdStart $false
-        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and (Get-NdCode $f) -ceq $explicitCase.code -and -not $script:nd.log.Contains('recovery-plan') -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "explicit -Recipe: $($explicitCase.label) is rethrown with its own code, with no model recovery, re-plan or substitution"
+        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and (Get-NdCode $f) -ceq $componentCase.code -and -not $script:nd.log.Contains('recovery-plan') -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "$($componentCase.label): rethrown with its own code, no model recovery, re-plan or substitution"
     }
-    Reset-Nd; $script:ndRecipe=$null; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
-    $f=Invoke-NdStart $false
-    Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan') -and $script:nd.requestedModelIds[$script:nd.requestedModelIds.Count-1] -ceq 'other-model') 'auto-selected (no -Recipe) start: a runtime failure still recovers exactly as before'
+    $script:ndPlanComponent=$false;$script:ndPlanHip=$false
+    foreach($vulkanRecipe in @($null,'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k')){
+        Reset-Nd; $script:ndRecipe=$vulkanRecipe; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+        $f=Invoke-NdStart $false
+        $recipeLabel=if($vulkanRecipe){'a UI-forwarded Vulkan -Recipe'}else{'an auto-selected'}
+        Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan') -and $script:nd.requestedModelIds[$script:nd.requestedModelIds.Count-1] -ceq 'other-model') "$recipeLabel built-in Vulkan start: a runtime failure still recovers exactly as before"
+    }
     $script:ndRecipe=$null
-    Check ($cliSource.Contains("-and -not `$selectionOptions.RecipeId -and -not `$NoDownload -and -not `$recoveryAttempted")) 'fast-llm.ps1 guards model recovery on an explicit recipe'
+    Check ($cliSource.Contains('$planOnEngineComponent') -and $cliSource.Contains('-not $planOnEngineComponent -and -not $NoDownload -and -not $recoveryAttempted') -and -not $cliSource.Contains('-not $selectionOptions.RecipeId')) 'fast-llm.ps1 keys the recovery guard on the plan (engine component or hip backend), not on the typed -Recipe'
 
     # -- update-check / update: argument validation and the cached notice wiring (static; no PowerShell can run a real start here)
     $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]

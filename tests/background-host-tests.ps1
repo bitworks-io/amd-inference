@@ -228,6 +228,8 @@ try {
     $script:throwPlan = $false
     $failedStatus = $script:mockStateWrites[$script:mockStateWrites.Count - 1]
     Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $script:mockStateWrites.Count -eq 2 -and $failedStatus.phase -ceq 'failed' -and $failedStatus.failureCode -ceq 'hip-device-not-found' -and $failedStatus.runId -ceq $script:mockStateWrites[0].runId -and $failedStatus.action -ceq 'start') 'A background failure before the supervisor must rewrite the preparing status to failed with the typed failure code.'
+    $typedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($typedOwner.failureCode -ceq 'hip-device-not-found' -and [string]$typedOwner.failureReason -like 'hip-device-not-found:*') 'The background host record must keep the typed failure code (and its bounded message), not only the reason.'
     # A supervisor that already moved the status on is not overwritten.
     $script:workerRequestId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
     Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{

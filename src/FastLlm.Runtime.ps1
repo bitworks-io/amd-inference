@@ -408,6 +408,14 @@ function New-FastLlmDeviceBindingFailure {
 # and what to set; Initialize-FastLlmEngineStartInfo applies it. -Plan needs backend, enginePath and (HIP only) runtimeRoots.
 #   Vulkan: the shared scrub, APPDATA/PROGRAMDATA in the run sandbox, PATH = <engine dir>;System32;SystemRoot, and the BAR variable only on request.
 #   HIP:    the same scrub plus every ROC* name, then PATH = <engine dir>;<runtime roots...>;System32;SystemRoot. Never the BAR variable and never any HIP_*, ROC* or HSA_* value.
+# Names scrubbed from a HIP child in addition to the shared scrub: the ROCm/HSA-adjacent ROC* family (ROCR_VISIBLE_DEVICES), the hipBLAS/hipBLASLt/rocBLAS
+# library-path and logging overrides (HIPBLAS*, HIPBLASLT_TENSILE_LIBPATH, MIOPEN_*), the CLR/COMGR switches (AMD_*, GPU_*, HCC_*, HIPCC_*) and the device-lib path.
+function Test-FastLlmHipEnvironmentName {
+    param([Parameter(Mandatory = $true)][string] $Name)
+    return [bool] ($Name -like 'ROC*' -or $Name -like 'HIPBLAS*' -or $Name -like 'MIOPEN_*' -or $Name -like 'AMD_*' -or $Name -like 'GPU_*' -or
+        $Name -like 'HCC_*' -or $Name -like 'HIPCC_*' -or $Name -like 'HIPRTC_*' -or $Name -like 'ORIGAMI_*' -or $Name -ieq 'DEVICE_LIB_PATH')
+}
+
 function Get-FastLlmEngineEnvironment {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [string[]] $InheritedNames = @(), [switch] $VulkanBarMitigation, [string] $SystemRoot)
@@ -422,13 +430,18 @@ function Get-FastLlmEngineEnvironment {
     if ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip') { $isHip = $true }
     $remove = New-Object 'System.Collections.Generic.List[string]'
     foreach ($name in @($InheritedNames)) {
-        if ((Test-FastLlmEnvironmentNameRequiresClearing -Name ([string] $name)) -or ($isHip -and ([string] $name) -like 'ROC*')) { $remove.Add([string] $name) }
+        if ((Test-FastLlmEnvironmentNameRequiresClearing -Name ([string] $name)) -or ($isHip -and (Test-FastLlmHipEnvironmentName -Name ([string] $name)))) { $remove.Add([string] $name) }
     }
     $set = [ordered] @{}
     $set['APPDATA'] = [string] $Sandbox.appData
     $set['PROGRAMDATA'] = [string] $Sandbox.programData
     if (-not $PSBoundParameters.ContainsKey('SystemRoot')) { $SystemRoot = [string] $env:SystemRoot }
-    if (($env:OS -eq 'Windows_NT' -or $PSBoundParameters.ContainsKey('SystemRoot')) -and $SystemRoot) {
+    if (($env:OS -eq 'Windows_NT' -or $PSBoundParameters.ContainsKey('SystemRoot')) -and [string]::IsNullOrWhiteSpace($SystemRoot)) {
+        # Never leave PATH inherited: ask Windows, or fail closed.
+        $SystemRoot = [Environment]::GetFolderPath('Windows')
+        if ([string]::IsNullOrWhiteSpace($SystemRoot)) { throw 'The Windows directory is not known, so the engine search path cannot be built. Nothing was started.' }
+    }
+    if ($env:OS -eq 'Windows_NT' -or $PSBoundParameters.ContainsKey('SystemRoot')) {
         $searchPath = New-Object 'System.Collections.Generic.List[string]'
         $searchPath.Add($engineDirectory)
         if ($isHip) {
@@ -463,7 +476,7 @@ function New-FastLlmHipLaunchFailure {
     $blocked = $false
     $missing = $false
     $detail = $null
-    if ($null -ne $NativeErrorCode -and [int] $NativeErrorCode -in @(4551, 1260)) { $blocked = $true; $detail = "Windows error $([int] $NativeErrorCode)" }
+    if ($null -ne $NativeErrorCode -and [int] $NativeErrorCode -in @(4551, 1260, 577)) { $blocked = $true; $detail = "Windows error $([int] $NativeErrorCode)" }
     elseif ($null -ne $ExitCode -and [int] $ExitCode -eq -1073740760) { $blocked = $true; $detail = 'exit status 0xC0000428, STATUS_INVALID_IMAGE_HASH' }
     elseif ($null -ne $ExitCode -and [int] $ExitCode -eq -1073741515) { $missing = $true; $detail = 'exit status 0xC0000135, STATUS_DLL_NOT_FOUND' }
     if (-not $blocked -and -not $missing) { return $null }
@@ -483,6 +496,46 @@ function New-FastLlmHipLaunchFailure {
     return $failure
 }
 
+# Smart App Control state, read-only: HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy VerifiedAndReputablePolicyState (1 = enforcement on).
+# 'enforced', 'off' (0 or evaluation) or 'unknown' (not Windows, or the value is unreadable). A module-level function so tests can replace the read.
+function Get-FastLlmSmartAppControlState {
+    if ($env:OS -ne 'Windows_NT') { return 'unknown' }
+    try {
+        $policy = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop
+        $value = $policy.VerifiedAndReputablePolicyState
+        if ($value -isnot [int] -and $value -isnot [long]) { return 'unknown' }
+        if ([int64] $value -eq 1) { return 'enforced' }
+        return 'off'
+    }
+    catch { return 'unknown' }
+}
+
+# The HIP device probe found no usable backend: it did not list a single ROCm<N> device, timed out, exited non-zero or could not start.
+# Upstream b11658 prints "Available devices:" and "(none)" with exit 0 and empty stderr when ggml-hip.dll (or an AMD DLL it loads) cannot load,
+# so this is not an exit code. Only independent evidence upgrades it to hip-dll-blocked: Smart App Control enforcement is on AND the engine
+# started cleanly but listed no ROCm device. The reason is never RuntimeCheckFailed (model recovery would re-plan onto Vulkan).
+function New-FastLlmHipBackendFailure {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $ComponentId, [Parameter(Mandatory = $true)][ValidateSet('no-device', 'timeout', 'exit', 'start')][string] $Cause, [object] $ExitCode)
+    $vulkan = 'FastLLM did not switch to Vulkan: use the Vulkan setup instead (start FastLLM without the HIP recipe).'
+    if ($Cause -ceq 'no-device' -and (Get-FastLlmSmartAppControlState) -ceq 'enforced') {
+        $failure = New-FastLlmTypedFailure -Code 'hip-dll-blocked' -Message "The HIP engine component '${ComponentId}' listed no ROCm device, and Smart App Control is on. Smart App Control blocks unsigned DLLs, and the AMD runtime DLLs are unsigned, so Windows most likely refused to load them. Nothing was started. $vulkan"
+        $failure.Data['FastLlmReason'] = 'HipDllFailed'
+    }
+    else {
+        $what = switch ($Cause) {
+            'no-device' { 'listed no ROCm device' }
+            'timeout' { 'did not finish listing its devices in time' }
+            'exit' { "exited with status $ExitCode while listing its devices" }
+            default { 'could not be started' }
+        }
+        $failure = New-FastLlmTypedFailure -Code 'hip-backend-unavailable' -Message "The HIP engine component '${ComponentId}' $what, so the HIP backend is not usable. Likely causes: an AMD runtime DLL could not load (blocked by Smart App Control or WDAC, or damaged), or the AMD driver does not expose HIP for this card. Reinstall the HIP components, update the AMD driver, or choose the Vulkan setup. Nothing was started. $vulkan"
+        $failure.Data['FastLlmReason'] = 'HipBackendUnavailable'
+    }
+    $failure.Data['FastLlmComponentId'] = $ComponentId
+    return $failure
+}
+
 # The Win32 error carried by a process-start failure, if any (PowerShell wraps the .NET exception, so the chain is walked).
 function Get-FastLlmNativeErrorCode {
     param($Exception)
@@ -492,6 +545,21 @@ function Get-FastLlmNativeErrorCode {
         $current = $current.InnerException
     }
     return $null
+}
+
+# True when the plan runs on an engine component (HIP, or any listed engine component). Such a plan is never recovered onto another setup.
+function Test-FastLlmPlanOnEngineComponent {
+    param($Plan)
+    if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { return $true }
+    return [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
+}
+
+# The closing sentence of a failed self-test depends on whether the CLI may actually recover onto the next cached setup.
+function Get-FastLlmSelfTestFailureText {
+    param([string[]] $Reasons, $Plan)
+    $next = 'FastLLM tries the next cached setup.'
+    if (Test-FastLlmPlanOnEngineComponent -Plan $Plan) { $next = 'FastLLM does not switch to another setup on its own.' }
+    return "Self-test failed ($(@($Reasons) -join ', ')). The server was stopped; $next"
 }
 
 function Invoke-FastLlmSupervisedServer {
@@ -516,7 +584,6 @@ function Invoke-FastLlmSupervisedServer {
     # Resolve the policy before any state is written; a non-off policy may run the bounded advisory heap probe.
     if ($isHipPlan) {
         $state.vulkanMemoryPolicy = [pscustomobject][ordered]@{ requested = 'not-applicable'; effective = 'not-applicable'; reason = 'hip-lane' }
-        $state.barGuidance = [ordered]@{ shown = $false; text = $null }
     }
     else { $state.vulkanMemoryPolicy = Resolve-FastLlmVulkanBarMitigation -Plan $Plan -Requested $VulkanBarMitigation -InstallRoot $InstallRoot }
     if ($ThroughputCanary) { $state.throughputCanary = $null }
@@ -786,7 +853,7 @@ function Invoke-FastLlmSupervisedServer {
                 Write-Host "Self-test: generation $($selfTestResult.generationTokS) tok/s is below 70% of the $($selfTestResult.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
             }
             else {
-                $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message "Self-test failed ($(@($selfTestResult.reasons) -join ', ')). The server was stopped; FastLLM tries the next cached setup."
+                $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message (Get-FastLlmSelfTestFailureText -Reasons @($selfTestResult.reasons) -Plan $Plan)
                 $failure.Data['FastLlmReason'] = 'RuntimeCheckFailed'
                 throw $failure
             }

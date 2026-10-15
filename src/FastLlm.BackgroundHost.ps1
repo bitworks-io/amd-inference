@@ -506,8 +506,6 @@ function Invoke-FastLlmBackgroundServe {
         $lease = Enter-FastLlmLabAppLifetime -SourceRoot $source
         Import-Module (Join-Path $source 'src\FastLlm.psm1') -Force
         $operation = Enter-FastLlmOperation -InstallRoot $install
-        # M2: a status exists from the moment the lock is held (the same 'preparing' shape the CLI writes), not only after the engine is probed.
-        Write-FastLlmState -InstallRoot $install -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action='start' })
         $self = [Diagnostics.Process]::GetCurrentProcess()
         try { $hostIdentity = [ordered]@{pid=[int]$self.Id;startUtcTicks=[long]$self.StartTime.ToUniversalTime().Ticks} }
         finally { $self.Dispose() }
@@ -516,6 +514,8 @@ function Invoke-FastLlmBackgroundServe {
             sourceRoot=$source;
             sourcePinSha256=(Get-FileHash -LiteralPath (Join-Path $source 'src\FastLlm.BackgroundHost.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()}
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
+        # M2: status.json says 'preparing' (the shape fast-llm.ps1 writes) once the lock is held and the host record exists, before the first probe.
+        Write-FastLlmState -InstallRoot $install -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action='start' })
         $catalog = Join-Path $source 'config\catalog.json'
         $hardware = Get-FastLlmHardware -CatalogPath $catalog -InstallRoot $install
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
@@ -550,10 +550,10 @@ function Invoke-FastLlmBackgroundServe {
         }
         if ($record) {
             $record.phase='failed'
-            $record.failureCode = if ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }
+            $record.failureCode = if ($_.Exception.Data['FastLlmFailureCode']) { [string]$_.Exception.Data['FastLlmFailureCode'] } elseif ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }
             # A plan change or a recipe refusal carries its reason (our own fixed wording, bounded, single line); other failures keep the code only.
             $failureText = [string]$_.Exception.Message
-            if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal)) {
+            if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal) -or $_.Exception.Data['FastLlmFailureCode']) {
                 $record.failureReason = [regex]::Replace($failureText, '[\x00-\x1f\x7f]', ' ')
                 if ($record.failureReason.Length -gt 400) { $record.failureReason = $record.failureReason.Substring(0, 400) }
             }

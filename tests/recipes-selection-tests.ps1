@@ -157,3 +157,7 @@ $caseName = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'amd 
 Check ($caseName[0].device -ceq 'ROCm0') 'the name comparison ignores case but nothing else'
 $wrongFamily = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'Vulkan0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x' }
 Check ($null -ne $wrongFamily -and $wrongFamily.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'only ROCm<N> devices count as HIP devices'
+
+$suffixed = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX (gfx1100)' 24560)) -ComponentId 'x' }
+Check ($null -ne $suffixed -and $suffixed.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found' -and $suffixed.Message -like '*AMD Radeon RX 7900 XTX (gfx1100)*' -and $suffixed.Message -like '*Vulkan setup*') 'a HIP device name that differs by a suffix fails closed, reports the name it saw and points at the Vulkan setup'
+Check ($twin.Message -like '*Vulkan setup*') 'the ambiguous message also points at the Vulkan setup'
