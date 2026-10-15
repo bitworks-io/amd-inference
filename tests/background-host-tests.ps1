@@ -139,6 +139,7 @@ try {
         $script:mockBarPolicy = $VulkanBarMitigation
         $script:mockServerStarts++
         if ($script:throwServer) { throw 'disposable test server failure' }
+        if ($script:throwPlanChanged) { $changed = New-Object System.InvalidOperationException("The measured recipe 'r1' no longer applies at start.`r`nSecond line."); $changed.Data['FastLlmReason'] = 'PlanChanged'; throw $changed }
         return 0
     }
     function Install-FastLlmModel { throw 'Worker attempted acquisition.' }
@@ -148,6 +149,7 @@ try {
     $script:workerRequestId = 'dddddddddddddddddddddddddddddddd'
     $script:mockServerStarts = 0
     $script:throwServer = $false
+    $script:throwPlanChanged = $false
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
@@ -185,6 +187,21 @@ try {
     Assert-BackgroundTest ($badRejected -and $script:mockServerStarts -eq 0) 'An invalid vulkanBarMitigation request value must be refused before any start.'
     $failedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($failedOwner.phase -ceq 'failed' -and $failedOwner.failureCode -ceq 'background-start-or-runtime-failed') 'Worker did not retain bounded failure state.'
+    Assert-BackgroundTest ($failedOwner.failureReason -eq $null -or [string]$failedOwner.failureReason -eq '') 'An ordinary failure must not persist its message.'
+    # A PlanChanged failure keeps its reason (final review N2), single line and bounded.
+    $script:workerRequestId = 'abababababababababababababababab'
+    $changedPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
+    Write-FastLlmBackgroundDocument -Path $changedPath -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:throwServer = $false
+    $script:throwPlanChanged = $true
+    try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+    $script:throwPlanChanged = $false
+    $changedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($changedOwner.failureCode -ceq 'PlanChanged' -and [string]$changedOwner.failureReason -like "The measured recipe 'r1' no longer applies*" -and [string]$changedOwner.failureReason -notmatch "[\x00-\x1f]") 'A PlanChanged failure must persist its single-line reason.'
     # Regression: Windows PowerShell 5.1 turns a plain $null into "" for File.Replace's backup argument ("path is not of a legal form").
     $replaceDoc = Join-Path $scratch 'replace-regression.json'
     Write-FastLlmBackgroundDocument -Path $replaceDoc -Value ([ordered]@{generation=1})

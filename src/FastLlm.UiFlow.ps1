@@ -330,6 +330,32 @@ function Get-FastLlmUiEvidenceUrl {
     return $null
 }
 
+# The preview's measured recipe is passed to the start as -Recipe, so a start that can no longer apply it fails closed
+# ("does not apply to this PC") instead of silently running as estimated under the preview's measured label.
+function Get-FastLlmUiStartRecipeArguments {
+    param($Plan)
+    if (-not $Plan -or -not $Plan.PSObject.Properties['recipe'] -or -not $Plan.recipe) { return @() }
+    $origin = [string] $Plan.recipe.origin
+    $id = $null
+    if ($Plan.recipe.PSObject.Properties['id']) { $id = [string] $Plan.recipe.id }
+    if (-not $id -or @('estimated', 'manual', '') -contains $origin) { return @() }
+    if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
+    return @('-Recipe', $id)
+}
+
+# What the RUNNING server's plan said about its recipe (status.json planRecipe), never the preview's.
+function Get-FastLlmUiRunEvidenceUrl {
+    param($State)
+    if (-not $State -or -not $State.PSObject.Properties['planRecipe'] -or -not $State.planRecipe) { return $null }
+    return (Get-FastLlmUiEvidenceUrl -Plan ([pscustomobject] @{ recipe = $State.planRecipe }))
+}
+
+function Get-FastLlmUiRunSetupLine {
+    param($State)
+    if (-not $State -or -not $State.PSObject.Properties['planRecipe'] -or -not $State.planRecipe -or -not $State.planRecipe.label) { return $null }
+    return "Setup: $([string] $State.planRecipe.label)"
+}
+
 function Format-FastLlmUiSelfTest {
     param($SelfTest)
     if (-not $SelfTest) { return $null }

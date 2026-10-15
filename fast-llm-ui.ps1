@@ -502,7 +502,12 @@ function LaunchUiPhase {
             LaunchStep 'model download' $args
             return
         }
-        'serving' { LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+$script:selection);return }
+        'serving' {
+            # The preview's label and link describe the preview only; clear them until the running plan reports its own.
+            $resultsLink.Visible=$false;$script:evidenceUrl=$null
+            $statusLabel.Text='Starting the server...'
+            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan)+$script:selection);return
+        }
         default { throw "The control-window workflow cannot launch phase '$($script:flow.phase)'." }
     }
 }
@@ -683,9 +688,11 @@ $timer.Add_Tick({
         $text=$script:child.Snapshot();$output.Text=$text;$output.SelectionStart=$output.TextLength;$output.ScrollToCaret()
         if(-not $script:child.Process.HasExited){
             if($script:step -eq 'serving'){
-                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text='Ready - API smoke tests passed; GPU residency/performance unqualified.';$progress.Visible=$false}
+                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text='Ready - API smoke tests passed; GPU residency/performance unqualified.';$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
                     if($s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
+                        $setupLine=Get-FastLlmUiRunSetupLine -State $s
+                        if($setupLine){$lines+=$setupLine}
                         if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}
                         $barNote=Get-FastLlmUiBarNote -State $s
                         if($barNote){$lines+=$barNote;$barLink.Visible=$true}
