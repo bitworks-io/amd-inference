@@ -166,16 +166,18 @@ jobs:
           .\tests\recipes-selection-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\semantic-smoke-tests.ps1
-      - name: Background host, UI background and Vulkan memory policy tests in Windows PowerShell 5.1 (mock only)
+      # tests/background-host-tests.ps1 is not run here: the background host refuses state it does not own, and files an
+      # elevated runner creates belong to Administrators. It runs as the standard bench user in the native gate.
+      - name: UI background and Vulkan memory policy tests in Windows PowerShell 5.1 (mock only)
         shell: powershell
         run: |
-          .\tests\background-host-tests.ps1
           .\tests\ui-background-tests.ps1
           .\tests\vulkan-memory-policy-tests.ps1
-      - name: Background host, UI background and Vulkan memory policy tests in PowerShell 7 (mock only)
+      # tests/background-host-tests.ps1 is not run here: the background host refuses state it does not own, and files an
+      # elevated runner creates belong to Administrators. It runs as the standard bench user in the native gate.
+      - name: UI background and Vulkan memory policy tests in PowerShell 7 (mock only)
         shell: pwsh
         run: |
-          .\tests\background-host-tests.ps1
           .\tests\ui-background-tests.ps1
           .\tests\vulkan-memory-policy-tests.ps1
 
