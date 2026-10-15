@@ -930,6 +930,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     }
     $linkProbeDir = New-TestRoot
     $canLink = New-TestLink -Path (Join-Path $linkProbeDir 'l') -Target $linkProbeDir
+    # Links are removed with Directory.Delete (non-recursive, never follows the link); Remove-Item can prompt or follow on Windows PowerShell 5.1.
+    if ($canLink) { [System.IO.Directory]::Delete((Join-Path $linkProbeDir 'l')) }
     if (-not $canLink) { Write-Host 'SKIP: the reparse-point tests (links in the staging folder, the component tree, requirers and removal) - neither a symbolic link nor a junction could be created here' }
     $isUnix = [System.IO.Path]::DirectorySeparatorChar -eq '/'
 
@@ -1123,6 +1125,12 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $derivedDoc = Write-ComponentsDoc @((New-TreeComponent -Id 'rt-bound-derived' -Parts @($derivedPart.part)))
     $derivedEntry = Get-ComponentEntry $derivedDoc 'rt-bound-derived'
     $probeCache = & $module { param($r, $c) @((Get-FastLlmComponentCachePaths -Component $c -InstallRoot $r).paths)[0] } (Join-Path $boundaryBase 'p') $derivedEntry
+    # The cache file name keeps only the URL's extension, and that extension must still make a simple leaf name.
+    $hostilePart = New-TreePart -Paths @('bin/a.dll')
+    $hostilePart.url = 'https://example.com/dl/x.z%3Aip'
+    $hostileEntry = Get-ComponentEntry (Write-ComponentsDoc @((New-TreeComponent -Id 'rt-hostile-ext' -Parts @($hostilePart)))) 'rt-hostile-ext'
+    $hostileMessage = Get-ThrownMessage { & $module { param($r, $c) Get-FastLlmComponentCachePaths -Component $c -InstallRoot $r } (Join-Path $boundaryBase 'h') $hostileEntry }
+    Check ($null -ne $hostileMessage -and $hostileMessage -like '*Component download file name*') 'a source URL whose extension is not a simple leaf name is refused for the cache path'
     $cacheSuffix = $probeCache.Length - [System.IO.Path]::GetFullPath((Join-Path $boundaryBase 'p')).Length
     foreach ($case in @(@{ total = 259; allowed = $true }, @{ total = 260; allowed = $false })) {
         $wantRoot = $case.total - 90 - $cacheSuffix
@@ -1188,6 +1196,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $null = Install-FastLlmComponent -ComponentsPath $staleFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $staleRoot -AcceptLicense -Download (New-ChainSeam -Fixture $staleFx -State (New-ChainState)) 6>$null 3>$null
     Check ((-not (Test-Path -LiteralPath (Join-Path $stagingBase 'oldoldol'))) -and (Test-Path -LiteralPath (Join-Path $stagingBase 'freshfre'))) 'an install removes staging leftovers older than an hour and keeps a fresh one'
     if ($staleLinkMade) { Check ((Test-Path -LiteralPath (Join-Path $linkTarget 'precious.txt')) -and (Test-Path -LiteralPath (Join-Path $stagingBase 'linklink'))) 'a link inside the staging folder is neither followed nor removed' }
+    if ($staleLinkMade) { [System.IO.Directory]::Delete((Join-Path $stagingBase 'linklink')) }
     $filesSourceNow = [regex]::Match($moduleSourceEarly, '(?s)function Install-FastLlmComponentFiles \{.*?\r?\n\}\r?\n').Value
     Check ($filesSourceNow.Contains('New-Item -ItemType Directory -Path $candidate -ErrorAction Stop') -and $filesSourceNow -notmatch 'New-Item -ItemType Directory -Path \$candidate[^\r\n]*-Force') 'the per-install staging folder is created without -Force, so an existing name fails and is redrawn'
 
@@ -1228,7 +1237,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Remove-Item -LiteralPath (Join-Path $treeComponentRoot '.kpack') -Recurse -Force
         $null = New-TestLink -Path (Join-Path $treeComponentRoot '.kpack') -Target $linkOutside
         Check ((-not (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry -Depth Presence)) -and (-not (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry))) 'a link inside the component root fails both depths'
-        Remove-Item -LiteralPath (Join-Path $treeComponentRoot '.kpack') -Force
+        [System.IO.Directory]::Delete((Join-Path $treeComponentRoot '.kpack'))
         New-Item -ItemType Directory -Path (Join-Path $treeComponentRoot '.kpack') -Force | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $treeComponentRoot '.kpack/k.kpack'), 'runtime-k')
         Check (Test-FastLlmComponentInstallation -InstallRoot $treeRoot -Component $treeEntry) 'the tree verifies again once the link is replaced by the real folder (positive control)'
@@ -1266,6 +1275,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $null = New-TestLink -Path (Join-Path $innerComponentRoot 'bin/sneaky') -Target $edgeOutside
         $innerMessage = Get-ThrownMessage { Remove-FastLlmComponent -ComponentsPath $innerFx.ComponentsPath -ComponentId 'rt-hip' -InstallRoot $innerRoot }
         Check ($null -ne $innerMessage -and $innerMessage -like '*reparse point*' -and (Test-Path -LiteralPath (Join-Path $edgeOutside 'precious.txt')) -and (Test-Path -LiteralPath (Join-Path $innerComponentRoot 'bin/a.dll'))) 'a link inside a component refuses the removal and deletes nothing'
+        [System.IO.Directory]::Delete((Join-Path $innerComponentRoot 'bin/sneaky'))
     }
 
     # ---- components -List shows runtime kinds ----
