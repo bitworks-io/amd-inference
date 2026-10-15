@@ -94,12 +94,19 @@ $e = New-Env
 $m = Mock 200 (Json (Rel 'v2026.10.16.1'))
 $null = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $m -NowUtc $t0
 $r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $m -NowUtc $t0.AddHours(23)
-Check ($r.status -eq 'skipped-recent' -and $script:calls.Count -eq 1) 'a second call within 24 h is skipped with no request'
+Check ($r.status -eq 'available' -and $script:calls.Count -eq 1) 'a second call within 24 h makes no request and still offers the cached newer release'
 Check ($null -ne $r.latest -and $r.latest.version -eq '2026.10.16.1' -and $r.latest.assets['a.zip'].size -eq 100) 'a skipped call still returns the stored latest'
 $r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $m -NowUtc $t0.AddHours(25)
 Check ($r.status -eq 'available' -and $script:calls.Count -eq 2) 'after 24 h the check runs again'
 $r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $m -NowUtc $t0.AddHours(25).AddMinutes(1) -Force
 Check ($r.status -eq 'available' -and $script:calls.Count -eq 3) '-Force bypasses the 24 h limit'
+
+# a cached latest that is not newer than the installed version stays skipped-recent
+$e = New-Env
+$mSame = Mock 200 (Json (Rel 'v2026.10.15.1'))
+$null = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $mSame -NowUtc $t0
+$r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $mSame -NowUtc $t0.AddHours(1)
+Check ($r.status -eq 'skipped-recent' -and $script:calls.Count -eq 1) 'inside 24 h an equal cached latest is skipped-recent with no request'
 
 # --- ETag and 304 ---
 $e = New-Env
@@ -111,7 +118,7 @@ Check ($r.status -eq 'available' -and $r.latest.version -eq '2026.10.16.1') 'a 3
 $saved = Get-Content -LiteralPath (StatePath $e) -Raw | ConvertFrom-Json
 Check ($saved.etag -eq 'W/"abc"' -and ([datetime]$saved.lastCheckUtc).ToUniversalTime().Hour -eq 18) 'a 304 keeps the ETag and stamps the time'
 $r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request $m -NowUtc $t0.AddHours(31)
-Check ($r.status -eq 'skipped-recent' -and $script:calls.Count -eq 1) 'the 304 stamp starts a new 24 h window'
+Check ($r.status -eq 'available' -and $script:calls.Count -eq 1) 'the 304 stamp starts a new 24 h window'
 $e2 = New-Env
 $r = Invoke-FastLlmUpdateCheck -InstallRoot $e2.Install -AppRoot $e2.App -Request (Mock 304 '' '') -NowUtc $t0
 Check ($r.status -eq 'failed' -and -not (Test-Path -LiteralPath (StatePath $e2))) 'a 304 with no stored state is a failure'

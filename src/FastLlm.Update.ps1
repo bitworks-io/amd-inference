@@ -283,7 +283,13 @@ function Invoke-FastLlmUpdateCheck {
     if (-not $Force -and $sameChannel -and $null -ne $state.lastCheckUtc) {
         $age = $now - $state.lastCheckUtc
         if ($age.TotalHours -ge 0 -and $age.TotalHours -lt 24) {
-            return (& $make 'skipped-recent' $state.latest $state.lastCheckUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture))
+            $recentStamp = $state.lastCheckUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+            # A newer release found by an earlier check stays available inside the window; still NO request.
+            $cachedLatest = $state.latest
+            if ($null -ne $cachedLatest -and -not [string]::IsNullOrEmpty([string]$cachedLatest.version) -and (Compare-FastLlmVersion ([string]$cachedLatest.version) $installedVersion) -gt 0) {
+                return (& $make 'available' $cachedLatest $recentStamp)
+            }
+            return (& $make 'skipped-recent' $cachedLatest $recentStamp)
         }
     }
 
