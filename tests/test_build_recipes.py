@@ -16,6 +16,13 @@ ENTRY = {
 }
 
 
+def community(origin="community-reproduced", rid="c1", **expected):
+    return {"id": rid, "origin": origin, "variant": "rx-7900-xtx", "gpuCount": 1, "model": "qwen3.8-27b-ud-q4-k-m",
+            "runtime": ENTRY["runtime"], "engineBuild": "b10698", "recommended": False,
+            "expected": dict(ENTRY["expected"], **expected), "evidence": copy.deepcopy(ENTRY["evidence"]),
+            "source": {"author": "a", "url": "https://example.com/p", "postedAt": "2026-10-01", "recordId": "r"}}
+
+
 class RecipeBuilderTests(unittest.TestCase):
     def tree(self, entries=None, records=None):
         root = Path(tempfile.mkdtemp())
@@ -73,6 +80,35 @@ class RecipeBuilderTests(unittest.TestCase):
                 community = [r for r in document["recipes"] if r["origin"] == "community-reproduced"][0]
                 self.assertEqual(community["compelling"]["isCompelling"], want)
                 self.assertEqual(community["label"], "Community recipe, reproduced by Bitworks")
+
+    def test_reproduced_community_entry_needs_a_live_bitworks_page(self):
+        # "Reproduced by Bitworks" with no result page behind it is the overclaim the live-page rule exists to stop.
+        for label, evidence in [("no evidence", None), ("empty evidence", {}), ("url without date", {"url": "https://bitworks.io/amd/results/c"}),
+                                ("date without url", {"publishedAt": "2026-10-20"}), ("null date", {"url": "https://bitworks.io/amd/results/c", "publishedAt": None})]:
+            with self.subTest(label):
+                record = community(generationTokS=40.0)
+                record["evidence"] = evidence
+                document, skipped = br.build(self.tree([ENTRY], [record]))
+                self.assertEqual([r["id"] for r in document["recipes"]], [ENTRY["id"]])
+                self.assertIn("c1: no live evidence page", skipped[0])
+
+    def test_reproduced_community_entry_with_a_live_page_ships(self):
+        document, skipped = br.build(self.tree([ENTRY], [community(generationTokS=40.0)]))
+        self.assertEqual(skipped, [])
+        self.assertEqual(sorted(r["origin"] for r in document["recipes"]), ["bitworks", "community-reproduced"])
+
+    def test_reproduced_community_entry_off_the_bitworks_site_is_refused(self):
+        record = community(generationTokS=40.0)
+        record["evidence"]["url"] = "https://evil.example/bitworks.io/"
+        with self.assertRaises(br.RecipeError):
+            br.build(self.tree([ENTRY], [record]))
+
+    def test_experimental_community_entry_needs_no_bitworks_page(self):
+        record = community("community-experimental", generationTokS=40.0)
+        record["evidence"] = None
+        document, skipped = br.build(self.tree([ENTRY], [record]))
+        self.assertEqual(skipped, [])
+        self.assertEqual(sorted(r["origin"] for r in document["recipes"]), ["bitworks", "community-experimental"])
 
     def test_output_is_deterministic_and_check_detects_drift(self):
         root = self.tree([ENTRY])
