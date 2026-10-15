@@ -1848,7 +1848,7 @@ function Get-FastLlmComponentChain {
         if (-not $byId.ContainsKey($key)) {
             throw (New-FastLlmEngineFailure -Code 'component-requires-unknown' -ComponentId $CurrentId -Message "Component '$CurrentId' is not in the signed components list.")
         }
-        if ($done.Contains($key)) { return }
+        # No early return for a finished node: its requires are walked again so the depth limit applies to the longest path, not the first one found.
         $node = $byId[$key]
         $requiresProperty = $node.PSObject.Properties['requires']
         if ($null -ne $requiresProperty -and $null -ne $requiresProperty.Value) {

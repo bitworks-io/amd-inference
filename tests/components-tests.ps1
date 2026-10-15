@@ -291,6 +291,12 @@ try {
     Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components $diamond -Id 'missing' }) -ceq 'component-requires-unknown') 'Get-FastLlmComponentChain on an unknown id is component-requires-unknown'
     Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components @((& $mkObj 'x1' @('x2')), (& $mkObj 'x2' @('x1'))) -Id 'x1' }) -ceq 'component-requires-cycle') 'Get-FastLlmComponentChain on a cycle is component-requires-cycle'
     Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components @((& $mkObj 'y1' @('y2')), (& $mkObj 'y2' @('y3')), (& $mkObj 'y3' @('y4')), (& $mkObj 'y4' @('y5')), (& $mkObj 'y5' @())) -Id 'y1' }) -ceq 'component-requires-too-deep') 'Get-FastLlmComponentChain on a chain of 5 is component-requires-too-deep'
+    $sharedDeep = @((& $mkObj 'top' @('xx', 'aa')), (& $mkObj 'aa' @('bb')), (& $mkObj 'bb' @('xx')), (& $mkObj 'xx' @('yy')), (& $mkObj 'yy' @()))
+    Check ((Get-ThrownCode { Get-FastLlmComponentChain -Components $sharedDeep -Id 'top' }) -ceq 'component-requires-too-deep') 'a shared dependency reached by a 5-node path (top, aa, bb, xx, yy) is component-requires-too-deep even when a shallower path finished it first'
+    $sharedDeepDoc = Write-ComponentsDoc @((& $mk 'top' @('xx', 'aa')), (& $mk 'aa' @('bb')), (& $mk 'bb' @('xx')), (& $mk 'xx' @('yy')), (& $mk 'yy' @()))
+    Check ((Get-ThrownCode { Get-FastLlmComponents -ComponentsPath $sharedDeepDoc }) -ceq 'component-requires-too-deep') 'the same shared-dependency fixture is refused when the file loads'
+    $diamond3 = @((& $mkObj 'top' @('aa', 'bb')), (& $mkObj 'aa' @('cc')), (& $mkObj 'bb' @('cc')), (& $mkObj 'cc' @()))
+    Check ((@(Get-FastLlmComponentChain -Components $diamond3 -Id 'top') | ForEach-Object { $_.id }) -join ',' -ceq 'cc,aa,bb,top') 'a diamond within the limit lists the shared dependency once, first'
     Check (@(Get-FastLlmComponentChain -Components @((& $mkObj 'solo' @())) -Id 'solo').Count -eq 1) 'a component without requires is a chain of one'
 
     # Get-FastLlmComponentSources.

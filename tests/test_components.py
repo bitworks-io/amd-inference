@@ -216,8 +216,21 @@ class TreeTests(unittest.TestCase):
                             comp("cc", [part(["bin/c.dll"])], requires=["aa"])], "cycle")
         chain4 = [comp(f"d{i}", [part([f"bin/d{i}.dll"])], requires=[f"d{i + 1}"] if i < 4 else []) for i in range(1, 5)]
         self.assertEqual(self.errors(*chain4), [])
+        shared = [comp("top", [part(["bin/t.dll"])], requires=["xx", "aa"]), comp("aa", [part(["bin/a.dll"])], requires=["bb"]),
+                  comp("bb", [part(["bin/b.dll"])], requires=["xx"]), comp("xx", [part(["bin/x.dll"])], requires=["yy"]),
+                  comp("yy", [part(["bin/y.dll"])])]
+        self.assertRefused(shared, "deeper than 4")
+        diamond = [comp("top", [part(["bin/t.dll"])], requires=["aa", "bb"]), comp("aa", [part(["bin/a.dll"])], requires=["cc"]),
+                   comp("bb", [part(["bin/b.dll"])], requires=["cc"]), comp("cc", [part(["bin/c.dll"])])]
+        self.assertEqual(self.errors(*diamond), [])
         chain5 = [comp(f"d{i}", [part([f"bin/d{i}.dll"])], requires=[f"d{i + 1}"] if i < 5 else []) for i in range(1, 6)]
         self.assertRefused(chain5, "deeper than 4")
+
+    def test_sha_with_trailing_newline_is_refused(self):
+        bad = comp("rt", [part(["bin/a.dll"])]); bad["sources"][0]["sha256"] = ZERO + "\n"
+        self.assertRefused([bad], "sha256")
+        bad = comp("rt", [part(["bin/a.dll"])]); bad["sources"][0]["fileManifest"][0]["sha256"] = ZERO + "\n"
+        self.assertRefused([bad], "sha256")
 
     def test_license_links(self):
         links = {"spdx": "p", "consent": "accept", "url": "https://example.com/l", "links": [{"title": "EULA", "url": "https://example.com/e"}]}
