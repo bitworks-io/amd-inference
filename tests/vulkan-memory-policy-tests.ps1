@@ -1022,11 +1022,18 @@ Write-Host $doctorTiming
 
 # ---- static guards: default path, ordering, catalog, CLI ----
 $runtimeSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Runtime.ps1') -Raw
-$pathIndex=$runtimeSource.IndexOf("`$info.EnvironmentVariables['PATH']")
-$setIndex=$runtimeSource.IndexOf('$script:FastLlmVulkanBarMitigationVariable] =')
-$clearIndex=$runtimeSource.IndexOf('Test-FastLlmEnvironmentNameRequiresClearing $name')
+# The child environment is built by Get-FastLlmEngineEnvironment (scrub, then PATH, then the BAR variable) and applied by
+# Initialize-FastLlmEngineStartInfo (removals before sets), which the launch calls before it starts the child.
+$envBuilderIndex=$runtimeSource.IndexOf('function Get-FastLlmEngineEnvironment')
+$clearIndex=$runtimeSource.IndexOf('Test-FastLlmEnvironmentNameRequiresClearing -Name',$envBuilderIndex)
+$pathIndex=$runtimeSource.IndexOf("`$set['PATH'] =",$envBuilderIndex)
+$setIndex=$runtimeSource.IndexOf('$set[$script:FastLlmVulkanBarMitigationVariable] =',$envBuilderIndex)
+$applyIndex=$runtimeSource.IndexOf('function Initialize-FastLlmEngineStartInfo')
+$applyRemoveIndex=$runtimeSource.IndexOf('$StartInfo.EnvironmentVariables.Remove($name)',$applyIndex)
+$applySetIndex=$runtimeSource.IndexOf('$StartInfo.EnvironmentVariables[[string] $name] =',$applyIndex)
+$launchApplyIndex=$runtimeSource.IndexOf('Initialize-FastLlmEngineStartInfo -StartInfo $info')
 $startIndex=$runtimeSource.IndexOf('$hostProcess.Start($info)')
-Check ($clearIndex -gt 0 -and $clearIndex -lt $setIndex -and $pathIndex -lt $setIndex -and $setIndex -lt $startIndex) 'the mitigation variable is set after sanitisation and before the child starts'
+Check ($envBuilderIndex -gt 0 -and $clearIndex -gt $envBuilderIndex -and $clearIndex -lt $pathIndex -and $pathIndex -lt $setIndex -and $setIndex -lt $applyIndex -and $applyRemoveIndex -gt $applyIndex -and $applyRemoveIndex -lt $applySetIndex -and $launchApplyIndex -gt 0 -and $launchApplyIndex -lt $startIndex) 'the mitigation variable is set after sanitisation and before the child starts'
 Check ($runtimeSource.Contains("`$state.vulkanMemoryPolicy.effective -eq 'on'")) 'only the resolved effective decision can set the variable'
 $readyIndex=$runtimeSource.IndexOf("Write-Host `"Ready:")
 $canaryIndex=$runtimeSource.IndexOf('Invoke-FastLlmThroughputCanary -BaseUrl')
