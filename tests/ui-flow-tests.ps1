@@ -326,6 +326,7 @@ $plan.recipe = $null
 Check ((Format-FastLlmUiRecipeSummary -Plan $plan).EndsWith('Estimated for your card.')) 'a plan without a recipe is labelled estimated'
 Check ((Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status = 'pass'; generationTokS = 32.5; promptTokS = 650 })) -eq 'Self-test passed: 32.5 tok/s generation, 650 tok/s prompt.') 'self-test pass text'
 Check ((Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status = 'below-expected'; generationTokS = 20; promptTokS = 400; expectedGenerationTokS = 32.7 })) -like 'Self-test: slower than expected*20*32.7*doctor*') 'below-expected text names the gap and doctor'
+Check ((Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status = 'skipped'; reasons = @('context-too-small') })) -eq 'Self-test skipped: the context size is too small for the performance check.') 'a skipped self-test is not reported as a failure'
 Check ($null -eq (Get-FastLlmUiBarNote -State ([pscustomobject]@{ barGuidance = [pscustomobject]@{ shown = $false; text = $null } }))) 'no BAR note when not shown'
 Check ((Get-FastLlmUiBarNote -State ([pscustomobject]@{ barGuidance = [pscustomobject]@{ shown = $true; text = 'Resizable BAR (AMD Smart Access Memory) appears to be off on this PC. x' } })) -like 'Resizable BAR*') 'BAR note passes through the runtime text'
 $uiRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-set-' + [guid]::NewGuid().ToString('N'))

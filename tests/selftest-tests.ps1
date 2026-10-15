@@ -34,5 +34,11 @@ $err = { param($Path, $Body, $TimeoutMs) if ($Path -eq '/tokenize') { [pscustomo
 $r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 8192 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $err
 Check ($r.status -eq 'fail' -and @($r.reasons) -contains 'request-failed') 'an HTTP 500 is a typed hard fail'
 $r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 256 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $ok
-Check ($r.status -eq 'fail' -and @($r.reasons) -contains 'context-too-small') 'a context smaller than the workload is reported'
+Check ($r.status -eq 'skipped' -and @($r.reasons) -contains 'context-too-small') 'a context smaller than the workload is skipped, not failed'
+$script:requests = 0
+$counting = { param($Path, $Body, $TimeoutMs) $script:requests++; if ($Path -eq '/tokenize') { [pscustomobject]@{ Status = 200; Body = (@{ tokens = $tokens } | ConvertTo-Json -Compress) } } else { Stream 128 } }
+$r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 647 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $counting
+Check ($r.status -eq 'skipped' -and $script:requests -eq 0) 'a skipped self-test sends no request (647 is one token under the 648 needed)'
+$r = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 648 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $counting
+Check ($r.status -eq 'pass' -and $script:requests -gt 0) 'a context of exactly 648 runs the self-test'
 Write-Host 'selftest-tests: PASS'

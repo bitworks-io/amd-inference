@@ -276,17 +276,19 @@ try {
     # (status phase, Ready console line) and before the last-ready recovery record is rewritten. A hard fail keeps the previous record.
     $savedWriteState=& $module {(Get-Command Write-FastLlmState).ScriptBlock}
     try {
-        foreach ($selfTestMode in @('selftest-ok','ok')) {
+        foreach ($selfTestCase in @(@{mode='selftest-ok';context=1024;label='selftest-ok'},@{mode='ok';context=1024;label='ok'},@{mode='selftest-ok';context=600;label='small-context'})) {
+            $selfTestMode=$selfTestCase.mode
             $expectPass=($selfTestMode -ceq 'selftest-ok')
+            $expectSkip=($selfTestCase.context -lt 648)
             $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
             $listener.Start();$port=$listener.LocalEndpoint.Port;$listener.Stop()
-            $runRoot=Join-Path $temp ('selftest-case-'+$selfTestMode)
+            $runRoot=Join-Path $temp ('selftest-case-'+$selfTestCase.label)
             $lock=Enter-FastLlmOperation $runRoot
             $plan=[pscustomobject]@{
                 enginePath=(Get-Process -Id $PID).Path
-                serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$selfTestMode,'-Model','test-model')
+                serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$selfTestMode,'-Model','test-model','-Context',"$($selfTestCase.context)")
                 endpoint="http://127.0.0.1:$port/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
-                hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}
+                hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=$selfTestCase.context;sha256=('0'*64)}
                 catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
             }
             $plan.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
@@ -305,7 +307,7 @@ try {
                 }
             } $writeLog $savedWriteState
             $stopper=$null
-            if ($expectPass) {
+            if ($expectPass -or $expectSkip) {
                 $stopper=New-Object Diagnostics.Process
                 $stopper.StartInfo.FileName=(Get-Process -Id $PID).Path
                 $stopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
@@ -332,7 +334,12 @@ try {
             }
             $finalStatus=Get-FastLlmStatus $runRoot
             $selfTestFile=Read-FastLlmJson (Join-Path $runRoot 'state/selftest.json')
-            if ($expectPass) {
+            if ($expectSkip) {
+                Check ($null -eq $failure -and $exit -eq 0) 'self-test skip: a context too small for the workload does not fail the start'
+                Check ($selfTestFile.result.status -ceq 'skipped' -and @($selfTestFile.result.reasons) -contains 'context-too-small') 'self-test skip: selftest.json records skipped with the reason context-too-small'
+                Check ($iSelfTest -ge 0 -and $iReady -gt $iSelfTest -and $iRecord -gt $iReady -and $iReadyLine -gt $iSelfTestLine -and $iSelfTestLine -ge 0) 'self-test skip: the skip is recorded before ready and the Ready line follows it'
+                Check ($console -like 'Self-test skipped*') 'self-test skip: the console says the self-test was skipped'
+            } elseif ($expectPass) {
                 Check ($null -eq $failure -and $exit -eq 0) 'self-test pass: the supervised start completes and obeys stop'
                 Check ($iSelfTest -ge 0 -and $iReady -gt $iSelfTest -and $iRecord -gt $iReady) 'self-test pass: the verdict is written before the ready status and the last-ready record'
                 Check ($iSelfTestLine -ge 0 -and $iReadyLine -gt $iSelfTestLine) 'self-test pass: the Ready line is printed after the self-test line'
@@ -351,7 +358,7 @@ try {
             try {
                 $probe.Connect('127.0.0.1',$port)
                 throw 'Leaked self-test child server remains listening.'
-            } catch [Net.Sockets.SocketException] { Check $true "self-test case $selfTestMode child was terminated" } finally { $probe.Dispose() }
+            } catch [Net.Sockets.SocketException] { Check $true "self-test case $($selfTestCase.label) child was terminated" } finally { $probe.Dispose() }
             $lock.Dispose();$lock=$null
         }
     } finally {
