@@ -670,11 +670,12 @@ $Model27B='qwen3.8-27b-ud-q4-k-m'
 function Canary($Names,[scriptblock]$Request,[int]$Context=1024,[string]$Model=$Model27B){& $module {param($N,$R,$C,$M) Invoke-FastLlmThroughputCanary -BaseUrl 'http://127.0.0.1:1' -ContextSize $C -AdapterNames $N -Request $R -ModelId $M} $Names $Request $Context $Model}
 $tokenBody='{"tokens":['+((1..600) -join ',')+']}'
 function NewMock([double]$PromptMs=100,[int]$PromptN=512){
+    $tb=$tokenBody  # GetNewClosure copies only locals; script-level $tokenBody is not visible when run from another script (CI)
     $recorded=@{paths=(New-Object 'Collections.Generic.List[string]');completion=$null;completions=0}
     $response=FakeResponse $PromptMs $PromptN
     $request={param($Path,$Body,$TimeoutMs)
         $recorded.paths.Add($Path)
-        if($Path -eq '/tokenize'){return [pscustomobject]@{Status=200;Body=$tokenBody;Events=@();EventTimesMs=@();ElapsedMs=1.0}}
+        if($Path -eq '/tokenize'){return [pscustomobject]@{Status=200;Body=$tb;Events=@();EventTimesMs=@();ElapsedMs=1.0}}
         $recorded.completion=$Body
         $recorded.completions++
         return $response
@@ -712,10 +713,11 @@ foreach($id in @('qwen3.8-27b-ud-iq4-xs','qwen3.8-27b-ud-q4-k-m','qwen3.8-27b-q8
 # warm-up: the first request is discarded, only the second one is rated
 $warmSlow=@((FakeResponse 5000),(FakeResponse 100))
 function NewSequence($Responses){
+    $tb=$tokenBody  # GetNewClosure copies only locals; script-level $tokenBody is not visible when run from another script (CI)
     $sequence=@{n=0;paths=(New-Object 'Collections.Generic.List[string]')}
     $request={param($Path,$Body,$TimeoutMs)
         $sequence.paths.Add($Path)
-        if($Path -eq '/tokenize'){return [pscustomobject]@{Status=200;Body=$tokenBody;Events=@();EventTimesMs=@();ElapsedMs=1.0}}
+        if($Path -eq '/tokenize'){return [pscustomobject]@{Status=200;Body=$tb;Events=@();EventTimesMs=@();ElapsedMs=1.0}}
         $item=$Responses[[Math]::Min($sequence.n,$Responses.Count-1)]
         $sequence.n++
         if($item -is [scriptblock]){return (& $item)}
