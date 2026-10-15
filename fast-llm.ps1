@@ -415,11 +415,12 @@ try {
             $windowsPrerequisites = Get-FastLlmWindowsPrerequisiteStatus
             $vulkanVerified = Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey 'vulkan' -Asset $catalog.engine.assets.vulkan
             # Install integrity: the installed files against the signed FastLLM.cat. The signature skip is a hidden test seam that
-            # applies ONLY to an unsigned catalog (reason not-valid) AND FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=1; any other signature
+            # applies ONLY to an unsigned catalog (reason not-valid, Authenticode status exactly NotSigned) AND FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=1; any other signature
             # failure is never skipped. Nothing in the product sets the variable.
             $installIntegrityResult = Test-FastLlmInstallIntegrity -AppRoot $PSScriptRoot
             if ($installIntegrityResult.status -ceq 'failed' -and $installIntegrityResult.reason -ceq 'catalog-signature' -and
                 $installIntegrityResult.catalogSignature -and $installIntegrityResult.catalogSignature.reason -ceq 'not-valid' -and
+                $installIntegrityResult.catalogSignature.detail -ceq 'NotSigned' -and
                 $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE -ceq '1') {
                 $installIntegrityResult = Test-FastLlmInstallIntegrity -AppRoot $PSScriptRoot -SkipSignatureForTest
             }
