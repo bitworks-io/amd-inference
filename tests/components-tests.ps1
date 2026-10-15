@@ -1783,7 +1783,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $componentsBody = Get-CliBranchBody 'components'
     $recipesBody = Get-CliBranchBody 'recipes'
     Check ($null -ne $componentsBody -and $null -ne $recipesBody) 'fast-llm.ps1 has a components branch and a recipes branch'
-    $branchDeclaration = 'function Invoke-CliBranchUnderTest { [CmdletBinding()] param([string] $Install, [string] $Remove, [switch] $AcceptLicense, [switch] $Unattended, [switch] $AsJson, [string] $InstallRoot, [string] $componentsFilePath, [string] $recipesPath) '
+    $branchDeclaration = 'function Invoke-CliBranchUnderTest { [CmdletBinding()] param([string] $Install, [string] $Remove, [switch] $AcceptLicense, [switch] $Unattended, [switch] $AsJson, [switch] $Detail, [string] $InstallRoot, [string] $componentsFilePath, [string] $recipesPath, [string] $catalogPath) '
     . ([scriptblock]::Create($branchDeclaration + $componentsBody + ' }'))
     $componentsFunction = ${function:Invoke-CliBranchUnderTest}
     . ([scriptblock]::Create($branchDeclaration + $recipesBody + ' }'))
@@ -1826,8 +1826,43 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $recipesOnText = @(& $recipesFunction -InstallRoot $recipesOnRoot -recipesPath $recipesFile 6>&1 | ForEach-Object { [string] $_ })
     Check ($recipesOnText.Count -eq 2 -and @($recipesOnText | Where-Object { $_ -like 'e1 - Experimental community recipe, not reproduced by Bitworks - *' }).Count -eq 1) 'recipes lists an experimental recipe with its label when the switch is on'
 
+    # recipes -Detail -AsJson: each recipe with its engine's requires chain, read-only and offline.
+    $shippedCatalogPath = Join-Path $PSScriptRoot '../config/catalog.json'
+    $shippedComponentsPath = Join-Path $PSScriptRoot '../config/components.json'
+    $shippedRecipesPath = Join-Path $PSScriptRoot '../config/recipes.json'
+    $detailRoot = New-TestRoot
+    function Get-DetailRows([string] $Root) {
+        $text = (@(& $recipesFunction -InstallRoot $Root -recipesPath $shippedRecipesPath -componentsFilePath $shippedComponentsPath -catalogPath $shippedCatalogPath -AsJson -Detail 6>&1 | ForEach-Object { [string] $_ }) -join "`n")
+        return @($text | ConvertFrom-Json)
+    }
+    $detailOff = Get-DetailRows $detailRoot
+    Check ($detailOff.Count -ge 1 -and @($detailOff | Where-Object { $_.origin -like '*experimental' }).Count -eq 0) 'recipes -Detail -AsJson hides experimental recipes when the switch is off'
+    Set-FastLlmComponentSettings -InstallRoot $detailRoot -ExperimentalComponents 'on'
+    $detailOn = Get-DetailRows $detailRoot
+    $detailHip = @($detailOn | Where-Object { $_.id -like '*.hip' })
+    Check ($detailHip.Count -eq 2 -and $detailOn.Count -eq $detailOff.Count + 2) 'recipes -Detail -AsJson lists the two HIP recipes when the switch is on'
+    $hipDetail = $detailHip[0]
+    Check ($hipDetail.origin -ceq 'bitworks-experimental' -and $hipDetail.label -ceq 'Experimental Bitworks setup, not yet measured by Bitworks on this card' -and $hipDetail.engineId -ceq 'llama.cpp-hip-b11658' -and $hipDetail.contextSize -gt 0 -and $hipDetail.model) 'a Detail row carries the recipe id, origin, label, engine, model and context'
+    Check (@($hipDetail.chain).Count -eq 2 -and $hipDetail.chain[0].id -ceq 'amd-rocm-gfx1100-10.0.0' -and $hipDetail.chain[1].id -ceq 'llama.cpp-hip-b11658') 'the Detail chain lists the required runtime first and the engine last'
+    Check ($hipDetail.chain[0].consent -ceq 'accept' -and $hipDetail.chain[1].consent -ceq 'accept' -and -not $hipDetail.chain[0].installed -and -not $hipDetail.chain[1].installed -and $hipDetail.consentRequired -eq $true) 'a HIP chain that is not installed needs consent'
+    Check ((@($hipDetail.chain[0].sourceHosts) -join ',') -ceq 'stable.repo.amd.com' -and (@($hipDetail.chain[1].sourceHosts) -join ',') -ceq 'github.com' -and @($hipDetail.chain[1].redirectHosts) -contains 'objects.githubusercontent.com') 'the Detail chain names the source host of each component and the redirect hosts'
+    $listedHip = @(Get-FastLlmComponents -ComponentsPath $shippedComponentsPath | Where-Object { $_.id -ceq 'llama.cpp-hip-b11658' })[0]
+    $listedLinks = @(Get-FastLlmComponentLicenseLinks -Component $listedHip)
+    Check ($listedLinks.Count -ge 2 -and @($hipDetail.chain[1].licenseLinks).Count -eq $listedLinks.Count -and $hipDetail.chain[1].licenseLinks[1].url -ceq [string] $listedLinks[1].url) 'the Detail chain carries the component''s license links'
+    $listedRuntime = @(Get-FastLlmComponents -ComponentsPath $shippedComponentsPath | Where-Object { $_.id -ceq 'amd-rocm-gfx1100-10.0.0' })[0]
+    New-Item -ItemType Directory -Path (Get-FastLlmComponentRoot -InstallRoot $detailRoot -Component $listedRuntime) -Force | Out-Null
+    $detailPartial = @(Get-DetailRows $detailRoot | Where-Object { $_.id -like '*.hip' })[0]
+    Check ($detailPartial.chain[0].installed -eq $true -and $detailPartial.chain[1].installed -eq $false -and $detailPartial.consentRequired -eq $true) 'Detail reads the installed state per component from the inventory'
+    New-Item -ItemType Directory -Path (Get-FastLlmComponentRoot -InstallRoot $detailRoot -Component $listedHip) -Force | Out-Null
+    $detailFull = @(Get-DetailRows $detailRoot | Where-Object { $_.id -like '*.hip' })[0]
+    Check ($detailFull.consentRequired -eq $false) 'a fully installed chain needs no consent'
+    $detailVulkan = @($detailOff | Where-Object { $_.engineId -ceq 'llama.cpp-b10698-vulkan' })[0]
+    Check ($null -ne $detailVulkan -and $detailVulkan.consentRequired -eq $false -and $detailVulkan.chain[0].consent -ceq 'show') 'a built-in Vulkan recipe lists its engine and needs no consent'
+    $hostsSample = @(Get-FastLlmComponentSourceHosts -Listed $listedRuntime)
+    Check ($hostsSample.Count -eq 1 -and $hostsSample[0] -ceq 'stable.repo.amd.com') 'the source host of a multi-part component is read from its source URLs'
+
     # fast-llm.ps1 argument rules and wiring.
-    Check ($cliText.Contains("'update-check', 'update', 'components')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense and -AcceptExperimental'
+    Check ($cliText.Contains("'update-check', 'update', 'components')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
     Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
     $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
@@ -1850,6 +1885,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('plan', '-List', '-InstallRoot', $refusalRoot); text = '-List is supported only by components.' },
             @{ args = @('plan', '-Install', 'x', '-InstallRoot', $refusalRoot); text = '-Install is supported only by components.' },
             @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components.' },
+            @{ args = @('recipes', '-Detail', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
+            @{ args = @('plan', '-Detail', '-AsJson', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components.' },
             @{ args = @('components', '-AcceptExperimental', '-InstallRoot', $refusalRoot); text = '-AcceptExperimental is supported only by plan, start and install.' },
             @{ args = @('components', '-Install', 'a', '-Remove', 'b', '-InstallRoot', $refusalRoot); text = 'components takes one of -List, -Install <id> or -Remove <id>.' },

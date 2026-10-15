@@ -5,6 +5,7 @@ $root=Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $root 'src/FastLlm.Update.ps1')
 . (Join-Path $root 'src/FastLlm.Components.ps1')
+Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 $checks=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
 function Clone($Value){return ($Value|ConvertTo-Json -Depth 16|ConvertFrom-Json)}
@@ -459,5 +460,122 @@ Check ($ui.Contains('src/FastLlm.Components.ps1') -and -not [regex]::IsMatch($ui
 $removeHandler = [regex]::Match($ui, '(?s)function RemoveComponentFromWindow.*?\r?\n\}').Value
 Check ($removeHandler.Contains('$view.dialog.BeginInvoke([Action]{FillComponentsPanel})') -and -not [regex]::IsMatch($removeHandler, '(?m)^\s*FillComponentsPanel\s*$')) 'the Components window rebuilds its panel after the Remove click returns, never disposing the clicked button inside its own Click handler'
 Check (-not $ui.Contains("'-AcceptExperimental'")) 'the window never passes -AcceptExperimental (the CLI is the path to an experimental recipe)'
+
+# ---- "Choose another setup": the chooser rows ----
+$chooserCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
+$chooserComponents = @(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
+$chooserRecipes = @(Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.json'))
+function New-ChooserDetailRows([object[]]$Inventory = @()) {
+    # What `recipes -Detail -AsJson` prints, through the same JSON round trip the window reads.
+    $built = @(Get-FastLlmRecipeChooserRows -Recipes $chooserRecipes -Components $chooserComponents -Inventory $Inventory -Catalog $chooserCatalog)
+    return @((ConvertTo-Json -InputObject $built -Depth 8) | ConvertFrom-Json)
+}
+$detailRows = @(New-ChooserDetailRows)
+$experimentalLabel = 'Experimental Bitworks setup, not yet measured by Bitworks on this card'
+$offRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'off')
+$onRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on')
+$expectedHidden = @($chooserRecipes | Where-Object { Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin) }).Count
+Check ($expectedHidden -ge 2 -and $detailRows.Count -eq $chooserRecipes.Count) 'the shipped recipes include the experimental HIP recipes, and each recipe has a detail row'
+Check ($offRows.Count -eq ($detailRows.Count - $expectedHidden) -and @($offRows | Where-Object { $_.experimental }).Count -eq 0) 'with the switch off the chooser hides every experimental row, even when the list holds them'
+Check ($onRows.Count -eq $detailRows.Count -and @($onRows | Where-Object { $_.experimental }).Count -eq $expectedHidden) 'with the switch on the chooser shows the experimental rows too'
+Check (@(Get-FastLlmUiChooserRows -Rows $detailRows).Count -eq $offRows.Count -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'ON').Count -eq $offRows.Count) 'the switch defaults to off and only the exact value on shows experimental rows'
+$hipRow = @($onRows | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
+Check ($null -ne $hipRow -and $hipRow.label -ceq $experimentalLabel -and $hipRow.origin -ceq 'bitworks-experimental' -and $hipRow.model -ceq 'qwen3.8-27b-ud-q4-k-m' -and $hipRow.contextText -ceq '32,768 tokens') 'a HIP row shows the experimental Bitworks label, the model and the context'
+Check ($hipRow.engineText -like 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; not installed); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; not installed)') 'a HIP row names the engine, its required runtime and their source hosts'
+$vulkanRow = @($offRows | Where-Object { $_.origin -ceq 'bitworks' })[0]
+Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card' -and -not $vulkanRow.consentRequired -and $vulkanRow.engineText -like 'llama.cpp b10698 (Vulkan) (from github.com;*') 'a Bitworks row shows its origin label and needs no consent'
+$communityDetail = @(ConvertTo-Json -InputObject @($detailRows[0]) -Depth 8 | ConvertFrom-Json)[0]
+$communityDetail.origin = 'community-experimental'
+Check (@(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'off').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows @($communityDetail) -ExperimentalComponents 'on').Count -eq 1) 'a community-experimental row is hidden with the switch off and shown with it on'
+$cardRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant 'rx-7900-xt')
+Check ($cardRows.Count -ge 1 -and @($cardRows | Where-Object { $_.variant -cne 'rx-7900-xt' }).Count -eq 0 -and $cardRows.Count -lt $onRows.Count) 'an identified card limits the chooser to that card''s recipes'
+
+# ---- the per-component consent rows and the enable rule ----
+$hipChain = @($hipRow.chain)
+$consentRows = @(Get-FastLlmUiConsentRows -Chain $hipChain)
+Check ($consentRows.Count -eq 2 -and $hipChain.Count -eq 2) 'the consent dialog has one row per component in the HIP chain'
+Check ($consentRows[0].id -ceq 'amd-rocm-gfx1100-10.0.0' -and $consentRows[1].id -ceq 'llama.cpp-hip-b11658') 'the consent rows list the required runtime first and the engine last'
+Check (($consentRows[0].sourceHosts -join ',') -ceq 'stable.repo.amd.com' -and ($consentRows[1].sourceHosts -join ',') -ceq 'github.com' -and $consentRows[0].sourceText -ceq 'stable.repo.amd.com') 'each consent row shows its source host'
+foreach ($consentRow in $consentRows) {
+    $listed = @($chooserComponents | Where-Object { [string]$_.id -ceq $consentRow.id })[0]
+    $expectedLinks = @(Get-FastLlmComponentLicenseLinks -Component $listed)
+    Check ($expectedLinks.Count -ge 2 -and @($consentRow.links).Count -eq $expectedLinks.Count) "the consent row for $($consentRow.id) has every license link of the component"
+    for ($i = 0; $i -lt $expectedLinks.Count; $i++) {
+        Check ($consentRow.links[$i].url -ceq [string]$expectedLinks[$i].url -and $consentRow.links[$i].title -ceq [string]$expectedLinks[$i].title) "link $i of $($consentRow.id) is the component's license link"
+    }
+    Check ($consentRow.acceptText -like 'I accept*' -and @($consentRow.PSObject.Properties.Name | Where-Object { $_ -like '*text*' -and $_ -notin @('sourceText', 'acceptText') }).Count -eq 0) "the consent row for $($consentRow.id) carries links and an accept box, never license text"
+}
+$installedRuntimeChain = @(ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json)
+$installedRuntimeChain[0].installed = $true
+$partRows = @(Get-FastLlmUiConsentRows -Chain $installedRuntimeChain)
+Check ($partRows.Count -eq 1 -and $partRows[0].id -ceq 'llama.cpp-hip-b11658') 'a component that is already installed gets no consent row'
+$unsafeChain = @(ConvertTo-Json -InputObject $hipChain -Depth 6 | ConvertFrom-Json)
+$unsafeChain[1].licenseLinks[0].url = 'javascript:alert(1)'
+$unsafeChain[1].licenseLinks[1].url = 'http://example.com/license'
+Check ($null -eq (@(Get-FastLlmUiConsentRows -Chain $unsafeChain)[1].links[0].url) -and $null -eq (@(Get-FastLlmUiConsentRows -Chain $unsafeChain)[1].links[1].url)) 'a license link that is not https is never offered to the browser'
+Check ((Get-FastLlmUiSafeLicenseUrl -Url 'https://www.amd.com/en/developer/resources/rocm-hub/eula/licenses.html') -ceq 'https://www.amd.com/en/developer/resources/rocm-hub/eula/licenses.html' -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url 'file:///C:/x') -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url 'https://a b') -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url '') -and $null -eq (Get-FastLlmUiSafeLicenseUrl -Url 'not a url')) 'only a plain https URL passes the link check'
+Check ((Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($true, $true))) 'Install is enabled when every row is ticked'
+Check (-not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($true, $false)) -and -not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($false, $true)) -and -not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($false, $false))) 'Install stays disabled while any row is unticked'
+Check (-not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @($true)) -and -not (Test-FastLlmUiConsentComplete -RowCount 2 -Ticked @()) -and -not (Test-FastLlmUiConsentComplete -RowCount 0 -Ticked @()) -and -not (Test-FastLlmUiConsentComplete -RowCount 1 -Ticked @('yes'))) 'a missing box, no rows or a non-boolean tick never enables Install'
+
+# ---- the install and start argument builders ----
+$installRootArg = 'C:\Users\x\FastLLM'
+$installArgs = @(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658' -InstallRoot $installRootArg -Confirmed $true -RowCount 2 -Ticked @($true, $true))
+Check (($installArgs -join '|') -ceq 'components|-Install|llama.cpp-hip-b11658|-InstallRoot|C:\Users\x\FastLLM|-AcceptLicense|-Unattended') 'Install runs components -Install <engine id> -AcceptLicense'
+Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658' -InstallRoot $installRootArg -Confirmed $false -RowCount 2 -Ticked @($true, $true)).Count -eq 0) 'Cancel produces no install command, even with every box ticked'
+Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658' -InstallRoot $installRootArg -Confirmed $true -RowCount 2 -Ticked @($true, $false)).Count -eq 0) 'Install without every box ticked produces no install command'
+Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'x y; evil' -InstallRoot $installRootArg -Confirmed $true -RowCount 1 -Ticked @($true)).Count -eq 0) 'an unsafe engine id never reaches the child'
+$expPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'; origin = 'bitworks-experimental' } }
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip -AcceptExperimental') 'the start of a bitworks-experimental recipe passes -Recipe and -AcceptExperimental'
+$communityPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'c1'; origin = 'community-experimental' } }
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $communityPlan) -join ' ') -ceq '-Recipe c1 -AcceptExperimental') 'the start of a community-experimental recipe passes -AcceptExperimental'
+foreach ($plainOrigin in @('bitworks', 'community-reproduced')) {
+    Check ((@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = 'r1'; origin = $plainOrigin } })) -join ' ') -ceq '-Recipe r1') "the start of a $plainOrigin recipe passes -Recipe only"
+}
+Check ((@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'c1'; origin = 'community-experimental' })) -join ' ') -ceq '-Recipe c1 -AcceptExperimental' -and (@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'r1'; origin = 'bitworks' })) -join ' ') -ceq '-Recipe r1' -and @(Get-FastLlmUiPreviewRecipeArguments -Recipe $null).Count -eq 0 -and @(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'bad id'; origin = 'bitworks' })).Count -eq 0) 'the preview of a chosen recipe passes -Recipe, plus -AcceptExperimental only for an experimental origin'
+$pickerSelection = @('-InstallRoot', 'C:\r', '-ContextSize', '16384', '-ModelId', 'm1')
+Check ((@(Get-FastLlmUiRecipeSelection -Selection $pickerSelection -Recipe ([pscustomobject]@{ id = 'r1'; origin = 'bitworks' })) -join '|') -ceq '-InstallRoot|C:\r' -and (@(Get-FastLlmUiRecipeSelection -Selection $pickerSelection -Recipe $null) -join '|') -ceq ($pickerSelection -join '|')) 'a chosen recipe drops the model and context pickers (they cannot be combined with -Recipe); no chosen recipe keeps the selection'
+foreach ($typedCode in @('hip-backend-unavailable', 'hip-dll-blocked', 'hip-device-not-found', 'hip-device-ambiguous', 'needs-setup-component-missing')) {
+    Check (Test-FastLlmUiTypedHipFailure -Code $typedCode) "$typedCode is a typed failure the window shows without retrying"
+}
+Check (-not (Test-FastLlmUiTypedHipFailure -Code '') -and -not (Test-FastLlmUiTypedHipFailure -Code 'plan-changed') -and -not (Test-FastLlmUiTypedHipFailure -Code 'xhip-dll-blocked')) 'other or empty failure codes are not treated as typed HIP failures'
+Check ((Format-FastLlmUiTypedFailure -Code 'hip-dll-blocked' -Text "Blocked.`r`n") -ceq "Blocked.`r`n(failure code: hip-dll-blocked)") 'a typed failure shows its own message and its code'
+
+# ---- source assertions on the window ----
+$uiTokens = $null; $uiErrors = $null
+$uiAst = [System.Management.Automation.Language.Parser]::ParseInput($ui, [ref]$uiTokens, [ref]$uiErrors)
+Check ($uiErrors.Count -eq 0) 'the window script parses'
+function Get-UiFunctionText([string]$Name) {
+    $found = $uiAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name }, $true)
+    if (-not $found) { throw "FAIL: the window has no function $Name" }
+    return $found
+}
+function Test-NoDisposeInHandlers($FunctionAst) {
+    $handlers = @($FunctionAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$n.Member.Value) -like 'Add_*' }, $true))
+    $bad = 0
+    foreach ($handler in $handlers) {
+        $bad += @($handler.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$n.Member.Value) -ceq 'Dispose' }, $true)).Count
+    }
+    return [pscustomobject]@{ handlers = $handlers.Count; disposes = $bad }
+}
+$consentFn = Get-UiFunctionText 'ShowComponentConsent'
+$chooserFn = Get-UiFunctionText 'ShowRecipeChooser'
+$consentText = $consentFn.Extent.Text
+Check ($consentText -notmatch 'License Agreement' -and $consentText -notmatch 'Get-Content|ReadAllText|ReadAllLines|Invoke-WebRequest|Invoke-RestMethod|\.Multiline' -and $consentText -notmatch 'New-Object Windows\.Forms\.TextBox') 'the consent dialog embeds no license text: no agreement text, no license file read, no text box'
+Check ($consentText.Contains('New-Object Windows.Forms.LinkLabel') -and $consentText.Contains('Get-FastLlmUiSafeLicenseUrl') -and $consentText.Contains('Start-Process $target') -and $consentText.Contains('$consentRow.links')) 'the consent dialog shows each license as a clickable link opened in the browser'
+Check ($consentText.Contains('New-Object Windows.Forms.CheckBox') -and $consentText.Contains('$install.Enabled=$false') -and $consentText.Contains('$box.Add_CheckedChanged({UpdateConsentInstallState})') -and (Get-UiFunctionText 'UpdateConsentInstallState').Extent.Text.Contains('Test-FastLlmUiConsentComplete')) 'the consent dialog starts with Install disabled and enables it through the all-ticked rule'
+Check ($consentText.Contains('$dialog.AcceptButton=$cancel') -and $consentText.Contains('$dialog.CancelButton=$cancel')) 'Enter and Escape in the consent dialog cancel'
+$consentDisposal = Test-NoDisposeInHandlers $consentFn
+$chooserDisposal = Test-NoDisposeInHandlers $chooserFn
+Check ($consentDisposal.handlers -ge 2 -and $consentDisposal.disposes -eq 0) 'the consent dialog disposes nothing inside its own Click, LinkClicked or CheckedChanged handlers'
+Check ($chooserDisposal.handlers -ge 2 -and $chooserDisposal.disposes -eq 0) 'the chooser disposes nothing inside its own handlers'
+Check ([regex]::Matches($consentText, '\.Dispose\(\)').Count -eq 1 -and $consentText -match '(?s)finally\{[^}]*\$dialog\.Dispose\(\)' -and [regex]::Matches($chooserFn.Extent.Text, '\.Dispose\(\)').Count -eq 1 -and $chooserFn.Extent.Text -match '(?s)finally\{\$dialog\.Dispose\(\)') 'each dialog is disposed once, in a finally after ShowDialog returns'
+$continueText = (Get-UiFunctionText 'ContinueWithChosenRecipe').Extent.Text
+Check ($continueText.Contains('Get-FastLlmUiComponentInstallArguments') -and $continueText.Contains("LaunchStep 'component install' `$installArgs") -and $continueText.Contains('$Row.experimental -and -not $experimentalBox.Checked')) 'choosing a recipe installs through the argument builder and refuses an experimental row while the switch is off'
+Check (-not $ui.Contains("'-Install'") -and -not $ui.Contains("'-AcceptLicense'")) 'the window builds no install or license-acceptance argument itself'
+Check ($ui.Contains("'recipes','-Detail','-AsJson'") -and $ui.Contains('$chooseButton.Add_Click') -and $ui.Contains("ButtonAt 'Choose another setup'") -and $ui.Contains('$script:previewReady')) 'a Choose another setup button asks the CLI for the recipe list and is tied to a preview'
+Check ($ui.Contains('$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)')) 'the button is enabled only when a preview exists and nothing else is running'
+Check ($ui.Contains("'component install'{") -and $ui.Contains('Test-FastLlmUiTypedHipFailure -Code $failureCode') -and $ui.Contains('Format-FastLlmUiTypedFailure')) 'a finished component install starts the chosen recipe, and a typed start failure is shown as its message'
+Check ($ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe') -and $ui.Contains('$script:chosenRecipe=$null;$script:flow=New-FastLlmUiFlow -Mode start')) 'the chosen recipe is pinned for the preview and cleared by the plain Start'
 
 Write-Output "UI flow tests passed: $checks"

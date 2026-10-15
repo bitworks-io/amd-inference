@@ -191,3 +191,71 @@ function Assert-FastLlmExperimentalRecipeAllowed {
     throw ("Recipe '$RecipeId' is $refusedKind, and was refused: " + ($reasons -join '; and ') +
         ". It would use: " + ($named -join '; ') + '. Nothing was changed.')
 }
+
+# The hosts a listed component downloads from (the host of each source URL), and separately the hosts a download may be redirected to.
+function Get-FastLlmComponentSourceHosts {
+    param([Parameter(Mandatory = $true)] $Listed, [switch] $Redirect)
+    $entries = @()
+    if ($Listed.PSObject.Properties['sources'] -and $Listed.sources) { $entries = @($Listed.sources) }
+    elseif ($Listed.PSObject.Properties['source'] -and $Listed.source) { $entries = @($Listed.source) }
+    $hosts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($entry in $entries) {
+        $candidates = @()
+        if ($Redirect) {
+            if ($entry.PSObject.Properties['allowedRedirectHosts'] -and $entry.allowedRedirectHosts) { $candidates = @($entry.allowedRedirectHosts | ForEach-Object { [string] $_ }) }
+        }
+        else {
+            $parsed = $null
+            if ([Uri]::TryCreate([string] $entry.url, [UriKind]::Absolute, [ref] $parsed)) { $candidates = @($parsed.Host) }
+        }
+        foreach ($candidate in $candidates) { if ($candidate -and -not $hosts.Contains($candidate)) { $hosts.Add($candidate) } }
+    }
+    return $hosts.ToArray()
+}
+
+# One row per recipe for the window's "Choose another setup" list: the recipe, its label, model and context, and the engine's whole requires chain
+# (requires first, the engine last) with install state, license consent kind, source hosts and license links. Read-only and offline: the
+# inventory is presence-only. The caller passes the recipes it wants listed (Select-FastLlmVisibleRecipes has already hidden experimental ones).
+function Get-FastLlmRecipeChooserRows {
+    param([object[]] $Recipes, [object[]] $Components, [object[]] $Inventory, [Parameter(Mandatory = $true)] $Catalog)
+    $installedIds = @{}
+    foreach ($inventoryRow in @($Inventory | Where-Object { $_ })) { if ([bool] $inventoryRow.installed) { $installedIds[[string] $inventoryRow.id] = $true } }
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($recipe in @($Recipes | Where-Object { $_ })) {
+        # Same rule as the recipe selection: the recipe's named engine component, else the built-in Vulkan engine of the catalog.
+        $engineId = 'llama.cpp-' + [string] $Catalog.engine.version + '-vulkan'
+        if ($recipe.PSObject.Properties['components'] -and $recipe.components -and $recipe.components.PSObject.Properties['engine'] -and $recipe.components.engine) { $engineId = [string] $recipe.components.engine }
+        $chainError = ''
+        $members = @()
+        if (@($Components | Where-Object { $_ -and [string] $_.id -ceq $engineId }).Count -gt 0) {
+            try { $members = @(Get-FastLlmComponentChain -Components $Components -Id $engineId) }
+            catch { $chainError = [string] $_.Exception.Message }
+        }
+        else { $chainError = "The engine '$engineId' is not in this release's component list." }
+        $chain = New-Object 'System.Collections.Generic.List[object]'
+        $consentRequired = $false
+        foreach ($member in $members) {
+            $consent = ''
+            if ($member.PSObject.Properties['license'] -and $member.license -and $member.license.PSObject.Properties['consent']) { $consent = [string] $member.license.consent }
+            $isInstalled = $installedIds.ContainsKey([string] $member.id)
+            if (-not $isInstalled -and $consent -ceq 'accept') { $consentRequired = $true }
+            $displayName = [string] $member.id
+            if ($member.PSObject.Properties['displayName'] -and $member.displayName) { $displayName = [string] $member.displayName }
+            $chain.Add([pscustomobject] [ordered] @{
+                    id = [string] $member.id; displayName = $displayName; kind = [string] $member.kind; version = [string] $member.version
+                    installed = [bool] $isInstalled; consent = $consent
+                    sourceHosts = @(Get-FastLlmComponentSourceHosts -Listed $member); redirectHosts = @(Get-FastLlmComponentSourceHosts -Listed $member -Redirect)
+                    licenseLinks = @(Get-FastLlmComponentLicenseLinks -Component $member)
+                })
+        }
+        $contextSize = 0
+        if ($recipe.PSObject.Properties['runtime'] -and $recipe.runtime -and $recipe.runtime.PSObject.Properties['contextSize']) { $contextSize = [int] $recipe.runtime.contextSize }
+        $rows.Add([pscustomobject] [ordered] @{
+                id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
+                variant = [string] $recipe.gpu.variant; gpuCount = [int] $recipe.gpu.count
+                model = [string] $recipe.components.model; contextSize = $contextSize
+                engineId = $engineId; chain = $chain.ToArray(); consentRequired = [bool] $consentRequired; chainError = $chainError
+            })
+    }
+    return $rows.ToArray()
+}

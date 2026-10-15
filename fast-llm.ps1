@@ -84,7 +84,10 @@ param(
     [switch] $AcceptLicense,
 
     # plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: required in addition to the experimental switch being on.
-    [switch] $AcceptExperimental
+    [switch] $AcceptExperimental,
+
+    # recipes only, with -AsJson: each listed recipe with its engine's requires chain (install state, license consent kind, source hosts, license links). Read-only and offline.
+    [switch] $Detail
 )
 
 Set-StrictMode -Version 2.0
@@ -122,6 +125,7 @@ if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { t
 if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
 if ($AcceptLicense -and $Action -ne 'components') { throw '-AcceptLicense is supported only by components.' }
 if ($AcceptExperimental -and $Action -notin @('plan', 'start', 'install')) { throw '-AcceptExperimental is supported only by plan, start and install.' }
+if ($Detail -and ($Action -ne 'recipes' -or -not $AsJson)) { throw '-Detail is supported only by recipes with -AsJson.' }
 if ($Action -eq 'components') {
     if (@(@([bool] $List, $PSBoundParameters.ContainsKey('Install'), $PSBoundParameters.ContainsKey('Remove')) | Where-Object { $_ }).Count -gt 1) {
         throw 'components takes one of -List, -Install <id> or -Remove <id>.'
@@ -230,7 +234,13 @@ try {
         'recipes' {
             # Experimental recipes are listed only when the experimental switch is on; each is marked with its label.
             $recipeList = @(Select-FastLlmVisibleRecipes -Recipes @(Read-FastLlmRecipes -Path $recipesPath) -ExperimentalComponents ([string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents))
-            if ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
+            if ($AsJson -and $Detail) {
+                $detailCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
+                $detailComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath)
+                $detailInventory = @(Get-FastLlmComponentInventory -ComponentsPath $componentsFilePath -InstallRoot $InstallRoot)
+                ConvertTo-Json -InputObject @(Get-FastLlmRecipeChooserRows -Recipes $recipeList -Components $detailComponents -Inventory $detailInventory -Catalog $detailCatalog) -Depth 8
+            }
+            elseif ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
             elseif ($recipeList.Count -eq 0) { Write-Host 'This release has no published recipes.' }
             else {
                 foreach ($listed in $recipeList) {

@@ -340,7 +340,146 @@ function Get-FastLlmUiStartRecipeArguments {
     if ($Plan.recipe.PSObject.Properties['id']) { $id = [string] $Plan.recipe.id }
     if (-not $id -or @('estimated', 'manual', '') -contains $origin) { return @() }
     if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
+    # A plan only reports an experimental origin when the user named that recipe in the chooser with the switch on; passing the acceptance
+    # on to the start is that explicit choice, and the CLI still checks the switch.
+    if (Test-FastLlmExperimentalOrigin -Origin $origin) { return @('-Recipe', $id, '-AcceptExperimental') }
     return @('-Recipe', $id)
+}
+
+# The recipe chosen in "Choose another setup" is pinned for the preview as well, so the plan describes the recipe the user picked.
+function Get-FastLlmUiPreviewRecipeArguments {
+    param($Recipe)
+    if (-not $Recipe) { return @() }
+    $id = [string] $Recipe.id
+    if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
+    if (Test-FastLlmExperimentalOrigin -Origin ([string] $Recipe.origin)) { return @('-Recipe', $id, '-AcceptExperimental') }
+    return @('-Recipe', $id)
+}
+
+# -Recipe cannot be combined with -ModelId and takes its context from the recipe, so a chosen recipe drops the window's model and context pickers.
+function Get-FastLlmUiRecipeSelection {
+    param([object[]] $Selection, $Recipe)
+    if (-not $Recipe) { return @($Selection) }
+    $kept = New-Object 'System.Collections.Generic.List[object]'
+    $items = @($Selection)
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        if ([string] $items[$i] -ceq '-ModelId' -or [string] $items[$i] -ceq '-ContextSize') { $i++; continue }
+        $kept.Add($items[$i])
+    }
+    return $kept.ToArray()
+}
+
+# ---- "Choose another setup" and the per-component consent dialog (pure helpers) ----
+
+function Format-FastLlmUiHostList {
+    param([object[]] $Hosts)
+    $names = @($Hosts | Where-Object { $_ } | ForEach-Object { [string] $_ })
+    if ($names.Count -eq 0) { return 'a source listed in this release' }
+    return ($names -join ', ')
+}
+
+# The recipes the chooser shows, from the detail rows of `recipes -Detail -AsJson`. Experimental rows (community-experimental and
+# bitworks-experimental) are shown only when the switch is on, whatever the list contained.
+function Get-FastLlmUiChooserRows {
+    param([object[]] $Rows, [string] $ExperimentalComponents = 'off', [string] $Variant)
+    $shown = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($row in @($Rows | Where-Object { $_ })) {
+        $origin = [string] $row.origin
+        $isExperimental = Test-FastLlmExperimentalOrigin -Origin $origin
+        if ($isExperimental -and $ExperimentalComponents -cne 'on') { continue }
+        # When the preview identified the card, only that card's recipes are offered; without an identified card every listed recipe is, and
+        # a recipe that does not apply is refused by the plan with its own message.
+        if (-not [string]::IsNullOrWhiteSpace($Variant) -and [string] $row.variant -cne $Variant) { continue }
+        $chain = @($row.chain | Where-Object { $_ })
+        # The chain is requires first, the engine last; the text names the engine first, then what it requires, each with its source host.
+        $engineText = [string] $row.engineId
+        if ($chain.Count -gt 0) {
+            $parts = @($chain | ForEach-Object {
+                    $name = [string] $_.displayName
+                    if ([string]::IsNullOrWhiteSpace($name)) { $name = [string] $_.id }
+                    $state = 'not installed'
+                    if ([bool] $_.installed) { $state = 'installed' }
+                    '{0} (from {1}; {2})' -f $name, (Format-FastLlmUiHostList -Hosts @($_.sourceHosts)), $state
+                })
+            $engineText = $parts[$parts.Count - 1]
+            if ($parts.Count -gt 1) { $engineText += '; requires ' + (@($parts[0..($parts.Count - 2)]) -join '; ') }
+        }
+        $shown.Add([pscustomobject] [ordered] @{
+                id = [string] $row.id; origin = $origin; variant = [string] $row.variant; experimental = [bool] $isExperimental
+                label = [string] $row.label; model = [string] $row.model
+                contextSize = [int] $row.contextSize
+                contextText = ([int] $row.contextSize).ToString('N0', [Globalization.CultureInfo]::InvariantCulture) + ' tokens'
+                engineId = [string] $row.engineId; engineText = $engineText
+                chain = $chain
+                consentRequired = [bool] $row.consentRequired
+                chainError = $(if ($row.PSObject.Properties['chainError']) { [string] $row.chainError } else { '' })
+            })
+    }
+    return $shown.ToArray()
+}
+
+# Only an https link is ever handed to the browser.
+function Get-FastLlmUiSafeLicenseUrl {
+    param([string] $Url)
+    if ([string]::IsNullOrWhiteSpace($Url) -or $Url.Length -gt 2048 -or $Url -match '[\p{Cc}\s]') { return $null }
+    $parsed = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref] $parsed)) { return $null }
+    if ($parsed.Scheme -cne 'https' -or [string]::IsNullOrEmpty($parsed.Host)) { return $null }
+    return $Url
+}
+
+# One consent row per component the install would download (the chain members that are not installed): name, version, source host and the
+# license links as they are listed for the component. There is no license text: the user reads the linked page.
+function Get-FastLlmUiConsentRows {
+    param([object[]] $Chain)
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($member in @($Chain | Where-Object { $_ -and -not [bool] $_.installed })) {
+        $links = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($link in @($member.licenseLinks | Where-Object { $_ })) {
+            $safe = Get-FastLlmUiSafeLicenseUrl -Url ([string] $link.url)
+            $links.Add([pscustomobject] [ordered] @{ title = [string] $link.title; url = $safe })
+        }
+        $name = [string] $member.displayName
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = [string] $member.id }
+        $rows.Add([pscustomobject] [ordered] @{
+                id = [string] $member.id; name = $name; version = [string] $member.version
+                sourceHosts = @($member.sourceHosts); sourceText = (Format-FastLlmUiHostList -Hosts @($member.sourceHosts))
+                redirectHosts = @($member.redirectHosts)
+                links = $links.ToArray()
+                acceptText = ('I accept the license terms for {0}' -f $name)
+            })
+    }
+    return $rows.ToArray()
+}
+
+# Install is enabled only when there is at least one row and EVERY row's box is ticked.
+function Test-FastLlmUiConsentComplete {
+    param([int] $RowCount, [object[]] $Ticked)
+    $states = @($Ticked)
+    if ($RowCount -lt 1 -or $states.Count -ne $RowCount) { return $false }
+    foreach ($state in $states) { if ($state -isnot [bool] -or -not $state) { return $false } }
+    return $true
+}
+
+# The install command the dialog's Install runs, or nothing: Cancel (or an incomplete dialog) never produces one, so nothing is downloaded.
+function Get-FastLlmUiComponentInstallArguments {
+    param([string] $EngineId, [string] $InstallRoot, [bool] $Confirmed, [int] $RowCount, [object[]] $Ticked)
+    if (-not $Confirmed -or -not (Test-FastLlmUiConsentComplete -RowCount $RowCount -Ticked $Ticked)) { return @() }
+    if ($EngineId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$' -or [string]::IsNullOrWhiteSpace($InstallRoot)) { return @() }
+    return @('components', '-Install', $EngineId, '-InstallRoot', $InstallRoot, '-AcceptLicense', '-Unattended')
+}
+
+# Typed failures of a start (the failure code the CLI records in status.json) are shown as their own message; the window does not retry them,
+# and nothing falls back to Vulkan.
+function Test-FastLlmUiTypedHipFailure {
+    param([string] $Code)
+    if ([string]::IsNullOrWhiteSpace($Code)) { return $false }
+    return [bool] ($Code -cmatch '^(hip-backend-unavailable|hip-dll-blocked|hip-device-[a-z\-]{1,40}|needs-setup-component-missing)$')
+}
+
+function Format-FastLlmUiTypedFailure {
+    param([string] $Code, [string] $Text)
+    return ([string] $Text).TrimEnd() + "`r`n(failure code: $Code)"
 }
 
 # What the RUNNING server's plan said about its recipe (status.json planRecipe), never the preview's.
