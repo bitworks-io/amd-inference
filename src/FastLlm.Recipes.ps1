@@ -78,6 +78,8 @@ function Select-FastLlmRecipeForPlacements {
             $model = $models[[string] $recipe.components.model]
             if (-not $model) { $skipped.Add("$($recipe.id): model not in the catalog"); continue }
             if ([string] $recipe.engineBuild -ne [string] $Catalog.engine.version) { $skipped.Add("$($recipe.id): engine build differs"); continue }
+            # The estimated planner never auto-picks a model flagged autoEligible false; a recipe may use one only when named with -Recipe.
+            if (-not $RecipeId -and $model.PSObject.Properties['autoEligible'] -and -not [bool] $model.autoEligible) { $skipped.Add("$($recipe.id): model is experimental and not auto-eligible"); continue }
             if ([int64] $model.requiredFreeVramMiB -gt [int64] $placement.selectionCapacity) {
                 $skipped.Add("$($recipe.id): needs $($model.requiredFreeVramMiB) MiB free, $($placement.selectionCapacity) MiB available"); continue
             }

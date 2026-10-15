@@ -21,7 +21,9 @@ LABELS = {
     "community-reproduced": "Community recipe, reproduced by Bitworks",
     "community-experimental": "Experimental community recipe, not reproduced by Bitworks",
 }
-MITIGATIONS = ("auto", "on", "off")
+# The recipe never forces the Vulkan BAR mitigation; the start applies the user or UI policy (auto by default).
+MITIGATIONS = ("auto",)
+CACHE_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
@@ -61,6 +63,15 @@ def validate(entry, origin, catalog, variants):
         raise RecipeError(f"{rid}: runtime.vulkanBarMitigation must be one of {MITIGATIONS}")
     if not isinstance(runtime.get("contextSize"), int) or not 0 < runtime["contextSize"] <= int(model["contextSize"]):
         raise RecipeError(f"{rid}: runtime.contextSize must be 1..{model['contextSize']}")
+    if "parallel" in runtime and (isinstance(runtime["parallel"], bool) or runtime["parallel"] != 1):
+        raise RecipeError(f"{rid}: runtime.parallel must be 1 (the API check requires a single slot)")
+    for field in ("cacheTypeK", "cacheTypeV"):
+        if field in runtime and runtime[field] not in CACHE_TYPES:
+            raise RecipeError(f"{rid}: runtime.{field} must be one of {CACHE_TYPES}")
+    if "fitTargetMiB" in runtime and (not isinstance(runtime["fitTargetMiB"], int) or isinstance(runtime["fitTargetMiB"], bool) or runtime["fitTargetMiB"] <= 0):
+        raise RecipeError(f"{rid}: runtime.fitTargetMiB must be a positive integer")
+    if model.get("autoEligible") is False and origin != "community-experimental":
+        raise RecipeError(f"{rid}: model {entry.get('model')!r} is not auto-eligible; only an experimental community recipe may use it")
     if not isinstance(entry.get("gpuCount"), int) or entry["gpuCount"] not in (1, 2):
         raise RecipeError(f"{rid}: gpuCount must be 1 or 2")
     expected = entry.get("expected") or {}
