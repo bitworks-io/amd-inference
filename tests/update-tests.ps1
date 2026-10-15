@@ -179,4 +179,129 @@ Check (@(Get-ChildItem -LiteralPath $e.Install -Filter 'settings.json.tmp-*').Co
 $s = Get-FastLlmUpdateSettings -InstallRoot $e.Install -AppRoot $e.App
 Check ($s.updateCheck -eq 'off' -and $s.updateChannel -eq 'stable') 'the stored values are read back'
 
+# --- htmlUrl must be this repository's release page ---
+$e = New-Env
+$rel = Rel 'v2026.10.16.1'
+$rel.html_url = 'https://evil.example/bitworks-io/amd-inference/releases/tag/v2026.10.16.1'
+$r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request (Mock 200 (Json $rel)) -NowUtc $t0
+Check ($r.status -eq 'up-to-date' -and $null -eq $r.latest) 'a release whose page URL is off-site is no eligible release'
+$e = New-Env
+$rel = Rel 'v2026.10.16.1'
+$rel.html_url = 'https://github.com/bitworks-io/amd-inference-evil/releases/tag/v2026.10.16.1'
+$r = Invoke-FastLlmUpdateCheck -InstallRoot $e.Install -AppRoot $e.App -Request (Mock 200 (Json $rel)) -NowUtc $t0
+Check ($r.status -eq 'up-to-date' -and $null -eq $r.latest) 'a lookalike repository page URL is no eligible release'
+
+# --- verified update flow ---
+$ver = '2026.10.16.1'
+$setupName = "FastLLM-Setup-$ver.exe"
+$setupBytes = [Text.Encoding]::ASCII.GetBytes('pretend installer bytes')
+$sha = New-Object Security.Cryptography.SHA256Managed
+$setupSha = (($sha.ComputeHash($setupBytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+$sha.Dispose()
+function New-Latest([string]$Version = $ver) {
+    @{ version = $Version; tag = "v$Version"; channel = 'stable'; htmlUrl = "https://github.com/bitworks-io/amd-inference/releases/tag/v$Version"
+       assets = @{
+           'SHA256SUMS' = @{ url = ($good + "v$Version/SHA256SUMS"); size = 200 }
+           "FastLLM-Setup-$Version.exe" = @{ url = ($good + "v$Version/FastLLM-Setup-$Version.exe"); size = $setupBytes.Length } } }
+}
+# Builds the seam mocks; each records its name in $order.
+function New-Seams($Opts) {
+    $order = New-Object 'System.Collections.Generic.List[string]'
+    $o = @{ Sums = ($setupSha + '  ' + $setupName + "`n"); StopOk = $true; DownloadFail = $false; PartialOnFail = $true; SigOk = $true; SigReason = $null
+            ProductVersion = $ver; Exit = 0; IntegrityStatus = 'ok'; IntegrityReason = $null }
+    if ($Opts) { foreach ($k in $Opts.Keys) { $o[$k] = $Opts[$k] } }
+    $seams = @{ Order = $order }
+    $seams.StopServer = { param($Root) $order.Add('stop'); [pscustomobject]@{ ok = $o.StopOk; reason = 'mock-stop' } }.GetNewClosure()
+    $seams.Download = {
+        param($Url, $Destination, $Sha256, $SizeBytes)
+        if ($Sha256) { $order.Add('download') } else { $order.Add('sums') }
+        if (-not $Sha256) { [IO.File]::WriteAllText($Destination, $o.Sums); return }
+        if ($o.DownloadFail) {
+            [IO.File]::WriteAllText("$Destination.$($Sha256.Substring(0, 16)).partial", 'partial')
+            [IO.File]::WriteAllText("$Destination.$($Sha256.Substring(0, 16)).lock", '')
+            throw 'Downloaded artifact failed exact size/SHA-256 verification'
+        }
+        [IO.File]::WriteAllBytes($Destination, $setupBytes)
+    }.GetNewClosure()
+    $seams.Verify = { param($Path) $order.Add('verify'); [pscustomobject]@{ ok = $o.SigOk; reason = $o.SigReason; detail = $null } }.GetNewClosure()
+    $seams.GetProductVersion = { param($Path) $order.Add('version'); $o.ProductVersion }.GetNewClosure()
+    $seams.RunInstaller = { param($Setup, $QuietMode) $order.Add('install'); $o.Exit }.GetNewClosure()
+    $seams.Integrity = { param($Root) $order.Add('integrity'); [pscustomobject]@{ status = $o.IntegrityStatus; reason = $o.IntegrityReason } }.GetNewClosure()
+    $seams
+}
+function Run-Update($Env, $Seams, $Latest = $null) {
+    if ($null -eq $Latest) { $Latest = New-Latest }
+    Invoke-FastLlmVerifiedUpdate -InstallRoot $Env.Install -AppRoot $Env.App -Latest $Latest -StopServer $Seams.StopServer -Download $Seams.Download `
+        -Verify $Seams.Verify -GetProductVersion $Seams.GetProductVersion -RunInstaller $Seams.RunInstaller -Integrity $Seams.Integrity
+}
+function UpdateDirs($Env) {
+    $u = Join-Path $Env.Install 'updates'
+    if (-not (Test-Path -LiteralPath $u)) { return @() }
+    @(Get-ChildItem -LiteralPath $u -Force)
+}
+
+$e = New-Env
+$s = New-Seams @{ StopOk = $false }
+$r = Run-Update $e $s
+Check ($r.status -eq 'failed' -and $r.step -eq 'stop' -and (($s.Order -join ',') -eq 'stop') -and @(UpdateDirs $e).Count -eq 0) 'stop fails: failed/stop, and no download'
+
+$e = New-Env
+$s = New-Seams @{ Sums = ('a' * 64 + '  other.zip' + "`n") }
+$r = Run-Update $e $s
+Check ($r.status -eq 'refused' -and $r.step -eq 'sums' -and $r.reason -eq 'no-installer-entry' -and (($s.Order -join ',') -eq 'stop,sums') -and @(UpdateDirs $e).Count -eq 0) 'SUMS without the installer line: refused/sums, and the work directory is removed'
+
+foreach ($bad in @(($setupSha.ToUpper() + '  ' + $setupName), ($setupSha + ' ' + $setupName), ($setupSha + '  ..\' + $setupName), ('not a line'))) {
+    $e = New-Env
+    $s = New-Seams @{ Sums = ($bad + "`n") }
+    $r = Run-Update $e $s
+    Check ($r.status -eq 'refused' -and $r.step -eq 'sums' -and -not ($s.Order -contains 'download')) "a malformed SUMS line is refused: $bad"
+}
+$e = New-Env
+$s = New-Seams @{ Sums = ($setupSha + '  ' + $setupName + "`n" + $setupSha + '  ' + $setupName + "`n") }
+$r = Run-Update $e $s
+Check ($r.status -eq 'refused' -and $r.step -eq 'sums') 'a duplicate SUMS entry is refused'
+
+$e = New-Env
+$s = New-Seams @{ DownloadFail = $true }
+$r = Run-Update $e $s
+Check ($r.status -eq 'failed' -and $r.step -eq 'download' -and -not ($s.Order -contains 'verify') -and @(UpdateDirs $e).Count -eq 0) 'download hash mismatch: failed/download, partial and lock removed, directory removed'
+
+$e = New-Env
+$s = New-Seams @{ SigOk = $false; SigReason = 'wrong-publisher' }
+$r = Run-Update $e $s
+Check ($r.status -eq 'refused' -and $r.step -eq 'signature' -and $r.reason -eq 'wrong-publisher' -and -not ($s.Order -contains 'install') -and @(UpdateDirs $e).Count -eq 0) 'wrong-publisher: refused/signature, installer never run, files removed'
+
+$e = New-Env
+$s = New-Seams @{ ProductVersion = '2026.10.15.1'; Sums = ($setupSha + '  FastLLM-Setup-2026.10.15.2.exe' + "`n") }
+$r = Run-Update $e $s (New-Latest '2026.10.15.2')
+Check ($r.status -eq 'refused' -and $r.step -eq 'version' -and -not ($s.Order -contains 'install')) 'ProductVersion 2026.10.15.1 against latest 2026.10.15.2: refused/version'
+
+$e = New-Env -Version $ver
+$s = New-Seams
+$r = Run-Update $e $s
+Check ($r.status -eq 'refused' -and $r.step -eq 'version' -and -not ($s.Order -contains 'install')) 'ProductVersion equal to installed: refused/version (no reinstall)'
+$e = New-Env -Version '2026.10.17.1'
+$s = New-Seams
+$r = Run-Update $e $s
+Check ($r.status -eq 'refused' -and $r.step -eq 'version' -and -not ($s.Order -contains 'install')) 'an older release than installed: refused/version (no downgrade)'
+
+$e = New-Env
+$s = New-Seams @{ Exit = 1 }
+$r = Run-Update $e $s
+Check ($r.status -eq 'failed' -and $r.step -eq 'install' -and -not ($s.Order -contains 'integrity') -and @(UpdateDirs $e).Count -eq 0) 'the installer exits 1: failed/install'
+
+$e = New-Env
+$s = New-Seams @{ IntegrityStatus = 'failed'; IntegrityReason = 'tree' }
+$r = Run-Update $e $s
+Check ($r.status -eq 'failed' -and $r.step -eq 'integrity' -and $r.reason -eq 'tree') 'integrity failed: failed/integrity with the reason'
+
+$e = New-Env
+$s = New-Seams
+$r = Run-Update $e $s
+Check ($r.status -eq 'installed') 'all good: installed'
+Check (($s.Order -join ',') -eq 'stop,sums,download,verify,version,install,integrity') 'the call order is stop, sums, download, verify, version, install, integrity'
+$dirs = @(UpdateDirs $e)
+Check ($dirs.Count -eq 1 -and $dirs[0].Name -match '^2026\.10\.16\.1-[0-9a-f]{8}$' -and (Test-Path -LiteralPath (Join-Path $dirs[0].FullName $setupName))) 'success keeps the installer in a fresh <version>-<8 hex> directory'
+Check (@(Get-ChildItem -LiteralPath $e.App -Force).Count -eq 1) 'the app folder is untouched'
+
 Write-Host 'update-tests: PASS'
