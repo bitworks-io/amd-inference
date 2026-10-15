@@ -1,0 +1,35 @@
+{
+ "schema": "bitworks.community-export/v0",
+ "byVariant": {
+  "rx-7900-xt-20gb": [
+   {
+    "id": "model-not-pinned",
+    "gpuCount": 1,
+    "model": {
+     "name": "m"
+    },
+    "engine": {
+     "name": "llama.cpp",
+     "build": "b10698",
+     "backend": "vulkan"
+    },
+    "serving": {
+     "speculative": null,
+     "topology": "single"
+    },
+    "draftModel": null,
+    "generationTps": [
+     {
+      "value": 39.3
+     }
+    ],
+    "promptTps": [
+     {
+      "value": 500.0
+     }
+    ],
+    "submissionComplete": true
+   }
+  ]
+ }
+}

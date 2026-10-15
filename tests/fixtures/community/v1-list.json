@@ -1,0 +1,32 @@
+[
+ {
+  "id": "v1-candidate",
+  "variant": "rx-7900-xt",
+  "exactModel": {
+   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "engine": {
+   "name": "llama.cpp",
+   "version": "b10829",
+   "backend": "vulkan"
+  },
+  "settings": {
+   "contextSize": 16384,
+   "flags": "",
+   "draftModel": null,
+   "gpuCount": 1,
+   "topology": "single"
+  },
+  "submissionComplete": true,
+  "generationTps": [
+   {
+    "value": 40.0
+   }
+  ],
+  "promptTps": [
+   {
+    "value": 520.0
+   }
+  ]
+ }
+]
