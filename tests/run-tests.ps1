@@ -156,6 +156,7 @@ try {
         $withoutRecipes = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile
         Assert-Equal -Expected 'estimated' -Actual $withRecipes.recipe.origin -Message "an explicit $explicitProfile profile is not overridden by a recipe"
         Assert-Equal -Expected 'auto' -Actual $withRecipes.selectionMode -Message "an explicit $explicitProfile profile keeps automatic selection"
+        Assert-True -Condition (@($withRecipes.recipe.skipped | Where-Object { $_ -like "recipes not applied: the $explicitProfile profile*" }).Count -eq 1) -Message "the plan says why recipes were not applied under the $explicitProfile profile"
         Assert-Equal -Expected $withoutRecipes.model.id -Actual $withRecipes.model.id -Message "an explicit $explicitProfile profile plans the same model as without recipes"
         Assert-Equal -Expected $withoutRecipes.model.contextSize -Actual $withRecipes.model.contextSize -Message "an explicit $explicitProfile profile plans the same context as without recipes"
         $namedUnderProfile = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile -RecipeId 'test-xtx-q4' @recipeOptions

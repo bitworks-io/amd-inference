@@ -46,7 +46,9 @@ function Select-FastLlmRecipeForPlacements {
     $models = @{}
     foreach ($model in @($Catalog.models)) { $models[[string] $model.id] = $model }
     $options = New-Object System.Collections.Generic.List[object]
-    $skipped = New-Object System.Collections.Generic.List[string]
+    # Reasons go straight into the caller's sink when there is one, so a plan keeps them even if a later step throws or no recipe is picked.
+    $skipped = $SkippedSink
+    if ($null -eq $skipped) { $skipped = New-Object System.Collections.Generic.List[string] }
     # A recipe is for a card count: it applies only when gpu.count equals the number of IDENTIFIED eligible cards of that variant in this PC,
     # on the placement that uses all of them. Without the explicit list, the eligible cards are the single-card placements (as the planner builds them).
     $eligible = @($EligibleAdapters | Where-Object { $_ })
@@ -96,7 +98,6 @@ function Select-FastLlmRecipeForPlacements {
                     generation = $generation; id = [string] $recipe.id })
         }
     }
-    if ($SkippedSink) { foreach ($reason in $skipped) { $SkippedSink.Add($reason) } }
     $sorted = @($options | Sort-Object -Property rank, @{ Expression = { $_.recommended }; Descending = $true },
         @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { $_.generation }; Descending = $true }, id)
     if ($RecipeId -and $sorted.Count -eq 0) { throw "Recipe '$RecipeId' does not apply to this PC: $(@($skipped) -join '; '). No other recipe was substituted." }
