@@ -103,6 +103,10 @@ function Test-FastLlmInstallIntegrity {
     )
     $catalogPath = Join-Path $AppRoot 'FastLLM.cat'
     if (-not (Test-Path -LiteralPath $catalogPath -PathType Leaf)) {
+        # An installed release always has RELEASE.json; a deleted catalog there is a failure, not a source checkout.
+        if (Test-Path -LiteralPath (Join-Path $AppRoot 'RELEASE.json') -PathType Leaf) {
+            return [pscustomobject]@{ status = 'failed'; reason = 'catalog-missing'; catalogSignature = $null; mismatches = @() }
+        }
         return [pscustomobject]@{ status = 'not-installed'; reason = 'no-catalog'; catalogSignature = $null; mismatches = @() }
     }
     if ($SkipSignatureForTest) {
