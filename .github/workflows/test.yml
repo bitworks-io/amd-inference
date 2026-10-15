@@ -156,6 +156,7 @@ jobs:
           .\tests\vulkan-fit-benchmark-tests.ps1
           .\tests\card-identity-tests.ps1
           .\tests\recipes-selection-tests.ps1
+          .\tests\components-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
@@ -175,6 +176,7 @@ jobs:
           .\tests\vulkan-fit-benchmark-tests.ps1
           .\tests\card-identity-tests.ps1
           .\tests\recipes-selection-tests.ps1
+          .\tests\components-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
