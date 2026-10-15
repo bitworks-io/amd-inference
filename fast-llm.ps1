@@ -198,8 +198,12 @@ try {
             Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12
             # Cached notice only (no network). Not in -AsJson mode: status already prints one JSON document.
             if (-not $AsJson) {
-                $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
-                if ($cachedNotice) { Write-Host $cachedNotice }
+                try {
+                    if (Get-Command -Name Get-FastLlmCachedUpdateNotice -ErrorAction SilentlyContinue) {
+                        $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
+                        if ($cachedNotice) { Write-Host $cachedNotice }
+                    }
+                } catch { }
             }
         }
         'update-check' {
@@ -322,7 +326,6 @@ try {
             }
             $maximumPlanAttempts = 3
             $serverCompleted = $false
-            $updateNoticeShown = $false
             $recoveryAttempted = $false
             for ($planAttempt = 1; $planAttempt -le $maximumPlanAttempts; $planAttempt++) {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
@@ -345,10 +348,15 @@ try {
                 }
 
                 # Cached notice only (no network, state\update-check.json): once, after the plan and before the foreground server launches.
-                if (-not $updateNoticeShown) {
-                    $updateNoticeShown = $true
-                    $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
-                    if ($cachedNotice) { Write-Host $cachedNotice }
+                # It is cosmetic and must never affect the start: strict-mode-safe once guard, only when loaded, any error ignored.
+                if (-not (Get-Variable -Name FastLlmUpdateNoticeShown -Scope Script -ErrorAction SilentlyContinue)) {
+                    $script:FastLlmUpdateNoticeShown = $true
+                    try {
+                        if (Get-Command -Name Get-FastLlmCachedUpdateNotice -ErrorAction SilentlyContinue) {
+                            $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
+                            if ($cachedNotice) { Write-Host $cachedNotice }
+                        }
+                    } catch { }
                 }
                 # The BAR policy is always passed so the auto default reaches the start; the other options only when asked.
                 $startPolicyOptions = @{}
