@@ -150,6 +150,20 @@ try {
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -RecipeId 'no-such-recipe' @recipeOptions } -Pattern 'No other recipe was substituted' -Message 'an unknown -Recipe refuses without substituting'
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'does not apply to this PC' -Message '-Recipe without a matching card identity refuses'
 
+    # Profiles (final review M1): an explicit fast or quality profile gets the estimated planner; -Recipe still applies under any profile.
+    foreach ($explicitProfile in @('fast', 'quality')) {
+        $withRecipes = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile @recipeOptions
+        $withoutRecipes = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile
+        Assert-Equal -Expected 'estimated' -Actual $withRecipes.recipe.origin -Message "an explicit $explicitProfile profile is not overridden by a recipe"
+        Assert-Equal -Expected 'auto' -Actual $withRecipes.selectionMode -Message "an explicit $explicitProfile profile keeps automatic selection"
+        Assert-Equal -Expected $withoutRecipes.model.id -Actual $withRecipes.model.id -Message "an explicit $explicitProfile profile plans the same model as without recipes"
+        Assert-Equal -Expected $withoutRecipes.model.contextSize -Actual $withRecipes.model.contextSize -Message "an explicit $explicitProfile profile plans the same context as without recipes"
+        $namedUnderProfile = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile -RecipeId 'test-xtx-q4' @recipeOptions
+        Assert-Equal -Expected 'test-xtx-q4' -Actual $namedUnderProfile.recipe.id -Message "an explicit -Recipe applies under the $explicitProfile profile"
+    }
+    $explicitBalanced = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile balanced @recipeOptions
+    Assert-Equal -Expected 'test-xtx-q4' -Actual $explicitBalanced.recipe.id -Message 'an explicit balanced profile still gets the recipe'
+
     # Card count (final review I3): a one-card recipe must not override the estimated dual-card plan on a PC with two identified cards.
     $xtRecipeFile = Join-Path $recipeTestRoot 'recipes-xt.json'
     $xtRecipeDocument = [pscustomobject] [ordered] @{
