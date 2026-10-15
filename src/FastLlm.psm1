@@ -998,6 +998,9 @@ function Get-FastLlmPlan {
     $recipeSkippedSink = New-Object System.Collections.Generic.List[string]
     # Recipes auto-apply only under the default balanced profile (the UI's fixed profile) or when -Recipe names one; an explicit fast or quality
     # profile keeps the estimated planner exactly as before recipes existed (spec 4.2: the profiles keep working as today).
+    if (-not $ModelId -and $Profile -ne 'balanced' -and -not $RecipeId -and $RecipesPath -and $GpuVariantsPath) {
+        $recipeSkippedSink.Add("recipes not applied: the $Profile profile uses the estimated planner; the balanced profile or -Recipe uses measured recipes")
+    }
     if (-not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
         # Recipe data never fails an automatic plan; only an explicit -Recipe refuses.
         try {
@@ -1010,6 +1013,7 @@ function Get-FastLlmPlan {
         catch {
             if ($RecipeId) { throw }
             $recipePick = $null
+            $recipeSkippedSink.Add("recipes not applied: recipe selection failed ($($_.Exception.GetType().Name)); the estimated plan is used")
         }
         if ($recipePick -and $ContextSize -gt [int] $recipePick.model.contextSize) {
             if ($RecipeId) { throw 'Requested context exceeds the catalog ceiling for this model.' }
