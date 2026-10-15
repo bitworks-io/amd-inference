@@ -506,6 +506,8 @@ function Invoke-FastLlmBackgroundServe {
         $lease = Enter-FastLlmLabAppLifetime -SourceRoot $source
         Import-Module (Join-Path $source 'src\FastLlm.psm1') -Force
         $operation = Enter-FastLlmOperation -InstallRoot $install
+        # M2: a status exists from the moment the lock is held (the same 'preparing' shape the CLI writes), not only after the engine is probed.
+        Write-FastLlmState -InstallRoot $install -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action='start' })
         $self = [Diagnostics.Process]::GetCurrentProcess()
         try { $hostIdentity = [ordered]@{pid=[int]$self.Id;startUtcTicks=[long]$self.StartTime.ToUniversalTime().Ticks} }
         finally { $self.Dispose() }

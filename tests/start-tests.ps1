@@ -24,15 +24,15 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]')}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
         param($S)
         $script:startTestState=$S
         function script:Assert-FastLlmWindowsPrerequisites { }
-        function script:Test-FastLlmEngineInstallation { return $true }
-        function script:Test-FastLlmComponentInstallation { param($InstallRoot,$Component) $script:startTestState.events.Add('component-check');return $script:startTestState.componentOk }
+        function script:Test-FastLlmEngineInstallation { $script:startTestState.engineChecks++;return $true }
+        function script:Test-FastLlmComponentInstallation { param($InstallRoot,$Component,$Depth) $script:startTestState.events.Add('component-check');$script:startTestState.componentCalls.Add(([string]$Component.id)+':'+[string]$Depth);if([string]$Component.id -ceq $script:startTestState.failComponent){return $false};return $script:startTestState.componentOk }
         function script:Install-FastLlmComponent { param($ComponentsPath,$ComponentId,$InstallRoot) $script:startTestState.events.Add('INSTALL-COMPONENT');return $null }
         function script:Test-FastLlmFileHash { $script:startTestState.events.Add('hash');return $script:startTestState.hash }
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
@@ -150,6 +150,58 @@ try {
     try{Start-FastLlmServer -Plan $wrongExe -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match 'does not match the verified installed engine'}
     Check ($caught -and -not $state.events.Contains('supervisor')) 'a component plan that points at the built-in engine instead is refused before launch'
     $state.fresh=$savedFresh;$state.componentOk=$true;$state.events.Clear()
+
+    # ---- C3 Task 3: a HIP component plan. M7 start order: no built-in engine check and no catalog asset check; every component in the chain verified (Full), the first
+    # failure named; the resolved backend must equal the plan backend; device binding enforce is refused before anything runs. ----
+    $hipEngineEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq 'llama.cpp-hip-b11658' })[0]
+    $hipExe=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $hipEngineEntry) ([string]$hipEngineEntry.entryPoint)
+    $hipPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $hipPlan.enginePath=$hipExe;$hipPlan.backend='hip'
+    $hipPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-hip-b11658'
+    $hipPlan | Add-Member -NotePropertyName runtimeRoots -NotePropertyValue @('C:\rt\bin')
+    $freshHip=$hipPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $state.fresh=$freshHip;$state.componentOk=$true;$state.failComponent='';$state.events.Clear();$state.componentCalls.Clear();$state.observed=$null;$engineChecksBefore=$state.engineChecks
+    $result=Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp
+    Check ($result -eq 0 -and $state.events.Contains('supervisor') -and $state.observed.backend -ceq 'hip' -and $state.observed.enginePath -ceq $hipExe) 'a HIP component plan launches on the component executable with backend hip, although the catalog rocm asset is disabled'
+    Check ($state.engineChecks -eq $engineChecksBefore) 'a HIP component plan never runs the built-in engine installation check (M7)'
+    Check (($state.componentCalls -join ',') -ceq 'amd-rocm-gfx1100-10.0.0:Full,llama.cpp-hip-b11658:Full') 'a HIP start verifies the runtime and then the engine, each at Depth Full'
+    $state.fresh=$savedFresh;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.engineChecks -eq $engineChecksBefore + 1) 'positive control: a built-in (non-component) plan still runs the built-in engine installation check exactly once'
+    foreach($missingCase in @(@{id='amd-rocm-gfx1100-10.0.0';expected='amd-rocm-gfx1100-10.0.0'},@{id='llama.cpp-hip-b11658';expected='llama.cpp-hip-b11658'})){
+        $state.fresh=$freshHip;$state.failComponent=$missingCase.id;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks;$code=$null;$message='';$named=$null;$unavailableNamed=$null
+        try{Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode'];$message=$_.Exception.Message;$named=$_.Exception.Data['FastLlmComponentId'];$unavailableNamed=$_.Exception.Data['FastLlmUnavailableComponentId']}
+        Check ($code -ceq 'needs-setup-component-missing' -and $named -ceq 'llama.cpp-hip-b11658' -and $unavailableNamed -ceq $missingCase.expected -and $message -like "*'$($missingCase.expected)'*" -and -not $state.events.Contains('supervisor') -and -not $state.events.Contains('hash') -and -not $state.events.Contains('INSTALL-COMPONENT') -and $state.engineChecks -eq $engineChecksBefore) "a HIP start whose $($missingCase.id) fails its check is needs-setup-component-missing naming it (the install target stays the engine), before any hash, install, probe or launch"
+    }
+    $state.failComponent='amd-rocm-gfx1100-10.0.0';$state.componentCalls.Clear()
+    try{Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{}
+    Check (($state.componentCalls -join ',') -ceq 'amd-rocm-gfx1100-10.0.0:Full') 'the chain stops at the first failing component (the runtime), so the engine is not reported as the cause'
+    $state.failComponent=''
+    # Backend mismatch: the plan backend must equal the resolved engine component's backend, in both directions.
+    foreach($mismatch in @(@{label='a Vulkan plan on the HIP engine component';backend='Vulkan';component='llama.cpp-hip-b11658'},@{label='a hip plan on the Vulkan engine component';backend='hip';component='llama.cpp-b10698-vulkan'})){
+        $mismatchPlan=$componentPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $mismatchPlan.backend=$mismatch.backend;$mismatchPlan.engineComponentId=$mismatch.component
+        $mismatchEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq $mismatch.component })[0]
+        $mismatchPlan.enginePath=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $mismatchEntry) ([string]$mismatchEntry.entryPoint)
+        $state.fresh=$mismatchPlan;$state.events.Clear();$code=$null
+        try{Start-FastLlmServer -Plan $mismatchPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode']}
+        Check ($code -ceq 'recipe-engine-backend-mismatch' -and -not $state.events.Contains('supervisor') -and -not $state.events.Contains('hash')) "$($mismatch.label) is refused as recipe-engine-backend-mismatch before any hash or launch"
+    }
+    # A hip plan with no engine component is not a thing: it stays refused (and never reaches the catalog rocm asset).
+    $bareHip=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $bareHip.backend='hip';$state.fresh=$bareHip;$state.events.Clear();$caught=$false
+    try{Start-FastLlmServer -Plan $bareHip -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match "unknown backend 'hip'"}
+    Check ($caught -and -not $state.events.Contains('supervisor')) 'a hip plan without an engine component is refused'
+    # Device binding is Vulkan-only: enforce is refused before any check, record and off are not.
+    $state.fresh=$freshHip;$state.events.Clear();$state.componentCalls.Clear();$engineChecksBefore=$state.engineChecks;$code=$null;$reason=$null;$message=''
+    try{Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding enforce | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode'];$reason=$_.Exception.Data['FastLlmReason'];$message=$_.Exception.Message}
+    Check ($code -ceq 'device-binding-unsupported-backend' -and $reason -ceq 'DeviceBindingFailed' -and $message -like 'device-binding-unsupported-backend:*' -and $state.events.Count -eq 0 -and $state.componentCalls.Count -eq 0 -and $state.engineChecks -eq $engineChecksBefore) '-DeviceBinding enforce on a HIP plan is device-binding-unsupported-backend (never recovered), before any verification or launch'
+    foreach($allowed in @('record','off')){
+        $state.events.Clear();$state.observed=$null;$state.supervisorBinding=$null
+        $allowedResult=Start-FastLlmServer -Plan $hipPlan -CatalogPath $catalogPath -InstallRoot $temp -DeviceBinding $allowed
+        Check ($allowedResult -eq 0 -and $state.events.Contains('supervisor')) "-DeviceBinding $allowed on a HIP plan still starts"
+    }
+    $state.fresh=$savedFresh;$state.componentOk=$true;$state.failComponent='';$state.events.Clear()
 
     # ================= fast-llm.ps1 start -NoDownload: every acquisition path is blocked with a typed failure code =================
     # The real 'start' branch of fast-llm.ps1 is extracted from its AST and run with every I/O boundary replaced by a recorder, so no

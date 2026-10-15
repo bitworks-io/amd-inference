@@ -404,6 +404,96 @@ function New-FastLlmDeviceBindingFailure {
     return $exception
 }
 
+# The ONE child-environment builder, used by the device probe and by the server launch. It returns what to remove from the inherited environment
+# and what to set; Initialize-FastLlmEngineStartInfo applies it. -Plan needs backend, enginePath and (HIP only) runtimeRoots.
+#   Vulkan: the shared scrub, APPDATA/PROGRAMDATA in the run sandbox, PATH = <engine dir>;System32;SystemRoot, and the BAR variable only on request.
+#   HIP:    the same scrub plus every ROC* name, then PATH = <engine dir>;<runtime roots...>;System32;SystemRoot. Never the BAR variable and never any HIP_*, ROC* or HSA_* value.
+function Get-FastLlmEngineEnvironment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [string[]] $InheritedNames = @(), [switch] $VulkanBarMitigation, [string] $SystemRoot)
+    $enginePath = [string] $Plan.enginePath
+    # Split-Path as both call sites always used it. Off Windows (a pre-filter run on a Windows-style path) it would rewrite the separators, so cut by hand.
+    if ($env:OS -eq 'Windows_NT') { $engineDirectory = Split-Path -Parent $enginePath }
+    else {
+        $separator = $enginePath.LastIndexOfAny([char[]] @('\', '/'))
+        $engineDirectory = if ($separator -gt 0) { $enginePath.Substring(0, $separator) } else { '' }
+    }
+    $isHip = $false
+    if ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip') { $isHip = $true }
+    $remove = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in @($InheritedNames)) {
+        if ((Test-FastLlmEnvironmentNameRequiresClearing -Name ([string] $name)) -or ($isHip -and ([string] $name) -like 'ROC*')) { $remove.Add([string] $name) }
+    }
+    $set = [ordered] @{}
+    $set['APPDATA'] = [string] $Sandbox.appData
+    $set['PROGRAMDATA'] = [string] $Sandbox.programData
+    if (-not $PSBoundParameters.ContainsKey('SystemRoot')) { $SystemRoot = [string] $env:SystemRoot }
+    if (($env:OS -eq 'Windows_NT' -or $PSBoundParameters.ContainsKey('SystemRoot')) -and $SystemRoot) {
+        $searchPath = New-Object 'System.Collections.Generic.List[string]'
+        $searchPath.Add($engineDirectory)
+        if ($isHip) {
+            $planRuntimeRoots = @()
+            if ($Plan.PSObject.Properties['runtimeRoots'] -and $null -ne $Plan.runtimeRoots) { $planRuntimeRoots = @($Plan.runtimeRoots) }
+            foreach ($runtimeRoot in $planRuntimeRoots) { if (-not [string]::IsNullOrWhiteSpace([string] $runtimeRoot)) { $searchPath.Add([string] $runtimeRoot) } }
+        }
+        $searchPath.Add("$SystemRoot\System32")
+        $searchPath.Add($SystemRoot)
+        $set['PATH'] = $searchPath.ToArray() -join ';'
+    }
+    # The BAR variable is a Vulkan-lane switch: a HIP plan never receives it, whatever the caller asked for.
+    if ($VulkanBarMitigation -and -not $isHip) { $set[$script:FastLlmVulkanBarMitigationVariable] = '1' }
+    return [pscustomobject] [ordered] @{ remove = $remove.ToArray(); set = $set }
+}
+
+function Initialize-FastLlmEngineStartInfo {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo] $StartInfo, [Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [switch] $VulkanBarMitigation)
+    $environment = Get-FastLlmEngineEnvironment -Plan $Plan -Sandbox $Sandbox -InheritedNames @($StartInfo.EnvironmentVariables.Keys | ForEach-Object { [string] $_ }) -VulkanBarMitigation:$VulkanBarMitigation
+    foreach ($name in $environment.remove) { $StartInfo.EnvironmentVariables.Remove($name) }
+    foreach ($name in $environment.set.Keys) { $StartInfo.EnvironmentVariables[[string] $name] = [string] $environment.set[$name] }
+}
+
+# Decimal NTSTATUS values as Int32 (Process.ExitCode): STATUS_INVALID_IMAGE_HASH 0xC0000428 and STATUS_DLL_NOT_FOUND 0xC0000135.
+# Win32 errors 4551 and 1260 (application-control policy blocks such as Smart App Control or WDAC) can surface from the process start itself.
+# Returns a typed exception, or $null when neither a policy block nor a missing DLL explains the failure. The reason is deliberately not
+# RuntimeCheckFailed: model recovery would re-plan onto the built-in Vulkan engine, which is the silent fallback this lane forbids.
+function New-FastLlmHipLaunchFailure {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $ComponentId, [object] $ExitCode, [object] $NativeErrorCode, [switch] $ServerWasRunning)
+    $blocked = $false
+    $missing = $false
+    $detail = $null
+    if ($null -ne $NativeErrorCode -and [int] $NativeErrorCode -in @(4551, 1260)) { $blocked = $true; $detail = "Windows error $([int] $NativeErrorCode)" }
+    elseif ($null -ne $ExitCode -and [int] $ExitCode -eq -1073740760) { $blocked = $true; $detail = 'exit status 0xC0000428, STATUS_INVALID_IMAGE_HASH' }
+    elseif ($null -ne $ExitCode -and [int] $ExitCode -eq -1073741515) { $missing = $true; $detail = 'exit status 0xC0000135, STATUS_DLL_NOT_FOUND' }
+    if (-not $blocked -and -not $missing) { return $null }
+    $stopped = 'The server was stopped.'
+    $vulkan = 'FastLLM does not switch to Vulkan on its own. To use the Vulkan setup instead, start FastLLM without the HIP recipe (choose a Vulkan setup).'
+    if ($blocked) {
+        $code = 'hip-dll-blocked'
+        $text = "Windows blocked a DLL of the HIP engine component '${ComponentId}' from loading ($detail). Smart App Control or an application-control policy (WDAC) rejects unsigned files. $stopped $vulkan"
+    }
+    else {
+        $code = 'hip-dll-missing'
+        $text = "The HIP engine component '${ComponentId}' could not find a DLL it needs ($detail). Reinstall the engine and its runtime component. $stopped $vulkan"
+    }
+    $failure = New-FastLlmTypedFailure -Code $code -Message $text
+    $failure.Data['FastLlmComponentId'] = $ComponentId
+    $failure.Data['FastLlmReason'] = 'HipDllFailed'
+    return $failure
+}
+
+# The Win32 error carried by a process-start failure, if any (PowerShell wraps the .NET exception, so the chain is walked).
+function Get-FastLlmNativeErrorCode {
+    param($Exception)
+    $current = $Exception
+    for ($depth = 0; $null -ne $current -and $depth -lt 8; $depth++) {
+        if ($current -is [System.ComponentModel.Win32Exception]) { return [int] $current.NativeErrorCode }
+        $current = $current.InnerException
+    }
+    return $null
+}
+
 function Invoke-FastLlmSupervisedServer {
     param($Plan, [string] $InstallRoot, [int] $LoadTimeoutSeconds=300, [string] $CatalogPath,
           # Policy defaults and the canary default to off here (and in the module policy) so direct callers (lab trials) are unaffected;
@@ -419,8 +509,16 @@ function Invoke-FastLlmSupervisedServer {
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     Initialize-FastLlmProcessHost
     $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
+    # A HIP plan (the engine component's lane) has no Vulkan memory policy, BAR mitigation, device binding or Vulkan identity capture.
+    $isHipPlan = [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
+    $hipComponentId = ''
+    if ($isHipPlan -and $Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { $hipComponentId = [string] $Plan.engineComponentId }
     # Resolve the policy before any state is written; a non-off policy may run the bounded advisory heap probe.
-    $state.vulkanMemoryPolicy = Resolve-FastLlmVulkanBarMitigation -Plan $Plan -Requested $VulkanBarMitigation -InstallRoot $InstallRoot
+    if ($isHipPlan) {
+        $state.vulkanMemoryPolicy = [pscustomobject][ordered]@{ requested = 'not-applicable'; effective = 'not-applicable'; reason = 'hip-lane' }
+        $state.barGuidance = [ordered]@{ shown = $false; text = $null }
+    }
+    else { $state.vulkanMemoryPolicy = Resolve-FastLlmVulkanBarMitigation -Plan $Plan -Requested $VulkanBarMitigation -InstallRoot $InstallRoot }
     if ($ThroughputCanary) { $state.throughputCanary = $null }
     if ($state.vulkanMemoryPolicy.requested -ne 'off' -and $state.vulkanMemoryPolicy.reason -eq 'engine-not-verified') {
         Write-Host "Vulkan memory: -VulkanBarMitigation $($state.vulkanMemoryPolicy.requested) was skipped because engine build '$($Plan.engineVersion)' has not been verified for it; no mitigation was applied."
@@ -449,7 +547,15 @@ function Invoke-FastLlmSupervisedServer {
     # the start. enforce does: a binding that is not 'bound' becomes a typed gate (below) that is thrown before the port probe and the spawn.
     $deviceIdentity = $null
     $deviceBindingGate = $null
-    if ($DeviceBinding -ne 'off') {
+    if ($isHipPlan -and $DeviceBinding -ne 'off') {
+        # Device binding and the Vulkan identity capture are Vulkan-only: record observes nothing here, and enforce refuses before any launch.
+        $state.deviceBinding = [pscustomobject][ordered]@{ mode = $DeviceBinding; status = 'not-applicable'; reason = 'unsupported-backend' }
+        $state.identityRecord = 'not-applicable'
+        if ($DeviceBinding -ceq 'enforce') {
+            $deviceBindingGate = New-FastLlmDeviceBindingFailure -Code 'device-binding-unsupported-backend' -Message "Device binding (enforce) is available only for the Vulkan lane; this setup runs on the HIP engine component '${hipComponentId}'. The server was not started. Use -DeviceBinding record or -DeviceBinding off to start without this requirement."
+        }
+    }
+    elseif ($DeviceBinding -ne 'off') {
         # The glue is contained as well: nothing here may reach the start's catch (binding-internal-error, identity unavailable).
         try {
             $binding = Invoke-FastLlmDeviceBinding -Plan $Plan -InstallRoot $InstallRoot -BarDecision $state.vulkanMemoryPolicy -Mode $DeviceBinding
@@ -545,14 +651,18 @@ function Invoke-FastLlmSupervisedServer {
         $info.FileName = $Plan.enginePath
         $info.Arguments = Join-FastLlmProcessArguments -Arguments $Plan.serverArguments
         $info.WorkingDirectory = Split-Path -Parent $Plan.enginePath
-        foreach ($name in @($info.EnvironmentVariables.Keys)) { if (Test-FastLlmEnvironmentNameRequiresClearing $name) { $info.EnvironmentVariables.Remove($name) } }
-        $info.EnvironmentVariables['APPDATA'] = $sandbox.appData
-        $info.EnvironmentVariables['PROGRAMDATA'] = $sandbox.programData
-        if ($env:OS -eq 'Windows_NT') { $info.EnvironmentVariables['PATH'] = "$($info.WorkingDirectory);$env:SystemRoot\System32;$env:SystemRoot" }
-        # Opt-in Vulkan mitigation: set only after sanitisation, only when the policy resolved to it (Vulkan lane only).
-        if ($state.vulkanMemoryPolicy.effective -eq 'on') { $info.EnvironmentVariables[$script:FastLlmVulkanBarMitigationVariable] = '1' }
+        # The scrub, sandbox paths, PATH and (Vulkan lane, opt-in) the BAR variable all come from the one environment builder the device probe also uses.
+        Initialize-FastLlmEngineStartInfo -StartInfo $info -Plan $Plan -Sandbox $sandbox -VulkanBarMitigation:($state.vulkanMemoryPolicy.effective -eq 'on')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
-        $hostProcess.Start($info)
+        try { $hostProcess.Start($info) }
+        catch {
+            # A policy block can refuse the process start itself (Win32 error 4551 or 1260): typed, and never a Vulkan fallback.
+            if ($isHipPlan) {
+                $hipStartFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -NativeErrorCode (Get-FastLlmNativeErrorCode -Exception $_.Exception)
+                if ($hipStartFailure) { throw $hipStartFailure }
+            }
+            throw
+        }
         $spawned = $true
         # Record only the actual supervised child identity, never a discovered
         # listener guess. This remains present through checking/ready/final state.
@@ -566,7 +676,14 @@ function Invoke-FastLlmSupervisedServer {
         $healthy = $false
         while ($deadline.Elapsed.TotalSeconds -lt $LoadTimeoutSeconds) {
             if (Test-Path -LiteralPath $stopPath) { $state.phase='stopped'; return 0 }
-            if ($hostProcess.Process.HasExited) { throw 'Server exited before readiness.' }
+            if ($hostProcess.Process.HasExited) {
+                # A HIP server that dies on a blocked or missing DLL is a typed failure; any other early exit stays the generic one.
+                if ($isHipPlan) {
+                    $hipEarlyFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -ExitCode ([int] $hostProcess.Process.ExitCode)
+                    if ($hipEarlyFailure) { throw $hipEarlyFailure }
+                }
+                throw 'Server exited before readiness.'
+            }
             try { $health=Invoke-FastLlmHttp -BaseUrl $baseUrl -Path '/health' -TimeoutMs 1000; $healthy=$health.Status -eq 200 -and (ConvertFrom-Json $health.Body).status -eq 'ok' } catch { $healthy=$false }
             if ($healthy) { break }
             Start-Sleep -Milliseconds 200
@@ -733,6 +850,9 @@ function Invoke-FastLlmSupervisedServer {
             $state.failureCode=$bindingFailureCode
             # Write the sanitised value back so the supervisor state and the CLI's outer catch (which records Data into status.json) carry the same code.
             $_.Exception.Data['FastLlmFailureCode']=$bindingFailureCode
+        } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'HipDllFailed') {
+            # A blocked or missing HIP DLL keeps its typed code and a reason that model recovery does not retry (recovery would re-plan onto Vulkan).
+            $state.failureCode=[string]$_.Exception.Data['FastLlmFailureCode']
         } else {
             $state.failureCode='startup-or-runtime-check-failed'
             if($spawned){$_.Exception.Data['FastLlmReason']='RuntimeCheckFailed'}

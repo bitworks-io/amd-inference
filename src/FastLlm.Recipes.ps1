@@ -45,14 +45,14 @@ function Get-FastLlmRecipeEngineId {
     return (Get-FastLlmBuiltInEngineId -Catalog $Catalog)
 }
 
-# The listed engine component with this exact id: kind engine, Vulkan backend, llama.cpp adapter. $null when there is none.
+# The listed engine component with this exact id: kind engine, Vulkan or HIP backend, llama.cpp adapter. $null when there is none.
 function Find-FastLlmEngineComponent {
     param([object[]] $Components, [Parameter(Mandatory = $true)][string] $EngineId)
     foreach ($candidate in @($Components | Where-Object { $_ })) {
         if ([string] $candidate.id -cne $EngineId) { continue }
         if ([string] $candidate.kind -cne 'engine') { continue }
         if (-not $candidate.PSObject.Properties['adapter'] -or [string] $candidate.adapter -cne 'llama.cpp') { continue }
-        if (-not $candidate.PSObject.Properties['platform'] -or -not $candidate.platform -or -not $candidate.platform.PSObject.Properties['backend'] -or [string] $candidate.platform.backend -cne 'vulkan') { continue }
+        if (-not $candidate.PSObject.Properties['platform'] -or -not $candidate.platform -or -not $candidate.platform.PSObject.Properties['backend'] -or [string] $candidate.platform.backend -cnotin @('vulkan', 'hip')) { continue }
         return $candidate
     }
     return $null
@@ -89,11 +89,11 @@ function Resolve-FastLlmRecipeEngine {
         }
         $builtInExecutable = Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $Catalog.engine.version) -BackendKey 'vulkan' -EntryPoint $builtInEntryPoint
         return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $Catalog.engine.version; backend = 'vulkan'
-            executable = $builtInExecutable; installed = [bool] $builtInExecutable; builtIn = $true }
+            executable = $builtInExecutable; installed = [bool] $builtInExecutable; builtIn = $true; runtimeRoots = @() }
     }
     $component = Find-FastLlmEngineComponent -Components $Components -EngineId $engineId
     if ($null -eq $component) {
-        throw (New-FastLlmEngineFailure -Code 'recipe-engine-component-unknown' -Message "The recipe names the engine '${engineId}', which is not a built-in engine or a listed Vulkan llama.cpp engine component." -ComponentId $engineId)
+        throw (New-FastLlmEngineFailure -Code 'recipe-engine-component-unknown' -Message "The recipe names the engine '${engineId}', which is not a built-in engine or a listed Vulkan or HIP llama.cpp engine component." -ComponentId $engineId)
     }
     $componentEntryPoint = 'llama-server.exe'
     if ($component.PSObject.Properties['entryPoint'] -and $component.entryPoint) { $componentEntryPoint = [string] $component.entryPoint }
@@ -101,8 +101,63 @@ function Resolve-FastLlmRecipeEngine {
     Assert-FastLlmLeafName -Value $componentEntryPoint -Label 'Engine component entry point'
     $componentExecutable = Join-FastLlmContainedPath -Root $componentRoot -Child $componentEntryPoint -Label 'Engine component executable path'
     $componentInstalled = [bool] ((Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $component -Depth Presence) -and (Test-Path -LiteralPath $componentExecutable -PathType Leaf))
-    return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $component.version; backend = 'vulkan'
-        executable = $componentExecutable; installed = $componentInstalled; builtIn = $false }
+    # Every required component (requires-first chain, the engine itself last) must also be present; its runtime directories become the DLL search roots.
+    $runtimeRoots = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($chained in @(Get-FastLlmComponentChain -Components $Components -Id $engineId)) {
+        if ([string] $chained.id -ceq [string] $component.id) { continue }
+        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $chained -Depth Presence)) { $componentInstalled = $false }
+        if ([string] $chained.kind -ceq 'runtime' -and $chained.PSObject.Properties['runtimePathDirs'] -and $chained.runtimePathDirs) {
+            $requiredRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $chained
+            foreach ($pathDirectory in @($chained.runtimePathDirs)) {
+                # The strict leaf rule first: a .NET Framework path API throws on a control character before any rule of ours runs.
+                Assert-FastLlmComponentLeafName -Value ([string] $pathDirectory) -Label 'Runtime path directory'
+                $runtimeRoots.Add((Join-FastLlmContainedPath -Root $requiredRoot -Child ([string] $pathDirectory) -Label 'Runtime path directory'))
+            }
+        }
+    }
+    return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $component.version; backend = [string] $component.platform.backend
+        executable = $componentExecutable; installed = $componentInstalled; builtIn = $false; runtimeRoots = $runtimeRoots.ToArray() }
+}
+
+# The first component of an engine's chain (requires first, the engine last) that fails the installation check at the given depth, or $null when
+# all pass. Used to name the right component in a needs-setup-component-missing failure.
+function Get-FastLlmFirstUnavailableComponent {
+    param([object[]] $Components, [Parameter(Mandatory = $true)][string] $EngineId, [Parameter(Mandatory = $true)][string] $InstallRoot,
+          [ValidateSet('Presence', 'Full')][string] $Depth = 'Full')
+    foreach ($chained in @(Get-FastLlmComponentChain -Components $Components -Id $EngineId)) {
+        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $chained -Depth $Depth)) { return [string] $chained.id }
+    }
+    return $null
+}
+
+# Maps each selected (discrete AMD) adapter onto the HIP engine's own device name by EXACT name and total VRAM within +-5%. The result is a copy:
+# the hardware object is never changed. Zero matches is hip-device-not-found, two or more (two identical cards) is hip-device-ambiguous; nothing is guessed.
+function Resolve-FastLlmHipSelectedAdapters {
+    param([object[]] $Adapters, [object[]] $Devices, [Parameter(Mandatory = $true)][string] $ComponentId)
+    $hipDevices = @($Devices | Where-Object { $_ -and [string] $_.device -cmatch '^ROCm[0-9]{1,2}$' })
+    $listed = (@($hipDevices | ForEach-Object { "$($_.device): $($_.name) ($($_.vramMiB) MiB)" }) -join '; ')
+    if (-not $listed) { $listed = 'no device' }
+    $resolved = New-Object 'System.Collections.Generic.List[object]'
+    $claimed = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($adapter in @($Adapters)) {
+        $adapterName = ([string] $adapter.name).Trim()
+        $adapterVram = [int64] $adapter.vramMiB
+        $candidates = @($hipDevices | Where-Object {
+                ([string] $_.name).Trim().Equals($adapterName, [System.StringComparison]::OrdinalIgnoreCase) -and
+                [Math]::Abs([int64] $_.vramMiB - $adapterVram) -le ([double] $adapterVram * 0.05)
+            })
+        if ($candidates.Count -eq 0) {
+            throw (New-FastLlmEngineFailure -Code 'hip-device-not-found' -ComponentId $ComponentId -Message "The HIP engine '${ComponentId}' reports no device that matches the selected card '$adapterName' ($adapterVram MiB). It reports: $listed. Nothing was guessed.")
+        }
+        if ($candidates.Count -gt 1 -or $claimed.Contains([string] $candidates[0].device)) {
+            throw (New-FastLlmEngineFailure -Code 'hip-device-ambiguous' -ComponentId $ComponentId -Message "The selected card '$adapterName' ($adapterVram MiB) matches more than one HIP device ($listed), for example two identical cards. FastLLM cannot tell which one is the selected card, so nothing was guessed.")
+        }
+        $claimed.Add([string] $candidates[0].device)
+        $copy = $adapter.PSObject.Copy()
+        $copy | Add-Member -NotePropertyName device -NotePropertyValue ([string] $candidates[0].device) -Force
+        $resolved.Add($copy)
+    }
+    return $resolved.ToArray()
 }
 
 function Select-FastLlmRecipeForPlacements {

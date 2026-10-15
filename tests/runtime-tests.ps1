@@ -434,6 +434,124 @@ try {
         try { [Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/stall",$null,200,1000) } catch { $caught=$true }
         Check ($caught -and $elapsed.Elapsed.TotalSeconds -lt 5) 'a stalled HTTP request is bounded by its whole-request deadline'
     } finally { $stallHost.Dispose() }
+    # ================= C3 Task 3: the one child-environment builder, the HIP device list, and the typed HIP failures =================
+    $envSandbox=[pscustomobject]@{appData='C:\sandbox\appdata';programData='C:\sandbox\programdata'}
+    $inherited=@('PATH','HOME','HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','VK_ICD_FILENAMES','HF_TOKEN','Hip_Path_Lower','USERPROFILE')
+    $vulkanEnvPlan=[pscustomobject]@{backend='Vulkan';enginePath='C:\fl\engines\b10698\vulkan\llama-server.exe'}
+    $hipEnvPlan=[pscustomobject]@{backend='hip';enginePath='C:\fl\components\engine\llama.cpp-hip-b11658\b11658\llama-server.exe';runtimeRoots=@('C:\fl\components\runtime\amd-rocm-gfx1100-10.0.0\10.0.0\bin')}
+    $vulkanEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inherited
+    Check (($vulkanEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH' -and $vulkanEnv.set['PATH'] -ceq 'C:\fl\engines\b10698\vulkan;C:\Windows\System32;C:\Windows' -and $vulkanEnv.set['APPDATA'] -ceq 'C:\sandbox\appdata' -and $vulkanEnv.set['PROGRAMDATA'] -ceq 'C:\sandbox\programdata') 'Vulkan environment is unchanged: APPDATA, PROGRAMDATA and PATH = engine dir;System32;SystemRoot, and no BAR variable by default'
+    Check (($vulkanEnv.remove -join ',') -ceq 'HIP_VISIBLE_DEVICES,HSA_OVERRIDE_GFX_VERSION,ROCM_PATH,ROCBLAS_LAYER,GGML_VK_VISIBLE_DEVICES,LLAMA_ARG_PORT,VK_ICD_FILENAMES,HF_TOKEN,Hip_Path_Lower') 'Vulkan scrub is unchanged (ROCR_ names are not in the shared scrub list)'
+    $vulkanBarEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -VulkanBarMitigation -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inherited
+    $barName=& $module { $script:FastLlmVulkanBarMitigationVariable }
+    Check (($vulkanBarEnv.set.Keys -join ',') -ceq "APPDATA,PROGRAMDATA,PATH,$barName" -and $vulkanBarEnv.set[$barName] -ceq '1') 'Vulkan environment gets the BAR variable only when the mitigation is requested'
+    $hipEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' } $hipEnvPlan $envSandbox $inherited
+    Check ($hipEnv.set['PATH'] -ceq 'C:\fl\components\engine\llama.cpp-hip-b11658\b11658;C:\fl\components\runtime\amd-rocm-gfx1100-10.0.0\10.0.0\bin;C:\Windows\System32;C:\Windows') 'HIP PATH is exactly <engine dir>;<runtime roots>;System32;SystemRoot (engine first, so its amdhip64_7.dll wins over the driver copy)'
+    Check (($hipEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH') 'HIP environment sets only APPDATA, PROGRAMDATA and PATH'
+    $hipBarEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -VulkanBarMitigation -SystemRoot 'C:\Windows' } $hipEnvPlan $envSandbox $inherited
+    Check (-not $hipBarEnv.set.Contains($barName) -and ($hipBarEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH') 'a HIP plan never receives the BAR variable, even when the caller asks for it'
+    Check (@($hipEnv.set.Keys | Where-Object { $_ -like 'HIP_*' -or $_ -like 'ROC*' -or $_ -like 'HSA_*' }).Count -eq 0) 'no HIP_, ROC or HSA_ variable is ever set for a HIP child'
+    foreach($mustGo in @('HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','HF_TOKEN')) {
+        Check ($hipEnv.remove -contains $mustGo) "the HIP child scrubs the inherited $mustGo"
+    }
+    Check (-not ($hipEnv.remove -contains 'PATH') -and -not ($hipEnv.remove -contains 'USERPROFILE')) 'the scrub does not remove variables outside its list'
+    $twoRootsPlan=[pscustomobject]@{backend='hip';enginePath='C:\e\llama-server.exe';runtimeRoots=@('C:\r1\bin','C:\r2\bin')}
+    $twoRootsEnv=& $module { param($P,$S) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -SystemRoot 'D:\Win' } $twoRootsPlan $envSandbox
+    Check ($twoRootsEnv.set['PATH'] -ceq 'C:\e;C:\r1\bin;C:\r2\bin;D:\Win\System32;D:\Win') 'several runtime roots keep their chain order between the engine dir and System32'
+    # The builder is applied to a real ProcessStartInfo by the one wrapper that both the probe and the launch call.
+    $startInfo=New-Object Diagnostics.ProcessStartInfo
+    $startInfo.EnvironmentVariables['HIP_VISIBLE_DEVICES']='1';$startInfo.EnvironmentVariables['ROCR_VISIBLE_DEVICES']='1';$startInfo.EnvironmentVariables['GGML_VK_X']='1'
+    & $module { param($I,$P,$S) Initialize-FastLlmEngineStartInfo -StartInfo $I -Plan $P -Sandbox $S -VulkanBarMitigation } $startInfo $hipEnvPlan $envSandbox
+    Check (-not $startInfo.EnvironmentVariables.ContainsKey('HIP_VISIBLE_DEVICES') -and -not $startInfo.EnvironmentVariables.ContainsKey('ROCR_VISIBLE_DEVICES') -and -not $startInfo.EnvironmentVariables.ContainsKey('GGML_VK_X') -and -not $startInfo.EnvironmentVariables.ContainsKey($barName) -and $startInfo.EnvironmentVariables['APPDATA'] -ceq 'C:\sandbox\appdata') 'Initialize-FastLlmEngineStartInfo applies the scrub and the sets to a ProcessStartInfo (HIP, BAR requested and ignored)'
+    $moduleText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.psm1'))
+    $runtimeText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.Runtime.ps1'))
+    Check ($moduleText.Contains('Initialize-FastLlmEngineStartInfo -StartInfo $startInfo -Plan $probePlan') -and $runtimeText.Contains('Initialize-FastLlmEngineStartInfo -StartInfo $info -Plan $Plan') -and -not $moduleText.Contains("EnvironmentVariables['PATH']") -and -not $moduleText.Contains("EnvironmentVariables['APPDATA']") -and -not $runtimeText.Contains("$info.EnvironmentVariables['PATH']")) 'the device probe and the server launch both build their environment through the one function (no second copy of the PATH or scrub code)'
+
+    # The real b11658 device list on an RX 7900 XTX bench, parsed by the existing parser and matched by name and VRAM.
+    $realList="Available devices:`r`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`r`n"
+    $realDevices=@(ConvertFrom-LlamaDeviceList -Text $realList -Backend ROCm)
+    Check ($realDevices.Count -eq 1 -and $realDevices[0].device -ceq 'ROCm0' -and $realDevices[0].name -ceq 'AMD Radeon RX 7900 XTX' -and $realDevices[0].vramMiB -eq 24560 -and $realDevices[0].freeVramMiB -eq 24411 -and $realDevices[0].isAmd -and -not $realDevices[0].isIntegrated) 'the real b11658 --list-devices line parses to ROCm0 with name, total and free VRAM'
+    $realSelected=@(& $module { param($A,$D) Resolve-FastLlmHipSelectedAdapters -Adapters $A -Devices $D -ComponentId 'llama.cpp-hip-b11658' } @([pscustomobject]@{device='Vulkan0';name='AMD Radeon RX 7900 XTX';vramMiB=24560;freeVramMiB=23737}) $realDevices)
+    Check ($realSelected.Count -eq 1 -and $realSelected[0].device -ceq 'ROCm0') 'the real device line matches the Vulkan-probed RX 7900 XTX'
+    $twoCards=@(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+    $twinCode=$null
+    try { & $module { param($A,$D) Resolve-FastLlmHipSelectedAdapters -Adapters $A -Devices $D -ComponentId 'c' } @([pscustomobject]@{device='Vulkan0';name='AMD Radeon RX 7900 XTX';vramMiB=24560}) $twoCards | Out-Null } catch { $twinCode=$_.Exception.Data['FastLlmFailureCode'] }
+    Check ($twoCards.Count -eq 2 -and $twinCode -ceq 'hip-device-ambiguous') 'two identical cards in a real-format list: hip-device-ambiguous'
+    $mixed=@(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon(TM) Graphics (512 MiB, 400 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+    $mixedSelected=@(& $module { param($A,$D) Resolve-FastLlmHipSelectedAdapters -Adapters $A -Devices $D -ComponentId 'c' } @([pscustomobject]@{device='Vulkan0';name='AMD Radeon RX 7900 XTX';vramMiB=24560}) $mixed)
+    Check ($mixed.Count -eq 2 -and $mixed[0].isIntegrated -and $mixedSelected[0].device -ceq 'ROCm1') 'an iGPU plus a dGPU in a real-format list: the dGPU is picked by name and VRAM'
+
+    # Typed HIP launch failures (the supervisor and the probe both use this factory). The reason is never RuntimeCheckFailed: recovery would re-plan onto Vulkan.
+    function Get-HipFailure($ExitCode,$NativeError) { & $module { param($E,$N) if ($null -ne $N) { New-FastLlmHipLaunchFailure -ComponentId 'llama.cpp-hip-b11658' -NativeErrorCode $N } else { New-FastLlmHipLaunchFailure -ComponentId 'llama.cpp-hip-b11658' -ExitCode $E } } $ExitCode $NativeError }
+    $blockedExit=Get-HipFailure -1073740760 $null
+    Check ($null -ne $blockedExit -and $blockedExit.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked' -and $blockedExit.Data['FastLlmReason'] -ceq 'HipDllFailed' -and $blockedExit.Message -like 'hip-dll-blocked:*' -and $blockedExit.Message -like "*llama.cpp-hip-b11658*" -and $blockedExit.Message -like '*server was stopped*' -and $blockedExit.Message -like '*Vulkan*') 'exit status 0xC0000428 (STATUS_INVALID_IMAGE_HASH) is hip-dll-blocked, naming the component, saying the server was stopped and pointing at the Vulkan setup'
+    foreach($nativeError in @(4551,1260)) {
+        $blockedStart=Get-HipFailure $null $nativeError
+        Check ($null -ne $blockedStart -and $blockedStart.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked') "Win32 error $nativeError from the process start is hip-dll-blocked"
+    }
+    $missingDll=Get-HipFailure -1073741515 $null
+    Check ($null -ne $missingDll -and $missingDll.Data['FastLlmFailureCode'] -ceq 'hip-dll-missing' -and $missingDll.Data['FastLlmReason'] -ceq 'HipDllFailed' -and $missingDll.Message -like '*llama.cpp-hip-b11658*' -and $missingDll.Message -like '*Vulkan*') 'exit status 0xC0000135 (STATUS_DLL_NOT_FOUND) is hip-dll-missing, naming the component'
+    foreach($ordinary in @(0,1,-1073741819,3,5)) { Check ($null -eq (Get-HipFailure $ordinary $null)) "exit status $ordinary is not a DLL failure" }
+    Check ($null -eq (Get-HipFailure $null 5)) 'an unrelated Win32 error from the process start is not a DLL failure'
+    Check ($runtimeText.Contains("New-FastLlmHipLaunchFailure -ComponentId `$hipComponentId -ExitCode ([int] `$hostProcess.Process.ExitCode)") -and $runtimeText.Contains("New-FastLlmHipLaunchFailure -ComponentId `$hipComponentId -NativeErrorCode") -and $moduleText.Contains('New-FastLlmHipLaunchFailure -ComponentId $ComponentId -ExitCode') -and $moduleText.Contains('New-FastLlmHipLaunchFailure -ComponentId $ComponentId -NativeErrorCode')) 'the supervisor (early exit and process start) and the device probe (exit and start) all use the typed factory'
+    Check ($runtimeText -match "elseif \(\`$_\.Exception\.Data\['FastLlmReason'\] -ceq 'HipDllFailed'\)") 'the supervisor keeps the typed code and its non-recoverable reason out of the RuntimeCheckFailed branch'
+
+    Check ($moduleText.Contains("if (`$_.Exception.Data['FastLlmFailureCode']) { throw }")) 'the HIP device probe rethrows its own typed failure instead of turning it into an empty device list'
+    # The real probe against a stand-in engine (a batch file that exits with a chosen status; Windows only).
+    if ($env:OS -eq 'Windows_NT') {
+        function Invoke-StandInProbe([string]$Name,[int]$ExitCode,[switch]$Hip) {
+            $probeDir=Join-Path $temp $Name
+            New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
+            $standIn=Join-Path $probeDir 'llama-server.cmd'
+            [IO.File]::WriteAllText($standIn,"@exit /b $ExitCode`r`n",(New-Object Text.ASCIIEncoding))
+            $probeArguments=@{EnginePath=$standIn;Backend='ROCm';InstallRoot=$probeDir;TimeoutSeconds=20}
+            if($Hip){$probeArguments.Hip=$true;$probeArguments.RuntimeRoots=@();$probeArguments.ComponentId='llama.cpp-hip-b11658'}
+            $probeFailure=$null;$probeDevices=$null
+            try { $probeDevices=@(Invoke-FastLlmDeviceProbe @probeArguments) } catch { $probeFailure=$_.Exception }
+            return [pscustomobject]@{failure=$probeFailure;devices=$probeDevices}
+        }
+        $probeBlocked=Invoke-StandInProbe 'probe-blocked' -1073740760 -Hip
+        Check ($null -ne $probeBlocked.failure -and $probeBlocked.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked') 'the real HIP device probe turns an engine exit of 0xC0000428 into hip-dll-blocked, not an empty list'
+        $probeMissing=Invoke-StandInProbe 'probe-missing' -1073741515 -Hip
+        Check ($null -ne $probeMissing.failure -and $probeMissing.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-missing') 'the real HIP device probe turns an engine exit of 0xC0000135 into hip-dll-missing'
+        $probeOrdinary=Invoke-StandInProbe 'probe-ordinary' 3 -Hip
+        Check ($null -eq $probeOrdinary.failure -and $probeOrdinary.devices.Count -eq 0) 'any other failing exit of the HIP probe is still an empty device list'
+        $probeVulkan=Invoke-StandInProbe 'probe-vulkan' -1073740760
+        Check ($null -eq $probeVulkan.failure -and $probeVulkan.devices.Count -eq 0) 'the non-HIP probe is unchanged: the same exit is an empty list, never a typed failure'
+    }
+    else { Write-Host 'SKIP: the stand-in engine probe needs a Windows child process' }
+
+    # Supervised start of a HIP plan against a stand-in engine that exits at once (Windows only: a real child process with a chosen exit status).
+    if ($env:OS -eq 'Windows_NT') {
+        & $module { Initialize-FastLlmProcessHost }
+        function Invoke-HipEarlyExit([string]$Name,[int]$ExitCode,[string]$Binding='off') {
+            $hipRun=Join-Path $temp $Name
+            New-Item -ItemType Directory -Path $hipRun -Force | Out-Null
+            $hipListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$hipListener.Start();$hipPort=$hipListener.LocalEndpoint.Port;$hipListener.Stop()
+            $hipPlan=[pscustomobject]@{enginePath=$env:ComSpec;serverArguments=@('/c','exit',"$ExitCode");endpoint="http://127.0.0.1:$hipPort/v1";backend='hip';engineComponentId='llama.cpp-hip-b11658';runtimeRoots=@()
+                selectedAdapters=@([pscustomobject]@{device='ROCm0';name='AMD Radeon RX 7900 XTX';vramMiB=24560});hardwareFingerprint='synthetic';engineVersion='b11658';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}}
+            $hipLock=Enter-FastLlmOperation $hipRun
+            $hipFailure=$null
+            try {
+                $hipOptions=@{Plan=$hipPlan;InstallRoot=$hipRun;LoadTimeoutSeconds=30}
+                if($Binding -cne 'off'){$hipOptions.DeviceBinding=$Binding}
+                try { & $module { param($O) Invoke-FastLlmSupervisedServer @O } $hipOptions | Out-Null } catch { $hipFailure=$_.Exception }
+            } finally { $hipLock.Dispose() }
+            return [pscustomobject]@{failure=$hipFailure;state=(Get-FastLlmStatus $hipRun)}
+        }
+        $blockedRun=Invoke-HipEarlyExit 'hip-blocked' -1073740760
+        Check ($null -ne $blockedRun.failure -and $blockedRun.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked' -and $blockedRun.failure.Data['FastLlmReason'] -ceq 'HipDllFailed' -and $blockedRun.state.phase -ceq 'failed' -and $blockedRun.state.failureCode -ceq 'hip-dll-blocked') 'a HIP server that exits with 0xC0000428 before readiness fails the start hip-dll-blocked (status failed, code recorded, never RuntimeCheckFailed)'
+        $missingRun=Invoke-HipEarlyExit 'hip-missing' -1073741515
+        Check ($null -ne $missingRun.failure -and $missingRun.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-missing' -and $missingRun.state.failureCode -ceq 'hip-dll-missing') 'a HIP server that exits with 0xC0000135 before readiness fails the start hip-dll-missing'
+        $genericRun=Invoke-HipEarlyExit 'hip-generic' 3
+        Check ($null -ne $genericRun.failure -and $genericRun.failure.Message -like '*exited before readiness*' -and $null -eq $genericRun.failure.Data['FastLlmFailureCode'] -and $genericRun.state.failureCode -ceq 'startup-or-runtime-check-failed') 'any other early exit of a HIP server keeps the generic failure'
+        Check ($genericRun.state.engineComponentId -ceq 'llama.cpp-hip-b11658' -and $genericRun.state.engineExecutable -ceq $env:ComSpec -and $genericRun.state.vulkanMemoryPolicy.effective -ceq 'not-applicable' -and $genericRun.state.barGuidance.shown -eq $false) 'status.json records the HIP component and executable, a not-applicable Vulkan memory policy and no BAR guidance'
+        $recordRun=Invoke-HipEarlyExit 'hip-record' 3 'record'
+        Check ($recordRun.state.deviceBinding.status -ceq 'not-applicable' -and $recordRun.state.identityRecord -ceq 'not-applicable' -and $recordRun.state.failureCode -ceq 'startup-or-runtime-check-failed') '-DeviceBinding record on a HIP plan records not-applicable and captures no Vulkan identity'
+        $enforceRun=Invoke-HipEarlyExit 'hip-enforce' 3 'enforce'
+        Check ($null -ne $enforceRun.failure -and $enforceRun.failure.Data['FastLlmFailureCode'] -ceq 'device-binding-unsupported-backend' -and $enforceRun.failure.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and $enforceRun.state.failureCode -ceq 'device-binding-unsupported-backend' -and $null -eq $enforceRun.state.PSObject.Properties['processIdentity']) '-DeviceBinding enforce on a HIP plan fails device-binding-unsupported-backend before any process is started'
+    }
+    else { Write-Host 'SKIP: supervised HIP early-exit starts need a Windows child process' }
     $suitePassed=$true
 } finally {
     if($lock){$lock.Dispose()}

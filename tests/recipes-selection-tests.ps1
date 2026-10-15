@@ -124,3 +124,36 @@ foreach ($badComponent in @((EngineComponent 'llama.cpp-b10800-vulkan' 'b10800' 
 $caughtFailure = $null
 try { Resolve-FastLlmRecipeEngine -Recipe $componentRecipe -Catalog $catalog -Components @() -InstallRoot 'C:\unused' | Out-Null } catch { $caughtFailure = $_.Exception }
 Check ($null -ne $caughtFailure -and $caughtFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown' -and $caughtFailure.Message -like "*llama.cpp-b10800-vulkan*") 'an unknown engine id is a typed error that names the id'
+
+# ---- C3 Task 3: HIP engine components are engines; the selected card is matched to the HIP device by exact name and VRAM, never guessed ----
+$hipComponent = EngineComponent 'llama.cpp-hip-b11658' 'b11658' 'engine' 'hip'
+Check ($null -ne (Find-FastLlmEngineComponent -Components @($hipComponent) -EngineId 'llama.cpp-hip-b11658')) 'a listed hip engine component is an engine'
+Check ($null -eq (Find-FastLlmEngineComponent -Components @((EngineComponent 'llama.cpp-hip-b11658' 'b11658' 'runtime' 'hip')) -EngineId 'llama.cpp-hip-b11658')) 'a hip runtime component is not an engine'
+function HipDevice($device, $name, $total, $free = 1000) { [pscustomobject]@{ device = $device; name = $name; vramMiB = [int64]$total; freeVramMiB = [int64]$free; backend = 'ROCm' } }
+function SelectedCard($name = 'AMD Radeon RX 7900 XTX', $vram = 24560, $device = 'Vulkan0') { [pscustomobject]@{ device = $device; name = $name; vramMiB = [int64]$vram; freeVramMiB = 23737; isAmd = $true } }
+function HipFailure([scriptblock]$Block) { try { & $Block | Out-Null } catch { return $_.Exception }; return $null }
+$one = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560 24411)) -ComponentId 'llama.cpp-hip-b11658')
+Check ($one.Count -eq 1 -and $one[0].device -ceq 'ROCm0' -and $one[0].name -ceq 'AMD Radeon RX 7900 XTX' -and $one[0].freeVramMiB -eq 23737) 'one card: the selected adapter keeps its fields and gets the HIP device name'
+$selectedOriginal = SelectedCard
+$null = Resolve-FastLlmHipSelectedAdapters -Adapters @($selectedOriginal) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x'
+Check ($selectedOriginal.device -ceq 'Vulkan0') 'the hardware adapter object is not modified (the result is a copy)'
+$igpuFirst = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon(TM) Graphics' 512 400), (HipDevice 'ROCm1' 'AMD Radeon RX 7900 XTX' 24560 24411)) -ComponentId 'x')
+Check ($igpuFirst[0].device -ceq 'ROCm1') 'an iGPU listed first and the dGPU second: the dGPU is matched by name and VRAM, not by index'
+$igpuLast = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560), (HipDevice 'ROCm1' 'AMD Radeon(TM) Graphics' 24576 400)) -ComponentId 'x')
+Check ($igpuLast[0].device -ceq 'ROCm0') 'an iGPU with a similar VRAM total but another name is never matched'
+$twin = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560), (HipDevice 'ROCm1' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'llama.cpp-hip-b11658' }
+Check ($null -ne $twin -and $twin.Data['FastLlmFailureCode'] -ceq 'hip-device-ambiguous' -and $twin.Data['FastLlmComponentId'] -ceq 'llama.cpp-hip-b11658') 'two identical cards: hip-device-ambiguous, nothing is guessed'
+$twinPair = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'AMD Radeon RX 7900 XTX' 24560 'Vulkan0'), (SelectedCard 'AMD Radeon RX 7900 XTX' 24560 'Vulkan1')) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560), (HipDevice 'ROCm1' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x' }
+Check ($null -ne $twinPair -and $twinPair.Data['FastLlmFailureCode'] -ceq 'hip-device-ambiguous') 'a selected pair of identical cards is ambiguous too (HIP names cannot be assigned to them)'
+$none = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @() -ComponentId 'x' }
+Check ($null -ne $none -and $none.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'an empty HIP device list: hip-device-not-found'
+$otherName = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XT' 24560)) -ComponentId 'x' }
+Check ($null -ne $otherName -and $otherName.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'a different card name with the same VRAM is not a match'
+$edgeIn = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'AMD Radeon RX 7900 XTX' 24000)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 25200)) -ComponentId 'x')
+Check ($edgeIn[0].device -ceq 'ROCm0') 'a total exactly 5% above the selected card still matches'
+$edgeOut = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'AMD Radeon RX 7900 XTX' 24000)) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 25201)) -ComponentId 'x' }
+Check ($null -ne $edgeOut -and $edgeOut.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'a total just over 5% away does not match'
+$caseName = @(Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard 'amd radeon rx 7900 xtx')) -Devices @((HipDevice 'ROCm0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x')
+Check ($caseName[0].device -ceq 'ROCm0') 'the name comparison ignores case but nothing else'
+$wrongFamily = HipFailure { Resolve-FastLlmHipSelectedAdapters -Adapters @((SelectedCard)) -Devices @((HipDevice 'Vulkan0' 'AMD Radeon RX 7900 XTX' 24560)) -ComponentId 'x' }
+Check ($null -ne $wrongFamily -and $wrongFamily.Data['FastLlmFailureCode'] -ceq 'hip-device-not-found') 'only ROCm<N> devices count as HIP devices'

@@ -678,6 +678,7 @@ try {
         $runtime = New-TreeComponent -Id 'rt-hip' -Parts @($part1.part, $part2.part) -PathDirs @('bin') -License $runtimeLicense
         $engine = New-TreeComponent -Id 'eng-hip' -Parts @($enginePart.part) -Kind 'engine' -Requires @('rt-hip') -License $engineLicense -LegacySource
         $engine.entryPoint = 'server.exe'
+        $engine.adapter = 'llama.cpp'
         $docPath = Write-ComponentsDoc @($engine, $runtime)
         $zipByUrl = @{}
         foreach ($archive in @($part1, $part2, $enginePart)) { $zipByUrl[$archive.url] = $archive.zip }
@@ -912,7 +913,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $recipesSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/FastLlm.Recipes.ps1') -Raw
     Check ($recipesSource -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$component -Depth Presence') 'Resolve-FastLlmRecipeEngine checks components at Depth Presence'
     Check ($moduleSourceEarly -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$entry -Depth Presence') 'Get-FastLlmComponentInventory checks components at Depth Presence'
-    Check ($moduleSourceEarly -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$startComponent\)') 'Start-FastLlmServer keeps the default Full check'
+    Check ($moduleSourceEarly -match 'Get-FastLlmFirstUnavailableComponent -Components \$startComponents -EngineId \$planComponentId -InstallRoot \$InstallRoot -Depth Full' -and $recipesSource -match 'Test-FastLlmComponentInstallation -InstallRoot \$InstallRoot -Component \$chained -Depth \$Depth') 'Start-FastLlmServer keeps the Full check (it passes -Depth Full through the chain helper)'
 
     # ---- Streaming: no whole-archive or whole-entry API on the extraction path ----
     $extractSource = [regex]::Match($moduleSourceEarly, '(?s)function Expand-FastLlmComponentArchivePart \{.*?\r?\n\}\r?\n').Value
@@ -1372,6 +1373,102 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $builtInNoRootParams = @{ Hardware = $xtxHardware; CatalogPath = $shippedCatalogPath; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
     $builtInNoRoot = Get-FastLlmPlan @builtInNoRootParams
     Check ($builtInNoRoot.recipe.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' -and -not $builtInNoRoot.PSObject.Properties['engineComponentId']) 'a built-in-engine recipe still plans without -InstallRoot'
+
+    # ---- C3 Task 3: a HIP engine that requires a runtime. Resolution, the plan (device probe, ROCm<N>), and the shipped HIP engine's manifest ----
+    $hipShippedEngine = @($shipped | Where-Object { [string] $_.id -ceq 'llama.cpp-hip-b11658' })[0]
+    $hipShippedManifest = @((Get-FastLlmComponentSources -Component $hipShippedEngine)[0].fileManifest)
+    Check (@($hipShippedManifest | Where-Object { $_.path -ceq 'amdhip64_7.dll' }).Count -eq 1 -and @($hipShippedManifest | Where-Object { $_.path -ceq 'llama-server.exe' }).Count -eq 1) 'the shipped HIP engine carries its own amdhip64_7.dll next to llama-server.exe (the engine-dir copy that wins the PATH order over the driver copy)'
+    $hipFx = New-ChainFixture -Name 'fx-hip-plan'
+    $hipList = @(Get-FastLlmComponents -ComponentsPath $hipFx.ComponentsPath)
+    $hipResolveRecipe = [pscustomobject] @{ id = 'rh'; components = [pscustomobject] @{ engine = 'eng-hip'; model = 'm' } }
+    $hipInstallRoot = New-TestRoot
+    $hipRuntimeEntry = Get-ComponentEntry $hipFx.ComponentsPath 'rt-hip'
+    $hipEngineEntry = Get-ComponentEntry $hipFx.ComponentsPath 'eng-hip'
+    $hipRuntimeRootPath = Get-FastLlmComponentRoot -InstallRoot $hipInstallRoot -Component $hipRuntimeEntry
+    $hipExpectedRoots = @(& $module { param($R, $C) Join-FastLlmContainedPath -Root $R -Child $C -Label 'x' } $hipRuntimeRootPath 'bin')
+    $hipBefore = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $hipResolveRecipe $resolveCatalog $hipList $hipInstallRoot
+    Check (-not $hipBefore.builtIn -and $hipBefore.backend -ceq 'hip' -and -not $hipBefore.installed -and @($hipBefore.runtimeRoots).Count -eq 1 -and $hipBefore.runtimeRoots[0] -ceq $hipExpectedRoots[0]) 'a HIP engine resolves with backend hip and the runtime root joined with runtimePathDirs, whether or not it is installed'
+    $hipChainState = New-ChainState
+    $null = Install-FastLlmComponent -ComponentsPath $hipFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $hipInstallRoot -AcceptLicense -Download (New-ChainSeam -Fixture $hipFx -State $hipChainState)
+    $hipAfter = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $hipResolveRecipe $resolveCatalog $hipList $hipInstallRoot
+    Check ($hipAfter.installed -and $hipAfter.backend -ceq 'hip' -and $hipAfter.id -ceq 'eng-hip' -and $hipAfter.runtimeRoots[0] -ceq $hipExpectedRoots[0]) 'an installed HIP chain resolves as installed, with the runtime bin directory as its DLL root'
+    Check (@($resolvedBuiltIn.runtimeRoots).Count -eq 0 -and $resolvedBuiltIn.backend -ceq 'vulkan' -and $installed.backend -ceq 'vulkan' -and @($installed.runtimeRoots).Count -eq 0) 'built-in and Vulkan component engines resolve with backend vulkan and no runtime roots'
+    $hipShippedResolve = & $module { param($L, $I) Resolve-FastLlmRecipeEngine -Recipe ([pscustomobject] @{ id = 'rs'; components = [pscustomobject] @{ engine = 'llama.cpp-hip-b11658'; model = 'm' } }) -Catalog ([pscustomobject] @{ engine = [pscustomobject] @{ version = 'b10698'; assets = [pscustomobject] @{ vulkan = [pscustomobject] @{ entryPoint = 'llama-server.exe' } } } }) -Components $L -InstallRoot $I } $shipped (New-TestRoot)
+    Check ($hipShippedResolve.backend -ceq 'hip' -and @($hipShippedResolve.runtimeRoots).Count -eq 1 -and $hipShippedResolve.runtimeRoots[0] -like '*components*runtime*amd-rocm-gfx1100-10.0.0*10.0.0*bin') 'the shipped HIP engine resolves its runtime root under components\runtime\amd-rocm-gfx1100-10.0.0\10.0.0\bin'
+
+    $hipPlanDir = Join-Path $work 'hip-plan-config'
+    New-Item -ItemType Directory -Path $hipPlanDir -Force | Out-Null
+    Copy-Item -LiteralPath $shippedCatalogPath -Destination (Join-Path $hipPlanDir 'catalog.json') -Force
+    Copy-Item -LiteralPath $hipFx.ComponentsPath -Destination (Join-Path $hipPlanDir 'components.json') -Force
+    $hipRecipeDocument = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
+    $hipRecipeEntry = @($hipRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' })[0]
+    $hipRecipeEntry.id = 'fixture.hip-engine'
+    $hipRecipeEntry.components.engine = 'eng-hip'
+    $hipRecipeEntry.engineBuild = '1.0'
+    $hipRecipeDocument.recipes = @($hipRecipeEntry)
+    $hipRecipesPath = Join-Path $hipPlanDir 'recipes.json'
+    [System.IO.File]::WriteAllText($hipRecipesPath, (ConvertTo-Json -InputObject $hipRecipeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+    $hipPlanParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    $hipProbe = @{ calls = (New-Object 'System.Collections.Generic.List[object]'); devices = @(); failure = $null }
+    $savedHipProbe = & $module { (Get-Command Invoke-FastLlmDeviceProbe).ScriptBlock }
+    & $module {
+        param($P)
+        $script:hipProbeState = $P
+        function script:Invoke-FastLlmDeviceProbe {
+            param($EnginePath, $Backend, $InstallRoot, $TimeoutSeconds, [switch] $Hip, $RuntimeRoots, $ComponentId)
+            $script:hipProbeState.calls.Add([pscustomobject] @{ EnginePath = $EnginePath; Backend = $Backend; Hip = [bool] $Hip; RuntimeRoots = @($RuntimeRoots); ComponentId = $ComponentId })
+            if ($script:hipProbeState.failure) { throw $script:hipProbeState.failure }
+            return $script:hipProbeState.devices
+        }
+    } $hipProbe
+    try {
+        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+        $hipPlanned = Get-FastLlmPlan @hipPlanParams
+        Check ($hipPlanned.recipe.id -ceq 'fixture.hip-engine' -and $hipPlanned.backend -ceq 'hip' -and $hipPlanned.engineComponentId -ceq 'eng-hip' -and $hipPlanned.engineVersion -ceq '1.0') 'a HIP recipe plans with backend hip, the engine component id and its version'
+        Check (@($hipPlanned.runtimeRoots).Count -eq 1 -and $hipPlanned.runtimeRoots[0] -ceq $hipExpectedRoots[0]) 'the HIP plan carries the absolute runtime DLL roots'
+        Check ($hipPlanned.selectedAdapters[0].device -ceq 'ROCm0' -and $xtxHardware.adapters[0].device -ceq 'Vulkan0') 'the HIP plan names the selected adapter ROCm0 and leaves the probed hardware untouched'
+        $hipArguments = @($hipPlanned.serverArguments)
+        Check ($hipArguments[[Array]::IndexOf($hipArguments, '--device') + 1] -ceq 'ROCm0' -and $hipArguments[[Array]::IndexOf($hipArguments, '--host') + 1] -ceq '127.0.0.1') 'the HIP plan passes --device ROCm0 and still binds 127.0.0.1'
+        Check ($hipProbe.calls.Count -eq 1 -and $hipProbe.calls[0].Hip -and $hipProbe.calls[0].Backend -ceq 'ROCm' -and $hipProbe.calls[0].EnginePath -ceq $hipPlanned.enginePath -and $hipProbe.calls[0].ComponentId -ceq 'eng-hip' -and $hipProbe.calls[0].RuntimeRoots[0] -ceq $hipExpectedRoots[0]) 'the HIP device probe runs the component engine with the runtime roots (the same environment as the launch)'
+        Check ((@($hipPlanned.PSObject.Properties.Name) -join ',') -ceq ((@($builtInNoRoot.PSObject.Properties.Name) + @('engineComponentId', 'runtimeRoots')) -join ',')) 'a HIP plan is the Vulkan plan shape plus exactly engineComponentId and runtimeRoots'
+        # Vulkan plans never probe HIP and keep their shape.
+        $hipProbe.calls.Clear()
+        $vulkanAgain = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $shippedCatalogPath -InstallRoot $planRoot -RecipesPath $shippedRecipesPath -GpuVariantsPath $shippedVariantsPath
+        Check ($hipProbe.calls.Count -eq 0 -and $vulkanAgain.backend -ceq 'Vulkan' -and -not $vulkanAgain.PSObject.Properties['runtimeRoots'] -and -not $vulkanAgain.PSObject.Properties['engineComponentId']) 'a shipped Vulkan recipe plans without any HIP probe, with backend Vulkan and no HIP fields'
+        # iGPU first, dGPU second: matched by name and VRAM.
+        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon(TM) Graphics (512 MiB, 400 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+        $hipSecond = Get-FastLlmPlan @hipPlanParams
+        Check ($hipSecond.selectedAdapters[0].device -ceq 'ROCm1' -and $hipSecond.serverArguments[[Array]::IndexOf(@($hipSecond.serverArguments), '--device') + 1] -ceq 'ROCm1') 'with an iGPU listed first the plan still selects the dGPU as ROCm1'
+        # Fail closed: nothing matches, or two identical cards.
+        foreach ($closed in @(
+                @{ code = 'hip-device-not-found'; text = "Available devices:`n  ROCm0: AMD Radeon RX 7900 XT (20464 MiB, 20000 MiB free)" },
+                @{ code = 'hip-device-not-found'; text = 'Available devices:' },
+                @{ code = 'hip-device-ambiguous'; text = "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" })) {
+            $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text $closed.text -Backend ROCm)
+            $closedFailure = $null
+            try { Get-FastLlmPlan @hipPlanParams | Out-Null } catch { $closedFailure = $_.Exception }
+            Check ($null -ne $closedFailure -and $closedFailure.Data['FastLlmFailureCode'] -ceq $closed.code) "the HIP plan fails closed with $($closed.code) and no estimated plan"
+        }
+        # A blocked DLL at the probe is the typed failure, not "no device" and not an estimated Vulkan plan.
+        $hipProbe.failure = & $module { New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode -1073740760 }
+        $blockedPlan = $null
+        try { Get-FastLlmPlan @hipPlanParams | Out-Null } catch { $blockedPlan = $_.Exception }
+        Check ($null -ne $blockedPlan -and $blockedPlan.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked' -and $blockedPlan.Data['FastLlmReason'] -ceq 'HipDllFailed') 'a blocked DLL during the device probe fails the plan hip-dll-blocked (never a silent fallback to Vulkan)'
+        $hipProbe.failure = $null
+        # The runtime is removed while the engine is installed: the plan names the RUNTIME.
+        $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text 'Available devices:  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)' -Backend ROCm)
+        $hipProbe.calls.Clear()
+        Remove-Item -LiteralPath (Join-Path (Join-Path $hipRuntimeRootPath 'bin') 'a.dll') -Force
+        $missingRuntimePlan = $null
+        try { Get-FastLlmPlan @hipPlanParams | Out-Null } catch { $missingRuntimePlan = $_.Exception }
+        Check ($null -ne $missingRuntimePlan -and $missingRuntimePlan.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and $missingRuntimePlan.Data['FastLlmComponentId'] -ceq 'eng-hip' -and $missingRuntimePlan.Data['FastLlmUnavailableComponentId'] -ceq 'rt-hip' -and $missingRuntimePlan.Message -like "*'rt-hip'*" -and $hipProbe.calls.Count -eq 0) 'an engine installed but its runtime tampered with: the plan fails needs-setup-component-missing naming the runtime (the install target stays the engine, so the install action repairs the whole chain), and runs nothing'
+        $hipStillResolved = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $hipResolveRecipe $resolveCatalog $hipList $hipInstallRoot
+        Check (-not $hipStillResolved.installed) 'the HIP engine no longer resolves as installed once its runtime is damaged'
+        Check ((& $module { param($L, $I) Get-FastLlmFirstUnavailableComponent -Components $L -EngineId 'eng-hip' -InstallRoot $I -Depth Presence } $hipList $hipInstallRoot) -ceq 'rt-hip') 'the first unavailable component of the chain is the runtime (requires first)'
+    }
+    finally {
+        & $module { param($B) Set-Item -Path Function:script:Invoke-FastLlmDeviceProbe -Value $B } $savedHipProbe
+    }
 
     # ---- Experimental switch, CLI components action and the experimental gate (src/FastLlm.Components.ps1; entry scripts only) ----
     . (Join-Path $PSScriptRoot '../src/FastLlm.Components.ps1')

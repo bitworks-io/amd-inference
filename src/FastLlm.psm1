@@ -659,7 +659,15 @@ function Invoke-FastLlmDeviceProbe {
         [string] $InstallRoot,
 
         [ValidateRange(1, 120)]
-        [int] $TimeoutSeconds = 15
+        [int] $TimeoutSeconds = 15,
+
+        # The HIP engine component's lane: its runtime directories join the DLL search path (Get-FastLlmEngineEnvironment), and a blocked or
+        # missing DLL is a typed failure instead of an empty device list (which would read as "no device").
+        [switch] $Hip,
+
+        [string[]] $RuntimeRoots = @(),
+
+        [string] $ComponentId
     )
 
     if (-not (Test-Path -LiteralPath $EnginePath -PathType Leaf)) {
@@ -678,17 +686,11 @@ function Invoke-FastLlmDeviceProbe {
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
-        foreach ($name in @($startInfo.EnvironmentVariables.Keys)) {
-            if (Test-FastLlmEnvironmentNameRequiresClearing -Name ([string] $name)) {
-                $startInfo.EnvironmentVariables.Remove([string] $name)
-            }
-        }
-        $startInfo.EnvironmentVariables['APPDATA'] = [string] $sandbox.appData
-        $startInfo.EnvironmentVariables['PROGRAMDATA'] = [string] $sandbox.programData
-        if ($env:OS -eq 'Windows_NT' -and $env:SystemRoot) {
-            $system32 = Join-Path $env:SystemRoot 'System32'
-            $startInfo.EnvironmentVariables['PATH'] = "$(Split-Path -Parent $EnginePath);$system32;$env:SystemRoot"
-        }
+        # The same environment builder as the server launch: the probe cannot see a different PATH than the server will.
+        $probeBackend = [string] $Backend
+        if ($Hip) { $probeBackend = 'hip' }
+        $probePlan = [pscustomobject] [ordered] @{ backend = $probeBackend; enginePath = $EnginePath; runtimeRoots = @($RuntimeRoots) }
+        Initialize-FastLlmEngineStartInfo -StartInfo $startInfo -Plan $probePlan -Sandbox $sandbox
         $process.StartInfo = $startInfo
 
         if (-not $process.Start()) {
@@ -707,6 +709,10 @@ function Invoke-FastLlmDeviceProbe {
             return @()
         }
         if ($process.ExitCode -ne 0) {
+            if ($Hip) {
+                $hipProbeFailure = New-FastLlmHipLaunchFailure -ComponentId $ComponentId -ExitCode ([int] $process.ExitCode)
+                if ($hipProbeFailure) { throw $hipProbeFailure }
+            }
             return @()
         }
         $output = [string] $stdoutTask.GetAwaiter().GetResult()
@@ -716,6 +722,11 @@ function Invoke-FastLlmDeviceProbe {
         }
     }
     catch {
+        if ($Hip) {
+            if ($_.Exception.Data['FastLlmFailureCode']) { throw }
+            $hipStartFailure = New-FastLlmHipLaunchFailure -ComponentId $ComponentId -NativeErrorCode (Get-FastLlmNativeErrorCode -Exception $_.Exception)
+            if ($hipStartFailure) { throw $hipStartFailure }
+        }
         return @()
     }
     finally {
@@ -1137,6 +1148,8 @@ function Get-FastLlmPlan {
     $planEnginePath = $Hardware.enginePath
     $planEngineVersion = [string] $catalog.engine.version
     $planEngineComponentId = $null
+    $planBackend = [string] $Hardware.backend
+    $planRuntimeRoots = $null
     # The built-in id is recognised by name alone, so a plan on the built-in engine does no engine resolution at all.
     if ($recipePick -and -not $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
         throw (New-FastLlmEngineFailure -Code 'recipe-engine-needs-install-root' -Message "Recipe '$($recipePick.recipe.id)' runs on an engine component, which cannot be resolved without an install root. The built-in engine is not used instead.")
@@ -1145,12 +1158,34 @@ function Get-FastLlmPlan {
         $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
         if (-not $resolvedEngine.builtIn) {
             if (-not $resolvedEngine.installed) {
-                throw (New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId ([string] $resolvedEngine.id) `
-                    -Message "The engine component '$($resolvedEngine.id)' is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first.")
+                # The first component of the chain that fails, so a missing runtime is named as the runtime.
+                $unavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Presence
+                if (-not $unavailableId) { $unavailableId = [string] $resolvedEngine.id }
+                if ($unavailableId -ceq [string] $resolvedEngine.id) {
+                    $unavailableMessage = "The engine component '$($resolvedEngine.id)' is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
+                }
+                else {
+                    $unavailableMessage = "The component '${unavailableId}', which the engine component '$($resolvedEngine.id)' requires, is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
+                }
+                # FastLlmComponentId stays the engine (the chain root): the install action installs that one id and its whole requires chain.
+                # The member that actually failed is named in the message and in FastLlmUnavailableComponentId.
+                $unavailableFailure = New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId ([string] $resolvedEngine.id) -Message $unavailableMessage
+                $unavailableFailure.Data['FastLlmUnavailableComponentId'] = $unavailableId
+                throw $unavailableFailure
             }
             $planEnginePath = [string] $resolvedEngine.executable
             $planEngineVersion = [string] $resolvedEngine.version
             $planEngineComponentId = [string] $resolvedEngine.id
+            if ([string] $resolvedEngine.backend -ceq 'hip') {
+                # The HIP engine names its own devices (ROCm<N>): the selected card is matched by exact name and VRAM, or the plan fails closed.
+                $planBackend = 'hip'
+                $planRuntimeRoots = @($resolvedEngine.runtimeRoots)
+                $hipDevices = @(Invoke-FastLlmDeviceProbe -EnginePath $planEnginePath -Backend 'ROCm' -InstallRoot $InstallRoot `
+                        -TimeoutSeconds ([int] $catalog.hardwarePolicy.deviceProbeTimeoutSeconds) -Hip -RuntimeRoots $planRuntimeRoots -ComponentId $planEngineComponentId)
+                $selectedAdapters = @(Resolve-FastLlmHipSelectedAdapters -Adapters $selectedAdapters -Devices $hipDevices -ComponentId $planEngineComponentId)
+                $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
+                $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own.'
+            }
         }
     }
 
@@ -1202,7 +1237,7 @@ function Get-FastLlmPlan {
         performanceQualified = $false
         candidatePlacementCount = $placements.Count
         profile             = $Profile
-        backend             = [string] $Hardware.backend
+        backend             = $planBackend
         engineVersion       = $planEngineVersion
         enginePath          = $planEnginePath
         capacity            = [pscustomobject] [ordered] @{
@@ -1226,6 +1261,10 @@ function Get-FastLlmPlan {
     # Present only for an engine component, so a plan on the built-in engine has exactly the fields it always had.
     if ($planEngineComponentId) {
         $planDocument | Add-Member -NotePropertyName engineComponentId -NotePropertyValue $planEngineComponentId
+    }
+    # Present only on a HIP plan: the absolute DLL directories of the required runtime components, in chain order.
+    if ($planBackend -ceq 'hip') {
+        $planDocument | Add-Member -NotePropertyName runtimeRoots -NotePropertyValue @($planRuntimeRoots)
     }
     return $planDocument
 }
@@ -3194,34 +3233,50 @@ function Start-FastLlmServer {
     if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $vulkanMemoryPolicy = ConvertTo-FastLlmVulkanBarMitigationName $VulkanBarMitigation }
     else { $vulkanMemoryPolicy = ConvertTo-FastLlmVulkanBarMitigationName $script:FastLlmVulkanBarMitigationPolicy }
 
+    # Device binding is Vulkan-only: enforce on a HIP plan is refused before anything is verified or launched.
+    if (([string] $Plan.backend) -ieq 'hip' -and $DeviceBinding -ceq 'enforce') {
+        throw (New-FastLlmDeviceBindingFailure -Code 'device-binding-unsupported-backend' -Message 'Device binding (enforce) is available only for the Vulkan lane; this setup runs on the HIP engine. The server was not started. Use -DeviceBinding record or -DeviceBinding off to start without this requirement.')
+    }
+
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     $backendKey = ([string] $Plan.backend).ToLowerInvariant()
-    if ($backendKey -notin @('rocm', 'vulkan')) {
-        throw "The plan selected unknown backend '$($Plan.backend)'."
-    }
-    $asset = $catalog.engine.assets.PSObject.Properties[$backendKey].Value
-    if (-not [bool] $asset.enabled) {
-        throw "The $($Plan.backend) execution lane is disabled: $($asset.disabledReason)"
-    }
-    if (-not (Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey $backendKey -Asset $asset)) {
-        throw 'The selected engine installation failed its exact file manifest. Run the install action to repair it.'
-    }
-    $expectedEngine = Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey $backendKey -EntryPoint ([string] $asset.entryPoint)
-    # A plan on an engine component runs that component's verified executable, never the built-in engine. Not installed is a typed failure.
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) {
+        # A plan on an engine component (M7) never consults the catalog backend asset or the built-in engine installation: it runs the component's
+        # verified executable. Every required component is verified in full first, naming the first one that fails; nothing falls back or installs.
         $planComponentId = [string] $Plan.engineComponentId
         $startComponentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
+        $startComponents = @()
         $startComponent = $null
         if (Test-Path -LiteralPath $startComponentsFile -PathType Leaf) {
-            $startComponent = Find-FastLlmEngineComponent -Components @(Get-FastLlmComponents -ComponentsPath $startComponentsFile) -EngineId $planComponentId
+            $startComponents = @(Get-FastLlmComponents -ComponentsPath $startComponentsFile)
+            $startComponent = Find-FastLlmEngineComponent -Components $startComponents -EngineId $planComponentId
         }
         if ($null -eq $startComponent) {
             throw (New-FastLlmEngineFailure -Code 'recipe-engine-component-unknown' -ComponentId $planComponentId -Message "The plan names the engine component '${planComponentId}', which is not in the signed components list.")
         }
-        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $startComponent)) {
-            throw (New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId $planComponentId -Message "The engine component '${planComponentId}' is not installed or failed its file check. The built-in engine is not used instead.")
+        $unavailableComponentId = Get-FastLlmFirstUnavailableComponent -Components $startComponents -EngineId $planComponentId -InstallRoot $InstallRoot -Depth Full
+        if ($unavailableComponentId) {
+            $startUnavailableFailure = New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId $planComponentId -Message "The component '${unavailableComponentId}' (for the engine component '${planComponentId}') is not installed or failed its file check. The built-in engine is not used instead."
+            $startUnavailableFailure.Data['FastLlmUnavailableComponentId'] = $unavailableComponentId
+            throw $startUnavailableFailure
+        }
+        if (([string] $startComponent.platform.backend) -ine ([string] $Plan.backend)) {
+            throw (New-FastLlmEngineFailure -Code 'recipe-engine-backend-mismatch' -ComponentId $planComponentId -Message "The plan backend '$($Plan.backend)' does not match the engine component '${planComponentId}', which is a $($startComponent.platform.backend) engine. Nothing was started.")
         }
         $expectedEngine = Join-FastLlmContainedPath -Root (Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $startComponent) -Child ([string] $startComponent.entryPoint) -Label 'Engine component executable path'
+    }
+    else {
+        if ($backendKey -notin @('rocm', 'vulkan')) {
+            throw "The plan selected unknown backend '$($Plan.backend)'."
+        }
+        $asset = $catalog.engine.assets.PSObject.Properties[$backendKey].Value
+        if (-not [bool] $asset.enabled) {
+            throw "The $($Plan.backend) execution lane is disabled: $($asset.disabledReason)"
+        }
+        if (-not (Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey $backendKey -Asset $asset)) {
+            throw 'The selected engine installation failed its exact file manifest. Run the install action to repair it.'
+        }
+        $expectedEngine = Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey $backendKey -EntryPoint ([string] $asset.entryPoint)
     }
     if (-not $Plan.enginePath -or -not ([string] $Plan.enginePath).Equals($expectedEngine, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'The plan engine path does not match the verified installed engine.'
