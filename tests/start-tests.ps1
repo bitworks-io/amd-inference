@@ -36,7 +36,7 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel)
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered)
             $script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             return $script:startTestState.fresh
         }
@@ -97,6 +97,28 @@ try {
         Check ($reason -eq 'PlanChanged' -and -not $state.events.Contains('supervisor')) "changed model $property cannot reach native launch"
         $fresh.model.$property=$original
     }
+    # Final review M9: a measured (recipe-origin) plan whose start re-plan lost the card identity or the recipe must re-plan, never run as estimated.
+    $savedRecipe=$plan.recipe;$savedFreshRecipe=$fresh.recipe
+    $plan.recipe=[pscustomobject]@{id='r1';origin='bitworks';label='Measured by Bitworks on this card'}
+    $fresh.recipe=[pscustomobject]@{id=$null;origin='estimated';label='Estimated for your card'}
+    $state.events.Clear();$reason=$null;$message=''
+    try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$reason=$_.Exception.Data['FastLlmReason'];$message=$_.Exception.Message}
+    Check ($reason -eq 'PlanChanged' -and -not $state.events.Contains('supervisor') -and $message -like "*measured recipe 'r1'*estimated*") 'a recipe plan that re-plans as estimated raises PlanChanged with the reason and never launches'
+    $fresh.recipe=[pscustomobject]@{id='r2';origin='bitworks';label='Measured by Bitworks on this card'}
+    $state.events.Clear();$reason=$null;$message=''
+    try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$reason=$_.Exception.Data['FastLlmReason'];$message=$_.Exception.Message}
+    Check ($reason -eq 'PlanChanged' -and -not $state.events.Contains('supervisor') -and $message -like "*'r1'*'r2'*") 'a recipe plan that re-plans to another recipe raises PlanChanged'
+    $fresh.recipe=[pscustomobject]@{id='r1';origin='bitworks';label='Measured by Bitworks on this card'}
+    $state.events.Clear();$reason=$null
+    try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$reason=$_.Exception.Data['FastLlmReason']}
+    Check ($null -eq $reason -and $state.events.Contains('supervisor')) 'a recipe plan that re-plans to the same recipe launches'
+    $plan.recipe=[pscustomobject]@{id=$null;origin='estimated';label='Estimated for your card'}
+    $fresh.recipe=[pscustomobject]@{id=$null;origin='estimated';label='Estimated for your card'}
+    $state.events.Clear();$reason=$null
+    try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$reason=$_.Exception.Data['FastLlmReason']}
+    Check ($null -eq $reason -and $state.events.Contains('supervisor')) 'an estimated plan that re-plans as estimated is unaffected'
+    $plan.recipe=$savedRecipe;$fresh.recipe=$savedFreshRecipe;$state.events.Clear()
+
     $state.hash=$false;$state.events.Clear();$reason=$null
     try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$reason=$_.Exception.Data['FastLlmReason']}
     Check ($reason -eq 'ModelNeedsProvisioning' -and ($state.events -join ',') -eq 'hash') 'integrity failure stops before probe or launch'
