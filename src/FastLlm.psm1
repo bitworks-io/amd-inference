@@ -917,7 +917,10 @@ function Get-FastLlmPlan {
 
         [string] $GpuVariantsPath,
 
-        [string] $RecipeId
+        [string] $RecipeId,
+
+        # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
+        [switch] $Recovered
     )
 
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
@@ -1158,6 +1161,7 @@ function Get-FastLlmPlan {
         selectionMode       = if ($ModelId) { 'explicit' } elseif ($recipePick) { 'recipe' } else { 'auto' }
         requestedModelId    = $ModelId
         requestedRecipeId   = $RecipeId
+        recovered           = [bool] ($Recovered -and $ModelId)
         requestedContextSize = $ContextSize
         allowExperimentalModel = [bool] $AllowExperimentalModel
         catalogContextSize  = $catalogContext
@@ -1182,7 +1186,7 @@ function Get-FastLlmPlan {
         tensorSplit         = $tensorSplit
         endpoint            = "http://$($catalog.hardwarePolicy.serverHost):$($catalog.hardwarePolicy.serverPort)/v1"
         serverArguments     = $arguments
-        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped)
+        recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)))
         warnings            = $warnings
     }
 }
@@ -1849,6 +1853,8 @@ function Start-FastLlmServer {
     # A recipe-chosen plan is re-planned with the same recipe data, or it would always look "changed" against the estimated choice.
     $freshRecipeOptions = @{}
     $configRoot = Split-Path -Parent $CatalogPath
+    # Added only when set, so the default call keeps the exact parameter set it always had.
+    if ($Plan.PSObject.Properties['recovered'] -and $Plan.recovered) { $freshRecipeOptions.Recovered = $true }
     $planRecipeId = $null
     if ($Plan.PSObject.Properties['requestedRecipeId'] -and $Plan.requestedRecipeId) { $planRecipeId = [string] $Plan.requestedRecipeId }
     if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.origin -notin @('estimated', 'manual')) {

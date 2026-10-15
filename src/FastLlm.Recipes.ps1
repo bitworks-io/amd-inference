@@ -107,7 +107,7 @@ function Select-FastLlmRecipeForPlacements {
 }
 
 function New-FastLlmPlanRecipeBlock {
-    param($Pick, [string] $ModelId, [string[]] $Skipped)
+    param($Pick, [string] $ModelId, [string[]] $Skipped, [switch] $Recovered)
     if ($Pick) {
         $recipe = $Pick.recipe
         $url = $null
@@ -120,7 +120,7 @@ function New-FastLlmPlanRecipeBlock {
             variant = $Pick.variant; evidenceUrl = $url; expected = $expected; vulkanBarMitigation = $mitigation; skipped = @($Pick.skipped) }
     }
     $origin = 'estimated'
-    if ($ModelId) { $origin = 'manual' }
+    if ($ModelId -and -not $Recovered) { $origin = 'manual' }   # a model picked by recovery is not the user's choice
     return [pscustomobject] [ordered] @{ id = $null; origin = $origin; label = (Get-FastLlmRecipeLabel $origin); variant = $null
         evidenceUrl = $null; expected = $null; vulkanBarMitigation = $null; skipped = @($Skipped) }
 }

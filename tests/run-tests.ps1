@@ -195,9 +195,20 @@ try {
     Assert-Equal -Expected 'layer' -Actual $dualXtPlan.splitMode -Message 'the estimated dual-XT plan keeps the layer split'
     Assert-True -Condition (@($dualXtPlan.recipe.skipped | Where-Object { $_ -like 'test-xt-iq4: measured on 1 card(s)*' }).Count -ge 1) -Message 'the plan lists why the one-card recipe was skipped'
 
+    # Recovery label (final review M6): a cached model picked by recovery is not "Chosen by you".
+    $explicitPlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'qwen3.5-9b-q4-k-m' @recipeOptions
+    Assert-Equal -Expected 'Chosen by you' -Actual $explicitPlan.recipe.label -Message 'an explicit -ModelId stays labelled as the user choice'
+    $recoveredPlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'qwen3.5-9b-q4-k-m' -Recovered @recipeOptions
+    Assert-Equal -Expected 'estimated' -Actual $recoveredPlan.recipe.origin -Message 'a recovered plan has the estimated origin'
+    Assert-Equal -Expected 'Estimated for your card' -Actual $recoveredPlan.recipe.label -Message 'a recovered plan is not labelled Chosen by you'
+    Assert-Equal -Expected 'qwen3.5-9b-q4-k-m' -Actual $recoveredPlan.model.id -Message 'a recovered plan still plans the cached model'
+    Assert-True -Condition ([bool] $recoveredPlan.recovered -and -not [bool] $explicitPlan.recovered) -Message 'the plan records that it came from recovery so the start re-plan keeps the label'
+    $startSource = Get-Content -LiteralPath $modulePath -Raw
+    Assert-True -Condition ($startSource -match '(?s)recovered.. -and \$Plan\.recovered\) \{ \$freshRecipeOptions\.Recovered = \$true') -Message 'the start re-plan carries the recovery marker'
     # Recovery names an explicit cached model, so the CLI must clear -Recipe at the same moment (the CLI start loop is not unit-testable).
     $cliSource = Get-Content -LiteralPath (Join-Path $projectRoot 'fast-llm.ps1') -Raw
     Assert-True -Condition ($cliSource -match '(?s)\$selectionOptions\.ModelId = \$recovery\.model\.id\s+[^\r\n]*\r?\n\s*\$selectionOptions\.RecipeId = \$null') -Message 'recovery clears RecipeId when it sets ModelId'
+    Assert-True -Condition ($cliSource -match '(?s)RecipeId = \$null\s+[^\r\n]*\r?\n\s*\$selectionOptions\.Recovered = \$true') -Message 'recovery marks the plan as recovered'
 }
 finally {
     if (Test-Path -LiteralPath $recipeTestRoot) { Remove-Item -LiteralPath $recipeTestRoot -Recurse -Force }

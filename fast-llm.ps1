@@ -294,6 +294,8 @@ try {
                             $selectionOptions.ModelId = $recovery.model.id
                             # -Recipe and -ModelId cannot be combined; recovery is an explicit cached model.
                             $selectionOptions.RecipeId = $null
+                            # The cached model is a recovery, not the user's choice: the plan is labelled estimated.
+                            $selectionOptions.Recovered = $true
                             Write-Host "The automatic choice failed runtime checks. Trying previously smoke-tested, cached model '$($recovery.model.id)' once; it will be rehashed and checked again."
                             continue
                         }

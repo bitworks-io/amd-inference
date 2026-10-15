@@ -132,7 +132,7 @@ function Get-FastLlmRecoveryPlan {
         if($record.kind -ne 'api-smoke-only' -or $record.hardwareFingerprint -ne $key -or $record.modelId -eq $FailedModelId){return $null}
         $digest=(Get-FileHash -LiteralPath $CatalogPath -Algorithm SHA256).Hash.ToLowerInvariant()
         if($record.catalogSha256 -ne $digest){return $null}
-        $plan=Get-FastLlmPlan -Hardware $Hardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot -Profile $Profile -ModelId $record.modelId -ContextSize $ContextSize
+        $plan=Get-FastLlmPlan -Hardware $Hardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot -Profile $Profile -ModelId $record.modelId -ContextSize $ContextSize -Recovered
         if($plan.model.sha256 -ne $record.modelSha256 -or -not (Test-Path -LiteralPath $plan.modelPath -PathType Leaf) -or -not (Test-FastLlmModelConsentReceipt $plan.model $InstallRoot)){return $null}
         return $plan
     }catch{return $null}

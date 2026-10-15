@@ -75,5 +75,7 @@ $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x')
 Check ($block.origin -eq 'estimated' -and $block.label -eq 'Estimated for your card') 'no pick is labelled estimated'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @()
 Check ($block.origin -eq 'manual' -and $block.label -eq 'Chosen by you') 'an explicit model is labelled as the user choice'
+$block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @() -Recovered
+Check ($block.origin -eq 'estimated' -and $block.label -eq 'Estimated for your card') 'a model chosen by recovery is labelled estimated, never Chosen by you'
 Check ((Get-FastLlmRecipeLabel 'bitworks') -eq 'Measured by Bitworks on this card') 'the Bitworks label text is exact'
 Write-Host 'recipes-selection-tests: PASS'
