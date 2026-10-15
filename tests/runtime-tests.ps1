@@ -272,6 +272,92 @@ try {
         $lock.Dispose();$lock=$null
     }
 
+    # Post-load self-test inside a mock supervised start (final review I1/I2): the verdict is in before ANY ready announcement
+    # (status phase, Ready console line) and before the last-ready recovery record is rewritten. A hard fail keeps the previous record.
+    $savedWriteState=& $module {(Get-Command Write-FastLlmState).ScriptBlock}
+    try {
+        foreach ($selfTestMode in @('selftest-ok','ok')) {
+            $expectPass=($selfTestMode -ceq 'selftest-ok')
+            $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
+            $listener.Start();$port=$listener.LocalEndpoint.Port;$listener.Stop()
+            $runRoot=Join-Path $temp ('selftest-case-'+$selfTestMode)
+            $lock=Enter-FastLlmOperation $runRoot
+            $plan=[pscustomobject]@{
+                enginePath=(Get-Process -Id $PID).Path
+                serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$selfTestMode,'-Model','test-model')
+                endpoint="http://127.0.0.1:$port/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
+                hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}
+                catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
+            }
+            $plan.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
+            $priorRecord=[ordered]@{kind='api-smoke-only';hardwareFingerprint='synthetic';modelId='prior-model';modelSha256=('1'*64);catalogSha256=('2'*64)}
+            Write-FastLlmState $runRoot $priorRecord 'synthetic.last-ready.json'
+            $recordPath=Join-Path $runRoot 'state/synthetic.last-ready.json'
+            $priorText=[IO.File]::ReadAllText($recordPath)
+            $writeLog=New-Object 'Collections.Generic.List[string]'
+            & $module {
+                param($Log,$Original)
+                $script:selfTestWriteLog=$Log;$script:selfTestOriginalWrite=$Original
+                function script:Write-FastLlmState {
+                    param([string]$InstallRoot,$State,[string]$FileName='status.json')
+                    if ($FileName -ceq 'status.json') { $script:selfTestWriteLog.Add('status:'+[string]$State.phase) } else { $script:selfTestWriteLog.Add($FileName) }
+                    & $script:selfTestOriginalWrite -InstallRoot $InstallRoot -State $State -FileName $FileName
+                }
+            } $writeLog $savedWriteState
+            $stopper=$null
+            if ($expectPass) {
+                $stopper=New-Object Diagnostics.Process
+                $stopper.StartInfo.FileName=(Get-Process -Id $PID).Path
+                $stopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+                $stopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stopCode))
+                $stopper.StartInfo.UseShellExecute=$false
+                $stopper.Start()|Out-Null
+            }
+            $exit=$null;$failure=$null;$console=@()
+            try {
+                try {
+                    $out=@(& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C -SelfTest } $plan $runRoot $catalog 6>&1)
+                    foreach ($item in $out) { if ($item -is [Management.Automation.InformationRecord]) { $console += [string]$item } elseif ($item -is [int]) { $exit = $item } }
+                } catch { $failure=$_.Exception }
+            } finally {
+                & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original } $savedWriteState
+                if ($stopper) { if (-not $stopper.HasExited) { $stopper.Kill() }; $stopper.Dispose() }
+            }
+            $log=@($writeLog)
+            $iSelfTest=$log.IndexOf('selftest.json');$iReady=$log.IndexOf('status:ready');$iRecord=$log.IndexOf('synthetic.last-ready.json')
+            $iSelfTestLine=-1;$iReadyLine=-1
+            for ($k=0;$k -lt $console.Count;$k++) {
+                if ($iSelfTestLine -lt 0 -and $console[$k] -like 'Self-test*') { $iSelfTestLine=$k }
+                if ($iReadyLine -lt 0 -and $console[$k] -like 'Ready:*') { $iReadyLine=$k }
+            }
+            $finalStatus=Get-FastLlmStatus $runRoot
+            $selfTestFile=Read-FastLlmJson (Join-Path $runRoot 'state/selftest.json')
+            if ($expectPass) {
+                Check ($null -eq $failure -and $exit -eq 0) 'self-test pass: the supervised start completes and obeys stop'
+                Check ($iSelfTest -ge 0 -and $iReady -gt $iSelfTest -and $iRecord -gt $iReady) 'self-test pass: the verdict is written before the ready status and the last-ready record'
+                Check ($iSelfTestLine -ge 0 -and $iReadyLine -gt $iSelfTestLine) 'self-test pass: the Ready line is printed after the self-test line'
+                Check ($selfTestFile.result.status -ceq 'pass' -and $selfTestFile.schemaVersion -eq 1) 'self-test pass: selftest.json records the verdict'
+                $newRecord=Read-FastLlmJson $recordPath
+                Check ($newRecord.modelId -ceq 'test-model') 'self-test pass: the last-ready record is rewritten for the model that passed'
+            } else {
+                Check ($null -ne $failure -and $failure.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and $failure.Message -match 'Self-test failed') 'self-test hard fail: the start raises RuntimeCheckFailed so recovery runs'
+                Check ($iSelfTest -ge 0 -and $iReady -eq -1 -and $iRecord -eq -1) 'self-test hard fail: no ready status and no last-ready write ever happened'
+                Check ($iReadyLine -eq -1 -and @($console | Where-Object { $_ -like 'Ready:*' }).Count -eq 0) 'self-test hard fail: the Ready line is never printed'
+                Check ($finalStatus.phase -ceq 'failed' -and $selfTestFile.result.status -ceq 'fail') 'self-test hard fail: the run ends failed and the verdict is recorded'
+                Check ([IO.File]::ReadAllText($recordPath) -ceq $priorText) 'self-test hard fail: the previous last-ready record survives byte for byte'
+                Check ((Read-FastLlmJson $recordPath).modelId -cne $plan.model.id) 'self-test hard fail: recovery can still use the previous record (it does not name the failed model)'
+            }
+            $probe=New-Object Net.Sockets.TcpClient
+            try {
+                $probe.Connect('127.0.0.1',$port)
+                throw 'Leaked self-test child server remains listening.'
+            } catch [Net.Sockets.SocketException] { Check $true "self-test case $selfTestMode child was terminated" } finally { $probe.Dispose() }
+            $lock.Dispose();$lock=$null
+        }
+    } finally {
+        & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original } $savedWriteState
+    }
+
     $httpHost=New-Object Bitworks.FastLlm.ProcessHost
     try {
         $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)

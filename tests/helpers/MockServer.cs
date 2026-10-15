@@ -115,8 +115,14 @@ namespace FastLlmTests {
                             if (mode == "canary-fail") { status = 500; body = "{}"; }
                             else {
                                 string promptMs = mode == "canary-slow" ? "5000" : "100";
+                                // selftest-ok honours the requested n_predict (the post-load self-test asks for 128); every other mode reports 16.
+                                int predicted = 16;
+                                if (mode == "selftest-ok") {
+                                    Match requested = Regex.Match(requestBody.ToString(), "\"n_predict\"\\s*:\\s*(\\d+)", RegexOptions.CultureInvariant);
+                                    if (requested.Success) predicted = Int32.Parse(requested.Groups[1].Value);
+                                }
                                 body = "data: {\"content\":\"x\",\"stop\":false}\n\n" +
-                                    "data: {\"content\":\"\",\"stop\":true,\"timings\":{\"prompt_n\":512,\"prompt_ms\":" + promptMs + ",\"predicted_n\":16,\"predicted_ms\":160}}\n\n" +
+                                    "data: {\"content\":\"\",\"stop\":true,\"timings\":{\"prompt_n\":512,\"prompt_ms\":" + promptMs + ",\"predicted_n\":" + predicted + ",\"predicted_ms\":" + (predicted * 10) + "}}\n\n" +
                                     "data: [DONE]\n\n";
                             }
                         }
