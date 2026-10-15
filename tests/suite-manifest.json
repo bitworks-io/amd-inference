@@ -42,6 +42,11 @@
       "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
     },
     {
+      "suite": "components-tests",
+      "class": "ci",
+      "reason": "Component install, inventory and removal over fixtures built at test time (temp tree, fake download seam); no network, no elevation; wired in test.yml."
+    },
+    {
       "suite": "concurrency-benchmark-tests",
       "class": "ci",
       "reason": "Loopback-only mock server tests (acquisition, concurrency, task workload); already wired in test.yml."

@@ -24,14 +24,16 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null}
-    $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true}
+    $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
         param($S)
         $script:startTestState=$S
         function script:Assert-FastLlmWindowsPrerequisites { }
         function script:Test-FastLlmEngineInstallation { return $true }
+        function script:Test-FastLlmComponentInstallation { param($InstallRoot,$Component) $script:startTestState.events.Add('component-check');return $script:startTestState.componentOk }
+        function script:Install-FastLlmComponent { param($ComponentsPath,$ComponentId,$InstallRoot) $script:startTestState.events.Add('INSTALL-COMPONENT');return $null }
         function script:Test-FastLlmFileHash { $script:startTestState.events.Add('hash');return $script:startTestState.hash }
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');return $script:startTestState.hardware }
@@ -125,6 +127,29 @@ try {
     $state.hash=$true;$state.consent=$false;$state.events.Clear();$caught=$false
     try{Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match 'consent'}
     Check ($caught -and -not $state.events.Contains('supervisor')) 'missing consent cannot reach native launch'
+    $state.consent=$true
+
+    # Engine component plans (Task 3): the verified component executable is what runs; a missing component is a typed failure, with no install and no fallback.
+    $shippedComponents=@(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
+    $componentEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq 'llama.cpp-b10698-vulkan' })[0]
+    $componentExe=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $componentEntry) ([string]$componentEntry.entryPoint)
+    $componentPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $componentPlan.enginePath=$componentExe
+    $componentPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-b10698-vulkan'
+    $freshComponent=$componentPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $savedFresh=$state.fresh;$state.fresh=$freshComponent
+    $state.componentOk=$false;$state.events.Clear();$code=$null;$message=''
+    try{Start-FastLlmServer -Plan $componentPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$code=$_.Exception.Data['FastLlmFailureCode'];$message=$_.Exception.Message}
+    Check ($code -ceq 'needs-setup-component-missing' -and $message -like '*llama.cpp-b10698-vulkan*' -and ($state.events -join ',') -ceq 'component-check') 'a component plan whose component is not installed fails typed, naming it, before any hashing, probe, install or launch'
+    $state.componentOk=$true;$state.events.Clear();$state.observed=$null
+    $result=Start-FastLlmServer -Plan $componentPlan -CatalogPath $catalogPath -InstallRoot $temp
+    Check ($result -eq 0 -and $state.events.Contains('supervisor') -and -not $state.events.Contains('INSTALL-COMPONENT') -and $state.observed.enginePath -ceq $componentExe) 'a component plan with an installed component launches on the component executable, with no install call'
+    $wrongExe=$componentPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $wrongExe.enginePath=$plan.enginePath
+    $state.events.Clear();$caught=$false
+    try{Start-FastLlmServer -Plan $wrongExe -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$caught=$_.Exception.Message -match 'does not match the verified installed engine'}
+    Check ($caught -and -not $state.events.Contains('supervisor')) 'a component plan that points at the built-in engine instead is refused before launch'
+    $state.fresh=$savedFresh;$state.componentOk=$true;$state.events.Clear()
 
     # ================= fast-llm.ps1 start -NoDownload: every acquisition path is blocked with a typed failure code =================
     # The real 'start' branch of fast-llm.ps1 is extracted from its AST and run with every I/O boundary replaced by a recorder, so no
@@ -142,8 +167,8 @@ try {
     $ndRoot=Join-Path $temp 'nodownload'
     New-Item -ItemType Directory -Path $ndRoot -Force | Out-Null
     $ndModel=Join-Path $ndRoot 'model.gguf'
-    $script:nd=@{log=(New-Object 'Collections.Generic.List[string]');prereq=$true;engine=$true;modelExists=$true;consent=$true;startQueue=(New-Object 'Collections.Generic.Queue[object]');recovery=$true;planCalls=0;requestedModelIds=(New-Object 'Collections.Generic.List[string]')}
-    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear()
+    $script:nd=@{log=(New-Object 'Collections.Generic.List[string]');prereq=$true;engine=$true;modelExists=$true;consent=$true;startQueue=(New-Object 'Collections.Generic.Queue[object]');recovery=$true;planCalls=0;requestedModelIds=(New-Object 'Collections.Generic.List[string]');planFailure=$null}
+    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear();$script:nd.planFailure=$null
         if(Test-Path -LiteralPath $ndModel){Remove-Item -LiteralPath $ndModel -Force};Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true }
     function Get-FastLlmWindowsPrerequisiteStatus { $script:nd.log.Add('prerequisites');return [pscustomobject]@{applicable=$true;ready=$script:nd.prereq} }
     function Get-FastLlmCatalog { param($CatalogPath) $script:nd.log.Add('catalog');return [pscustomobject]@{engine=[pscustomobject]@{version='b-test';assets=[pscustomobject]@{vulkan=[pscustomobject]@{enabled=$true};rocm=[pscustomobject]@{enabled=$false}}}} }
@@ -151,11 +176,13 @@ try {
     function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) $script:nd.log.Add('hardware');return [pscustomobject]@{} }
     function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId)
         $script:nd.log.Add('plan');$script:nd.planCalls++;$script:nd.requestedModelIds.Add([string]$ModelId)
+        if($script:nd.planFailure){throw $script:nd.planFailure}
         return [pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}} }
     function Write-FastLlmPlan { param($Plan) }
     function Test-FastLlmModelConsentReceipt { param($Model,$InstallRoot) $script:nd.log.Add('consent-check');return $script:nd.consent }
     function Install-FastLlmModel { param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:nd.log.Add('INSTALL-MODEL');Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true;return $ndModel }
     function Install-FastLlmEngines { param($CatalogPath,$InstallRoot) $script:nd.log.Add('INSTALL-ENGINE') }
+    function Install-FastLlmComponent { param($ComponentsPath,$ComponentId,$InstallRoot,$AcceptLicense,$Unattended) $script:nd.log.Add('INSTALL-COMPONENT');return $null }
     function Save-FastLlmVerifiedFile { param($Url,$Destination,$Sha256,$SizeBytes) $script:nd.log.Add('NETWORK-SAVE') }
     function Invoke-WebRequest { $script:nd.log.Add('NETWORK-WEB') }
     function Invoke-RestMethod { $script:nd.log.Add('NETWORK-REST') }
@@ -171,10 +198,11 @@ try {
         }
         return 0 }
     $script:ndDeviceBinding='off'
+    $script:ndUnattended=$true
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$true;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='auto';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='auto';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
         $failure=$null
         try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
@@ -182,6 +210,11 @@ try {
     }
     function Get-NdCode($Failure) { if($null -eq $Failure){return $null};return $Failure.Data['FastLlmFailureCode'] }
     function Test-NdNoAcquisition { return (@($script:nd.log | Where-Object { $_ -cmatch '^(INSTALL|NETWORK)' }).Count -eq 0) }
+
+    # The install action (not start) is the only place a missing engine component is installed, and never on a dry run or unattended.
+    $installClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'install'" })[0]
+    $installText=$installClause.Item2.Extent.Text
+    Check ($installText.Contains("'needs-setup-component-missing'") -and $installText.Contains('Install-FastLlmComponent') -and $installText.Contains('$DryRun -or $Unattended') -and -not $startText.Contains('Install-FastLlmComponent')) 'only the install action can install a missing engine component (not on a dry run, not unattended); start never does'
 
     # -- blocked paths: a typed code, never RuntimeCheckFailed, and no Install-*/network seam is reached
     Reset-Nd; $script:nd.prereq=$false
@@ -208,6 +241,17 @@ try {
     Reset-Nd
     $f=Invoke-NdStart $true
     Check ($null -eq $f -and (Test-NdNoAcquisition) -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1) '-NoDownload: a healthy start still starts exactly once'
+    # A recipe whose engine component is not installed: the plan raises needs-setup-component-missing; a start never installs it and never falls back.
+    foreach($componentCase in @(@{label='-NoDownload';noDownload=$true;unattended=$true},@{label='default';noDownload=$false;unattended=$false},@{label='-Unattended';noDownload=$false;unattended=$true})){
+        Reset-Nd
+        $componentFailure=New-Object InvalidOperationException('needs-setup-component-missing: The engine component test-engine-1 is not installed.')
+        $componentFailure.Data['FastLlmFailureCode']='needs-setup-component-missing';$componentFailure.Data['FastLlmComponentId']='test-engine-1'
+        $script:nd.planFailure=$componentFailure
+        $savedUnattended=$script:ndUnattended;$script:ndUnattended=$componentCase.unattended
+        $f=Invoke-NdStart $componentCase.noDownload
+        $script:ndUnattended=$savedUnattended
+        Check ((Get-NdCode $f) -ceq 'needs-setup-component-missing' -and $f.Message -like '*test-engine-1*' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('start') -and -not $script:nd.log.Contains('recovery-plan') -and $script:nd.planCalls -eq 1) "start ($($componentCase.label)): a missing engine component is needs-setup-component-missing with no install call, no start, no recovery and no built-in fallback"
+    }
 
     # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
     Reset-Nd
@@ -264,7 +308,7 @@ try {
     $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]
     $updateCheckClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update-check'" })[0]
     $updateClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update'" })[0]
-    Check ($cliSource.Contains("'stop', 'update-check', 'update')]") -and $cliSource.Contains('[switch] $Yes') -and $cliSource.Contains("[ValidateSet('stable', 'canary')]") -and $cliSource.Contains('[string] $Channel')) 'fast-llm.ps1 declares update-check, update, -Yes and -Channel stable|canary'
+    Check ($cliSource.Contains("'stop', 'update-check', 'update', 'components')]") -and $cliSource.Contains('[switch] $Yes') -and $cliSource.Contains("[ValidateSet('stable', 'canary')]") -and $cliSource.Contains('[string] $Channel')) 'fast-llm.ps1 declares update-check, update, -Yes and -Channel stable|canary'
     Check ($cliSource.Contains("-Yes is supported only by update.") -and $cliSource.Contains("-Channel is supported only by update-check and update.") -and $cliSource.Contains("`$PSBoundParameters.ContainsKey('Channel')")) 'fast-llm.ps1 refuses -Yes and -Channel for any other action'
     Check ($cliSource.Contains('$Action -eq ''update'' -and $Unattended -and -not $Yes') -and $cliSource.Contains('update -Unattended requires -Yes')) 'update refuses -Unattended without -Yes before doing anything'
     Check ($cliSource.Contains("FastLlm.Update.ps1") -and -not ([IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.psm1'))).Contains('FastLlm.Update.ps1')) 'FastLlm.Update.ps1 is dot-sourced by fast-llm.ps1 and never by FastLlm.psm1'

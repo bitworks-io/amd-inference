@@ -17,10 +17,18 @@ ENTRY = {
 
 
 def community(origin="community-reproduced", rid="c1", **expected):
-    return {"id": rid, "origin": origin, "variant": "rx-7900-xtx", "gpuCount": 1, "model": "qwen3.8-27b-ud-q4-k-m",
+    exp = dict(ENTRY["expected"], **expected)
+    record = {"id": rid, "origin": origin, "variant": "rx-7900-xtx", "gpuCount": 1, "model": "qwen3.8-27b-ud-q4-k-m",
             "runtime": ENTRY["runtime"], "engineBuild": "b10698", "recommended": False,
-            "expected": dict(ENTRY["expected"], **expected), "evidence": copy.deepcopy(ENTRY["evidence"]),
+            "expected": exp, "evidence": copy.deepcopy(ENTRY["evidence"]),
             "source": {"author": "a", "url": "https://example.com/p", "postedAt": "2026-10-01", "recordId": "r"}}
+    if origin == "community-reproduced":
+        record["reproduction"] = repro(exp["generationTokS"], exp["promptTokS"])
+    return record
+
+
+def repro(gen, prompt):
+    return {"resultId": "res-1", "batchManifestSha256": "ab" * 32, "measuredAt": "2026-10-14", "generationTokS": gen, "promptTokS": prompt}
 
 
 class RecipeBuilderTests(unittest.TestCase):
@@ -30,6 +38,7 @@ class RecipeBuilderTests(unittest.TestCase):
         catalog = {"engine": {"version": "b10698"}, "models": [{"id": "qwen3.8-27b-ud-q4-k-m", "contextSize": 32768},
                                                               {"id": "qwen3.8-27b-ud-iq4-xs", "contextSize": 16384}]}
         (root / "config" / "catalog.json").write_text(json.dumps(catalog))
+        (root / "config" / "components.json").write_text(json.dumps({"components": [{"id": "llama.cpp-b10698-vulkan", "kind": "engine", "version": "b10698"}]}))
         (root / "config" / "gpu-variants.json").write_text((ROOT / "config" / "gpu-variants.json").read_text())
         (root / "data" / "verified-recipes.json").write_text(json.dumps({"schema": "bitworks.fastllm-verified-recipes/v1", "entries": entries or []}))
         (root / "data" / "community-records.json").write_text(json.dumps({"schema": "bitworks.fastllm-community-recipes/v1", "records": records or []}))
@@ -66,6 +75,21 @@ class RecipeBuilderTests(unittest.TestCase):
                 with self.assertRaises(br.RecipeError):
                     br.build(self.tree([entry]))
 
+    def test_components_json_constrains_the_engine_reference(self):
+        good = {"components": [{"id": "llama.cpp-b10698-vulkan", "kind": "engine", "version": "b10698"}]}
+        for comps, ok in ((good, True),
+                          ({"components": [dict(good["components"][0], version="b1")]}, False),
+                          ({"components": [dict(good["components"][0], kind="runtime")]}, False),
+                          ({"components": [dict(good["components"][0], id="other")]}, False)):
+            root = self.tree([ENTRY])
+            (root / "config" / "components.json").write_text(json.dumps(comps))
+            if ok:
+                document, _ = br.build(root)
+                self.assertIn("config/components.json", document["inputs"])
+            else:
+                with self.assertRaises(br.RecipeError):
+                    br.build(root)
+
     def test_two_recommended_for_one_card_is_refused(self):
         other = copy.deepcopy(ENTRY); other["id"] = "rx-7900-xtx.other"
         with self.assertRaises(br.RecipeError):
@@ -76,13 +100,16 @@ class RecipeBuilderTests(unittest.TestCase):
             return {"id": "c1", "origin": "community-reproduced", "variant": "rx-7900-xtx", "gpuCount": 1, "model": "qwen3.8-27b-ud-q4-k-m",
                     "runtime": ENTRY["runtime"], "engineBuild": "b10698", "recommended": False,
                     "expected": dict(ENTRY["expected"], generationTokS=gen, promptTokS=prompt, contextTokens=ctx),
-                    "evidence": ENTRY["evidence"], "source": {"author": "a", "url": "https://example.com/p", "postedAt": "2026-10-01", "recordId": "r"}}
+                    "reproduction": repro(gen, prompt), "evidence": ENTRY["evidence"], "source": {"author": "a", "url": "https://example.com/p", "postedAt": "2026-10-01", "recordId": "r"}}
         for gen, prompt, ctx, want in [(37.7, 654.14, 32768, True), (33.0, 990.0, 32768, True), (36.0, 700.0, 32768, False), (40.0, 654.0, 16384, False)]:
             with self.subTest(gen=gen, prompt=prompt, ctx=ctx):
-                document, _ = br.build(self.tree([ENTRY], [record(gen, prompt, ctx)]))
-                community = [r for r in document["recipes"] if r["origin"] == "community-reproduced"][0]
-                self.assertEqual(community["compelling"]["isCompelling"], want)
-                self.assertEqual(community["label"], "Community recipe, reproduced by Bitworks")
+                document, skipped = br.build(self.tree([ENTRY], [record(gen, prompt, ctx)]))
+                shipped = [r for r in document["recipes"] if r["origin"] == "community-reproduced"]
+                self.assertEqual(bool(shipped), want)
+                if want:
+                    self.assertEqual(shipped[0]["label"], "Community recipe, reproduced by Bitworks")
+                else:
+                    self.assertEqual(skipped, ["c1: not-compelling"])
 
     def test_reproduced_community_entry_needs_a_live_bitworks_page(self):
         # "Reproduced by Bitworks" with no result page behind it is the overclaim the live-page rule exists to stop.
@@ -126,8 +153,8 @@ class RecipeBuilderTests(unittest.TestCase):
         slow, fast, tie = community(rid="c-slow", generationTokS=20.0), community(rid="c-fast", generationTokS=30.0), community(rid="b-tie", generationTokS=30.0)
         document, skipped = br.build(self.tree([], [slow, fast, tie]))
         flags = {r["id"]: r["compelling"]["isCompelling"] for r in document["recipes"]}
-        self.assertEqual(flags, {"c-slow": False, "c-fast": False, "b-tie": True})
-        self.assertEqual(skipped, [])
+        self.assertEqual(flags, {"b-tie": True})
+        self.assertEqual(sorted(skipped), ["c-fast: not-compelling", "c-slow: not-compelling"])
 
     def test_without_a_bitworks_peer_a_slower_experimental_record_is_skipped(self):
         fast = community(rid="c-fast", generationTokS=30.0)
@@ -170,6 +197,89 @@ class RecipeBuilderTests(unittest.TestCase):
         record = community("community-experimental", generationTokS=40.0); record["model"] = "qwen3.8-27b-ud-iq3-xxs"; record["runtime"] = runtime
         document, _ = br.build(tree_with_experimental_model([ENTRY], [record]))
         self.assertIn("community-experimental", [r["origin"] for r in document["recipes"]])
+
+    def test_reproduced_entry_needs_a_valid_reproduction_block(self):
+        cases = [("missing", None), ("no resultId", {"resultId": ""}), ("short sha", {"batchManifestSha256": "ab" * 31}),
+                 ("non-hex sha", {"batchManifestSha256": "zz" * 32}), ("bad date", {"measuredAt": "yesterday"}),
+                 ("zero gen", {"generationTokS": 0}), ("zero prompt", {"promptTokS": 0}), ("string gen", {"generationTokS": "40"})]
+        for label, change in cases:
+            with self.subTest(label):
+                record = community(generationTokS=40.0)
+                if change is None: del record["reproduction"]
+                else: record["reproduction"].update(change)
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.tree([ENTRY], [record]))
+
+    def test_compelling_is_computed_from_the_reproduction_not_the_claim(self):
+        record = community(generationTokS=60.0, promptTokS=2000.0)
+        record["reproduction"] = repro(33.0, 660.0)
+        document, skipped = br.build(self.tree([ENTRY], [record]))
+        self.assertEqual([r["id"] for r in document["recipes"]], [ENTRY["id"]])
+        self.assertEqual(skipped, ["c1: not-compelling"])
+        record = community(generationTokS=33.0, promptTokS=660.0)
+        record["reproduction"] = repro(40.0, 660.0)
+        document, _ = br.build(self.tree([ENTRY], [record]))
+        shipped = [r for r in document["recipes"] if r["origin"] == "community-reproduced"][0]
+        self.assertEqual(shipped["compelling"]["baselineRecipe"], ENTRY["id"])
+        self.assertEqual(shipped["compelling"]["generationGainPct"], 22.2)
+        self.assertEqual(shipped["compelling"]["promptGainPct"], 0.9)
+        self.assertEqual(shipped["reproduction"], record["reproduction"])
+
+    def test_bitworks_recipes_carry_no_reproduction_key(self):
+        document, _ = br.build(self.tree([ENTRY]))
+        self.assertNotIn("reproduction", document["recipes"][0])
+
+    def test_experimental_entry_components_must_exist_with_matching_kinds(self):
+        comps = {"components": [{"id": "llama.cpp-b10698-vulkan", "kind": "engine", "version": "b10698"},
+                                {"id": "rt-1", "kind": "runtime", "version": "1"}, {"id": "dr-1", "kind": "draft", "version": "1"}]}
+        cases = [({}, True), ({"runtime": "rt-1", "draft": "dr-1"}, True), ({"runtime": "missing"}, False), ({"draft": "rt-1"}, False),
+                 ({"runtime": "dr-1"}, False), ({"engine": "other-engine"}, False)]
+        for refs, ok in cases:
+            with self.subTest(refs=refs):
+                record = community("community-experimental", generationTokS=40.0)
+                if refs: record["components"] = refs
+                root = self.tree([ENTRY], [record])
+                (root / "config" / "components.json").write_text(json.dumps(comps))
+                if ok:
+                    document, _ = br.build(root)
+                    exp = [r for r in document["recipes"] if r["origin"] == "community-experimental"][0]
+                    self.assertFalse(exp["recommended"])
+                    self.assertEqual(exp["label"], "Experimental community recipe, not reproduced by Bitworks")
+                    self.assertEqual(exp["source"], record["source"])
+                    self.assertNotIn("reproduction", exp)
+                else:
+                    with self.assertRaises(br.RecipeError):
+                        br.build(root)
+
+    def test_experimental_entry_needs_a_source_block(self):
+        for key in ("author", "url", "postedAt", "recordId"):
+            with self.subTest(key=key):
+                record = community("community-experimental", generationTokS=40.0)
+                del record["source"][key]
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.tree([ENTRY], [record]))
+
+    def test_experimental_entry_without_components_json_is_refused(self):
+        root = self.tree([ENTRY], [community("community-experimental", generationTokS=40.0)])
+        (root / "config" / "components.json").unlink()
+        with self.assertRaises(br.RecipeError):
+            br.build(root)
+
+    def test_demoted_entry_is_skipped_with_its_reason_and_never_ships(self):
+        for origin in ("community-reproduced", "community-experimental"):
+            with self.subTest(origin=origin):
+                record = community(origin, generationTokS=40.0)
+                record.update(demotedAt="2026-10-20", demotionReason="regressed on b10750")
+                document, skipped = br.build(self.tree([ENTRY], [record]))
+                self.assertEqual([r["id"] for r in document["recipes"]], [ENTRY["id"]])
+                self.assertEqual(skipped, ["c1: demoted: regressed on b10750"])
+
+    def test_a_half_specified_demotion_is_refused(self):
+        for change in ({"demotedAt": "2026-10-20"}, {"demotionReason": "x"}, {"demotedAt": "soon", "demotionReason": "x"}, {"demotedAt": "2026-10-20", "demotionReason": " "}):
+            with self.subTest(change=change):
+                record = community(generationTokS=40.0); record.update(change)
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.tree([ENTRY], [record]))
 
     def test_output_is_deterministic_and_check_detects_drift(self):
         root = self.tree([ENTRY])

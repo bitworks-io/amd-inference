@@ -26,6 +26,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - run: python3 tools/check-components.py
       - run: python3 tools/build-recipes.py --check
 
   powershell:
@@ -155,6 +156,7 @@ jobs:
           .\tests\vulkan-fit-benchmark-tests.ps1
           .\tests\card-identity-tests.ps1
           .\tests\recipes-selection-tests.ps1
+          .\tests\components-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
@@ -174,6 +176,7 @@ jobs:
           .\tests\vulkan-fit-benchmark-tests.ps1
           .\tests\card-identity-tests.ps1
           .\tests\recipes-selection-tests.ps1
+          .\tests\components-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1

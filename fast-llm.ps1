@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop', 'update-check', 'update')]
+    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop', 'update-check', 'update', 'components')]
     [string] $Action = 'start',
 
     [ValidateSet('fast', 'balanced', 'quality')]
@@ -71,7 +71,20 @@ param(
 
     # update-check and update only: the release channel to follow; persisted to settings.json before the check.
     [ValidateSet('stable', 'canary')]
-    [string] $Channel
+    [string] $Channel,
+
+    # components only: -List (the default) shows every listed component; -Install <id> installs one through its license rule; -Remove <id> removes one.
+    [switch] $List,
+
+    [string] $Install,
+
+    [string] $Remove,
+
+    # components -Install only: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
+    [switch] $AcceptLicense,
+
+    # plan, start and install with -Recipe of a community-experimental recipe: required in addition to the experimental switch being on.
+    [switch] $AcceptExperimental
 )
 
 Set-StrictMode -Version 2.0
@@ -104,6 +117,20 @@ if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -o
 if ($NoDownload -and ($Action -ne 'start' -or $DryRun)) { throw '-NoDownload is supported only by a live start.' }
 if ($Yes -and $Action -ne 'update') { throw '-Yes is supported only by update.' }
 if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-check', 'update')) { throw '-Channel is supported only by update-check and update.' }
+if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
+if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { throw '-Install is supported only by components.' }
+if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
+if ($AcceptLicense -and $Action -ne 'components') { throw '-AcceptLicense is supported only by components.' }
+if ($AcceptExperimental -and $Action -notin @('plan', 'start', 'install')) { throw '-AcceptExperimental is supported only by plan, start and install.' }
+if ($Action -eq 'components') {
+    if (@(@([bool] $List, $PSBoundParameters.ContainsKey('Install'), $PSBoundParameters.ContainsKey('Remove')) | Where-Object { $_ }).Count -gt 1) {
+        throw 'components takes one of -List, -Install <id> or -Remove <id>.'
+    }
+    if ($AcceptLicense -and -not $PSBoundParameters.ContainsKey('Install')) { throw '-AcceptLicense is supported only with components -Install.' }
+    if (($PSBoundParameters.ContainsKey('Install') -and [string]::IsNullOrWhiteSpace($Install)) -or ($PSBoundParameters.ContainsKey('Remove') -and [string]::IsNullOrWhiteSpace($Remove))) {
+        throw 'components -Install and -Remove need a component id.'
+    }
+}
 if ($Action -eq 'update' -and $Unattended -and -not $Yes) { throw 'update -Unattended requires -Yes; nothing was changed.' }
 if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
@@ -138,7 +165,10 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFlow.ps1')
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Trust.ps1')
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Update.ps1')
+# Components is dot-sourced here and in the control window, never imported through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Components.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
+$componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.json'
 $selectionOptions = @{
     ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
     RecipesPath = $recipesPath; GpuVariantsPath = (Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'); RecipeId = $Recipe
@@ -173,6 +203,12 @@ function Write-FastLlmPlan {
 
 $operationLock = $null
 try {
+    # An experimental recipe is refused before anything is planned, locked or downloaded.
+    if ($Recipe -and $Action -in @('plan', 'start', 'install', 'doctor')) {
+        $gateComponents = @()
+        if (Test-Path -LiteralPath $componentsFilePath -PathType Leaf) { $gateComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath) }
+        Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $InstallRoot -RecipeId $Recipe -Recipes @(Read-FastLlmRecipes -Path $recipesPath) -Components $gateComponents -AcceptExperimental:$AcceptExperimental
+    }
     if ($Action -in @('install', 'start') -and -not $DryRun) {
         if ($env:OS -ne 'Windows_NT') { throw 'Live execution is Windows-only. Use plan -HardwareFile for offline testing.' }
         $operationLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
@@ -185,13 +221,32 @@ try {
             else { $catalog.models | Select-Object id, quantization, contextSize, requiredFreeVramMiB, servingMode | Format-Table -AutoSize }
         }
         'recipes' {
-            $recipeList = @(Read-FastLlmRecipes -Path $recipesPath)
+            # Experimental recipes are listed only when the experimental switch is on; each is marked with its label.
+            $recipeList = @(Select-FastLlmVisibleRecipes -Recipes @(Read-FastLlmRecipes -Path $recipesPath) -ExperimentalComponents ([string] (Get-FastLlmComponentSettings -InstallRoot $InstallRoot).experimentalComponents))
             if ($AsJson) { ConvertTo-Json -InputObject $recipeList -Depth 12 }
             elseif ($recipeList.Count -eq 0) { Write-Host 'This release has no published recipes.' }
             else {
                 foreach ($listed in $recipeList) {
                     Write-Host ("{0} - {1} - {2} x{3} - {4}, {5} tokens" -f $listed.id, (Get-FastLlmRecipeLabel ([string] $listed.origin)), $listed.gpu.variant, $listed.gpu.count, $listed.components.model, $listed.runtime.contextSize)
                 }
+            }
+        }
+        'components' {
+            if ($PSBoundParameters.ContainsKey('Install')) {
+                $installedRoot = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -Unattended:$Unattended
+                if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = [string] $installedRoot } | ConvertTo-Json -Depth 4 }
+                else { Write-Host "Installed and verified component '$Install': $installedRoot" }
+            }
+            elseif ($PSBoundParameters.ContainsKey('Remove')) {
+                Remove-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Remove -InstallRoot $InstallRoot | Out-Null
+                if ($AsJson) { [pscustomobject]@{ id = $Remove; removed = $true } | ConvertTo-Json -Depth 4 }
+                else { Write-Host "Removed component '$Remove'." }
+            }
+            else {
+                $componentInventory = @(Get-FastLlmComponentInventory -ComponentsPath $componentsFilePath -InstallRoot $InstallRoot)
+                if ($AsJson) { ConvertTo-Json -InputObject @($componentInventory) -Depth 6 }
+                elseif ($componentInventory.Count -eq 0) { Write-Host 'This release lists no components.' }
+                else { foreach ($componentLine in @(Format-FastLlmComponentList -Inventory $componentInventory)) { Write-Host $componentLine } }
             }
         }
         'status' {
@@ -278,7 +333,17 @@ try {
                 break
             }
             $hardware = Get-FastLlmHardware -HardwareFile $HardwareFile -CatalogPath $catalogPath -InstallRoot $InstallRoot
-            $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            try {
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            }
+            catch {
+                # A recipe on an engine component that is not installed: a plain install (never a dry run or an unattended one) installs
+                # that one listed component through its license rule, then plans again. Start never does this, and nothing falls back.
+                $missingComponentId = [string] $_.Exception.Data['FastLlmComponentId']
+                if ([string] $_.Exception.Data['FastLlmFailureCode'] -cne 'needs-setup-component-missing' -or -not $missingComponentId -or $DryRun -or $Unattended) { throw }
+                Install-FastLlmComponent -ComponentsPath (Join-Path (Join-Path $PSScriptRoot 'config') 'components.json') -ComponentId $missingComponentId -InstallRoot $InstallRoot | Out-Null
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            }
             if ($ExpectedModelProvenanceSha256) {
                 Assert-FastLlmUiExpectedProvenance -Model $plan.model -ExpectedSha256 $ExpectedModelProvenanceSha256
             }

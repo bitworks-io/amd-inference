@@ -32,11 +32,85 @@ function Get-FastLlmRecipeRank {
     return 1
 }
 
+function Get-FastLlmBuiltInEngineId {
+    param([Parameter(Mandatory = $true)] $Catalog)
+    return 'llama.cpp-' + [string] $Catalog.engine.version + '-vulkan'
+}
+
+function Get-FastLlmRecipeEngineId {
+    param([Parameter(Mandatory = $true)] $Recipe, [Parameter(Mandatory = $true)] $Catalog)
+    if ($Recipe.PSObject.Properties['components'] -and $Recipe.components -and $Recipe.components.PSObject.Properties['engine'] -and $Recipe.components.engine) {
+        return [string] $Recipe.components.engine
+    }
+    return (Get-FastLlmBuiltInEngineId -Catalog $Catalog)
+}
+
+# The listed engine component with this exact id: kind engine, Vulkan backend, llama.cpp adapter. $null when there is none.
+function Find-FastLlmEngineComponent {
+    param([object[]] $Components, [Parameter(Mandatory = $true)][string] $EngineId)
+    foreach ($candidate in @($Components | Where-Object { $_ })) {
+        if ([string] $candidate.id -cne $EngineId) { continue }
+        if ([string] $candidate.kind -cne 'engine') { continue }
+        if (-not $candidate.PSObject.Properties['adapter'] -or [string] $candidate.adapter -cne 'llama.cpp') { continue }
+        if (-not $candidate.PSObject.Properties['platform'] -or -not $candidate.platform -or -not $candidate.platform.PSObject.Properties['backend'] -or [string] $candidate.platform.backend -cne 'vulkan') { continue }
+        return $candidate
+    }
+    return $null
+}
+
+# The engine version a recipe runs on: the catalog version for the built-in id, the component version otherwise; $null for an unknown id.
+function Get-FastLlmRecipeEngineVersion {
+    param([Parameter(Mandatory = $true)] $Recipe, [Parameter(Mandatory = $true)] $Catalog, [object[]] $Components)
+    $engineId = Get-FastLlmRecipeEngineId -Recipe $Recipe -Catalog $Catalog
+    if ($engineId -ceq (Get-FastLlmBuiltInEngineId -Catalog $Catalog)) { return [string] $Catalog.engine.version }
+    $found = Find-FastLlmEngineComponent -Components $Components -EngineId $engineId
+    if ($null -eq $found) { return $null }
+    return [string] $found.version
+}
+
+function New-FastLlmEngineFailure {
+    param([Parameter(Mandatory = $true)][string] $Code, [Parameter(Mandatory = $true)][string] $Message, [string] $ComponentId)
+    $failure = New-Object -TypeName System.InvalidOperationException -ArgumentList ($Code + ': ' + $Message)
+    $failure.Data['FastLlmFailureCode'] = $Code
+    if ($ComponentId) { $failure.Data['FastLlmComponentId'] = $ComponentId }
+    return $failure
+}
+
+# Resolves the engine a recipe names. The built-in id (llama.cpp-<catalog version>-vulkan) is checked first and maps to the existing
+# engines\<version>\vulkan path; it never consults components.json. Any other id must be a listed engine component. An unknown id is a typed error.
+function Resolve-FastLlmRecipeEngine {
+    param([Parameter(Mandatory = $true)] $Recipe, [Parameter(Mandatory = $true)] $Catalog, [object[]] $Components, [Parameter(Mandatory = $true)][string] $InstallRoot)
+    $engineId = Get-FastLlmRecipeEngineId -Recipe $Recipe -Catalog $Catalog
+    if ($engineId -ceq (Get-FastLlmBuiltInEngineId -Catalog $Catalog)) {
+        $builtInEntryPoint = 'llama-server.exe'
+        if ($Catalog.engine.PSObject.Properties['assets'] -and $Catalog.engine.assets -and $Catalog.engine.assets.PSObject.Properties['vulkan'] -and
+            $Catalog.engine.assets.vulkan.PSObject.Properties['entryPoint'] -and $Catalog.engine.assets.vulkan.entryPoint) {
+            $builtInEntryPoint = [string] $Catalog.engine.assets.vulkan.entryPoint
+        }
+        $builtInExecutable = Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $Catalog.engine.version) -BackendKey 'vulkan' -EntryPoint $builtInEntryPoint
+        return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $Catalog.engine.version; backend = 'vulkan'
+            executable = $builtInExecutable; installed = [bool] $builtInExecutable; builtIn = $true }
+    }
+    $component = Find-FastLlmEngineComponent -Components $Components -EngineId $engineId
+    if ($null -eq $component) {
+        throw (New-FastLlmEngineFailure -Code 'recipe-engine-component-unknown' -Message "The recipe names the engine '${engineId}', which is not a built-in engine or a listed Vulkan llama.cpp engine component." -ComponentId $engineId)
+    }
+    $componentEntryPoint = 'llama-server.exe'
+    if ($component.PSObject.Properties['entryPoint'] -and $component.entryPoint) { $componentEntryPoint = [string] $component.entryPoint }
+    $componentRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $component
+    Assert-FastLlmLeafName -Value $componentEntryPoint -Label 'Engine component entry point'
+    $componentExecutable = Join-FastLlmContainedPath -Root $componentRoot -Child $componentEntryPoint -Label 'Engine component executable path'
+    $componentInstalled = [bool] ((Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $component) -and (Test-Path -LiteralPath $componentExecutable -PathType Leaf))
+    return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $component.version; backend = 'vulkan'
+        executable = $componentExecutable; installed = $componentInstalled; builtIn = $false }
+}
+
 function Select-FastLlmRecipeForPlacements {
     param([object[]] $Recipes, [object[]] $Variants, [object[]] $Placements, [object[]] $DxgiAdapters,
           [Parameter(Mandatory = $true)] $Catalog, [Parameter(Mandatory = $true)][string] $Profile,
           [string] $RecipeId, [switch] $IncludeExperimental,
           [object[]] $EligibleAdapters,
+          [object[]] $Components,
           [System.Collections.Generic.List[string]] $SkippedSink)
     $usable = @($Recipes | Where-Object { $_ -and ($_.origin -ne 'community-experimental' -or $IncludeExperimental -or ($RecipeId -and $_.id -eq $RecipeId)) })
     if ($RecipeId) {
@@ -49,6 +123,25 @@ function Select-FastLlmRecipeForPlacements {
     # Reasons go straight into the caller's sink when there is one, so a plan keeps them even if a later step throws or no recipe is picked.
     $skipped = $SkippedSink
     if ($null -eq $skipped) { $skipped = New-Object System.Collections.Generic.List[string] }
+    # Fail closed until runtime and draft components can run: a recipe naming one would otherwise be planned without it. Skipped with a reason,
+    # or a typed failure when it was named with -Recipe.
+    $runnable = New-Object System.Collections.Generic.List[object]
+    foreach ($candidate in $usable) {
+        $unsupportedRole = $null
+        if ($candidate.PSObject.Properties['components'] -and $candidate.components) {
+            foreach ($role in @('runtime', 'draft')) {
+                $roleProperty = $candidate.components.PSObject.Properties[$role]
+                if ($roleProperty -and -not [string]::IsNullOrWhiteSpace([string] $roleProperty.Value)) { $unsupportedRole = $role; break }
+            }
+        }
+        if ($null -eq $unsupportedRole) { $runnable.Add($candidate); continue }
+        if ($RecipeId) {
+            throw (New-FastLlmEngineFailure -Code 'recipe-component-role-unsupported' -Message "Recipe '$($candidate.id)' names a $unsupportedRole component, which this release cannot run. No other recipe was substituted.")
+        }
+        $roleReason = "$($candidate.id): needs a runtime or draft component this release cannot run"
+        if (-not $skipped.Contains($roleReason)) { $skipped.Add($roleReason) }
+    }
+    $usable = $runnable.ToArray()
     # A recipe is for a card count: it applies only when gpu.count equals the number of IDENTIFIED eligible cards of that variant in this PC,
     # on the placement that uses all of them. Without the explicit list, the eligible cards are the single-card placements (as the planner builds them).
     $eligible = @($EligibleAdapters | Where-Object { $_ })
@@ -79,7 +172,9 @@ function Select-FastLlmRecipeForPlacements {
             }
             $model = $models[[string] $recipe.components.model]
             if (-not $model) { $skipped.Add("$($recipe.id): model not in the catalog"); continue }
-            if ([string] $recipe.engineBuild -ne [string] $Catalog.engine.version) { $skipped.Add("$($recipe.id): engine build differs"); continue }
+            # The build is compared with the engine the recipe actually resolves to: the catalog's for the built-in id, the component's otherwise.
+            $recipeEngineVersion = Get-FastLlmRecipeEngineVersion -Recipe $recipe -Catalog $Catalog -Components $Components
+            if ($null -eq $recipeEngineVersion -or [string] $recipe.engineBuild -ne $recipeEngineVersion) { $skipped.Add("$($recipe.id): engine build differs"); continue }
             # The estimated planner never auto-picks a model flagged autoEligible false; a recipe may use one only when named with -Recipe.
             if (-not $RecipeId -and $model.PSObject.Properties['autoEligible'] -and -not [bool] $model.autoEligible) { $skipped.Add("$($recipe.id): model is experimental and not auto-eligible"); continue }
             if ([int64] $model.requiredFreeVramMiB -gt [int64] $placement.selectionCapacity) {

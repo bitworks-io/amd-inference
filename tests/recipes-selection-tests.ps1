@@ -99,3 +99,28 @@ Check ($null -eq $pick) 'an unknown revision (C0) of the same device selects no 
 $block = New-FastLlmPlanRecipeBlock -Pick $pick -ModelId '' -Skipped @()
 Check ($block.origin -eq 'estimated') 'an unknown revision leaves the plan estimated'
 Write-Host 'recipes-selection-tests: PASS'
+
+# Engine component (Task 3): a recipe's engineBuild is compared with the engine the recipe RESOLVES to: the catalog build for the built-in id, the component version otherwise.
+function EngineComponent($id, $version, $kind = 'engine', $backend = 'vulkan', $adapter = 'llama.cpp') {
+    [pscustomobject]@{ id = $id; kind = $kind; version = $version; adapter = $adapter; platform = [pscustomobject]@{ os = 'windows'; arch = 'x64'; backend = $backend }; entryPoint = 'llama-server.exe' }
+}
+$componentRecipe = Recipe 'k1' 'bitworks' 'big' 32.7 $true $false 'rx-7900-xtx' 1 'b10800'
+$listed = @((EngineComponent 'llama.cpp-b10800-vulkan' 'b10800'))
+Check ((Get-FastLlmBuiltInEngineId -Catalog $catalog) -ceq 'llama.cpp-b10698-vulkan') 'the built-in engine id is llama.cpp-<catalog version>-vulkan'
+Check ((Get-FastLlmRecipeEngineVersion -Recipe (Recipe 'b1' 'bitworks' 'big' 32.7) -Catalog $catalog -Components @()) -ceq 'b10698') 'the built-in id resolves to the catalog engine version without any component list'
+Check ((Get-FastLlmRecipeEngineVersion -Recipe $componentRecipe -Catalog $catalog -Components $listed) -ceq 'b10800') 'a listed engine component resolves to its own version'
+Check ($null -eq (Get-FastLlmRecipeEngineVersion -Recipe $componentRecipe -Catalog $catalog -Components @())) 'an engine id that is neither built-in nor listed has no version'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($componentRecipe) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -Components $listed
+Check ($pick -and $pick.recipe.id -eq 'k1') 'a recipe on a listed engine component of the same build is picked'
+$sink = New-Object 'System.Collections.Generic.List[string]'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($componentRecipe) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -SkippedSink $sink
+Check ($null -eq $pick -and @($sink | Where-Object { $_ -like 'k1: engine build differs' }).Count -eq 1) 'a recipe whose engine component is not listed is skipped, not thrown'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($componentRecipe) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -Components @((EngineComponent 'llama.cpp-b10800-vulkan' 'b10801'))
+Check ($null -eq $pick) 'a recipe whose engineBuild differs from its component version is skipped'
+foreach ($badComponent in @((EngineComponent 'llama.cpp-b10800-vulkan' 'b10800' 'runtime'), (EngineComponent 'llama.cpp-b10800-vulkan' 'b10800' 'engine' 'rocm'), (EngineComponent 'llama.cpp-b10800-vulkan' 'b10800' 'engine' 'vulkan' 'other'))) {
+    $pick = Select-FastLlmRecipeForPlacements -Recipes @($componentRecipe) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -Components @($badComponent)
+    Check ($null -eq $pick) "a component of kind $($badComponent.kind), backend $($badComponent.platform.backend), adapter $($badComponent.adapter) is not an engine for a llama.cpp Vulkan recipe"
+}
+$caughtFailure = $null
+try { Resolve-FastLlmRecipeEngine -Recipe $componentRecipe -Catalog $catalog -Components @() -InstallRoot 'C:\unused' | Out-Null } catch { $caughtFailure = $_.Exception }
+Check ($null -ne $caughtFailure -and $caughtFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown' -and $caughtFailure.Message -like "*llama.cpp-b10800-vulkan*") 'an unknown engine id is a typed error that names the id'

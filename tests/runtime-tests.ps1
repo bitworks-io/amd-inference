@@ -341,6 +341,7 @@ try {
             }
             $finalStatus=Get-FastLlmStatus $runRoot
             Check ($finalStatus.planRecipe.id -ceq 'r1' -and $finalStatus.planRecipe.origin -ceq 'bitworks' -and $finalStatus.planRecipe.evidenceUrl -ceq 'https://bitworks.io/amd/results/x') "self-test case $($selfTestCase.label): the status records the running plan's recipe"
+            Check ($finalStatus.engineExecutable -ceq $plan.enginePath -and $finalStatus.engineComponentId -ceq 'llama.cpp-test-vulkan') "self-test case $($selfTestCase.label): the status records the engine executable that runs and its engine component id"
             $selfTestFile=Read-FastLlmJson (Join-Path $runRoot 'state/selftest.json')
             if ($expectSkip) {
                 Check ($null -eq $failure -and $exit -eq 0) 'self-test skip: a context too small for the workload does not fail the start'

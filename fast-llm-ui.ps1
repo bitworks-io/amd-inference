@@ -17,6 +17,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiBackground.ps1')
 # Update and Trust are dot-sourced here, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.Update.ps1')
+# Components (the experimental switch and the list helpers) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.Components.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
@@ -79,6 +81,7 @@ $copyButton=ButtonAt 'Copy API URL' 688 255 132
 $backgroundStartButton=ButtonAt 'Start in background' 24 303 205
 $backgroundAttachButton=ButtonAt 'Attach running' 245 303 165
 $backgroundCheckButton=ButtonAt 'Recheck background' 426 303 180
+$componentsButton=ButtonAt 'Components' 622 303 198
 $backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
 $statusLabel=LabelAt 'Stopped. Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first.' 24 382
 $progress=New-Object Windows.Forms.ProgressBar
@@ -98,6 +101,10 @@ $driverButton=ButtonAt 'Driver guidance' 630 778 190
 $updateBox=New-Object Windows.Forms.CheckBox
 $updateBox.Text='Check for updates';$updateBox.Location=New-Object Drawing.Point(300,757);$updateBox.AutoSize=$true
 $updateBox.Checked=([string]$script:uiSettings.updateCheck -ceq 'on');$form.Controls.Add($updateBox)
+$experimentalBox=New-Object Windows.Forms.CheckBox
+$experimentalBox.Text='Experimental community components';$experimentalBox.Location=New-Object Drawing.Point(480,757);$experimentalBox.AutoSize=$true
+$experimentalBox.Checked=([string]$script:uiSettings.experimentalComponents -ceq 'on');$form.Controls.Add($experimentalBox)
+$script:experimentalRevert=$false
 # The top row is reserved for the banner, so everything above is shifted down by its height. Banner controls are added after the shift.
 $script:bannerHeight=36
 foreach($shifted in @($form.Controls)){$shifted.Top+=$script:bannerHeight}
@@ -144,6 +151,25 @@ $bannerNotes.Add_LinkClicked({
 $updateBox.Add_CheckedChanged({
     try{Set-FastLlmUpdateSettings -InstallRoot $script:settingsRoot -UpdateCheck $(if($updateBox.Checked){'on'}else{'off'})}
     catch{$statusLabel.Text='The update setting could not be saved.'}
+})
+# Turning the switch on shows the spec 2.7 paragraph in a Yes/No confirmation (default No); No leaves it off. Turning it off needs no confirmation.
+$experimentalBox.Add_CheckedChanged({
+    if($script:experimentalRevert){return}
+    try{
+        if($experimentalBox.Checked){
+            $answer=[Windows.Forms.MessageBox]::Show($form,$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2')
+            if($answer -ne [Windows.Forms.DialogResult]::Yes){
+                $script:experimentalRevert=$true;$experimentalBox.Checked=$false;$script:experimentalRevert=$false
+                return
+            }
+            Set-FastLlmComponentSettings -InstallRoot $script:settingsRoot -ExperimentalComponents 'on'
+        }
+        else{Set-FastLlmComponentSettings -InstallRoot $script:settingsRoot -ExperimentalComponents 'off'}
+    }
+    catch{
+        $statusLabel.Text='The experimental components setting could not be saved.'
+        $script:experimentalRevert=$true;$experimentalBox.Checked=$false;$script:experimentalRevert=$false
+    }
 })
 function SetBusy([bool]$Busy) {
     $Busy=[bool]($Busy -or $script:updateRun)
@@ -680,6 +706,60 @@ $backgroundCheckButton.Add_Click({
 })
 $doctorButton.Add_Click({try{ReadSelection;LaunchStep 'diagnostics' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 $driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
+# The installed components with their sizes and a Remove button per row. Removal is Remove-FastLlmComponent, which refuses while the server uses the component.
+# The window has no recipe chooser today, so there is no "Choose another" list; the CLI (-Recipe with -AcceptExperimental) is the path to an experimental recipe.
+$script:componentsView=$null
+function FillComponentsPanel {
+    $view=$script:componentsView
+    foreach($old in @($view.panel.Controls)){$old.Dispose()}
+    try{$rows=@(Get-FastLlmInstalledComponentRows -Inventory @(Get-FastLlmComponentInventory -ComponentsPath $view.file -InstallRoot $view.root))}
+    catch{$rows=@();$view.message.Text="The component list could not be read: $($_.Exception.Message)"}
+    if($rows.Count -eq 0){
+        $none=New-Object Windows.Forms.Label
+        $none.Text='No community components are installed.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
+        $view.panel.Controls.Add($none)
+        return
+    }
+    $top=8
+    foreach($row in $rows){
+        $rowLabel=New-Object Windows.Forms.Label
+        $rowLabel.Text=[string]$row.label;$rowLabel.Location=New-Object Drawing.Point(8,($top+6));$rowLabel.Size=New-Object Drawing.Size(530,26)
+        $removeButton=New-Object Windows.Forms.Button
+        $removeButton.Text='Remove';$removeButton.Tag=[string]$row.id;$removeButton.Location=New-Object Drawing.Point(548,$top);$removeButton.Size=New-Object Drawing.Size(110,32)
+        $removeButton.Add_Click({param($sender,$clickArgs)RemoveComponentFromWindow ([string]$sender.Tag)})
+        $view.panel.Controls.Add($rowLabel);$view.panel.Controls.Add($removeButton)
+        $top+=40
+    }
+}
+function RemoveComponentFromWindow([string]$ComponentId) {
+    $view=$script:componentsView
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later.",'Remove component','YesNo','Question','Button2')
+    if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
+    try{
+        [void](Remove-FastLlmComponent -ComponentsPath $view.file -ComponentId $ComponentId -InstallRoot $view.root)
+        $view.message.Text="Removed '$ComponentId'."
+    }
+    catch{$view.message.Text=[string]$_.Exception.Message}
+    # Rebuilt after this Click handler returns: FillComponentsPanel disposes the clicked button, which must not happen inside its own Click.
+    [void]$view.dialog.BeginInvoke([Action]{FillComponentsPanel})
+}
+function ShowComponentsWindow {
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='FastLLM components';$dialog.Size=New-Object Drawing.Size(720,440)
+    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $panel=New-Object Windows.Forms.Panel
+    $panel.Location=New-Object Drawing.Point(20,20);$panel.Size=New-Object Drawing.Size(660,270);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
+    $message=New-Object Windows.Forms.Label
+    $message.Location=New-Object Drawing.Point(20,300);$message.Size=New-Object Drawing.Size(660,50);$message.Text=''
+    $close=New-Object Windows.Forms.Button
+    $close.Text='Close';$close.Location=New-Object Drawing.Point(570,360);$close.Size=New-Object Drawing.Size(110,32);$close.DialogResult='Cancel'
+    $dialog.Controls.Add($panel);$dialog.Controls.Add($message);$dialog.Controls.Add($close)
+    $dialog.CancelButton=$close
+    $script:componentsView=@{dialog=$dialog;panel=$panel;message=$message;root=[IO.Path]::GetFullPath($pathBox.Text);file=(Join-Path $PSScriptRoot 'config/components.json')}
+    try{FillComponentsPanel;[void]$dialog.ShowDialog($form)}
+    finally{$script:componentsView=$null;$dialog.Dispose()}
+}
+$componentsButton.Add_Click({try{ShowComponentsWindow}catch{ShowFailure $_.Exception.Message}})
 # Launch checks run on a background runspace (the same pattern as the background-host poll); the timer collects the result, so the window never waits on the network.
 function StartUiStartupChecks {
     if($script:startupRun){return}
