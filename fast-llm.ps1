@@ -380,7 +380,7 @@ try {
                 }
                 error          = $null
             }
-            if ($installIntegrityResult.status -ceq 'failed') { $diagnostic.error = $installIntegritySummary }
+            if ($installIntegrityResult.status -ceq 'failed') { $diagnostic.error = 'Install integrity failed: ' + $installIntegritySummary.Substring('Install integrity: FAILED '.Length) }
             try { $diagnostic.prerequisiteInventory = Get-FastLlmPrerequisiteInventory }
             catch { $diagnostic.prerequisiteInventoryError = 'prerequisite-inventory-unavailable' }
             try { $diagnostic.windowsInventory = Get-FastLlmWindowsInventory } catch { $diagnostic.inventoryError = $_.Exception.Message }
