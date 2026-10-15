@@ -39,7 +39,7 @@ param(
     [switch] $AsJson,
 
     # Vulkan Resizable-BAR mitigation for a live start: off = none, on = set GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 on the
-    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means auto (owner decision 12, 2026-10-14).
+    # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means auto.
     [ValidateSet('off', 'on', 'auto')]
     [string] $VulkanBarMitigation = 'auto',
 
@@ -177,6 +177,9 @@ $selectionOptions = @{
     ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
     RecipesPath = $recipesPath; GpuVariantsPath = (Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'); RecipeId = $Recipe
 }
+
+# A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
+if ($HardwareFile) { $selectionOptions.NoEngineExecution = $true }
 
 function Write-FastLlmPlan {
     param($Plan)
@@ -416,6 +419,9 @@ try {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
                 $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
                 Write-FastLlmPlan -Plan $plan
+                if ($VulkanBarMitigation -in @('on', 'off') -and $plan.PSObject.Properties['backend'] -and [string] $plan.backend -ieq 'hip') {
+                    Write-Host 'Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
+                }
                 $modelReady = (Test-Path -LiteralPath ([string] $plan.modelPath) -PathType Leaf) -and
                     (Test-FastLlmModelConsentReceipt -Model $plan.model -InstallRoot $InstallRoot)
                 if (-not $modelReady) {

@@ -341,7 +341,7 @@ Write-FastLlmUiSettings -InstallRoot $uiRoot -Settings ([pscustomobject]@{ vulka
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'off') 'BAR setting persists'
 Set-Content -LiteralPath (Join-Path $uiRoot 'settings.json') -Value '{"vulkanBarMitigation":"sideways"}' -Encoding ascii
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'auto') 'an invalid stored value falls back to auto'
-# The preview's measured recipe is passed to the start (final review N2), and the running plan's recipe drives the label and link.
+# The preview's measured recipe is passed to the start , and the running plan's recipe drives the label and link.
 $measuredPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; origin = 'bitworks'; label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
 Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $measuredPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k') 'a measured preview passes its recipe id to the start'
 foreach ($quiet in @('estimated', 'manual')) { Check (@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = $null; origin = $quiet } })).Count -eq 0) "a $quiet preview passes no recipe" }
@@ -353,14 +353,14 @@ $estimatedRun = [pscustomobject]@{ planRecipe = [pscustomobject]@{ id = $null; o
 Check ($null -eq (Get-FastLlmUiRunEvidenceUrl -State $estimatedRun) -and (Get-FastLlmUiRunSetupLine -State $estimatedRun) -ceq 'Setup: Estimated for your card') 'a run that is estimated shows no results link, whatever the preview said'
 Check ($null -eq (Get-FastLlmUiRunEvidenceUrl -State ([pscustomobject]@{ planRecipe = [pscustomobject]@{ evidenceUrl = 'https://evil.example/x' } })) -and $null -eq (Get-FastLlmUiRunEvidenceUrl -State ([pscustomobject]@{ phase = 'ready' }))) 'a run without a safe recorded link shows none'
 Check ($ui.Contains('Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan') -and $ui.Contains('$resultsLink.Visible=$false;$script:evidenceUrl=$null') -and $ui.Contains('Get-FastLlmUiRunEvidenceUrl -State $s')) 'the UI passes the recipe, clears the preview link at start and re-shows it from the running plan'
-# The BAR setting is read and written under the same launch root, never the editable folder box (final review M8).
+# The BAR setting is read and written under the same launch root, never the editable folder box .
 $readRoots = @([regex]::Matches($ui, '(?m)Read-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
 $writeRoots = @([regex]::Matches($ui, '(?m)Write-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
 Check ($readRoots.Count -eq 1 -and $writeRoots.Count -eq 1 -and $readRoots[0] -ceq $writeRoots[0] -and $readRoots[0] -ceq '$script:settingsRoot') 'the BAR setting is read and written under one root'
 Check ($ui.Contains('$script:settingsRoot=$InstallRoot') -and -not [regex]::IsMatch($ui, '(?:Read|Write)-FastLlmUiSettings[^\r\n]*pathBox')) 'the settings root is the launch root, not the folder box'
 Remove-Item -LiteralPath $uiRoot -Recurse -Force
 
-# Update banner, first-launch integrity, settings round trip and the Preview title (Plan C task 6).
+# Update banner, first-launch integrity, settings round trip and the Preview title .
 $releaseUrl = 'https://github.com/bitworks-io/amd-inference/releases/tag/v2026.10.16.1'
 $availableCheck = [pscustomobject]@{ status = 'available'; installed = '2026.10.15.1'; latest = @{ version = '2026.10.16.1'; htmlUrl = $releaseUrl; assets = @{} } }
 $banner = Format-FastLlmUiUpdateBanner -Check $availableCheck
@@ -457,6 +457,7 @@ Check ($script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*
 Check ($ui.Contains("Text='Experimental community components'") -and $ui.Contains('$experimentalBox.Add_CheckedChanged')) 'the settings area has an Experimental community components checkbox'
 Check ($ui.Contains("`$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2'")) 'turning the switch on shows the paragraph in a Yes/No confirmation whose default is No'
 Check ($ui.Contains("Set-FastLlmComponentSettings -InstallRoot `$script:settingsRoot -ExperimentalComponents 'on'") -and $ui.Contains("-ExperimentalComponents 'off'")) 'the checkbox writes the switch through Set-FastLlmComponentSettings'
+Check ($ui.Contains('$removeLock=Enter-FastLlmOperation -InstallRoot $view.root') -and $ui.Contains('-InstallRoot $view.root -OperationLockHeld)') -and $ui.Contains('finally{if($removeLock){$removeLock.Dispose()}}') -and $ui.IndexOf('Enter-FastLlmOperation -InstallRoot $view.root') -lt $ui.IndexOf('-InstallRoot $view.root -OperationLockHeld)')) 'removing a component from the window takes the operation lock first, passes it to the removal and releases it'
 Check ($ui.Contains("ButtonAt 'Components'") -and $ui.Contains('Remove-FastLlmComponent -ComponentsPath') -and $ui.Contains("Text='Remove'") -and $ui.Contains('Get-FastLlmInstalledComponentRows')) 'a Components button lists installed components with a Remove action per row'
 Check ($ui.Contains('src/FastLlm.Components.ps1') -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Components')) 'the UI dot-sources the components script'
 $removeHandler = [regex]::Match($ui, '(?s)function RemoveComponentFromWindow.*?\r?\n\}').Value

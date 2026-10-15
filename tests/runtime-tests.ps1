@@ -273,7 +273,7 @@ try {
         $lock.Dispose();$lock=$null
     }
 
-    # Post-load self-test inside a mock supervised start (final review I1/I2): the verdict is in before ANY ready announcement
+    # Post-load self-test inside a mock supervised start (a failed self-test must not announce ready): the verdict is in before ANY ready announcement
     # (status phase, Ready console line) and before the last-ready recovery record is rewritten. A hard fail keeps the previous record.
     $savedWriteState=& $module {(Get-Command Write-FastLlmState).ScriptBlock}
     try {
@@ -446,7 +446,7 @@ try {
     $barName=& $module { $script:FastLlmVulkanBarMitigationVariable }
     Check (($vulkanBarEnv.set.Keys -join ',') -ceq "APPDATA,PROGRAMDATA,PATH,$barName" -and $vulkanBarEnv.set[$barName] -ceq '1') 'Vulkan environment gets the BAR variable only when the mitigation is requested'
     $hipEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' } $hipEnvPlan $envSandbox $inherited
-    Check ($hipEnv.set['PATH'] -ceq 'C:\fl\components\engine\llama.cpp-hip-b11658\b11658;C:\fl\components\runtime\amd-rocm-gfx1100-10.0.0\10.0.0\bin;C:\Windows\System32;C:\Windows') 'HIP PATH is exactly <engine dir>;<runtime roots>;System32;SystemRoot (the engine dir is also the application directory, so its own amdhip64_7.dll wins; PATH only decides the DLLs that are not next to the exe)'
+    Check ($hipEnv.set['PATH'] -ceq 'C:\fl\components\engine\llama.cpp-hip-b11658\b11658;C:\fl\components\runtime\amd-rocm-gfx1100-10.0.0\10.0.0\bin;C:\Windows\System32;C:\Windows') 'HIP PATH is exactly <engine dir>;<runtime roots>;System32;SystemRoot (the engine dir is the application directory, which Windows searches first, then System32 and the Windows directory, and PATH after those: PATH orders only its own entries)'
     Check (($hipEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH') 'HIP environment sets only APPDATA, PROGRAMDATA and PATH'
     $hipBarEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -VulkanBarMitigation -SystemRoot 'C:\Windows' } $hipEnvPlan $envSandbox $inherited
     Check (-not $hipBarEnv.set.Contains($barName) -and ($hipBarEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH') 'a HIP plan never receives the BAR variable, even when the caller asks for it'
@@ -493,6 +493,7 @@ try {
     function Get-HipFailure($ExitCode,$NativeError) { & $module { param($E,$N) if ($null -ne $N) { New-FastLlmHipLaunchFailure -ComponentId 'llama.cpp-hip-b11658' -NativeErrorCode $N } else { New-FastLlmHipLaunchFailure -ComponentId 'llama.cpp-hip-b11658' -ExitCode $E } } $ExitCode $NativeError }
     $blockedExit=Get-HipFailure -1073740760 $null
     Check ($null -ne $blockedExit -and $blockedExit.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked' -and $blockedExit.Data['FastLlmReason'] -ceq 'HipDllFailed' -and $blockedExit.Message -like 'hip-dll-blocked:*' -and $blockedExit.Message -like "*llama.cpp-hip-b11658*" -and $blockedExit.Message -like '*server was stopped*' -and $blockedExit.Message -like '*Vulkan*') 'exit status 0xC0000428 (STATUS_INVALID_IMAGE_HASH) is hip-dll-blocked, naming the component, saying the server was stopped and pointing at the Vulkan setup'
+    Check ($runtimeText.Contains("`$state.selectedDeviceIdentity = [ordered]@{ status = 'not-applicable'; reason = 'hip-lane' }") -and $runtimeText.Contains('if (-not $isHipPlan) { $state.selectedDeviceIdentity=ConvertFrom-FastLlmSelectedDeviceIdentity')) 'a HIP status records the selected-device identity as not applicable instead of a misleading Vulkan-name failure'
     foreach($nativeError in @(4551,1260,577)) {
         $blockedStart=Get-HipFailure $null $nativeError
         Check ($null -ne $blockedStart -and $blockedStart.Data['FastLlmFailureCode'] -ceq 'hip-dll-blocked') "Win32 error $nativeError from the process start is hip-dll-blocked"
@@ -607,7 +608,7 @@ try {
         Check ($null -ne $missingRun.failure -and $missingRun.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-missing' -and $missingRun.state.failureCode -ceq 'hip-dll-missing') 'a HIP server that exits with 0xC0000135 before readiness fails the start hip-dll-missing'
         $genericRun=Invoke-HipEarlyExit 'hip-generic' 3
         Check ($null -ne $genericRun.failure -and $genericRun.failure.Message -like '*exited before readiness*' -and $null -eq $genericRun.failure.Data['FastLlmFailureCode'] -and $genericRun.state.failureCode -ceq 'startup-or-runtime-check-failed') 'any other early exit of a HIP server keeps the generic failure'
-        Check ($genericRun.state.engineComponentId -ceq 'llama.cpp-hip-b11658' -and $genericRun.state.engineExecutable -ceq $env:ComSpec -and $genericRun.state.vulkanMemoryPolicy.effective -ceq 'not-applicable' -and $genericRun.state.barGuidance.shown -eq $false -and $genericRun.state.processIdentity.pid -gt 0) 'status.json records the HIP component and executable, a not-applicable Vulkan memory policy and no BAR guidance'
+        Check ($genericRun.state.engineComponentId -ceq 'llama.cpp-hip-b11658' -and $genericRun.state.engineExecutable -ceq $env:ComSpec -and $genericRun.state.vulkanMemoryPolicy.effective -ceq 'not-applicable' -and $genericRun.state.barGuidance.shown -eq $false -and $genericRun.state.processIdentity.pid -gt 0 -and $genericRun.state.selectedDeviceIdentity.status -ceq 'not-applicable' -and $genericRun.state.selectedDeviceIdentity.reason -ceq 'hip-lane') 'status.json records the HIP component and executable, a not-applicable Vulkan memory policy and no BAR guidance'
         $recordRun=Invoke-HipEarlyExit 'hip-record' 3 'record'
         Check ($recordRun.state.deviceBinding.status -ceq 'not-applicable' -and $recordRun.state.identityRecord -ceq 'not-applicable' -and $recordRun.state.failureCode -ceq 'startup-or-runtime-check-failed') '-DeviceBinding record on a HIP plan records not-applicable and captures no Vulkan identity'
         $enforceRun=Invoke-HipEarlyExit 'hip-enforce' 3 'enforce'

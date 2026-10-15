@@ -150,7 +150,7 @@ try {
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -RecipeId 'no-such-recipe' @recipeOptions } -Pattern 'No other recipe was substituted' -Message 'an unknown -Recipe refuses without substituting'
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'does not apply to this PC' -Message '-Recipe without a matching card identity refuses'
 
-    # Profiles (final review M1): an explicit fast or quality profile gets the estimated planner; -Recipe still applies under any profile.
+    # Profiles: an explicit fast or quality profile gets the estimated planner; -Recipe still applies under any profile.
     foreach ($explicitProfile in @('fast', 'quality')) {
         $withRecipes = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile @recipeOptions
         $withoutRecipes = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile $explicitProfile
@@ -165,7 +165,7 @@ try {
     $explicitBalanced = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -Profile balanced @recipeOptions
     Assert-Equal -Expected 'test-xtx-q4' -Actual $explicitBalanced.recipe.id -Message 'an explicit balanced profile still gets the recipe'
 
-    # Card count (final review I3): a one-card recipe must not override the estimated dual-card plan on a PC with two identified cards.
+    # Card count: a one-card recipe must not override the estimated dual-card plan on a PC with two identified cards.
     $xtRecipeFile = Join-Path $recipeTestRoot 'recipes-xt.json'
     $xtRecipeDocument = [pscustomobject] [ordered] @{
         schema  = 'bitworks.fastllm-recipes/v2'
@@ -196,7 +196,7 @@ try {
     Assert-Equal -Expected 'layer' -Actual $dualXtPlan.splitMode -Message 'the estimated dual-XT plan keeps the layer split'
     Assert-True -Condition (@($dualXtPlan.recipe.skipped | Where-Object { $_ -like 'test-xt-iq4: measured on 1 card(s)*' }).Count -ge 1) -Message 'the plan lists why the one-card recipe was skipped'
 
-    # Recovery label (final review M6): a cached model picked by recovery is not "Chosen by you".
+    # Recovery label: a cached model picked by recovery is not "Chosen by you".
     $explicitPlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'qwen3.5-9b-q4-k-m' @recipeOptions
     Assert-Equal -Expected 'Chosen by you' -Actual $explicitPlan.recipe.label -Message 'an explicit -ModelId stays labelled as the user choice'
     $recoveredPlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'qwen3.5-9b-q4-k-m' -Recovered @recipeOptions

@@ -99,7 +99,7 @@ try {
         Check ($reason -eq 'PlanChanged' -and -not $state.events.Contains('supervisor')) "changed model $property cannot reach native launch"
         $fresh.model.$property=$original
     }
-    # Final review M9: a measured (recipe-origin) plan whose start re-plan lost the card identity or the recipe must re-plan, never run as estimated.
+    # A measured (recipe-origin) plan whose start re-plan lost the card identity or the recipe must re-plan, never run as estimated.
     $savedRecipe=$plan.recipe;$savedFreshRecipe=$fresh.recipe
     $plan.recipe=[pscustomobject]@{id='r1';origin='bitworks';label='Measured by Bitworks on this card'}
     $fresh.recipe=[pscustomobject]@{id=$null;origin='estimated';label='Estimated for your card'}
@@ -129,7 +129,7 @@ try {
     Check ($caught -and -not $state.events.Contains('supervisor')) 'missing consent cannot reach native launch'
     $state.consent=$true
 
-    # Engine component plans (Task 3): the verified component executable is what runs; a missing component is a typed failure, with no install and no fallback.
+    # Engine component plans: the verified component executable is what runs; a missing component is a typed failure, with no install and no fallback.
     $shippedComponents=@(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
     $componentEntry=@($shippedComponents | Where-Object { [string]$_.id -ceq 'llama.cpp-b10698-vulkan' })[0]
     $componentExe=& $module { param($R,$L) Join-FastLlmContainedPath -Root $R -Child $L -Label 'Engine component executable path' } (Get-FastLlmComponentRoot -InstallRoot $temp -Component $componentEntry) ([string]$componentEntry.entryPoint)
@@ -253,14 +253,15 @@ try {
         }
         return 0 }
     $script:ndDeviceBinding='off'
-    $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false
+    $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false;$script:ndBar='auto';$script:ndHost=New-Object 'Collections.Generic.List[string]'
     $script:ndUnattended=$true
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='auto';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
+        function Write-Host { $script:ndHost.Add(($args -join ' ')) }
         try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
         return $failure
     }
@@ -378,6 +379,15 @@ try {
     }
     $script:ndRecipe=$null
     Check ($cliSource.Contains('$planOnEngineComponent') -and $cliSource.Contains('-not $planOnEngineComponent -and -not $NoDownload -and -not $recoveryAttempted') -and -not $cliSource.Contains('-not $selectionOptions.RecipeId')) 'fast-llm.ps1 keys the recovery guard on the plan (engine component or hip backend), not on the typed -Recipe'
+
+    # -- an explicit -VulkanBarMitigation on|off with a HIP plan is not silently ignored (one line); Vulkan plans and the auto default print nothing
+    $barLine='Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
+    foreach($barCase in @(@{bar='on';hip=$true;expect=1},@{bar='off';hip=$true;expect=1},@{bar='auto';hip=$true;expect=0},@{bar='on';hip=$false;expect=0})){
+        Reset-Nd; $script:ndBar=$barCase.bar; $script:ndPlanHip=$barCase.hip; $script:ndHost.Clear()
+        $f=Invoke-NdStart $false
+        Check ($null -eq $f -and @($script:ndHost | Where-Object { $_ -ceq $barLine }).Count -eq $barCase.expect) "-VulkanBarMitigation $($barCase.bar) with a $(if($barCase.hip){'HIP'}else{'Vulkan'}) plan prints the not-applicable line $($barCase.expect) time(s)"
+    }
+    $script:ndBar='auto';$script:ndPlanHip=$false
 
     # -- update-check / update: argument validation and the cached notice wiring (static; no PowerShell can run a real start here)
     $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]

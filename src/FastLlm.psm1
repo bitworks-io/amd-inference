@@ -940,7 +940,11 @@ function Get-FastLlmPlan {
         [string] $RecipeId,
 
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
-        [switch] $Recovered
+        [switch] $Recovered,
+
+        # Set by the CLI for a fixture plan (-HardwareFile): the plan must never run an engine, so a recipe whose engine has to be probed
+        # (the HIP engine) fails typed before anything is hashed or executed.
+        [switch] $NoEngineExecution
     )
 
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
@@ -1176,6 +1180,9 @@ function Get-FastLlmPlan {
     if ($recipePick -and $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
         $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
         if (-not $resolvedEngine.builtIn) {
+            if ($NoEngineExecution -and [string] $resolvedEngine.backend -ceq 'hip') {
+                throw (New-FastLlmEngineFailure -Code 'fixture-plan-cannot-probe-engine' -ComponentId ([string] $resolvedEngine.id) -Message "Recipe '$($recipePick.recipe.id)' runs on the HIP engine, whose devices can only be listed by running it. A fixture plan (-HardwareFile) never runs an engine, so this plan was not made. Plan without -HardwareFile on the real PC instead.")
+            }
             if (-not $resolvedEngine.installed) {
                 # The first component of the chain that fails, so a missing runtime is named as the runtime.
                 $unavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Presence
@@ -2280,12 +2287,18 @@ function Get-FastLlmComponentMemoKey {
         $fileCount = 0
         $totalSize = [int64] 0
         $newestTicks = [int64] 0
-        foreach ($treeItem in @(Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction Stop)) {
-            if ($treeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
-            if ($treeItem.PSIsContainer) { continue }
-            $fileCount++
-            $totalSize += [int64] $treeItem.Length
-            if ([int64] $treeItem.LastWriteTimeUtc.Ticks -gt $newestTicks) { $newestTicks = [int64] $treeItem.LastWriteTimeUtc.Ticks }
+        # Enumerate by hand and never descend into a reparse point: the recursive directory cmdlet of Windows PowerShell 5.1 follows junctions and symlinks.
+        $pending = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+        $pending.Push((New-Object System.IO.DirectoryInfo($Root)))
+        while ($pending.Count -gt 0) {
+            $directory = $pending.Pop()
+            foreach ($treeItem in $directory.EnumerateFileSystemInfos()) {
+                if ($treeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+                if ($treeItem -is [System.IO.DirectoryInfo]) { $pending.Push($treeItem); continue }
+                $fileCount++
+                $totalSize += [int64] $treeItem.Length
+                if ([int64] $treeItem.LastWriteTimeUtc.Ticks -gt $newestTicks) { $newestTicks = [int64] $treeItem.LastWriteTimeUtc.Ticks }
+            }
         }
         return ('{0}|{1}|{2}|{3}|{4}' -f ([string] $Component.id), $Root, $fileCount, $totalSize, $newestTicks)
     }
@@ -2371,7 +2384,7 @@ function Test-FastLlmComponentConsentReceipt {
     }
     try {
         $receipt = Read-FastLlmJson -Path $receiptPath -MaxBytes 16384
-        # links[] was added in C3: a receipt without it (written before) still matches a component without license links, and no other.
+        # links[] was added with multi-part components: a receipt without it (written before) still matches a component without license links, and no other.
         $receiptLinkUrls = @()
         $receiptLinksProperty = $receipt.PSObject.Properties['links']
         if ($null -ne $receiptLinksProperty -and $null -ne $receiptLinksProperty.Value) { $receiptLinkUrls = @(@($receiptLinksProperty.Value) | ForEach-Object { [string] $_.url }) }
@@ -2772,6 +2785,17 @@ function Install-FastLlmComponentFiles {
         # A same-volume rename of files that were just hashed: the exact-set and size check is enough here; Start hashes again.
         if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $Entry -Depth Presence)) {
             throw "The promoted component '$componentId' failed its exact file manifest; remove it first."
+        }
+        # Verified and promoted: the archives this install downloaded (only the pinned cache files of this component, under downloads\c) are no longer
+        # needed, since a repair downloads and verifies them again. A link or anything that is not a plain file there is left alone.
+        foreach ($cachedArchive in @($cache.paths)) {
+            try {
+                if (Test-Path -LiteralPath $cachedArchive -PathType Leaf) {
+                    $cachedItem = Get-Item -LiteralPath $cachedArchive -Force -ErrorAction Stop
+                    if (-not ($cachedItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { Remove-Item -LiteralPath $cachedArchive -Force -ErrorAction Stop }
+                }
+            }
+            catch { Write-Warning "The verified archive '$cachedArchive' could not be removed and was left in place." }
         }
     }
     finally {

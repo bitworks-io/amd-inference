@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic, offline CycloneDX SBOM and third-party notice inventory.
 
-FastLLM itself is declared Apache-2.0 (owner decision 5, 2026-10-14).
+FastLLM itself is declared Apache-2.0.
 Third-party licenses are only the values
 declared in config/catalog.json or THIRD_PARTY_NOTICES.md. No network access.
 """

@@ -117,14 +117,24 @@ function Resolve-FastLlmRecipeEngine {
         if ([string] $chained.kind -ceq 'runtime' -and $chained.PSObject.Properties['runtimePathDirs'] -and $chained.runtimePathDirs) {
             $requiredRoot = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $chained
             foreach ($pathDirectory in @($chained.runtimePathDirs)) {
-                # The strict leaf rule first: a .NET Framework path API throws on a control character before any rule of ours runs.
-                Assert-FastLlmComponentLeafName -Value ([string] $pathDirectory) -Label 'Runtime path directory'
-                $runtimeRoots.Add((Join-FastLlmContainedPath -Root $requiredRoot -Child ([string] $pathDirectory) -Label 'Runtime path directory'))
+                $runtimeRoots.Add((Resolve-FastLlmRuntimePathDirectory -Root $requiredRoot -Directory ([string] $pathDirectory)))
             }
         }
     }
     return [pscustomobject] [ordered] @{ id = $engineId; version = [string] $component.version; backend = [string] $component.platform.backend
         executable = $componentExecutable; installed = $componentInstalled; builtIn = $false; runtimeRoots = $runtimeRoots.ToArray() }
+}
+
+# A runtimePathDirs entry is a nested tree path ('bin' or 'lib/bin'), validated by the same rule the components file is validated with, then joined one
+# segment at a time. The strict rule runs first: a .NET Framework path API throws on a control character before any rule of ours would.
+function Resolve-FastLlmRuntimePathDirectory {
+    param([Parameter(Mandatory = $true)][string] $Root, [Parameter(Mandatory = $true)][string] $Directory)
+    Assert-FastLlmComponentTreePath -Value $Directory -Label 'Runtime path directory'
+    $resolved = $Root
+    foreach ($segment in $Directory.Split('/')) {
+        $resolved = Join-FastLlmContainedPath -Root $resolved -Child $segment -Label 'Runtime path directory'
+    }
+    return $resolved
 }
 
 # needs-setup-component-missing. FastLlmComponentId stays the engine (the chain root): the install action installs that one id and its whole requires

@@ -407,6 +407,9 @@ function New-FastLlmDeviceBindingFailure {
 # The ONE child-environment builder, used by the device probe and by the server launch. It returns what to remove from the inherited environment
 # and what to set; Initialize-FastLlmEngineStartInfo applies it. -Plan needs backend, enginePath and (HIP only) runtimeRoots.
 #   Vulkan: the shared scrub, APPDATA/PROGRAMDATA in the run sandbox, PATH = <engine dir>;System32;SystemRoot, and the BAR variable only on request.
+# The PATH only decides among PATH entries: Windows searches the application directory (the engine directory, which holds amdhip64_7, amd_comgr and
+# rocm_kpack), then System32, then the Windows directory, and PATH after those. A same-named library in System32 would therefore win over a runtime bin
+# entry, whatever the PATH order is.
 #   HIP:    the same scrub plus every ROC* name, then PATH = <engine dir>;<runtime roots...>;System32;SystemRoot. Never the BAR variable and never any HIP_*, ROC* or HSA_* value.
 # Names scrubbed from a HIP child in addition to the shared scrub: the ROCm/HSA-adjacent ROC* family (ROCR_VISIBLE_DEVICES), the hipBLAS/hipBLASLt/rocBLAS
 # library-path and logging overrides (HIPBLAS*, HIPBLASLT_TENSILE_LIBPATH, MIOPEN_*), the CLR/COMGR switches (AMD_*, GPU_*, HCC_*, HIPCC_*) and the device-lib path.
@@ -584,6 +587,7 @@ function Invoke-FastLlmSupervisedServer {
     # Resolve the policy before any state is written; a non-off policy may run the bounded advisory heap probe.
     if ($isHipPlan) {
         $state.vulkanMemoryPolicy = [pscustomobject][ordered]@{ requested = 'not-applicable'; effective = 'not-applicable'; reason = 'hip-lane' }
+        $state.selectedDeviceIdentity = [ordered]@{ status = 'not-applicable'; reason = 'hip-lane' }
     }
     else { $state.vulkanMemoryPolicy = Resolve-FastLlmVulkanBarMitigation -Plan $Plan -Requested $VulkanBarMitigation -InstallRoot $InstallRoot }
     if ($ThroughputCanary) { $state.throughputCanary = $null }
@@ -770,7 +774,7 @@ function Invoke-FastLlmSupervisedServer {
             overflow=[bool]$hostProcess.SelectedDeviceIdentityOverflow
             diagnostics=[string]$hostProcess.SelectedDeviceIdentityDiagnostics()
         }
-        $state.selectedDeviceIdentity=ConvertFrom-FastLlmSelectedDeviceIdentity -Text $selectedDeviceText -ExpectedDevices @($Plan.selectedAdapters.device) -LikeLines $state.selectedDeviceCapture.likeLines -MalformedLines $state.selectedDeviceCapture.malformedLines -Overflow $state.selectedDeviceCapture.overflow
+        if (-not $isHipPlan) { $state.selectedDeviceIdentity=ConvertFrom-FastLlmSelectedDeviceIdentity -Text $selectedDeviceText -ExpectedDevices @($Plan.selectedAdapters.device) -LikeLines $state.selectedDeviceCapture.likeLines -MalformedLines $state.selectedDeviceCapture.malformedLines -Overflow $state.selectedDeviceCapture.overflow }
         # Freeze the server device-list capture (the level-4 device_info entries and the "using device" lines) at the same point, before any
         # API canary. The capture itself never gates: any throw is recorded as { error = <exception type name> } (never its text) and is
         # swallowed here. Under -DeviceBinding enforce the post-load check below READS these entries (an error capture fails that check

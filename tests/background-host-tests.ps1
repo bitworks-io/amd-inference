@@ -202,7 +202,7 @@ try {
     $failedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($failedOwner.phase -ceq 'failed' -and $failedOwner.failureCode -ceq 'background-start-or-runtime-failed') 'Worker did not retain bounded failure state.'
     Assert-BackgroundTest ($failedOwner.failureReason -eq $null -or [string]$failedOwner.failureReason -eq '') 'An ordinary failure must not persist its message.'
-    # A PlanChanged failure keeps its reason (final review N2), single line and bounded.
+    # A PlanChanged failure keeps its reason, single line and bounded.
     $script:workerRequestId = 'abababababababababababababababab'
     $changedPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $changedPath -CreateNew -Value ([ordered]@{

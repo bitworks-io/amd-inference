@@ -753,11 +753,16 @@ function RemoveComponentFromWindow([string]$ComponentId) {
     $view=$script:componentsView
     $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later.",'Remove component','YesNo','Question','Button2')
     if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
+    # The operation lock is taken (without waiting) so a chain install or a start in preparation cannot be undone under it; a busy answer changes nothing.
+    $removeLock=$null
     try{
-        [void](Remove-FastLlmComponent -ComponentsPath $view.file -ComponentId $ComponentId -InstallRoot $view.root)
+        try{$removeLock=Enter-FastLlmOperation -InstallRoot $view.root}
+        catch{throw 'FastLLM is busy with another install or start. Try again when it has finished; nothing was removed.'}
+        [void](Remove-FastLlmComponent -ComponentsPath $view.file -ComponentId $ComponentId -InstallRoot $view.root -OperationLockHeld)
         $view.message.Text="Removed '$ComponentId'."
     }
     catch{$view.message.Text=[string]$_.Exception.Message}
+    finally{if($removeLock){$removeLock.Dispose()}}
     # Rebuilt after this Click handler returns: FillComponentsPanel disposes the clicked button, which must not happen inside its own Click.
     [void]$view.dialog.BeginInvoke([Action]{FillComponentsPanel})
 }

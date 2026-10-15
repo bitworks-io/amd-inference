@@ -123,7 +123,7 @@ class ComponentsTests(unittest.TestCase):
         self.assertEqual(cc.main(["--root", str(root)]), 1)
 
 
-# ---- C3: zip-tree, sources[], requires chains, license links, runtimePathDirs ----
+# ---- zip-tree, sources[], requires chains, license links, runtimePathDirs ----
 ZERO = "0" * 64
 
 

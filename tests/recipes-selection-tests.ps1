@@ -49,7 +49,7 @@ try { Select-FastLlmRecipeForPlacements -Recipes @() -Variants $variants -Placem
 Check ($threw -like "*not in this release*") '-Recipe for an unknown id refuses'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'd1' 'bitworks' 'big' 31 $true $false 'rx-7900-xtx' 2)) -Variants $variants -Placements @((Placement 23000), (Placement 23000), (Placement 46000 2)) -EligibleAdapters @((Placement 1).adapters[0], (Placement 1).adapters[0]) -DxgiAdapters @($xtxDxgi[0], $xtxDxgi[0]) -Catalog $catalog -Profile 'balanced'
 Check ($pick.recipe.id -eq 'd1' -and @($pick.placement.adapters).Count -eq 2) 'a dual-card recipe applies only to the two-card placement'
-# Card count (final review I3): a recipe applies only when gpu.count equals the identified eligible cards of its variant, on the placement using all of them.
+# Card count: a recipe applies only when gpu.count equals the identified eligible cards of its variant, on the placement using all of them.
 $twoXtxPlacements = @((Placement 23000), (Placement 23000), (Placement 46000 2))
 $twoXtxCards = @((Placement 1).adapters[0], (Placement 1).adapters[0])
 $sink = New-Object 'System.Collections.Generic.List[string]'
@@ -62,7 +62,7 @@ $mixedCards = @((Placement 1).adapters[0], (Placement 1 1 20480).adapters[0])
 $mixedDxgi = @($xtxDxgi[0], $xtDxgi[0])
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'x1' 'bitworks' 'small' 25 $true $false 'rx-7900-xt' 1)) -Variants $variants -Placements @((Placement 23000), (Placement 19000 1 20480)) -EligibleAdapters $mixedCards -DxgiAdapters $mixedDxgi -Catalog $catalog -Profile 'balanced'
 Check ($pick.recipe.id -eq 'x1' -and $pick.variant -eq 'rx-7900-xt') 'a one-card recipe still applies when the PC has one card of its variant next to another variant'
-# Not auto-eligible models (final review M3): never auto-picked by a recipe; reachable only by naming the recipe.
+# Not auto-eligible models: never auto-picked by a recipe; reachable only by naming the recipe.
 $catalogWithExperimental = [pscustomobject]@{ engine = $catalog.engine; models = @($catalog.models) + @([pscustomobject]@{ id = 'exp'; requiredFreeVramMiB = 7300; autoEligible = $false; scores = [pscustomobject]@{ balanced = 90 } }) }
 $sink = New-Object 'System.Collections.Generic.List[string]'
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced' -SkippedSink $sink
@@ -112,7 +112,7 @@ $block = New-FastLlmPlanRecipeBlock -Pick $pick -ModelId '' -Skipped @()
 Check ($block.origin -eq 'estimated') 'an unknown revision leaves the plan estimated'
 Write-Host 'recipes-selection-tests: PASS'
 
-# Engine component (Task 3): a recipe's engineBuild is compared with the engine the recipe RESOLVES to: the catalog build for the built-in id, the component version otherwise.
+# Engine component: a recipe's engineBuild is compared with the engine the recipe RESOLVES to: the catalog build for the built-in id, the component version otherwise.
 function EngineComponent($id, $version, $kind = 'engine', $backend = 'vulkan', $adapter = 'llama.cpp') {
     [pscustomobject]@{ id = $id; kind = $kind; version = $version; adapter = $adapter; platform = [pscustomobject]@{ os = 'windows'; arch = 'x64'; backend = $backend }; entryPoint = 'llama-server.exe' }
 }
