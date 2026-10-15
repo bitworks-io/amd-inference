@@ -1,9 +1,12 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$LauncherScript = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/start-windows-lab-setup.ps1'),
-    [string]$CommandScript = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/setup-windows-lab.cmd')
+    [string]$LauncherScript,
+    [string]$CommandScript
 )
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while -File evaluates parameter defaults, so resolve the defaults here.
+if (-not $LauncherScript) { $LauncherScript = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/start-windows-lab-setup.ps1' }
+if (-not $CommandScript) { $CommandScript = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/setup-windows-lab.cmd' }
 $ErrorActionPreference='Stop'
 $tokens=$null; $parseErrors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($LauncherScript,[ref]$tokens,[ref]$parseErrors)

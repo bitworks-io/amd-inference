@@ -1,6 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([string]$SetupScript = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/setup-windows-lab.ps1'))
+param([string]$SetupScript)
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while -File evaluates parameter defaults, so resolve the default here.
+if (-not $SetupScript) { $SetupScript = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/setup-windows-lab.ps1' }
 $ErrorActionPreference = 'Stop'
 $tokens=$null; $parseErrors=$null
 $ast = [Management.Automation.Language.Parser]::ParseFile($SetupScript,[ref]$tokens,[ref]$parseErrors)
