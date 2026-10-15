@@ -126,6 +126,7 @@ try {
 $labAppLifetime = Enter-FastLlmLabAppLifetime -SourceRoot $projectRoot
 Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFlow.ps1')
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Trust.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $selectionOptions = @{
     ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
@@ -325,6 +326,24 @@ try {
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             $windowsPrerequisites = Get-FastLlmWindowsPrerequisiteStatus
             $vulkanVerified = Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey 'vulkan' -Asset $catalog.engine.assets.vulkan
+            # Install integrity: the installed files against the signed FastLLM.cat. The signature skip is a hidden test seam that
+            # applies ONLY to an unsigned catalog (reason not-valid) AND FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=1; any other signature
+            # failure is never skipped. Nothing in the product sets the variable.
+            $installIntegrityResult = Test-FastLlmInstallIntegrity -AppRoot $PSScriptRoot
+            if ($installIntegrityResult.status -ceq 'failed' -and $installIntegrityResult.reason -ceq 'catalog-signature' -and
+                $installIntegrityResult.catalogSignature -and $installIntegrityResult.catalogSignature.reason -ceq 'not-valid' -and
+                $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE -ceq '1') {
+                $installIntegrityResult = Test-FastLlmInstallIntegrity -AppRoot $PSScriptRoot -SkipSignatureForTest
+            }
+            $installIntegritySummary = switch ([string]$installIntegrityResult.status) {
+                'ok' { 'Install integrity: ok' }
+                'not-installed' { 'Install integrity: not an installed release (no FastLLM.cat)' }
+                default {
+                    $integrityDetail = @(@($installIntegrityResult.mismatches) | Select-Object -First 5)
+                    if (-not $integrityDetail.Count -and $installIntegrityResult.catalogSignature) { $integrityDetail = @([string]$installIntegrityResult.catalogSignature.reason) }
+                    'Install integrity: FAILED (' + [string]$installIntegrityResult.reason + '): ' + ($integrityDetail -join ', ')
+                }
+            }
             $diagnostic = [ordered] @{
                 timestamp      = (Get-Date).ToUniversalTime().ToString('o')
                 windows        = $env:OS -eq 'Windows_NT'
@@ -350,8 +369,18 @@ try {
                 plan           = $null
                 vulkanMemory   = $null
                 vulkanMemoryError = $null
+                # doctor prints one JSON document, so the human line travels inside it as summary.
+                installIntegrity = [pscustomobject] @{
+                    appRoot          = [string] $PSScriptRoot
+                    status           = [string] $installIntegrityResult.status
+                    reason           = $installIntegrityResult.reason
+                    catalogSignature = $installIntegrityResult.catalogSignature
+                    mismatches       = @($installIntegrityResult.mismatches)
+                    summary          = $installIntegritySummary
+                }
                 error          = $null
             }
+            if ($installIntegrityResult.status -ceq 'failed') { $diagnostic.error = $installIntegritySummary }
             try { $diagnostic.prerequisiteInventory = Get-FastLlmPrerequisiteInventory }
             catch { $diagnostic.prerequisiteInventoryError = 'prerequisite-inventory-unavailable' }
             try { $diagnostic.windowsInventory = Get-FastLlmWindowsInventory } catch { $diagnostic.inventoryError = $_.Exception.Message }

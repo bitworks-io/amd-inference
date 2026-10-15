@@ -62,6 +62,17 @@ foreach ($f in $policyFiles) {
     if ($policyAllowlist.ContainsKey($rel)) { continue }
     Assert-True (-not $hit) "$rel sets or names an execution policy; only FastLLM.cmd may, and lab-only scripts must be allowlisted with a justification"
 }
+# The doctor signature-skip seam (FASTLLM_TEST_SKIP_CATALOG_SIGNATURE) is only ever READ, and only in fast-llm.ps1: no product file
+# (src, tools, the entry scripts) may set it, and no product file other than fast-llm.ps1 may name it at all.
+foreach ($f in $policyFiles) {
+    $rel = $f.FullName.Substring($repo.Length + 1).Replace('\', '/')
+    $text = Get-Content -LiteralPath $f.FullName -Raw
+    if ($rel -ne 'fast-llm.ps1') { Assert-True ($text -notmatch 'FASTLLM_TEST_SKIP_CATALOG_SIGNATURE') "$rel names the test-only catalog signature skip" }
+    Assert-True ($text -notmatch '(?i)env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE\s*=(?!=)') "$rel assigns the test-only catalog signature skip"
+    Assert-True ($text -notmatch '(?i)SetEnvironmentVariable\([^)]*FASTLLM_TEST_SKIP_CATALOG_SIGNATURE') "$rel sets the test-only catalog signature skip"
+    Assert-True ($text -notmatch '(?i)(Set-Item|New-Item|Set-Content)[^\r\n]*env:\\?FASTLLM_TEST_SKIP_CATALOG_SIGNATURE') "$rel sets the test-only catalog signature skip through the env: drive"
+}
+Assert-True ((Get-Content -LiteralPath (Join-Path $repo 'fast-llm.ps1') -Raw) -match '\$env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE -ceq') 'fast-llm.ps1 must read the test-only catalog signature skip'
 foreach ($rel in $policyAllowlist.Keys) {
     Assert-True (Test-Path -LiteralPath (Join-Path $repo $rel)) "allowlisted $rel no longer exists; remove it from the allowlist"
     Assert-True ([bool](Select-String -LiteralPath (Join-Path $repo $rel) -Pattern 'ExecutionPolicy' -Quiet)) "allowlisted $rel no longer sets a policy; remove it from the allowlist"
