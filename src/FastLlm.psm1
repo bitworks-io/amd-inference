@@ -2260,25 +2260,32 @@ function Test-FastLlmComponentInstallation {
 # In-process memo of Full verdicts (never persisted). A component is hashed once per process while its tree is unchanged: the key is the component id,
 # its root, the file count, the total size and the newest write time. Only a passing verdict is remembered, and a missing root is never memoised.
 $script:FastLlmFullVerdictMemo = @{}
+# The memo key of a component tree, or $null (no memo read, no memo store) when the root is missing, the tree cannot be enumerated, or ANY entry in it
+# (the root included) is a reparse point: a junction or symlink swapped into a verified tree can never reuse a remembered pass.
+function Get-FastLlmComponentMemoKey {
+    param([Parameter(Mandatory = $true)][string] $Root, [Parameter(Mandatory = $true)] $Component)
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $null }
+    try {
+        if ((Get-Item -LiteralPath $Root -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+        $fileCount = 0
+        $totalSize = [int64] 0
+        $newestTicks = [int64] 0
+        foreach ($treeItem in @(Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction Stop)) {
+            if ($treeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+            if ($treeItem.PSIsContainer) { continue }
+            $fileCount++
+            $totalSize += [int64] $treeItem.Length
+            if ([int64] $treeItem.LastWriteTimeUtc.Ticks -gt $newestTicks) { $newestTicks = [int64] $treeItem.LastWriteTimeUtc.Ticks }
+        }
+        return ('{0}|{1}|{2}|{3}|{4}' -f ([string] $Component.id), $Root, $fileCount, $totalSize, $newestTicks)
+    }
+    catch { return $null }
+}
 function Test-FastLlmComponentVerifiedFull {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Component)
     $root = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $Component
-    $key = $null
-    if (Test-Path -LiteralPath $root -PathType Container) {
-        try {
-            $fileCount = 0
-            $totalSize = [int64] 0
-            $newestTicks = [int64] 0
-            foreach ($treeFile in @(Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction Stop)) {
-                $fileCount++
-                $totalSize += [int64] $treeFile.Length
-                if ([int64] $treeFile.LastWriteTimeUtc.Ticks -gt $newestTicks) { $newestTicks = [int64] $treeFile.LastWriteTimeUtc.Ticks }
-            }
-            $key = '{0}|{1}|{2}|{3}|{4}' -f ([string] $Component.id), $root, $fileCount, $totalSize, $newestTicks
-        }
-        catch { $key = $null }
-    }
+    $key = Get-FastLlmComponentMemoKey -Root $root -Component $Component
     if ($key -and $script:FastLlmFullVerdictMemo.ContainsKey($key)) { return $true }
     $verdict = [bool] (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $Component -Depth Full)
     if ($verdict -and $key) { $script:FastLlmFullVerdictMemo[$key] = $true }

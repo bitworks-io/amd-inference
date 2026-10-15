@@ -250,6 +250,10 @@ try {
         @(Get-ChildItem -LiteralPath $scratch -Filter 'replace-regression*' -Force).Count -eq 1) 'Atomic replace left a temp or backup file.'
     $hostSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     $replaceSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.FileReplace.ps1') -Raw
+    $hostRecordAt = $hostSource.IndexOf('Write-FastLlmBackgroundDocument -Path $recordPath -Value $record')
+    $preparingAt = $hostSource.IndexOf("phase='preparing'; action='start'")
+    $firstProbeAt = $hostSource.IndexOf('$hardware = Get-FastLlmHardware')
+    Assert-BackgroundTest ($hostRecordAt -gt 0 -and $preparingAt -gt $hostRecordAt -and $firstProbeAt -gt $preparingAt) 'The preparing status must be written after the host record and before the first hardware probe (a failure between the lock and the record must not leave a bare preparing status).'
     Assert-BackgroundTest ($hostSource.Contains('vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant()') -and $hostSource.Contains("[ValidateSet('off','on','auto')][string]`$VulkanBarMitigation='auto'")) 'The background request records vulkanBarMitigation with a default of auto.'
     Assert-BackgroundTest ($replaceSource.Contains('[IO.File]::Replace($Source,$Destination,[NullString]::Value)') -and
         -not ($replaceSource -match '\[IO\.File\]::Replace\([^)]*\$null') -and

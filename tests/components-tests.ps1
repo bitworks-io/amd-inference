@@ -1522,6 +1522,39 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         & $module { param($B) Set-Item -Path Function:script:Invoke-FastLlmDeviceProbe -Value $B } $savedHipProbe
     }
 
+    # ---- Memo hardening: a tree holding ANY reparse point has no memo key, so a junction or symlink swapped in can never reuse a remembered pass ----
+    $memoFx = New-Fixture -Dir (Join-Path $work 'fx-memo') -Id 'memo-engine-1' -Version 'v1'
+    $memoRoot = New-TestRoot
+    $memoCounter = @{ count = 0 }
+    $memoComponentRoot = Install-Fixture -Fixture $memoFx -InstallRoot $memoRoot -Counter $memoCounter -AcceptLicense -Unattended
+    $memoComponent = Get-ComponentEntry $memoFx.ComponentsPath 'memo-engine-1'
+    $plainKey = & $module { param($R, $C) Get-FastLlmComponentMemoKey -Root $R -Component $C } $memoComponentRoot $memoComponent
+    Check (-not [string]::IsNullOrEmpty($plainKey) -and $plainKey -like 'memo-engine-1|*') 'a plain installed tree has a memo key'
+    $memoEntriesBefore = & $module { @($script:FastLlmFullVerdictMemo.Keys).Count }
+    Check ((& $module { param($I, $C) Test-FastLlmComponentVerifiedFull -InstallRoot $I -Component $C } $memoRoot $memoComponent) -and (& $module { @($script:FastLlmFullVerdictMemo.Keys).Count }) -eq $memoEntriesBefore + 1) 'a passing Full verdict of a plain tree is remembered'
+    $reparseTarget = Join-Path (New-TestRoot) 'outside'
+    New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+    $reparseLink = Join-Path $memoComponentRoot 'swapped'
+    $reparseMade = $false
+    try {
+        if ($env:OS -eq 'Windows_NT') { & cmd.exe /c mklink /J "$reparseLink" "$reparseTarget" | Out-Null; $reparseMade = Test-Path -LiteralPath $reparseLink }
+        else { New-Item -ItemType SymbolicLink -Path $reparseLink -Target $reparseTarget | Out-Null; $reparseMade = Test-Path -LiteralPath $reparseLink }
+    }
+    catch { $reparseMade = $false }
+    if ($reparseMade) {
+        $reparseKey = & $module { param($R, $C) Get-FastLlmComponentMemoKey -Root $R -Component $C } $memoComponentRoot $memoComponent
+        Check ($null -eq $reparseKey) 'a tree holding a reparse point (junction or symlink) has no memo key'
+        $memoCountWithLink = & $module { @($script:FastLlmFullVerdictMemo.Keys).Count }
+        $null = & $module { param($I, $C) Test-FastLlmComponentVerifiedFull -InstallRoot $I -Component $C } $memoRoot $memoComponent
+        Check ((& $module { @($script:FastLlmFullVerdictMemo.Keys).Count }) -eq $memoCountWithLink) 'a verdict on a tree with a reparse point is never stored in the memo'
+        $reusedVerdict = & $module { param($I, $C) Test-FastLlmComponentVerifiedFull -InstallRoot $I -Component $C } $memoRoot $memoComponent
+        Check (-not $reusedVerdict -and -not (Test-FastLlmComponentInstallation -InstallRoot $memoRoot -Component $memoComponent)) 'a remembered pass for the same tree is not reused once a reparse point is in it: the real check runs and refuses it'
+        if ($env:OS -eq 'Windows_NT') { & cmd.exe /c rmdir "$reparseLink" | Out-Null } else { Remove-Item -LiteralPath $reparseLink -Force }
+    }
+    else { Write-Host 'SKIP: the reparse-point memo checks need a junction or symlink, which could not be created here' }
+    $memoSource = [System.IO.File]::ReadAllText($modulePath)
+    Check ($memoSource.Contains('[IO.FileAttributes]::ReparsePoint) { return $null }') -and $memoSource.Contains('Get-FastLlmComponentMemoKey -Root $root -Component $Component')) 'the memo key function returns $null on any reparse point and the verdict function uses it'
+
     # ---- Experimental switch, CLI components action and the experimental gate (src/FastLlm.Components.ps1; entry scripts only) ----
     . (Join-Path $PSScriptRoot '../src/FastLlm.Components.ps1')
     $repoRoot = Split-Path -Parent $PSScriptRoot

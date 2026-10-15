@@ -544,11 +544,20 @@ try {
             $slowDeadline=[DateTime]::UtcNow.AddSeconds(20)
             while ([DateTime]::UtcNow -lt $slowDeadline -and @(Get-Process -Name ping -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -gt $slowStarted } catch { $false } }).Count -gt 0) { Start-Sleep -Milliseconds 250 }
         } finally { & $module { Remove-Item -Path Function:script:Get-FastLlmSmartAppControlState -ErrorAction SilentlyContinue } }
+        # A healthy HIP engine through the real probe: exactly the two lines b11658 prints, no child process left holding the folder.
+        $healthyDir=Join-Path $temp 'probe-healthy'
+        New-Item -ItemType Directory -Path $healthyDir -Force | Out-Null
+        $healthyEngine=Join-Path $healthyDir 'llama-server.cmd'
+        [IO.File]::WriteAllText($healthyEngine,"@echo Available devices:`r`n@echo   ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`r`n@exit /b 0`r`n",(New-Object Text.ASCIIEncoding))
+        $healthyDevices=@(Invoke-FastLlmDeviceProbe -EnginePath $healthyEngine -Backend ROCm -InstallRoot $healthyDir -TimeoutSeconds 20 -Hip -RuntimeRoots @() -ComponentId 'llama.cpp-hip-b11658')
+        Check ($healthyDevices.Count -eq 1 -and $healthyDevices[0].device -ceq 'ROCm0' -and $healthyDevices[0].name -ceq 'AMD Radeon RX 7900 XTX' -and $healthyDevices[0].vramMiB -eq 24560 -and $healthyDevices[0].freeVramMiB -eq 24411) 'a healthy HIP engine through the real probe yields exactly one parsed ROCm0 device with its name and totals'
         $probeVulkan=Invoke-StandInProbe 'probe-vulkan' -1073740760
         Check ($null -eq $probeVulkan.failure -and $probeVulkan.devices.Count -eq 0) 'the non-HIP probe is unchanged: the same exit is an empty list, never a typed failure'
     }
     else { Write-Host 'SKIP: the stand-in engine probe needs a Windows child process' }
 
+    # Call-site pin: the self-test failure is built through the helper at the call site, and the old inline text exists only inside the helper.
+    Check ($runtimeText.Contains("-Code 'self-test-failed' -Message (Get-FastLlmSelfTestFailureText -Reasons @(`$selfTestResult.reasons) -Plan `$Plan)") -and ([regex]::Matches($runtimeText, [regex]::Escape('FastLLM tries the next cached setup.'))).Count -eq 1) 'the self-test failure at its call site uses the plan-aware helper (the old inline text is gone)'
     # The HIP backend-unavailable / SAC-evidenced block factory (the Smart App Control read is seamed).
     function Get-HipBackendFailure([string]$Sac,[string]$Cause,$ExitCode=$null) {
         & $module { param($S) function script:Get-FastLlmSmartAppControlState { $script:sacForTest }; $script:sacForTest=$S } $Sac
