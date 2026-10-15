@@ -330,6 +330,8 @@ try {
                 & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original; Remove-Item -Path 'Function:script:Write-Host' -ErrorAction SilentlyContinue } $savedWriteState
                 if ($stopper) { if (-not $stopper.HasExited) { $stopper.Kill() }; $stopper.Dispose() }
             }
+            # Diagnostics only: name the start's own failure before any check reads its files, so an unexpected throw is not hidden behind a missing selftest.json.
+            if ($null -ne $failure) { Write-Host ("Self-test case $($selfTestCase.label): the start raised: " + [regex]::Replace([string]$failure.Message,'[\x00-\x1f\x7f]',' ')) }
             $log=@($writeLog)
             $iSelfTest=$log.IndexOf('selftest.json');$iReady=$log.IndexOf('status:ready');$iRecord=$log.IndexOf('synthetic.last-ready.json')
             $iSelfTestLine=-1;$iReadyLine=-1
