@@ -335,6 +335,7 @@ function Format-FastLlmUiSelfTest {
     if (-not $SelfTest) { return $null }
     switch ([string] $SelfTest.status) {
         'pass' { return "Self-test passed: $($SelfTest.generationTokS) tok/s generation, $($SelfTest.promptTokS) tok/s prompt." }
+        'skipped' { return 'Self-test skipped: the context size is too small for the performance check.' }
         'below-expected' { return "Self-test: slower than expected ($($SelfTest.generationTokS) vs $($SelfTest.expectedGenerationTokS) tok/s generation). Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run Doctor for details." }
         default {
             $reasons = @()

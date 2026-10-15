@@ -644,6 +644,9 @@ function Invoke-FastLlmSupervisedServer {
                         engineBuild = [string] $Plan.engineVersion; result = $selfTest }) } catch { }
             try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { }
             if ($selfTest.status -eq 'pass') { Write-Host "Self-test passed: $($selfTest.generationTokS) tok/s generation, $($selfTest.promptTokS) tok/s prompt." }
+            elseif ($selfTest.status -eq 'skipped') {
+                Write-Host "Self-test skipped: the context size is too small for the performance check ($(@($selfTest.reasons) -join ', ')). The server keeps running."
+            }
             elseif ($selfTest.status -eq 'below-expected') {
                 Write-Host "Self-test: generation $($selfTest.generationTokS) tok/s is below 70% of the $($selfTest.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
             }

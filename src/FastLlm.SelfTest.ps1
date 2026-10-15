@@ -42,7 +42,12 @@ function Invoke-FastLlmSelfTest {
             expectedGenerationTokS = $null; comparable = $false; promptArtifactSha256 = $null; measuredAt = (Get-Date).ToUniversalTime().ToString('o') } }
     $promptTokens = $script:FastLlmSelfTestPromptTokens
     $generation = $script:FastLlmSelfTestGenerationTokens
-    if ($ContextSize -gt 0 -and $promptTokens + $generation + 8 -gt $ContextSize) { return (& $fail 'context-too-small') }
+    # A context too small for the workload (512 prompt + 128 generated + 8 overhead = 648) is not a failure: a valid small-context start is not stopped.
+    if ($ContextSize -gt 0 -and $promptTokens + $generation + 8 -gt $ContextSize) {
+        $skipped = & $fail 'context-too-small'
+        $skipped.status = 'skipped'
+        return $skipped
+    }
     $send = { param($Path, $Body, $TimeoutMs)
         if ($Request) { return (& $Request $Path $Body $TimeoutMs) }
         return (Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path $Path -Body $Body -TimeoutMs $TimeoutMs) }
