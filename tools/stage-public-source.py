@@ -20,6 +20,7 @@ ROOT_FILES = (
     ".gitignore",
     ".github/workflows/test.yml",
     "FastLLM.cmd",
+    "README.md",
     "Install-FastLLM-Lab.cmd",
     "fast-llm.ps1",
     "fast-llm-ui.ps1",
@@ -27,7 +28,6 @@ ROOT_FILES = (
     "THIRD_PARTY_NOTICES.md",
 )
 PUBLIC_DOCS = (
-    "docs/PUBLIC-README.md",
     "docs/PUBLIC-LAB-GUIDE.md",
     "docs/BENCHMARK-METHODOLOGY.md",
     "docs/RESIZABLE-BAR.md",
@@ -202,7 +202,6 @@ def source_map(root: Path, public_tree: bool = False) -> dict[str, Path]:
         sources[relative] = _regular_source(root, relative)
     for relative in PUBLIC_DOCS:
         sources[relative] = _regular_source(root, relative)
-    sources["README.md"] = sources["docs/PUBLIC-README.md"]
     return dict(sorted(sources.items()))
 
 

@@ -1,65 +1,90 @@
-# Bitworks AMD inference integration
+# FastLLM for AMD Radeon (Preview)
 
 > **Preview.** FastLLM is in public preview for Windows PCs with AMD Radeon graphics. Releases are signed by Bitworks LLC.
 > Licensed under the Apache License 2.0 (see `LICENSE`).
 
-**Supervised lab alpha — not a consumer installer release or a performance recommendation.**
+FastLLM is Bitworks' integration and configuration package for running a local, OpenAI-compatible model server on an AMD Radeon card. It is not a new inference engine: it uses pinned llama.cpp Vulkan binaries and existing model files, and keeps model provenance and upstream licenses visible.
 
-FastLLM is Bitworks' name for an integration and configuration package. It brings together existing inference engines, model artifacts and AMD hardware checks to reduce the work involved in deploying local inference. **It is not a new inference engine.** The initial Windows path uses pinned llama.cpp Vulkan binaries; model provenance and upstream licenses remain visible.
+## What it does
 
-The intended user experience is simple: inspect the installed hardware at each start, choose a suitable reviewed model/configuration, obtain verified components with explicit consent, and serve a local OpenAI-compatible API. The implementation does not yet deliver a qualified one-click consumer deployment. Source availability is not a claim of hardware compatibility, memory fit, answer quality or speed.
+FastLLM looks at your card each time it starts, then picks a model and settings that fit. Every choice carries a label that says how much evidence stands behind it:
 
-- Learn about the project and candidate card recipes at [Bitworks AMD inference](https://bitworks.io/amd-inference/).
-- Read the [benchmark methodology](https://github.com/bitworks-io/amd-inference/blob/main/docs/BENCHMARK-METHODOLOGY.md) and [supervised lab guide](https://github.com/bitworks-io/amd-inference/blob/main/docs/PUBLIC-LAB-GUIDE.md).
-- Review [security boundaries](https://github.com/bitworks-io/amd-inference/blob/main/SECURITY.md) and [third-party provenance and notices](https://github.com/bitworks-io/amd-inference/blob/main/THIRD_PARTY_NOTICES.md) before use.
+- **Measured by Bitworks on this card**
+- **Community recipe, reproduced by Bitworks**
+- **Experimental community recipe, not reproduced by Bitworks**
+- **Estimated for your card**
+- **Chosen by you**
 
-## What is in this source snapshot
+Measured recipes link to Bitworks results pages. Those pages are lab observations (not fully qualified): see for example the [RX 7900 XT recipe](https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation). Their class is "Bitworks lab observation (not fully qualified)". Two measured setups exist so far. Estimates for other cards are estimates, not promises about fit, answer quality or speed.
 
-- Windows per-user control window and CLI for acquisition, live planning, start/stop/status and diagnostics.
-- A versioned, integrity-pinned engine/model catalog and exact-artifact model consent receipts.
-- Fresh serving-engine device probes, free-memory-based candidate selection and startup/API checks.
-- Loopback-only serving, bounded downloads and process supervision. Reported GPU layers/buffers are checked, but full physical residency and every operation's placement remain unverified.
-- Linux assessment and explicit supervised experimental paths; Windows evidence is not Linux qualification.
-- Benchmark, reliability, narrow semantic-check and diagnostic tools, plus source and mock-process tests.
+More about the project and its recipes: [Bitworks AMD inference](https://bitworks.io/amd-inference/).
 
-The current normal Windows service has **one server slot**. The private concurrent-client collector measures contention and queue pressure at 1/2/4/8 clients; this does not establish multi-slot parallel decoding. A separate eight-task tool checks correctly completed work at C1/C2/C4, with strict answer grading and explicit failure counts. Its default smoke mode stops on an incorrect answer; an opt-in finite assessment counts wrong answers across the full workload while still stopping on infrastructure failures. Neither is a general intelligence benchmark. Dual-card model splitting is distinct from independent per-card workers. Multi-slot orchestration, independent-worker routing and broader task-quality evaluation remain development/qualification work.
+## Requirements
 
-Only the normal pinned Vulkan lane is enabled. Experimental HIP/offload tools are explicitly separate and do not enable or qualify an automatic production backend. The integration does not bundle model weights, engine binaries, AMD drivers or Microsoft installers in this repository.
+- Windows 10 or 11, x64.
+- An AMD Radeon GPU with a working Vulkan driver.
+- The Vulkan engine is the only enabled engine.
+- Text-only models.
+- A standard user account. No administrator rights are needed.
 
-## Benchmark suite
+## Install
 
-| Source | Purpose |
-|---|---|
-| [Methodology](https://github.com/bitworks-io/amd-inference/blob/main/docs/BENCHMARK-METHODOLOGY.md) | Workloads, useful context, concurrency, metrics, correctness and disclosure requirements |
-| [Catalog-wide matrix](https://github.com/bitworks-io/amd-inference/blob/main/tools/benchmark-matrix.py) | Offline planning for every catalog artifact; explicit untested/outside-policy cells, no model execution |
-| [Single-request API benchmark](https://github.com/bitworks-io/amd-inference/blob/main/tools/benchmark.ps1) | Fixed token workloads against a supervised Ready service |
-| [Concurrent-client benchmark](https://github.com/bitworks-io/amd-inference/blob/main/tools/concurrency-benchmark.ps1) | Private request-pressure measurements; not yet native Windows/hardware-qualified |
-| [Task-quality tool](https://github.com/bitworks-io/amd-inference/blob/main/tools/task-quality-benchmark.ps1) | Same eight tasks at C1/C2/C4; fail-fast smoke or opt-in finite assessment; correctness, completion latency and useful work; not hardware-qualified |
-| [Reliability runner](https://github.com/bitworks-io/amd-inference/blob/main/tools/soak.ps1) | Existing single-client soak; not proof of concurrent reliability |
-| [Semantic smoke](https://github.com/bitworks-io/amd-inference/blob/main/tools/semantic-smoke.ps1) | Narrow known-answer checks, not an intelligence leaderboard |
-| [Strict comparison](https://github.com/bitworks-io/amd-inference/blob/main/tools/compare_benchmarks.py) | Rejects missing/incompatible recorded evidence; no automatic qualification |
-| [Tests](https://github.com/bitworks-io/amd-inference/tree/main/tests) | Source, policy and mock-process checks; these are not GPU benchmarks |
+1. Open the [Releases page](https://github.com/bitworks-io/amd-inference/releases).
+2. Download `FastLLM-Setup-<version>.exe` from the newest release.
+3. Run it. The installer is per-user and needs no administrator rights. The publisher is Bitworks LLC.
 
-Inspect the planned coverage without downloading or executing a model:
+If Windows SmartScreen shows a warning, choose "More info → Run anyway" after checking the publisher (see the next section).
 
-```sh
-python3 tools/benchmark-matrix.py
+## Verify a download
+
+Each release publishes `SHA256SUMS`, `fastllm-<version>.zip`, an `.offer.json`, a `.signing-report.json`, the SBOM (`.cdx.json`) and `THIRD_PARTY_NOTICES.md`.
+
+Compare the installer's hash with the `SHA256SUMS` entry:
+
+```powershell
+(Get-FileHash .\FastLLM-Setup-<version>.exe -Algorithm SHA256).Hash
 ```
+
+Check the signature, and confirm the publisher is `O=Bitworks LLC`:
+
+```powershell
+Get-AuthenticodeSignature .\FastLLM-Setup-<version>.exe | Format-List Status, SignerCertificate
+```
+
+The exact certificate pins are described in [SECURITY.md](SECURITY.md). To check an existing install, run `fast-llm.ps1 doctor`; it reports `installIntegrity`.
+
+## Updates
+
+FastLLM checks for a newer release at most once a day, with a single unauthenticated request to the GitHub API. You can turn this off in settings (`updateCheck`). The release channel is the `updateChannel` setting; pre-releases are offered only on the canary channel.
+
+Nothing installs without a click. `fast-llm.ps1 update-check` shows what is available and `fast-llm.ps1 update` installs it after your confirmation. Every update is verified before it runs; see "Update security" in [SECURITY.md](SECURITY.md).
+
+## Privacy
+
+- No telemetry.
+- The server listens on 127.0.0.1 only.
+- Self-test results stay on your PC (`selftest.json`).
+
+## Resizable BAR
+
+FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
+
+## Uninstall
+
+Use Windows Settings, Apps, FastLLM. Downloaded models and engines are kept unless you choose to delete them when asked.
+
+## Building from source and tests
+
+Release builds, signing and verification are in `release/` and `.github/workflows/`. Read the [benchmark methodology](docs/BENCHMARK-METHODOLOGY.md) and the [lab guide](docs/PUBLIC-LAB-GUIDE.md) for the measurement tools.
 
 Run the portable Python tests:
 
 ```sh
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 -m unittest discover -s tests
 ```
 
-PowerShell suites are documented in the lab guide and CI workflow. Do not treat a passing mock test as a physical AMD result. No performance leaderboard, sanitized physical result bundle or approved consumer installer is supplied by this initial source snapshot.
+PowerShell suites run in CI on Windows. A passing mock test is not a physical AMD result.
 
-## Current limits
+## License
 
-Public qualification still requires measured context/concurrency operating envelopes on each card/platform, authoritative serving-device/driver identity, physical memory/placement evidence, broader semantic checks, concurrent reliability, clean-machine/GUI/prerequisite testing, reviewed dependency redistribution, signing, repair/uninstall and release approval. Catalog memory thresholds are estimates, not measured fit guarantees. A higher concurrency or context setting can reduce responsiveness or exhaust memory.
-
-## Publication and licensing
-
-This repository contains a reviewed source-only subset of the working project. Private bench reports, addresses, access keys, website coordination records, downloads and generated packages are excluded. [The source staging tool](https://github.com/bitworks-io/amd-inference/blob/main/tools/stage-public-source.py) uses an explicit allowlist; the separate lab ZIP builder is for reviewed lab packaging and must not be used to publish an internal checkout wholesale.
-
-**No production-release approval should be inferred from this source publication.** Upstream components and models retain their own terms; see the notices. Do not redistribute dependencies or represent candidate performance as qualified without the corresponding review and approval.
+Apache-2.0; see `LICENSE`. Upstream engines and models keep their own terms: see `NOTICE` and `THIRD_PARTY_NOTICES.md`.
