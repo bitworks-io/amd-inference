@@ -1878,6 +1878,25 @@ function Start-FastLlmServer {
         [string] $freshPlan.model.upstreamLicense -ne [string] $Plan.model.upstreamLicense -or
         [string] $freshPlan.model.upstreamLicenseSha256 -ne [string] $Plan.model.upstreamLicenseSha256 -or
         [string] $freshPlan.model.artifactLicense -ne [string] $Plan.model.artifactLicense
+    # A measured plan must not start silently as estimated: if the start re-plan lost the card identity or the recipe (for example a failed
+    # or slow inventory probe), the preview label and the recipe id would no longer describe what runs. Re-plan instead, and say why.
+    $planRecipeLostReason = $null
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and [string] $Plan.recipe.origin -notin @('estimated', 'manual')) {
+        $freshOrigin = ''
+        $freshRecipeId = ''
+        if ($freshPlan.PSObject.Properties['recipe'] -and $freshPlan.recipe) { $freshOrigin = [string] $freshPlan.recipe.origin; $freshRecipeId = [string] $freshPlan.recipe.id }
+        if ($freshOrigin -in @('', 'estimated', 'manual')) {
+            $planRecipeLostReason = "The measured recipe '$($Plan.recipe.id)' no longer applies at start (the card could not be identified again or the recipe no longer fits); it will not run as an estimated setup under a measured label."
+        }
+        elseif ($freshRecipeId -ne [string] $Plan.recipe.id) {
+            $planRecipeLostReason = "The measured recipe '$($Plan.recipe.id)' was replaced by '$freshRecipeId' at start."
+        }
+    }
+    if ($planRecipeLostReason) {
+        $recipeLostException = New-Object -TypeName System.InvalidOperationException -ArgumentList $planRecipeLostReason
+        $recipeLostException.Data['FastLlmReason'] = 'PlanChanged'
+        throw $recipeLostException
+    }
     if ($planRequiresProvisioning) {
         $planChangedMessage = "Hardware, catalog, or model provenance changed while preparing startup; selection must be replanned (previous '$($Plan.model.id)', current '$($freshPlan.model.id)')."
         $planChangedException = New-Object -TypeName System.InvalidOperationException -ArgumentList $planChangedMessage
