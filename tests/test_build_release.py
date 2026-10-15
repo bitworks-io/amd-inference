@@ -14,7 +14,7 @@ class PublicBuilderTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         for name in br.ROOT_FILES:
             (self.root / name).write_text(name + "\n")
-        for rel in ("src/FastLlm.psm1", "tools/x.py", "tools/lab-only.ps1", "config/catalog.json", "licenses/llama.cpp/LICENSE", "tests/t.ps1",
+        for rel in ("docs/RESIZABLE-BAR.md", "docs/PRIVATE-NOTES.md", "src/FastLlm.psm1", "tools/x.py", "tools/lab-only.ps1", "config/catalog.json", "licenses/llama.cpp/LICENSE", "tests/t.ps1",
                     "src/__pycache__/x.pyc", "src/.hidden"):
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +93,20 @@ class PublicBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(br.BuildError, "LICENSE"):
             self.build()
 
+    def test_only_the_referenced_docs_are_packaged(self):
+        self.build()
+        names = self.names()
+        self.assertIn("docs/RESIZABLE-BAR.md", names)
+        self.assertEqual(self.member("docs/RESIZABLE-BAR.md"), b"docs/RESIZABLE-BAR.md\n")
+        self.assertFalse([n for n in names if n.startswith("docs/") and n != "docs/RESIZABLE-BAR.md"])
+        manifest = json.loads(self.member("MANIFEST.json"))
+        self.assertIn("docs/RESIZABLE-BAR.md", {f["path"] for f in manifest["files"]})
+
+    def test_refuses_missing_referenced_doc(self):
+        (self.root / "docs" / "RESIZABLE-BAR.md").unlink()
+        with self.assertRaisesRegex(br.BuildError, "RESIZABLE-BAR"):
+            self.build()
+
     def test_tools_folder_is_the_allowlist_not_a_wildcard(self):
         self.build()
         names = self.names()
@@ -152,6 +166,13 @@ class ProductToolsRealTreeTests(unittest.TestCase):
             self.assertTrue((ROOT / "tools" / name).is_file(), name)
             self.assertNotIn(name, self.allow)
             self.assertNotIn("tools/" + name, self.members)
+
+    def test_the_cli_resizable_bar_note_points_at_a_packaged_file(self):
+        runtime = self.members["src/FastLlm.Runtime.ps1"].decode("utf-8")
+        self.assertIn("See docs/RESIZABLE-BAR.md.", runtime)
+        self.assertIn("docs/RESIZABLE-BAR.md", self.members)
+        self.assertIn("-VulkanBarMitigation off", self.members["docs/RESIZABLE-BAR.md"].decode("utf-8"))
+        self.assertEqual([n for n in self.members if n.startswith("docs/")], ["docs/RESIZABLE-BAR.md"])
 
     def test_no_packaged_file_uses_a_bypass_policy(self):
         pattern = re.compile(r"(?i)-ExecutionPolicy\s+Bypass")
