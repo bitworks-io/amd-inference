@@ -66,6 +66,21 @@ class RecipeBuilderTests(unittest.TestCase):
                 with self.assertRaises(br.RecipeError):
                     br.build(self.tree([entry]))
 
+    def test_components_json_constrains_the_engine_reference(self):
+        good = {"components": [{"id": "llama.cpp-b10698-vulkan", "kind": "engine", "version": "b10698"}]}
+        for comps, ok in ((good, True),
+                          ({"components": [dict(good["components"][0], version="b1")]}, False),
+                          ({"components": [dict(good["components"][0], kind="runtime")]}, False),
+                          ({"components": [dict(good["components"][0], id="other")]}, False)):
+            root = self.tree([ENTRY])
+            (root / "config" / "components.json").write_text(json.dumps(comps))
+            if ok:
+                document, _ = br.build(root)
+                self.assertIn("config/components.json", document["inputs"])
+            else:
+                with self.assertRaises(br.RecipeError):
+                    br.build(root)
+
     def test_two_recommended_for_one_card_is_refused(self):
         other = copy.deepcopy(ENTRY); other["id"] = "rx-7900-xtx.other"
         with self.assertRaises(br.RecipeError):

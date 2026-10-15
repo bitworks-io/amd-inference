@@ -1,6 +1,7 @@
 {
   "inputs": {
     "config/catalog.json": "65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6",
+    "config/components.json": "af3cc4baeea3c304eaac31c75a5b2159289e6a6dca23eded8316b108706b71e7",
     "config/gpu-variants.json": "cbbc815150015687ce736e53ba90311d72cbceb9e47e3f61526197ddf890a7d2",
     "data/community-records.json": "201849d8ae11d656bdbf3a90d0950a941b19c4cfa05d84e7b4a75e5b406da967",
     "data/verified-recipes.json": "e1366b544325203ae6dcaa0261a975e864daf3761ca86f246bc13514db4ce814"

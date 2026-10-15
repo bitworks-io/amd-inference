@@ -125,8 +125,21 @@ def compelling(candidate, bitworks_recipes):
             "isCompelling": bool(same_or_larger and (gen >= 15.0 or prompt >= 50.0))}
 
 
+def check_component_refs(recipes, components):
+    """Each recipe's components.engine must be an engine component whose version is the recipe's engineBuild."""
+    engines = {c["id"]: c for c in components["components"] if c.get("kind") == "engine"}
+    for recipe in recipes:
+        engine = engines.get(recipe["components"]["engine"])
+        if engine is None:
+            raise RecipeError(f"{recipe['id']}: components.engine {recipe['components']['engine']!r} is not an engine in config/components.json")
+        if engine.get("version") != recipe["engineBuild"]:
+            raise RecipeError(f"{recipe['id']}: engine component {engine['id']!r} is version {engine.get('version')!r}, not the recipe's engineBuild {recipe['engineBuild']!r}")
+
+
 def build(root):
     catalog = load(root, "config/catalog.json")
+    components_path = os.path.join(root, "config", "components.json")
+    components = load(root, "config/components.json") if os.path.exists(components_path) else None
     variants = {v["key"] for v in load(root, "config/gpu-variants.json")["variants"]}
     verified = load(root, "data/verified-recipes.json")
     community = load(root, "data/community-records.json")
@@ -178,9 +191,13 @@ def build(root):
             if key in seen:
                 raise RecipeError(f"more than one recommended recipe for {key}")
             seen.add(key)
+    if components is not None:
+        check_component_refs(recipes, components)
     recipes.sort(key=lambda r: (r["gpu"]["variant"], r["gpu"]["count"], r["origin"], r["id"]))
-    inputs = {rel: sha256_file(root, rel) for rel in ("config/catalog.json", "config/gpu-variants.json",
-                                                     "data/verified-recipes.json", "data/community-records.json")}
+    input_files = ["config/catalog.json", "config/gpu-variants.json", "data/verified-recipes.json", "data/community-records.json"]
+    if components is not None:
+        input_files.append("config/components.json")
+    inputs = {rel: sha256_file(root, rel) for rel in input_files}
     return {"schema": "bitworks.fastllm-recipes/v2", "inputs": inputs, "recipes": recipes}, skipped
 
 
