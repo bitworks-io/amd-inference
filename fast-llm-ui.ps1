@@ -18,6 +18,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
+# The UI settings file lives under the launch root only (never the editable folder box), so it is read and written from the same place.
+$script:settingsRoot=$InstallRoot
 $script:child=$null; $script:step='idle'; $script:selection=@(); $script:installPath=$InstallRoot; $script:flow=$null
 $script:vcBroker=$null; $script:vcPrepared=$null
 $script:vcCacheRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM\prerequisites'
@@ -59,7 +61,7 @@ $barBox=New-Object Windows.Forms.ComboBox
 $barBox.Location=New-Object Drawing.Point(560,208);$barBox.Size=New-Object Drawing.Size(260,30);$barBox.DropDownStyle='DropDownList'
 $script:barValues=@('auto','on','off')
 foreach($barItem in @('Auto (recommended)','On','Off')){[void]$barBox.Items.Add($barItem)}
-$barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string](Read-FastLlmUiSettings -InstallRoot $InstallRoot).vulkanBarMitigation)
+$barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string](Read-FastLlmUiSettings -InstallRoot $script:settingsRoot).vulkanBarMitigation)
 $form.Controls.Add($barBox)
 function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.SelectedIndex)] }
 function ButtonAt($Text,$X,$Y,$Width=150) {
@@ -99,7 +101,7 @@ $resultsLink.Add_LinkClicked({
 })
 $barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the Resizable BAR page. Check your default browser.','Open Resizable BAR page','OK','Warning')}})
 $barBox.Add_SelectedIndexChanged({
-    try{Write-FastLlmUiSettings -InstallRoot ([IO.Path]::GetFullPath($pathBox.Text)) -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue)})}
+    try{Write-FastLlmUiSettings -InstallRoot $script:settingsRoot -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue)})}
     catch{$statusLabel.Text='The Resizable BAR setting could not be saved.'}
 })
 function SetBusy([bool]$Busy) {
