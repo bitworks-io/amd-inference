@@ -2,6 +2,23 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.5 (canary)
+
+- **HIP setups (experimental, off by default):**
+  - On the RX 7900 XT and RX 7900 XTX, FastLLM can run llama.cpp's HIP build (b11658) with AMD's ROCm 10.0 runtime, as an alternative to the default Vulkan setup.
+  - FastLLM downloads the HIP build from llama.cpp's GitHub releases, and AMD's runtime from AMD's own repository, straight to your PC. Bitworks hosts none of these files.
+  - Each file is checked against its pinned size and SHA-256 before use.
+- **License acceptance:**
+  - Before anything downloads, FastLLM lists each component with a link to its license and asks you to accept each one.
+  - Declining downloads nothing.
+- **How to choose one:**
+  - HIP setups are never picked automatically.
+  - Turn on "Experimental community components" in settings and choose one under **Choose another setup**.
+  - From the command line: `fast-llm.ps1 components -Install llama.cpp-hip-b11658 -AcceptLicense`, then `start -Recipe <id> -AcceptExperimental`.
+  - Bitworks has not yet measured these setups on these cards.
+- **If Windows blocks a file:** the AMD runtime files are not code-signed. If Windows blocks them (for example Smart App Control), FastLLM stops and says so. It never switches to Vulkan on its own.
+- No change to the default Vulkan setup.
+
 ## 2026.10.15.4 (canary)
 
 - **Components, experimental and off by default:**
