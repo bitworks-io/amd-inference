@@ -532,12 +532,17 @@ try {
             [IO.File]::WriteAllText($noneEngine,"@echo Available devices:`r`n@echo   (none)`r`n@exit /b 0`r`n",(New-Object Text.ASCIIEncoding))
             $noneFailure=$null;try { Invoke-FastLlmDeviceProbe -EnginePath $noneEngine -Backend ROCm -InstallRoot $noneDir -TimeoutSeconds 20 -Hip -RuntimeRoots @() -ComponentId 'llama.cpp-hip-b11658' | Out-Null } catch { $noneFailure=$_.Exception }
             Check ($null -ne $noneFailure -and $noneFailure.Data['FastLlmFailureCode'] -ceq 'hip-backend-unavailable') 'the real b11658 output of a HIP engine that cannot load its backend (exit 0, "(none)") is hip-backend-unavailable'
+            $slowStarted=Get-Date
             $slowDir=Join-Path $temp 'probe-slow'
             New-Item -ItemType Directory -Path $slowDir -Force | Out-Null
             $slowEngine=Join-Path $slowDir 'llama-server.cmd'
             [IO.File]::WriteAllText($slowEngine,"@ping -n 8 127.0.0.1 >nul`r`n@exit /b 0`r`n",(New-Object Text.ASCIIEncoding))
             $slowFailure=$null;try { Invoke-FastLlmDeviceProbe -EnginePath $slowEngine -Backend ROCm -InstallRoot $slowDir -TimeoutSeconds 1 -Hip -RuntimeRoots @() -ComponentId 'llama.cpp-hip-b11658' | Out-Null } catch { $slowFailure=$_.Exception }
             Check ($null -ne $slowFailure -and $slowFailure.Data['FastLlmFailureCode'] -ceq 'hip-backend-unavailable' -and $slowFailure.Message -like '*in time*') 'a HIP probe that times out is hip-backend-unavailable'
+            # The stand-in is a .cmd whose ping child outlives the probe's kill of cmd.exe (the real engine is one process) and holds the
+            # folder; wait for that child so the cleanup can delete it. Bounded: the stand-in pings for about 7 s.
+            $slowDeadline=[DateTime]::UtcNow.AddSeconds(20)
+            while ([DateTime]::UtcNow -lt $slowDeadline -and @(Get-Process -Name ping -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -gt $slowStarted } catch { $false } }).Count -gt 0) { Start-Sleep -Milliseconds 250 }
         } finally { & $module { Remove-Item -Path Function:script:Get-FastLlmSmartAppControlState -ErrorAction SilentlyContinue } }
         $probeVulkan=Invoke-StandInProbe 'probe-vulkan' -1073740760
         Check ($null -eq $probeVulkan.failure -and $probeVulkan.devices.Count -eq 0) 'the non-HIP probe is unchanged: the same exit is an empty list, never a typed failure'
