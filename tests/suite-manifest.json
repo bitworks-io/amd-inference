@@ -378,8 +378,8 @@
     },
     {
       "suite": "vulkan-memory-policy-tests",
-      "class": "bench-native",
-      "reason": "No AMD adapter on the runner, so the throughput-canary case diverges; it passes natively on the benches."
+      "class": "ci",
+      "reason": "Mock-only; runs on the hosted runner once its closures copy script-level fixtures locally (2026-10-15)."
     },
     {
       "suite": "vulkan-vidmem-benchmark-tests",
