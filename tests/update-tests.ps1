@@ -231,8 +231,12 @@ function New-Seams($Opts) {
 }
 function Run-Update($Env, $Seams, $Latest = $null) {
     if ($null -eq $Latest) { $Latest = New-Latest }
-    Invoke-FastLlmVerifiedUpdate -InstallRoot $Env.Install -AppRoot $Env.App -Latest $Latest -StopServer $Seams.StopServer -Download $Seams.Download `
+    $result = Invoke-FastLlmVerifiedUpdate -InstallRoot $Env.Install -AppRoot $Env.App -Latest $Latest -StopServer $Seams.StopServer -Download $Seams.Download `
         -Verify $Seams.Verify -GetProductVersion $Seams.GetProductVersion -RunInstaller $Seams.RunInstaller -Integrity $Seams.Integrity
+    # Diagnostics for CI and the bench gate: the exact result, the seam order and any leftover update files.
+    $left = @(UpdateDirs $Env | ForEach-Object { $_.Name + '(' + @(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue).Count + ')' })
+    Write-Host ('  update result: ' + (@($result) | ConvertTo-Json -Compress -Depth 4) + ' order=' + (@($Seams.Order) -join ',') + ' leftover=' + ($left -join ','))
+    $result
 }
 function UpdateDirs($Env) {
     $u = Join-Path $Env.Install 'updates'
