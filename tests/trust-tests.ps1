@@ -35,7 +35,8 @@ $productFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter *.p
     @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Filter *.ps1) + @(Get-Item -LiteralPath (Join-Path $root 'fast-llm.ps1'), (Join-Path $root 'fast-llm-ui.ps1'))
 $overrideUsers = @($productFiles | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match '-(ExpectedOrganization|ExpectedRootThumbprint|RequiredEkus|AllowUntrustedRootForTests)\b' } | ForEach-Object { $_.Name })
 Check ($overrideUsers.Count -eq 0) ("no product file passes a pin override or the untrusted-root switch (found: " + ($overrideUsers -join ', ') + ")")
-# doctor as a child process, against a temp copy of the entry script, src and config (Windows only: doctor reads Windows state).
+# doctor as a child process, against a temp copy of the entry script, src, config and tools (Windows only: doctor reads Windows state).
+# These cases assert what the install-integrity check owns; doctor's hardware, plan and inventory checks are not under test here.
 if ($env:OS -eq 'Windows_NT') {
   function Invoke-DoctorChild([string]$AppDir, [string]$InstallRoot) {
     $info=New-Object Diagnostics.ProcessStartInfo
@@ -45,29 +46,49 @@ if ($env:OS -eq 'Windows_NT') {
     $child=[Diagnostics.Process]::Start($info)
     $out=$child.StandardOutput.ReadToEndAsync();$err=$child.StandardError.ReadToEndAsync()
     if(-not $child.WaitForExit(120000)){$child.Kill(); throw 'doctor child timed out'}
-    return [pscustomobject]@{exit=$child.ExitCode;json=($out.Result|ConvertFrom-Json);err=$err.Result}
+    $stdout=[string]$out.Result; $stderr=[string]$err.Result
+    $lines=@($stdout -split "`r?`n"); $first=-1
+    for($n=0;$n -lt $lines.Count;$n++){ if($lines[$n] -match '^\{'){ $first=$n; break } }
+    $json=$null
+    if($first -ge 0){ try { $json=(($lines[$first..($lines.Count-1)]) -join "`n") | ConvertFrom-Json } catch { $json=$null } }
+    return [pscustomobject]@{exit=$child.ExitCode;json=$json;stdout=$stdout;stderr=$stderr}
   }
+  function Clip([string]$Text){ if($Text.Length -gt 1500){ $Text.Substring(0,1500) } else { $Text } }
+  function DoctorCheck($Child,[bool]$Condition,[string]$Message){
+    if(-not $Condition){ Write-Host ("doctor child exit code: "+$Child.exit); Write-Host ("doctor child stdout (first 1500): "+(Clip $Child.stdout)); Write-Host ("doctor child stderr (first 1500): "+(Clip $Child.stderr)) }
+    Check $Condition $Message
+  }
+  function Test-DoctorConsistent($Child){
+    # exit 2 iff doctor's error is set
+    if($null -eq $Child.json){ return $false }
+    $hasError = -not [string]::IsNullOrEmpty([string]$Child.json.error)
+    return (($Child.exit -eq 2) -eq $hasError)
+  }
+  function Test-NoIntegrityError($Child){ $e=[string]$Child.json.error; return ($e -notmatch '(?i)install integrity') }
   $doctorTmp=Join-Path ([IO.Path]::GetTempPath()) ('trust-doctor-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $doctorTmp | Out-Null
   try {
     $appDir=Join-Path $doctorTmp 'app'; New-Item -ItemType Directory -Path $appDir | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'fast-llm.ps1') -Destination $appDir
-    foreach($d in 'src','config'){ Copy-Item -LiteralPath (Join-Path $root $d) -Destination (Join-Path $appDir $d) -Recurse }
+    foreach($d in 'src','config','tools'){ Copy-Item -LiteralPath (Join-Path $root $d) -Destination (Join-Path $appDir $d) -Recurse }
     $instRoot=Join-Path $doctorTmp 'data'
     $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=$null
-    $d=Invoke-DoctorChild $appDir $instRoot
-    Check ($d.exit -eq 0 -and $d.json.installIntegrity.status -eq 'not-installed' -and $d.json.installIntegrity.appRoot -eq $appDir) 'doctor: no FastLLM.cat reports not-installed and exits 0'
-    Check ($d.json.installIntegrity.summary -eq 'Install integrity: not an installed release (no FastLLM.cat)') 'doctor: the not-installed line'
+    $dc=Invoke-DoctorChild $appDir $instRoot
+    DoctorCheck $dc ($null -ne $dc.json) 'doctor: the child printed a JSON report'
+    DoctorCheck $dc ($dc.json.installIntegrity.status -eq 'not-installed' -and $dc.json.installIntegrity.appRoot -eq $appDir) 'doctor: no FastLLM.cat reports not-installed with the app root'
+    DoctorCheck $dc ($dc.json.installIntegrity.summary -eq 'Install integrity: not an installed release (no FastLLM.cat)') 'doctor: the not-installed line'
+    DoctorCheck $dc ((Test-DoctorConsistent $dc) -and (Test-NoIntegrityError $dc)) 'doctor: not-installed adds no integrity error and exit 2 matches error'
     New-FileCatalog -Path $appDir -CatalogFilePath (Join-Path $appDir 'FastLLM.cat') -CatalogVersion 2 | Out-Null
     Set-Content -LiteralPath (Join-Path $appDir 'added.txt') -Value 'x' -Encoding ascii
-    $d=Invoke-DoctorChild $appDir $instRoot
-    Check ($d.exit -eq 2 -and $d.json.installIntegrity.status -eq 'failed' -and $d.json.installIntegrity.reason -eq 'catalog-signature') 'doctor: an unsigned catalog fails on its signature without the test variable'
+    $dc=Invoke-DoctorChild $appDir $instRoot
+    DoctorCheck $dc ($dc.exit -eq 2 -and $dc.json.installIntegrity.status -eq 'failed' -and $dc.json.installIntegrity.reason -eq 'catalog-signature' -and ([string]$dc.json.error) -match '(?i)install integrity') 'doctor: an unsigned catalog fails on its signature without the test variable'
     $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE='1'
-    $d=Invoke-DoctorChild $appDir $instRoot
-    Check ($d.exit -eq 2 -and $d.json.installIntegrity.status -eq 'failed' -and $d.json.installIntegrity.reason -eq 'tree' -and $d.json.installIntegrity.catalogSignature.reason -eq 'skipped-for-test' -and (@($d.json.installIntegrity.mismatches) -contains 'added.txt')) 'doctor: with the test variable, the added file is named and the exit is 2'
-    Check ($d.json.installIntegrity.summary -like 'Install integrity: FAILED (tree): *added.txt*') 'doctor: the failed line names the path'
+    $dc=Invoke-DoctorChild $appDir $instRoot
+    DoctorCheck $dc ($dc.exit -eq 2 -and $dc.json.installIntegrity.status -eq 'failed' -and $dc.json.installIntegrity.reason -eq 'tree' -and $dc.json.installIntegrity.catalogSignature.reason -eq 'skipped-for-test' -and (@($dc.json.installIntegrity.mismatches) -contains 'added.txt') -and ([string]$dc.json.error) -match '(?i)install integrity') 'doctor: with the test variable, the added file is named and the exit is 2'
+    DoctorCheck $dc ($dc.json.installIntegrity.summary -like 'Install integrity: FAILED (tree): *added.txt*') 'doctor: the failed line names the path'
     Remove-Item -LiteralPath (Join-Path $appDir 'added.txt')
-    $d=Invoke-DoctorChild $appDir $instRoot
-    Check ($d.exit -eq 0 -and $d.json.installIntegrity.status -eq 'ok' -and $d.json.installIntegrity.summary -eq 'Install integrity: ok') 'doctor: a matching tree reports ok (signature skipped only by the test variable)'
+    $dc=Invoke-DoctorChild $appDir $instRoot
+    DoctorCheck $dc ($dc.json.installIntegrity.status -eq 'ok' -and $dc.json.installIntegrity.summary -eq 'Install integrity: ok') 'doctor: a matching tree reports ok (signature skipped only by the test variable)'
+    DoctorCheck $dc ((Test-DoctorConsistent $dc) -and (Test-NoIntegrityError $dc)) 'doctor: ok adds no integrity error and exit 2 matches error'
   } finally { $env:FASTLLM_TEST_SKIP_CATALOG_SIGNATURE=$null; Remove-Item -LiteralPath $doctorTmp -Recurse -Force }
 }
 Write-Host "$count trust checks passed."
