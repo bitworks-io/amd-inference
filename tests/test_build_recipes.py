@@ -113,12 +113,13 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertEqual(sorted(r["origin"] for r in document["recipes"]), ["bitworks", "community-experimental"])
 
     def test_recommended_is_for_verified_bitworks_recipes_only(self):
+        # No Bitworks recipe for this card, so the "more than one recommended" rule cannot be what rejects the record.
         for origin in ("community-reproduced", "community-experimental"):
             with self.subTest(origin=origin):
                 record = community(origin, generationTokS=40.0)
                 record["recommended"] = True
-                with self.assertRaises(br.RecipeError):
-                    br.build(self.tree([ENTRY], [record]))
+                with self.assertRaisesRegex(br.RecipeError, "recommended is for verified Bitworks recipes only"):
+                    br.build(self.tree([], [record]))
 
     def test_without_a_bitworks_peer_only_the_fastest_record_is_compelling(self):
         slow, fast, tie = community(rid="c-slow", generationTokS=20.0), community(rid="c-fast", generationTokS=30.0), community(rid="b-tie", generationTokS=30.0)
