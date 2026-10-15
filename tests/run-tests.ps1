@@ -150,6 +150,37 @@ try {
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -RecipeId 'no-such-recipe' @recipeOptions } -Pattern 'No other recipe was substituted' -Message 'an unknown -Recipe refuses without substituting'
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'does not apply to this PC' -Message '-Recipe without a matching card identity refuses'
 
+    # Card count (final review I3): a one-card recipe must not override the estimated dual-card plan on a PC with two identified cards.
+    $xtRecipeFile = Join-Path $recipeTestRoot 'recipes-xt.json'
+    $xtRecipeDocument = [pscustomobject] [ordered] @{
+        schema  = 'bitworks.fastllm-recipes/v2'
+        recipes = @([pscustomobject] [ordered] @{
+                id = 'test-xt-iq4'; origin = 'bitworks'; recommended = $true
+                gpu = [pscustomobject] @{ variant = 'rx-7900-xt'; count = 1 }
+                components = [pscustomobject] @{ engine = "llama.cpp-$($recipeCatalog.engine.version)-vulkan"; model = 'qwen3.8-27b-ud-iq4-xs' }
+                engineBuild = [string] $recipeCatalog.engine.version
+                runtime = [pscustomobject] @{ contextSize = 16384; vulkanBarMitigation = 'auto' }
+                expected = [pscustomobject] @{ generationTokS = 26.1 }
+                evidence = [pscustomobject] @{ url = 'https://bitworks.io/test-xt-recipe'; publishedAt = '2026-10-01' }
+            })
+    }
+    $xtRecipeDocument | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $xtRecipeFile -Encoding UTF8
+    $xtRecipeOptions = @{ RecipesPath = $xtRecipeFile; GpuVariantsPath = $variantsFile }
+    $xtIdentity = [pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 204; dedicatedVideoMiB = 20464 }
+    $singleXt = Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xt-20gb.json')
+    $singleXt | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @($xtIdentity)
+    $singleXtPlan = Get-FastLlmPlan -Hardware $singleXt -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') @xtRecipeOptions
+    Assert-Equal -Expected 'test-xt-iq4' -Actual $singleXtPlan.recipe.id -Message 'the one-card XT recipe applies on a PC with one XT'
+    $dualXt = Read-FastLlmJson -Path (Join-Path $fixtureRoot 'dual-rx-7900-xt-20gb.json')
+    $dualXt | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @($xtIdentity, $xtIdentity)
+    $dualXtPlan = Get-FastLlmPlan -Hardware $dualXt -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') @xtRecipeOptions
+    Assert-Equal -Expected 'estimated' -Actual $dualXtPlan.recipe.origin -Message 'a one-card recipe does not apply on a PC with two identified XT cards'
+    Assert-Equal -Expected 'auto' -Actual $dualXtPlan.selectionMode -Message 'two identified XT cards keep automatic selection'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $dualXtPlan.model.id -Message 'the estimated dual-XT model stays'
+    Assert-Equal -Expected 2 -Actual @($dualXtPlan.selectedAdapters).Count -Message 'the estimated dual-XT plan keeps both cards'
+    Assert-Equal -Expected 'layer' -Actual $dualXtPlan.splitMode -Message 'the estimated dual-XT plan keeps the layer split'
+    Assert-True -Condition (@($dualXtPlan.recipe.skipped | Where-Object { $_ -like 'test-xt-iq4: measured on 1 card(s)*' }).Count -ge 1) -Message 'the plan lists why the one-card recipe was skipped'
+
     # Recovery names an explicit cached model, so the CLI must clear -Recipe at the same moment (the CLI start loop is not unit-testable).
     $cliSource = Get-Content -LiteralPath (Join-Path $projectRoot 'fast-llm.ps1') -Raw
     Assert-True -Condition ($cliSource -match '(?s)\$selectionOptions\.ModelId = \$recovery\.model\.id\s+[^\r\n]*\r?\n\s*\$selectionOptions\.RecipeId = \$null') -Message 'recovery clears RecipeId when it sets ModelId'

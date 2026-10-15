@@ -36,6 +36,7 @@ function Select-FastLlmRecipeForPlacements {
     param([object[]] $Recipes, [object[]] $Variants, [object[]] $Placements, [object[]] $DxgiAdapters,
           [Parameter(Mandatory = $true)] $Catalog, [Parameter(Mandatory = $true)][string] $Profile,
           [string] $RecipeId, [switch] $IncludeExperimental,
+          [object[]] $EligibleAdapters,
           [System.Collections.Generic.List[string]] $SkippedSink)
     $usable = @($Recipes | Where-Object { $_ -and ($_.origin -ne 'community-experimental' -or $IncludeExperimental -or ($RecipeId -and $_.id -eq $RecipeId)) })
     if ($RecipeId) {
@@ -46,6 +47,18 @@ function Select-FastLlmRecipeForPlacements {
     foreach ($model in @($Catalog.models)) { $models[[string] $model.id] = $model }
     $options = New-Object System.Collections.Generic.List[object]
     $skipped = New-Object System.Collections.Generic.List[string]
+    # A recipe is for a card count: it applies only when gpu.count equals the number of IDENTIFIED eligible cards of that variant in this PC,
+    # on the placement that uses all of them. Without the explicit list, the eligible cards are the single-card placements (as the planner builds them).
+    $eligible = @($EligibleAdapters | Where-Object { $_ })
+    if ($eligible.Count -eq 0) { $eligible = @($Placements | Where-Object { @($_.adapters).Count -eq 1 } | ForEach-Object { @($_.adapters)[0] }) }
+    $cardsPerVariant = @{}
+    foreach ($card in $eligible) {
+        $cardMatch = Resolve-FastLlmAdapterVariant -PlannerAdapter $card -DxgiAdapters $DxgiAdapters -Variants $Variants
+        if ($cardMatch.status -eq 'matched') {
+            $cardKey = [string] $cardMatch.variant
+            if ($cardsPerVariant.ContainsKey($cardKey)) { $cardsPerVariant[$cardKey] = [int] $cardsPerVariant[$cardKey] + 1 } else { $cardsPerVariant[$cardKey] = 1 }
+        }
+    }
     foreach ($placement in @($Placements)) {
         $adapters = @($placement.adapters)
         $keys = @($adapters | ForEach-Object {
@@ -53,8 +66,15 @@ function Select-FastLlmRecipeForPlacements {
                 if ($match.status -eq 'matched') { [string] $match.variant } else { '<' + [string] $match.status + '>' } } | Sort-Object -Unique)
         if ($keys.Count -ne 1 -or ([string] $keys[0]).StartsWith('<')) { $skipped.Add("card not identified ($($keys -join ','))"); continue }
         $variant = [string] $keys[0]
+        $cardsOfVariant = 0
+        if ($cardsPerVariant.ContainsKey($variant)) { $cardsOfVariant = [int] $cardsPerVariant[$variant] }
         foreach ($recipe in $usable) {
-            if ([string] $recipe.gpu.variant -ne $variant -or [int] $recipe.gpu.count -ne $adapters.Count) { continue }
+            if ([string] $recipe.gpu.variant -ne $variant) { continue }
+            if ([int] $recipe.gpu.count -ne $adapters.Count -or $adapters.Count -ne $cardsOfVariant) {
+                $countReason = "$($recipe.id): measured on $($recipe.gpu.count) card(s); this PC has $cardsOfVariant identified card(s) of this type, and this placement uses $($adapters.Count)"
+                if (-not $skipped.Contains($countReason)) { $skipped.Add($countReason) }
+                continue
+            }
             $model = $models[[string] $recipe.components.model]
             if (-not $model) { $skipped.Add("$($recipe.id): model not in the catalog"); continue }
             if ([string] $recipe.engineBuild -ne [string] $Catalog.engine.version) { $skipped.Add("$($recipe.id): engine build differs"); continue }
