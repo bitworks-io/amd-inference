@@ -4,6 +4,7 @@ Set-StrictMode -Version 2
 $root=Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $root 'src/FastLlm.Update.ps1')
+. (Join-Path $root 'src/FastLlm.Components.ps1')
 $checks=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
 function Clone($Value){return ($Value|ConvertTo-Json -Depth 16|ConvertFrom-Json)}
@@ -419,5 +420,42 @@ Check ($ui.Contains("`$form.Text='Bitworks FastLLM (Preview)'") -and -not $ui.Co
 Check ($ui.Contains("src/FastLlm.Update.ps1") -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Update')) 'the UI dot-sources the update script'
 Check ($ui.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot') -and -not [regex]::IsMatch($ui, '(?i)-Silent(?!ly)')) 'the UI runs the verified update without -Silent'
 Check ($ui.Contains('Test-FastLlmUiIntegrityDue') -and $ui.Contains('Set-FastLlmUpdateSettings') -and $ui.Contains("'Check for updates'")) 'the UI has the first-launch integrity check and the update setting'
+
+# Experimental components: the UI settings carry the switch (default off) and keep the other keys.
+$expRoot = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-ui-exp-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $expRoot -Force | Out-Null
+$expDefaults = Read-FastLlmUiSettings -InstallRoot $expRoot
+Check ($expDefaults.experimentalComponents -ceq 'off') 'the UI settings default experimentalComponents to off'
+Set-FastLlmUpdateSettings -InstallRoot $expRoot -UpdateCheck off -UpdateChannel canary
+Write-FastLlmUiSettings -InstallRoot $expRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; experimentalComponents = 'on' })
+$expRound = Read-FastLlmUiSettings -InstallRoot $expRoot
+Check ($expRound.experimentalComponents -ceq 'on' -and $expRound.vulkanBarMitigation -ceq 'on' -and $expRound.updateCheck -ceq 'off' -and $expRound.updateChannel -ceq 'canary') 'the UI write carries experimentalComponents and keeps vulkanBarMitigation, updateCheck and updateChannel'
+Write-FastLlmUiSettings -InstallRoot $expRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'off' })
+$expKept = Read-FastLlmUiSettings -InstallRoot $expRoot
+Check ($expKept.experimentalComponents -ceq 'on' -and $expKept.vulkanBarMitigation -ceq 'off') 'a BAR-only write (the BAR box of the window) leaves the experimental switch as it was'
+Set-FastLlmComponentSettings -InstallRoot $expRoot -ExperimentalComponents 'off'
+$expAfterSet = Read-FastLlmUiSettings -InstallRoot $expRoot
+Check ($expAfterSet.experimentalComponents -ceq 'off' -and $expAfterSet.vulkanBarMitigation -ceq 'off' -and $expAfterSet.updateCheck -ceq 'off' -and $expAfterSet.updateChannel -ceq 'canary') 'Set-FastLlmComponentSettings is read by the UI settings and keeps the other keys'
+$expRejected = $false
+try { Write-FastLlmUiSettings -InstallRoot $expRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'auto'; experimentalComponents = 'yes' }) } catch { $expRejected = $true }
+Check $expRejected 'an experimentalComponents value other than on or off is rejected'
+Remove-Item -LiteralPath $expRoot -Recurse -Force
+
+# The Components window helpers are pure.
+$uiRows = @(
+    [pscustomobject]@{ id = 'a'; kind = 'engine'; version = 'v1'; installed = $true; bytes = [int64]1048576; verified = $true },
+    [pscustomobject]@{ id = 'b'; kind = 'model'; version = 'v2'; installed = $false; bytes = [int64]0; verified = $false })
+$shownRows = @(Get-FastLlmInstalledComponentRows -Inventory $uiRows)
+Check ($shownRows.Count -eq 1 -and $shownRows[0].id -ceq 'a' -and $shownRows[0].label -ceq 'a (engine, v1) - 1.0 MB') 'the Components window lists only installed components, with their sizes'
+Check (@(Get-FastLlmInstalledComponentRows -Inventory @()).Count -eq 0) 'no installed components gives an empty list'
+Check ($script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the paragraph the checkbox confirms is the spec 2.7 text'
+
+# The window: the checkbox, its confirmation (Yes/No, default No), the Components list with Remove, and no recipe chooser.
+Check ($ui.Contains("Text='Experimental community components'") -and $ui.Contains('$experimentalBox.Add_CheckedChanged')) 'the settings area has an Experimental community components checkbox'
+Check ($ui.Contains("`$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2'")) 'turning the switch on shows the paragraph in a Yes/No confirmation whose default is No'
+Check ($ui.Contains("Set-FastLlmComponentSettings -InstallRoot `$script:settingsRoot -ExperimentalComponents 'on'") -and $ui.Contains("-ExperimentalComponents 'off'")) 'the checkbox writes the switch through Set-FastLlmComponentSettings'
+Check ($ui.Contains("ButtonAt 'Components'") -and $ui.Contains('Remove-FastLlmComponent -ComponentsPath') -and $ui.Contains("Text='Remove'") -and $ui.Contains('Get-FastLlmInstalledComponentRows')) 'a Components button lists installed components with a Remove action per row'
+Check ($ui.Contains('src/FastLlm.Components.ps1') -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Components')) 'the UI dot-sources the components script'
+Check (-not $ui.Contains("'-AcceptExperimental'")) 'the window never passes -AcceptExperimental (the CLI is the path to an experimental recipe)'
 
 Write-Output "UI flow tests passed: $checks"

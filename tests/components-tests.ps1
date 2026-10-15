@@ -452,6 +452,185 @@ try {
     $mismatchPlan = Get-FastLlmPlan @mismatchParams
     Check ($mismatchPlan.recipe.origin -ceq 'estimated' -and -not $mismatchPlan.PSObject.Properties['engineComponentId']) 'a recipe whose engineBuild is not its component version is skipped (estimated plan)'
     Check (@($mismatchPlan.recipe.skipped | Where-Object { $_ -like 'fixture.component-engine: engine build differs' }).Count -eq 1) 'the skipped list says the engine build differs'
+
+    # ---- Experimental switch, CLI components action and the experimental gate (src/FastLlm.Components.ps1; entry scripts only) ----
+    . (Join-Path $PSScriptRoot '../src/FastLlm.Components.ps1')
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $cliPath = (Resolve-Path -LiteralPath (Join-Path $repoRoot 'fast-llm.ps1')).Path
+    $cliText = [System.IO.File]::ReadAllText($cliPath)
+    $cliTokens = $null
+    $cliErrors = $null
+    $cliTree = [System.Management.Automation.Language.Parser]::ParseFile($cliPath, [ref] $cliTokens, [ref] $cliErrors)
+    Check (@($cliErrors).Count -eq 0) 'fast-llm.ps1 parses'
+
+    # Never imported by the producer: only the two entry scripts dot-source the new file.
+    $moduleText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'src/FastLlm.psm1'))
+    $benchmarkText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'src/FastLlm.Benchmark.ps1'))
+    $uiText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'fast-llm-ui.ps1'))
+    Check (-not $moduleText.Contains('FastLlm.Components') -and -not $benchmarkText.Contains('FastLlm.Components')) 'neither FastLlm.psm1 nor FastLlm.Benchmark.ps1 mentions FastLlm.Components.ps1'
+    Check ($cliText.Contains("'src') 'FastLlm.Components.ps1'") -and $uiText.Contains("src/FastLlm.Components.ps1")) 'fast-llm.ps1 and fast-llm-ui.ps1 dot-source FastLlm.Components.ps1'
+
+    # Settings: default off, read-modify-write keeps every other key.
+    $settingsRoot = New-TestRoot
+    Check ((Get-FastLlmComponentSettings -InstallRoot $settingsRoot).experimentalComponents -ceq 'off') 'experimentalComponents defaults to off with no settings.json'
+    [System.IO.File]::WriteAllText((Join-Path $settingsRoot 'settings.json'), '{"vulkanBarMitigation":"on","updateCheck":"off","updateChannel":"canary","futureKey":"keep","experimentalComponents":"maybe"}', (New-Object System.Text.UTF8Encoding($false)))
+    Check ((Get-FastLlmComponentSettings -InstallRoot $settingsRoot).experimentalComponents -ceq 'off') 'an unrecognised experimentalComponents value reads as off'
+    Set-FastLlmComponentSettings -InstallRoot $settingsRoot -ExperimentalComponents 'on'
+    $storedSettings = Get-Content -LiteralPath (Join-Path $settingsRoot 'settings.json') -Raw | ConvertFrom-Json
+    Check ($storedSettings.experimentalComponents -ceq 'on' -and $storedSettings.vulkanBarMitigation -ceq 'on' -and $storedSettings.updateCheck -ceq 'off' -and $storedSettings.updateChannel -ceq 'canary' -and $storedSettings.futureKey -ceq 'keep') 'turning the switch on preserves vulkanBarMitigation, updateCheck, updateChannel and unknown keys'
+    Check ((Get-FastLlmComponentSettings -InstallRoot $settingsRoot).experimentalComponents -ceq 'on') 'the switch reads back on'
+    Set-FastLlmComponentSettings -InstallRoot $settingsRoot -ExperimentalComponents 'off'
+    $storedSettings = Get-Content -LiteralPath (Join-Path $settingsRoot 'settings.json') -Raw | ConvertFrom-Json
+    Check ($storedSettings.experimentalComponents -ceq 'off' -and $storedSettings.vulkanBarMitigation -ceq 'on' -and $storedSettings.updateChannel -ceq 'canary') 'turning the switch off keeps the other keys'
+    $freshRoot = Join-Path (New-TestRoot) 'not-yet-created'
+    Set-FastLlmComponentSettings -InstallRoot $freshRoot -ExperimentalComponents 'on'
+    Check ((Get-FastLlmComponentSettings -InstallRoot $freshRoot).experimentalComponents -ceq 'on') 'setting the switch creates the install root and settings.json when they do not exist'
+    Check ((Get-ThrownMessage { Set-FastLlmComponentSettings -InstallRoot $settingsRoot -ExperimentalComponents 'sometimes' }) -ne $null) 'a value other than on or off is rejected'
+
+    # The paragraph (spec 2.7).
+    Check ($script:FastLlmExperimentalParagraph -like '*Experimental means*' -and $script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*listed official source*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the experimental paragraph says what experimental means, that Bitworks has not reproduced it, and that each component comes from its listed official source and is checked against its pinned hash'
+    Check ($script:FastLlmExperimentalParagraph -cnotmatch '[^\x20-\x7E]') 'the experimental paragraph is ASCII'
+
+    # Recipe visibility and the gate.
+    function New-GateRecipe([string] $Id, [string] $Origin) {
+        return [pscustomobject] @{
+            id = $Id; origin = $Origin
+            gpu = [pscustomobject] @{ variant = 'rx-7900-xtx'; count = 1 }
+            components = [pscustomobject] @{ engine = 'test-engine-1'; model = 'big-model' }
+            runtime = [pscustomobject] @{ contextSize = 32768 }
+        }
+    }
+    $gateRecipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'e1' 'community-experimental'))
+    $gateComponents = @([pscustomobject] @{ id = 'test-engine-1'; kind = 'engine'; version = 'v1'; source = [pscustomobject] @{ url = 'https://example.com/downloads/test-engine-1-v1.zip' } })
+    Check (@(Select-FastLlmVisibleRecipes -Recipes $gateRecipes -ExperimentalComponents 'off').Count -eq 1 -and @(Select-FastLlmVisibleRecipes -Recipes $gateRecipes -ExperimentalComponents 'off')[0].id -ceq 'b1') 'with the switch off an experimental recipe is hidden'
+    Check (@(Select-FastLlmVisibleRecipes -Recipes $gateRecipes -ExperimentalComponents 'on').Count -eq 2) 'with the switch on an experimental recipe is listed'
+    Check (@(Select-FastLlmVisibleRecipes -Recipes $gateRecipes).Count -eq 1) 'the visibility default is off'
+
+    $gateRoot = New-TestRoot
+    $gateOffAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents -AcceptExperimental }
+    Check ($null -ne $gateOffAccept -and $gateOffAccept -like '*switch is off*' -and $gateOffAccept -like '*test-engine-1*' -and $gateOffAccept -like '*https://example.com/downloads/test-engine-1-v1.zip*' -and $gateOffAccept -like '*big-model*') 'switch off plus -AcceptExperimental is refused, naming each component and its source URL'
+    Set-FastLlmComponentSettings -InstallRoot $gateRoot -ExperimentalComponents 'on'
+    $gateOnNoAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents }
+    Check ($null -ne $gateOnNoAccept -and $gateOnNoAccept -like '*-AcceptExperimental was not given*' -and $gateOnNoAccept -like '*https://example.com/downloads/test-engine-1-v1.zip*') 'switch on without -AcceptExperimental is refused'
+    Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents -AcceptExperimental })) 'switch on plus -AcceptExperimental passes'
+    Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'b1' -Recipes $gateRecipes -Components $gateComponents })) 'a Bitworks recipe needs neither the switch nor the acceptance'
+    $gateOffRoot = New-TestRoot
+    Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -RecipeId 'b1' -Recipes $gateRecipes -Components $gateComponents })) 'a Bitworks recipe passes with the switch off'
+    Check ($null -ne (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents })) 'an experimental recipe with the switch off and no acceptance is refused'
+    Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateOffRoot -Recipes $gateRecipes -Components $gateComponents })) 'no -Recipe means no gate'
+
+    # An installed experimental component with the switch off: its recipes stay hidden and nothing auto-selects it.
+    . (Join-Path $repoRoot 'src/FastLlm.CardIdentity.ps1')
+    . (Join-Path $repoRoot 'src/FastLlm.Recipes.ps1')
+    $autoVariants = Get-FastLlmGpuVariants -Path (Join-Path $repoRoot 'config/gpu-variants.json')
+    $autoCatalog = [pscustomobject] @{ engine = [pscustomobject] @{ version = 'b10698' }; models = @([pscustomobject] @{ id = 'big'; requiredFreeVramMiB = 20500; scores = [pscustomobject] @{ balanced = 112 } }) }
+    $autoRecipe = [pscustomobject] @{ id = 'e1'; origin = 'community-experimental'; gpu = [pscustomobject] @{ variant = 'rx-7900-xtx'; count = 1 }
+        components = [pscustomobject] @{ engine = 'llama.cpp-b10698-vulkan'; model = 'big' }; engineBuild = 'b10698'; recommended = $false
+        runtime = [pscustomobject] @{ contextSize = 32768; vulkanBarMitigation = 'auto' }; expected = [pscustomobject] @{ generationTokS = 60 }
+        evidence = [pscustomobject] @{ url = 'https://bitworks.io/r' }; compelling = [pscustomobject] @{ isCompelling = $true } }
+    $autoDxgi = @([pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 200; dedicatedVideoMiB = 24534 })
+    $autoPlacement = [pscustomobject] @{ adapters = @([pscustomobject] @{ name = 'n'; vramMiB = 24560 }); selectionCapacity = 23000 }
+    $autoOff = Select-FastLlmRecipeForPlacements -Recipes @($autoRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced'
+    $autoOn = Select-FastLlmRecipeForPlacements -Recipes @($autoRecipe) -Variants $autoVariants -Placements @($autoPlacement) -DxgiAdapters $autoDxgi -Catalog $autoCatalog -Profile 'balanced' -IncludeExperimental
+    Check ($null -eq $autoOff -and $null -eq $autoOn) 'an experimental recipe is never auto-selected, with the switch off or on'
+
+    # Listing format.
+    $listRows = @(
+        [pscustomobject] @{ id = 'comp-a'; kind = 'engine'; version = 'v1'; installed = $true; bytes = [int64] 12582912; verified = $true },
+        [pscustomobject] @{ id = 'comp-b'; kind = 'model'; version = 'q4'; installed = $false; bytes = [int64] 0; verified = $false })
+    $listLines = @(Format-FastLlmComponentList -Inventory $listRows)
+    Check ($listLines.Count -eq 3 -and $listLines[0] -like '*id*kind*version*installed*size*verified*') 'the component list has a header and one line per component'
+    Check ($listLines[1] -like '*comp-a*engine*v1*yes*12.0 MB*yes*') 'an installed component line lists id, kind, version, installed, size in MB and verified'
+    Check ($listLines[2] -like '*comp-b*model*q4*no*') 'a component that is not installed is listed as not installed'
+    Check ((Format-FastLlmComponentSize -Bytes 1572864) -ceq '1.5 MB') 'the size is shown in MB with one decimal'
+    $installedOnly = @(Get-FastLlmInstalledComponentRows -Inventory $listRows)
+    Check ($installedOnly.Count -eq 1 -and $installedOnly[0].id -ceq 'comp-a' -and $installedOnly[0].label -like '*comp-a*engine*v1*12.0 MB*') 'the Components window rows list only installed components, with their sizes'
+
+    # The real CLI branches, taken from the AST of fast-llm.ps1 and run against fixtures.
+    function Get-CliBranchBody([string] $Name) {
+        $switches = $cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+        foreach ($switchAst in $switches) {
+            foreach ($clause in $switchAst.Clauses) {
+                if ($clause.Item1.Extent.Text -ceq "'$Name'") {
+                    $branchText = $clause.Item2.Extent.Text
+                    return $branchText.Substring(1, $branchText.Length - 2)
+                }
+            }
+        }
+        return $null
+    }
+    $componentsBody = Get-CliBranchBody 'components'
+    $recipesBody = Get-CliBranchBody 'recipes'
+    Check ($null -ne $componentsBody -and $null -ne $recipesBody) 'fast-llm.ps1 has a components branch and a recipes branch'
+    $branchDeclaration = 'function Invoke-CliBranchUnderTest { [CmdletBinding()] param([string] $Install, [string] $Remove, [switch] $AcceptLicense, [switch] $Unattended, [switch] $AsJson, [string] $InstallRoot, [string] $componentsFilePath, [string] $recipesPath) '
+    . ([scriptblock]::Create($branchDeclaration + $componentsBody + ' }'))
+    $componentsFunction = ${function:Invoke-CliBranchUnderTest}
+    . ([scriptblock]::Create($branchDeclaration + $recipesBody + ' }'))
+    $recipesFunction = ${function:Invoke-CliBranchUnderTest}
+
+    $cliFixture = New-Fixture -Dir (New-TestRoot) -Id 'cli-engine-1'
+    $cliRoot = New-TestRoot
+    $cliCounter = @{ count = 0 }
+    $null = Install-Fixture -Fixture $cliFixture -InstallRoot $cliRoot -Counter $cliCounter -AcceptLicense -Unattended
+    $listText = @(& $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath 6>&1 | ForEach-Object { [string] $_ })
+    Check ($listText.Count -ge 2 -and $listText[0] -like '*id*kind*version*installed*size*verified*') 'components -List (the default) prints a header'
+    Check (@($listText | Where-Object { $_ -like '*cli-engine-1*engine*v1*yes*MB*yes*' }).Count -eq 1) 'components -List prints id, kind, version, installed, size in MB and verified'
+    $listJson = @(& $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -AsJson 6>&1 | ForEach-Object { [string] $_ }) -join "`n" | ConvertFrom-Json
+    $jsonRow = @($listJson)[0]
+    Check ($jsonRow.id -ceq 'cli-engine-1' -and $jsonRow.kind -ceq 'engine' -and $jsonRow.version -ceq 'v1' -and $jsonRow.installed -eq $true -and $jsonRow.bytes -gt 0 -and $jsonRow.verified -eq $true) 'components -List -AsJson emits id, kind, version, installed, bytes and verified'
+    $emptyCliRoot = New-TestRoot
+    $emptyListText = @(& $componentsFunction -InstallRoot $emptyCliRoot -componentsFilePath $cliFixture.ComponentsPath 6>&1 | ForEach-Object { [string] $_ })
+    Check (@($emptyListText | Where-Object { $_ -like '*cli-engine-1*engine*v1*no*' }).Count -eq 1) 'a component that is not installed is listed as not installed'
+    $removeMessage = Get-ThrownMessage { & $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -Remove 'not-a-listed-component' }
+    Check ($null -ne $removeMessage -and $removeMessage -like '*not in the signed components list*') 'components -Remove of an unlisted id is refused'
+    $null = & $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -Remove 'cli-engine-1' 6>&1
+    Check (-not (Test-Path -LiteralPath (Join-Path $cliRoot 'components/engine/cli-engine-1/v1'))) 'components -Remove removes the component'
+
+    # recipes: experimental recipes only when the switch is on, marked with their label.
+    $recipeDocument = [ordered] @{ schema = 'bitworks.fastllm-recipes/v2'; recipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'e1' 'community-experimental')) }
+    $recipesFile = Join-Path (New-TestRoot) 'recipes.json'
+    [System.IO.File]::WriteAllText($recipesFile, (ConvertTo-Json -InputObject $recipeDocument -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $recipesOffRoot = New-TestRoot
+    $recipesOffText = @(& $recipesFunction -InstallRoot $recipesOffRoot -recipesPath $recipesFile 6>&1 | ForEach-Object { [string] $_ })
+    Check ($recipesOffText.Count -eq 1 -and $recipesOffText[0] -like 'b1 - *' -and -not ($recipesOffText -join "`n").Contains('e1')) 'recipes hides an experimental recipe when the switch is off'
+    $recipesOffJson = (@(& $recipesFunction -InstallRoot $recipesOffRoot -recipesPath $recipesFile -AsJson 6>&1 | ForEach-Object { [string] $_ }) -join "`n") | ConvertFrom-Json
+    Check (@($recipesOffJson).Count -eq 1 -and @($recipesOffJson)[0].id -ceq 'b1') 'recipes -AsJson hides an experimental recipe when the switch is off'
+    $recipesOnRoot = New-TestRoot
+    Set-FastLlmComponentSettings -InstallRoot $recipesOnRoot -ExperimentalComponents 'on'
+    $recipesOnText = @(& $recipesFunction -InstallRoot $recipesOnRoot -recipesPath $recipesFile 6>&1 | ForEach-Object { [string] $_ })
+    Check ($recipesOnText.Count -eq 2 -and @($recipesOnText | Where-Object { $_ -like 'e1 - Experimental community recipe, not reproduced by Bitworks - *' }).Count -eq 1) 'recipes lists an experimental recipe with its label when the switch is on'
+
+    # fast-llm.ps1 argument rules and wiring.
+    Check ($cliText.Contains("'update-check', 'update', 'components')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense and -AcceptExperimental'
+    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
+    $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
+    Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install')")) 'the experimental gate runs for plan, start and install before the operation lock'
+    $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    $assignedNames = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+    # InstallRoot (default resolution) and DeviceBinding (lower-casing) are the two pre-existing, deliberate assignments to a parameter.
+    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding') -cnotcontains $_ })
+    Check ($shadowed.Count -eq 0) 'fast-llm.ps1 assigns to no variable named like one of its parameters, case-insensitively'
+
+    $psExecutable = (Get-Process -Id $PID).Path
+    function Invoke-CliRefusal([string[]] $Arguments) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $output = & $psExecutable -NoProfile -NonInteractive -File $cliPath @Arguments 2>&1 | ForEach-Object { [string] $_ } }
+        finally { $ErrorActionPreference = $previousPreference }
+        return [pscustomobject] @{ exit = $LASTEXITCODE; text = (($output -join ' ') -replace '\s+', ' ') }
+    }
+    $refusalRoot = New-TestRoot
+    foreach ($case in @(
+            @{ args = @('plan', '-List', '-InstallRoot', $refusalRoot); text = '-List is supported only by components.' },
+            @{ args = @('plan', '-Install', 'x', '-InstallRoot', $refusalRoot); text = '-Install is supported only by components.' },
+            @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components.' },
+            @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components.' },
+            @{ args = @('components', '-AcceptExperimental', '-InstallRoot', $refusalRoot); text = '-AcceptExperimental is supported only by plan, start and install.' },
+            @{ args = @('components', '-Install', 'a', '-Remove', 'b', '-InstallRoot', $refusalRoot); text = 'components takes one of -List, -Install <id> or -Remove <id>.' },
+            @{ args = @('components', '-List', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only with components -Install.' })) {
+        $result = Invoke-CliRefusal $case.args
+        Check ($result.exit -ne 0 -and $result.text.Contains($case.text)) ("fast-llm.ps1 " + ($case.args[0..1] -join ' ') + ' is refused: ' + $case.text)
+    }
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

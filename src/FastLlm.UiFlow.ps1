@@ -384,13 +384,16 @@ function Read-FastLlmUiSettings {
         . (Join-Path $PSScriptRoot 'FastLlm.Update.ps1')
     }
     $update = Get-FastLlmUpdateSettings -InstallRoot $InstallRoot -AppRoot $AppRoot
-    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel }
+    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off' }
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
             if ($stored.PSObject.Properties['vulkanBarMitigation'] -and @('auto', 'on', 'off') -contains [string] $stored.vulkanBarMitigation) {
                 $settings.vulkanBarMitigation = [string] $stored.vulkanBarMitigation
+            }
+            if ($stored.PSObject.Properties['experimentalComponents'] -and @('on', 'off') -ccontains [string] $stored.experimentalComponents) {
+                $settings.experimentalComponents = [string] $stored.experimentalComponents
             }
         }
     }
@@ -399,7 +402,7 @@ function Read-FastLlmUiSettings {
 }
 
 # Read-modify-write: every key already in settings.json (including ones this window does not know) is kept.
-# updateCheck and updateChannel are written only when the caller supplies them; the window itself writes them with Set-FastLlmUpdateSettings.
+# updateCheck, updateChannel and experimentalComponents are written only when the caller supplies them; the window itself writes them with Set-FastLlmUpdateSettings.
 function Write-FastLlmUiSettings {
     param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Settings)
     $value = [string] $Settings.vulkanBarMitigation
@@ -425,6 +428,11 @@ function Write-FastLlmUiSettings {
     if ($channelProperty -and $null -ne $channelProperty.Value) {
         if (@('stable', 'canary') -cnotcontains [string] $channelProperty.Value) { throw 'updateChannel must be stable or canary.' }
         $merged['updateChannel'] = [string] $channelProperty.Value
+    }
+    $experimentalProperty = $Settings.PSObject.Properties['experimentalComponents']
+    if ($experimentalProperty -and $null -ne $experimentalProperty.Value) {
+        if (@('on', 'off') -cnotcontains [string] $experimentalProperty.Value) { throw 'experimentalComponents must be on or off.' }
+        $merged['experimentalComponents'] = [string] $experimentalProperty.Value
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
