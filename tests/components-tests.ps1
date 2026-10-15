@@ -720,3 +720,6 @@ finally {
 }
 
 Write-Host "components-tests: $script:checks checks passed"
+# The CLI refusal cases leave a child's non-zero exit code in $LASTEXITCODE. CI runs the suites in one session and fails the step
+# when the final value is non-zero, so reset it once every check has passed.
+$global:LASTEXITCODE = 0
