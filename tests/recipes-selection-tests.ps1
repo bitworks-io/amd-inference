@@ -62,6 +62,15 @@ $mixedCards = @((Placement 1).adapters[0], (Placement 1 1 20480).adapters[0])
 $mixedDxgi = @($xtxDxgi[0], $xtDxgi[0])
 $pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'x1' 'bitworks' 'small' 25 $true $false 'rx-7900-xt' 1)) -Variants $variants -Placements @((Placement 23000), (Placement 19000 1 20480)) -EligibleAdapters $mixedCards -DxgiAdapters $mixedDxgi -Catalog $catalog -Profile 'balanced'
 Check ($pick.recipe.id -eq 'x1' -and $pick.variant -eq 'rx-7900-xt') 'a one-card recipe still applies when the PC has one card of its variant next to another variant'
+# Not auto-eligible models (final review M3): never auto-picked by a recipe; reachable only by naming the recipe.
+$catalogWithExperimental = [pscustomobject]@{ engine = $catalog.engine; models = @($catalog.models) + @([pscustomobject]@{ id = 'exp'; requiredFreeVramMiB = 7300; autoEligible = $false; scores = [pscustomobject]@{ balanced = 90 } }) }
+$sink = New-Object 'System.Collections.Generic.List[string]'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced' -SkippedSink $sink
+Check ($null -eq $pick -and @($sink | Where-Object { $_ -like 'e2: model is experimental*' }).Count -eq 1) 'a recipe for a model that is not auto-eligible is not auto-picked'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true), (Recipe 'b1' 'bitworks' 'big' 32.7 $false)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced'
+Check ($pick.recipe.id -eq 'b1') 'an auto-eligible recipe is still picked next to a not auto-eligible one'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'e2' 'bitworks' 'exp' 30 $true)) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalogWithExperimental -Profile 'balanced' -RecipeId 'e2'
+Check ($pick.recipe.id -eq 'e2') 'a not auto-eligible model is reachable by naming its recipe'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId '' -Skipped @('x')
 Check ($block.origin -eq 'estimated' -and $block.label -eq 'Estimated for your card') 'no pick is labelled estimated'
 $block = New-FastLlmPlanRecipeBlock -Pick $null -ModelId 'small' -Skipped @()

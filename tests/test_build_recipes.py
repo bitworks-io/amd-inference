@@ -53,7 +53,9 @@ class RecipeBuilderTests(unittest.TestCase):
 
     def test_refusals(self):
         cases = [("variant", "rx-9999"), ("model", "missing-model"), ("engineBuild", "b1"),
-                 (("runtime", "vulkanBarMitigation"), "maybe"), (("runtime", "contextSize"), 65536),
+                 (("runtime", "vulkanBarMitigation"), "maybe"), (("runtime", "vulkanBarMitigation"), "on"), (("runtime", "vulkanBarMitigation"), "off"),
+                 (("runtime", "parallel"), 2), (("runtime", "parallel"), 0), (("runtime", "cacheTypeK"), "q2_k"), (("runtime", "cacheTypeV"), "--evil"),
+                 (("runtime", "fitTargetMiB"), 0), (("runtime", "contextSize"), 65536),
                  (("expected", "generationTokS"), 0), (("evidence", "url"), "http://example.com/x")]
         for key, value in cases:
             with self.subTest(key=key):
@@ -139,6 +141,33 @@ class RecipeBuilderTests(unittest.TestCase):
         xt["runtime"] = dict(ENTRY["runtime"], contextSize=16384)
         document, _ = br.build(self.tree([], [community(rid="c-xtx", generationTokS=30.0), xt]))
         self.assertTrue(all(r["compelling"]["isCompelling"] for r in document["recipes"]))
+
+    def test_runtime_fields_the_planner_applies_verbatim_are_valid(self):
+        entry = copy.deepcopy(ENTRY); entry["runtime"].update(parallel=1, cacheTypeK="q8_0", cacheTypeV="q8_0", fitTargetMiB=768)
+        document, _ = br.build(self.tree([entry]))
+        self.assertEqual(document["recipes"][0]["runtime"]["cacheTypeK"], "q8_0")
+
+    def test_a_model_that_is_not_auto_eligible_is_refused_except_for_experimental(self):
+        def tree_with_experimental_model(entries, records):
+            root = self.tree(entries, records)
+            catalog = json.loads((root / "config" / "catalog.json").read_text())
+            catalog["models"].append({"id": "qwen3.8-27b-ud-iq3-xxs", "contextSize": 16384, "autoEligible": False})
+            (root / "config" / "catalog.json").write_text(json.dumps(catalog))
+            return root
+        runtime = dict(ENTRY["runtime"], contextSize=16384)
+        for origin in ("bitworks", "community-reproduced"):
+            with self.subTest(origin=origin):
+                if origin == "bitworks":
+                    entry = copy.deepcopy(ENTRY); entry["id"] = "rx-7900-xtx.exp"; entry["model"] = "qwen3.8-27b-ud-iq3-xxs"; entry["runtime"] = runtime; entry["recommended"] = False
+                    args = ([entry], [])
+                else:
+                    record = community(generationTokS=40.0); record["model"] = "qwen3.8-27b-ud-iq3-xxs"; record["runtime"] = runtime
+                    args = ([ENTRY], [record])
+                with self.assertRaises(br.RecipeError):
+                    br.build(tree_with_experimental_model(*args))
+        record = community("community-experimental", generationTokS=40.0); record["model"] = "qwen3.8-27b-ud-iq3-xxs"; record["runtime"] = runtime
+        document, _ = br.build(tree_with_experimental_model([ENTRY], [record]))
+        self.assertIn("community-experimental", [r["origin"] for r in document["recipes"]])
 
     def test_output_is_deterministic_and_check_detects_drift(self):
         root = self.tree([ENTRY])
