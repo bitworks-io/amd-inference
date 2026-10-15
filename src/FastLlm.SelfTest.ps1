@@ -1,4 +1,4 @@
-# Post-load self-test (public-release spec §4.3, Amendment 3): one discarded warm-up and two measured runs of a 512-token prompt
+# Post-load self-test (public-release spec section 4.3, Amendment 3): one discarded warm-up and two measured runs of a 512-token prompt
 # with 128 generated tokens. Server-reported timings only. Never stores prompt or completion text.
 Set-StrictMode -Version 2
 $script:FastLlmSelfTestPromptTokens = 512
