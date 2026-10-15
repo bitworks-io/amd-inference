@@ -133,8 +133,11 @@ try {
     function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
     function Get-FastLlmPlan {
         param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel)
+        if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         [pscustomobject]@{model=[pscustomobject]@{id='test-model'}}
     }
+    # The status the host would read back: the last document written (as the CLI-visible object, with the run id and action it was given).
+    function Get-FastLlmStatus { param($InstallRoot) $last = $script:mockStateWrites[$script:mockStateWrites.Count - 1]; $copy = [pscustomobject]@{}; foreach ($key in $last.Keys) { $copy | Add-Member -NotePropertyName $key -NotePropertyValue $last[$key] }; $copy }
     function Enter-FastLlmOperation { param($InstallRoot) $script:mockOrder.Add('lock'); $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
         param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest)
@@ -142,6 +145,7 @@ try {
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
         $script:mockBarPolicy = $VulkanBarMitigation
         $script:mockServerStarts++
+        if ($script:serverMovesStatus) { $script:mockStateWrites.Add([ordered]@{ schemaVersion = 1; runId = 'supervisor'; phase = 'failed'; failureCode = 'startup-or-runtime-check-failed' }) }
         if ($script:throwServer) { throw 'disposable test server failure' }
         if ($script:throwPlanChanged) { $changed = New-Object System.InvalidOperationException("The measured recipe 'r1' no longer applies at start.`r`nSecond line."); $changed.Data['FastLlmReason'] = 'PlanChanged'; throw $changed }
         return 0
@@ -154,6 +158,8 @@ try {
     $script:mockServerStarts = 0
     $script:throwServer = $false
     $script:throwPlanChanged = $false
+    $script:throwPlan = $false
+    $script:serverMovesStatus = $false
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
@@ -210,6 +216,29 @@ try {
     $script:throwPlanChanged = $false
     $changedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($changedOwner.failureCode -ceq 'PlanChanged' -and [string]$changedOwner.failureReason -like "The measured recipe 'r1' no longer applies*" -and [string]$changedOwner.failureReason -notmatch "[\x00-\x1f]") 'A PlanChanged failure must persist its single-line reason.'
+    # A failure before the supervisor runs: the 'preparing' status becomes failed with the typed code (the shape fast-llm.ps1 writes).
+    $script:workerRequestId = 'bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc'
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:mockStateWrites.Clear(); $script:mockServerStarts = 0; $script:throwServer = $false; $script:throwPlan = $true
+    try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+    $script:throwPlan = $false
+    $failedStatus = $script:mockStateWrites[$script:mockStateWrites.Count - 1]
+    Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $script:mockStateWrites.Count -eq 2 -and $failedStatus.phase -ceq 'failed' -and $failedStatus.failureCode -ceq 'hip-device-not-found' -and $failedStatus.runId -ceq $script:mockStateWrites[0].runId -and $failedStatus.action -ceq 'start') 'A background failure before the supervisor must rewrite the preparing status to failed with the typed failure code.'
+    # A supervisor that already moved the status on is not overwritten.
+    $script:workerRequestId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:mockStateWrites.Clear(); $script:throwServer = $true; $script:serverMovesStatus = $true
+    try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+    $script:throwServer = $false; $script:serverMovesStatus = $false
+    Assert-BackgroundTest ($script:mockStateWrites.Count -eq 2 -and $script:mockStateWrites[1].runId -ceq 'supervisor') 'A failure after the supervisor moved the status on must not rewrite it.'
     # Regression: Windows PowerShell 5.1 turns a plain $null into "" for File.Replace's backup argument ("path is not of a legal form").
     $replaceDoc = Join-Path $scratch 'replace-regression.json'
     Write-FastLlmBackgroundDocument -Path $replaceDoc -Value ([ordered]@{generation=1})

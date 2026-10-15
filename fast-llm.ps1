@@ -448,7 +448,8 @@ try {
                     if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
                         throw (New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.')
                     }
-                    if ($_.Exception.Data['FastLlmReason'] -eq 'RuntimeCheckFailed' -and -not $NoDownload -and -not $recoveryAttempted -and $planAttempt -lt $maximumPlanAttempts) {
+                    # An explicit -Recipe never recovers onto another recipe or engine: the failure is rethrown with its own code.
+                    if ($_.Exception.Data['FastLlmReason'] -eq 'RuntimeCheckFailed' -and -not $selectionOptions.RecipeId -and -not $NoDownload -and -not $recoveryAttempted -and $planAttempt -lt $maximumPlanAttempts) {
                         $recoveryAttempted = $true
                         $recoveryHardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
                         $recovery = Get-FastLlmRecoveryPlan -Hardware $recoveryHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot -Profile $Profile -FailedModelId $plan.model.id -RequestedModelId $ModelId -ContextSize $ContextSize

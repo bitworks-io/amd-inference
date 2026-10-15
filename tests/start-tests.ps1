@@ -250,12 +250,13 @@ try {
         }
         return 0 }
     $script:ndDeviceBinding='off'
+    $script:ndRecipe=$null
     $script:ndUnattended=$true
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
         $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation='auto';$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch
-        $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
+        $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
         return $failure
@@ -355,6 +356,18 @@ try {
     Reset-Nd; $script:nd.consent=$false
     $f=Invoke-NdStart $false
     Check ($null -ne $f -and $null -eq (Get-NdCode $f) -and $script:nd.log.Contains('INSTALL-MODEL')) 'default start, no consent receipt: still provisions (and the failure carries no typed -NoDownload code)'
+
+    # -- explicit -Recipe (any origin): a runtime failure after spawn is rethrown with its own code and NEVER recovers onto another recipe or engine
+    foreach($explicitCase in @(@{label='a self-test failure';queued=@{reason='RuntimeCheckFailed';code='self-test-failed'};code='self-test-failed'},@{label='a load timeout (no code)';queued='RuntimeCheckFailed';code=$null})){
+        Reset-Nd; $script:ndRecipe='fixture.hip-recipe'; $script:nd.startQueue.Enqueue($explicitCase.queued)
+        $f=Invoke-NdStart $false
+        Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and (Get-NdCode $f) -ceq $explicitCase.code -and -not $script:nd.log.Contains('recovery-plan') -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "explicit -Recipe: $($explicitCase.label) is rethrown with its own code, with no model recovery, re-plan or substitution"
+    }
+    Reset-Nd; $script:ndRecipe=$null; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan') -and $script:nd.requestedModelIds[$script:nd.requestedModelIds.Count-1] -ceq 'other-model') 'auto-selected (no -Recipe) start: a runtime failure still recovers exactly as before'
+    $script:ndRecipe=$null
+    Check ($cliSource.Contains("-and -not `$selectionOptions.RecipeId -and -not `$NoDownload -and -not `$recoveryAttempted")) 'fast-llm.ps1 guards model recovery on an explicit recipe'
 
     # -- update-check / update: argument validation and the cached notice wiring (static; no PowerShell can run a real start here)
     $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]

@@ -466,7 +466,7 @@ function Test-FastLlmEnvironmentNameRequiresClearing {
         $Name -like 'ROCBLAS_*' -or
         $Name -like 'SMITHY_*' -or
         $Name -like 'AIP_*' -or
-        $Name -in @('MTMD_BACKEND_DEVICE', 'HF_TOKEN')
+        $Name -in @('MTMD_BACKEND_DEVICE', 'HF_TOKEN', 'CUDA_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')
     )
 }
 

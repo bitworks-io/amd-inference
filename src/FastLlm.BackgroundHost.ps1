@@ -536,6 +536,18 @@ function Invoke-FastLlmBackgroundServe {
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
         return $exit
     } catch {
+        # A failure before the supervisor took over leaves the 'preparing' status behind: rewrite it to failed with the typed code, the shape
+        # fast-llm.ps1 writes. A supervisor that already moved the status on (loading, failed) is left alone.
+        if ($record) {
+            try {
+                $failedStatus = Get-FastLlmStatus -InstallRoot $install
+                if ([string]$failedStatus.phase -ceq 'preparing') {
+                    $failedStatus.phase = 'failed'
+                    if ($_.Exception.Data['FastLlmFailureCode']) { $failedStatus | Add-Member -NotePropertyName failureCode -NotePropertyValue ([string]$_.Exception.Data['FastLlmFailureCode']) -Force }
+                    Write-FastLlmState -InstallRoot $install -State $failedStatus
+                }
+            } catch { }
+        }
         if ($record) {
             $record.phase='failed'
             $record.failureCode = if ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }

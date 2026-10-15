@@ -436,12 +436,12 @@ try {
     } finally { $stallHost.Dispose() }
     # ================= C3 Task 3: the one child-environment builder, the HIP device list, and the typed HIP failures =================
     $envSandbox=[pscustomobject]@{appData='C:\sandbox\appdata';programData='C:\sandbox\programdata'}
-    $inherited=@('PATH','HOME','HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','VK_ICD_FILENAMES','HF_TOKEN','Hip_Path_Lower','USERPROFILE')
+    $inherited=@('PATH','HOME','HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','VK_ICD_FILENAMES','HF_TOKEN','CUDA_VISIBLE_DEVICES','GPU_DEVICE_ORDINAL','Hip_Path_Lower','USERPROFILE')
     $vulkanEnvPlan=[pscustomobject]@{backend='Vulkan';enginePath='C:\fl\engines\b10698\vulkan\llama-server.exe'}
     $hipEnvPlan=[pscustomobject]@{backend='hip';enginePath='C:\fl\components\engine\llama.cpp-hip-b11658\b11658\llama-server.exe';runtimeRoots=@('C:\fl\components\runtime\amd-rocm-gfx1100-10.0.0\10.0.0\bin')}
     $vulkanEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inherited
     Check (($vulkanEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH' -and $vulkanEnv.set['PATH'] -ceq 'C:\fl\engines\b10698\vulkan;C:\Windows\System32;C:\Windows' -and $vulkanEnv.set['APPDATA'] -ceq 'C:\sandbox\appdata' -and $vulkanEnv.set['PROGRAMDATA'] -ceq 'C:\sandbox\programdata') 'Vulkan environment is unchanged: APPDATA, PROGRAMDATA and PATH = engine dir;System32;SystemRoot, and no BAR variable by default'
-    Check (($vulkanEnv.remove -join ',') -ceq 'HIP_VISIBLE_DEVICES,HSA_OVERRIDE_GFX_VERSION,ROCM_PATH,ROCBLAS_LAYER,GGML_VK_VISIBLE_DEVICES,LLAMA_ARG_PORT,VK_ICD_FILENAMES,HF_TOKEN,Hip_Path_Lower') 'Vulkan scrub is unchanged (ROCR_ names are not in the shared scrub list)'
+    Check (($vulkanEnv.remove -join ',') -ceq 'HIP_VISIBLE_DEVICES,HSA_OVERRIDE_GFX_VERSION,ROCM_PATH,ROCBLAS_LAYER,GGML_VK_VISIBLE_DEVICES,LLAMA_ARG_PORT,VK_ICD_FILENAMES,HF_TOKEN,CUDA_VISIBLE_DEVICES,GPU_DEVICE_ORDINAL,Hip_Path_Lower') 'Vulkan scrub removes the same names as before plus the device-ordinal variables (ROCR_ names are not in the shared scrub list)'
     $vulkanBarEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -VulkanBarMitigation -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inherited
     $barName=& $module { $script:FastLlmVulkanBarMitigationVariable }
     Check (($vulkanBarEnv.set.Keys -join ',') -ceq "APPDATA,PROGRAMDATA,PATH,$barName" -and $vulkanBarEnv.set[$barName] -ceq '1') 'Vulkan environment gets the BAR variable only when the mitigation is requested'
@@ -451,7 +451,7 @@ try {
     $hipBarEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -VulkanBarMitigation -SystemRoot 'C:\Windows' } $hipEnvPlan $envSandbox $inherited
     Check (-not $hipBarEnv.set.Contains($barName) -and ($hipBarEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH') 'a HIP plan never receives the BAR variable, even when the caller asks for it'
     Check (@($hipEnv.set.Keys | Where-Object { $_ -like 'HIP_*' -or $_ -like 'ROC*' -or $_ -like 'HSA_*' }).Count -eq 0) 'no HIP_, ROC or HSA_ variable is ever set for a HIP child'
-    foreach($mustGo in @('HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','HF_TOKEN')) {
+    foreach($mustGo in @('HIP_VISIBLE_DEVICES','HSA_OVERRIDE_GFX_VERSION','ROCR_VISIBLE_DEVICES','ROCM_PATH','ROCBLAS_LAYER','GGML_VK_VISIBLE_DEVICES','LLAMA_ARG_PORT','HF_TOKEN','CUDA_VISIBLE_DEVICES','GPU_DEVICE_ORDINAL')) {
         Check ($hipEnv.remove -contains $mustGo) "the HIP child scrubs the inherited $mustGo"
     }
     Check (-not ($hipEnv.remove -contains 'PATH') -and -not ($hipEnv.remove -contains 'USERPROFILE')) 'the scrub does not remove variables outside its list'
@@ -549,7 +549,7 @@ try {
         $recordRun=Invoke-HipEarlyExit 'hip-record' 3 'record'
         Check ($recordRun.state.deviceBinding.status -ceq 'not-applicable' -and $recordRun.state.identityRecord -ceq 'not-applicable' -and $recordRun.state.failureCode -ceq 'startup-or-runtime-check-failed') '-DeviceBinding record on a HIP plan records not-applicable and captures no Vulkan identity'
         $enforceRun=Invoke-HipEarlyExit 'hip-enforce' 3 'enforce'
-        Check ($null -ne $enforceRun.failure -and $enforceRun.failure.Data['FastLlmFailureCode'] -ceq 'device-binding-unsupported-backend' -and $enforceRun.failure.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and $enforceRun.state.failureCode -ceq 'device-binding-unsupported-backend' -and $null -eq $enforceRun.state.PSObject.Properties['processIdentity']) '-DeviceBinding enforce on a HIP plan fails device-binding-unsupported-backend before any process is started'
+        Check ($null -ne $enforceRun.failure -and $enforceRun.failure.Data['FastLlmFailureCode'] -ceq 'device-binding-unsupported-backend' -and $enforceRun.failure.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and $enforceRun.state.failureCode -ceq 'device-binding-unsupported-backend' -and $null -eq $enforceRun.state.processIdentity) '-DeviceBinding enforce on a HIP plan fails device-binding-unsupported-backend before any process is started'
     }
     else { Write-Host 'SKIP: supervised HIP early-exit starts need a Windows child process' }
     $suitePassed=$true
