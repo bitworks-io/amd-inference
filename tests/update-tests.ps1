@@ -304,4 +304,35 @@ $dirs = @(UpdateDirs $e)
 Check ($dirs.Count -eq 1 -and $dirs[0].Name -match '^2026\.10\.16\.1-[0-9a-f]{8}$' -and (Test-Path -LiteralPath (Join-Path $dirs[0].FullName $setupName))) 'success keeps the installer in a fresh <version>-<8 hex> directory'
 Check (@(Get-ChildItem -LiteralPath $e.App -Force).Count -eq 1) 'the app folder is untouched'
 
+# --- the cached notice (start and status): cache only, no network ---
+$nRoot = Join-Path ([IO.Path]::GetTempPath()) ('fast-llm-notice-' + [guid]::NewGuid().ToString('N'))
+try {
+    $nInstall = Join-Path $nRoot 'install'; $nApp = Join-Path $nRoot 'app'
+    New-Item -ItemType Directory -Path (Join-Path $nInstall 'state') -Force | Out-Null
+    New-Item -ItemType Directory -Path $nApp -Force | Out-Null
+    $nPage = 'https://github.com/bitworks-io/amd-inference/releases/tag/v2026.10.16.1'
+    function Write-NoticeCache([string]$Version) {
+        $doc = [ordered]@{ lastCheckUtc = '2026-10-20T12:00:00Z'; etag = 'x'; channel = 'stable'
+            latest = [ordered]@{ version = $Version; tag = "v$Version"; channel = 'stable'; htmlUrl = "https://github.com/bitworks-io/amd-inference/releases/tag/v$Version"; assets = [ordered]@{} } }
+        [IO.File]::WriteAllText((Join-Path (Join-Path $nInstall 'state') 'update-check.json'), ([pscustomobject]$doc | ConvertTo-Json -Depth 8))
+    }
+    Check ($null -eq (Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp)) 'notice: no RELEASE.json and no cache gives null'
+    [IO.File]::WriteAllText((Join-Path $nApp 'RELEASE.json'), '{"version":"2026.10.15.1","channel":"stable"}')
+    Check ($null -eq (Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp)) 'notice: no cache gives null'
+    Write-NoticeCache '2026.10.16.1'
+    Check ((Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp) -ceq "Update available: FastLLM 2026.10.16.1 ($nPage).") 'notice: a newer cached version gives the one-line notice'
+    Write-NoticeCache '2026.10.15.1'
+    Check ($null -eq (Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp)) 'notice: the same cached version gives null'
+    Write-NoticeCache '2026.10.14.3'
+    Check ($null -eq (Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp)) 'notice: an older cached version gives null'
+    [IO.File]::WriteAllText((Join-Path (Join-Path $nInstall 'state') 'update-check.json'), 'not json')
+    Check ($null -eq (Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp)) 'notice: a corrupt cache gives null and does not throw'
+    Write-NoticeCache '2026.10.16.1'
+    Remove-Item -LiteralPath (Join-Path $nApp 'RELEASE.json') -Force
+    Check ($null -eq (Get-FastLlmCachedUpdateNotice -InstallRoot $nInstall -AppRoot $nApp)) 'notice: a source checkout (no RELEASE.json) gives null'
+    $noticeSource = (Get-Command Get-FastLlmCachedUpdateNotice).ScriptBlock.ToString()
+    Check (-not $noticeSource.Contains('Invoke-FastLlmUpdateCheck') -and -not $noticeSource.Contains('Invoke-FastLlmUpdateHttp')) 'notice: the helper makes no request'
+}
+finally { if (Test-Path -LiteralPath $nRoot) { Remove-Item -LiteralPath $nRoot -Recurse -Force } }
+
 Write-Host 'update-tests: PASS'
