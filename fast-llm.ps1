@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop')]
+    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop', 'update-check', 'update')]
     [string] $Action = 'start',
 
     [ValidateSet('fast', 'balanced', 'quality')]
@@ -64,7 +64,14 @@ param(
     # start with a typed failure code (needs-setup-model-missing, needs-setup-consent-missing, needs-setup-model-invalid,
     # needs-setup-engine-missing, needs-setup-prerequisite-missing), never RuntimeCheckFailed, and model recovery or substitution
     # is disabled. Absent means the default start, unchanged.
-    [switch] $NoDownload
+    [switch] $NoDownload,
+
+    # update only: confirm the install without the interactive prompt (required with -Unattended).
+    [switch] $Yes,
+
+    # update-check and update only: the release channel to follow; persisted to settings.json before the check.
+    [ValidateSet('stable', 'canary')]
+    [string] $Channel
 )
 
 Set-StrictMode -Version 2.0
@@ -95,6 +102,9 @@ if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -o
     throw '-DeviceBinding is supported only by a live start.'
 }
 if ($NoDownload -and ($Action -ne 'start' -or $DryRun)) { throw '-NoDownload is supported only by a live start.' }
+if ($Yes -and $Action -ne 'update') { throw '-Yes is supported only by update.' }
+if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-check', 'update')) { throw '-Channel is supported only by update-check and update.' }
+if ($Action -eq 'update' -and $Unattended -and -not $Yes) { throw 'update -Unattended requires -Yes; nothing was changed.' }
 if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
     throw '-AsJson is supported with start only when -DryRun is also specified; a foreground server owns its console output.'
@@ -127,6 +137,7 @@ $labAppLifetime = Enter-FastLlmLabAppLifetime -SourceRoot $projectRoot
 Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFlow.ps1')
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Trust.ps1')
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Update.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $selectionOptions = @{
     ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
@@ -183,7 +194,67 @@ try {
                 }
             }
         }
-        'status' { Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12 }
+        'status' {
+            Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12
+            # Cached notice only (no network). Not in -AsJson mode: status already prints one JSON document.
+            if (-not $AsJson) {
+                $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
+                if ($cachedNotice) { Write-Host $cachedNotice }
+            }
+        }
+        'update-check' {
+            if ($PSBoundParameters.ContainsKey('Channel')) { Set-FastLlmUpdateSettings -InstallRoot $InstallRoot -UpdateChannel $Channel }
+            $checkResult = Invoke-FastLlmUpdateCheck -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Force
+            if ($AsJson) { $checkResult | ConvertTo-Json -Depth 8; break }
+            switch ([string]$checkResult.status) {
+                'disabled' { Write-Host 'Update checks are turned off (updateCheck is off in settings.json).' }
+                'not-a-release' { Write-Host 'This is not an installed FastLLM release (no RELEASE.json), so there is nothing to check.' }
+                'failed' { Write-Host 'The update check could not be completed. Try again later.' }
+                'available' { Write-Host ('FastLLM {0} is available: {1}. Run "fast-llm.ps1 update" to install it.' -f $checkResult.latest.version, $checkResult.latest.htmlUrl) }
+                default { Write-Host ('FastLLM {0} is up to date.' -f $checkResult.installed) }
+            }
+        }
+        'update' {
+            if ($PSBoundParameters.ContainsKey('Channel')) { Set-FastLlmUpdateSettings -InstallRoot $InstallRoot -UpdateChannel $Channel }
+            $checkResult = Invoke-FastLlmUpdateCheck -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Force
+            if ([string]$checkResult.status -cne 'available') {
+                if ($AsJson) { $checkResult | ConvertTo-Json -Depth 8; break }
+                switch ([string]$checkResult.status) {
+                    'disabled' { Write-Host 'Update checks are turned off (updateCheck is off in settings.json).' }
+                    'not-a-release' { Write-Host 'This is not an installed FastLLM release (no RELEASE.json), so there is nothing to update.' }
+                    'failed' { Write-Host 'The update check could not be completed. Try again later.' }
+                    default { Write-Host ('FastLLM {0} is up to date.' -f $checkResult.installed) }
+                }
+                break
+            }
+            $updateLatest = $checkResult.latest
+            if (-not $AsJson) {
+                Write-Host ('FastLLM {0} is available: {1}' -f $updateLatest.version, $updateLatest.htmlUrl)
+                Write-Host 'The update will:'
+                Write-Host '  1. stop a running FastLLM server and confirm it stopped'
+                Write-Host '  2. download SHA256SUMS (size-capped) and read the installer hash from it'
+                Write-Host '  3. download the installer and check its size and SHA-256'
+                Write-Host '  4. check the installer signature against the pinned publisher'
+                Write-Host '  5. check the installer version equals the release and is newer than this install'
+                Write-Host '  6. run the per-user installer, then check the installed files against FastLLM.cat'
+            }
+            if (-not $Yes) {
+                $answer = Read-Host ('Install FastLLM {0} now? [y/N]' -f $updateLatest.version)
+                if ($answer -notmatch '^\s*[yY]') {
+                    if ($AsJson) { [pscustomobject]@{ status = 'declined'; step = 'confirm'; reason = 'not-confirmed' } | ConvertTo-Json -Depth 4 }
+                    else { Write-Host 'Not installed.' }
+                    break
+                }
+            }
+            $updateResult = Invoke-FastLlmVerifiedUpdate -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Latest $updateLatest -Silent:$Unattended
+            if ($AsJson) { $updateResult | ConvertTo-Json -Depth 4 }
+            elseif ([string]$updateResult.status -ceq 'installed') { Write-Host ('FastLLM {0} is installed.' -f $updateLatest.version) }
+            else { Write-Host ('Update {0} at {1}: {2}' -f $updateResult.status, $updateResult.step, $updateResult.reason) }
+            if ([string]$updateResult.status -ceq 'refused') { $updateExit = 3 }
+            elseif ([string]$updateResult.status -cne 'installed') { $updateExit = 1 }
+            else { $updateExit = 0 }
+            if ($updateExit -ne 0) { exit $updateExit }
+        }
         'stop' { Request-FastLlmStop -InstallRoot $InstallRoot }
         'install' {
             if ($env:OS -ne 'Windows_NT') {
@@ -321,6 +392,9 @@ try {
             if (-not $serverCompleted) {
                 throw "Hardware/model selection did not stabilize within $maximumPlanAttempts attempts. Close GPU-heavy applications and run start again."
             }
+            # Cached notice only (no network): after a successful start, from state\update-check.json.
+            $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
+            if ($cachedNotice) { Write-Host $cachedNotice }
         }
         'doctor' {
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath

@@ -259,6 +259,19 @@ try {
     Reset-Nd; $script:nd.consent=$false
     $f=Invoke-NdStart $false
     Check ($null -ne $f -and $null -eq (Get-NdCode $f) -and $script:nd.log.Contains('INSTALL-MODEL')) 'default start, no consent receipt: still provisions (and the failure carries no typed -NoDownload code)'
+
+    # -- update-check / update: argument validation and the cached notice wiring (static; no PowerShell can run a real start here)
+    $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]
+    $updateCheckClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update-check'" })[0]
+    $updateClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update'" })[0]
+    Check ($cliSource.Contains("'stop', 'update-check', 'update')]") -and $cliSource.Contains('[switch] $Yes') -and $cliSource.Contains("[ValidateSet('stable', 'canary')]") -and $cliSource.Contains('[string] $Channel')) 'fast-llm.ps1 declares update-check, update, -Yes and -Channel stable|canary'
+    Check ($cliSource.Contains("-Yes is supported only by update.") -and $cliSource.Contains("-Channel is supported only by update-check and update.") -and $cliSource.Contains("`$PSBoundParameters.ContainsKey('Channel')")) 'fast-llm.ps1 refuses -Yes and -Channel for any other action'
+    Check ($cliSource.Contains('$Action -eq ''update'' -and $Unattended -and -not $Yes') -and $cliSource.Contains('update -Unattended requires -Yes')) 'update refuses -Unattended without -Yes before doing anything'
+    Check ($cliSource.Contains("FastLlm.Update.ps1") -and -not ([IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.psm1'))).Contains('FastLlm.Update.ps1')) 'FastLlm.Update.ps1 is dot-sourced by fast-llm.ps1 and never by FastLlm.psm1'
+    Check ($null -ne $statusClause -and $null -ne $updateCheckClause -and $null -ne $updateClause) 'the status, update-check and update clauses exist'
+    Check ($statusClause.Item2.Extent.Text.Contains('Get-FastLlmCachedUpdateNotice') -and $startText.Contains('Get-FastLlmCachedUpdateNotice')) 'start and status print the cached update notice'
+    Check (-not $statusClause.Item2.Extent.Text.Contains('Invoke-FastLlmUpdateCheck') -and -not $startText.Contains('Invoke-FastLlmUpdateCheck') -and -not $statusClause.Item2.Extent.Text.Contains('Invoke-FastLlmVerifiedUpdate') -and -not $startText.Contains('Invoke-FastLlmVerifiedUpdate')) 'start and status make no update request'
+    Check ($updateCheckClause.Item2.Extent.Text.Contains('Invoke-FastLlmUpdateCheck') -and $updateCheckClause.Item2.Extent.Text.Contains('-Force') -and $updateClause.Item2.Extent.Text.Contains('Invoke-FastLlmVerifiedUpdate') -and $updateClause.Item2.Extent.Text.Contains('exit $updateExit')) 'update-check forces a check and update runs the verified flow with its exit code'
 } finally {
     foreach($name in $saved.Keys){& $module {param($N,$B) Set-Item -Path ('Function:script:'+$N) -Value $B} $name $saved[$name]}
     if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Recurse -Force}

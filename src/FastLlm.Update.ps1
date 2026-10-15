@@ -318,6 +318,25 @@ function Invoke-FastLlmUpdateCheck {
 }
 
 
+# The cached notice for start and status: reads ONLY <InstallRoot>\state\update-check.json and RELEASE.json. NO network.
+# Returns one line when the cached latest is newer than the installed version, else $null. Never throws.
+function Get-FastLlmCachedUpdateNotice {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$AppRoot
+    )
+    try {
+        $installedRelease = Read-FastLlmInstalledRelease -AppRoot $AppRoot
+        if ($null -eq $installedRelease) { return $null }
+        $cached = Read-FastLlmUpdateState -Path (Join-Path (Join-Path $InstallRoot 'state') 'update-check.json')
+        if ($null -eq $cached -or $null -eq $cached.latest) { return $null }
+        if ((Compare-FastLlmVersion ([string]$cached.latest.version) $installedRelease.version) -le 0) { return $null }
+        return ('Update available: FastLLM {0} ({1}).' -f $cached.latest.version, $cached.latest.htmlUrl)
+    }
+    catch { return $null }
+}
+
+
 # --- Verified update flow ---
 
 function Get-FastLlmUpdateFileSha256 {
