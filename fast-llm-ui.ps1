@@ -332,7 +332,7 @@ function EnsureTrayIcon {
         $exitItem.Add_Click({try{ExitFromTray}catch{ShowFailure $_.Exception.Message}})
         $script:trayIcon=New-Object Windows.Forms.NotifyIcon
         $script:trayIcon.Icon=[Drawing.SystemIcons]::Application
-        $script:trayIcon.Text='Bitworks FastLLM - lab alpha'
+        $script:trayIcon.Text='Bitworks FastLLM (Preview)'
         $script:trayIcon.ContextMenuStrip=$script:trayMenu
         $script:trayIcon.Add_DoubleClick({try{RestoreFromTray}catch{[void][Windows.Forms.MessageBox]::Show('Unable to restore the FastLLM window.','FastLLM tray','OK','Warning')}})
         $script:trayIcon.Visible=$true
@@ -698,7 +698,7 @@ try{$update=Invoke-FastLlmUpdateCheck -InstallRoot $Install -AppRoot $App}catch{
     $pipeline=[Management.Automation.PowerShell]::Create()
     try{
         $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument($runIntegrity)
-        $script:startupRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke()}
+        $script:startupRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke();version=$(if($release){[string]$release.version}else{''});integrityRan=$runIntegrity}
     }catch{$pipeline.Dispose();throw}
 }
 function CompleteUiStartupChecks {
@@ -707,6 +707,7 @@ function CompleteUiStartupChecks {
     try{
         $values=@($run.pipeline.EndInvoke($run.handle))
         if($values.Count -eq 1){
+            if($run.integrityRan){[void](Set-FastLlmUiIntegrityChecked -InstallRoot $script:settingsRoot -InstalledVersion $run.version -Result $values[0].integrity)}
             $failedIntegrity=Format-FastLlmUiIntegrityBanner -Result $values[0].integrity
             $offer=Format-FastLlmUiUpdateBanner -Check $values[0].update
             if($failedIntegrity){SetUiBanner $failedIntegrity.text $failedIntegrity.url $true $false}
