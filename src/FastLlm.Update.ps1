@@ -539,10 +539,11 @@ function Invoke-FastLlmVerifiedUpdate {
     if ([int]$exitCode -ne 0) { return (& $finish 'failed' 'install' "installer-exit-${exitCode}") }
 
     # 7. integrity of the installed tree
-    try { $integrity = & $Integrity $AppRoot } catch { return (& $finish 'failed' 'integrity' ([string]$_.Exception.Message)) }
-    if ([string](Get-FastLlmUpdateProp $integrity 'status') -cne 'ok') {
-        $why = [string](Get-FastLlmUpdateProp $integrity 'reason')
-        if ([string]::IsNullOrEmpty($why)) { $why = [string](Get-FastLlmUpdateProp $integrity 'status') }
+    # Not $integrity: PowerShell names are case-insensitive, so that would assign into the [scriptblock] $Integrity parameter.
+    try { $integrityResult = & $Integrity $AppRoot } catch { return (& $finish 'failed' 'integrity' ([string]$_.Exception.Message)) }
+    if ([string](Get-FastLlmUpdateProp $integrityResult 'status') -cne 'ok') {
+        $why = [string](Get-FastLlmUpdateProp $integrityResult 'reason')
+        if ([string]::IsNullOrEmpty($why)) { $why = [string](Get-FastLlmUpdateProp $integrityResult 'status') }
         return (& $finish 'failed' 'integrity' $why)
     }
     return (& $finish 'installed' 'integrity' '')
