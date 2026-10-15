@@ -115,7 +115,14 @@ function Get-FastLlmRecipeComponentSources {
         $componentId = [string] $roleProperty.Value
         $sourceUrl = $null
         foreach ($listed in @($Components | Where-Object { $_ })) {
-            if ([string] $listed.id -ceq $componentId) { $sourceUrl = [string] @(Get-FastLlmComponentSources -Component $listed)[0].url }
+            if ([string] $listed.id -ceq $componentId) {
+                # Display only (the loader has already validated the list): every source URL of the component, single 'source' or multi-part 'sources'.
+                $listedUrls = @()
+                if ($listed.PSObject.Properties['sources'] -and $listed.sources) { $listedUrls = @($listed.sources | ForEach-Object { [string] $_.url }) }
+                elseif ($listed.PSObject.Properties['source'] -and $listed.source) { $listedUrls = @([string] $listed.source.url) }
+                $sourceUrl = (@($listedUrls | Where-Object { $_ }) -join ', ')
+                if (-not $sourceUrl) { $sourceUrl = $null }
+            }
         }
         $rows.Add([pscustomobject] [ordered] @{ role = $role; id = $componentId; sourceUrl = $sourceUrl; listed = [bool] $sourceUrl })
     }

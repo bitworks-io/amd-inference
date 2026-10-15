@@ -1890,8 +1890,8 @@ function Get-FastLlmComponents {
     $entries = New-Object 'System.Collections.Generic.List[object]'
     foreach ($item in @($document.components)) {
         $itemId = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'id' -Label 'Component')
-        Assert-FastLlmLeafName -Value $itemId -Label 'Component id'
         Assert-FastLlmComponentLeafName -Value $itemId -Label 'Component id'
+        Assert-FastLlmLeafName -Value $itemId -Label 'Component id'
         if (-not $seenIds.Add($itemId)) {
             throw "Components file lists '$itemId' more than once."
         }
@@ -1901,8 +1901,8 @@ function Get-FastLlmComponents {
             throw "$label has an unsupported kind '$itemKind'."
         }
         $itemVersion = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)
-        Assert-FastLlmLeafName -Value $itemVersion -Label "$label version"
         Assert-FastLlmComponentLeafName -Value $itemVersion -Label "$label version"
+        Assert-FastLlmLeafName -Value $itemVersion -Label "$label version"
         $sources = @(Get-FastLlmComponentSources -Component $item)
         $installedPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
         $installedPathList = New-Object 'System.Collections.Generic.List[string]'
@@ -1939,8 +1939,10 @@ function Get-FastLlmComponents {
                     Assert-FastLlmComponentTreePath -Value $manifestPath -Label "$label manifest path"
                 }
                 else {
-                    Assert-FastLlmLeafName -Value $manifestPath -Label "$label manifest path"
+                    # The component rule first: it refuses control characters with its own message, before the generic check reaches a .NET Framework
+                    # path API that throws "Illegal characters in path" on them (Windows PowerShell 5.1).
                     Assert-FastLlmComponentLeafName -Value $manifestPath -Label "$label manifest path"
+                    Assert-FastLlmLeafName -Value $manifestPath -Label "$label manifest path"
                 }
                 if (-not $installedPaths.Add($manifestPath)) {
                     throw "$label manifest path '$manifestPath' appears more than once (paths are compared case-insensitively, across all sources)."

@@ -1403,6 +1403,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Set-FastLlmComponentSettings -InstallRoot $gateRoot -ExperimentalComponents 'on'
     $gateOnNoAccept = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents }
     Check ($null -ne $gateOnNoAccept -and $gateOnNoAccept -like '*-AcceptExperimental was not given*' -and $gateOnNoAccept -like '*https://example.com/downloads/test-engine-1-v1.zip*') 'switch on without -AcceptExperimental is refused'
+    $multiPartComponents = @([pscustomobject] @{ id = 'test-engine-1'; kind = 'engine'; version = 'v1'; sources = @([pscustomobject] @{ url = 'https://example.com/p1.zip' }, [pscustomobject] @{ url = 'https://example.com/p2.zip' }) })
+    $multiPartMsg = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $multiPartComponents }
+    Check ($null -ne $multiPartMsg -and $multiPartMsg -like '*engine test-engine-1 (https://example.com/p1.zip, https://example.com/p2.zip)*') 'the refusal lists every source URL of a multi-part component'
     Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'e1' -Recipes $gateRecipes -Components $gateComponents -AcceptExperimental })) 'switch on plus -AcceptExperimental passes'
     Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $gateRoot -RecipeId 'b1' -Recipes $gateRecipes -Components $gateComponents })) 'a Bitworks recipe needs neither the switch nor the acceptance'
     $gateOffRoot = New-TestRoot
