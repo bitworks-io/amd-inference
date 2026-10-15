@@ -278,7 +278,17 @@ try {
                 break
             }
             $hardware = Get-FastLlmHardware -HardwareFile $HardwareFile -CatalogPath $catalogPath -InstallRoot $InstallRoot
-            $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            try {
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            }
+            catch {
+                # A recipe on an engine component that is not installed: a plain install (never a dry run or an unattended one) installs
+                # that one listed component through its license rule, then plans again. Start never does this, and nothing falls back.
+                $missingComponentId = [string] $_.Exception.Data['FastLlmComponentId']
+                if ([string] $_.Exception.Data['FastLlmFailureCode'] -cne 'needs-setup-component-missing' -or -not $missingComponentId -or $DryRun -or $Unattended) { throw }
+                Install-FastLlmComponent -ComponentsPath (Join-Path (Join-Path $PSScriptRoot 'config') 'components.json') -ComponentId $missingComponentId -InstallRoot $InstallRoot | Out-Null
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            }
             if ($ExpectedModelProvenanceSha256) {
                 Assert-FastLlmUiExpectedProvenance -Model $plan.model -ExpectedSha256 $ExpectedModelProvenanceSha256
             }

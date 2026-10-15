@@ -502,6 +502,16 @@ function Invoke-FastLlmSupervisedServer {
         }
         $state.planRecipe = $planRecipeFields
     }
+    # The engine that actually runs, recorded so removing an engine component can tell whether this server uses it.
+    if ($Plan.PSObject.Properties['enginePath'] -and -not [string]::IsNullOrWhiteSpace([string] $Plan.enginePath)) {
+        $state.engineExecutable = [string] $Plan.enginePath
+        $statusEngineComponentId = $null
+        if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { $statusEngineComponentId = [string] $Plan.engineComponentId }
+        elseif ($Plan.PSObject.Properties['engineVersion'] -and $Plan.engineVersion -and $Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend).ToLowerInvariant() -ceq 'vulkan') {
+            $statusEngineComponentId = 'llama.cpp-' + [string] $Plan.engineVersion + '-vulkan'
+        }
+        $state.engineComponentId = $statusEngineComponentId
+    }
     if ($Plan.PSObject.Properties['catalogVersion']) {
         if (-not $CatalogPath) { throw 'A real runtime recipe requires the verified catalog path.' }
         $state.recipe = [ordered]@{

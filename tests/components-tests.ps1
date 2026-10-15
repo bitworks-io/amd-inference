@@ -314,6 +314,144 @@ try {
     Check (-not $absent) 'removing a component that is not installed deletes nothing and reports false'
     $msg = Get-ThrownMessage { Remove-FastLlmComponent -ComponentsPath $fxV2.ComponentsPath -ComponentId 'not-listed' -InstallRoot $multiRoot }
     Check ($null -ne $msg -and $msg -like '*not in the signed components list*') 'removing an id that is not in components.json is refused'
+
+    # ---- Remove: a status.json that records engineExecutable (Task 3) ----
+    $fxExeA = New-Fixture -Dir (Join-Path $work 'fx-exe-a') -Id 'exe-engine-a'
+    $fxExeB = New-Fixture -Dir (Join-Path $work 'fx-exe-b') -Id 'exe-engine-b'
+    $exeRoot = New-TestRoot
+    $exeCounter = @{ count = 0 }
+    $exeRootA = Install-Fixture -Fixture $fxExeA -InstallRoot $exeRoot -Counter $exeCounter -AcceptLicense -Unattended
+    $exeRootB = Install-Fixture -Fixture $fxExeB -InstallRoot $exeRoot -Counter $exeCounter -AcceptLicense -Unattended
+    $exeLock = Enter-FastLlmOperation -InstallRoot $exeRoot
+    try {
+        $builtInRunning = Join-Path (Join-Path $exeRoot 'engines') 'b10698\vulkan\llama-server.exe'
+        Write-FastLlmState -InstallRoot $exeRoot -State ([ordered] @{ schemaVersion = 1; runId = ('b' * 32); phase = 'ready'; engineExecutable = $builtInRunning; engineComponentId = 'llama.cpp-b10698-vulkan' })
+        $removedWhileOther = Remove-FastLlmComponent -ComponentsPath $fxExeA.ComponentsPath -ComponentId $fxExeA.Id -InstallRoot $exeRoot
+        Check ($removedWhileOther -and -not (Test-Path -LiteralPath $exeRootA)) 'a component NOT in use is removed while the built-in engine runs'
+        Write-FastLlmState -InstallRoot $exeRoot -State ([ordered] @{ schemaVersion = 1; runId = ('b' * 32); phase = 'ready'; engineExecutable = (Join-Path $exeRootB 'server.exe'); engineComponentId = $fxExeB.Id })
+        $removedOther = Remove-FastLlmComponent -ComponentsPath $fxExeA.ComponentsPath -ComponentId $fxExeA.Id -InstallRoot $exeRoot
+        Check (-not $removedOther -and (Test-Path -LiteralPath (Join-Path $exeRootB 'server.exe'))) 'removal of a component NOT in use succeeds (nothing to delete here) while a different component engine runs'
+        $msg = Get-ThrownMessage { Remove-FastLlmComponent -ComponentsPath $fxExeB.ComponentsPath -ComponentId $fxExeB.Id -InstallRoot $exeRoot }
+        Check ($null -ne $msg -and $msg -like '*Stop FastLLM first*' -and (Test-Path -LiteralPath (Join-Path $exeRootB 'server.exe'))) 'a component recorded as the running engineExecutable cannot be removed'
+    }
+    finally {
+        $exeLock.Dispose()
+    }
+
+    # ---- Resolve-FastLlmRecipeEngine (module-internal) ----
+    $resolveCatalog = [pscustomobject] @{ engine = [pscustomobject] @{ version = 'b10698'; assets = [pscustomobject] @{ vulkan = [pscustomobject] @{ entryPoint = 'llama-server.exe' } } } }
+    $resolveRecipe = [pscustomobject] @{ id = 'rr'; components = [pscustomobject] @{ engine = 'llama.cpp-b10698-vulkan'; model = 'm' } }
+    $resolveRoot = New-TestRoot
+    $builtInFolder = Join-Path $resolveRoot 'engines\b10698\vulkan'
+    New-Item -ItemType Directory -Path $builtInFolder -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $builtInFolder 'llama-server.exe'), 'x')
+    # A component list that ALSO lists the built-in id (the shipped components.json does): the built-in path must still win and components.json is not consulted.
+    $fxShadow = New-Fixture -Dir (Join-Path $work 'fx-shadow') -Id 'llama.cpp-b10698-vulkan' -Version 'bX'
+    $shadowList = @(Get-FastLlmComponents -ComponentsPath $fxShadow.ComponentsPath)
+    $resolvedBuiltIn = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $resolveRecipe $resolveCatalog $shadowList $resolveRoot
+    $expectedBuiltIn = Get-FastLlmEngineExecutable -InstallRoot $resolveRoot -EngineVersion 'b10698' -BackendKey 'vulkan' -EntryPoint 'llama-server.exe'
+    Check ($resolvedBuiltIn.builtIn -and $resolvedBuiltIn.installed -and $resolvedBuiltIn.executable -ceq $expectedBuiltIn -and $resolvedBuiltIn.version -ceq 'b10698' -and $resolvedBuiltIn.id -ceq 'llama.cpp-b10698-vulkan') 'the built-in id resolves to the existing engines\<version>\vulkan executable, builtIn true, even when components.json also lists that id'
+    Check ($resolvedBuiltIn.executable -notlike '*components*') 'the built-in id never resolves into the components folder'
+    $resolvedBuiltInEmpty = & $module { param($R, $C, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components @() -InstallRoot $I } $resolveRecipe $resolveCatalog (New-TestRoot)
+    Check ($resolvedBuiltInEmpty.builtIn -and -not $resolvedBuiltInEmpty.installed -and $null -eq $resolvedBuiltInEmpty.executable) 'the built-in id on a root without the engine resolves as not installed, without consulting any component'
+
+    $fxEngine = New-Fixture -Dir (Join-Path $work 'fx-engine') -Id 'test-engine-1' -Version 'v1'
+    $engineList = @(Get-FastLlmComponents -ComponentsPath $fxEngine.ComponentsPath)
+    $engineRecipe = [pscustomobject] @{ id = 'rc'; components = [pscustomobject] @{ engine = 'test-engine-1'; model = 'm' } }
+    $engineRoot = New-TestRoot
+    $notInstalled = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $engineRecipe $resolveCatalog $engineList $engineRoot
+    $expectedRoot = Join-Path (Join-Path (Join-Path (Join-Path $engineRoot 'components') 'engine') 'test-engine-1') 'v1'
+    Check (-not $notInstalled.builtIn -and -not $notInstalled.installed -and $notInstalled.executable -ceq (Join-Path $expectedRoot 'server.exe') -and $notInstalled.version -ceq 'v1' -and $notInstalled.backend -ceq 'vulkan') 'a component engine resolves to components\engine\<id>\<version>\<entryPoint> and is reported not installed before the install'
+    $engineCounter = @{ count = 0 }
+    $installedRoot = Install-Fixture -Fixture $fxEngine -InstallRoot $engineRoot -Counter $engineCounter -AcceptLicense -Unattended
+    $installed = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $engineRecipe $resolveCatalog $engineList $engineRoot
+    Check ($installed.installed -and -not $installed.builtIn -and $installed.executable -ceq (Join-Path $installedRoot 'server.exe')) 'an installed component engine resolves as installed, at its component root'
+    [System.IO.File]::WriteAllText((Join-Path $installedRoot 'extra.txt'), 'not in the pinned file list')
+    $tampered = & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $engineRecipe $resolveCatalog $engineList $engineRoot
+    Check (-not $tampered.installed) 'a component engine whose folder no longer matches its pinned file list resolves as not installed'
+    $unknownRecipe = [pscustomobject] @{ id = 'ru'; components = [pscustomobject] @{ engine = 'no-such-engine'; model = 'm' } }
+    $unknownFailure = $null
+    try { & $module { param($R, $C, $L, $I) Resolve-FastLlmRecipeEngine -Recipe $R -Catalog $C -Components $L -InstallRoot $I } $unknownRecipe $resolveCatalog $engineList $engineRoot | Out-Null } catch { $unknownFailure = $_.Exception }
+    Check ($null -ne $unknownFailure -and $unknownFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-component-unknown') 'an unknown engine id is a typed error'
+
+    # ---- Get-FastLlmPlan: shipped recipes keep exactly the plan they always had; a component recipe plans on its component ----
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $shippedCatalogPath = Join-Path (Join-Path $repoRoot 'config') 'catalog.json'
+    $shippedRecipesPath = Join-Path (Join-Path $repoRoot 'config') 'recipes.json'
+    $shippedVariantsPath = Join-Path (Join-Path $repoRoot 'config') 'gpu-variants.json'
+    $fixtureDir = Join-Path $PSScriptRoot 'fixtures'
+    $planRoot = New-TestRoot
+    $xtxHardware = Read-FastLlmJson -Path (Join-Path $fixtureDir 'rx-7900-xtx-24gb.json')
+    $xtxHardware | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @([pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 200; dedicatedVideoMiB = 24534 })
+    $xtHardware = Read-FastLlmJson -Path (Join-Path $fixtureDir 'rx-7900-xt-20gb.json')
+    $xtHardware | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @([pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 204; dedicatedVideoMiB = 20464 })
+    # Recorded expectation: the engine path and the full argument list the plan produced before engine components existed (MODEL is the verified model path).
+    $commonTail = @('--host', '127.0.0.1', '--port', '8080', '--cors-origins', 'localhost', '--no-cors-credentials')
+    $expectedXtx = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-q4-k-m') + $commonTail + @(
+        '--ctx-size', '32768', '--parallel', '1', '--n-gpu-layers', 'all', '--fit', 'on', '--fit-target', '768', '--device', 'Vulkan0', '--split-mode', 'none',
+        '--flash-attn', 'auto', '--cache-type-k', 'f16', '--cache-type-v', 'f16', '--jinja', '--metrics', '--log-verbosity', '4', '--no-agent', '--no-ui')
+    $expectedXt = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-iq4-xs') + $commonTail + @(
+        '--ctx-size', '16384', '--parallel', '1', '--n-gpu-layers', 'all', '--fit', 'on', '--fit-target', '512', '--device', 'ROCm0', '--split-mode', 'none',
+        '--flash-attn', 'auto', '--cache-type-k', 'f16', '--cache-type-v', 'f16', '--jinja', '--metrics', '--log-verbosity', '4', '--no-agent', '--no-ui')
+    $expectedFields = 'schemaVersion,catalogVersion,hardwareFingerprint,fingerprintKind,selectionMode,requestedModelId,requestedRecipeId,recovered,requestedContextSize,allowExperimentalModel,catalogContextSize,performanceQualified,candidatePlacementCount,profile,backend,engineVersion,enginePath,capacity,selectedAdapters,model,modelPath,requestedAllGpuLayers,placementVerified,splitMode,tensorSplit,endpoint,serverArguments,recipe,warnings'
+    $shippedCases = @(
+        @{ Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; Args = $expectedXtx; EnginePath = 'C:\FastLLM\vulkan\llama-server.exe' },
+        @{ Hardware = $xtHardware; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k'; Args = $expectedXt; EnginePath = 'C:\FastLLM\rocm\llama-server.exe' })
+    foreach ($case in $shippedCases) {
+        foreach ($recipeMode in @('auto', 'named')) {
+            $planParams = @{ Hardware = $case.Hardware; CatalogPath = $shippedCatalogPath; InstallRoot = $planRoot; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+            if ($recipeMode -ceq 'named') { $planParams.RecipeId = $case.RecipeId }
+            $shippedPlan = Get-FastLlmPlan @planParams
+            $expectedModelPath = $shippedPlan.modelPath
+            $expectedArguments = @($case.Args | ForEach-Object { if ($_ -ceq 'MODEL') { $expectedModelPath } else { $_ } })
+            Check ($shippedPlan.recipe.id -ceq $case.RecipeId -and $shippedPlan.selectionMode -ceq 'recipe') "shipped recipe $($case.RecipeId) is picked ($recipeMode), so the plan check exercises the recipe path"
+            Check ($shippedPlan.enginePath -ceq $case.EnginePath -and $shippedPlan.engineVersion -ceq 'b10698') "shipped recipe $($case.RecipeId) ($recipeMode): the plan's executable path is the probed built-in engine path, unchanged"
+            Check (($shippedPlan.serverArguments -join [char]31) -ceq ($expectedArguments -join [char]31)) "shipped recipe $($case.RecipeId) ($recipeMode): the full argument list is unchanged"
+            Check ($shippedPlan.modelPath -like '*\models\*.gguf' -and $shippedPlan.serverArguments[1] -ceq $shippedPlan.modelPath) "shipped recipe $($case.RecipeId) ($recipeMode): --model is the verified model path"
+            Check ((@($shippedPlan.PSObject.Properties.Name) -join ',') -ceq $expectedFields) "shipped recipe $($case.RecipeId) ($recipeMode): the plan has exactly its pre-component fields (no engineComponentId)"
+        }
+    }
+
+    # A recipe on a listed engine component: planned on that component's executable, never on the built-in engine.
+    $fxPlan = New-Fixture -Dir (Join-Path $work 'fx-plan') -Id 'test-engine-1' -Version 'v1'
+    Copy-Item -LiteralPath $shippedCatalogPath -Destination (Join-Path $fxPlan.Dir 'catalog.json') -Force
+    $planCatalogPath = Join-Path $fxPlan.Dir 'catalog.json'
+    $componentRecipeDocument = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
+    $componentRecipeEntry = @($componentRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' })[0]
+    $componentRecipeEntry.id = 'fixture.component-engine'
+    $componentRecipeEntry.components.engine = 'test-engine-1'
+    $componentRecipeEntry.engineBuild = 'v1'
+    $componentRecipeDocument.recipes = @($componentRecipeEntry)
+    $componentRecipesPath = Join-Path $fxPlan.Dir 'recipes.json'
+    [System.IO.File]::WriteAllText($componentRecipesPath, (ConvertTo-Json -InputObject $componentRecipeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+    $componentPlanRoot = New-TestRoot
+    $componentPlanParams = @{ Hardware = $xtxHardware; CatalogPath = $planCatalogPath; InstallRoot = $componentPlanRoot; RecipesPath = $componentRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    $missingFailure = $null
+    try { Get-FastLlmPlan @componentPlanParams | Out-Null } catch { $missingFailure = $_.Exception }
+    Check ($null -ne $missingFailure -and $missingFailure.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and $missingFailure.Message -like '*test-engine-1*') 'a recipe whose engine component is not installed fails the plan with needs-setup-component-missing naming the component'
+    Check (-not (Test-Path -LiteralPath (Join-Path $componentPlanRoot 'components'))) 'the missing-component plan failure installs nothing and falls back to nothing'
+    $missingNamed = $null
+    try { Get-FastLlmPlan @componentPlanParams -RecipeId 'fixture.component-engine' | Out-Null } catch { $missingNamed = $_.Exception }
+    Check ($null -ne $missingNamed -and $missingNamed.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing') 'naming the recipe with -Recipe gives the same typed failure'
+    $componentCounter = @{ count = 0 }
+    $componentRootPlanned = Install-Fixture -Fixture $fxPlan -InstallRoot $componentPlanRoot -Counter $componentCounter -AcceptLicense -Unattended
+    $componentPlan = Get-FastLlmPlan @componentPlanParams
+    Check ($componentPlan.recipe.id -ceq 'fixture.component-engine' -and $componentPlan.selectionMode -ceq 'recipe') 'once installed, the component recipe is picked'
+    Check ($componentPlan.enginePath -ceq (Join-Path $componentRootPlanned 'server.exe') -and $componentPlan.enginePath -like '*components\engine\test-engine-1\v1\server.exe') 'the plan runs the component executable at components\engine\<id>\<version>\<entryPoint>'
+    Check ($componentPlan.engineComponentId -ceq 'test-engine-1' -and $componentPlan.engineVersion -ceq 'v1') 'the plan records the engine component id and its version'
+    $componentArguments = @($componentPlan.serverArguments)
+    $hostIndex = [Array]::IndexOf($componentArguments, '--host')
+    Check ($hostIndex -ge 0 -and $componentArguments[$hostIndex + 1] -ceq '127.0.0.1') '--host 127.0.0.1 is still in the argument list of a component plan'
+    $componentExpected = @($expectedXtx | ForEach-Object { if ($_ -ceq 'MODEL') { $componentPlan.modelPath } else { $_ } })
+    Check (($componentArguments -join [char]31) -ceq ($componentExpected -join [char]31)) 'a component plan has the same argument list as the built-in plan of the same recipe'
+    $mismatchDocument = Get-Content -LiteralPath $componentRecipesPath -Raw | ConvertFrom-Json
+    $mismatchDocument.recipes[0].engineBuild = 'v2'
+    $mismatchPath = Join-Path $fxPlan.Dir 'recipes-mismatch.json'
+    [System.IO.File]::WriteAllText($mismatchPath, (ConvertTo-Json -InputObject $mismatchDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+    $mismatchParams = @{ Hardware = $xtxHardware; CatalogPath = $planCatalogPath; InstallRoot = $componentPlanRoot; RecipesPath = $mismatchPath; GpuVariantsPath = $shippedVariantsPath }
+    $mismatchPlan = Get-FastLlmPlan @mismatchParams
+    Check ($mismatchPlan.recipe.origin -ceq 'estimated' -and -not $mismatchPlan.PSObject.Properties['engineComponentId']) 'a recipe whose engineBuild is not its component version is skipped (estimated plan)'
+    Check (@($mismatchPlan.recipe.skipped | Where-Object { $_ -like 'fixture.component-engine: engine build differs' }).Count -eq 1) 'the skipped list says the engine build differs'
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

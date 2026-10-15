@@ -995,6 +995,7 @@ function Get-FastLlmPlan {
     }
 
     $recipePick = $null
+    $engineComponents = @()
     $recipeSkippedSink = New-Object System.Collections.Generic.List[string]
     # Recipes auto-apply only under the default balanced profile (the UI's fixed profile) or when -Recipe names one; an explicit fast or quality
     # profile keeps the estimated planner exactly as before recipes existed (spec 4.2: the profiles keep working as today).
@@ -1006,9 +1007,15 @@ function Get-FastLlmPlan {
         try {
             $dxgi = @()
             if ($Hardware.PSObject.Properties['dxgiAdapters']) { $dxgi = @($Hardware.dxgiAdapters) }
+            # The signed component list sits next to the catalog. Without it only the built-in engine id can match a recipe.
+            try {
+                $componentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
+                if (Test-Path -LiteralPath $componentsFile -PathType Leaf) { $engineComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFile) }
+            }
+            catch { $engineComponents = @() }
             $recipePick = Select-FastLlmRecipeForPlacements -Recipes (Read-FastLlmRecipes -Path $RecipesPath) `
                 -Variants (Get-FastLlmGpuVariants -Path $GpuVariantsPath) -Placements $placements -DxgiAdapters $dxgi `
-                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -SkippedSink $recipeSkippedSink
+                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -Components $engineComponents -SkippedSink $recipeSkippedSink
         }
         catch {
             if ($RecipeId) { throw }
@@ -1124,6 +1131,26 @@ function Get-FastLlmPlan {
         $modelPath = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $model.file) -Label 'Model path'
     }
 
+    # The engine the plan runs. A recipe naming the built-in engine keeps the probed engine path, so its plan is unchanged. A recipe naming a
+    # listed engine component runs that component's executable; when it is not installed the plan fails typed, with no fallback to the
+    # built-in engine. This sits outside the recipe-selection try, so a missing component can never turn into an estimated plan.
+    $planEnginePath = $Hardware.enginePath
+    $planEngineVersion = [string] $catalog.engine.version
+    $planEngineComponentId = $null
+    # The built-in id is recognised by name alone, so a plan on the built-in engine does no engine resolution at all.
+    if ($recipePick -and $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
+        $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
+        if (-not $resolvedEngine.builtIn) {
+            if (-not $resolvedEngine.installed) {
+                throw (New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId ([string] $resolvedEngine.id) `
+                    -Message "The engine component '$($resolvedEngine.id)' is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first.")
+            }
+            $planEnginePath = [string] $resolvedEngine.executable
+            $planEngineVersion = [string] $resolvedEngine.version
+            $planEngineComponentId = [string] $resolvedEngine.id
+        }
+    }
+
     $deviceNames = @($selectedAdapters | ForEach-Object { [string] $_.device })
     $arguments = @(
         '--model', $modelPath,
@@ -1157,7 +1184,7 @@ function Get-FastLlmPlan {
         $arguments += @('--tensor-split', $tensorSplit)
     }
 
-    return [pscustomobject] [ordered] @{
+    $planDocument = [pscustomobject] [ordered] @{
         schemaVersion       = 1
         catalogVersion      = [string] $catalog.catalogVersion
         hardwareFingerprint = Get-FastLlmFingerprint -Hardware $Hardware
@@ -1173,8 +1200,8 @@ function Get-FastLlmPlan {
         candidatePlacementCount = $placements.Count
         profile             = $Profile
         backend             = [string] $Hardware.backend
-        engineVersion       = [string] $catalog.engine.version
-        enginePath          = $Hardware.enginePath
+        engineVersion       = $planEngineVersion
+        enginePath          = $planEnginePath
         capacity            = [pscustomobject] [ordered] @{
             largestFreeVramMiB   = $largestCapacity
             aggregateFreeVramMiB = $rawAggregateCapacity
@@ -1193,6 +1220,11 @@ function Get-FastLlmPlan {
         recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)))
         warnings            = $warnings
     }
+    # Present only for an engine component, so a plan on the built-in engine has exactly the fields it always had.
+    if ($planEngineComponentId) {
+        $planDocument | Add-Member -NotePropertyName engineComponentId -NotePropertyValue $planEngineComponentId
+    }
+    return $planDocument
 }
 
 function Test-FastLlmFileHash {
@@ -2379,6 +2411,22 @@ function Start-FastLlmServer {
         throw 'The selected engine installation failed its exact file manifest. Run the install action to repair it.'
     }
     $expectedEngine = Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey $backendKey -EntryPoint ([string] $asset.entryPoint)
+    # A plan on an engine component runs that component's verified executable, never the built-in engine. Not installed is a typed failure.
+    if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) {
+        $planComponentId = [string] $Plan.engineComponentId
+        $startComponentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
+        $startComponent = $null
+        if (Test-Path -LiteralPath $startComponentsFile -PathType Leaf) {
+            $startComponent = Find-FastLlmEngineComponent -Components @(Get-FastLlmComponents -ComponentsPath $startComponentsFile) -EngineId $planComponentId
+        }
+        if ($null -eq $startComponent) {
+            throw (New-FastLlmEngineFailure -Code 'recipe-engine-component-unknown' -ComponentId $planComponentId -Message "The plan names the engine component '${planComponentId}', which is not in the signed components list.")
+        }
+        if (-not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $startComponent)) {
+            throw (New-FastLlmEngineFailure -Code 'needs-setup-component-missing' -ComponentId $planComponentId -Message "The engine component '${planComponentId}' is not installed or failed its file check. The built-in engine is not used instead.")
+        }
+        $expectedEngine = Join-FastLlmContainedPath -Root (Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $startComponent) -Child ([string] $startComponent.entryPoint) -Label 'Engine component executable path'
+    }
     if (-not $Plan.enginePath -or -not ([string] $Plan.enginePath).Equals($expectedEngine, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'The plan engine path does not match the verified installed engine.'
     }
