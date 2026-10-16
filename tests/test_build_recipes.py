@@ -306,8 +306,9 @@ class RecipeBuilderTests(unittest.TestCase):
         (root / "config" / "recipes.json").write_bytes(first.replace(b"32.73", b"99.99"))
         self.assertEqual(subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--root", str(root), "--check"]).returncode, 1)
 
-    def hip_verified_tree(self, entry=None, comps=None):
-        root = self.tree([ENTRY, entry or copy.deepcopy(HIP_VERIFIED)])
+    def hip_verified_tree(self, entry=None, comps=None, vulkan_recommended=True):
+        vulkan = copy.deepcopy(ENTRY); vulkan["recommended"] = vulkan_recommended
+        root = self.tree([vulkan, entry or copy.deepcopy(HIP_VERIFIED)])
         (root / "config" / "components.json").write_text(json.dumps(comps or HIP_COMPONENTS))
         return root
 
@@ -352,19 +353,20 @@ class RecipeBuilderTests(unittest.TestCase):
             (entry[section] if section else entry)[key] = value
             return entry
         cases = {
-            "runtime.vulkanBarMitigation": mutate("vulkanBarMitigation", "auto", "runtime"),
-            "recommended": mutate("recommended", True),
-            "engineBuild differs from the component": dict(mutate("engineBuild", "b1"), expected=dict(HIP_VERIFIED["expected"], engineBuild="b1")),
-            "expected.engineBuild differs": mutate("engineBuild", "b1", "expected"),
-            "unknown engine": mutate("engine", "missing", "components"),
-            "unknown runtime": dict(HIP_VERIFIED, components={"engine": "llama.cpp-hip-b11658", "runtime": "missing"}),
-            "context too large": mutate("contextSize", 65536, "runtime"),
-            "evidence off bitworks.io": mutate("url", "https://example.com/x", "evidence"),
+            "runtime.vulkanBarMitigation": (mutate("vulkanBarMitigation", "auto", "runtime"), "runtime.vulkanBarMitigation is for Vulkan engines only"),
+            "recommended": (mutate("recommended", True), "recommended is for Vulkan engines only"),
+            "engineBuild differs from the component": (dict(mutate("engineBuild", "b1"), expected=dict(HIP_VERIFIED["expected"], engineBuild="b1")), "is not the engine component's version"),
+            "expected.engineBuild differs": (mutate("engineBuild", "b1", "expected"), "expected.engineBuild must equal"),
+            "unknown engine": (mutate("engine", "missing", "components"), "is not an engine in config/components.json"),
+            "unknown runtime": (dict(HIP_VERIFIED, components={"engine": "llama.cpp-hip-b11658", "runtime": "missing"}), "is not a runtime in config/components.json"),
+            "context too large": (mutate("contextSize", 65536, "runtime"), "runtime.contextSize must be"),
+            "evidence off bitworks.io": (mutate("url", "https://example.com/x", "evidence"), "evidence.url must be on https://bitworks.io/"),
         }
-        for label, entry in cases.items():
+        for label, (entry, message) in cases.items():
             with self.subTest(label):
-                with self.assertRaises(br.RecipeError):
-                    br.build(self.hip_verified_tree(entry))
+                # The Vulkan twin is NOT recommended, so a missing guard cannot hide behind the one-recommended-per-card check.
+                with self.assertRaisesRegex(br.RecipeError, message):
+                    br.build(self.hip_verified_tree(entry, vulkan_recommended=False))
         root = self.hip_verified_tree()
         (root / "config" / "components.json").unlink()
         with self.assertRaisesRegex(br.RecipeError, "needs config/components.json"):

@@ -12,8 +12,8 @@ Output is a JSON list with one entry per record: id, variant, gpuCount, compelli
 the components to pin. Prints "candidates=N records=M". Exit 0 ok, 1 unreadable or invalid input,
 2 usage error.
 
-Compelling (spec 1.1): >=15% generation over the best bitworks generation OR >=50% prompt tok/s over the best bitworks prompt rate for the
-same variant and gpuCount, at the same or a larger context. Each metric is compared with the best
+Compelling: >=15% generation over the best bitworks generation OR >=50% prompt tok/s over the best bitworks prompt rate for the
+same variant and gpuCount, among bitworks entries at the same or a smaller context than the record. Each metric is compared with the best
 bitworks value for that metric (baselineGeneration, baselinePrompt; baseline is the generation baseline). With no bitworks entry, the fastest
 screened record for that variant and count is compelling. Quality checks are not visible on paper;
 they are enforced at reproduction.
@@ -266,12 +266,17 @@ def screen(doc, recipes, components, gpu_variants):
                 "baselinePrompt": base_prompt["id"] if base_prompt else None}
         if gen is not None or prm is not None:
             if peers:
+                # The gains are compared unrounded (as the recipe builder does) and rounded only for display.
+                gen_ratio = prm_ratio = None
                 if gen is not None and base_gen and base_gen["generationTokS"]:
-                    comp["genGainPct"] = round((gen / base_gen["generationTokS"] - 1) * 100, 1)
+                    gen_ratio = gen / base_gen["generationTokS"]
+                    comp["genGainPct"] = round((gen_ratio - 1) * 100, 1)
                 if prm is not None and base_prompt and base_prompt.get("promptTokS"):
-                    comp["promptGainPct"] = round((prm / base_prompt["promptTokS"] - 1) * 100, 1)
+                    prm_ratio = prm / base_prompt["promptTokS"]
+                    comp["promptGainPct"] = round((prm_ratio - 1) * 100, 1)
                 comp["compelling"] = bool(eligible) and (
-                    (comp["genGainPct"] or 0) >= GEN_PCT or (comp["promptGainPct"] or 0) >= PROMPT_PCT)
+                    (gen_ratio is not None and round(gen_ratio, 6) >= 1 + GEN_PCT / 100)
+                    or (prm_ratio is not None and round(prm_ratio, 6) >= 1 + PROMPT_PCT / 100))
             else:
                 comp["compelling"] = gen is not None and gen == fastest.get((var, n["gpuCount"]))
             if not comp["compelling"]:

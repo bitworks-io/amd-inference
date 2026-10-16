@@ -97,6 +97,45 @@ class PerMetricBaselineTests(unittest.TestCase):
         self.assertFalse(self.screened(30.0, 1100.0)["compellingOnPaper"]["compelling"])
 
 
+class ContextAndBoundaryTests(unittest.TestCase):
+    """Synthetic Bitworks entries for one card: A (16k, slower) and B (32k, faster)."""
+    PEERS = {"entries": [
+        {"id": "A", "variant": "rx-7900-xt", "gpuCount": 1, "expected": {"generationTokS": 30.0, "promptTokS": 500.0, "contextTokens": 16384}},
+        {"id": "B", "variant": "rx-7900-xt", "gpuCount": 1, "expected": {"generationTokS": 40.0, "promptTokS": 600.0, "contextTokens": 32768}}]}
+
+    def screened(self, generation, prompt, context=None, peers=None):
+        doc = sc.load(FIX / "cand.json")
+        record = doc["byVariant"]["rx-7900-xt-20gb"][0]
+        record["generationTps"][0]["value"] = generation
+        record["promptTps"][0]["value"] = prompt
+        if context is not None:
+            record.setdefault("settings", {})["contextSize"] = context
+        return sc.screen(doc, peers or self.PEERS, COMPONENTS, VARIANTS)[0]
+
+    def test_only_bitworks_entries_at_the_same_or_a_smaller_context_are_the_baseline(self):
+        # 36.0 is +20% over A (the only entry at a context this small) but below B, which is at a larger context.
+        row = self.screened(36.0, 100.0, context=16384)
+        self.assertEqual(row["compellingOnPaper"]["baselineGeneration"], "A")
+        self.assertTrue(row["compellingOnPaper"]["compelling"])
+        # At the larger context both entries count, and B is the best.
+        row = self.screened(36.0, 100.0, context=32768)
+        self.assertEqual(row["compellingOnPaper"]["baselineGeneration"], "B")
+        self.assertFalse(row["compellingOnPaper"]["compelling"])
+
+    def test_a_record_below_every_bitworks_context_is_not_compelling(self):
+        row = self.screened(100.0, 5000.0, context=8192)
+        self.assertFalse(row["compellingOnPaper"]["compelling"])
+        self.assertFalse(row["candidate"])
+        self.assertIn("not-compelling", row["reasons"])
+
+    def test_gains_are_compared_unrounded(self):
+        peers = {"entries": [self.PEERS["entries"][0]]}
+        below = self.screened(34.49, 100.0, peers=peers)  # +14.967%: displays as 15.0 but is below the threshold
+        self.assertEqual(below["compellingOnPaper"]["genGainPct"], 15.0)
+        self.assertFalse(below["compellingOnPaper"]["compelling"])
+        self.assertTrue(self.screened(34.5, 100.0, peers=peers)["compellingOnPaper"]["compelling"])
+
+
 class RealShapeTests(unittest.TestCase):
     """Synthetic records reproducing the shape variants seen in the real website export."""
 
