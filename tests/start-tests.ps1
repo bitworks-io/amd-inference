@@ -647,6 +647,11 @@ try {
     $script:ins.standing=''
     $explicitInteractive=Invoke-InsInstall $false $false 'hip-recipe'
     Check ($null -eq $explicitInteractive.failure -and $explicitInteractive.log -contains 'INSTALL-COMPONENT:eng-hip:accept=False:setting=') 'install -Recipe <hip> without -Unattended still reaches the component install (a show-type license asks on the console; an accept-type license refuses there)'
+# The background host plans through the same shared fallback: its Get-FastLlmPlan call asks for -ResolveFallback and it has no install path.
+$hostText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.BackgroundHost.ps1'))
+$hostPlanCall=[regex]::Match($hostText,'(?s)\$plan = Get-FastLlmPlan.*?\r?\n\s*\$plan \| Add-Member')
+Check ($hostPlanCall.Success -and $hostPlanCall.Value.Contains('-ResolveFallback')) 'background host: the plan is requested with -ResolveFallback'
+Check ($hostText -notmatch 'Install-FastLlm(Component|Model|Engines)\s+-') 'background host: no install function is called'
 } finally {
     foreach($name in $saved.Keys){& $module {param($N,$B) Set-Item -Path ('Function:script:'+$N) -Value $B} $name $saved[$name]}
     if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Recurse -Force}
