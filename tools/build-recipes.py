@@ -5,12 +5,13 @@ Bitworks-authored experimental setups (data/bitworks-experimental-recipes.json, 
 recommended; every component they name must be listed in config/components.json, and they name their own engine. They are gated like
 community-experimental recipes and never auto-selected by the product.
 A verified entry may name its own engine component (components.engine, e.g. the HIP lane): it is checked against config/components.json, carries
-no vulkanBarMitigation, uses expected.mitigation "not-applicable", and is never recommended; the product never picks it automatically.
+no vulkanBarMitigation and uses expected.mitigation "not-applicable". It may be recommended, but only when the measured results back it up (see below).
 Verified and community-reproduced entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and
 evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation over the highest Bitworks generation OR >=50% prompt over the
 highest Bitworks prompt rate, for the same card and GPU count, among Bitworks recipes at the same or a smaller context; with no Bitworks recipe to compare
 against, only the fastest community record for that card and GPU count). Only verified Bitworks recipes may be
-recommended. Deterministic output.
+recommended, and a recommended recipe must not be measured worse than any other Bitworks recipe for the same card, GPU count and model:
+promptTokS at least as high, generationTokS at least 97% of it (compared unrounded). Deterministic output.
 Usage: build-recipes.py [--root R] [--check]   (exit 0 ok, 1 drift, 2 refused)
 """
 import argparse
@@ -80,8 +81,6 @@ def validate(entry, origin, catalog, variants, components=None):
     if non_vulkan:
         if "vulkanBarMitigation" in runtime:
             raise RecipeError(f"{rid}: runtime.vulkanBarMitigation is for Vulkan engines only")
-        if entry.get("recommended"):
-            raise RecipeError(f"{rid}: recommended is for Vulkan engines only (a recipe whose engine needs an accepted license is never picked automatically)")
     elif runtime.get("vulkanBarMitigation") not in MITIGATIONS:
         raise RecipeError(f"{rid}: runtime.vulkanBarMitigation must be one of {MITIGATIONS}")
     if not isinstance(runtime.get("contextSize"), int) or not 0 < runtime["contextSize"] <= int(model["contextSize"]):
@@ -343,6 +342,7 @@ def build(root):
             if key in seen:
                 raise RecipeError(f"more than one recommended recipe for {key}")
             seen.add(key)
+    check_recommended_evidence(recipes)
     if components is not None:
         check_component_refs(recipes, components)
     recipes.sort(key=lambda r: (r["gpu"]["variant"], r["gpu"]["count"], r["origin"], r["id"]))
@@ -353,6 +353,25 @@ def build(root):
         input_files.append(EXPERIMENTAL_FILE)
     inputs = {rel: sha256_file(root, rel) for rel in input_files}
     return {"schema": "bitworks.fastllm-recipes/v2", "inputs": inputs, "recipes": recipes}, skipped
+
+
+def check_recommended_evidence(recipes):
+    """A recommended Bitworks recipe must be measured at least as good as every other Bitworks recipe for the same card, GPU count and model."""
+    measured = [r for r in recipes if r["origin"] == "bitworks"]
+    for recipe in measured:
+        if not recipe["recommended"]:
+            continue
+        key = (recipe["gpu"]["variant"], recipe["gpu"]["count"], recipe["components"]["model"])
+        for other in measured:
+            if other is recipe or (other["gpu"]["variant"], other["gpu"]["count"], other["components"]["model"]) != key:
+                continue
+            gen, prompt = recipe["expected"]["generationTokS"], recipe["expected"]["promptTokS"]
+            other_gen, other_prompt = other["expected"]["generationTokS"], other["expected"]["promptTokS"]
+            # 100 * gen >= 97 * other_gen is the 97% floor without the rounding noise of 0.97 * other_gen.
+            if prompt < other_prompt or 100 * gen < 97 * other_gen:
+                raise RecipeError(
+                    f"{recipe['id']}: recommended but not measured at least as good as {other['id']}: "
+                    f"prompt {prompt} vs {other_prompt} tok/s (must be at least equal), generation {gen} vs {other_gen} tok/s (must be at least 97%)")
 
 
 def render(document):
