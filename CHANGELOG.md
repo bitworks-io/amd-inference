@@ -5,9 +5,9 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 ## 2026.10.15.8 (canary)
 
 - **HIP is now the default on the RX 7900 XT and RX 7900 XTX:**
-  - Lab results (result pages are linked under 2026.10.15.6 below): at a 512-token prompt, the XT reads 799.1 tok/s against 507.0 tok/s on Vulkan (+57.6%), and the XTX 876.3 against 654.1 (+34%). Generation speed is within noise.
+  - Lab results (result pages are linked under 2026.10.15.6 below): at a 512-token prompt, the XT reads 799.1 tok/s against 507.0 tok/s on Vulkan (+57.6%), and the XTX 876.3 against 654.1 (+34%). Generation speed is about the same (XT -1%, XTX +3%). The builds compared are HIP b11658 and Vulkan b10698.
   - FastLLM only makes a HIP setup the default when its measured prompt speed is at least the Vulkan setup's and its generation speed is at least 97% of it. The recipe build checks this.
-- **Extra components on first use, about 565 MB to download and about 2.33 GB on disk once unpacked:**
+- **Extra components on first use, about 565 MB (539 MiB) to download and about 2.33 GB (2.17 GiB) on disk once unpacked, decimal units unless noted:**
   - llama.cpp b11658 HIP (about 1.20 GB unpacked) from github.com, and the AMD ROCm 10.0 gfx1100 runtime (about 1.13 GB unpacked) from stable.repo.amd.com.
   - Bitworks hosts neither. Each file is checked against its pinned size and SHA-256.
 - **One consent for the components, then the model license:**
@@ -16,14 +16,14 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 - **Optional setting to accept for you:**
   - Window: "Install engine components automatically (accept their licenses for me)", confirmed with "I accept these licenses".
   - Command line: `fast-llm.ps1 settings -ComponentLicenses accept-automatically -AcceptLicense`. Turn it off with `settings -ComponentLicenses ask`.
-  - It covers only the licenses shown when you turned it on. If a license changes, FastLLM asks again.
+  - It covers only the licenses (matched by title and host) shown when you turned it on. If a component needs one that is not covered, FastLLM asks again.
 - **A visible Vulkan fallback:**
   - If the license is declined, the HIP components are missing, fail their file check or fail to install, Windows blocks or cannot load the HIP files, the card cannot use HIP, or the HIP server does not start, FastLLM starts the Vulkan setup and says so. `status.json` records it as `fallback`, and the window's status line names the engine ("Running on HIP (AMD ROCm 10.0)" or "Running on Vulkan (fallback: ...)").
   - It never falls back after the server was ready.
   - A declined license is remembered for that setup and not asked again until you choose it under **Choose another setup** (or turn the automatic setting on).
   - An explicit `-Recipe`, or a setup you pick under **Choose another setup**, never falls back.
-  - `start` never downloads anything.
-- **Also:** new command-line options `start -PlannedRecipe`, `plan`, `install` and `start` `-UseFallback [-FallbackReason]`, and the `settings` command. The window notice now reads "Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models." The community screening tool reads `gpuVariants` and no longer flags HIP as unshipped on cards with a shipped HIP chain.
+  - `start` never installs engine components.
+- **Also:** new command-line options `start -PlannedRecipe <id>`, and `-UseFallback [-FallbackReason components-declined|components-install-failed]` on `plan`, `install` and `start`, and the `settings` command. The window notice now reads "Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models." The community screening tool reads `gpuVariants` and no longer flags HIP as unshipped on cards with a shipped HIP chain.
 - **What has not changed:** Vulkan remains the fallback and the default on other cards, and experimental setups stay behind their switch.
 
 ## 2026.10.15.7 (canary)
