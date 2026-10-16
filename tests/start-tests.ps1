@@ -348,7 +348,7 @@ try {
         if($script:ndPlanComponent){$ndPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-hip-b11658'}
         if($script:ndPlanHip){$ndPlan | Add-Member -NotePropertyName backend -NotePropertyValue 'hip'}
         return $ndPlan }
-    function Write-FastLlmPlan { param($Plan) }
+    function Write-FastLlmPlan { param($Plan,[switch]$Started) }
     # The fallback helper of fast-llm.ps1, taken from its source so the harness runs the shipped code.
     $declinedHelperAst=@($cliTree.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-FastLlmDeclinedFallbackPlan'},$true))[0]
     . ([scriptblock]::Create($declinedHelperAst.Extent.Text))
@@ -632,7 +632,6 @@ try {
     $noAccept=Invoke-InsInstall $false $true
     Check ($null -eq $noAccept.failure -and @($noAccept.log | Where-Object { $_ -like 'INSTALL-COMPONENT*' }).Count -eq 0 -and $noAccept.log -contains 'INSTALL-MODEL:vk-model' -and $noAccept.log -notcontains 'INSTALL-MODEL:hip-model') 'install without -AcceptLicense and without a covering setting: no component is downloaded, the fallback model is installed, no failure'
     Check ($noAccept.text.Contains("FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. FastLLM will use the Vulkan setup instead.") -and $noAccept.text.Contains('-AcceptLicense') -and $noAccept.text.Contains('AMD EULA') -and $noAccept.text.Contains('https://www.amd.com/eula')) 'that install prints the fallback line, the -AcceptLicense hint and the license links'
-    Write-Host $noAccept.text
     function Get-InsPendingPlanText {
         $script:ins.componentsInstalled=$false; $AsJson=$false
         $pendingPlan=Get-FastLlmPlan -Hardware $null -CatalogPath 'c' -Profile 'balanced' -InstallRoot 'r'
@@ -641,6 +640,21 @@ try {
         Write-FastLlmPlan -Plan $pendingPlan
         return ($lines -join "`n")
     }
+    function Get-InsFallbackPlanText([bool]$LiveStart,[string]$Reason='components-pending') {
+        $AsJson=$false
+        $appliedPlan=Get-FastLlmPlan -Hardware $null -CatalogPath 'c' -Profile 'balanced' -InstallRoot 'r' -FallbackFromRecipe 'hip-recipe' -FallbackReason $Reason
+        $lines=New-Object 'Collections.Generic.List[string]'
+        function Write-Host { $lines.Add(($args -join ' ')) }
+        if($LiveStart){ Write-FastLlmPlan -Plan $appliedPlan -Started } else { Write-FastLlmPlan -Plan $appliedPlan }
+        return ($lines -join "`n")
+    }
+    $verbatimStarted="FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. Started the Vulkan setup instead."
+    $liveText=Get-InsFallbackPlanText $true
+    Check ($liveText.Split("`n") -ccontains $verbatimStarted) 'a live start with components pending prints the exact fallback line'
+    $previewText=Get-InsFallbackPlanText $false
+    Check (-not $previewText.Contains('Started') -and $previewText.Contains('FastLLM will use the Vulkan setup instead.')) 'plan, install and start -DryRun (no -Started) do not claim the Vulkan setup was started'
+    $startSrc=[IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
+    Check (([regex]::Matches($startSrc,'Write-FastLlmPlan -Plan \$plan -Started')).Count -eq 1 -and $startSrc.Contains('Write-FastLlmPlan -Plan $plan' + "`n" + '            if (-not $AsJson) { foreach ($noteLine')) 'only the live start loop passes -Started'
     $pendingText=Get-InsPendingPlanText
     Check ($pendingText.Contains('AMD ROCm runtime 10, 565.1 MB, from repo.radeon.com') -and $pendingText.Contains('if the components are not installed')) 'the pending list shows decimal megabytes'
     $oldCulture=[Threading.Thread]::CurrentThread.CurrentCulture

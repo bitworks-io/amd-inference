@@ -296,7 +296,7 @@ try {
     function Install-FastLlmEngines {param($CatalogPath,$InstallRoot) $script:engineCalls++}
     function Get-FastLlmHardware {param($HardwareFile,$CatalogPath,$InstallRoot) return [pscustomobject]@{backend='Vulkan'}}
     function Get-FastLlmPlan {param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback) return [pscustomobject]@{model=$script:mockPlanModel}}
-    function Write-FastLlmPlan {param($Plan)}
+    function Write-FastLlmPlan {param($Plan,[switch]$Started)}
     function Install-FastLlmModel {param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:modelCalls++;return 'synthetic-model'}
     function Write-FastLlmState {param($InstallRoot,$State)}
 

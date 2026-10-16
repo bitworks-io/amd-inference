@@ -217,8 +217,11 @@ $selectionOptions = @{
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
 if ($HardwareFile) { $selectionOptions.NoEngineExecution = $true }
 
+# -Started: only the live start passes it; plan, install and start -DryRun start nothing, so they say what will be used.
 function Write-FastLlmPlan {
-    param($Plan)
+    param($Plan, [switch] $Started)
+    $fallbackVerb = 'FastLLM will use the Vulkan setup instead.'
+    if ($Started) { $fallbackVerb = 'Started the Vulkan setup instead.' }
 
     if ($AsJson) {
         $Plan | ConvertTo-Json -Depth 12
@@ -250,11 +253,11 @@ function Write-FastLlmPlan {
         if ($Plan.fallback.toRecipe) { $fallbackTarget = [string] $Plan.fallback.toRecipe }
         if ([bool] $Plan.fallback.applied) {
             Write-Host "Fallback:  using $fallbackTarget instead of $($Plan.fallback.fromRecipe) ($($Plan.fallback.reason))"
-            if ([string] $Plan.fallback.reason -ceq 'components-pending') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. FastLLM will use the Vulkan setup instead." }
-            elseif ([string] $Plan.fallback.reason -ceq 'components-unverified') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which is installed but failed its file check. FastLLM will use the Vulkan setup instead." }
+            if ([string] $Plan.fallback.reason -ceq 'components-pending') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. $fallbackVerb" }
+            elseif ([string] $Plan.fallback.reason -ceq 'components-unverified') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which is installed but failed its file check. $fallbackVerb" }
             elseif ([string] $Plan.fallback.reason -ceq 'components-declined') { Write-Host "Using the Vulkan setup: the AMD license wasn't accepted." }
             elseif ([string] $Plan.fallback.reason -ceq 'components-install-failed') { Write-Host 'Using the Vulkan setup: the engine components could not be installed. Start again to retry.' }
-            else { Write-Host "FastLLM's best setup for your card could not run here ($($Plan.fallback.reason)). FastLLM will use the Vulkan setup instead." }
+            else { Write-Host "FastLLM's best setup for your card could not run here ($($Plan.fallback.reason)). $fallbackVerb" }
         }
         else { Write-Host "Fallback:  if the components are not installed, $fallbackTarget is used ($($Plan.fallback.reason))" }
     }
@@ -568,7 +571,7 @@ try {
                 if ($PlannedRecipe -and -not $recoveryAttempted -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $plan -PlannedRecipe $PlannedRecipe)) {
                     throw (New-FastLlmTypedFailure -Code 'planned-recipe-not-applicable' -Message "The setup '$PlannedRecipe' does not apply to this PC any more. Nothing was started; choose a setup again.")
                 }
-                Write-FastLlmPlan -Plan $plan
+                Write-FastLlmPlan -Plan $plan -Started
                 if ($VulkanBarMitigation -in @('on', 'off') -and $plan.PSObject.Properties['backend'] -and [string] $plan.backend -ieq 'hip') {
                     Write-Host 'Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
                 }
