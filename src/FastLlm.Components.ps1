@@ -504,3 +504,44 @@ function Set-FastLlmComponentLicenseSettingMirrored {
         throw "The component license setting could not be applied to the install folder, so it was not changed: $failure"
     }
 }
+
+# ---- declinedSetups: setups whose component licenses the user declined in the window (window only; under the launch root, never mirrored) ----
+
+# declinedSetups in <InstallRoot>\settings.json: an array of recipe ids. A missing or malformed value reads as empty; a malformed entry is skipped. Never throws.
+function Get-FastLlmUiDeclinedSetups {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    try {
+        $stored = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+        if (-not $stored.Contains('declinedSetups')) { return @() }
+        $value = $stored['declinedSetups']
+        if ($value -isnot [array]) { return @() }
+        $ids = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($entry in $value) {
+            if ($entry -isnot [string] -or $entry -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { continue }
+            if (-not $ids.Contains([string] $entry)) { $ids.Add([string] $entry) }
+        }
+        return $ids.ToArray()
+    }
+    catch { return @() }
+}
+
+function Add-FastLlmUiDeclinedSetup {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $RecipeId)
+    if ($RecipeId -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { throw 'The setup id is not valid.' }
+    $ids = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($id in @(Get-FastLlmUiDeclinedSetups -InstallRoot $InstallRoot)) { $ids.Add([string] $id) }
+    if ($ids.Contains($RecipeId)) { return }
+    $ids.Add($RecipeId)
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged['declinedSetups'] = $ids.ToArray()
+    Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
+}
+
+function Remove-FastLlmUiDeclinedSetup {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $RecipeId)
+    $current = @(Get-FastLlmUiDeclinedSetups -InstallRoot $InstallRoot)
+    if ($current -cnotcontains $RecipeId) { return }
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged['declinedSetups'] = @($current | Where-Object { $_ -cne $RecipeId })
+    Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
+}

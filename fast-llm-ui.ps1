@@ -35,7 +35,7 @@ $script:bgPoll=$null
 $script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
 $form=New-Object Windows.Forms.Form
 $form.Text='Bitworks FastLLM (Preview)'
-$form.Size=New-Object Drawing.Size(880,911)
+$form.Size=New-Object Drawing.Size(880,941)
 $form.MinimumSize=$form.Size
 $form.StartPosition='CenterScreen'
 $form.Font=New-Object Drawing.Font('Segoe UI',10)
@@ -48,7 +48,7 @@ function LabelAt($Text,$X,$Y,$Width=800) {
 }
 $title=LabelAt 'Local AMD inference, managed on this PC' 24 20
 $title.Font=New-Object Drawing.Font('Segoe UI',18,[Drawing.FontStyle]::Bold);$title.Height=40
-$notice=LabelAt 'Preview. Windows + AMD Radeon. Vulkan engine. Text-only models.' 24 68
+$notice=LabelAt 'Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models.' 24 68
 $notice.ForeColor=[Drawing.Color]::DarkRed
 $null=LabelAt 'Model' 24 110 220
 $modelBox=New-Object Windows.Forms.ComboBox
@@ -115,6 +115,11 @@ $experimentalBox=New-Object Windows.Forms.CheckBox
 $experimentalBox.Text='Experimental community components';$experimentalBox.Location=New-Object Drawing.Point(480,757);$experimentalBox.AutoSize=$true
 $experimentalBox.Checked=([string]$script:uiSettings.experimentalComponents -ceq 'on');$form.Controls.Add($experimentalBox)
 $script:experimentalRevert=$false
+$licenseBox=New-Object Windows.Forms.CheckBox
+$licenseBox.Text='Install engine components automatically (accept their licenses for me)';$licenseBox.Location=New-Object Drawing.Point(24,822);$licenseBox.AutoSize=$true
+$licenseBox.Checked=([string](Get-FastLlmComponentLicenseSettings -InstallRoot $script:settingsRoot).mode -ceq 'accept-automatically');$form.Controls.Add($licenseBox)
+$script:licenseRevert=$false
+$script:useFallback=$false;$script:setupNotice='';$script:planComponentInstall=$false
 # The top row is reserved for the banner, so everything above is shifted down by its height. Banner controls are added after the shift.
 $script:bannerHeight=36
 foreach($shifted in @($form.Controls)){$shifted.Top+=$script:bannerHeight}
@@ -182,6 +187,68 @@ $experimentalBox.Add_CheckedChanged({
     catch{
         $statusLabel.Text='The experimental components setting could not be saved: '+$_.Exception.Message
         $script:experimentalRevert=$true;$experimentalBox.Checked=($previousValue -ceq 'on');$script:experimentalRevert=$false
+    }
+})
+function ShowLicenseSettingConfirm($Disclosure) {
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Install engine components automatically';$dialog.Size=New-Object Drawing.Size(700,420)
+    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $intro=New-Object Windows.Forms.Label
+    $intro.Text='With this on, FastLLM installs engine components without asking again, and counts that as accepting the licenses below. Open each link and read it first. You can turn this off at any time.'
+    $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(640,64);$dialog.Controls.Add($intro)
+    $top=86
+    foreach($licenseLink in @($Disclosure.links)){
+        if($licenseLink.url){
+            $link=New-Object Windows.Forms.LinkLabel
+            $link.Text=[string]$licenseLink.linkText;$link.Tag=[string]$licenseLink.url
+            $link.Location=New-Object Drawing.Point(30,$top);$link.AutoSize=$true
+            $link.Add_LinkClicked({param($sender,$clickArgs)
+                try{
+                    $target=Get-FastLlmUiSafeLicenseUrl -Url ([string]$sender.Tag)
+                    if($target){Start-Process $target}
+                }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was changed.','Open license page','OK','Warning')}
+            })
+            $dialog.Controls.Add($link)
+        }else{
+            $plain=New-Object Windows.Forms.Label
+            $plain.Text=("{0} (this link cannot be opened from here)" -f [string]$licenseLink.title);$plain.Location=New-Object Drawing.Point(30,$top);$plain.AutoSize=$true
+            $dialog.Controls.Add($plain)
+        }
+        $top+=26
+    }
+    $accept=New-Object Windows.Forms.Button
+    $accept.Text='I accept these licenses';$accept.Location=New-Object Drawing.Point(300,330);$accept.Size=New-Object Drawing.Size(210,38)
+    $accept.Anchor='Bottom,Right';$accept.Enabled=[bool]$Disclosure.canAccept
+    $accept.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($accept)
+    $cancel=New-Object Windows.Forms.Button
+    $cancel.Text='Cancel';$cancel.Location=New-Object Drawing.Point(530,330);$cancel.Size=New-Object Drawing.Size(120,38)
+    $cancel.Anchor='Bottom,Right';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($cancel)
+    # Enter and Escape cancel; accepting needs a click on the accept button.
+    $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
+    SetTrayMenuAvailable $false
+    try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+}
+# The CLI children read the setting from the install folder shown in the window, so it is stored under the launch root and mirrored there. Cancel,
+# or any failure, puts the box back to what it showed.
+$licenseBox.Add_CheckedChanged({
+    if($script:licenseRevert){return}
+    $wantedOn=[bool]$licenseBox.Checked
+    try{
+        $target=[IO.Path]::GetFullPath($pathBox.Text)
+        if($wantedOn){
+            $disclosure=Get-FastLlmUiLicenseDisclosure -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path $PSScriptRoot 'config/components.json'))
+            if(-not (ShowLicenseSettingConfirm $disclosure)){
+                $script:licenseRevert=$true;$licenseBox.Checked=$false;$script:licenseRevert=$false
+                return
+            }
+            Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot -TargetRoot $target -Mode 'accept-automatically' -Accepted @($disclosure.identities) -AcceptedAt ((Get-Date).ToUniversalTime().ToString('o'))
+        }else{
+            Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot -TargetRoot $target -Mode 'ask'
+        }
+    }
+    catch{
+        $statusLabel.Text='The automatic install setting could not be saved: '+$_.Exception.Message
+        $script:licenseRevert=$true;$licenseBox.Checked=(-not $wantedOn);$script:licenseRevert=$false
     }
 })
 function SetBusy([bool]$Busy) {
@@ -302,6 +369,8 @@ function GetVcInstallDecision($Inventory,$Candidate) {
     } (Join-Path $PSScriptRoot 'src/FastLlm.VcRedistInstall.ps1') $Inventory ([version]$Candidate.version)
 }
 function ReadSelection {
+    # A new workflow starts without the last one's fallback request, notice or pending component install.
+    $script:useFallback=$false;$script:setupNotice='';$script:planComponentInstall=$false
     $script:installPath=[IO.Path]::GetFullPath($pathBox.Text)
     $script:selection=@('-InstallRoot',$script:installPath,'-ContextSize',[string][int]$contextBox.Value)
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
@@ -314,6 +383,8 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
     # The experimental switch is stored under the launch root, but the child reads it from the install folder it is given: mirror it there first.
     # A mirror failure blocks only the steps that read the switch.
     if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{if(Test-FastLlmUiStepReadsExperimentalSwitch -Arguments $Arguments){throw "The experimental components setting could not be applied to the install folder: $($_.Exception.Message)"}}}
+    # The automatic-install setting is mirrored the same way; a mirror failure blocks only the steps that read it.
+    if($script:installPath){try{[void](Sync-FastLlmComponentLicenseSetting -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{if(Test-FastLlmUiStepReadsLicenseSetting -Arguments $Arguments){throw "The automatic install setting could not be applied to the install folder: $($_.Exception.Message)"}}}
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
     if($Step -ceq 'vc prepare'){
@@ -580,7 +651,7 @@ function LaunchUiPhase {
     switch($script:flow.phase){
         'setup' { LaunchStep 'setup check' (@('doctor','-Compact')+$script:selection);return }
         'engine' { LaunchStep 'engine' (@('install','-EngineOnly')+$script:selection);return }
-        'preview' { LaunchStep 'preview' (@('plan','-AsJson')+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe)+@(Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe));return }
+        'preview' { LaunchStep 'preview' (@('plan','-AsJson')+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe)+@(Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe -UseFallback:$script:useFallback));return }
         'model-download' {
             $plan=$script:flow.pendingPlan
             if(-not $plan -or (Get-FastLlmUiModelProvenanceDigest -Model $plan.model) -cne $script:flow.pendingProvenance){
@@ -602,7 +673,44 @@ function LaunchUiPhase {
         default { throw "The control-window workflow cannot launch phase '$($script:flow.phase)'." }
     }
 }
+function RepreviewForPendingSetup([bool]$UseFallback) {
+    $script:useFallback=$UseFallback
+    $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'components-handled'
+    if($script:flow.phase -eq 'failed'){ShowFailure $script:flow.lastStartError;return}
+    LaunchUiPhase
+    if($script:setupNotice){$statusLabel.Text=$script:setupNotice}
+}
+function HandlePendingSetup($Plan,$Decision) {
+    switch($Decision.action){
+        'fallback' {$script:setupNotice=[string]$Decision.notice;RepreviewForPendingSetup $true}
+        'install-now' {
+            $installArgs=@(Get-FastLlmUiAutomaticInstallArguments -EngineId ([string]$Decision.engineId) -InstallRoot $script:installPath)
+            if($installArgs.Count -eq 0){throw 'The engine components could not be identified; nothing was installed.'}
+            $script:planComponentInstall=$true
+            LaunchStep 'component install' $installArgs
+        }
+        default {
+            $row=[pscustomobject]@{model=[string]$Plan.model.id;contextText=(([int]$Plan.model.contextSize).ToString('N0',[Globalization.CultureInfo]::InvariantCulture)+' tokens')}
+            $answer=ShowComponentConsent $row @($Decision.rows) $false
+            $pendingCount=Get-FastLlmUiPendingConsentCount -ConsentRows @($Decision.rows)
+            $installArgs=@(Get-FastLlmUiComponentInstallArguments -EngineId ([string]$Decision.engineId) -InstallRoot $script:installPath -Confirmed ([bool]$answer.confirmed) -RowCount $pendingCount -Ticked @($answer.ticked))
+            if($installArgs.Count -eq 0){
+                # Cancel remembers the decline for this setup and starts the Vulkan setup; picking the HIP setup in Choose another setup clears it.
+                try{Add-FastLlmUiDeclinedSetup -InstallRoot $script:settingsRoot -RecipeId ([string]$Decision.recipeId)}catch{}
+                $script:setupNotice=Get-FastLlmUiDeclineLine
+                RepreviewForPendingSetup $true
+                return
+            }
+            $script:planComponentInstall=$true
+            LaunchStep 'component install' $installArgs
+        }
+    }
+}
 function ContinueUiAfterPreview($Plan) {
+    if(-not $script:chosenRecipe){
+        $decision=Get-FastLlmUiPendingDecision -Plan $Plan -LicenseSettings (Get-FastLlmComponentLicenseSettings -InstallRoot $script:settingsRoot) -DeclinedSetups @(Get-FastLlmUiDeclinedSetups -InstallRoot $script:settingsRoot)
+        if($decision.action -cne 'none'){HandlePendingSetup $Plan $decision;return}
+    }
     $receipt=Test-FastLlmModelConsentReceipt -Model $Plan.model -InstallRoot $script:installPath
     $artifact=[bool]($Plan.modelPath -and (Test-Path -LiteralPath ([string]$Plan.modelPath) -PathType Leaf))
     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'preview-complete' -Plan $Plan -HasConsent:$receipt -HasArtifact:$artifact
@@ -853,14 +961,14 @@ function UpdateConsentInstallState {
     $ticked=@($view.boxes|ForEach-Object{[bool]$_.Checked})
     $view.install.Enabled=[bool](Test-FastLlmUiConsentComplete -RowCount $view.boxes.Count -Ticked $ticked)
 }
-function ShowComponentConsent($Row,[object[]]$ConsentRows) {
+function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
     RevealUiForAction
     $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Install community components';$dialog.Size=New-Object Drawing.Size(800,620)
+    $dialog.Text='Install engine components';$dialog.Size=New-Object Drawing.Size(800,620)
     $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
     $boldFont=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold)
     $intro=New-Object Windows.Forms.Label
-    $intro.Text="You chose the $([string]$Row.model) setup ($([string]$Row.contextText)). It needs the components below. Missing ones are downloaded from the sources shown, not from Bitworks. Open each license link, read it, and tick I accept for every missing component to enable Install."
+    $intro.Text=Get-FastLlmUiComponentIntro -Model ([string]$Row.model) -ContextText ([string]$Row.contextText) -Chosen $Chosen
     $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(740,58)
     $panel=New-Object Windows.Forms.Panel
     $panel.Location=New-Object Drawing.Point(20,80);$panel.Size=New-Object Drawing.Size(740,420);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
@@ -939,6 +1047,8 @@ function ContinueWithChosenRecipe($Row) {
     }
     if($Row.experimental -and -not $experimentalBox.Checked){throw 'This setup is experimental. Turn on Experimental community components to use it. Nothing was changed.'}
     if(-not [string]::IsNullOrEmpty([string]$Row.chainError)){throw "This setup cannot be prepared: $([string]$Row.chainError) Nothing was changed."}
+    # Picking a setup yourself ends a remembered decline of it.
+    try{Remove-FastLlmUiDeclinedSetup -InstallRoot $script:settingsRoot -RecipeId ([string]$Row.id)}catch{}
     if($Row.installRequired){
         # Some component of the engine chain is missing: show the whole chain; Install needs every missing component accepted.
         $consentRows=@(Get-FastLlmUiConsentRows -Chain @($Row.chain))
@@ -1087,11 +1197,12 @@ $timer.Add_Tick({
         $text=$script:child.Snapshot();$output.Text=$text;$output.SelectionStart=$output.TextLength;$output.ScrollToCaret()
         if(-not $script:child.Process.HasExited){
             if($script:step -eq 'serving'){
-                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text='Ready - API smoke tests passed; GPU residency/performance unqualified.';$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
+                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
                     if($s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
                         $setupLine=Get-FastLlmUiRunSetupLine -State $s
                         if($setupLine){$lines+=$setupLine}
+                        if($script:setupNotice){$lines+=[string]$script:setupNotice}
                         if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}
                         $barNote=Get-FastLlmUiBarNote -State $s
                         if($barNote){$lines+=$barNote;$barLink.Visible=$true}
@@ -1143,7 +1254,7 @@ $timer.Add_Tick({
                 ShowFailure 'The Microsoft VC++ package could not be downloaded and verified. No installer was started. Use the official Microsoft link or try setup again later.'
                 return
             }
-            if($step -eq 'component install'){$script:pendingRecipeRow=$null}
+            if($step -eq 'component install'){$script:pendingRecipeRow=$null;$script:planComponentInstall=$false}
             if($step -eq 'serving' -and $script:flow){
                 # A typed failure (HIP backend unavailable, blocked DLL, device not found or ambiguous, a missing component) is shown as its own
                 # message and is not retried: the window never falls back to another setup.
@@ -1178,7 +1289,10 @@ $timer.Add_Tick({
             'engine'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'engine-complete';LaunchUiPhase}
             'preview'{ContinueUiAfterPreview (ConvertFrom-Json $text)}
             'recipe list'{SetBusy $false;$statusLabel.Text='Choose another setup.';ContinueWithChosenRecipe (ShowRecipeChooser @((ConvertFrom-Json $text) | ForEach-Object { $_ }))}
-            'component install'{$chosen=$script:pendingRecipeRow;$script:pendingRecipeRow=$null;$output.Text=$text;BeginChosenRecipe $chosen}
+            'component install'{
+                if($script:planComponentInstall){$script:planComponentInstall=$false;$output.Text=$text;RepreviewForPendingSetup $false}
+                else{$chosen=$script:pendingRecipeRow;$script:pendingRecipeRow=$null;$output.Text=$text;BeginChosenRecipe $chosen}
+            }
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
             'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
             default{SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'}
