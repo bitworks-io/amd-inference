@@ -12,8 +12,9 @@ Output is a JSON list with one entry per record: id, variant, gpuCount, compelli
 the components to pin. Prints "candidates=N records=M". Exit 0 ok, 1 unreadable or invalid input,
 2 usage error.
 
-Compelling (spec 1.1): >=15% generation OR >=50% prompt tok/s over the best bitworks entry for the
-same variant and gpuCount, at the same or a larger context. With no bitworks entry, the fastest
+Compelling: >=15% generation over the best bitworks generation OR >=50% prompt tok/s over the best bitworks prompt rate for the
+same variant and gpuCount, among bitworks entries at the same or a smaller context than the record. Each metric is compared with the best
+bitworks value for that metric (baselineGeneration, baselinePrompt; baseline is the generation baseline). With no bitworks entry, the fastest
 screened record for that variant and count is compelling. Quality checks are not visible on paper;
 they are enforced at reproduction.
 """
@@ -72,6 +73,24 @@ def best_by_variant(recipes):
             best[k] = {"id": e.get("id"), "generationTokS": exp["generationTokS"],
                        "promptTokS": exp.get("promptTokS"), "contextTokens": exp.get("contextTokens")}
     return best
+
+
+def entries_by_variant(recipes):
+    """Every Bitworks entry with a generation rate, per (variant, gpuCount)."""
+    entries = {}
+    for e in recipes.get("entries", []):
+        exp = e.get("expected") or {}
+        if not isinstance(exp.get("generationTokS"), (int, float)):
+            continue
+        entries.setdefault((e["variant"], int(e.get("gpuCount", 1))), []).append(
+            {"id": e.get("id"), "generationTokS": exp["generationTokS"], "promptTokS": exp.get("promptTokS"),
+             "contextTokens": exp.get("contextTokens")})
+    return entries
+
+
+def best_of(entries, metric):
+    rated = [e for e in entries if isinstance(e.get(metric), (int, float))]
+    return max(rated, key=lambda e: (e[metric], str(e["id"]))) if rated else None
 
 
 def flatten(doc):
@@ -190,6 +209,7 @@ def submission_complete(rec, n):
 
 def screen(doc, recipes, components, gpu_variants):
     best = best_by_variant(recipes)
+    peers_by_variant = entries_by_variant(recipes)
     engines = [c for c in components.get("components", []) if c.get("kind") == "engine"]
     rows, bad = [], []
     for hint, rec in flatten(doc):
@@ -205,7 +225,7 @@ def screen(doc, recipes, components, gpu_variants):
             bad.append({"id": S(D(rec).get("id")) or None, "variant": variant_key(hint, gpu_variants) or None,
                         "gpuCount": None, "generationTokS": None, "promptTokS": None,
                         "compellingOnPaper": {"compelling": False, "genGainPct": None, "promptGainPct": None,
-                                              "baseline": None},
+                                              "baseline": None, "baselineGeneration": None, "baselinePrompt": None},
                         "candidate": False, "reasons": ["unparseable-record"]})
     # Fastest single-stream record per (variant, count) when no Bitworks entry exists.
     fastest = {}
@@ -235,19 +255,28 @@ def screen(doc, recipes, components, gpu_variants):
         if n["engineName"] and not is_llama:
             reasons.append("lane-not-shipped:other-engine")
 
-        base = best.get((var, n["gpuCount"]))
+        peers = peers_by_variant.get((var, n["gpuCount"]), [])
+        # Each metric is compared with the best Bitworks value for that metric, among entries at the same or a smaller context.
+        eligible = [p for p in peers if n["contextSize"] is None or not p.get("contextTokens") or n["contextSize"] >= p["contextTokens"]]
+        pool = eligible or peers
+        base_gen, base_prompt = best_of(pool, "generationTokS"), best_of(pool, "promptTokS")
         comp = {"compelling": False, "genGainPct": None, "promptGainPct": None,
-                "baseline": base["id"] if base else None}
+                "baseline": base_gen["id"] if base_gen else None,
+                "baselineGeneration": base_gen["id"] if base_gen else None,
+                "baselinePrompt": base_prompt["id"] if base_prompt else None}
         if gen is not None or prm is not None:
-            if base:
-                if gen is not None and base["generationTokS"]:
-                    comp["genGainPct"] = round((gen / base["generationTokS"] - 1) * 100, 1)
-                if prm is not None and base.get("promptTokS"):
-                    comp["promptGainPct"] = round((prm / base["promptTokS"] - 1) * 100, 1)
-                big_enough = (n["contextSize"] is None or not base.get("contextTokens")
-                              or n["contextSize"] >= base["contextTokens"])
-                comp["compelling"] = big_enough and (
-                    (comp["genGainPct"] or 0) >= GEN_PCT or (comp["promptGainPct"] or 0) >= PROMPT_PCT)
+            if peers:
+                # The gains are compared unrounded (as the recipe builder does) and rounded only for display.
+                gen_ratio = prm_ratio = None
+                if gen is not None and base_gen and base_gen["generationTokS"]:
+                    gen_ratio = gen / base_gen["generationTokS"]
+                    comp["genGainPct"] = round((gen_ratio - 1) * 100, 1)
+                if prm is not None and base_prompt and base_prompt.get("promptTokS"):
+                    prm_ratio = prm / base_prompt["promptTokS"]
+                    comp["promptGainPct"] = round((prm_ratio - 1) * 100, 1)
+                comp["compelling"] = bool(eligible) and (
+                    (gen_ratio is not None and round(gen_ratio, 6) >= 1 + GEN_PCT / 100)
+                    or (prm_ratio is not None and round(prm_ratio, 6) >= 1 + PROMPT_PCT / 100))
             else:
                 comp["compelling"] = gen is not None and gen == fastest.get((var, n["gpuCount"]))
             if not comp["compelling"]:

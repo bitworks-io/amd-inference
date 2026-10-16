@@ -482,15 +482,23 @@ $experimentalLabel = 'Experimental Bitworks setup, not yet measured by Bitworks 
 $xtxVariant = 'rx-7900-xtx'
 $offRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'off' -Variant $xtxVariant)
 $onRows = @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant $xtxVariant)
-$expectedHidden = @($chooserRecipes | Where-Object { (Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin)) -and [string]$_.gpu.variant -ceq $xtxVariant }).Count
-Check ($expectedHidden -eq 1 -and @($chooserRecipes | Where-Object { Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin) }).Count -ge 2 -and $detailRows.Count -eq $chooserRecipes.Count) 'the shipped recipes include the experimental HIP recipes, and each recipe has a detail row'
-Check ($offRows.Count -ge 1 -and @($offRows | Where-Object { $_.experimental }).Count -eq 0 -and $onRows.Count -eq $offRows.Count + $expectedHidden) 'with the switch off the chooser hides every experimental row, even when the list holds them; with it on it shows them'
-Check (@(Get-FastLlmUiChooserRows -Rows $detailRows -Variant $xtxVariant).Count -eq $offRows.Count -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'ON' -Variant $xtxVariant).Count -eq $offRows.Count) 'the switch defaults to off and only the exact value on shows experimental rows'
-$hipRow = @($onRows | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
-Check ($null -ne $hipRow -and $hipRow.label -ceq $experimentalLabel -and $hipRow.origin -ceq 'bitworks-experimental' -and $hipRow.model -ceq 'qwen3.8-27b-ud-q4-k-m' -and $hipRow.contextText -ceq '32,768 tokens') 'a HIP row shows the experimental Bitworks label, the model and the context'
+Check (@($chooserRecipes | Where-Object { Test-FastLlmExperimentalOrigin -Origin ([string]$_.origin) }).Count -eq 0 -and @($chooserRecipes | Where-Object { $_.id -like '*.hip' }).Count -ge 2 -and $detailRows.Count -eq $chooserRecipes.Count) 'no shipped recipe is experimental (the HIP recipes are Bitworks-measured), and each recipe has a detail row'
+Check ($offRows.Count -ge 2 -and @($offRows | Where-Object { $_.experimental }).Count -eq 0 -and $onRows.Count -eq $offRows.Count) 'the shipped HIP recipe is in the chooser with the experimental switch off, and the switch changes nothing for it'
+# Experimental rows are still hidden unless the switch is on: the same detail rows with the HIP rows switched to the experimental origin.
+$flippedRows = @($detailRows | ForEach-Object {
+        $copy = @((ConvertTo-Json -InputObject $_ -Depth 8 | ConvertFrom-Json) | ForEach-Object { $_ })[0]
+        if ($copy.id -like '*.hip') { $copy.origin = 'bitworks-experimental'; $copy.label = $experimentalLabel }
+        $copy })
+$offFlipped = @(Get-FastLlmUiChooserRows -Rows $flippedRows -ExperimentalComponents 'off' -Variant $xtxVariant)
+$onFlipped = @(Get-FastLlmUiChooserRows -Rows $flippedRows -ExperimentalComponents 'on' -Variant $xtxVariant)
+Check ($offFlipped.Count -ge 1 -and @($offFlipped | Where-Object { $_.experimental }).Count -eq 0 -and $offFlipped.Count -eq $offRows.Count - 1 -and $onFlipped.Count -eq $offFlipped.Count + 1) 'with the switch off the chooser hides every experimental row, even when the list holds them; with it on it shows them'
+Check (@(Get-FastLlmUiChooserRows -Rows $flippedRows -Variant $xtxVariant).Count -eq $offFlipped.Count -and @(Get-FastLlmUiChooserRows -Rows $flippedRows -ExperimentalComponents 'ON' -Variant $xtxVariant).Count -eq $offFlipped.Count) 'the switch defaults to off and only the exact value on shows experimental rows'
+$hipRow = @($offRows | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
+Check ($null -ne $hipRow -and $hipRow.label -ceq 'Measured by Bitworks on this card' -and $hipRow.origin -ceq 'bitworks' -and -not $hipRow.experimental -and $hipRow.model -ceq 'qwen3.8-27b-ud-q4-k-m' -and $hipRow.contextText -ceq '32,768 tokens') 'a HIP row shows the Bitworks-measured label, the model and the context, with the experimental switch off'
 Check ($hipRow.engineText -ceq 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; missing); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; missing)') 'a HIP row names the engine, its required runtime, their source hosts and the exact state "missing"'
 Check ($hipRow.installRequired -eq $true -and $hipRow.consentRequired -eq $true) 'a HIP row with its chain missing needs the install'
-$vulkanRow = @($offRows | Where-Object { $_.origin -ceq 'bitworks' })[0]
+Check (@($hipRow.chain).Count -eq 2 -and @($hipRow.chain[0].licenseLinks).Count -ge 1 -and @($hipRow.chain[1].licenseLinks).Count -ge 2 -and -not (@($hipRow.chain | ForEach-Object { $_.licenseLinks } | Where-Object { [string]$_.url -cnotlike 'https://*' }).Count)) 'a HIP row carries the license links of each component in its chain'
+$vulkanRow = @($offRows | Where-Object { $_.origin -ceq 'bitworks' -and $_.engineId -ceq 'llama.cpp-b10698-vulkan' })[0]
 Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card' -and -not $vulkanRow.consentRequired -and -not $vulkanRow.installRequired -and $vulkanRow.engineText -ceq 'llama.cpp b10698 (Vulkan) (from github.com; missing)') 'a Bitworks row with no engine installed says the built-in engine is missing, and needs no component install'
 # The built-in engine lives under engines\<version>\vulkan, not under components\.
 $vulkanDir = Join-Path $chooserRoot 'engines/b10698/vulkan'
@@ -503,7 +511,7 @@ $unverifiedInventory = @([pscustomobject]@{ id = 'amd-rocm-gfx1100-10.0.0'; kind
 $unverifiedHip = @(New-ChooserDetailRows $unverifiedInventory | Where-Object { $_.id -like '*.hip' })[0]
 Check ($unverifiedHip.chain[0].state -ceq 'missing' -and $unverifiedHip.chain[0].installed -eq $false) 'a component that is present but not verified is missing'
 $verifiedInventory = @([pscustomobject]@{ id = 'amd-rocm-gfx1100-10.0.0'; kind = 'runtime'; version = '10.0.0'; installed = $true; bytes = 1; verified = $true })
-$verifiedHip = @(Get-FastLlmUiChooserRows -Rows @(New-ChooserDetailRows $verifiedInventory) -ExperimentalComponents 'on' -Variant $xtxVariant | Where-Object { $_.id -like '*.hip' })[0]
+$verifiedHip = @(Get-FastLlmUiChooserRows -Rows @(New-ChooserDetailRows $verifiedInventory) -ExperimentalComponents 'off' -Variant $xtxVariant | Where-Object { $_.id -like '*.hip' })[0]
 Check ($verifiedHip.engineText -ceq 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; missing); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; installed)' -and $verifiedHip.installRequired -eq $true) 'an installed and verified runtime is "installed" while the engine is still "missing"'
 $communityDetail = @((ConvertTo-Json -InputObject @($detailRows | Where-Object { $_.variant -ceq $xtxVariant })[0] -Depth 8 | ConvertFrom-Json) | ForEach-Object { $_ })[0]
 $communityDetail.origin = 'community-experimental'
@@ -513,7 +521,7 @@ Check ($xtRows.Count -ge 1 -and @($xtRows | Where-Object { $_.variant -cne 'rx-7
 Check (@(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant '').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on').Count -eq 0 -and @(Get-FastLlmUiChooserRows -Rows $detailRows -ExperimentalComponents 'on' -Variant 'rx-9999').Count -eq 0) 'a card that is not identified (or has no recipes) gets no rows, never every card''s'
 Check ((Get-FastLlmUiChooserNotice -Shown @() -ExperimentalComponents 'on' -Variant '') -ceq 'This card was not identified, so no setup can be offered for it. Nothing was changed.') 'an unidentified card is explained'
 Check ((Get-FastLlmUiChooserNotice -Shown @() -ExperimentalComponents 'off' -Variant 'rx-9999') -ceq 'No other setup is available for this card.') 'no setup for the card is explained'
-Check ((Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'on' -Variant $xtxVariant) -ceq 'Experimental community components is on, but no experimental setup is listed for this card.' -and (Get-FastLlmUiChooserNotice -Shown $onRows -ExperimentalComponents 'on' -Variant $xtxVariant) -ceq '' -and (Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'off' -Variant $xtxVariant) -ceq '') 'the switch on without any experimental row is said so; otherwise there is no notice'
+Check ((Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'on' -Variant $xtxVariant) -ceq 'Experimental community components is on, but no experimental setup is listed for this card.' -and (Get-FastLlmUiChooserNotice -Shown $onFlipped -ExperimentalComponents 'on' -Variant $xtxVariant) -ceq '' -and (Get-FastLlmUiChooserNotice -Shown $offRows -ExperimentalComponents 'off' -Variant $xtxVariant) -ceq '') 'the switch on without any experimental row is said so; otherwise there is no notice'
 
 # ---- the experimental switch is mirrored to the install folder the children are given ----
 $mirrorSource = Join-Path $chooserRoot 'launch'

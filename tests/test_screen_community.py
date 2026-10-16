@@ -59,6 +59,82 @@ class ScreenTests(unittest.TestCase):
         self.assertIn(("rx-7900-xt", 1), best)
         self.assertIn(("rx-7900-xtx", 1), best)
 
+    def test_baseline_is_the_fastest_generation_entry_including_the_measured_hip_setups(self):
+        best = sc.best_by_variant(RECIPES)
+        # XT: the Vulkan entry still generates faster than the measured HIP entry, so it stays the baseline.
+        self.assertEqual(best[("rx-7900-xt", 1)]["id"], "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k")
+        # XTX: the measured HIP entry generates faster and becomes the baseline.
+        self.assertEqual(best[("rx-7900-xtx", 1)]["id"], "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip")
+        self.assertEqual((best[("rx-7900-xtx", 1)]["generationTokS"], best[("rx-7900-xtx", 1)]["promptTokS"]), (33.72, 876.3))
+
+
+class PerMetricBaselineTests(unittest.TestCase):
+    """Each metric is compared with the best Bitworks value for that metric (XT: Vulkan generation 32.75, HIP prompt 799.09)."""
+
+    def screened(self, generation, prompt):
+        doc = sc.load(FIX / "cand.json")
+        record = doc["byVariant"]["rx-7900-xt-20gb"][0]
+        record["generationTps"][0]["value"] = generation
+        record["promptTps"][0]["value"] = prompt
+        return sc.screen(doc, RECIPES, COMPONENTS, VARIANTS)[0]
+
+    def test_prompt_is_measured_against_the_fastest_bitworks_prompt_rate(self):
+        row = self.screened(30.0, 780.0)  # +53.8% over the Vulkan prompt rate (it was compelling before), +/-0 over the HIP one
+        comp = row["compellingOnPaper"]
+        self.assertEqual((comp["baselineGeneration"], comp["baselinePrompt"], comp["baseline"]),
+                         ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k"))
+        self.assertFalse(comp["compelling"])
+        self.assertFalse(row["candidate"])
+        self.assertIn("not-compelling", row["reasons"])
+        self.assertLess(comp["promptGainPct"], 0)
+
+    def test_a_record_beating_both_bests_is_compelling(self):
+        for generation, prompt in ((39.3, 1300.0), (30.0, 1300.0), (39.3, 500.0)):
+            with self.subTest(generation=generation, prompt=prompt):
+                row = self.screened(generation, prompt)
+                self.assertTrue(row["compellingOnPaper"]["compelling"])
+                self.assertTrue(row["candidate"])
+        self.assertFalse(self.screened(30.0, 1100.0)["compellingOnPaper"]["compelling"])
+
+
+class ContextAndBoundaryTests(unittest.TestCase):
+    """Synthetic Bitworks entries for one card: A (16k, slower) and B (32k, faster)."""
+    PEERS = {"entries": [
+        {"id": "A", "variant": "rx-7900-xt", "gpuCount": 1, "expected": {"generationTokS": 30.0, "promptTokS": 500.0, "contextTokens": 16384}},
+        {"id": "B", "variant": "rx-7900-xt", "gpuCount": 1, "expected": {"generationTokS": 40.0, "promptTokS": 600.0, "contextTokens": 32768}}]}
+
+    def screened(self, generation, prompt, context=None, peers=None):
+        doc = sc.load(FIX / "cand.json")
+        record = doc["byVariant"]["rx-7900-xt-20gb"][0]
+        record["generationTps"][0]["value"] = generation
+        record["promptTps"][0]["value"] = prompt
+        if context is not None:
+            record.setdefault("settings", {})["contextSize"] = context
+        return sc.screen(doc, peers or self.PEERS, COMPONENTS, VARIANTS)[0]
+
+    def test_only_bitworks_entries_at_the_same_or_a_smaller_context_are_the_baseline(self):
+        # 36.0 is +20% over A (the only entry at a context this small) but below B, which is at a larger context.
+        row = self.screened(36.0, 100.0, context=16384)
+        self.assertEqual(row["compellingOnPaper"]["baselineGeneration"], "A")
+        self.assertTrue(row["compellingOnPaper"]["compelling"])
+        # At the larger context both entries count, and B is the best.
+        row = self.screened(36.0, 100.0, context=32768)
+        self.assertEqual(row["compellingOnPaper"]["baselineGeneration"], "B")
+        self.assertFalse(row["compellingOnPaper"]["compelling"])
+
+    def test_a_record_below_every_bitworks_context_is_not_compelling(self):
+        row = self.screened(100.0, 5000.0, context=8192)
+        self.assertFalse(row["compellingOnPaper"]["compelling"])
+        self.assertFalse(row["candidate"])
+        self.assertIn("not-compelling", row["reasons"])
+
+    def test_gains_are_compared_unrounded(self):
+        peers = {"entries": [self.PEERS["entries"][0]]}
+        below = self.screened(34.49, 100.0, peers=peers)  # +14.967%: displays as 15.0 but is below the threshold
+        self.assertEqual(below["compellingOnPaper"]["genGainPct"], 15.0)
+        self.assertFalse(below["compellingOnPaper"]["compelling"])
+        self.assertTrue(self.screened(34.5, 100.0, peers=peers)["compellingOnPaper"]["compelling"])
+
 
 class RealShapeTests(unittest.TestCase):
     """Synthetic records reproducing the shape variants seen in the real website export."""

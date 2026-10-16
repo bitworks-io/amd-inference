@@ -59,6 +59,68 @@
         "vulkanBarMitigation": "auto"
       },
       "variant": "rx-7900-xtx"
+    },
+    {
+      "components": {
+        "engine": "llama.cpp-hip-b11658"
+      },
+      "engineBuild": "b11658",
+      "evidence": {
+        "publishedAt": "2026-10-16",
+        "resultId": "obs-rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs-2026-10-15",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs/#lab-observation"
+      },
+      "expected": {
+        "contextTokens": 16384,
+        "engineBuild": "b11658",
+        "firstTextS": 0.66,
+        "generationTokS": 32.38,
+        "measuredAt": "2026-10-15",
+        "mitigation": "not-applicable",
+        "producer": "fastllm-benchmark-vnext vnext.3",
+        "promptTokS": 799.09,
+        "promptTokens": 512
+      },
+      "gpuCount": 1,
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
+      "model": "qwen3.8-27b-ud-iq4-xs",
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 16384
+      },
+      "variant": "rx-7900-xt"
+    },
+    {
+      "components": {
+        "engine": "llama.cpp-hip-b11658"
+      },
+      "engineBuild": "b11658",
+      "evidence": {
+        "publishedAt": "2026-10-16",
+        "resultId": "obs-rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km-2026-10-15",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km/#lab-observation"
+      },
+      "expected": {
+        "contextTokens": 32768,
+        "engineBuild": "b11658",
+        "firstTextS": 0.59,
+        "generationTokS": 33.72,
+        "measuredAt": "2026-10-15",
+        "mitigation": "not-applicable",
+        "producer": "fastllm-benchmark-vnext vnext.3",
+        "promptTokS": 876.3,
+        "promptTokens": 512
+      },
+      "gpuCount": 1,
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip",
+      "model": "qwen3.8-27b-ud-q4-k-m",
+      "runtime": {
+        "cacheTypeK": "f16",
+        "cacheTypeV": "f16",
+        "contextSize": 32768
+      },
+      "variant": "rx-7900-xtx"
     }
   ],
   "schema": "bitworks.fastllm-verified-recipes/v1"

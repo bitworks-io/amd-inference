@@ -40,6 +40,14 @@ HIP_ENTRY = {"id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip", "origin": "bitwo
              "runtime": {"contextSize": 32768, "cacheTypeK": "f16", "cacheTypeV": "f16"}}
 
 
+HIP_VERIFIED = {"id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip", "variant": "rx-7900-xtx", "gpuCount": 1, "model": "qwen3.8-27b-ud-q4-k-m",
+                "components": {"engine": "llama.cpp-hip-b11658"}, "engineBuild": "b11658",
+                "runtime": {"contextSize": 32768, "cacheTypeK": "f16", "cacheTypeV": "f16"},
+                "expected": {"generationTokS": 33.72, "promptTokS": 876.3, "firstTextS": 0.59, "promptTokens": 512, "contextTokens": 32768,
+                             "engineBuild": "b11658", "mitigation": "not-applicable", "measuredAt": "2026-10-15", "producer": "fastllm-benchmark-vnext vnext.3"},
+                "evidence": {"url": "https://bitworks.io/amd-inference/recipes/x-hip/#lab-observation", "resultId": "r2", "publishedAt": "2026-10-16"}}
+
+
 class RecipeBuilderTests(unittest.TestCase):
     def tree(self, entries=None, records=None):
         root = Path(tempfile.mkdtemp())
@@ -297,6 +305,100 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertEqual(subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--root", str(root), "--check"]).returncode, 0)
         (root / "config" / "recipes.json").write_bytes(first.replace(b"32.73", b"99.99"))
         self.assertEqual(subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--root", str(root), "--check"]).returncode, 1)
+
+    def hip_verified_tree(self, entry=None, comps=None, vulkan_recommended=True):
+        vulkan = copy.deepcopy(ENTRY); vulkan["recommended"] = vulkan_recommended
+        root = self.tree([vulkan, entry or copy.deepcopy(HIP_VERIFIED)])
+        (root / "config" / "components.json").write_text(json.dumps(comps or HIP_COMPONENTS))
+        return root
+
+    def test_a_measured_hip_entry_becomes_a_bitworks_recipe_that_is_never_recommended(self):
+        document, skipped = br.build(self.hip_verified_tree())
+        self.assertEqual(skipped, [])
+        by_id = {r["id"]: r for r in document["recipes"]}
+        recipe = by_id[HIP_VERIFIED["id"]]
+        self.assertEqual(recipe["origin"], "bitworks")
+        self.assertEqual(recipe["label"], "Measured by Bitworks on this card")
+        self.assertEqual(recipe["components"], {"engine": "llama.cpp-hip-b11658", "model": "qwen3.8-27b-ud-q4-k-m"})
+        self.assertEqual(recipe["engineBuild"], "b11658")
+        self.assertIs(recipe["recommended"], False)
+        self.assertNotIn("vulkanBarMitigation", recipe["runtime"])
+        self.assertEqual(recipe["expected"]["mitigation"], "not-applicable")
+        self.assertEqual(recipe["evidence"]["publishedAt"], "2026-10-16")
+        # The Vulkan recipe of the same card is untouched and stays the one recommended recipe.
+        vulkan = by_id[ENTRY["id"]]
+        self.assertIs(vulkan["recommended"], True)
+        self.assertEqual(vulkan["components"]["engine"], "llama.cpp-b10698-vulkan")
+        self.assertEqual(vulkan["expected"]["mitigation"], "on")
+
+    def test_a_hip_entry_without_a_live_evidence_page_is_skipped(self):
+        entry = copy.deepcopy(HIP_VERIFIED); del entry["evidence"]
+        document, skipped = br.build(self.hip_verified_tree(entry))
+        self.assertEqual([r["id"] for r in document["recipes"]], [ENTRY["id"]])
+        self.assertEqual(len(skipped), 1)
+
+    def test_not_applicable_mitigation_is_for_non_vulkan_engines_only(self):
+        for mitigation in ("on", "off", "auto", None):
+            with self.subTest(mitigation=mitigation):
+                entry = copy.deepcopy(HIP_VERIFIED); entry["expected"]["mitigation"] = mitigation
+                with self.assertRaisesRegex(br.RecipeError, "expected.mitigation must be not-applicable"):
+                    br.build(self.hip_verified_tree(entry))
+        vulkan = copy.deepcopy(ENTRY); vulkan["expected"]["mitigation"] = "not-applicable"
+        with self.assertRaisesRegex(br.RecipeError, "expected.mitigation must be on or off"):
+            br.build(self.tree([vulkan]))
+
+    def test_a_measured_hip_entry_is_checked_like_the_other_entries(self):
+        def mutate(key, value, section=None):
+            entry = copy.deepcopy(HIP_VERIFIED)
+            (entry[section] if section else entry)[key] = value
+            return entry
+        cases = {
+            "runtime.vulkanBarMitigation": (mutate("vulkanBarMitigation", "auto", "runtime"), "runtime.vulkanBarMitigation is for Vulkan engines only"),
+            "recommended": (mutate("recommended", True), "recommended is for Vulkan engines only"),
+            "engineBuild differs from the component": (dict(mutate("engineBuild", "b1"), expected=dict(HIP_VERIFIED["expected"], engineBuild="b1")), "is not the engine component's version"),
+            "expected.engineBuild differs": (mutate("engineBuild", "b1", "expected"), "expected.engineBuild must equal"),
+            "unknown engine": (mutate("engine", "missing", "components"), "is not an engine in config/components.json"),
+            "unknown runtime": (dict(HIP_VERIFIED, components={"engine": "llama.cpp-hip-b11658", "runtime": "missing"}), "is not a runtime in config/components.json"),
+            "context too large": (mutate("contextSize", 65536, "runtime"), "runtime.contextSize must be"),
+            "evidence off bitworks.io": (mutate("url", "https://example.com/x", "evidence"), "evidence.url must be on https://bitworks.io/"),
+        }
+        for label, (entry, message) in cases.items():
+            with self.subTest(label):
+                # The Vulkan twin is NOT recommended, so a missing guard cannot hide behind the one-recommended-per-card check.
+                with self.assertRaisesRegex(br.RecipeError, message):
+                    br.build(self.hip_verified_tree(entry, vulkan_recommended=False))
+        root = self.hip_verified_tree()
+        (root / "config" / "components.json").unlink()
+        with self.assertRaisesRegex(br.RecipeError, "needs config/components.json"):
+            br.build(root)
+
+    def test_compelling_compares_each_metric_with_the_best_bitworks_value_for_that_metric(self):
+        # The Vulkan entry is the best generation (32.73); a HIP entry is slower to generate (32.0) but much faster on prompt (1000.0).
+        prompt_fast = copy.deepcopy(HIP_VERIFIED); prompt_fast["expected"].update(generationTokS=32.0, promptTokS=1000.0)
+
+        def compelling_of(record):
+            document = br.build(self.tree_with_hip_and_record(prompt_fast, record))[0]
+            found = [r for r in document["recipes"] if r["origin"] == "community-reproduced"]
+            return found[0]["compelling"] if found else None
+
+        # +20% on prompt over the best prompt (HIP 1000.0) is not enough, though it is +83% over the Vulkan entry (it was compelling before).
+        self.assertIsNone(compelling_of(community("community-reproduced", generationTokS=30.0, promptTokS=1200.0)))
+        # +50% over the best prompt rate is compelling, and the block names each metric's baseline.
+        block = compelling_of(community("community-reproduced", generationTokS=30.0, promptTokS=1500.0))
+        self.assertTrue(block["isCompelling"])
+        self.assertEqual((block["baselineGeneration"], block["baselinePrompt"]), (ENTRY["id"], HIP_VERIFIED["id"]))
+        self.assertEqual(block["baselineRecipe"], block["baselineGeneration"])
+        # A record that beats both bests is compelling; one that beats the generation best by 15% is too.
+        block = compelling_of(community("community-reproduced", generationTokS=40.0, promptTokS=1600.0))
+        self.assertTrue(block["isCompelling"])
+        self.assertEqual((block["generationGainPct"], block["promptGainPct"]), (22.2, 60.0))
+        self.assertIsNone(compelling_of(community("community-reproduced", generationTokS=37.0, promptTokS=1100.0)))
+        self.assertTrue(compelling_of(community("community-reproduced", generationTokS=37.7, promptTokS=1100.0))["isCompelling"])
+
+    def tree_with_hip_and_record(self, hip, record):
+        root = self.tree([ENTRY, hip], [record])
+        (root / "config" / "components.json").write_text(json.dumps(HIP_COMPONENTS))
+        return root
 
     def test_repo_recipes_are_current(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--check"], capture_output=True, text=True)

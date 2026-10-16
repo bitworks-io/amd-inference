@@ -13,6 +13,13 @@ $v = & $module { param($s, $e) Get-FastLlmSelfTestVerdict -Samples $s -Generatio
 Check ($v.status -eq 'below-expected' -and @($v.reasons) -contains 'resizable-bar') 'under 70 percent of expected warns with likely causes'
 $v = & $module { param($s, $e) Get-FastLlmSelfTestVerdict -Samples $s -GenerationTokens 128 -Expected $e -EngineBuild 'b10698' -ContextSize 32768 -MitigationEffective 'off' } @((S 20 400), (S 21 410)) $exp
 Check ($v.status -eq 'pass' -and -not $v.comparable) 'a different mitigation state is not compared'
+$expHip = [pscustomobject]@{ generationTokS = 32.7; promptTokS = 654; contextTokens = 32768; engineBuild = 'b11658'; mitigation = 'not-applicable' }
+$v = & $module { param($s, $e) Get-FastLlmSelfTestVerdict -Samples $s -GenerationTokens 128 -Expected $e -EngineBuild 'b11658' -ContextSize 32768 -MitigationEffective 'off' } @((S 20 400), (S 21 410)) $expHip
+Check ($v.status -eq 'below-expected' -and $v.comparable) 'a not-applicable mitigation (a HIP recipe) is compared whatever the effective mitigation is'
+$v = & $module { param($s, $e) Get-FastLlmSelfTestVerdict -Samples $s -GenerationTokens 128 -Expected $e -EngineBuild 'b11658' -ContextSize 32768 -MitigationEffective 'off' } @((S 32 650), (S 33 655)) $expHip
+Check ($v.status -eq 'pass' -and $v.comparable) 'a not-applicable mitigation recipe at the expected speed passes'
+$v = & $module { param($s, $e) Get-FastLlmSelfTestVerdict -Samples $s -GenerationTokens 128 -Expected $e -EngineBuild 'b10698' -ContextSize 32768 -MitigationEffective 'off' } @((S 20 400), (S 21 410)) $expHip
+Check ($v.status -eq 'pass' -and -not $v.comparable) 'a not-applicable mitigation recipe is still not compared across engine builds'
 $v = & $module { param($s, $e) Get-FastLlmSelfTestVerdict -Samples $s -GenerationTokens 128 -Expected $e -EngineBuild 'b9999' -ContextSize 32768 -MitigationEffective 'on' } @((S 20 400), (S 21 410)) $exp
 Check ($v.status -eq 'pass' -and -not $v.comparable) 'a different engine build is not compared'
 $v = & $module { param($s) Get-FastLlmSelfTestVerdict -Samples $s -GenerationTokens 128 -Expected $null -EngineBuild 'b10698' -ContextSize 8192 -MitigationEffective 'off' } @((S 30 500 64), (S 30 500))
