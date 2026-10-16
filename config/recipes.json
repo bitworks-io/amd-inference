@@ -3,9 +3,9 @@
     "config/catalog.json": "65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6",
     "config/components.json": "18fa55db79eaa4d65d9b8fb8cc9fe35643ca77a7932f5d8cf5640556a54f0559",
     "config/gpu-variants.json": "cbbc815150015687ce736e53ba90311d72cbceb9e47e3f61526197ddf890a7d2",
-    "data/bitworks-experimental-recipes.json": "9b251874824bf61df066e5ecc2685a2d9a3fa8ac879d6b4dfa29e0a081464de6",
+    "data/bitworks-experimental-recipes.json": "93056c1341e7abb8b8febaa997c37aa3e2846fbb7a45703c0c33b713718b0fe2",
     "data/community-records.json": "201849d8ae11d656bdbf3a90d0950a941b19c4cfa05d84e7b4a75e5b406da967",
-    "data/verified-recipes.json": "e1366b544325203ae6dcaa0261a975e864daf3761ca86f246bc13514db4ce814"
+    "data/verified-recipes.json": "22832347e517c8d28c0d988926effbd4a6238aa289091f54e0c9d80973f554fa"
   },
   "recipes": [
     {
@@ -54,15 +54,29 @@
         "model": "qwen3.8-27b-ud-iq4-xs"
       },
       "engineBuild": "b11658",
-      "evidence": null,
-      "expected": null,
+      "evidence": {
+        "publishedAt": "2026-10-16",
+        "resultId": "obs-rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs-2026-10-15",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs/#lab-observation"
+      },
+      "expected": {
+        "contextTokens": 16384,
+        "engineBuild": "b11658",
+        "firstTextS": 0.66,
+        "generationTokS": 32.38,
+        "measuredAt": "2026-10-15",
+        "mitigation": "not-applicable",
+        "producer": "fastllm-benchmark-vnext vnext.3",
+        "promptTokS": 799.09,
+        "promptTokens": 512
+      },
       "gpu": {
         "count": 1,
         "variant": "rx-7900-xt"
       },
       "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
-      "label": "Experimental Bitworks setup, not yet measured by Bitworks on this card",
-      "origin": "bitworks-experimental",
+      "label": "Measured by Bitworks on this card",
+      "origin": "bitworks",
       "recommended": false,
       "runtime": {
         "cacheTypeK": "f16",
@@ -117,15 +131,29 @@
         "model": "qwen3.8-27b-ud-q4-k-m"
       },
       "engineBuild": "b11658",
-      "evidence": null,
-      "expected": null,
+      "evidence": {
+        "publishedAt": "2026-10-16",
+        "resultId": "obs-rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km-2026-10-15",
+        "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km/#lab-observation"
+      },
+      "expected": {
+        "contextTokens": 32768,
+        "engineBuild": "b11658",
+        "firstTextS": 0.59,
+        "generationTokS": 33.72,
+        "measuredAt": "2026-10-15",
+        "mitigation": "not-applicable",
+        "producer": "fastllm-benchmark-vnext vnext.3",
+        "promptTokS": 876.3,
+        "promptTokens": 512
+      },
       "gpu": {
         "count": 1,
         "variant": "rx-7900-xtx"
       },
       "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip",
-      "label": "Experimental Bitworks setup, not yet measured by Bitworks on this card",
-      "origin": "bitworks-experimental",
+      "label": "Measured by Bitworks on this card",
+      "origin": "bitworks",
       "recommended": false,
       "runtime": {
         "cacheTypeK": "f16",

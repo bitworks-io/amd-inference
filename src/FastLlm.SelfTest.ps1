@@ -27,7 +27,8 @@ function Get-FastLlmSelfTestVerdict {
         $mitigation = 'off'
         if ($Expected.PSObject.Properties['mitigation'] -and $Expected.mitigation) { $mitigation = [string] $Expected.mitigation }
         $result.expectedGenerationTokS = [double] $Expected.generationTokS
-        $result.comparable = ([string] $Expected.engineBuild -eq $EngineBuild) -and ([int] $Expected.contextTokens -ge $ContextSize) -and ($mitigation -eq $MitigationEffective)
+        # A non-Vulkan (HIP) engine has no BAR mitigation, so a recipe measured on one records 'not-applicable' and the comparison skips it.
+        $result.comparable = ([string] $Expected.engineBuild -eq $EngineBuild) -and ([int] $Expected.contextTokens -ge $ContextSize) -and (($mitigation -ceq 'not-applicable') -or ($mitigation -eq $MitigationEffective))
         if ($result.comparable -and $result.generationTokS -lt 0.70 * [double] $Expected.generationTokS) {
             $result.status = 'below-expected'
             $result.reasons = @('driver-version', 'resizable-bar', 'other-apps-using-vram', 'power-or-thermal-limits')

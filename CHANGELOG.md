@@ -2,6 +2,18 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.6 (canary)
+
+- **HIP setups for the RX 7900 XT and RX 7900 XTX are now measured by Bitworks:**
+  - [RX 7900 XT result](https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs/#lab-observation): 32.3 tok/s generation and 799.0 tok/s prompt, at a 512-token prompt.
+  - [RX 7900 XTX result](https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km/#lab-observation): 33.7 tok/s generation and 876.3 tok/s prompt, at a 512-token prompt.
+  - The builds differ: HIP b11658, Vulkan b10698.
+- **Where they appear:** under **Choose another setup**, without turning on experimental components.
+- **What has not changed:**
+  - They are still never picked automatically.
+  - They still need each component's license accepted before anything downloads.
+  - The default Vulkan setup is unchanged.
+
 ## 2026.10.15.5 (canary)
 
 - **HIP setups (experimental, off by default):**

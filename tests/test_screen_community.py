@@ -59,6 +59,14 @@ class ScreenTests(unittest.TestCase):
         self.assertIn(("rx-7900-xt", 1), best)
         self.assertIn(("rx-7900-xtx", 1), best)
 
+    def test_baseline_is_the_fastest_generation_entry_including_the_measured_hip_setups(self):
+        best = sc.best_by_variant(RECIPES)
+        # XT: the Vulkan entry still generates faster than the measured HIP entry, so it stays the baseline.
+        self.assertEqual(best[("rx-7900-xt", 1)]["id"], "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k")
+        # XTX: the measured HIP entry generates faster and becomes the baseline.
+        self.assertEqual(best[("rx-7900-xtx", 1)]["id"], "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip")
+        self.assertEqual((best[("rx-7900-xtx", 1)]["generationTokS"], best[("rx-7900-xtx", 1)]["promptTokS"]), (33.72, 876.3))
+
 
 class RealShapeTests(unittest.TestCase):
     """Synthetic records reproducing the shape variants seen in the real website export."""

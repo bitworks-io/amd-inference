@@ -4,6 +4,8 @@
 Bitworks-authored experimental setups (data/bitworks-experimental-recipes.json, origin bitworks-experimental) need no evidence and are never
 recommended; every component they name must be listed in config/components.json, and they name their own engine. They are gated like
 community-experimental recipes and never auto-selected by the product.
+A verified entry may name its own engine component (components.engine, e.g. the HIP lane): it is checked against config/components.json, carries
+no vulkanBarMitigation, uses expected.mitigation "not-applicable", and is never recommended; the product never picks it automatically.
 Verified and community-reproduced entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and
 evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation OR >=50% prompt over the
 best Bitworks recipe for the same card and GPU count, at the same or larger context; with no Bitworks recipe to compare
@@ -28,6 +30,9 @@ LABELS = {
 }
 # The recipe never forces the Vulkan BAR mitigation; the start applies the user or UI policy (auto by default).
 MITIGATIONS = ("auto",)
+# expected.mitigation records whether the Vulkan BAR mitigation was on when the numbers were measured. A non-Vulkan (HIP) engine has none.
+EXPECTED_MITIGATIONS = ("on", "off")
+NOT_APPLICABLE = "not-applicable"
 CACHE_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -52,7 +57,7 @@ def positive(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
-def validate(entry, origin, catalog, variants):
+def validate(entry, origin, catalog, variants, components=None):
     rid = entry.get("id")
     if not isinstance(rid, str) or not ID_RE.match(rid):
         raise RecipeError(f"bad recipe id: {rid!r}")
@@ -62,10 +67,22 @@ def validate(entry, origin, catalog, variants):
     model = models.get(entry.get("model"))
     if model is None:
         raise RecipeError(f"{rid}: model {entry.get('model')!r} is not in the catalog")
-    if entry.get("engineBuild") != catalog["engine"]["version"]:
+    # A Bitworks entry may name its own engine component (the HIP lane); every other entry runs on the built-in Vulkan engine.
+    own_engine = None
+    if origin == "bitworks" and (entry.get("components") or {}).get("engine"):
+        if components is None:
+            raise RecipeError(f"{rid}: an entry that names its own engine needs config/components.json to check it against")
+        own_engine = check_engine_components(entry, model, components)
+    non_vulkan = own_engine is not None and (own_engine.get("platform") or {}).get("backend") != "vulkan"
+    if own_engine is None and entry.get("engineBuild") != catalog["engine"]["version"]:
         raise RecipeError(f"{rid}: engine build {entry.get('engineBuild')!r} is not the shipped {catalog['engine']['version']!r}")
     runtime = entry.get("runtime") or {}
-    if runtime.get("vulkanBarMitigation") not in MITIGATIONS:
+    if non_vulkan:
+        if "vulkanBarMitigation" in runtime:
+            raise RecipeError(f"{rid}: runtime.vulkanBarMitigation is for Vulkan engines only")
+        if entry.get("recommended"):
+            raise RecipeError(f"{rid}: recommended is for Vulkan engines only (a recipe whose engine needs an accepted license is never picked automatically)")
+    elif runtime.get("vulkanBarMitigation") not in MITIGATIONS:
         raise RecipeError(f"{rid}: runtime.vulkanBarMitigation must be one of {MITIGATIONS}")
     if not isinstance(runtime.get("contextSize"), int) or not 0 < runtime["contextSize"] <= int(model["contextSize"]):
         raise RecipeError(f"{rid}: runtime.contextSize must be 1..{model['contextSize']}")
@@ -84,7 +101,10 @@ def validate(entry, origin, catalog, variants):
     for key in ("generationTokS", "promptTokS", "contextTokens"):
         if not positive(expected.get(key)):
             raise RecipeError(f"{rid}: expected.{key} must be a positive number")
-    if expected.get("mitigation") not in ("on", "off"):
+    if non_vulkan:
+        if expected.get("mitigation") != NOT_APPLICABLE:
+            raise RecipeError(f"{rid}: expected.mitigation must be {NOT_APPLICABLE} for a non-Vulkan engine")
+    elif expected.get("mitigation") not in EXPECTED_MITIGATIONS:
         raise RecipeError(f"{rid}: expected.mitigation must be on or off")
     # The self-test's below-expected comparison reads expected.engineBuild; a recipe without it would fail every self-test.
     if expected.get("engineBuild") != entry.get("engineBuild"):
@@ -115,26 +135,10 @@ def validate(entry, origin, catalog, variants):
     return model
 
 
-def validate_bitworks_experimental(entry, catalog, variants, components):
-    """A Bitworks setup that is shipped so Bitworks can measure it through the product: no evidence yet, never recommended, and its own
-    engine and other components must all be listed in config/components.json. The engine build is the component's, not the catalog's."""
+def check_engine_components(entry, model, components):
+    """The entry's engine, runtime and draft components must all be listed in config/components.json, the engine's version must be the entry's
+    engineBuild, and the runtime block must be valid for it. Returns the engine component."""
     rid = entry.get("id")
-    if not isinstance(rid, str) or not ID_RE.match(rid):
-        raise RecipeError(f"bad recipe id: {rid!r}")
-    if components is None:
-        raise RecipeError(f"{rid}: bitworks-experimental entries need config/components.json to check their components against")
-    if entry.get("recommended"):
-        raise RecipeError(f"{rid}: recommended is for verified Bitworks recipes only")
-    for forbidden in ("expected", "evidence", "source", "reproduction"):
-        if entry.get(forbidden):
-            raise RecipeError(f"{rid}: a bitworks-experimental entry carries no {forbidden} block (it has not been measured)")
-    if entry.get("variant") not in variants:
-        raise RecipeError(f"{rid}: unknown card variant {entry.get('variant')!r}")
-    model = {m["id"]: m for m in catalog["models"]}.get(entry.get("model"))
-    if model is None:
-        raise RecipeError(f"{rid}: model {entry.get('model')!r} is not in the catalog")
-    if not isinstance(entry.get("gpuCount"), int) or isinstance(entry.get("gpuCount"), bool) or entry["gpuCount"] not in (1, 2):
-        raise RecipeError(f"{rid}: gpuCount must be 1 or 2")
     refs = entry.get("components") or {}
     engine_id = refs.get("engine")
     by_id = {c["id"]: c for c in components["components"]}
@@ -165,6 +169,31 @@ def validate_bitworks_experimental(entry, catalog, variants, components):
     if "fitTargetMiB" in runtime and (not isinstance(runtime["fitTargetMiB"], int) or isinstance(runtime["fitTargetMiB"], bool) or runtime["fitTargetMiB"] <= 0):
         raise RecipeError(f"{rid}: runtime.fitTargetMiB must be a positive integer")
 
+    return engine
+
+
+def validate_bitworks_experimental(entry, catalog, variants, components):
+    """A Bitworks setup that is shipped so Bitworks can measure it through the product: no evidence yet, never recommended, and its own
+    engine and other components must all be listed in config/components.json. The engine build is the component's, not the catalog's."""
+    rid = entry.get("id")
+    if not isinstance(rid, str) or not ID_RE.match(rid):
+        raise RecipeError(f"bad recipe id: {rid!r}")
+    if components is None:
+        raise RecipeError(f"{rid}: bitworks-experimental entries need config/components.json to check their components against")
+    if entry.get("recommended"):
+        raise RecipeError(f"{rid}: recommended is for verified Bitworks recipes only")
+    for forbidden in ("expected", "evidence", "source", "reproduction"):
+        if entry.get(forbidden):
+            raise RecipeError(f"{rid}: a bitworks-experimental entry carries no {forbidden} block (it has not been measured)")
+    if entry.get("variant") not in variants:
+        raise RecipeError(f"{rid}: unknown card variant {entry.get('variant')!r}")
+    model = {m["id"]: m for m in catalog["models"]}.get(entry.get("model"))
+    if model is None:
+        raise RecipeError(f"{rid}: model {entry.get('model')!r} is not in the catalog")
+    if not isinstance(entry.get("gpuCount"), int) or isinstance(entry.get("gpuCount"), bool) or entry["gpuCount"] not in (1, 2):
+        raise RecipeError(f"{rid}: gpuCount must be 1 or 2")
+    check_engine_components(entry, model, components)
+
 
 def has_live_evidence(entry):
     evidence = entry.get("evidence") or {}
@@ -182,7 +211,7 @@ def recipe_from(entry, origin):
                 "runtime": entry["runtime"], "engineBuild": entry["engineBuild"], "recommended": False,
                 "expected": None, "evidence": None, "source": None, "compelling": None}
     components = {"engine": f"llama.cpp-{entry['engineBuild']}-vulkan", "model": entry["model"]}
-    if origin == "community-experimental":
+    if origin in ("bitworks", "community-experimental"):
         # An experimental entry may name its own engine, plus a runtime and a draft model; all are checked against components.json.
         for key in ("engine", "runtime", "draft"):
             ref = (entry.get("components") or {}).get(key)
@@ -249,7 +278,7 @@ def build(root):
         raise RecipeError("unexpected data schema")
     recipes, skipped, ids = [], [], set()
     for entry in verified["entries"]:
-        validate(entry, "bitworks", catalog, variants)
+        validate(entry, "bitworks", catalog, variants, components)
         if not has_live_evidence(entry):
             skipped.append(f"{entry['id']}: no live evidence page (evidence.url and evidence.publishedAt are required)")
             continue
