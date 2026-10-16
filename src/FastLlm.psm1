@@ -912,6 +912,67 @@ function Get-FastLlmScore {
     return [int] $property.Value
 }
 
+# The components of an engine's chain (requires first, the engine last) that still have to be installed, as the pending-form records, or $null when
+# every member is present and (when asked) passes the Full hash check. A member that is absent is listed first and no hash runs; otherwise a member
+# that is present but fails the Full check is listed with unverified = $true. Source hosts come from the signed list, never from the network.
+function Get-FastLlmPendingComponentState {
+    param([object[]] $Components, [Parameter(Mandatory = $true)][string] $EngineId, [Parameter(Mandatory = $true)][string] $InstallRoot, [switch] $CheckFull)
+    $chain = @(Get-FastLlmComponentChain -Components $Components -Id $EngineId)
+    $absent = @($chain | Where-Object { -not (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $_ -Depth Presence) })
+    $unverified = $false
+    $listed = $absent
+    if ($absent.Count -eq 0 -and $CheckFull) {
+        $listed = @($chain | Where-Object { -not (Test-FastLlmComponentVerifiedFull -InstallRoot $InstallRoot -Component $_) })
+        $unverified = $true
+    }
+    if ($listed.Count -eq 0) { return $null }
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($member in $listed) { $records.Add((Get-FastLlmPendingComponentRecord -Component $member -Unverified:$unverified)) }
+    $reason = 'components-pending'
+    if ($unverified) { $reason = 'components-unverified' }
+    return [pscustomobject] [ordered] @{ records = $records.ToArray(); reason = $reason }
+}
+
+function Get-FastLlmPendingComponentRecord {
+    param([Parameter(Mandatory = $true)] $Component, [switch] $Unverified)
+    $sources = @()
+    foreach ($sourceName in @('sources', 'source')) {
+        $sourceProperty = $Component.PSObject.Properties[$sourceName]
+        if ($sourceProperty -and $sourceProperty.Value) { $sources += @($sourceProperty.Value) }
+    }
+    $sourceHosts = New-Object System.Collections.Generic.List[string]
+    $redirectHosts = New-Object System.Collections.Generic.List[string]
+    $bytes = [int64] 0
+    foreach ($source in $sources) {
+        $sourceHost = ([Uri] ([string] $source.url)).Host
+        if (-not $sourceHosts.Contains($sourceHost)) { $sourceHosts.Add($sourceHost) }
+        if ($source.PSObject.Properties['allowedRedirectHosts']) {
+            foreach ($redirectHost in @($source.allowedRedirectHosts)) {
+                if (-not $redirectHosts.Contains([string] $redirectHost)) { $redirectHosts.Add([string] $redirectHost) }
+            }
+        }
+        if ($source.PSObject.Properties['sizeBytes']) { $bytes += [int64] $source.sizeBytes }
+    }
+    $links = @(Get-FastLlmComponentLicenseLinks -Component $Component | ForEach-Object { [pscustomobject] [ordered] @{ title = [string] $_.title; url = [string] $_.url } })
+    $consent = $null
+    if ($Component.PSObject.Properties['license'] -and $Component.license -and $Component.license.PSObject.Properties['consent']) { $consent = [string] $Component.license.consent }
+    $displayName = [string] $Component.id
+    if ($Component.PSObject.Properties['displayName'] -and $Component.displayName) { $displayName = [string] $Component.displayName }
+    return [pscustomobject] [ordered] @{
+        id = [string] $Component.id; name = $displayName; kind = [string] $Component.kind; version = [string] $Component.version
+        sourceHosts = $sourceHosts.ToArray(); redirectHosts = $redirectHosts.ToArray(); downloadBytes = $bytes
+        licenseLinks = $links; consent = $consent; unverified = [bool] $Unverified }
+}
+
+# True when the plan is for the planned recipe: it is the recipe itself, or the fallback that stands in for it.
+function Test-FastLlmPlanMatchesPlannedRecipe {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)][string] $PlannedRecipe)
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id'] -and [string] $Plan.recipe.id -ceq $PlannedRecipe) { return $true }
+    if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback -and $Plan.fallback.PSObject.Properties['fromRecipe'] -and [string] $Plan.fallback.fromRecipe -ceq $PlannedRecipe) { return $true }
+    return $false
+}
+
 function Get-FastLlmPlan {
     [CmdletBinding()]
     param(
@@ -944,10 +1005,21 @@ function Get-FastLlmPlan {
 
         # Set by the CLI for a fixture plan (-HardwareFile): the plan must never run an engine, so a recipe whose engine has to be probed
         # (the HIP engine) fails typed before anything is hashed or executed.
-        [switch] $NoEngineExecution
+        [switch] $NoEngineExecution,
+
+        # An automatically picked recipe whose engine components are not installed (or fail to verify), or whose engine cannot be resolved
+        # (any typed failure), returns the fallback plan (stamped in `fallback`) instead of the pending form or the failure.
+        [switch] $ResolveFallback,
+
+        # Force the fallback: recipes whose engine chain needs a license accepted are not considered, and the plan is stamped.
+        # The fallback pass never falls back again.
+        [string] $FallbackFromRecipe,
+
+        [string] $FallbackReason
     )
 
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
+    $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
     if ($ContextSize -gt 0 -and $ContextSize -lt 512) { throw 'Explicit context must be at least 512 tokens, or 0 for the catalog default.' }
@@ -1037,9 +1109,11 @@ function Get-FastLlmPlan {
                 if (Test-Path -LiteralPath $componentsFile -PathType Leaf) { $engineComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFile) }
             }
             catch { $engineComponents = @() }
-            $recipePick = Select-FastLlmRecipeForPlacements -Recipes (Read-FastLlmRecipes -Path $RecipesPath) `
+            # The recipe that fell back is never its own fallback, whatever its engine's license.
+            $candidateRecipes = @(Read-FastLlmRecipes -Path $RecipesPath | Where-Object { -not $isFallbackPass -or [string] $_.id -cne $FallbackFromRecipe })
+            $recipePick = Select-FastLlmRecipeForPlacements -Recipes $candidateRecipes `
                 -Variants (Get-FastLlmGpuVariants -Path $GpuVariantsPath) -Placements $placements -DxgiAdapters $dxgi `
-                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -Components $engineComponents -SkippedSink $recipeSkippedSink
+                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -Components $engineComponents -ExcludeLicenseRecipes:$isFallbackPass -SkippedSink $recipeSkippedSink
         }
         catch {
             if ($RecipeId) { throw }
@@ -1173,50 +1247,94 @@ function Get-FastLlmPlan {
     $planEngineComponentId = $null
     $planBackend = [string] $Hardware.backend
     $planRuntimeRoots = $null
-    # The built-in id is recognised by name alone, so a plan on the built-in engine does no engine resolution at all.
-    if ($recipePick -and -not $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
-        throw (New-FastLlmEngineFailure -Code 'recipe-engine-needs-install-root' -Message "Recipe '$($recipePick.recipe.id)' runs on an engine component, which cannot be resolved without an install root. The built-in engine is not used instead.")
-    }
-    if ($recipePick -and $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
-        $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
-        if (-not $resolvedEngine.builtIn) {
-            if ($NoEngineExecution -and [string] $resolvedEngine.backend -ceq 'hip') {
-                throw (New-FastLlmEngineFailure -Code 'fixture-plan-cannot-probe-engine' -ComponentId ([string] $resolvedEngine.id) -Message "Recipe '$($recipePick.recipe.id)' runs on the HIP engine, whose devices can only be listed by running it. A fixture plan (-HardwareFile) never runs an engine, so this plan was not made. Plan without -HardwareFile on the real PC instead.")
-            }
-            if (-not $resolvedEngine.installed) {
-                # The first component of the chain that fails, so a missing runtime is named as the runtime.
-                $unavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Presence
-                if (-not $unavailableId) { $unavailableId = [string] $resolvedEngine.id }
-                if ($unavailableId -ceq [string] $resolvedEngine.id) {
-                    $unavailableMessage = "The engine component '$($resolvedEngine.id)' is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
+    # An automatically picked recipe on an engine component may fall back: components still to install give the pending form, and a typed failure
+    # while resolving the engine gives the fallback plan. An explicit recipe, and the fallback pass itself, never fall back.
+    $autoFallbackEligible = [bool] ($recipePick -and -not $RecipeId -and -not $isFallbackPass -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog))
+    $pendingState = $null
+    $fallbackTrigger = $null
+    try {
+        # The built-in id is recognised by name alone, so a plan on the built-in engine does no engine resolution at all.
+        if ($recipePick -and -not $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
+            throw (New-FastLlmEngineFailure -Code 'recipe-engine-needs-install-root' -Message "Recipe '$($recipePick.recipe.id)' runs on an engine component, which cannot be resolved without an install root. The built-in engine is not used instead.")
+        }
+        if ($recipePick -and $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
+            $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
+            if (-not $resolvedEngine.builtIn) {
+                if ($NoEngineExecution -and [string] $resolvedEngine.backend -ceq 'hip') {
+                    throw (New-FastLlmEngineFailure -Code 'fixture-plan-cannot-probe-engine' -ComponentId ([string] $resolvedEngine.id) -Message "Recipe '$($recipePick.recipe.id)' runs on the HIP engine, whose devices can only be listed by running it. A fixture plan (-HardwareFile) never runs an engine, so this plan was not made. Plan without -HardwareFile on the real PC instead.")
+                }
+                if ($autoFallbackEligible) {
+                    # Components missing or failing their file check are listed instead of failing; the Full hash runs only when every member is present.
+                    $pendingState = Get-FastLlmPendingComponentState -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -CheckFull:([string] $resolvedEngine.backend -ceq 'hip')
+                }
+                if ($pendingState) {
+                    $planEnginePath = $null
+                    $planEngineVersion = [string] $resolvedEngine.version
+                    $planEngineComponentId = [string] $resolvedEngine.id
+                    $planBackend = [string] $resolvedEngine.backend
+                    $planRuntimeRoots = @()
                 }
                 else {
-                    $unavailableMessage = "The component '${unavailableId}', which the engine component '$($resolvedEngine.id)' requires, is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
+                    if (-not $resolvedEngine.installed) {
+                        # The first component of the chain that fails, so a missing runtime is named as the runtime.
+                        $unavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Presence
+                        if (-not $unavailableId) { $unavailableId = [string] $resolvedEngine.id }
+                        if ($unavailableId -ceq [string] $resolvedEngine.id) {
+                            $unavailableMessage = "The engine component '$($resolvedEngine.id)' is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
+                        }
+                        else {
+                            $unavailableMessage = "The component '${unavailableId}', which the engine component '$($resolvedEngine.id)' requires, is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
+                        }
+                        throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $unavailableId -Message $unavailableMessage)
+                    }
+                    $planEnginePath = [string] $resolvedEngine.executable
+                    $planEngineVersion = [string] $resolvedEngine.version
+                    $planEngineComponentId = [string] $resolvedEngine.id
+                    if ([string] $resolvedEngine.backend -ceq 'hip') {
+                        # The HIP engine names its own devices (ROCm<N>): the selected card is matched by exact name and VRAM, or the plan fails closed.
+                        $planBackend = 'hip'
+                        $planRuntimeRoots = @($resolvedEngine.runtimeRoots)
+                        # Verify before execute: the probe runs the engine and loads every AMD DLL, so the whole chain is hashed (Full, memoised in-process) first.
+                        $fullUnavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Full
+                        if ($fullUnavailableId) {
+                            throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $fullUnavailableId `
+                                -Message "The component '${fullUnavailableId}' (for the engine component '$($resolvedEngine.id)') failed its file check, so recipe '$($recipePick.recipe.id)' was not started and nothing was run. The built-in engine is not used instead. Reinstall the component.")
+                        }
+                        $hipDevices = @(Invoke-FastLlmDeviceProbe -EnginePath $planEnginePath -Backend 'ROCm' -InstallRoot $InstallRoot `
+                                -TimeoutSeconds ([int] $catalog.hardwarePolicy.deviceProbeTimeoutSeconds) -Hip -RuntimeRoots $planRuntimeRoots -ComponentId $planEngineComponentId)
+                        $selectedAdapters = @(Resolve-FastLlmHipSelectedAdapters -Adapters $selectedAdapters -Devices $hipDevices -ComponentId $planEngineComponentId)
+                        $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
+                        $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own.'
+                    }
                 }
-                throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $unavailableId -Message $unavailableMessage)
-            }
-            $planEnginePath = [string] $resolvedEngine.executable
-            $planEngineVersion = [string] $resolvedEngine.version
-            $planEngineComponentId = [string] $resolvedEngine.id
-            if ([string] $resolvedEngine.backend -ceq 'hip') {
-                # The HIP engine names its own devices (ROCm<N>): the selected card is matched by exact name and VRAM, or the plan fails closed.
-                $planBackend = 'hip'
-                $planRuntimeRoots = @($resolvedEngine.runtimeRoots)
-                # Verify before execute: the probe runs the engine and loads every AMD DLL, so the whole chain is hashed (Full, memoised in-process) first.
-                $fullUnavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Full
-                if ($fullUnavailableId) {
-                    throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $fullUnavailableId `
-                        -Message "The component '${fullUnavailableId}' (for the engine component '$($resolvedEngine.id)') failed its file check, so recipe '$($recipePick.recipe.id)' was not started and nothing was run. The built-in engine is not used instead. Reinstall the component.")
-                }
-                $hipDevices = @(Invoke-FastLlmDeviceProbe -EnginePath $planEnginePath -Backend 'ROCm' -InstallRoot $InstallRoot `
-                        -TimeoutSeconds ([int] $catalog.hardwarePolicy.deviceProbeTimeoutSeconds) -Hip -RuntimeRoots $planRuntimeRoots -ComponentId $planEngineComponentId)
-                $selectedAdapters = @(Resolve-FastLlmHipSelectedAdapters -Adapters $selectedAdapters -Devices $hipDevices -ComponentId $planEngineComponentId)
-                $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
-                $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own.'
             }
         }
-    }
 
+    }
+    catch {
+        $typedFailureCode = $null
+        if ($_.Exception.Data) { $typedFailureCode = $_.Exception.Data['FastLlmFailureCode'] }
+        if (-not $autoFallbackEligible -or -not $typedFailureCode) { throw }
+        $fallbackTrigger = [string] $typedFailureCode
+    }
+    if ($fallbackTrigger -or $pendingState) {
+        $triggerReason = $fallbackTrigger
+        if (-not $triggerReason) { $triggerReason = [string] $pendingState.reason }
+        $fallbackParams = @{}
+        foreach ($boundName in @($PSBoundParameters.Keys)) { if ($boundName -cne 'ResolveFallback') { $fallbackParams[$boundName] = $PSBoundParameters[$boundName] } }
+        $fallbackParams['FallbackFromRecipe'] = [string] $recipePick.recipe.id
+        $fallbackParams['FallbackReason'] = $triggerReason
+        $fallbackPlan = $null
+        $fallbackError = $null
+        try { $fallbackPlan = Get-FastLlmPlan @fallbackParams }
+        catch { $fallbackError = $_.Exception }
+        if ($fallbackTrigger -or $ResolveFallback) {
+            if ($fallbackError) {
+                throw (New-FastLlmEngineFailure -Code 'fallback-unavailable' -Message "Recipe '$($recipePick.recipe.id)' cannot run here ($triggerReason) and no fallback setup could be planned: $($fallbackError.Message)")
+            }
+            return $fallbackPlan
+        }
+    }
     $deviceNames = @($selectedAdapters | ForEach-Object { [string] $_.device })
     $arguments = @(
         '--model', $modelPath,
@@ -1249,6 +1367,8 @@ function Get-FastLlmPlan {
     if ($tensorSplit) {
         $arguments += @('--tensor-split', $tensorSplit)
     }
+    # The pending form names no engine and no launch: nothing can start until the components are installed.
+    if ($pendingState) { $arguments = @() }
 
     $planDocument = [pscustomobject] [ordered] @{
         schemaVersion       = 1
@@ -1293,6 +1413,25 @@ function Get-FastLlmPlan {
     # Present only on a HIP plan: the absolute DLL directories of the required runtime components, in chain order.
     if ($planBackend -ceq 'hip') {
         $planDocument | Add-Member -NotePropertyName runtimeRoots -NotePropertyValue @($planRuntimeRoots)
+    }
+    if ($pendingState) {
+        $pendingToRecipe = $null
+        $pendingToModelId = $null
+        if ($fallbackPlan) {
+            if ([string] $fallbackPlan.selectionMode -ceq 'recipe') { $pendingToRecipe = [string] $fallbackPlan.recipe.id }
+            $pendingToModelId = [string] $fallbackPlan.model.id
+        }
+        $planDocument | Add-Member -NotePropertyName setup -NotePropertyValue ([pscustomobject] [ordered] @{ pendingComponents = @($pendingState.records) })
+        $planDocument | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject] [ordered] @{
+                fromRecipe = [string] $recipePick.recipe.id; toRecipe = $pendingToRecipe; toModelId = $pendingToModelId
+                reason = [string] $pendingState.reason; applied = $false })
+    }
+    elseif ($isFallbackPass) {
+        $fallbackToRecipe = $null
+        if ($recipePick) { $fallbackToRecipe = [string] $recipePick.recipe.id }
+        $planDocument | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject] [ordered] @{
+                fromRecipe = $FallbackFromRecipe; toRecipe = $fallbackToRecipe; toModelId = [string] $model.id
+                reason = $FallbackReason; applied = $true })
     }
     return $planDocument
 }
@@ -3501,5 +3640,6 @@ Export-ModuleMember -Function @(
     'Test-FastLlmFileHash',
     'Test-FastLlmHipSupportedName',
     'Test-FastLlmIntegratedName',
-    'Test-FastLlmModelConsentReceipt'
+    'Test-FastLlmModelConsentReceipt',
+    'Test-FastLlmPlanMatchesPlannedRecipe'
 )

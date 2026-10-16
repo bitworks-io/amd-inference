@@ -215,6 +215,7 @@ function Select-FastLlmRecipeForPlacements {
           [string] $RecipeId, [switch] $IncludeExperimental,
           [object[]] $EligibleAdapters,
           [object[]] $Components,
+          [switch] $ExcludeLicenseRecipes,
           [System.Collections.Generic.List[string]] $SkippedSink)
     $usable = @($Recipes | Where-Object { $_ -and (-not (Test-FastLlmExperimentalOrigin -Origin ([string] $_.origin)) -or $IncludeExperimental -or ($RecipeId -and $_.id -eq $RecipeId)) })
     if ($RecipeId) {
@@ -274,8 +275,9 @@ function Select-FastLlmRecipeForPlacements {
                 if (-not $skipped.Contains($countReason)) { $skipped.Add($countReason) }
                 continue
             }
-            # An AMD license cannot be accepted silently, so a recipe whose engine chain needs an accepted license is never auto-selected, whatever its origin; -Recipe is the way to it.
-            if (-not $RecipeId -and (Test-FastLlmRecipeNeedsLicenseAcceptance -Recipe $recipe -Catalog $Catalog -Components $Components)) {
+            # A recipe whose engine chain needs an accepted license is auto-selected only when its origin is 'bitworks' (measured by us) and the caller
+            # did not ask to exclude license recipes (the fallback pass does). Every other origin is never auto-selected for it; -Recipe is the way to it.
+            if (-not $RecipeId -and ($ExcludeLicenseRecipes -or [string] $recipe.origin -cne 'bitworks') -and (Test-FastLlmRecipeNeedsLicenseAcceptance -Recipe $recipe -Catalog $Catalog -Components $Components)) {
                 $licenseReason = "$($recipe.id): needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)"
                 if (-not $skipped.Contains($licenseReason)) { $skipped.Add($licenseReason) }
                 continue

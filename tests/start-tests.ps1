@@ -38,7 +38,7 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered)
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason)
             $script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             return $script:startTestState.fresh
         }
@@ -226,7 +226,7 @@ try {
     function Get-FastLlmCatalog { param($CatalogPath) $script:nd.log.Add('catalog');return [pscustomobject]@{engine=[pscustomobject]@{version='b-test';assets=[pscustomobject]@{vulkan=[pscustomobject]@{enabled=$true};rocm=[pscustomobject]@{enabled=$false}}}} }
     function Test-FastLlmEngineInstallation { param($InstallRoot,$EngineVersion,$BackendKey,$Asset) $script:nd.log.Add('engine-check');return $script:nd.engine }
     function Get-FastLlmHardware { param($CatalogPath,$InstallRoot) $script:nd.log.Add('hardware');return [pscustomobject]@{} }
-    function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId)
+    function Get-FastLlmPlan { param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason)
         $script:nd.log.Add('plan');$script:nd.planCalls++;$script:nd.requestedModelIds.Add([string]$ModelId)
         if($script:nd.planFailure){throw $script:nd.planFailure}
         $ndPlan=[pscustomobject]@{modelPath=$ndModel;model=[pscustomobject]@{id='nd-model'}}

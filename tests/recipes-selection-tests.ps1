@@ -41,6 +41,33 @@ $pick = Select-FastLlmRecipeForPlacements -Recipes $exp -Variants $variants -Pla
 Check ($null -eq $pick) 'an experimental recipe is never auto-selected'
 $pick = Select-FastLlmRecipeForPlacements -Recipes $exp -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -RecipeId 'e1'
 Check ($pick.recipe.id -eq 'e1') 'an experimental recipe can be chosen explicitly'
+# Recipes whose engine chain needs an AMD license accepted: auto-selected when Bitworks measured them, unless the caller excludes them (the fallback pass).
+$acceptEngine = [pscustomobject]@{ id = 'eng-hip'; kind = 'engine'; version = 'h1'; adapter = 'llama.cpp'; requires = @()
+    platform = [pscustomobject]@{ os = 'windows'; arch = 'x64'; backend = 'hip' }; license = [pscustomobject]@{ consent = 'accept' } }
+function HipRecipe($id, $origin, [bool]$recommended, $gen = 40) { $hipRecipe = Recipe $id $origin 'big' $gen $recommended $true; $hipRecipe.components.engine = 'eng-hip'; $hipRecipe.engineBuild = 'h1'; return $hipRecipe }
+$licenseSelect = { param($Recipes, [bool] $Exclude, $Sink, [bool] $Experimental)
+    $selectParams = @{ Recipes = @($Recipes); Variants = $variants; Placements = @((Placement 23000)); DxgiAdapters = $xtxDxgi; Catalog = $catalog; Profile = 'balanced'; Components = @($acceptEngine) }
+    if ($Exclude) { $selectParams.ExcludeLicenseRecipes = $true }
+    if ($null -ne $Sink) { $selectParams.SkippedSink = $Sink }
+    if ($Experimental) { $selectParams.IncludeExperimental = $true }
+    return (Select-FastLlmRecipeForPlacements @selectParams) }
+$pick = & $licenseSelect @((HipRecipe 'h1' 'bitworks' $true)) $false $null $false
+Check ($null -ne $pick -and $pick.recipe.id -ceq 'h1') 'bitworks recipe whose chain needs accept is auto-selected when recommended'
+$licenseSink = New-Object 'System.Collections.Generic.List[string]'
+$pick = & $licenseSelect @((HipRecipe 'h1' 'bitworks' $true)) $true $licenseSink $false
+Check ($null -eq $pick -and $licenseSink.Count -eq 1 -and $licenseSink[0] -ceq 'h1: needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)') 'with -ExcludeLicenseRecipes the same recipe is skipped with the needs-license-acceptance reason'
+$licenseSink = New-Object 'System.Collections.Generic.List[string]'
+$pick = & $licenseSelect @((HipRecipe 'c2' 'community-reproduced' $false)) $false $licenseSink $false
+Check ($null -eq $pick -and @($licenseSink | Where-Object { $_ -like 'c2: needs-license-acceptance*' }).Count -eq 1) 'community-reproduced recipe whose chain needs accept is still never auto-selected'
+Check ($null -eq (& $licenseSelect @((HipRecipe 'e3' 'community-experimental' $false)) $false $null $false) -and $null -eq (& $licenseSelect @((HipRecipe 'e3' 'community-experimental' $false)) $false $null $true) -and $null -eq (& $licenseSelect @((HipRecipe 'e3' 'bitworks-experimental' $true)) $false $null $true)) 'experimental origins are never auto-selected, switch on or off'
+$pick = & $licenseSelect @((HipRecipe 'h1' 'bitworks' $false 50), (Recipe 'v1' 'bitworks' 'big' 32.7 $true)) $false $null $false
+Check ($pick.recipe.id -ceq 'v1') 'unrecommended bitworks HIP loses to recommended Vulkan'
+$pick = & $licenseSelect @((HipRecipe 'h1' 'bitworks' $true 40), (Recipe 'v1' 'bitworks' 'big' 32.7 $false)) $false $null $false
+Check ($pick.recipe.id -ceq 'h1') 'recommended HIP wins over Vulkan'
+$pick = & $licenseSelect @((HipRecipe 'h1' 'bitworks' $true 40), (Recipe 'v1' 'bitworks' 'big' 32.7 $false)) $true $null $false
+Check ($pick.recipe.id -ceq 'v1') 'with -ExcludeLicenseRecipes the Vulkan recipe is picked instead of the recommended HIP one'
+$namedParams = @{ Recipes = @((HipRecipe 'h1' 'bitworks' $false)); Variants = $variants; Placements = @((Placement 23000)); DxgiAdapters = $xtxDxgi; Catalog = $catalog; Profile = 'balanced'; Components = @($acceptEngine); RecipeId = 'h1' }
+Check ((Select-FastLlmRecipeForPlacements @namedParams).recipe.id -ceq 'h1' -and (Select-FastLlmRecipeForPlacements @namedParams -ExcludeLicenseRecipes).recipe.id -ceq 'h1') '-Recipe selects the license recipe whether or not license recipes are excluded'
 $threw = $null
 try { Select-FastLlmRecipeForPlacements -Recipes @((Recipe 'b1' 'bitworks' 'big' 32.7 $true)) -Variants $variants -Placements @((Placement 18000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -RecipeId 'b1' | Out-Null } catch { $threw = $_.Exception.Message }
 Check ($threw -like "*does not apply to this PC*No other recipe was substituted*") '-Recipe that does not fit refuses without substituting'
