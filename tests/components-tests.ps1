@@ -1825,6 +1825,118 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ((Get-FastLlmComponentSettings -InstallRoot $freshRoot).experimentalComponents -ceq 'on') 'setting the switch creates the install root and settings.json when they do not exist'
     Check ((Get-ThrownMessage { Set-FastLlmComponentSettings -InstallRoot $settingsRoot -ExperimentalComponents 'sometimes' }) -ne $null) 'a value other than on or off is rejected'
 
+    # ---- componentLicenses setting (storage, fail-closed reads, identities, matching, standing-setting receipts) ----
+    $licRoot = New-TestRoot
+    $licDefault = Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot
+    Check ($licDefault.mode -ceq 'ask' -and @($licDefault.accepted).Count -eq 0) 'componentLicenses defaults to ask with no settings.json'
+    [System.IO.File]::WriteAllText((Join-Path $licRoot 'settings.json'), '{"vulkanBarMitigation":"on","updateCheck":"off","experimentalComponents":"on","futureKey":"keep"}', (New-Object System.Text.UTF8Encoding($false)))
+    Set-FastLlmComponentLicenseSettings -InstallRoot $licRoot -Mode 'accept-automatically' -Accepted @([pscustomobject] @{ title = 'AMD EULA'; host = 'github.com' }) -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+    $licStored = Get-Content -LiteralPath (Join-Path $licRoot 'settings.json') -Raw | ConvertFrom-Json
+    Check ($licStored.experimentalComponents -ceq 'on' -and $licStored.vulkanBarMitigation -ceq 'on' -and $licStored.updateCheck -ceq 'off' -and $licStored.futureKey -ceq 'keep') 'storing componentLicenses keeps experimentalComponents, updateCheck, vulkanBarMitigation and unknown keys'
+    $licBack = Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot
+    Check ($licBack.mode -ceq 'accept-automatically' -and $licBack.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z' -and @($licBack.accepted).Count -eq 1 -and $licBack.accepted[0].title -ceq 'AMD EULA' -and $licBack.accepted[0].host -ceq 'github.com') 'accept-automatically round-trips mode, acceptedAt and the accepted title and host'
+    Check ((Get-Content -LiteralPath (Join-Path $licRoot 'settings.json') -Raw) -match '"accepted"\s*:\s*\[') 'a one-element accepted list is stored as an array'
+    Set-FastLlmComponentSettings -InstallRoot $licRoot -ExperimentalComponents 'off'
+    Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot).mode -ceq 'accept-automatically') 'turning the experimental switch off keeps componentLicenses'
+    Set-FastLlmComponentLicenseSettings -InstallRoot $licRoot -Mode 'ask'
+    $licOff = Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot
+    Check ($licOff.mode -ceq 'ask' -and @($licOff.accepted).Count -eq 0 -and (Get-Content -LiteralPath (Join-Path $licRoot 'settings.json') -Raw | ConvertFrom-Json).futureKey -ceq 'keep') 'ask turns it off, clears the list and keeps the other keys'
+    Check ($null -ne (Get-ThrownMessage { Set-FastLlmComponentLicenseSettings -InstallRoot $licRoot -Mode 'accept-automatically' -Accepted @() })) 'accept-automatically with no accepted licenses is refused at write time'
+    $licBadCases = [ordered] @{
+        'a missing file'                    = $null
+        'an empty file'                     = ''
+        'a JSON array'                      = '[]'
+        'a JSON string'                     = '"x"'
+        'componentLicenses as a string'     = '{"componentLicenses":"accept-automatically"}'
+        'componentLicenses as an array'     = '{"componentLicenses":[{"mode":"accept-automatically"}]}'
+        'an unknown mode'                   = '{"componentLicenses":{"mode":"always","acceptedAt":"x","accepted":[{"title":"t","host":"h"}]}}'
+        'a wrong-case mode'                 = '{"componentLicenses":{"mode":"Accept-Automatically","accepted":[{"title":"t","host":"h"}]}}'
+        'a missing accepted list'           = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"x"}}'
+        'accepted as a string'              = '{"componentLicenses":{"mode":"accept-automatically","accepted":"t"}}'
+        'accepted as a single object'       = '{"componentLicenses":{"mode":"accept-automatically","accepted":{"title":"t","host":"h"}}}'
+        'an entry without a title'          = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"host":"h"}]}}'
+        'an entry without a host'           = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t"}]}}'
+        'one good and one incomplete entry' = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t","host":"h"},{"title":"t2"}]}}'
+        'an entry with a control character' = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t\u0007","host":"h"}]}}'
+        'an empty accepted list'            = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"x","accepted":[]}}'
+        'broken JSON'                       = '{"componentLicenses":{"mode":'
+    }
+    foreach ($badName in $licBadCases.Keys) {
+        $badRoot = New-TestRoot
+        if ($null -ne $licBadCases[$badName]) { [System.IO.File]::WriteAllText((Join-Path $badRoot 'settings.json'), [string] $licBadCases[$badName], (New-Object System.Text.UTF8Encoding($false))) }
+        $badThrown = $null
+        $badRead = $null
+        try { $badRead = Get-FastLlmComponentLicenseSettings -InstallRoot $badRoot } catch { $badThrown = [string] $_.Exception.Message }
+        Check ($null -eq $badThrown -and $badRead.mode -ceq 'ask' -and @($badRead.accepted).Count -eq 0) "componentLicenses reads as ask, without throwing, for $badName"
+    }
+
+    $licShipped = @(Get-FastLlmComponents -ComponentsPath (Join-Path $repoRoot 'config/components.json'))
+    $licIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components $licShipped)
+    $licKeys = @($licIdentities | ForEach-Object { $_.title + ' @ ' + $_.host } | Sort-Object)
+    Check ($licIdentities.Count -eq 3 -and ($licKeys -join '|') -ceq 'AMD HIP SDK license page @ www.amd.com|AMD Software End User License Agreement @ github.com|llama.cpp license (MIT) @ github.com') 'the shipped components yield exactly three acceptable license identities (the Vulkan show license contributes none)'
+    $licDisclosure = @(Format-FastLlmLicenseDisclosure -Components $licShipped)
+    Check ($licDisclosure.Count -eq 3 -and @($licDisclosure | Where-Object { $_ -like 'License: llama.cpp license (MIT) https://github.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD HIP SDK license page https://www.amd.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD Software End User License Agreement https://github.com/*' }).Count -eq 1) 'the disclosure lists one "License: <title> <url>" line per acceptable identity'
+
+    $licOn = [pscustomobject] @{ mode = 'accept-automatically'; acceptedAt = '2026-10-16T10:00:00.0000000Z'; accepted = $licIdentities }
+    $licAsk = [pscustomobject] @{ mode = 'ask'; acceptedAt = ''; accepted = @() }
+    function New-PendingFor([string] $Id, [object[]] $Links) { return [pscustomobject] @{ id = $Id; consent = 'accept'; licenseLinks = @($Links) } }
+    $licHipPending = @($licShipped | Where-Object { @('amd-rocm-gfx1100-10.0.0', 'llama.cpp-hip-b11658') -ccontains [string] $_.id } | ForEach-Object { New-PendingFor ([string] $_.id) @(Get-FastLlmComponentLicenseLinks -Component $_) })
+    Check ($licHipPending.Count -eq 2 -and (Test-FastLlmLicensesCovered -Settings $licOn -Pending $licHipPending)) 'the shipped HIP chain is covered by the stored identities'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licAsk -Pending $licHipPending)) 'mode ask covers nothing'
+    $licBumped = @($licHipPending | ForEach-Object { New-PendingFor ([string] $_.id) @($_.licenseLinks | ForEach-Object { [pscustomobject] @{ title = ([string] $_.title).ToUpperInvariant(); url = ([string] $_.url) -replace 'blob/b11658', 'blob/b12000' } }) })
+    Check (Test-FastLlmLicensesCovered -Settings $licOn -Pending $licBumped) 'a changed URL path (engine tag bump) and a different title case are still covered: matching is title plus host'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'A brand new license'; url = 'https://github.com/a/b' })))) 'a new title is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = 'https://other.example.com/licenses.html' })))) 'the same title on a different host is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = 'not a url' })))) 'a link whose URL does not parse is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = ('https://www.amd.com/a' + [char] 7 + 'b') })))) 'a link whose URL has a control character is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @()))) 'an accept-type component with no license links is not covered'
+    Check (Test-FastLlmLicensesCovered -Settings $licOn -Pending @([pscustomobject] @{ id = 'v'; consent = 'show'; licenseLinks = @([pscustomobject] @{ title = 'other'; url = 'https://other.example.com/x' }) })) 'a show-type component needs no stored acceptance'
+
+    # Standing-setting receipts through the install seam (fixture chain with accept-type licenses).
+    $stFx = New-ChainFixture -Name 'fx-standing'
+    $stComponents = @(Get-FastLlmComponents -ComponentsPath $stFx.ComponentsPath)
+    $stIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components $stComponents)
+    $stRoot = New-TestRoot
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $stRoot -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '') 'with the setting off there is no standing acceptance'
+    Set-FastLlmComponentLicenseSettings -InstallRoot $stRoot -Mode 'accept-automatically' -Accepted $stIdentities -AcceptedAt '2026-10-16T11:22:33.0000000Z'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $stRoot -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '2026-10-16T11:22:33.0000000Z') 'with the setting on and covering the chain the standing acceptance is the stored acceptedAt'
+    $stPartial = New-TestRoot
+    Set-FastLlmComponentLicenseSettings -InstallRoot $stPartial -Mode 'accept-automatically' -Accepted @($stIdentities[0]) -AcceptedAt '2026-10-16T11:22:33.0000000Z'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $stPartial -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '') 'a setting that covers only some of the chain licenses gives no standing acceptance'
+    $stNone = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) }
+    Check ($stNone.code -ceq 'component-consent-required') 'neither -AcceptLicense nor -SettingAcceptedAt still needs consent'
+    $stState = New-ChainState
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stRoot -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -Download (New-ChainSeam -Fixture $stFx -State $stState) 6>$null
+    foreach ($stId in @('rt-hip', 'eng-hip')) {
+        $stReceiptPath = @(Get-ChildItem -LiteralPath (Join-Path $stRoot 'consents') -Filter "component-$stId-*.json")[0].FullName
+        $stReceiptText = Get-Content -LiteralPath $stReceiptPath -Raw
+        $stReceipt = $stReceiptText | ConvertFrom-Json
+        $stEntry = Get-ComponentEntry $stFx.ComponentsPath $stId
+        $stExpectedUrls = (@(& $module { param($c) Get-FastLlmComponentLicenseLinkEntries -Component $c } $stEntry) | ForEach-Object { $_.url }) -join '|'
+        Check ($stReceipt.mode -ceq 'standing-setting' -and $stReceiptText.Contains('"settingAcceptedAt": "2026-10-16T11:22:33.0000000Z"') -and [int] $stReceipt.schemaVersion -eq 1 -and (@($stReceipt.links | ForEach-Object { $_.url }) -join '|') -ceq $stExpectedUrls) "the $stId receipt has mode standing-setting, settingAcceptedAt and the exact license links"
+        Check (& $module { param($c, $r) Test-FastLlmComponentConsentReceipt -Component $c -InstallRoot $r } $stEntry $stRoot) "the standing-setting receipt for $stId is valid for the consent check"
+    }
+    $stExplicitRoot = New-TestRoot
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stExplicitRoot -AcceptLicense -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) 6>$null
+    $stExplicit = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath (Join-Path $stExplicitRoot 'consents') -Filter 'component-eng-hip-*.json')[0].FullName) -Raw | ConvertFrom-Json
+    Check ($stExplicit.mode -ceq 'explicit-switch' -and -not $stExplicit.PSObject.Properties['settingAcceptedAt']) '-AcceptLicense still writes an explicit-switch receipt without settingAcceptedAt'
+    $stBothRoot = New-TestRoot
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stBothRoot -AcceptLicense -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) 6>$null
+    Check ((Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath (Join-Path $stBothRoot 'consents') -Filter 'component-eng-hip-*.json')[0].FullName) -Raw | ConvertFrom-Json).mode -ceq 'explicit-switch') 'when both are given the explicit switch wins'
+
+    # Mirror pair.
+    $mirrorSource = New-TestRoot
+    $mirrorTarget = New-TestRoot
+    Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+    $mirrored = Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget
+    Check ($mirrored.mode -ceq 'accept-automatically' -and @($mirrored.accepted).Count -eq 3 -and $mirrored.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z') 'the mirrored setting reaches the install folder'
+    Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorTarget)) 'syncing roots that already agree writes nothing'
+    Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorSource)) 'syncing a root with itself writes nothing'
+    Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'ask'
+    Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget).mode -ceq 'ask') 'turning the setting off reaches the install folder too'
+    $componentsSourceText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'src/FastLlm.Components.ps1'))
+    Check ($componentsSourceText -cnotmatch '[^\x00-\x7F]') 'src/FastLlm.Components.ps1 is ASCII only'
+
     # The paragraph (spec 2.7).
     Check ($script:FastLlmExperimentalParagraph -like '*Experimental means*' -and $script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*listed official source*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the experimental paragraph says what experimental means, that Bitworks has not reproduced it, and that each component comes from its listed official source and is checked against its pinned hash'
     Check ($script:FastLlmExperimentalParagraph -cnotmatch '[^\x20-\x7E]') 'the experimental paragraph is ASCII'
@@ -2130,8 +2242,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($hostsSample.Count -eq 1 -and $hostsSample[0] -ceq 'stable.repo.amd.com') 'the source host of a multi-part component is read from its source URLs'
 
     # fast-llm.ps1 argument rules and wiring.
-    Check ($cliText.Contains("'update-check', 'update', 'components')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
-    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
+    Check ($cliText.Contains("'update-check', 'update', 'components', 'settings')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
+    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components -Install, install and settings.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
     $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
@@ -2155,7 +2267,10 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components.' },
             @{ args = @('recipes', '-Detail', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('plan', '-Detail', '-AsJson', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
-            @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components.' },
+            @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components' },
+            @{ args = @('plan', '-ComponentLicenses', 'ask', '-InstallRoot', $refusalRoot); text = '-ComponentLicenses is supported only by settings.' },
+            @{ args = @('components', '-List', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-ComponentLicenses is supported only by settings.' },
+            @{ args = @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $refusalRoot); text = 'needs -AcceptLicense' },
             @{ args = @('components', '-AcceptExperimental', '-InstallRoot', $refusalRoot); text = '-AcceptExperimental is supported only by plan, start and install.' },
             @{ args = @('components', '-Install', 'a', '-Remove', 'b', '-InstallRoot', $refusalRoot); text = 'components takes one of -List, -Install <id> or -Remove <id>.' },
             @{ args = @('components', '-List', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only with components -Install.' })) {
@@ -2194,8 +2309,41 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     }
     $cliSource = Get-Content -LiteralPath $cliPath -Raw
     Check ($cliSource.Contains('$componentsLock = Enter-FastLlmOperation') -and $cliSource.Contains('-OperationLockHeld:') -and $cliSource -match 'if \(\$componentsLock\) \{ \$componentsLock\.Dispose\(\) \}') 'the components lock is its own variable (the failure writer only knows $operationLock), is passed to Remove, and is disposed'
+    $cliSettingsPins = $cliSource.Contains("'settings' {") -and $cliSource.Contains('-SettingAcceptedAt $settingAcceptedAt') -and $cliSource.Contains('Get-FastLlmStandingAcceptance')
+    Check $cliSettingsPins 'fast-llm.ps1 has a settings branch and components -Install passes the standing acceptance through'
     if ($cliChildrenElevated) { Write-Host $cliChildSkip }
     else {
+        # settings -ComponentLicenses: refused without -AcceptLicense, shows the licenses first, stores, turns off.
+        $setRoot = New-TestRoot
+        $setFile = Join-Path $setRoot 'settings.json'
+        $setShown = Invoke-CliRefusal @('settings', '-InstallRoot', $setRoot)
+        Check ($setShown.exit -eq 0 -and $setShown.text -like '*componentLicenses: ask*') 'settings alone prints the current mode (ask)'
+        $setShownJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
+        $setObject = $setShownJson.text | ConvertFrom-Json
+        Check ($setShownJson.exit -eq 0 -and $setObject.mode -ceq 'ask' -and @($setObject.accepted).Count -eq 0) 'settings -AsJson gives an object with the mode and the accepted list'
+        $setRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $setRoot)
+        Check ($setRefused.exit -ne 0 -and $setRefused.text.Contains('needs -AcceptLicense') -and -not (Test-Path -LiteralPath $setFile)) 'settings -ComponentLicenses accept-automatically without -AcceptLicense is refused and changes nothing'
+        $setOn = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
+        $setOnLinks = [regex]::Matches($setOn.text, 'License: ').Count
+        Check ($setOn.exit -eq 0 -and $setOnLinks -eq 3 -and $setOn.text.Contains('AMD HIP SDK license page') -and $setOn.text.Contains('AMD Software End User License Agreement') -and $setOn.text.Contains('llama.cpp license (MIT)') -and $setOn.text.Contains('accept-automatically')) 'with -AcceptLicense it prints the three license links and stores the setting'
+        $setStored = Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot
+        Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 3 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the three identities'
+        $setOnJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
+        Check ((($setOnJson.text | ConvertFrom-Json).mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
+        $setOff = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)
+        Check ($setOff.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'ask') 'settings -ComponentLicenses ask turns it off'
+        $setInstallOk = Invoke-CliRefusal @('install', '-DryRun', '-AcceptLicense', '-InstallRoot', $setRoot)
+        Check (-not $setInstallOk.text.Contains('-AcceptLicense is supported only')) '-AcceptLicense is accepted with install'
+        # components -Install with the setting off still needs -AcceptLicense (nothing is downloaded before consent).
+        # A short folder: the shipped runtime's file paths must fit under the Windows path limit before consent is looked at.
+        $shortSetRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fl' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $shortSetRoot -Force | Out-Null
+        try {
+            Copy-Item -LiteralPath $setFile -Destination (Join-Path $shortSetRoot 'settings.json')
+            $setNeeds = Invoke-CliRefusal @('components', '-Install', 'llama.cpp-hip-b11658', '-Unattended', '-InstallRoot', $shortSetRoot)
+        }
+        finally { Remove-Item -LiteralPath $shortSetRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        Check ($setNeeds.exit -ne 0 -and $setNeeds.text.Contains('component-consent-required')) 'components -Install of the HIP engine with the setting off still needs -AcceptLicense'
         # components -Install and -Remove take the operation lock.
         $lockRoot = New-TestRoot
         $heldLock = Enter-FastLlmOperation -InstallRoot $lockRoot

@@ -393,7 +393,7 @@ try {
     $statusClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'status'" })[0]
     $updateCheckClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update-check'" })[0]
     $updateClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update'" })[0]
-    Check ($cliSource.Contains("'stop', 'update-check', 'update', 'components')]") -and $cliSource.Contains('[switch] $Yes') -and $cliSource.Contains("[ValidateSet('stable', 'canary')]") -and $cliSource.Contains('[string] $Channel')) 'fast-llm.ps1 declares update-check, update, -Yes and -Channel stable|canary'
+    Check ($cliSource.Contains("'stop', 'update-check', 'update', 'components', 'settings')]") -and $cliSource.Contains('[switch] $Yes') -and $cliSource.Contains("[ValidateSet('stable', 'canary')]") -and $cliSource.Contains('[string] $Channel')) 'fast-llm.ps1 declares update-check, update, -Yes and -Channel stable|canary'
     Check ($cliSource.Contains("-Yes is supported only by update.") -and $cliSource.Contains("-Channel is supported only by update-check and update.") -and $cliSource.Contains("`$PSBoundParameters.ContainsKey('Channel')")) 'fast-llm.ps1 refuses -Yes and -Channel for any other action'
     Check ($cliSource.Contains('$Action -eq ''update'' -and $Unattended -and -not $Yes') -and $cliSource.Contains('update -Unattended requires -Yes')) 'update refuses -Unattended without -Yes before doing anything'
     Check ($cliSource.Contains("FastLlm.Update.ps1") -and -not ([IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.psm1'))).Contains('FastLlm.Update.ps1')) 'FastLlm.Update.ps1 is dot-sourced by fast-llm.ps1 and never by FastLlm.psm1'

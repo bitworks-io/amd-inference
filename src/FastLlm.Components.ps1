@@ -37,6 +37,17 @@ function Get-FastLlmComponentSettings {
     return @{ experimentalComponents = $value }
 }
 
+# Writes the whole settings object through a temporary file and a replace, so a reader never sees a half-written file.
+function Write-FastLlmComponentSettingsObject {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Merged)
+    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
+    $path = Join-Path $InstallRoot 'settings.json'
+    $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
+    [IO.File]::WriteAllText($temporary, (([pscustomobject] $Merged) | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+    if (Get-Command -Name Move-FastLlmFileReplacing -ErrorAction SilentlyContinue) { Move-FastLlmFileReplacing -Source $temporary -Destination $path }
+    else { Move-Item -LiteralPath $temporary -Destination $path -Force }
+}
+
 # Read-modify-write: every other key already in settings.json is kept.
 function Set-FastLlmComponentSettings {
     param(
@@ -45,12 +56,7 @@ function Set-FastLlmComponentSettings {
     )
     $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
     $merged['experimentalComponents'] = $ExperimentalComponents
-    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
-    $path = Join-Path $InstallRoot 'settings.json'
-    $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
-    [IO.File]::WriteAllText($temporary, (([pscustomobject] $merged) | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
-    if (Get-Command -Name Move-FastLlmFileReplacing -ErrorAction SilentlyContinue) { Move-FastLlmFileReplacing -Source $temporary -Destination $path }
-    else { Move-Item -LiteralPath $temporary -Destination $path -Force }
+    Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
 }
 
 function Format-FastLlmComponentSize {
@@ -301,5 +307,197 @@ function Set-FastLlmExperimentalSwitchMirrored {
         $failure = $_.Exception.Message
         try { Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $previous } catch { }
         throw "The experimental components setting could not be applied to the install folder, so it was not changed: $failure"
+    }
+}
+
+# ---- componentLicenses: accept the licenses of engine components automatically (a standing, explicit user setting) ----
+
+# componentLicenses in <InstallRoot>\settings.json: { mode: 'ask' | 'accept-automatically', acceptedAt, accepted: [ { title, host } ] }.
+# Reads fail closed: anything missing, malformed or incomplete reads as 'ask' with an empty list. Never throws.
+function Get-FastLlmComponentLicenseSettings {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $ask = [pscustomobject] [ordered] @{ mode = 'ask'; acceptedAt = ''; accepted = @() }
+    try {
+        $stored = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+        if (-not $stored.Contains('componentLicenses')) { return $ask }
+        $block = $stored['componentLicenses']
+        if ($null -eq $block -or $block -isnot [pscustomobject]) { return $ask }
+        $modeProperty = $block.PSObject.Properties['mode']
+        if ($null -eq $modeProperty -or $modeProperty.Value -isnot [string] -or $modeProperty.Value -cne 'accept-automatically') { return $ask }
+        $listProperty = $block.PSObject.Properties['accepted']
+        if ($null -eq $listProperty -or $listProperty.Value -isnot [array]) { return $ask }
+        $accepted = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($entry in $listProperty.Value) {
+            if ($null -eq $entry -or $entry -isnot [pscustomobject]) { return $ask }
+            $titleProperty = $entry.PSObject.Properties['title']
+            $hostProperty = $entry.PSObject.Properties['host']
+            if ($null -eq $titleProperty -or $null -eq $hostProperty -or $titleProperty.Value -isnot [string] -or $hostProperty.Value -isnot [string]) { return $ask }
+            $title = ([string] $titleProperty.Value).Trim()
+            $hostName = ([string] $hostProperty.Value).Trim()
+            if ($title.Length -eq 0 -or $hostName.Length -eq 0) { return $ask }
+            if ([regex]::IsMatch($title + $hostName, '[\x00-\x1F\x7F]')) { return $ask }
+            $accepted.Add([pscustomobject] [ordered] @{ title = $title; host = $hostName })
+        }
+        if ($accepted.Count -eq 0) { return $ask }
+        $acceptedAt = ''
+        $atProperty = $block.PSObject.Properties['acceptedAt']
+        if ($null -ne $atProperty -and $atProperty.Value -is [string]) { $acceptedAt = [string] $atProperty.Value }
+        elseif ($null -ne $atProperty -and $atProperty.Value -is [datetime]) { $acceptedAt = ([datetime] $atProperty.Value).ToUniversalTime().ToString('o') }
+        return [pscustomobject] [ordered] @{ mode = 'accept-automatically'; acceptedAt = $acceptedAt; accepted = $accepted.ToArray() }
+    }
+    catch { return $ask }
+}
+
+# Read-modify-write: every other key already in settings.json is kept. 'ask' stores an empty list.
+function Set-FastLlmComponentLicenseSettings {
+    param(
+        [Parameter(Mandatory = $true)][string] $InstallRoot,
+        [Parameter(Mandatory = $true)][ValidateSet('ask', 'accept-automatically')][string] $Mode,
+        [object[]] $Accepted = @(),
+        [string] $AcceptedAt = ''
+    )
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    if ($Mode -ceq 'accept-automatically') {
+        foreach ($identity in @($Accepted)) {
+            if ($null -eq $identity -or [string]::IsNullOrWhiteSpace([string] $identity.title) -or [string]::IsNullOrWhiteSpace([string] $identity.host)) {
+                throw 'Every accepted license needs a title and a host.'
+            }
+            $entries.Add([pscustomobject] [ordered] @{ title = ([string] $identity.title).Trim(); host = ([string] $identity.host).Trim() })
+        }
+        if ($entries.Count -eq 0) { throw 'accept-automatically needs at least one accepted license.' }
+    }
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged['componentLicenses'] = [pscustomobject] [ordered] @{
+        mode       = $Mode
+        acceptedAt = $(if ($Mode -ceq 'accept-automatically') { $AcceptedAt } else { '' })
+        accepted   = $entries.ToArray()
+    }
+    Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
+}
+
+# The host of an https license URL, or $null when the URL does not parse, is not https or contains a control character.
+function Get-FastLlmLicenseUrlHost {
+    param([string] $Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+    if ([regex]::IsMatch($Url, '[\x00-\x1F\x7F]')) { return $null }
+    $parsed = $null
+    if (-not [Uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref] $parsed)) { return $null }
+    if ($parsed.Scheme -cne 'https' -or [string]::IsNullOrEmpty($parsed.Host)) { return $null }
+    return [string] $parsed.Host
+}
+
+# Every license link (title, host, url) of every accept-type component in the list, once per title and host.
+function Get-FastLlmAcceptableLicenseLinks {
+    param([object[]] $Components)
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $result = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($component in @($Components | Where-Object { $_ })) {
+        $licenseProperty = $component.PSObject.Properties['license']
+        if ($null -eq $licenseProperty -or $null -eq $licenseProperty.Value) { continue }
+        $consentProperty = $licenseProperty.Value.PSObject.Properties['consent']
+        if ($null -eq $consentProperty -or [string] $consentProperty.Value -cne 'accept') { continue }
+        foreach ($link in @(Get-FastLlmComponentLicenseLinks -Component $component)) {
+            $hostName = Get-FastLlmLicenseUrlHost -Url ([string] $link.url)
+            $title = ([string] $link.title).Trim()
+            if ($null -eq $hostName -or $title.Length -eq 0) { continue }
+            if ($seen.Add($title + "`n" + $hostName)) {
+                $result.Add([pscustomobject] [ordered] @{ title = $title; host = $hostName; url = ([string] $link.url).Trim() })
+            }
+        }
+    }
+    return $result.ToArray()
+}
+
+# The license identities (title and host) a user accepts by turning the setting on.
+function Get-FastLlmAcceptableLicenseIdentities {
+    param([object[]] $Components)
+    foreach ($link in @(Get-FastLlmAcceptableLicenseLinks -Components $Components)) {
+        [pscustomobject] [ordered] @{ title = [string] $link.title; host = [string] $link.host }
+    }
+}
+
+# True when the setting is accept-automatically and every license link of every accept-type pending component matches a stored identity by title
+# (case-insensitive) and URL host, never by the full URL. A link that does not parse, or has a control character, is never covered.
+function Test-FastLlmLicensesCovered {
+    param([Parameter(Mandatory = $true)] $Settings, [object[]] $Pending)
+    try {
+        if ($null -eq $Settings -or [string] $Settings.mode -cne 'accept-automatically') { return $false }
+        $stored = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($identity in @($Settings.accepted)) { [void] $stored.Add(([string] $identity.title).Trim() + "`n" + ([string] $identity.host).Trim()) }
+        foreach ($component in @($Pending | Where-Object { $_ })) {
+            $consentProperty = $component.PSObject.Properties['consent']
+            if ($null -ne $consentProperty -and [string] $consentProperty.Value -cne 'accept') { continue }
+            $linksProperty = $component.PSObject.Properties['licenseLinks']
+            $links = @()
+            if ($null -ne $linksProperty -and $null -ne $linksProperty.Value) { $links = @($linksProperty.Value) }
+            if ($links.Count -eq 0) { return $false }
+            foreach ($link in $links) {
+                $hostName = Get-FastLlmLicenseUrlHost -Url ([string] $link.url)
+                $title = ([string] $link.title).Trim()
+                if ($null -eq $hostName -or $title.Length -eq 0) { return $false }
+                if (-not $stored.Contains($title + "`n" + $hostName)) { return $false }
+            }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
+# The lines shown before the setting is stored: every acceptable license with its current link.
+function Format-FastLlmLicenseDisclosure {
+    param([object[]] $Components)
+    foreach ($link in @(Get-FastLlmAcceptableLicenseLinks -Components $Components)) { 'License: {0} {1}' -f $link.title, $link.url }
+}
+
+# The acceptance time to pass to Install-FastLlmComponent when the stored setting covers every accept-type license of the component's chain, else ''.
+function Get-FastLlmStandingAcceptance {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $ComponentsPath, [Parameter(Mandatory = $true)][string] $ComponentId)
+    try {
+        $settings = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
+        if ([string] $settings.mode -cne 'accept-automatically') { return '' }
+        $all = @(Get-FastLlmComponents -ComponentsPath $ComponentsPath)
+        $chain = @(Get-FastLlmComponentChain -Components $all -Id $ComponentId)
+        $needing = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($chainEntry in $chain) {
+            if ([string] $chainEntry.license.consent -ceq 'accept') {
+                $needing.Add([pscustomobject] @{ id = [string] $chainEntry.id; consent = 'accept'; licenseLinks = @(Get-FastLlmComponentLicenseLinks -Component $chainEntry) })
+            }
+        }
+        if (-not (Test-FastLlmLicensesCovered -Settings $settings -Pending $needing.ToArray())) { return '' }
+        if ([string]::IsNullOrWhiteSpace([string] $settings.acceptedAt)) { return (Get-Date).ToUniversalTime().ToString('o') }
+        return [string] $settings.acceptedAt
+    }
+    catch { return '' }
+}
+
+# Mirrors the stored setting from the launch root into the install folder when they differ (pattern of Sync-FastLlmExperimentalSwitch). Returns $true when it wrote.
+function Sync-FastLlmComponentLicenseSetting {
+    param([Parameter(Mandatory = $true)][string] $SourceRoot, [Parameter(Mandatory = $true)][string] $TargetRoot)
+    if ([IO.Path]::GetFullPath($SourceRoot).TrimEnd('\', '/') -ieq [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\', '/')) { return $false }
+    $wanted = Get-FastLlmComponentLicenseSettings -InstallRoot $SourceRoot
+    $stored = Get-FastLlmComponentLicenseSettings -InstallRoot $TargetRoot
+    $same = ([string] $wanted.mode -ceq [string] $stored.mode) -and ([string] $wanted.acceptedAt -ceq [string] $stored.acceptedAt) -and
+        ((@($wanted.accepted | ForEach-Object { $_.title + "`n" + $_.host }) -join "`r") -ceq (@($stored.accepted | ForEach-Object { $_.title + "`n" + $_.host }) -join "`r"))
+    if ($same) { return $false }
+    Set-FastLlmComponentLicenseSettings -InstallRoot $TargetRoot -Mode ([string] $wanted.mode) -Accepted @($wanted.accepted) -AcceptedAt ([string] $wanted.acceptedAt)
+    return $true
+}
+
+# Stores the setting under the launch root and mirrors it into the install folder; when the mirror fails the launch-root value goes back to what it was.
+function Set-FastLlmComponentLicenseSettingMirrored {
+    param(
+        [Parameter(Mandatory = $true)][string] $SourceRoot,
+        [Parameter(Mandatory = $true)][string] $TargetRoot,
+        [Parameter(Mandatory = $true)][ValidateSet('ask', 'accept-automatically')][string] $Mode,
+        [object[]] $Accepted = @(),
+        [string] $AcceptedAt = ''
+    )
+    $previous = Get-FastLlmComponentLicenseSettings -InstallRoot $SourceRoot
+    Set-FastLlmComponentLicenseSettings -InstallRoot $SourceRoot -Mode $Mode -Accepted $Accepted -AcceptedAt $AcceptedAt
+    try { [void](Sync-FastLlmComponentLicenseSetting -SourceRoot $SourceRoot -TargetRoot $TargetRoot) }
+    catch {
+        $failure = $_.Exception.Message
+        try { Set-FastLlmComponentLicenseSettings -InstallRoot $SourceRoot -Mode ([string] $previous.mode) -Accepted @($previous.accepted) -AcceptedAt ([string] $previous.acceptedAt) } catch { }
+        throw "The component license setting could not be applied to the install folder, so it was not changed: $failure"
     }
 }

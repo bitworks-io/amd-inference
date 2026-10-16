@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop', 'update-check', 'update', 'components')]
+    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop', 'update-check', 'update', 'components', 'settings')]
     [string] $Action = 'start',
 
     [ValidateSet('fast', 'balanced', 'quality')]
@@ -83,8 +83,14 @@ param(
 
     [string] $Remove,
 
-    # components -Install only: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
+    # components -Install and install: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
+    # settings: required to turn -ComponentLicenses accept-automatically on, after the licenses are shown.
     [switch] $AcceptLicense,
+
+    # settings only: ask (default) or accept-automatically. With accept-automatically, the licenses of the engine components listed in components.json
+    # (title and host) count as accepted by you, so components can be installed without -AcceptLicense. Needs -AcceptLicense to turn on; ask turns it off.
+    [ValidateSet('ask', 'accept-automatically')]
+    [string] $ComponentLicenses,
 
     # plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: required in addition to the experimental switch being on.
     [switch] $AcceptExperimental,
@@ -126,7 +132,11 @@ if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-chec
 if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { throw '-Install is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
-if ($AcceptLicense -and $Action -ne 'components') { throw '-AcceptLicense is supported only by components.' }
+if ($AcceptLicense -and $Action -notin @('components', 'install', 'settings')) { throw '-AcceptLicense is supported only by components -Install, install and settings.' }
+if ($PSBoundParameters.ContainsKey('ComponentLicenses') -and $Action -ne 'settings') { throw '-ComponentLicenses is supported only by settings.' }
+if ($Action -eq 'settings' -and $PSBoundParameters.ContainsKey('ComponentLicenses') -and $ComponentLicenses -ceq 'accept-automatically' -and -not $AcceptLicense) {
+    throw 'settings -ComponentLicenses accept-automatically needs -AcceptLicense: it shows the licenses first, and nothing was changed.'
+}
 if ($AcceptExperimental -and $Action -notin @('plan', 'start', 'install')) { throw '-AcceptExperimental is supported only by plan, start and install.' }
 if ($Detail -and ($Action -ne 'recipes' -or -not $AsJson)) { throw '-Detail is supported only by recipes with -AsJson.' }
 if ($Action -eq 'components') {
@@ -257,7 +267,10 @@ try {
         }
         'components' {
             if ($PSBoundParameters.ContainsKey('Install')) {
-                $installResult = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -Unattended:$Unattended -PassThru
+                # The standing componentLicenses setting counts as the license acceptance when it covers every license of the chain; -AcceptLicense still wins.
+                $settingAcceptedAt = ''
+                if (-not $AcceptLicense) { $settingAcceptedAt = [string] (Get-FastLlmStandingAcceptance -InstallRoot $InstallRoot -ComponentsPath $componentsFilePath -ComponentId $Install) }
+                $installResult = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -SettingAcceptedAt $settingAcceptedAt -Unattended:$Unattended -PassThru
                 $installedRoot = [string] $installResult.root
                 if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = $installedRoot; installedComponents = @($installResult.installed) } | ConvertTo-Json -Depth 5 }
                 elseif (@($installResult.installed).Count -eq 0) { Write-Host "Component '$Install' is already installed and verified: $installedRoot" }
@@ -274,6 +287,23 @@ try {
                 elseif ($componentInventory.Count -eq 0) { Write-Host 'This release lists no components.' }
                 else { foreach ($componentLine in @(Format-FastLlmComponentList -Inventory $componentInventory)) { Write-Host $componentLine } }
             }
+        }
+        'settings' {
+            # No operation lock: this only reads and writes settings.json.
+            if ($PSBoundParameters.ContainsKey('ComponentLicenses')) {
+                if ($ComponentLicenses -ceq 'accept-automatically') {
+                    $licenseComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath)
+                    foreach ($disclosureLine in @(Format-FastLlmLicenseDisclosure -Components $licenseComponents)) { Write-Host $disclosureLine }
+                    Set-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot -Mode 'accept-automatically' -Accepted @(Get-FastLlmAcceptableLicenseIdentities -Components $licenseComponents) -AcceptedAt ((Get-Date).ToUniversalTime().ToString('o'))
+                }
+                else { Set-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot -Mode 'ask' }
+            }
+            $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
+            if ($AsJson) { $licenseState | ConvertTo-Json -Depth 6 }
+            elseif ([string] $licenseState.mode -ceq 'accept-automatically') {
+                Write-Host "componentLicenses: accept-automatically (turned on $($licenseState.acceptedAt); $(@($licenseState.accepted).Count) license(s) accepted)"
+            }
+            else { Write-Host 'componentLicenses: ask' }
         }
         'status' {
             Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12

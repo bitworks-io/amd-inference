@@ -2505,8 +2505,11 @@ function Write-FastLlmComponentConsentReceipt {
         [string] $InstallRoot,
 
         [Parameter(Mandatory = $true)]
-        [ValidateSet('interactive', 'explicit-switch')]
-        [string] $AcceptanceMode
+        [ValidateSet('interactive', 'explicit-switch', 'standing-setting')]
+        [string] $AcceptanceMode,
+
+        # standing-setting only: when the user turned the componentLicenses setting on (written as settingAcceptedAt).
+        [string] $SettingAcceptedAt = ''
     )
 
     $receiptPath = Get-FastLlmComponentConsentPath -Component $Component -InstallRoot $InstallRoot
@@ -2521,6 +2524,7 @@ function Write-FastLlmComponentConsentReceipt {
         acceptedAt    = (Get-Date).ToUniversalTime().ToString('o')
         mode          = $AcceptanceMode
     }
+    if ($AcceptanceMode -ceq 'standing-setting') { $receipt['settingAcceptedAt'] = $SettingAcceptedAt }
     $temporary = "$receiptPath.tmp.$([Guid]::NewGuid().ToString('N'))"
     $written = $false
     try {
@@ -3016,6 +3020,9 @@ function Install-FastLlmComponent {
 
         [switch] $AcceptLicense,
 
+        # When the componentLicenses setting is on and covers this chain: its acceptance time. Acts like -AcceptLicense, with receipt mode standing-setting.
+        [string] $SettingAcceptedAt = '',
+
         [switch] $Unattended,
 
         # Returns { root; installed = @({ id; version; path }) } (the components this call newly installed, required ones first) instead of the root.
@@ -3096,7 +3103,8 @@ function Install-FastLlmComponent {
             Write-Host "License: $([string] $licenseLink.title) $([string] $licenseLink.url)"
         }
     }
-    if (-not $AcceptLicense) {
+    $standingSetting = (-not $AcceptLicense) -and (-not [string]::IsNullOrWhiteSpace($SettingAcceptedAt))
+    if (-not $AcceptLicense -and -not $standingSetting) {
         $switchHint = "To install it, run: fast-llm.ps1 components -Install $ComponentId -AcceptLicense"
         if ($needsSwitch.Count -gt 0) {
             $acceptNames = (@($needsSwitch | ForEach-Object { "'$([string] $_.id)'" }) -join ', ')
@@ -3122,7 +3130,8 @@ function Install-FastLlmComponent {
     }
     else {
         foreach ($pendingEntry in $needsSwitch) {
-            Write-FastLlmComponentConsentReceipt -Component $pendingEntry -InstallRoot $InstallRoot -AcceptanceMode 'explicit-switch'
+            if ($standingSetting) { Write-FastLlmComponentConsentReceipt -Component $pendingEntry -InstallRoot $InstallRoot -AcceptanceMode 'standing-setting' -SettingAcceptedAt $SettingAcceptedAt }
+            else { Write-FastLlmComponentConsentReceipt -Component $pendingEntry -InstallRoot $InstallRoot -AcceptanceMode 'explicit-switch' }
         }
     }
 
