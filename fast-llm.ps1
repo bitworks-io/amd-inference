@@ -46,6 +46,9 @@ param(
     # doctor only: opt in to the live Vulkan memory-layout probe (a bounded child process). Default doctor never probes.
     [switch] $ProbeVulkanMemory,
 
+    # doctor only: print the report as compact single-line JSON with a summarized install-integrity block, for callers that bound the output size.
+    [switch] $Compact,
+
     # Advisory post-Ready prompt-processing measurement (live start only; default off).
     [switch] $ThroughputCanary,
 
@@ -137,6 +140,7 @@ if ($Action -eq 'components') {
 }
 if ($Action -eq 'update' -and $Unattended -and -not $Yes) { throw 'update -Unattended requires -Yes; nothing was changed.' }
 if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
+if ($Compact -and $Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
     throw '-AsJson is supported with start only when -DryRun is also specified; a foreground server owns its console output.'
 }
@@ -592,7 +596,8 @@ try {
                 $diagnostic.vulkanMemory = Get-FastLlmVulkanMemoryDiagnostic -AdapterNames $diagnosticAdapters -Backend $diagnosticBackend -Probe:$ProbeVulkanMemory -Adapters $diagnosticAdapterObjects
             }
             catch { $diagnostic.vulkanMemoryError = 'vulkan-memory-diagnostic-unavailable' }
-            $diagnostic | ConvertTo-Json -Depth 12
+            if ($Compact) { ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 -Compress }
+            else { $diagnostic | ConvertTo-Json -Depth 12 }
             if ($diagnostic.error) {
                 exit 2
             }

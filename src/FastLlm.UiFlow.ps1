@@ -129,6 +129,43 @@ function Move-FastLlmUiTrayState {
     return $State
 }
 
+# The window's setup check asks doctor for its compact report; this is the most text the window will parse from it.
+$script:FastLlmUiSetupCheckMaxCharacters = 262144
+
+function ConvertFrom-FastLlmUiSetupCheckOutput {
+    param([AllowNull()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt $script:FastLlmUiSetupCheckMaxCharacters) {
+        throw 'The setup check returned no usable bounded diagnostic.'
+    }
+    return (ConvertFrom-Json $Text)
+}
+
+# doctor -Compact: the install-integrity block keeps its status, reason, mismatch list and summary line, and the catalog signature
+# result keeps only its ok/reason/detail verdict; the full signature object that Authenticode attaches is dropped.
+function ConvertTo-FastLlmCompactDoctorReport {
+    param([Parameter(Mandatory=$true)]$Diagnostic)
+    $integrity = $Diagnostic['installIntegrity']
+    if ($null -eq $integrity) { return $Diagnostic }
+    $signature = $integrity.catalogSignature
+    $compactSignature = $null
+    if ($null -ne $signature) {
+        $compactSignature = [ordered]@{}
+        foreach ($name in @('ok', 'reason', 'detail')) {
+            if ($signature.PSObject.Properties[$name]) { $compactSignature[$name] = $signature.PSObject.Properties[$name].Value }
+        }
+        $compactSignature = [pscustomobject]$compactSignature
+    }
+    $Diagnostic['installIntegrity'] = [pscustomobject][ordered]@{
+        appRoot          = $integrity.appRoot
+        status           = $integrity.status
+        reason           = $integrity.reason
+        catalogSignature = $compactSignature
+        mismatches       = @($integrity.mismatches)
+        summary          = $integrity.summary
+    }
+    return $Diagnostic
+}
+
 function Get-FastLlmUiSetupDecision {
     param([Parameter(Mandatory=$true)]$Diagnostic, [ValidateSet(0,2)][int]$ExitCode)
     if ($null -eq $Diagnostic -or $Diagnostic -is [array] -or
