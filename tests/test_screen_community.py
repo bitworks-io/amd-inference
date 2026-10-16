@@ -24,7 +24,7 @@ class ScreenTests(unittest.TestCase):
         cases = {
             "topology": "topology-unavailable", "aggregate": "aggregate-metric",
             "nopin": "model-not-pinned", "enginepin": "engine-not-pinnable",
-            "incomplete": "submission-incomplete", "hip": "lane-not-shipped:hip",
+            "incomplete": "submission-incomplete", "hip-unshipped-card": "lane-not-shipped:hip",
             "draft": "lane-not-shipped:draft", "other": "lane-not-shipped:other-engine",
             "slow": "not-compelling", "nometric": "no-metric",
         }
@@ -66,6 +66,55 @@ class ScreenTests(unittest.TestCase):
         # XTX: the measured HIP entry generates faster and becomes the baseline.
         self.assertEqual(best[("rx-7900-xtx", 1)]["id"], "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip")
         self.assertEqual((best[("rx-7900-xtx", 1)]["generationTokS"], best[("rx-7900-xtx", 1)]["promptTokS"]), (33.72, 876.3))
+
+
+class GpuVariantsTests(unittest.TestCase):
+    def test_gpuvariants_list_is_read(self):
+        row = run("hip")
+        self.assertEqual(row["variant"], "rx-7900-xtx")
+
+    def test_each_gpuvariants_entry_is_its_own_card_record(self):
+        rows = sc.screen(sc.load(FIX / "multi-variant.json"), RECIPES, COMPONENTS, VARIANTS)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r["id"] for r in rows}, {"multi"})
+        self.assertEqual([r["variant"] for r in rows], ["rx-7900-xt", "rx-7900-xtx"])
+
+    def test_explicit_variant_and_other_forms_are_unchanged(self):
+        rec = {"id": "x", "variant": "rx-7900-xt-20gb", "gpuVariants": ["rx-7900-xtx-24gb"]}
+        self.assertEqual([h for h, _ in sc.flatten([rec])], ["rx-7900-xt-20gb"])
+        rec = {"id": "x", "variantKey": "rx-7900-xtx", "gpuVariants": ["rx-7900-xt-20gb"]}
+        self.assertEqual([h for h, _ in sc.flatten([rec])], ["rx-7900-xtx"])
+        self.assertEqual([h for h, _ in sc.flatten({"byVariant": {"rx-7900-xt-20gb": [{"id": "x"}]}})], ["rx-7900-xt-20gb"])
+        self.assertEqual([h for h, _ in sc.flatten([{"id": "x"}])], [None])
+
+    def test_gpuvariants_edge_cases(self):
+        self.assertEqual([h for h, _ in sc.flatten([{"gpuVariants": ["a", 3, None, "b"]}])], ["a", "b"])
+        self.assertEqual([h for h, _ in sc.flatten([{"gpuVariants": []}])], [None])
+        self.assertEqual([h for h, _ in sc.flatten([{"gpuVariants": [3]}])], [None])
+
+    def test_hip_record_on_shipped_architecture_is_not_flagged(self):
+        row = run("hip")
+        self.assertNotIn("lane-not-shipped:hip", row["reasons"])
+        xt = sc.load(FIX / "hip.json")
+        xt["records"][0]["gpuVariants"] = ["rx-7900-xt-20gb"]
+        rows = sc.screen(xt, RECIPES, COMPONENTS, VARIANTS)
+        self.assertNotIn("lane-not-shipped:hip", rows[0]["reasons"])
+
+    def test_hip_record_on_card_without_a_chain_is_flagged(self):
+        self.assertIn("lane-not-shipped:hip", run("hip-unshipped-card")["reasons"])
+        # A mapped card whose architecture has no runtime component keeps the reason.
+        components = json.loads(json.dumps(COMPONENTS))
+        components["components"] = [c for c in components["components"]
+                                    if not (c.get("kind") == "runtime" and "gfx1100" in c["id"])]
+        rows = sc.screen(sc.load(FIX / "hip.json"), RECIPES, components, VARIANTS)
+        self.assertIn("lane-not-shipped:hip", rows[0]["reasons"])
+        # An engine whose requires does not name a HIP runtime is not a chain.
+        components = json.loads(json.dumps(COMPONENTS))
+        for c in components["components"]:
+            if c.get("kind") == "engine":
+                c["requires"] = []
+        rows = sc.screen(sc.load(FIX / "hip.json"), RECIPES, components, VARIANTS)
+        self.assertIn("lane-not-shipped:hip", rows[0]["reasons"])
 
 
 class PerMetricBaselineTests(unittest.TestCase):
@@ -157,8 +206,9 @@ class RealShapeTests(unittest.TestCase):
 
     def test_freetext_backend_and_speculative(self):
         r = self.rows()["s-freetext-hip-mtp"]
-        for reason in ("lane-not-shipped:hip", "lane-not-shipped:draft", "topology-unavailable", "engine-not-pinnable"):
+        for reason in ("lane-not-shipped:draft", "topology-unavailable", "engine-not-pinnable"):
             self.assertIn(reason, r["reasons"])
+        self.assertNotIn("lane-not-shipped:hip", r["reasons"])  # the card's architecture has a shipped HIP chain
 
     def test_two_copies_c16_is_aggregate(self):
         r = self.rows()["s-two-copies-c16"]

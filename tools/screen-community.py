@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 GEN_PCT, PROMPT_PCT = 15.0, 50.0
 # Fallback when config/gpu-variants.json has no matching key.
 VARIANT_MAP = {"rx-7900-xt-20gb": "rx-7900-xt", "rx-7900-xtx-24gb": "rx-7900-xtx"}
+# Card architecture per variant key; a HIP record is only treated as shipped where a component chain exists for it.
+ARCH_BY_VARIANT = {"rx-7900-xt": "gfx1100", "rx-7900-xtx": "gfx1100"}
 AGGREGATE_RE = re.compile(r"aggregate|concurren|parallel|copies|(^|[^a-z0-9])c\d+($|[^a-z0-9])", re.I)
 SHA_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 BUILD_RE = re.compile(r"^b\d+$")
@@ -62,6 +64,22 @@ def variant_key(raw, gpu_variants):
     return stripped if stripped in keys else raw
 
 
+def hip_chain_exists(components, arch):
+    """True when a HIP engine requires a HIP runtime component whose id contains the architecture."""
+    if not arch:
+        return False
+    comps = [c for c in D(components).get("components", []) if isinstance(c, dict)]
+    runtimes = {c.get("id") for c in comps
+                if c.get("kind") == "runtime" and D(c.get("platform")).get("backend") == "hip"
+                and arch in S(c.get("id"))}
+    for c in comps:
+        if c.get("kind") == "engine" and D(c.get("platform")).get("backend") == "hip":
+            for req in (c.get("requires") if isinstance(c.get("requires"), list) else []):
+                if (req.get("id") if isinstance(req, dict) else req) in runtimes:
+                    return True
+    return False
+
+
 def best_by_variant(recipes):
     best = {}
     for e in recipes.get("entries", []):
@@ -94,7 +112,8 @@ def best_of(entries, metric):
 
 
 def flatten(doc):
-    """Yield (variant_hint, record) for either input form. Records may be any JSON value."""
+    """Yield (variant_hint, record) for either input form; a gpuVariants list yields one pair per entry.
+    Records may be any JSON value."""
     if isinstance(doc, dict) and isinstance(doc.get("byVariant"), dict):
         for var, group in doc["byVariant"].items():
             recs = group.get("records") if isinstance(group, dict) else group
@@ -105,7 +124,14 @@ def flatten(doc):
         if not isinstance(recs, list):
             raise ValueError("input is neither a byVariant export nor a list of records")
         for r in recs:
-            yield (S(D(r).get("variant") or D(r).get("variantKey")) or None), r
+            hint = S(D(r).get("variant") or D(r).get("variantKey")) or None
+            listed = D(r).get("gpuVariants")
+            names = [S(v) for v in listed if isinstance(v, str) and S(v)] if isinstance(listed, list) else []
+            if hint or not names:
+                yield hint, r
+            else:
+                for name in names:  # one card-record per listed variant
+                    yield name, r
 
 
 def _num(x):
@@ -248,7 +274,7 @@ def screen(doc, recipes, components, gpu_variants):
             reasons.append("engine-not-pinnable")
         if not submission_complete(rec, n):
             reasons.append("submission-incomplete")
-        if n["backend"] == "hip":
+        if n["backend"] == "hip" and not hip_chain_exists(components, ARCH_BY_VARIANT.get(var)):
             reasons.append("lane-not-shipped:hip")
         if n["draft"]:
             reasons.append("lane-not-shipped:draft")
