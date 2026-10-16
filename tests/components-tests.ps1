@@ -1362,9 +1362,6 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $missingFailure = $null
     try { Get-FastLlmPlan @componentPlanParams -RecipeId 'fixture.component-engine' | Out-Null } catch { $missingFailure = $_.Exception }
     Check ($null -ne $missingFailure -and $missingFailure.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and $missingFailure.Message -like '*test-engine-1*') 'a recipe named with -Recipe whose engine component is not installed fails the plan with needs-setup-component-missing naming the component'
-    $missingNamed = $null
-    try { Get-FastLlmPlan @componentPlanParams -RecipeId 'fixture.component-engine' | Out-Null } catch { $missingNamed = $_.Exception }
-    Check ($null -ne $missingNamed -and $missingNamed.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing') 'naming the recipe with -Recipe gives the same typed failure'
     $componentCounter = @{ count = 0 }
     $componentRootPlanned = Install-Fixture -Fixture $fxPlan -InstallRoot $componentPlanRoot -Counter $componentCounter -AcceptLicense -Unattended
     $componentPlan = Get-FastLlmPlan @componentPlanParams
@@ -1617,10 +1614,15 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($okPlan.recipe.id -ceq $autoHipId -and $okPlan.backend -ceq 'hip' -and $okPlan.selectedAdapters[0].device -ceq 'ROCm0' -and -not $okPlan.PSObject.Properties['setup'] -and -not $okPlan.PSObject.Properties['fallback'] -and $autoProbe.calls.Count -eq 1) 'components installed, probe ok -> HIP plan, no setup or fallback fields'
         $okResolved = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -ResolveFallback
         Check ($okResolved.recipe.id -ceq $autoHipId -and -not $okResolved.PSObject.Properties['fallback']) '-ResolveFallback leaves a working HIP plan alone'
+        # Smart App Control enforced and no ROCm device listed: the hip-dll-blocked path of the backend failure.
+        $savedSacState = & $module { (Get-Command Get-FastLlmSmartAppControlState).ScriptBlock }
+        & $module { function script:Get-FastLlmSmartAppControlState { return 'enforced' } }
+        try { $sacFailure = & $module { New-FastLlmHipBackendFailure -ComponentId 'eng-hip' -Cause 'no-device' } }
+        finally { & $module { param($B) Set-Item -Path Function:script:Get-FastLlmSmartAppControlState -Value $B } $savedSacState }
         # Typed failures while resolving the engine: the plain call falls back too (it cannot return a plan it could not probe).
         $typedCases = @(
             @{ code = 'hip-backend-unavailable'; failure = (& $module { New-FastLlmHipBackendFailure -ComponentId 'eng-hip' -Cause 'timeout' }); devices = $null },
-            @{ code = 'hip-dll-blocked'; failure = (& $module { New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode -1073740760 }); devices = $null },
+            @{ code = 'hip-dll-blocked'; failure = $sacFailure; devices = $null },
             @{ code = 'hip-device-not-found'; failure = $null; devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XT (20464 MiB, 20000 MiB free)" -Backend ROCm) },
             @{ code = 'hip-device-ambiguous'; failure = $null; devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm) })
         foreach ($typedCase in $typedCases) {
@@ -1675,6 +1677,48 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($estimatedFallback.recipe.origin -ceq 'estimated' -and $null -eq $estimatedFallback.fallback.toRecipe -and $estimatedFallback.fallback.fromRecipe -ceq $autoHipId -and $estimatedFallback.fallback.applied -eq $true) 'with no license-free recipe the fallback is the estimated plan, toRecipe null'
         $estimatedPending = Get-FastLlmPlan @onlyHipParams -InstallRoot $pendingRoot
         Check ($null -eq $estimatedPending.fallback.toRecipe -and $estimatedPending.fallback.toModelId -ceq [string] $estimatedFallback.model.id -and $estimatedPending.fallback.applied -eq $false) 'the pending form names the estimated model as its fallback when no recipe can stand in'
+        # -FallbackFromRecipe with -RecipeId is refused: an explicit recipe never falls back.
+        $bothParams = $null
+        try { Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -RecipeId $autoHipId -FallbackFromRecipe $autoHipId | Out-Null } catch { $bothParams = $_.Exception }
+        Check ($null -ne $bothParams -and $bothParams.Message -like '*cannot be combined*') '-FallbackFromRecipe together with -RecipeId is refused'
+        # Warnings: an automatic HIP plan says it falls back; an explicit one keeps the old text; the pending form carries no Vulkan-only warning.
+        Check (@($okPlan.warnings | Where-Object { $_ -like '*falls back to the Vulkan setup and says so*' }).Count -eq 1 -and @($okPlan.warnings | Where-Object { $_ -like '*will not fall back to Vulkan*' }).Count -eq 0) 'an automatic HIP plan warns that it falls back to Vulkan, not that it will not'
+        Check (@($explicitOk.warnings | Where-Object { $_ -like '*will not fall back to Vulkan on its own*' }).Count -eq 1) 'an explicit -RecipeId HIP plan keeps the no-fallback warning'
+        Check (@($pendingPlan.warnings | Where-Object { $_ -like 'Vulkan is the only enabled alpha engine lane*' }).Count -eq 0) 'the pending form does not carry the Vulkan-only warning'
+        # The fallback pass only considers recipes that can run now. A license-free recipe on an engine component that is not installed is skipped (the
+        # Vulkan recipe is used); one that is installed but cannot start does not chain into a second fallback: the fallback is refused, typed.
+        $freeDir = Join-Path $work 'hip-plan-config-free'
+        New-Item -ItemType Directory -Path $freeDir -Force | Out-Null
+        Copy-Item -LiteralPath $shippedCatalogPath -Destination (Join-Path $freeDir 'catalog.json') -Force
+        $freeComponentsDocument = Get-Content -LiteralPath $hipFx.ComponentsPath -Raw | ConvertFrom-Json
+        $freeEngine = @($freeComponentsDocument.components | Where-Object { $_.id -ceq 'eng-hip' })[0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $freeEngine.id = 'eng-hip-free'
+        $freeEngine.requires = @()
+        $freeEngine.license.consent = 'show'
+        $freeComponentsDocument.components = @($freeComponentsDocument.components) + @($freeEngine)
+        $freeComponentsPath = Join-Path $freeDir 'components.json'
+        [System.IO.File]::WriteAllText($freeComponentsPath, (ConvertTo-Json -InputObject $freeComponentsDocument -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+        $freeRecipe = $autoHipEntry | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $freeRecipe.id = 'fixture.hip-free'
+        $freeRecipe.components.engine = 'eng-hip-free'
+        $freeRecipe.expected.generationTokS = [double] $autoHipEntry.expected.generationTokS - 0.1
+        $freeDocument = Get-Content -LiteralPath $autoRecipesPath -Raw | ConvertFrom-Json
+        $freeDocument.recipes = @($freeDocument.recipes) + @($freeRecipe)
+        $freeRecipesPath = Join-Path $freeDir 'recipes.json'
+        [System.IO.File]::WriteAllText($freeRecipesPath, (ConvertTo-Json -InputObject $freeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+        $freeBase = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $freeDir 'catalog.json'); RecipesPath = $freeRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+        $freeFirst = Get-FastLlmPlan @freeBase -InstallRoot $pendingRoot -ResolveFallback
+        Check ($freeFirst.recipe.id -ceq $autoVulkanId -and $freeFirst.fallback.fromRecipe -ceq $autoHipId -and $freeFirst.fallback.applied -eq $true -and $freeFirst.fallback.reason -ceq 'components-pending' -and $freeFirst.fallback.toRecipe -ceq $autoVulkanId -and -not $freeFirst.PSObject.Properties['setup']) 'the fallback skips a license-free recipe whose engine component is not installed, and lands on the runnable Vulkan recipe (one fallback only)'
+        $freeRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $freeComponentsPath -ComponentId 'eng-hip-free' -InstallRoot $freeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $hipFx -State (New-ChainState))
+        $autoProbe.calls.Clear()
+        $autoProbe.failure = & $module { New-FastLlmHipBackendFailure -ComponentId 'eng-hip-free' -Cause 'timeout' }
+        $freeChained = $null
+        try { Get-FastLlmPlan @freeBase -InstallRoot $freeRoot -ResolveFallback | Out-Null } catch { $freeChained = $_.Exception }
+        Check ($null -ne $freeChained -and $freeChained.Data['FastLlmFailureCode'] -ceq 'fallback-unavailable' -and $freeChained.Message -like '*hip-backend-unavailable*' -and $autoProbe.calls.Count -eq 1) 'a fallback recipe that is installed but cannot start does not chain into a second fallback: fallback-unavailable after exactly one engine probe'
+        $freePending = Get-FastLlmPlan @freeBase -InstallRoot $freeRoot
+        Check ($freePending.fallback.applied -eq $false -and $freePending.fallback.reason -ceq 'components-pending' -and $null -eq $freePending.fallback.toRecipe -and $null -eq $freePending.enginePath) 'the pending form is still returned when the fallback cannot be planned (toRecipe null)'
+        $autoProbe.failure = $null
         # The helper that matches a plan with the recipe it was planned for.
         Check ((Test-FastLlmPlanMatchesPlannedRecipe -Plan $resolvedPlan -PlannedRecipe $autoVulkanId) -and (Test-FastLlmPlanMatchesPlannedRecipe -Plan $resolvedPlan -PlannedRecipe $autoHipId) -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $resolvedPlan -PlannedRecipe 'unrelated.recipe') -and (Test-FastLlmPlanMatchesPlannedRecipe -Plan $okPlan -PlannedRecipe $autoHipId) -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $okPlan -PlannedRecipe $autoVulkanId)) 'Test-FastLlmPlanMatchesPlannedRecipe: true for the plan''s own id and a fallback plan''s fromRecipe, false for an unrelated id'
     }
@@ -1906,7 +1950,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $unknownRequires = $soloShow | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $unknownRequires.requires = @('no-such-runtime')
     $unknownSink = New-Object 'System.Collections.Generic.List[string]'
-    Check ($null -eq (& $chainSelect $chainRecipe @($unknownRequires) $unknownSink '' $false $true) -and @($unknownSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'an engine whose requires cannot be resolved fails closed: not auto-selected, with the license-acceptance reason'
+    Check ($null -eq (& $chainSelect $chainRecipe @($unknownRequires) $unknownSink '' $false) -and @($unknownSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'an engine whose requires cannot be resolved fails closed: not auto-selected for a bitworks recipe either, with the license-acceptance reason'
 
     # Visibility and the gate, for both experimental origins.
     $bwGateRecipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'x1' 'bitworks-experimental'))

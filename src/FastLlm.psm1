@@ -973,6 +973,19 @@ function Test-FastLlmPlanMatchesPlannedRecipe {
     return $false
 }
 
+# True when the recipe can run now: it names the built-in engine, or an engine component whose whole chain is installed and passes the Full hash check.
+function Test-FastLlmRecipeEngineRunnableNow {
+    param([Parameter(Mandatory = $true)] $Recipe, [Parameter(Mandatory = $true)] $Catalog, [object[]] $Components, [string] $InstallRoot)
+    $engineId = Get-FastLlmRecipeEngineId -Recipe $Recipe -Catalog $Catalog
+    if ($engineId -ceq (Get-FastLlmBuiltInEngineId -Catalog $Catalog)) { return $true }
+    if (-not $InstallRoot) { return $false }
+    try {
+        if ($null -eq (Find-FastLlmEngineComponent -Components $Components -EngineId $engineId)) { return $false }
+        return [bool] (-not (Get-FastLlmFirstUnavailableComponent -Components $Components -EngineId $engineId -InstallRoot $InstallRoot -Depth Full))
+    }
+    catch { return $false }
+}
+
 function Get-FastLlmPlan {
     [CmdletBinding()]
     param(
@@ -1019,6 +1032,7 @@ function Get-FastLlmPlan {
     )
 
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
+    if ($RecipeId -and $FallbackFromRecipe) { throw '-Recipe and -FallbackFromRecipe cannot be combined: an explicit recipe never falls back.' }
     $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
@@ -1109,8 +1123,11 @@ function Get-FastLlmPlan {
                 if (Test-Path -LiteralPath $componentsFile -PathType Leaf) { $engineComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFile) }
             }
             catch { $engineComponents = @() }
-            # The recipe that fell back is never its own fallback, whatever its engine's license.
-            $candidateRecipes = @(Read-FastLlmRecipes -Path $RecipesPath | Where-Object { -not $isFallbackPass -or [string] $_.id -cne $FallbackFromRecipe })
+            # In the fallback pass the recipe that fell back is never its own fallback, and a recipe on an engine component that is not installed and
+            # verified is out too (it could not run now). What is left is runnable; with nothing left the estimated plan is used.
+            $candidateRecipes = @(Read-FastLlmRecipes -Path $RecipesPath | Where-Object {
+                    -not $isFallbackPass -or ([string] $_.id -cne $FallbackFromRecipe -and (Test-FastLlmRecipeEngineRunnableNow -Recipe $_ -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot))
+                })
             $recipePick = Select-FastLlmRecipeForPlacements -Recipes $candidateRecipes `
                 -Variants (Get-FastLlmGpuVariants -Path $GpuVariantsPath) -Placements $placements -DxgiAdapters $dxgi `
                 -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -Components $engineComponents -ExcludeLicenseRecipes:$isFallbackPass -SkippedSink $recipeSkippedSink
@@ -1240,8 +1257,9 @@ function Get-FastLlmPlan {
     }
 
     # The engine the plan runs. A recipe naming the built-in engine keeps the probed engine path, so its plan is unchanged. A recipe naming a
-    # listed engine component runs that component's executable; when it is not installed the plan fails typed, with no fallback to the
-    # built-in engine. This sits outside the recipe-selection try, so a missing component can never turn into an estimated plan.
+    # listed engine component runs that component's executable; when it is not installed an explicit -Recipe fails typed, with no fallback to the
+    # built-in engine. An automatically picked recipe instead returns the pending form, or (typed failure, -ResolveFallback) the stamped fallback plan.
+    # This sits outside the recipe-selection try, so a missing component never silently turns into an estimated plan.
     $planEnginePath = $Hardware.enginePath
     $planEngineVersion = [string] $catalog.engine.version
     $planEngineComponentId = $null
@@ -1273,6 +1291,9 @@ function Get-FastLlmPlan {
                     $planEngineComponentId = [string] $resolvedEngine.id
                     $planBackend = [string] $resolvedEngine.backend
                     $planRuntimeRoots = @()
+                    # The pending form is the HIP recipe's plan that cannot start yet: selectedAdapters stays as probed (no HIP device names exist before
+                    # the engine runs), and the Vulkan-only warning is dropped because the plan's backend is not Vulkan.
+                    $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
                 }
                 else {
                     if (-not $resolvedEngine.installed) {
@@ -1304,7 +1325,12 @@ function Get-FastLlmPlan {
                                 -TimeoutSeconds ([int] $catalog.hardwarePolicy.deviceProbeTimeoutSeconds) -Hip -RuntimeRoots $planRuntimeRoots -ComponentId $planEngineComponentId)
                         $selectedAdapters = @(Resolve-FastLlmHipSelectedAdapters -Adapters $selectedAdapters -Devices $hipDevices -ComponentId $planEngineComponentId)
                         $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
-                        $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own.'
+                        if ($RecipeId) {
+                            $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own.'
+                        }
+                        else {
+                            $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup; if it cannot be used, FastLLM falls back to the Vulkan setup and says so.'
+                        }
                     }
                 }
             }
