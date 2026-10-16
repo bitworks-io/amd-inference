@@ -777,7 +777,10 @@ $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
 Check ($cli.Contains("if (`$Compact -and `$Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }") -and $cli.Contains('ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 -Compress')) 'fast-llm.ps1 refuses -Compact outside doctor and compacts only on request.'
 $host2=(Get-Process -Id $PID).Path
 foreach($otherAction in @('plan','status')){
-    $compactChildOutput=& $host2 -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') $otherAction -Compact 2>&1|Out-String
+    # Windows PowerShell 5.1 turns a child's redirected stderr into an error record; keep it as text here.
+    $savedPreference=$ErrorActionPreference;$ErrorActionPreference='Continue'
+    try{$compactChildOutput=& $host2 -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') $otherAction -Compact 2>&1|Out-String}
+    finally{$ErrorActionPreference=$savedPreference}
     $global:LASTEXITCODE=0
     Check ($compactChildOutput -match '-Compact is supported only by doctor') "-Compact is refused with $otherAction."
 }
