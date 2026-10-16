@@ -196,6 +196,18 @@ try {
     Assert-Equal -Expected 'layer' -Actual $dualXtPlan.splitMode -Message 'the estimated dual-XT plan keeps the layer split'
     Assert-True -Condition (@($dualXtPlan.recipe.skipped | Where-Object { $_ -like 'test-xt-iq4: measured on 1 card(s)*' }).Count -ge 1) -Message 'the plan lists why the one-card recipe was skipped'
 
+    # The shipped recommended HIP setups: a fixture plan never runs an engine, so each card resolves to the Vulkan recipe it always had, and says why.
+    $shippedRecipeOptions = @{ RecipesPath = (Join-Path (Join-Path $projectRoot 'config') 'recipes.json'); GpuVariantsPath = $variantsFile }
+    foreach ($shippedCase in @(
+            @{ Name = 'XTX'; Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' },
+            @{ Name = 'XT'; Hardware = $singleXt; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k' })) {
+        $shippedFixturePlan = Get-FastLlmPlan -Hardware $shippedCase.Hardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -NoEngineExecution @shippedRecipeOptions
+        Assert-Equal -Expected $shippedCase.RecipeId -Actual $shippedFixturePlan.recipe.id -Message "$($shippedCase.Name) fixture plans with recipes still resolve to the same Vulkan recipe id as before"
+        Assert-Equal -Expected 'fixture-plan-cannot-probe-engine' -Actual $shippedFixturePlan.fallback.reason -Message "$($shippedCase.Name) fixture plan carries fallback.reason"
+        Assert-Equal -Expected ($shippedCase.RecipeId + '.hip') -Actual $shippedFixturePlan.fallback.fromRecipe -Message "$($shippedCase.Name) fixture plan names the HIP recipe it fell back from"
+        Assert-True -Condition ([bool] $shippedFixturePlan.fallback.applied) -Message "$($shippedCase.Name) fixture plan marks the fallback as applied"
+    }
+
     # Recovery label: a cached model picked by recovery is not "Chosen by you".
     $explicitPlan = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'qwen3.5-9b-q4-k-m' @recipeOptions
     Assert-Equal -Expected 'Chosen by you' -Actual $explicitPlan.recipe.label -Message 'an explicit -ModelId stays labelled as the user choice'

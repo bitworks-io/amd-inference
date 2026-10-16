@@ -3,7 +3,7 @@
 > **Preview.** FastLLM is in public preview for Windows PCs with AMD Radeon graphics. Releases are signed by Bitworks LLC.
 > Licensed under the Apache License 2.0 (see `LICENSE`).
 
-FastLLM is Bitworks' integration and configuration package for running a local, OpenAI-compatible model server on an AMD Radeon card. It is not a new inference engine: it uses pinned llama.cpp Vulkan binaries and existing model files, and keeps model provenance and upstream licenses visible.
+FastLLM is Bitworks' integration and configuration package for running a local, OpenAI-compatible model server on an AMD Radeon card. It is not a new inference engine: it uses pinned llama.cpp binaries (Vulkan, and HIP on the RX 7900 XT and XTX) and existing model files, and keeps model provenance and upstream licenses visible.
 
 ## What it does
 
@@ -15,7 +15,7 @@ FastLLM looks at your card each time it starts, then picks a model and settings 
 - **Estimated for your card**
 - **Chosen by you**
 
-Measured recipes link to Bitworks results pages. Those pages are lab observations (not fully qualified): see for example the [RX 7900 XT recipe](https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation). Their class is "Bitworks lab observation (not fully qualified)". Two measured setups exist so far. Estimates for other cards are estimates, not promises about fit, answer quality or speed.
+Measured recipes link to Bitworks results pages. Those pages are lab observations (not fully qualified): see for example the [RX 7900 XT recipe](https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation). Their class is "Bitworks lab observation (not fully qualified)". Four measured setups exist so far (Vulkan and HIP on each of the RX 7900 XT and XTX). Estimates for other cards are estimates, not promises about fit, answer quality or speed.
 
 More about the project and its recipes: [Bitworks AMD inference](https://bitworks.io/amd-inference/).
 
@@ -23,7 +23,7 @@ More about the project and its recipes: [Bitworks AMD inference](https://bitwork
 
 - Windows 10 or 11, x64.
 - An AMD Radeon GPU with a working Vulkan driver.
-- The Vulkan engine is the only enabled engine.
+- Vulkan is the engine on other cards and the fallback on the RX 7900 XT and XTX, where HIP (AMD ROCm) is the default. HIP needs extra components (about 565 MB to download, about 2.33 GB on disk), installed after you accept their licenses; if they are not installed or HIP cannot run, FastLLM starts the Vulkan setup and says so.
 - Text-only models.
 - A standard user account. No administrator rights are needed.
 

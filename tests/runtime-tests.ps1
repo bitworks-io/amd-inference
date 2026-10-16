@@ -374,6 +374,82 @@ try {
         & $module { param($Original) Set-Item -Path 'Function:script:Write-FastLlmState' -Value $Original; Remove-Item -Path 'Function:script:Write-Host' -ErrorAction SilentlyContinue } $savedWriteState
     }
 
+
+    # The start-time fallback launches a second server right after the first failed: the first one must be fully gone (child process, port, status file)
+    # and the second run must carry the fallback and its own recipe into status.json and selftest.json. Same run root, same port, mock servers.
+    $fallbackListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
+    $fallbackListener.Start();$fallbackPort=$fallbackListener.LocalEndpoint.Port;$fallbackListener.Stop()
+    $fallbackRoot=Join-Path $temp 'fallback-sequence'
+    $fallbackLock=Enter-FastLlmOperation $fallbackRoot
+    try {
+        function New-FallbackSequencePlan([string]$Mode,[string]$RecipeId) {
+            $built=[pscustomobject]@{
+                enginePath=(Get-Process -Id $PID).Path
+                serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$fallbackPort",'-Mode',$Mode,'-Model','test-model','-Context','1024')
+                endpoint="http://127.0.0.1:$fallbackPort/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
+                hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}
+                catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
+                recipe=[pscustomobject]@{id=$RecipeId;origin='bitworks';label='Measured by Bitworks on this card';evidenceUrl=$null;expected=$null}
+            }
+            $built.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
+            return $built
+        }
+        # A run that cannot even spawn (the port is occupied) is untyped and has no runtime reason: the start-time fallback never applies to it.
+        $occupier=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$fallbackPort)
+        $occupier.Server.ExclusiveAddressUse=$true;$occupier.Start()
+        $occupiedFailure=$null
+        try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } (New-FallbackSequencePlan 'ok' 'hip-recipe') $fallbackRoot $catalog } catch { $occupiedFailure=$_.Exception } finally { $occupier.Stop() }
+        Check ($null -ne $occupiedFailure -and [string]::IsNullOrEmpty([string]$occupiedFailure.Data['FastLlmReason']) -and [string]::IsNullOrEmpty([string]$occupiedFailure.Data['FastLlmFailureCode'])) 'an occupied port fails the supervised run before the spawn with no typed code and no runtime reason (so it never falls back)'
+        Check (([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/FastLlm.Runtime.ps1'))).Contains("if (`$reachedReady) { `$_.Exception.Data['FastLlmAfterReady']=`$true }")) 'a failure after the supervisor reached ready is tagged FastLlmAfterReady'
+        # First run: the server loads, then the run fails (the child is alive when the failure is raised).
+        $firstFailure=$null
+        try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } (New-FallbackSequencePlan 'unstable' 'hip-recipe') $fallbackRoot $catalog | Out-Null } catch { $firstFailure=$_.Exception }
+        $firstStatus=Get-FastLlmStatus $fallbackRoot
+        Check ($null -ne $firstFailure -and $firstStatus.phase -ceq 'failed' -and $firstStatus.processIdentity.pid -gt 0) 'fallback sequence: the first run fails with a recorded child'
+        $firstChildAlive=$true
+        try { $firstChild=Get-Process -Id ([int]$firstStatus.processIdentity.pid) -ErrorAction Stop; $firstChildAlive=(-not $firstChild.HasExited) -and ($firstChild.StartTime.ToUniversalTime().Ticks -eq [long]$firstStatus.processIdentity.startUtcTicks) } catch { $firstChildAlive=$false }
+        Check (-not $firstChildAlive) 'fallback sequence: the first run''s server process is gone before the supervised start returns'
+        $freeProbe=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$fallbackPort)
+        $portFree=$true
+        try { $freeProbe.Server.ExclusiveAddressUse=$true; $freeProbe.Start() } catch { $portFree=$false } finally { try { $freeProbe.Stop() } catch { } }
+        Check $portFree 'fallback sequence: the first run''s port is free again, so the second launch cannot collide with it'
+        # Second run: the stand-in, carrying the fallback, with the self-test on.
+        $secondPlan=New-FallbackSequencePlan 'selftest-ok' 'vulkan-recipe'
+        $secondPlan | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject]@{fromRecipe='hip-recipe';toRecipe='vulkan-recipe';toModelId='test-model';reason='hip-dll-missing';applied=$true})
+        $secondStopper=New-Object Diagnostics.Process
+        $secondStopper.StartInfo.FileName=(Get-Process -Id $PID).Path
+        $secondStopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($fallbackRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($fallbackRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+        $secondStopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($secondStopCode))
+        $secondStopper.StartInfo.UseShellExecute=$false
+        $secondStopper.Start()|Out-Null
+        $secondFailure=$null;$secondExit=$null
+        try { $secondExit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C -SelfTest } $secondPlan $fallbackRoot $catalog } catch { $secondFailure=$_.Exception }
+        finally { if (-not $secondStopper.HasExited) { $secondStopper.Kill() }; $secondStopper.Dispose() }
+        if ($null -ne $secondFailure) { Write-Host ('Fallback sequence: the second run raised: ' + [regex]::Replace([string]$secondFailure.Message,'[\x00-\x1f\x7f]',' ')) }
+        $secondStatus=Get-FastLlmStatus $fallbackRoot
+        Check ($null -eq $secondFailure -and $secondExit -eq 0) 'fallback sequence: the second run starts on the same port and run root, and obeys stop'
+        Check ($secondStatus.fallback.fromRecipe -ceq 'hip-recipe' -and $secondStatus.fallback.toRecipe -ceq 'vulkan-recipe' -and $secondStatus.fallback.reason -ceq 'hip-dll-missing' -and $secondStatus.planRecipe.id -ceq 'vulkan-recipe') 'status.json after a fallback start contains fallback {fromRecipe, toRecipe, reason} and the recipe that ran'
+        Check ($secondStatus.engine.backend -ceq 'vulkan' -and $secondStatus.engine.version -ceq 'test' -and $secondStatus.engine.componentId -ceq 'llama.cpp-test-vulkan' -and $secondStatus.engineVersion -ceq 'test') 'status.json records engine {backend, version, componentId} next to the existing engine fields'
+        $fallbackSelfTest=Read-FastLlmJson (Join-Path $fallbackRoot 'state/selftest.json')
+        Check ($fallbackSelfTest.recipeId -ceq 'vulkan-recipe') 'selftest.json after a fallback start names the recipe that ran (the Vulkan one)'
+        # A start without a fallback records none.
+        Check ($null -eq $firstStatus.PSObject.Properties['fallback']) 'a start without a fallback has no fallback field in status.json'
+    } finally { $fallbackLock.Dispose() }
+
+    # The failure text depends on how the HIP setup was chosen: an automatic choice is followed by the Vulkan setup, an explicit recipe is not.
+    $autoHipPlan=[pscustomobject]@{backend='hip';engineComponentId='x';recipe=[pscustomobject]@{id='hip-recipe'}}
+    $explicitHipPlan=[pscustomobject]@{backend='hip';engineComponentId='x';recipe=[pscustomobject]@{id='hip-recipe'};requestedRecipeId='hip-recipe'}
+    $fellBackPlan=[pscustomobject]@{backend='hip';engineComponentId='x';recipe=[pscustomobject]@{id='hip-recipe'};fallback=[pscustomobject]@{applied=$true}}
+    $wordingFor={ param($P) & $module { param($X) Get-FastLlmSelfTestFailureText -Reasons @('slow') -Plan $X } $P }
+    Check ((& $wordingFor $autoHipPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM tries the Vulkan setup instead.') 'an automatically chosen HIP setup''s self-test failure says the Vulkan setup is started instead'
+    Check ((& $wordingFor $explicitHipPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM does not switch to another setup on its own.') 'an explicit -Recipe HIP self-test failure still says FastLLM does not switch on its own'
+    Check ((& $wordingFor $fellBackPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM does not switch to another setup on its own.') 'a plan that already fell back never promises another fallback'
+    foreach($wordingCase in @(@{label='hip-dll-blocked';exit=-1073740760},@{label='hip-dll-missing';exit=-1073741515})){
+        $autoText=& $module { param($E) (New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode $E -AutoSelected).Message } $wordingCase.exit
+        $explicitText=& $module { param($E) (New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode $E).Message } $wordingCase.exit
+        Check ($autoText -like '*FastLLM tries the Vulkan setup instead.' -and $autoText -notlike '*does not switch to Vulkan on its own*' -and $explicitText -like '*FastLLM does not switch to Vulkan on its own.*') "$($wordingCase.label): the message for an automatic choice no longer says it does not switch; for an explicit recipe it still does"
+    }
+
     $httpHost=New-Object Bitworks.FastLlm.ProcessHost
     try {
         $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)

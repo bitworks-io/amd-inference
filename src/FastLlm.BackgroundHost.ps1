@@ -521,7 +521,7 @@ function Invoke-FastLlmBackgroundServe {
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
             -InstallRoot $install -ModelId ([string]$request.modelId) -ContextSize ([int]$request.contextSize) `
             -AllowExperimentalModel:([bool]$request.allowExperimentalModel) `
-            -RecipesPath (Join-Path $source 'config\recipes.json') -GpuVariantsPath (Join-Path $source 'config\gpu-variants.json')
+            -ResolveFallback -RecipesPath (Join-Path $source 'config\recipes.json') -GpuVariantsPath (Join-Path $source 'config\gpu-variants.json')
         $plan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue $RequestId -Force
         $record.modelId = [string]$plan.model.id
         $record.phase = 'loading'

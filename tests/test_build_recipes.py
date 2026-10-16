@@ -312,8 +312,11 @@ class RecipeBuilderTests(unittest.TestCase):
         (root / "config" / "components.json").write_text(json.dumps(comps or HIP_COMPONENTS))
         return root
 
-    def test_a_measured_hip_entry_becomes_a_bitworks_recipe_that_is_never_recommended(self):
-        document, skipped = br.build(self.hip_verified_tree())
+    def test_a_measured_hip_entry_becomes_a_bitworks_recipe_that_is_not_recommended_unless_it_says_so(self):
+        # A recommended Vulkan twin that the HIP entry measurably beats is itself refused by the evidence rule.
+        with self.assertRaisesRegex(br.RecipeError, "recommended but not measured at least as good as"):
+            br.build(self.hip_verified_tree())
+        document, skipped = br.build(self.hip_verified_tree(vulkan_recommended=False))
         self.assertEqual(skipped, [])
         by_id = {r["id"]: r for r in document["recipes"]}
         recipe = by_id[HIP_VERIFIED["id"]]
@@ -325,11 +328,83 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertNotIn("vulkanBarMitigation", recipe["runtime"])
         self.assertEqual(recipe["expected"]["mitigation"], "not-applicable")
         self.assertEqual(recipe["evidence"]["publishedAt"], "2026-10-16")
-        # The Vulkan recipe of the same card is untouched and stays the one recommended recipe.
         vulkan = by_id[ENTRY["id"]]
-        self.assertIs(vulkan["recommended"], True)
+        self.assertIs(vulkan["recommended"], False)
         self.assertEqual(vulkan["components"]["engine"], "llama.cpp-b10698-vulkan")
         self.assertEqual(vulkan["expected"]["mitigation"], "on")
+
+    def pair(self, hip_gen=33.72, hip_prompt=876.3, vulkan_gen=32.75, vulkan_prompt=507.02, hip_recommended=True, mutate_hip=None):
+        vulkan = copy.deepcopy(ENTRY); vulkan["recommended"] = False
+        vulkan["expected"].update(generationTokS=vulkan_gen, promptTokS=vulkan_prompt)
+        hip = copy.deepcopy(HIP_VERIFIED); hip["recommended"] = hip_recommended
+        hip["expected"].update(generationTokS=hip_gen, promptTokS=hip_prompt)
+        if mutate_hip:
+            mutate_hip(hip)
+        root = self.tree([vulkan, hip])
+        (root / "config" / "components.json").write_text(json.dumps(HIP_COMPONENTS))
+        return root
+
+    def test_bitworks_hip_entry_may_be_recommended(self):
+        root = self.pair()
+        document, skipped = br.build(root)
+        by_id = {r["id"]: r for r in document["recipes"]}
+        self.assertIs(by_id[HIP_VERIFIED["id"]]["recommended"], True)
+        self.assertIs(by_id[ENTRY["id"]]["recommended"], False)
+        self.assertEqual(subprocess.run([sys.executable, str(ROOT / "tools" / "build-recipes.py"), "--root", str(root)], capture_output=True).returncode, 0)
+
+    def test_recommended_must_not_be_slower_in_prompt(self):
+        with self.assertRaises(br.RecipeError) as caught:
+            br.build(self.pair(hip_prompt=500))
+        self.assertIn(HIP_VERIFIED["id"], str(caught.exception))
+        self.assertIn(ENTRY["id"], str(caught.exception))
+        self.assertIn("recommended but not measured at least as good as", str(caught.exception))
+        br.build(self.pair(hip_prompt=507.02))  # equal prompt rate passes
+
+    def test_recommended_generation_floor_is_97_percent(self):
+        with self.assertRaisesRegex(br.RecipeError, "recommended but not measured at least as good as"):
+            br.build(self.pair(hip_gen=31.7))
+        br.build(self.pair(hip_gen=31.8))
+        # The boundary compares unrounded values: exactly 97.0% passes, just under fails.
+        br.build(self.pair(hip_gen=97.0, vulkan_gen=100.0))
+        with self.assertRaisesRegex(br.RecipeError, "recommended but not measured at least as good as"):
+            br.build(self.pair(hip_gen=96.99, vulkan_gen=100.0))
+        # 100 * 4.85 is 484.99999999999994 in binary floats, but 4.85 is exactly 97% of 5.0.
+        br.build(self.pair(hip_gen=4.85, vulkan_gen=5.0))
+
+    def test_evidence_check_is_keyed_on_variant_count_and_model(self):
+        # A faster Vulkan sibling on another model or another GPU count is not compared with the recommended entry.
+        def other_model(hip):
+            hip["model"] = "qwen3.8-27b-ud-iq4-xs"; hip["runtime"]["contextSize"] = 16384; hip["expected"]["contextTokens"] = 16384
+        br.build(self.pair(hip_prompt=500, mutate_hip=other_model))
+        br.build(self.pair(hip_prompt=500, mutate_hip=lambda hip: hip.update(gpuCount=2)))
+        br.build(self.pair(hip_prompt=500, mutate_hip=lambda hip: hip.update(variant="rx-7900-xt")))
+
+    def test_one_recommended_per_variant_and_count_still_enforced(self):
+        vulkan = copy.deepcopy(ENTRY)
+        hip = copy.deepcopy(HIP_VERIFIED); hip["recommended"] = True
+        root = self.tree([vulkan, hip])
+        (root / "config" / "components.json").write_text(json.dumps(HIP_COMPONENTS))
+        with self.assertRaisesRegex(br.RecipeError, "more than one recommended recipe"):
+            br.build(root)
+
+    def test_shipped_data_xt_and_xtx_recommend_hip(self):
+        document, _ = br.build(ROOT)
+        by_id = {r["id"]: r for r in document["recipes"]}
+        for hip_id in ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip", "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip"):
+            self.assertIs(by_id[hip_id]["recommended"], True, hip_id)
+            self.assertIs(by_id[hip_id[:-len(".hip")]]["recommended"], False, hip_id)
+
+    def test_experimental_and_community_entries_still_cannot_be_recommended(self):
+        for value in (True, 1):
+            with self.subTest(origin="bitworks-experimental", value=value):
+                entry = copy.deepcopy(HIP_ENTRY); entry["recommended"] = value
+                with self.assertRaisesRegex(br.RecipeError, "recommended is for verified Bitworks recipes only"):
+                    br.build(self.hip_tree(entry))
+        for origin in ("community-reproduced", "community-experimental"):
+            with self.subTest(origin=origin):
+                record = community(origin, generationTokS=40.0); record["recommended"] = True
+                with self.assertRaisesRegex(br.RecipeError, "recommended is for verified Bitworks recipes only"):
+                    br.build(self.tree([ENTRY], [record]))
 
     def test_a_hip_entry_without_a_live_evidence_page_is_skipped(self):
         entry = copy.deepcopy(HIP_VERIFIED); del entry["evidence"]
@@ -354,7 +429,6 @@ class RecipeBuilderTests(unittest.TestCase):
             return entry
         cases = {
             "runtime.vulkanBarMitigation": (mutate("vulkanBarMitigation", "auto", "runtime"), "runtime.vulkanBarMitigation is for Vulkan engines only"),
-            "recommended": (mutate("recommended", True), "recommended is for Vulkan engines only"),
             "engineBuild differs from the component": (dict(mutate("engineBuild", "b1"), expected=dict(HIP_VERIFIED["expected"], engineBuild="b1")), "is not the engine component's version"),
             "expected.engineBuild differs": (mutate("engineBuild", "b1", "expected"), "expected.engineBuild must equal"),
             "unknown engine": (mutate("engine", "missing", "components"), "is not an engine in config/components.json"),
@@ -396,7 +470,8 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertTrue(compelling_of(community("community-reproduced", generationTokS=37.7, promptTokS=1100.0))["isCompelling"])
 
     def tree_with_hip_and_record(self, hip, record):
-        root = self.tree([ENTRY, hip], [record])
+        vulkan = copy.deepcopy(ENTRY); vulkan["recommended"] = False
+        root = self.tree([vulkan, hip], [record])
         (root / "config" / "components.json").write_text(json.dumps(HIP_COMPONENTS))
         return root
 

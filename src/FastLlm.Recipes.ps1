@@ -1,5 +1,7 @@
 # Per-card recipes (config/recipes.json, bitworks.fastllm-recipes/v2). Matching uses card variants from
 # FastLlm.CardIdentity.ps1, never names. community-experimental and bitworks-experimental recipes are never auto-selected.
+# A recipe whose engine chain needs an AMD license accepted may be auto-selected only when its origin is 'bitworks' (measured by us); every other
+# origin never is. A recipe whose engine chain cannot be resolved is never auto-selected, whatever its origin.
 Set-StrictMode -Version 2
 
 $script:FastLlmRecipeLabels = @{
@@ -209,12 +211,29 @@ function Test-FastLlmRecipeNeedsLicenseAcceptance {
     return $false
 }
 
+# True when the recipe's engine chain (requires first, the engine last) can be resolved from the component list. The built-in engine and an engine that
+# is not listed (skipped later by the version check) have nothing to resolve.
+function Test-FastLlmRecipeChainResolves {
+    param([Parameter(Mandatory = $true)] $Recipe, [Parameter(Mandatory = $true)] $Catalog, [object[]] $Components)
+    $engineId = Get-FastLlmRecipeEngineId -Recipe $Recipe -Catalog $Catalog
+    if ($engineId -ceq (Get-FastLlmBuiltInEngineId -Catalog $Catalog)) { return $true }
+    $engine = Find-FastLlmEngineComponent -Components $Components -EngineId $engineId
+    if ($null -eq $engine) { return $true }
+    $requiresProperty = $engine.PSObject.Properties['requires']
+    if ($null -ne $requiresProperty -and @($requiresProperty.Value | Where-Object { $_ }).Count -gt 0) {
+        try { $null = @(Get-FastLlmComponentChain -Components $Components -Id $engineId) }
+        catch { return $false }
+    }
+    return $true
+}
+
 function Select-FastLlmRecipeForPlacements {
     param([object[]] $Recipes, [object[]] $Variants, [object[]] $Placements, [object[]] $DxgiAdapters,
           [Parameter(Mandatory = $true)] $Catalog, [Parameter(Mandatory = $true)][string] $Profile,
           [string] $RecipeId, [switch] $IncludeExperimental,
           [object[]] $EligibleAdapters,
           [object[]] $Components,
+          [switch] $ExcludeLicenseRecipes,
           [System.Collections.Generic.List[string]] $SkippedSink)
     $usable = @($Recipes | Where-Object { $_ -and (-not (Test-FastLlmExperimentalOrigin -Origin ([string] $_.origin)) -or $IncludeExperimental -or ($RecipeId -and $_.id -eq $RecipeId)) })
     if ($RecipeId) {
@@ -274,8 +293,11 @@ function Select-FastLlmRecipeForPlacements {
                 if (-not $skipped.Contains($countReason)) { $skipped.Add($countReason) }
                 continue
             }
-            # An AMD license cannot be accepted silently, so a recipe whose engine chain needs an accepted license is never auto-selected, whatever its origin; -Recipe is the way to it.
-            if (-not $RecipeId -and (Test-FastLlmRecipeNeedsLicenseAcceptance -Recipe $recipe -Catalog $Catalog -Components $Components)) {
+            # A recipe whose engine chain needs an accepted license is auto-selected only when its origin is 'bitworks' (measured by us) and the caller
+            # did not ask to exclude license recipes (the fallback pass does). A chain that cannot be resolved is never auto-selected, whatever its origin.
+            # Every other origin is never auto-selected for a license chain; -Recipe is the way to it.
+            if (-not $RecipeId -and (Test-FastLlmRecipeNeedsLicenseAcceptance -Recipe $recipe -Catalog $Catalog -Components $Components) -and
+                ($ExcludeLicenseRecipes -or [string] $recipe.origin -cne 'bitworks' -or -not (Test-FastLlmRecipeChainResolves -Recipe $recipe -Catalog $Catalog -Components $Components))) {
                 $licenseReason = "$($recipe.id): needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)"
                 if (-not $skipped.Contains($licenseReason)) { $skipped.Add($licenseReason) }
                 continue

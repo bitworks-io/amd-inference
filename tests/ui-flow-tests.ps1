@@ -286,7 +286,7 @@ $oldOs=$env:OS
 try {
     $env:OS='Windows_NT'
     $InstallRoot='synthetic-no-files';$catalogPath='synthetic-catalog';$ModelId=[string]$large.id;$HardwareFile=$null
-    $ExpectedModelProvenanceSha256=$digest;$EngineOnly=$false;$DryRun=$false
+    $ExpectedModelProvenanceSha256=$digest;$EngineOnly=$false;$DryRun=$false;$UseFallback=[switch]$false;$FallbackReason='components-declined';$AcceptLicense=[switch]$false
     $AsJson=$true;$Unattended=$true;$AcceptModelLicense=$true;$Profile='balanced'
     $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
     $script:mockCatalogModel=Clone $large
@@ -295,8 +295,8 @@ try {
     function Get-FastLlmCatalog {param($CatalogPath) return [pscustomobject]@{models=@($script:mockCatalogModel)}}
     function Install-FastLlmEngines {param($CatalogPath,$InstallRoot) $script:engineCalls++}
     function Get-FastLlmHardware {param($HardwareFile,$CatalogPath,$InstallRoot) return [pscustomobject]@{backend='Vulkan'}}
-    function Get-FastLlmPlan {param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel) return [pscustomobject]@{model=$script:mockPlanModel}}
-    function Write-FastLlmPlan {param($Plan)}
+    function Get-FastLlmPlan {param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback) return [pscustomobject]@{model=$script:mockPlanModel}}
+    function Write-FastLlmPlan {param($Plan,[switch]$Started)}
     function Install-FastLlmModel {param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:modelCalls++;return 'synthetic-model'}
     function Write-FastLlmState {param($InstallRoot,$State)}
 
@@ -788,5 +788,159 @@ foreach($otherAction in @('plan','status')){
 # The window asks for the compact report, parses it through the bounded function, and keeps full output for Diagnostics.
 Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics keeps the full one.'
 Check ($ui.Contains('$control.UseMnemonic=$false')) 'Window labels show an ampersand instead of treating it as a mnemonic.'
+
+
+# ---- engine components named by the preview, remembered declines, start arguments and the running-engine line ----
+$hipId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'
+$vulkanId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'
+function PendingItem([string]$Id, [string]$Title = 'AMD license', [string]$Url = 'https://www.amd.com/en/legal/eula.html', [bool]$Unverified = $false) {
+    return [pscustomobject]@{ id = $Id; name = "Name of $Id"; kind = 'runtime'; version = '1.0'; sourceHosts = @('repo.radeon.com'); redirectHosts = @(); downloadBytes = 100
+        licenseLinks = @([pscustomobject]@{ title = $Title; url = $Url }); consent = 'accept'; unverified = $Unverified }
+}
+function PendingPlan([object[]]$Items) {
+    return [pscustomobject]@{
+        recipe = [pscustomobject]@{ id = $hipId; origin = 'bitworks' }; engineComponentId = 'engine-1'
+        setup = [pscustomobject]@{ pendingComponents = @($Items) }
+        fallback = [pscustomobject]@{ fromRecipe = $hipId; toRecipe = $vulkanId; toModelId = 'm'; reason = 'components-pending'; applied = $false }
+    }
+}
+$askSettings = [pscustomobject]@{ mode = 'ask'; acceptedAt = ''; accepted = @() }
+$coveringSettings = [pscustomobject]@{ mode = 'accept-automatically'; acceptedAt = '2026-10-16T00:00:00.0000000Z'; accepted = @([pscustomobject]@{ title = 'AMD license'; host = 'www.amd.com' }) }
+$twoItems = @((PendingItem 'rocm-1'), (PendingItem 'engine-1'))
+$noPending = Get-FastLlmUiPendingDecision -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = $hipId; origin = 'bitworks' } }) -LicenseSettings $askSettings -DeclinedSetups @()
+Check ($noPending.action -ceq 'none') 'a plan without pending components needs no decision'
+Check ((Get-FastLlmUiPendingDecision -Plan (PendingPlan @()) -LicenseSettings $askSettings).action -ceq 'none' -and (Get-FastLlmUiPendingDecision -Plan $null -LicenseSettings $askSettings).action -ceq 'none') 'an empty pending list or no plan needs no decision'
+$askDecision = Get-FastLlmUiPendingDecision -Plan (PendingPlan $twoItems) -LicenseSettings $askSettings -DeclinedSetups @()
+Check ($askDecision.action -ceq 'ask' -and $askDecision.recipeId -ceq $hipId -and $askDecision.engineId -ceq 'engine-1') 'the ask setting asks for pending components'
+Check (@($askDecision.rows).Count -eq 2 -and @($askDecision.rows | Where-Object { $_.needsAccept }).Count -eq 2 -and $askDecision.rows[0].name -ceq 'Name of rocm-1' -and $askDecision.rows[0].sourceText -ceq 'repo.radeon.com' -and $askDecision.rows[0].links[0].linkText -ceq 'AMD license (www.amd.com)') 'one consent row per pending member, with its name, source host and license links'
+Check ((Get-FastLlmUiPendingDecision -Plan (PendingPlan $twoItems) -LicenseSettings $coveringSettings -DeclinedSetups @()).action -ceq 'install-now') 'a setting that covers every pending license installs now'
+$otherLicense = @((PendingItem 'rocm-1'), (PendingItem 'engine-1' -Title 'Other license' -Url 'https://example.org/l'))
+Check ((Get-FastLlmUiPendingDecision -Plan (PendingPlan $otherLicense) -LicenseSettings $coveringSettings -DeclinedSetups @()).action -ceq 'ask') 'a license outside the accepted set is asked about, whatever the setting'
+$declinedDecision = Get-FastLlmUiPendingDecision -Plan (PendingPlan $twoItems) -LicenseSettings $coveringSettings -DeclinedSetups @($hipId)
+Check ($declinedDecision.action -ceq 'fallback' -and $declinedDecision.notice -ceq "Using the Vulkan setup: the AMD license wasn't accepted. You can install the HIP setup any time from Choose another setup.") 'a remembered decline takes the Vulkan setup with the decline line'
+Check ($declinedDecision.fallbackRequest -ceq 'declined' -and $askDecision.fallbackRequest -ceq '') 'a remembered decline asks the start to use the fallback; asking does not'
+Check ((Get-FastLlmUiPendingDecision -Plan (PendingPlan $twoItems) -LicenseSettings $askSettings -DeclinedSetups @('another-recipe')).action -ceq 'ask') 'a decline of another setup does not apply'
+$badDecision = Get-FastLlmUiPendingDecision -Plan (PendingPlan @((PendingItem 'rocm-1' -Unverified $true), (PendingItem 'engine-1'))) -LicenseSettings $coveringSettings -DeclinedSetups @()
+Check ($badDecision.fallbackRequest -ceq 'resolve') 'a failed file check previews the fallback but does not claim a decline'
+Check ($badDecision.action -ceq 'fallback' -and $badDecision.notice.Contains('failed its file check') -and $badDecision.notice.Contains('components -Remove rocm-1')) 'an unverified component takes the Vulkan setup and names the failed check and components -Remove'
+
+$declRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-decl-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $declRoot | Out-Null
+try {
+    Check (@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot).Count -eq 0) 'no settings file: nothing declined'
+    Set-Content -LiteralPath (Join-Path $declRoot 'settings.json') -Value '{"vulkanBarMitigation":"on","declinedSetups":"oops"}' -Encoding ascii
+    Check (@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot).Count -eq 0) 'a string declinedSetups reads as empty'
+    Set-Content -LiteralPath (Join-Path $declRoot 'settings.json') -Value '{"declinedSetups":{"a":1}}' -Encoding ascii
+    Check (@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot).Count -eq 0) 'an object declinedSetups reads as empty'
+    Set-Content -LiteralPath (Join-Path $declRoot 'settings.json') -Value '{"vulkanBarMitigation":"on","experimentalComponents":"on"}' -Encoding ascii
+    Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId $hipId
+    Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId $hipId
+    Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId 'other.recipe'
+    $declined = @(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot)
+    Check ($declined.Count -eq 2 -and $declined -ccontains $hipId -and $declined -ccontains 'other.recipe') 'a decline is added once per recipe id'
+    $stored = Get-Content -LiteralPath (Join-Path $declRoot 'settings.json') -Raw | ConvertFrom-Json
+    Check ($stored.vulkanBarMitigation -ceq 'on' -and $stored.experimentalComponents -ceq 'on') 'the other settings keys are kept'
+    Check (@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot).Count -eq 2) 'a decline survives a fresh read (restart)'
+    Remove-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId $hipId
+    Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId $hipId
+    Clear-FastLlmUiDeclinedSetups -InstallRoot $declRoot
+    Check (@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot).Count -eq 0) 'accepting the automatic install clears every remembered decline'
+    Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId 'other.recipe'
+    Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId $hipId
+    Remove-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId $hipId
+    Check ((@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot) -join ',') -ceq 'other.recipe') 'picking the setup removes only its decline'
+    Remove-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId 'other.recipe'
+    Check (@(Get-FastLlmUiDeclinedSetups -InstallRoot $declRoot).Count -eq 0 -and (Read-FastLlmUiSettings -InstallRoot $declRoot).vulkanBarMitigation -ceq 'on') 'removing the last decline leaves an empty list and the other keys'
+    $threw = $false
+    try { Add-FastLlmUiDeclinedSetup -InstallRoot $declRoot -RecipeId 'bad id; x' } catch { $threw = $true }
+    Check $threw 'an unsafe setup id is never stored'
+}
+finally { Remove-Item -LiteralPath $declRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
+$autoHip = PendingPlan @()
+$autoHip.PSObject.Properties.Remove('setup')
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $autoHip) -join ' ') -ceq "-PlannedRecipe $hipId") 'an automatic HIP plan is started with -PlannedRecipe, never -Recipe'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan (PendingPlan $twoItems)) -join ' ') -ceq "-PlannedRecipe $hipId") 'a plan with pending components is started with -PlannedRecipe'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $autoHip -ChosenRecipe ([pscustomobject]@{ id = $hipId; origin = 'bitworks' })) -join ' ') -ceq "-Recipe $hipId") 'a chosen HIP row is started with -Recipe'
+$tookFallback = [pscustomobject]@{
+    recipe = [pscustomobject]@{ id = $vulkanId; origin = 'bitworks' }
+    fallback = [pscustomobject]@{ fromRecipe = $hipId; toRecipe = $vulkanId; toModelId = 'm'; reason = 'components-declined'; applied = $true }
+}
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $tookFallback) -join ' ') -ceq "-PlannedRecipe $hipId") 'a plan that took the fallback for its own reason is started with -PlannedRecipe alone, so the start keeps the true reason'
+$blockedFallback = Clone $tookFallback
+$blockedFallback.fallback.reason = 'hip-dll-blocked'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $blockedFallback -FallbackRequest 'resolve') -join ' ') -ceq "-PlannedRecipe $hipId") 'a hip-dll-blocked fallback is never relabelled by -UseFallback'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $tookFallback -FallbackRequest 'declined') -join ' ') -ceq "-PlannedRecipe $hipId -UseFallback") 'a real decline starts with -PlannedRecipe <hip id> -UseFallback'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $tookFallback -FallbackRequest 'install-failed') -join ' ') -ceq "-PlannedRecipe $hipId -UseFallback -FallbackReason components-install-failed") 'after the window''s own failed install the start says why'
+$estimatedFallback = [pscustomobject]@{
+    recipe = [pscustomobject]@{ id = $null; origin = 'estimated' }
+    fallback = [pscustomobject]@{ fromRecipe = $hipId; toRecipe = $null; toModelId = 'm'; reason = 'components-declined'; applied = $true }
+}
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $estimatedFallback) -join ' ') -ceq "-PlannedRecipe $hipId" -and (@(Get-FastLlmUiStartRecipeArguments -Plan $estimatedFallback -FallbackRequest 'declined') -join ' ') -ceq "-PlannedRecipe $hipId -UseFallback") 'an estimated fallback (no recipe of its own) is started from the setup it replaced'
+Check ((@(Get-FastLlmUiPreviewRecipeArguments -Recipe $null -FallbackRequest 'install-failed') -join ' ') -ceq '-UseFallback -FallbackReason components-install-failed' -and (@(Get-FastLlmUiPreviewRecipeArguments -Recipe $null -FallbackRequest 'resolve') -join ' ') -ceq '-UseFallback') 'the preview after a failed install or a failed file check asks for the fallback'
+Check (@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = $null; origin = 'estimated' } })).Count -eq 0 -and @(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = 'x'; origin = 'manual' } })).Count -eq 0) 'an estimated or manual plan passes nothing'
+$badIdPlan = PendingPlan @()
+$badIdPlan.recipe.id = 'bad id; x'
+$badIdPlan.fallback.fromRecipe = 'bad id; x'
+Check (@(Get-FastLlmUiStartRecipeArguments -Plan $badIdPlan).Count -eq 0) 'an invalid recipe id passes nothing'
+Check ((@(Get-FastLlmUiPreviewRecipeArguments -Recipe $null -FallbackRequest 'declined') -join ' ') -ceq '-UseFallback' -and @(Get-FastLlmUiPreviewRecipeArguments -Recipe $null).Count -eq 0 -and (@(Get-FastLlmUiPreviewRecipeArguments -Recipe ([pscustomobject]@{ id = 'r1'; origin = 'bitworks' }) -FallbackRequest 'declined') -join ' ') -ceq '-Recipe r1') 'the preview asks for the fallback only when no setup was chosen'
+
+Check (Test-FastLlmUiTypedHipFailure -Code 'hip-dll-missing') 'hip-dll-missing is a typed failure the window shows'
+Check (-not (Test-FastLlmUiTypedHipFailure -Code 'self-test-failed') -and -not (Test-FastLlmUiTypedHipFailure -Code '')) 'self-test-failed and an empty code are not typed failures'
+
+Check ((Format-FastLlmUiRunEngineLine -State ([pscustomobject]@{ engine = [pscustomobject]@{ backend = 'hip'; version = 'b1'; componentId = 'e' } })) -ceq 'Running on HIP (AMD ROCm 10.0)') 'the engine line names HIP and its ROCm version'
+Check ((Format-FastLlmUiRunEngineLine -State ([pscustomobject]@{ engine = [pscustomobject]@{ backend = 'vulkan'; version = 'b1'; componentId = 'e' } })) -ceq 'Running on Vulkan') 'the engine line names Vulkan'
+Check ((Format-FastLlmUiRunEngineLine -State ([pscustomobject]@{ engine = [pscustomobject]@{ backend = 'vulkan' }; fallback = [pscustomobject]@{ fromRecipe = $hipId; toRecipe = $vulkanId; reason = 'hip-dll-blocked' } })) -ceq 'Running on Vulkan (fallback: Windows blocked the HIP runtime)') 'the engine line names the fallback reason in words'
+foreach ($pair in @(@('components-declined', 'AMD license not accepted'), @('components-pending', 'HIP components not installed'), @('components-unverified', 'HIP component failed its file check'), @('components-install-failed', 'HIP components could not be installed'), @('hip-dll-missing', 'HIP runtime could not be loaded'), @('hip-backend-unavailable', 'HIP runtime could not be loaded'), @('hip-device-not-found', 'HIP could not use this card'), @('hip-device-ambiguous', 'HIP could not use this card'), @('start-failed', 'HIP server did not start'), @('some-new-code', 'some-new-code'))) {
+    Check ((Get-FastLlmUiFallbackReasonText -Reason $pair[0]) -ceq $pair[1]) "reason $($pair[0]) reads as $($pair[1])"
+}
+Check ((Get-FastLlmUiInstallFailedLine) -ceq 'Using the Vulkan setup: the engine components could not be installed. Start again to retry.') 'the failed-install line is the specified one'
+Check ($null -eq (Format-FastLlmUiRunEngineLine -State ([pscustomobject]@{ phase = 'ready' })) -and $null -eq (Format-FastLlmUiRunEngineLine -State $null)) 'no engine block, no engine line'
+Check ((Format-FastLlmUiReadyStatus -State ([pscustomobject]@{ engine = [pscustomobject]@{ backend = 'vulkan' } })).StartsWith('Running on Vulkan. Ready - API smoke tests passed') -and (Format-FastLlmUiReadyStatus -State $null).StartsWith('Ready - API smoke tests passed')) 'the ready status line leads with the engine when known'
+$bgFallbackState = [pscustomobject]@{ engine = [pscustomobject]@{ backend = 'vulkan' }; fallback = [pscustomobject]@{ fromRecipe = $hipId; toRecipe = $vulkanId; reason = 'components-pending' } }
+Check ((Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State $bgFallbackState).StartsWith('Running on Vulkan (fallback: ') -and (Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State $bgFallbackState).EndsWith('. Ready background inference attached.')) 'an attached background run shows the engine and the fallback in front of its status text'
+Check ((Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State $null) -ceq 'Ready background inference attached.' -and (Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State ([pscustomobject]@{ phase = 'ready' })) -ceq 'Ready background inference attached.') 'an attached background run without an engine block keeps its plain text'
+
+Check ((@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'engine-1' -InstallRoot 'C:\r') -join '|') -ceq 'components|-Install|engine-1|-InstallRoot|C:\r|-Unattended') 'the automatic install carries no -AcceptLicense'
+Check (@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'x y' -InstallRoot 'C:\r').Count -eq 0 -and @(Get-FastLlmUiAutomaticInstallArguments -EngineId '' -InstallRoot 'C:\r').Count -eq 0) 'an unsafe or empty engine id installs nothing'
+Check ((Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-Install', 'e', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('install', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('plan', '-AsJson')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-AsJson'))) 'only a component install reads the license setting'
+Check ((Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Chosen $true).StartsWith('You chose the m setup (32,768 tokens).') -and (Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Chosen $false).StartsWith("FastLLM's best setup for your card")) 'the dialog intro differs for a chosen and an automatic setup'
+
+$flowForComponents = New-FastLlmUiFlow -Mode start
+$flowForComponents.phase = 'preview'
+$flowForComponents = Move-FastLlmUiFlow -Flow $flowForComponents -Event 'components-handled'
+Check ($flowForComponents.phase -ceq 'preview' -and $flowForComponents.planAttempts -eq 0 -and $flowForComponents.componentAttempts -eq 1) 'handling components keeps the preview phase and uses the component budget, not a preview attempt'
+$flowForComponents = Move-FastLlmUiFlow -Flow $flowForComponents -Event 'components-handled'
+Check ($flowForComponents.phase -ceq 'failed' -and $flowForComponents.lastStartError -like '*did not stabilize*') 'a second round of pending components stops the flow'
+
+# A first run: components installed, model downloaded, serving still has its retry; the previews keep all three attempts.
+$firstRun = New-FastLlmUiFlow -Mode start
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'setup-complete' -SetupDecision (ReadySetup -EngineVerified:$true)
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'components-handled'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'preview-complete' -Plan $largePlan -HasConsent:$false -HasArtifact:$false
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'consent-approved'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'model-complete'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'preview-complete' -Plan $largePlan -HasConsent:$true -HasArtifact:$true
+Check ($firstRun.phase -ceq 'serving' -and $firstRun.planAttempts -eq 2) 'a first run that installed components still reaches serving with a preview attempt to spare'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'serving-failed' -ErrorMessage 'x'
+Check ($firstRun.phase -ceq 'preview' -and $firstRun.retryAfterFailure) 'and the serving retry is still available after a component install'
+
+$licenseDisclosureComponents = @([pscustomobject]@{ id = 'r'; license = [pscustomobject]@{ consent = 'accept'; links = @([pscustomobject]@{ title = 'AMD license'; url = 'https://www.amd.com/en/legal/eula.html' }) } })
+$disclosure = Get-FastLlmUiLicenseDisclosure -Components $licenseDisclosureComponents
+Check (($disclosure.canAccept -eq ($disclosure.links.Count -gt 0)) -and $disclosure.identities.Count -eq $disclosure.links.Count) 'the license disclosure lists identities for exactly its links'
+Check (-not (Get-FastLlmUiLicenseDisclosure -Components @()).canAccept) 'with no license to show the setting cannot be turned on'
+
+# Source pins for the form.
+Check ($ui.Contains("'Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models.'")) 'the window notice names the Vulkan or HIP engine'
+Check ($ui.Contains("'Install engine components automatically (accept their licenses for me)'") -and $ui.Contains('$licenseBox.Add_CheckedChanged') -and $ui.Contains("'I accept these licenses'")) 'the settings checkbox and its confirmation button carry the specified text'
+Check ($ui.Contains("`$dialog.Text='Install engine components'") -and -not $ui.Contains('Install community components')) 'the component dialog is titled Install engine components'
+Check ($ui.Contains('Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot') -and $ui.Contains('Sync-FastLlmComponentLicenseSetting -SourceRoot $script:settingsRoot -TargetRoot $script:installPath')) 'the license setting is stored under the launch root and mirrored into the install folder at every launch'
+Check ($ui.Contains('Get-FastLlmUiPendingDecision') -and $ui.Contains('Add-FastLlmUiDeclinedSetup') -and $ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest') -and $ui.Contains('Format-FastLlmUiReadyStatus')) 'the preview decides on pending components, remembers a decline, previews the fallback and shows the engine line'
+Check (([regex]::Matches($ui, 'Format-FastLlmUiBackgroundReadyStatus -Text')).Count -eq 2 -and $ui.Contains('GetUiBackgroundRunStatus') -and $ui.Contains('Get-FastLlmStatus $script:installPath')) 'both background attach paths read the engine and fallback from the run status'
+$chosenBody = $ui.Substring($ui.IndexOf('function ContinueWithChosenRecipe'))
+$chosenBody = $chosenBody.Substring(0, $chosenBody.IndexOf('BeginChosenRecipe $Row'))
+Check ($ui.Contains('Clear-FastLlmUiDeclinedSetups -InstallRoot $script:settingsRoot') -and $ui.Contains("RepreviewForPendingSetup 'install-failed'") -and $ui.Contains('Get-FastLlmUiInstallFailedLine')) 'accepting the automatic install clears declines; a failed own install previews the fallback without recording a decline'
+Check ($chosenBody.Contains('Remove-FastLlmUiDeclinedSetup')) 'picking a setup in the chooser clears its remembered decline'
+Check ($componentsSourceText -notmatch '[^\x00-\x7F]') 'the components script stays ASCII-only'
 
 Write-Output "UI flow tests passed: $checks"

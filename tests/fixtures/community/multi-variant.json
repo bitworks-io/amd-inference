@@ -1,0 +1,41 @@
+{
+ "schema": "bitworks.community-export/v0",
+ "records": [
+  {
+   "id": "multi",
+   "gpuCount": 1,
+   "model": {
+    "name": "m",
+    "quant": "Q4",
+    "provider": "unsloth",
+    "fileUrl": "https://huggingface.co/x/m.gguf",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "engine": {
+    "name": "llama.cpp",
+    "build": "b10698",
+    "backend": "vulkan"
+   },
+   "serving": {
+    "speculative": null,
+    "topology": "single"
+   },
+   "draftModel": null,
+   "generationTps": [
+    {
+     "value": 39.3
+    }
+   ],
+   "promptTps": [
+    {
+     "value": 500.0
+    }
+   ],
+   "submissionComplete": true,
+   "gpuVariants": [
+    "rx-7900-xt-20gb",
+    "rx-7900-xtx-24gb"
+   ]
+  }
+ ]
+}

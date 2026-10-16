@@ -132,8 +132,20 @@ try {
     $script:mockStateWrites = New-Object 'System.Collections.Generic.List[object]'
     function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
     function Get-FastLlmPlan {
-        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel)
+        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath)
+        $script:mockResolveSeen.Add([bool]$ResolveFallback)
         if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
+        if ($script:planMode -ceq 'hip-missing' -and -not [string]$ModelId) {
+            if ($ResolveFallback) {
+                return [pscustomobject]@{model=[pscustomobject]@{id='vulkan-model'};recipe=[pscustomobject]@{id='vulkan-recipe'};backend='vulkan';
+                    fallback=[pscustomobject]@{fromRecipe='hip-recipe';toRecipe='vulkan-recipe';toModelId='vulkan-model';reason='components-pending';applied=$true}}
+            }
+            return [pscustomobject]@{model=[pscustomobject]@{id='hip-model'};recipe=[pscustomobject]@{id='hip-recipe'};backend='hip';enginePath=$null;
+                setup=[pscustomobject]@{pendingComponents=@([pscustomobject]@{id='eng-hip'})};
+                fallback=[pscustomobject]@{fromRecipe='hip-recipe';toRecipe='vulkan-recipe';toModelId='vulkan-model';reason='components-pending';applied=$false}}
+        }
+        if ($script:planMode -ceq 'hip-missing') { return [pscustomobject]@{model=[pscustomobject]@{id=[string]$ModelId};recipe=$null;backend='vulkan'} }
+        if ($script:planMode -ceq 'hip-ready') { return [pscustomobject]@{model=[pscustomobject]@{id='hip-model'};recipe=[pscustomobject]@{id='hip-recipe'};backend='hip';enginePath='engine'} }
         [pscustomobject]@{model=[pscustomobject]@{id='test-model'}}
     }
     # The status the host would read back: the last document written (as the CLI-visible object, with the run id and action it was given).
@@ -144,6 +156,7 @@ try {
         Assert-BackgroundTest ([bool]$SelfTest) 'Background worker did not request the post-load self-test.'
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
         $script:mockBarPolicy = $VulkanBarMitigation
+        $script:mockStartedPlan = $Plan
         $script:mockServerStarts++
         if ($script:serverMovesStatus) { $script:mockStateWrites.Add([ordered]@{ schemaVersion = 1; runId = 'supervisor'; phase = 'failed'; failureCode = 'startup-or-runtime-check-failed' }) }
         if ($script:throwServer) { throw 'disposable test server failure' }
@@ -155,6 +168,9 @@ try {
     $workerRoot = Join-Path $scratch 'worker'
     New-Item -ItemType Directory -Path $workerRoot | Out-Null
     $script:workerRequestId = 'dddddddddddddddddddddddddddddddd'
+    $script:mockResolveSeen = New-Object 'System.Collections.Generic.List[bool]'
+    $script:mockStartedPlan = $null
+    $script:planMode = ''
     $script:mockServerStarts = 0
     $script:throwServer = $false
     $script:throwPlanChanged = $false
@@ -173,6 +189,32 @@ try {
     Assert-BackgroundTest (($script:mockOrder -join ',') -ceq 'lock,status:preparing,hardware') ('The background worker must write a preparing status right after taking the lock, before probing (observed: ' + ($script:mockOrder -join ',') + ').')
     $preparingState = $script:mockStateWrites[0]
     Assert-BackgroundTest ($preparingState.schemaVersion -eq 1 -and $preparingState.phase -ceq 'preparing' -and $preparingState.action -ceq 'start' -and [string]$preparingState.runId -cmatch '^[0-9a-f]{32}$' -and @($preparingState.Keys).Count -eq 4) 'The preparing status has the shape the CLI writes (schemaVersion, runId, phase, action).'
+    # The host plans with the fallback resolution and runs whatever plan comes back; it has no install path of its own.
+    Assert-BackgroundTest ($script:mockResolveSeen.Count -eq 1 -and $script:mockResolveSeen[0]) 'The worker must ask for the plan with -ResolveFallback.'
+    function Invoke-BackgroundPlanCase {
+        param([string]$Mode,[string]$ModelId,[string]$Id)
+        $script:planMode = $Mode
+        $script:mockStartedPlan = $null
+        $script:mockResolveSeen.Clear()
+        $script:workerRequestId = $Id
+        $casePath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $Id + '.json')
+        Write-FastLlmBackgroundDocument -Path $casePath -CreateNew -Value ([ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$Id;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId=$ModelId;contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+            sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+        $caseExit = Invoke-FastLlmBackgroundServe -RequestId $Id -InstallRoot $workerRoot -SourceRoot $source
+        $caseRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+        [pscustomobject]@{exit=$caseExit;plan=$script:mockStartedPlan;record=$caseRecord}
+    }
+    $script:throwServer = $false
+    $pendingCase = Invoke-BackgroundPlanCase 'hip-missing' '' '11111111111111111111111111111111'
+    Assert-BackgroundTest ($pendingCase.exit -eq 0 -and $pendingCase.plan.backend -ceq 'vulkan' -and $pendingCase.plan.fallback.applied -and $pendingCase.plan.fallback.reason -ceq 'components-pending' -and $pendingCase.record.modelId -ceq 'vulkan-model') 'Missing HIP components: the host starts the stamped Vulkan fallback plan and records its model.'
+    $selectedCase = Invoke-BackgroundPlanCase 'hip-missing' 'chosen-model' '22222222222222222222222222222222'
+    Assert-BackgroundTest ($selectedCase.exit -eq 0 -and $selectedCase.plan.backend -ceq 'vulkan' -and -not $selectedCase.plan.PSObject.Properties['fallback'] -and $selectedCase.record.modelId -ceq 'chosen-model') 'A request with a model id starts the estimated plan with no fallback.'
+    $readyCase = Invoke-BackgroundPlanCase 'hip-ready' '' '33333333333333333333333333333333'
+    Assert-BackgroundTest ($readyCase.exit -eq 0 -and $readyCase.plan.backend -ceq 'hip' -and -not $readyCase.plan.PSObject.Properties['fallback'] -and $readyCase.record.modelId -ceq 'hip-model') 'Installed and healthy HIP components: the host starts the HIP plan.'
+    $script:planMode = ''
     $script:workerRequestId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
@@ -250,6 +292,8 @@ try {
         @(Get-ChildItem -LiteralPath $scratch -Filter 'replace-regression*' -Force).Count -eq 1) 'Atomic replace left a temp or backup file.'
     $hostSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     $replaceSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.FileReplace.ps1') -Raw
+    $hostPlanCall = [regex]::Match($hostSource, '(?s)\$plan = Get-FastLlmPlan.*?\r?\n\s*\$plan \| Add-Member')
+    Assert-BackgroundTest ($hostPlanCall.Success -and $hostPlanCall.Value.Contains('-ResolveFallback')) 'The host plans with -ResolveFallback.'
     $hostRecordAt = $hostSource.IndexOf('Write-FastLlmBackgroundDocument -Path $recordPath -Value $record')
     $preparingAt = $hostSource.IndexOf("phase='preparing'; action='start'")
     $firstProbeAt = $hostSource.IndexOf('$hardware = Get-FastLlmHardware')

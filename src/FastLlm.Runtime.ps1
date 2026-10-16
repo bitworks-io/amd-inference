@@ -473,9 +473,21 @@ function Initialize-FastLlmEngineStartInfo {
 # Win32 errors 4551 and 1260 (application-control policy blocks such as Smart App Control or WDAC) can surface from the process start itself.
 # Returns a typed exception, or $null when neither a policy block nor a missing DLL explains the failure. The reason is deliberately not
 # RuntimeCheckFailed: model recovery would re-plan onto the built-in Vulkan engine, which is the silent fallback this lane forbids.
+# True when a HIP plan was picked automatically from a measured recipe and has not itself fallen back: a failed start of such a plan is
+# followed by one visible start of the Vulkan setup. An explicit recipe, a plan that already fell back and a non-HIP plan never are.
+function Test-FastLlmPlanFallsBackOnFailure {
+    param($Plan)
+    if ($null -eq $Plan) { return $false }
+    if (-not ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')) { return $false }
+    if (-not ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id'] -and -not [string]::IsNullOrWhiteSpace([string] $Plan.recipe.id))) { return $false }
+    if ($Plan.PSObject.Properties['requestedRecipeId'] -and -not [string]::IsNullOrWhiteSpace([string] $Plan.requestedRecipeId)) { return $false }
+    if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback) { return $false }
+    return $true
+}
+
 function New-FastLlmHipLaunchFailure {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string] $ComponentId, [object] $ExitCode, [object] $NativeErrorCode, [switch] $ServerWasRunning)
+    param([Parameter(Mandatory = $true)][string] $ComponentId, [object] $ExitCode, [object] $NativeErrorCode, [switch] $ServerWasRunning, [switch] $AutoSelected)
     $blocked = $false
     $missing = $false
     $detail = $null
@@ -485,6 +497,7 @@ function New-FastLlmHipLaunchFailure {
     if (-not $blocked -and -not $missing) { return $null }
     $stopped = 'The server was stopped.'
     $vulkan = 'FastLLM does not switch to Vulkan on its own. To use the Vulkan setup instead, start FastLLM without the HIP recipe (choose a Vulkan setup).'
+    if ($AutoSelected) { $vulkan = 'FastLLM tries the Vulkan setup instead.' }
     if ($blocked) {
         $code = 'hip-dll-blocked'
         $text = "Windows blocked a DLL of the HIP engine component '${ComponentId}' from loading ($detail). Smart App Control or an application-control policy (WDAC) rejects unsigned files. $stopped $vulkan"
@@ -562,6 +575,7 @@ function Get-FastLlmSelfTestFailureText {
     param([string[]] $Reasons, $Plan)
     $next = 'FastLLM tries the next cached setup.'
     if (Test-FastLlmPlanOnEngineComponent -Plan $Plan) { $next = 'FastLLM does not switch to another setup on its own.' }
+    if (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan) { $next = 'FastLLM tries the Vulkan setup instead.' }
     return "Self-test failed ($(@($Reasons) -join ', ')). The server was stopped; $next"
 }
 
@@ -582,6 +596,7 @@ function Invoke-FastLlmSupervisedServer {
     $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
     # A HIP plan (the engine component's lane) has no Vulkan memory policy, BAR mitigation, device binding or Vulkan identity capture.
     $isHipPlan = [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
+    $hipAutoSelected = Test-FastLlmPlanFallsBackOnFailure -Plan $Plan
     $hipComponentId = ''
     if ($isHipPlan -and $Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { $hipComponentId = [string] $Plan.engineComponentId }
     # Resolve the policy before any state is written; a non-off policy may run the bounded advisory heap probe.
@@ -688,6 +703,14 @@ function Invoke-FastLlmSupervisedServer {
             $statusEngineComponentId = 'llama.cpp-' + [string] $Plan.engineVersion + '-vulkan'
         }
         $state.engineComponentId = $statusEngineComponentId
+        # The engine that runs, in one block (backend, version, component id), next to the older flat fields.
+        $state.engine = [ordered]@{ backend = $(if ($Plan.PSObject.Properties['backend']) { ([string] $Plan.backend).ToLowerInvariant() } else { $null }); version = $(if ($Plan.PSObject.Properties['engineVersion']) { [string] $Plan.engineVersion } else { $null }); componentId = $statusEngineComponentId }
+    }
+    # A plan that stands in for the one that could not run says so: the recipe it replaced, the one that runs, and why.
+    if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback -and $Plan.fallback.PSObject.Properties['applied'] -and [bool] $Plan.fallback.applied) {
+        $fallbackToRecipe = $null
+        if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id']) { $fallbackToRecipe = [string] $Plan.recipe.id }
+        $state.fallback = [ordered]@{ fromRecipe = [string] $Plan.fallback.fromRecipe; toRecipe = $fallbackToRecipe; reason = [string] $Plan.fallback.reason }
     }
     if ($Plan.PSObject.Properties['catalogVersion']) {
         if (-not $CatalogPath) { throw 'A real runtime recipe requires the verified catalog path.' }
@@ -710,6 +733,7 @@ function Invoke-FastLlmSupervisedServer {
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
     $hostProcess = New-Object Bitworks.FastLlm.ProcessHost
     $spawned = $false
+    $reachedReady = $false
     $baseUrl = $Plan.endpoint -replace '/v1$', ''
     try {
         if ($null -ne $deviceBindingGate) { throw $deviceBindingGate }
@@ -729,7 +753,7 @@ function Invoke-FastLlmSupervisedServer {
         catch {
             # A policy block can refuse the process start itself (Win32 error 4551 or 1260): typed, and never a Vulkan fallback.
             if ($isHipPlan) {
-                $hipStartFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -NativeErrorCode (Get-FastLlmNativeErrorCode -Exception $_.Exception)
+                $hipStartFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -NativeErrorCode (Get-FastLlmNativeErrorCode -Exception $_.Exception) -AutoSelected:$hipAutoSelected
                 if ($hipStartFailure) { throw $hipStartFailure }
             }
             throw
@@ -750,7 +774,7 @@ function Invoke-FastLlmSupervisedServer {
             if ($hostProcess.Process.HasExited) {
                 # A HIP server that dies on a blocked or missing DLL is a typed failure; any other early exit stays the generic one.
                 if ($isHipPlan) {
-                    $hipEarlyFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -ExitCode ([int] $hostProcess.Process.ExitCode)
+                    $hipEarlyFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -ExitCode ([int] $hostProcess.Process.ExitCode) -AutoSelected:$hipAutoSelected
                     if ($hipEarlyFailure) { throw $hipEarlyFailure }
                 }
                 throw 'Server exited before readiness.'
@@ -864,6 +888,7 @@ function Invoke-FastLlmSupervisedServer {
         }
         $state.phase='ready'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
+        $reachedReady = $true
         if ($state.recipe) {
             Write-FastLlmState -InstallRoot $InstallRoot -FileName ($Plan.hardwareFingerprint+'.last-ready.json') -State ([ordered]@{
                 kind='api-smoke-only';hardwareFingerprint=$Plan.hardwareFingerprint;modelId=$Plan.model.id;modelSha256=$Plan.model.sha256;catalogSha256=$state.recipe.catalogSha256
@@ -909,6 +934,8 @@ function Invoke-FastLlmSupervisedServer {
         return $exitCode
     } catch {
         $state.phase='failed'
+        # A failure after the server was ready (a crash while serving) is not a start failure: the start-time fallback never applies to it.
+        if ($reachedReady) { $_.Exception.Data['FastLlmAfterReady']=$true }
         if ($_.Exception.Data['FastLlmStateWrite'] -eq $true) {
             # A status-file write failure is not a model/runtime failure: it must never trigger model-switch recovery.
             $state.failureCode='state-write-failed'

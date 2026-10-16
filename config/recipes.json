@@ -5,7 +5,7 @@
     "config/gpu-variants.json": "cbbc815150015687ce736e53ba90311d72cbceb9e47e3f61526197ddf890a7d2",
     "data/bitworks-experimental-recipes.json": "93056c1341e7abb8b8febaa997c37aa3e2846fbb7a45703c0c33b713718b0fe2",
     "data/community-records.json": "201849d8ae11d656bdbf3a90d0950a941b19c4cfa05d84e7b4a75e5b406da967",
-    "data/verified-recipes.json": "22832347e517c8d28c0d988926effbd4a6238aa289091f54e0c9d80973f554fa"
+    "data/verified-recipes.json": "92ad17cb59271da1dff442c1bdaafad48131a65bda27a4f7ceba1198ba3f7a0d"
   },
   "recipes": [
     {
@@ -38,7 +38,7 @@
       "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
       "label": "Measured by Bitworks on this card",
       "origin": "bitworks",
-      "recommended": true,
+      "recommended": false,
       "runtime": {
         "cacheTypeK": "f16",
         "cacheTypeV": "f16",
@@ -77,7 +77,7 @@
       "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
       "label": "Measured by Bitworks on this card",
       "origin": "bitworks",
-      "recommended": false,
+      "recommended": true,
       "runtime": {
         "cacheTypeK": "f16",
         "cacheTypeV": "f16",
@@ -115,7 +115,7 @@
       "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k",
       "label": "Measured by Bitworks on this card",
       "origin": "bitworks",
-      "recommended": true,
+      "recommended": false,
       "runtime": {
         "cacheTypeK": "f16",
         "cacheTypeV": "f16",
@@ -154,7 +154,7 @@
       "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip",
       "label": "Measured by Bitworks on this card",
       "origin": "bitworks",
-      "recommended": false,
+      "recommended": true,
       "runtime": {
         "cacheTypeK": "f16",
         "cacheTypeV": "f16",

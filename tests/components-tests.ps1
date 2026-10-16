@@ -1327,6 +1327,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         foreach ($recipeMode in @('auto', 'named')) {
             $planParams = @{ Hardware = $case.Hardware; CatalogPath = $shippedCatalogPath; InstallRoot = $planRoot; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
             if ($recipeMode -ceq 'named') { $planParams.RecipeId = $case.RecipeId }
+            # Automatic selection now prefers the recommended HIP recipe, whose components are not installed here: the Vulkan recipe is its stamped fallback.
+            else { $planParams.ResolveFallback = $true }
             $shippedPlan = Get-FastLlmPlan @planParams
             $expectedModelPath = $shippedPlan.modelPath
             $expectedArguments = @($case.Args | ForEach-Object { if ($_ -ceq 'MODEL') { $expectedModelPath } else { $_ } })
@@ -1334,7 +1336,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             Check ($shippedPlan.enginePath -ceq $case.EnginePath -and $shippedPlan.engineVersion -ceq 'b10698') "shipped recipe $($case.RecipeId) ($recipeMode): the plan's executable path is the probed built-in engine path, unchanged"
             Check (($shippedPlan.serverArguments -join [char]31) -ceq ($expectedArguments -join [char]31)) "shipped recipe $($case.RecipeId) ($recipeMode): the full argument list is unchanged"
             Check ($shippedPlan.modelPath -like '*\models\*.gguf' -and $shippedPlan.serverArguments[1] -ceq $shippedPlan.modelPath) "shipped recipe $($case.RecipeId) ($recipeMode): --model is the verified model path"
-            Check ((@($shippedPlan.PSObject.Properties.Name) -join ',') -ceq $expectedFields) "shipped recipe $($case.RecipeId) ($recipeMode): the plan has exactly its pre-component fields (no engineComponentId)"
+            $expectedModeFields = $expectedFields
+            if ($recipeMode -ceq 'auto') { $expectedModeFields = $expectedFields + ',fallback' }
+            Check ((@($shippedPlan.PSObject.Properties.Name) -join ',') -ceq $expectedModeFields) "shipped recipe $($case.RecipeId) ($recipeMode): the plan has exactly its pre-component fields (no engineComponentId), plus the fallback stamp when it is the fallback"
         }
     }
 
@@ -1352,13 +1356,12 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     [System.IO.File]::WriteAllText($componentRecipesPath, (ConvertTo-Json -InputObject $componentRecipeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
     $componentPlanRoot = New-TestRoot
     $componentPlanParams = @{ Hardware = $xtxHardware; CatalogPath = $planCatalogPath; InstallRoot = $componentPlanRoot; RecipesPath = $componentRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    $missingPending = Get-FastLlmPlan @componentPlanParams
+    Check ($missingPending.recipe.id -ceq 'fixture.component-engine' -and @($missingPending.setup.pendingComponents).Count -eq 1 -and $missingPending.setup.pendingComponents[0].id -ceq 'test-engine-1' -and $null -eq $missingPending.enginePath) 'an automatically picked recipe whose engine component is not installed returns the pending form naming the component'
+    Check (-not (Test-Path -LiteralPath (Join-Path $componentPlanRoot 'components'))) 'the pending form installs nothing'
     $missingFailure = $null
-    try { Get-FastLlmPlan @componentPlanParams | Out-Null } catch { $missingFailure = $_.Exception }
-    Check ($null -ne $missingFailure -and $missingFailure.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and $missingFailure.Message -like '*test-engine-1*') 'a recipe whose engine component is not installed fails the plan with needs-setup-component-missing naming the component'
-    Check (-not (Test-Path -LiteralPath (Join-Path $componentPlanRoot 'components'))) 'the missing-component plan failure installs nothing and falls back to nothing'
-    $missingNamed = $null
-    try { Get-FastLlmPlan @componentPlanParams -RecipeId 'fixture.component-engine' | Out-Null } catch { $missingNamed = $_.Exception }
-    Check ($null -ne $missingNamed -and $missingNamed.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing') 'naming the recipe with -Recipe gives the same typed failure'
+    try { Get-FastLlmPlan @componentPlanParams -RecipeId 'fixture.component-engine' | Out-Null } catch { $missingFailure = $_.Exception }
+    Check ($null -ne $missingFailure -and $missingFailure.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and $missingFailure.Message -like '*test-engine-1*') 'a recipe named with -Recipe whose engine component is not installed fails the plan with needs-setup-component-missing naming the component'
     $componentCounter = @{ count = 0 }
     $componentRootPlanned = Install-Fixture -Fixture $fxPlan -InstallRoot $componentPlanRoot -Counter $componentCounter -AcceptLicense -Unattended
     $componentPlan = Get-FastLlmPlan @componentPlanParams
@@ -1383,9 +1386,11 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $noRootParams = @{} + $componentPlanParams
     $noRootParams.Remove('InstallRoot')
     $noRootFailure = $null
-    try { Get-FastLlmPlan @noRootParams | Out-Null } catch { $noRootFailure = $_.Exception }
-    Check ($null -ne $noRootFailure -and $noRootFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-needs-install-root') 'a component-engine recipe planned without -InstallRoot fails typed with recipe-engine-needs-install-root'
-    $builtInNoRootParams = @{ Hardware = $xtxHardware; CatalogPath = $shippedCatalogPath; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    try { Get-FastLlmPlan @noRootParams -RecipeId 'fixture.component-engine' | Out-Null } catch { $noRootFailure = $_.Exception }
+    Check ($null -ne $noRootFailure -and $noRootFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-needs-install-root') 'a component-engine recipe named with -Recipe and planned without -InstallRoot fails typed with recipe-engine-needs-install-root'
+    $noRootAuto = Get-FastLlmPlan @noRootParams
+    Check ($noRootAuto.fallback.reason -ceq 'recipe-engine-needs-install-root' -and $noRootAuto.fallback.applied -eq $true -and $noRootAuto.fallback.fromRecipe -ceq 'fixture.component-engine') 'the same recipe picked automatically falls back to the estimated plan, stamped with the typed reason'
+    $builtInNoRootParams = @{ Hardware = $xtxHardware; CatalogPath = $shippedCatalogPath; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' }
     $builtInNoRoot = Get-FastLlmPlan @builtInNoRootParams
     Check ($builtInNoRoot.recipe.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' -and -not $builtInNoRoot.PSObject.Properties['engineComponentId']) 'a built-in-engine recipe still plans without -InstallRoot'
 
@@ -1450,7 +1455,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ((@($hipPlanned.PSObject.Properties.Name) -join ',') -ceq ((@($builtInNoRoot.PSObject.Properties.Name) + @('engineComponentId', 'runtimeRoots')) -join ',')) 'a HIP plan is the Vulkan plan shape plus exactly engineComponentId and runtimeRoots'
         # Vulkan plans never probe HIP and keep their shape.
         $hipProbe.calls.Clear()
-        $vulkanAgain = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $shippedCatalogPath -InstallRoot $planRoot -RecipesPath $shippedRecipesPath -GpuVariantsPath $shippedVariantsPath
+        $vulkanAgain = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $shippedCatalogPath -InstallRoot $planRoot -RecipesPath $shippedRecipesPath -GpuVariantsPath $shippedVariantsPath -ResolveFallback
         Check ($hipProbe.calls.Count -eq 0 -and $vulkanAgain.backend -ceq 'Vulkan' -and -not $vulkanAgain.PSObject.Properties['runtimeRoots'] -and -not $vulkanAgain.PSObject.Properties['engineComponentId']) 'a shipped Vulkan recipe plans without any HIP probe, with backend Vulkan and no HIP fields'
         # A named shipped-shape HIP recipe plans on the HIP engine with no Vulkan-only argument.
         $hipRecipeDoc2 = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
@@ -1463,7 +1468,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $hipProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
         $hipNamedParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath2; GpuVariantsPath = $shippedVariantsPath }
         $hipAutoPlan = Get-FastLlmPlan @hipNamedParams
-        Check ($hipAutoPlan.recipe.origin -ceq 'estimated') 'without -Recipe the HIP recipe is not picked: the plan stays estimated (no silent HIP promotion)'
+        Check ($hipAutoPlan.recipe.origin -ceq 'bitworks' -and $hipAutoPlan.backend -ceq 'hip' -and $hipAutoPlan.engineComponentId -ceq 'eng-hip' -and -not $hipAutoPlan.PSObject.Properties['setup'] -and -not $hipAutoPlan.PSObject.Properties['fallback']) 'without -Recipe the recommended HIP recipe is picked once its components are installed and verified: a HIP plan with no setup or fallback fields'
         $hipNamedPlan = Get-FastLlmPlan @hipNamedParams -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'
         Check ($hipNamedPlan.recipe.origin -ceq 'bitworks' -and $hipNamedPlan.backend -ceq 'hip' -and $hipNamedPlan.engineComponentId -ceq 'eng-hip' -and $hipNamedPlan.selectionMode -ceq 'recipe') 'naming the HIP recipe yields a HIP plan on the engine component'
         $vulkanFlagText = (@($hipNamedPlan.serverArguments) -join ' ')
@@ -1545,6 +1550,222 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     }
     finally {
         & $module { param($B) Set-Item -Path Function:script:Invoke-FastLlmDeviceProbe -Value $B } $savedHipProbe
+    }
+
+    # ---- An automatically picked HIP recipe: pending components, the visible fallback, plan-time typed failures ----
+    $autoVulkanId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'
+    $autoHipId = $autoVulkanId + '.hip'
+    $autoDocument = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
+    $autoVulkanEntry = @($autoDocument.recipes | Where-Object { $_.id -ceq $autoVulkanId })[0]
+    $autoHipEntry = @($autoDocument.recipes | Where-Object { $_.id -ceq $autoHipId })[0]
+    $autoHipEntry.components.engine = 'eng-hip'
+    $autoHipEntry.engineBuild = '1.0'
+    $autoDocument.recipes = @($autoVulkanEntry, $autoHipEntry)
+    $autoRecipesPath = Join-Path $hipPlanDir 'recipes-auto.json'
+    [System.IO.File]::WriteAllText($autoRecipesPath, (ConvertTo-Json -InputObject $autoDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+    $autoBase = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); RecipesPath = $autoRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+    $autoProbe = @{ calls = (New-Object 'System.Collections.Generic.List[object]'); devices = @(); failure = $null }
+    $savedAutoProbe = & $module { (Get-Command Invoke-FastLlmDeviceProbe).ScriptBlock }
+    & $module {
+        param($P)
+        $script:autoProbeState = $P
+        function script:Invoke-FastLlmDeviceProbe {
+            param($EnginePath, $Backend, $InstallRoot, $TimeoutSeconds, [switch] $Hip, $RuntimeRoots, $ComponentId)
+            $script:autoProbeState.calls.Add([pscustomobject] @{ EnginePath = $EnginePath; ComponentId = $ComponentId })
+            if ($script:autoProbeState.failure) { throw $script:autoProbeState.failure }
+            return $script:autoProbeState.devices
+        }
+    } $autoProbe
+    try {
+        $autoProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+        # Components missing: the pending form.
+        $pendingRoot = New-TestRoot
+        $pendingPlan = Get-FastLlmPlan @autoBase -InstallRoot $pendingRoot
+        Check ($pendingPlan.recipe.id -ceq $autoHipId -and $pendingPlan.selectionMode -ceq 'recipe') 'auto plan, HIP components missing -> pending form: the plan is for the HIP recipe'
+        Check ((@($pendingPlan.setup.pendingComponents | ForEach-Object { $_.id }) -join ',') -ceq 'rt-hip,eng-hip') 'the pending components are the runtime, then the engine (chain order)'
+        $pendingFieldsOk = $true
+        foreach ($pendingMember in @($pendingPlan.setup.pendingComponents)) {
+            foreach ($pendingField in @('id', 'name', 'kind', 'version', 'sourceHosts', 'redirectHosts', 'downloadBytes', 'licenseLinks', 'consent', 'unverified')) {
+                if (-not $pendingMember.PSObject.Properties[$pendingField]) { $pendingFieldsOk = $false }
+            }
+            if ($pendingMember.unverified -ne $false -or @($pendingMember.sourceHosts) -cnotcontains 'downloads.example.com' -or [int64] $pendingMember.downloadBytes -le 0 -or @($pendingMember.licenseLinks).Count -lt 1 -or $pendingMember.consent -cne 'accept') { $pendingFieldsOk = $false }
+        }
+        Check ($pendingFieldsOk -and $pendingPlan.setup.pendingComponents[0].licenseLinks[0].title -ceq 'AMD EULA' -and $pendingPlan.setup.pendingComponents[0].licenseLinks[0].url -ceq 'https://rocm.example.com/eula') 'each pending component carries id, name, kind, version, sourceHosts, redirectHosts, downloadBytes, licenseLinks, consent and unverified = false'
+        Check ($pendingPlan.fallback.applied -eq $false -and $pendingPlan.fallback.fromRecipe -ceq $autoHipId -and $pendingPlan.fallback.toRecipe -ceq $autoVulkanId -and $pendingPlan.fallback.toModelId -ceq [string] $autoVulkanEntry.components.model -and $pendingPlan.fallback.reason -ceq 'components-pending') 'the pending form names the Vulkan recipe and its model as the fallback, not applied, reason components-pending'
+        Check ($null -eq $pendingPlan.enginePath -and @($pendingPlan.serverArguments).Count -eq 0 -and $autoProbe.calls.Count -eq 0) 'the pending form has no engine path and no arguments, and ran no engine'
+        Check (-not (Test-Path -LiteralPath (Join-Path $pendingRoot 'components'))) 'the pending form installs nothing'
+        # The window receives this plan as JSON from the child: round-trip it and feed the window's helpers (src/FastLlm.UiFlow.ps1) the result.
+        if (-not (Get-Command Get-FastLlmUiPendingDecision -ErrorAction SilentlyContinue)) { . (Join-Path $repoRoot 'src/FastLlm.UiFlow.ps1') }
+        $wirePlan = ConvertTo-Json -InputObject $pendingPlan -Depth 12 | ConvertFrom-Json
+        $pendingWireIds = @($wirePlan.setup.pendingComponents | ForEach-Object { [string] $_.id })
+        $fixtureIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath $hipFx.ComponentsPath))
+        $shippedIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path (Join-Path $repoRoot 'config') 'components.json')))
+        Check ($shippedIdentities.Count -eq 3 -and $fixtureIdentities.Count -ge 1) 'license identities come from both the shipped and the fixture component lists'
+        $uiAskRoot = New-TestRoot
+        $uiOnRoot = New-TestRoot
+        $uiShippedRoot = New-TestRoot
+        Set-FastLlmComponentLicenseSettings -InstallRoot $uiOnRoot -Mode 'accept-automatically' -Accepted $fixtureIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        Set-FastLlmComponentLicenseSettings -InstallRoot $uiShippedRoot -Mode 'accept-automatically' -Accepted $shippedIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        $uiAskSettings = Get-FastLlmComponentLicenseSettings -InstallRoot $uiAskRoot
+        $uiOnSettings = Get-FastLlmComponentLicenseSettings -InstallRoot $uiOnRoot
+        $uiShippedSettings = Get-FastLlmComponentLicenseSettings -InstallRoot $uiShippedRoot
+        $wireRows = @(Get-FastLlmUiConsentRows -Chain @($wirePlan.setup.pendingComponents))
+        $wireRowsOk = ($wireRows.Count -eq $pendingWireIds.Count)
+        for ($rowIndex = 0; $wireRowsOk -and $rowIndex -lt $wireRows.Count; $rowIndex++) {
+            $wireMember = @($wirePlan.setup.pendingComponents)[$rowIndex]
+            $wireRow = $wireRows[$rowIndex]
+            if ($wireRow.id -cne [string] $wireMember.id -or -not $wireRow.needsAccept -or $wireRow.blocked -or @($wireRow.links).Count -ne @($wireMember.licenseLinks).Count -or $wireRow.links[0].url -cne [string] $wireMember.licenseLinks[0].url) { $wireRowsOk = $false }
+        }
+        Check $wireRowsOk 'the consent rows built from the JSON plan: one per pending member, needing acceptance, with that member''s license links'
+        Check ((Test-FastLlmLicensesCovered -Settings $uiOnSettings -Pending @($wirePlan.setup.pendingComponents)) -and -not (Test-FastLlmLicensesCovered -Settings $uiAskSettings -Pending @($wirePlan.setup.pendingComponents)) -and -not (Test-FastLlmLicensesCovered -Settings $uiShippedSettings -Pending @($wirePlan.setup.pendingComponents))) 'the covered test on the JSON plan: only a setting that holds those licenses covers them'
+        $askDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiAskSettings -DeclinedSetups @()
+        Check ($askDecision.action -ceq 'ask' -and $askDecision.recipeId -ceq $autoHipId -and $askDecision.engineId -ceq 'eng-hip' -and @($askDecision.rows).Count -eq $pendingWireIds.Count -and ((@($askDecision.rows | ForEach-Object { $_.id }) -join ',') -ceq ($pendingWireIds -join ',')) -and @($askDecision.rows | Where-Object { @($_.links).Count -lt 1 }).Count -eq 0) 'the JSON plan with the setting on ask: decision ask, one consent row per pending member with its license links'
+        $onDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiOnSettings -DeclinedSetups @()
+        Check ($onDecision.action -ceq 'install-now' -and $onDecision.engineId -ceq 'eng-hip') 'the JSON plan with the setting on and covering every license: install now'
+        $uncoveredDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiShippedSettings -DeclinedSetups @()
+        Check ($uncoveredDecision.action -ceq 'ask') 'the JSON plan with the setting on but holding other licenses: ask'
+        $declinedDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiOnSettings -DeclinedSetups @($autoHipId)
+        Check ($declinedDecision.action -ceq 'fallback' -and $declinedDecision.fallbackRequest -ceq 'declined' -and $declinedDecision.notice -ceq "Using the Vulkan setup: the AMD license wasn't accepted. You can install the HIP setup any time from Choose another setup.") 'a declined recipe on the JSON plan: fallback with the decline line'
+        $wireStart = @(Get-FastLlmUiStartRecipeArguments -Plan $wirePlan -ChosenRecipe $null -FallbackRequest '')
+        Check (($wireStart -join ' ') -ceq "-PlannedRecipe $autoHipId") 'start arguments from the JSON plan: -PlannedRecipe <hip id> alone, never -Recipe or -UseFallback'
+        $wireStartDeclined = @(Get-FastLlmUiStartRecipeArguments -Plan $wirePlan -ChosenRecipe $null -FallbackRequest 'declined')
+        Check (($wireStartDeclined -join ' ') -ceq "-PlannedRecipe $autoHipId -UseFallback") 'start arguments from the JSON plan after a decline: -PlannedRecipe <hip id> -UseFallback'
+        $wirePreview = @(Get-FastLlmUiPreviewRecipeArguments -Recipe $null -FallbackRequest 'declined')
+        Check (($wirePreview -join ' ') -ceq '-UseFallback') 'the preview after a decline asks for the fallback'
+        # The same call with -ResolveFallback: the Vulkan plan, stamped.
+        $resolvedPlan = Get-FastLlmPlan @autoBase -InstallRoot $pendingRoot -ResolveFallback
+        Check ($resolvedPlan.recipe.id -ceq $autoVulkanId -and $resolvedPlan.backend -ieq 'vulkan' -and $resolvedPlan.fallback.applied -eq $true -and $resolvedPlan.fallback.fromRecipe -ceq $autoHipId -and $resolvedPlan.fallback.toRecipe -ceq $autoVulkanId -and $resolvedPlan.fallback.reason -ceq 'components-pending' -and -not $resolvedPlan.PSObject.Properties['setup']) 'same with -ResolveFallback -> Vulkan plan, fallback applied, no setup field'
+        Check ((@($resolvedPlan.PSObject.Properties.Name) -join ',') -ceq ($expectedFields + ',fallback') -and $resolvedPlan.enginePath -ceq $xtxHardware.enginePath) 'the fallback plan has exactly the built-in plan fields plus the fallback stamp'
+        # Installed, but a same-size content change of the runtime: pending with unverified for that member only.
+        $autoTamperRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $hipFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $autoTamperRoot -AcceptLicense -Download (New-ChainSeam -Fixture $hipFx -State (New-ChainState))
+        $autoTamperTarget = Join-Path (Join-Path (Get-FastLlmComponentRoot -InstallRoot $autoTamperRoot -Component $hipRuntimeEntry) 'bin') 'a.dll'
+        $autoTamperBytes = [byte[]] [System.IO.File]::ReadAllBytes($autoTamperTarget)
+        $autoTamperBytes[$autoTamperBytes.Length - 1] = [byte] ($autoTamperBytes[$autoTamperBytes.Length - 1] -bxor 1)
+        [System.IO.File]::WriteAllBytes($autoTamperTarget, $autoTamperBytes)
+        $unverifiedPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoTamperRoot
+        Check (@($unverifiedPlan.setup.pendingComponents).Count -eq 1 -and $unverifiedPlan.setup.pendingComponents[0].id -ceq 'rt-hip' -and $unverifiedPlan.setup.pendingComponents[0].unverified -eq $true -and $unverifiedPlan.fallback.reason -ceq 'components-unverified' -and $unverifiedPlan.fallback.applied -eq $false -and $autoProbe.calls.Count -eq 0) 'installed but Full hash fails -> pending with unverified = $true for that member only (components-unverified), nothing run'
+        # Installed and verified: the HIP plan, no setup or fallback fields.
+        $autoOkRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $hipFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $autoOkRoot -AcceptLicense -Download (New-ChainSeam -Fixture $hipFx -State (New-ChainState))
+        $okPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot
+        Check ($okPlan.recipe.id -ceq $autoHipId -and $okPlan.backend -ceq 'hip' -and $okPlan.selectedAdapters[0].device -ceq 'ROCm0' -and -not $okPlan.PSObject.Properties['setup'] -and -not $okPlan.PSObject.Properties['fallback'] -and $autoProbe.calls.Count -eq 1) 'components installed, probe ok -> HIP plan, no setup or fallback fields'
+        $okResolved = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -ResolveFallback
+        Check ($okResolved.recipe.id -ceq $autoHipId -and -not $okResolved.PSObject.Properties['fallback']) '-ResolveFallback leaves a working HIP plan alone'
+        # Smart App Control enforced and no ROCm device listed: the hip-dll-blocked path of the backend failure.
+        $savedSacState = & $module { (Get-Command Get-FastLlmSmartAppControlState).ScriptBlock }
+        & $module { function script:Get-FastLlmSmartAppControlState { return 'enforced' } }
+        try { $sacFailure = & $module { New-FastLlmHipBackendFailure -ComponentId 'eng-hip' -Cause 'no-device' } }
+        finally { & $module { param($B) Set-Item -Path Function:script:Get-FastLlmSmartAppControlState -Value $B } $savedSacState }
+        # Typed failures while resolving the engine: the plain call falls back too (it cannot return a plan it could not probe).
+        $typedCases = @(
+            @{ code = 'hip-backend-unavailable'; failure = (& $module { New-FastLlmHipBackendFailure -ComponentId 'eng-hip' -Cause 'timeout' }); devices = $null },
+            @{ code = 'hip-dll-blocked'; failure = $sacFailure; devices = $null },
+            @{ code = 'hip-device-not-found'; failure = $null; devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XT (20464 MiB, 20000 MiB free)" -Backend ROCm) },
+            @{ code = 'hip-device-ambiguous'; failure = $null; devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)`n  ROCm1: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm) })
+        foreach ($typedCase in $typedCases) {
+            $autoProbe.failure = $typedCase.failure
+            if ($typedCase.devices) { $autoProbe.devices = $typedCase.devices }
+            $typedPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot
+            Check ($typedPlan.recipe.id -ceq $autoVulkanId -and $typedPlan.backend -ieq 'vulkan' -and $typedPlan.fallback.reason -ceq $typedCase.code -and $typedPlan.fallback.applied -eq $true -and $typedPlan.fallback.fromRecipe -ceq $autoHipId) "plan-time typed HIP failure $($typedCase.code) falls back to the Vulkan plan for an auto pick, with that reason"
+            if ($typedCase.code -ceq 'hip-dll-blocked') {
+                $typedWire = ConvertTo-Json -InputObject $typedPlan -Depth 12 | ConvertFrom-Json
+                Check (((@(Get-FastLlmUiStartRecipeArguments -Plan $typedWire -ChosenRecipe $null -FallbackRequest '')) -join ' ') -ceq "-PlannedRecipe $autoHipId" -and (Get-FastLlmUiPendingDecision -Plan $typedWire -LicenseSettings $null -DeclinedSetups @()).action -ceq 'none') 'a plan-time hip-dll-blocked fallback from JSON starts with -PlannedRecipe <hip id> alone and has no pending decision'
+            }
+            $typedNamed = $null
+            try { Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -RecipeId $autoHipId | Out-Null } catch { $typedNamed = $_.Exception }
+            Check ($null -ne $typedNamed -and $typedNamed.Data['FastLlmFailureCode'] -ceq $typedCase.code) "explicit -RecipeId HIP keeps throwing $($typedCase.code)"
+        }
+        $autoProbe.failure = $null
+        $autoProbe.devices = @(ConvertFrom-LlamaDeviceList -Text "Available devices:`n  ROCm0: AMD Radeon RX 7900 XTX (24560 MiB, 24411 MiB free)" -Backend ROCm)
+        # Untyped exceptions still propagate.
+        $autoProbe.failure = New-Object System.InvalidOperationException 'untyped probe failure'
+        $untypedPlan = $null
+        try { Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot | Out-Null } catch { $untypedPlan = $_.Exception }
+        Check ($null -ne $untypedPlan -and $untypedPlan.Message -like '*untyped probe failure*' -and -not $untypedPlan.Data['FastLlmFailureCode']) 'an untyped exception from the engine probe is not turned into a fallback'
+        $autoProbe.failure = $null
+        # No install root, and a fixture plan: both fall back (they used to throw).
+        $autoNoRoot = Get-FastLlmPlan @autoBase
+        Check ($autoNoRoot.recipe.id -ceq $autoVulkanId -and $autoNoRoot.fallback.reason -ceq 'recipe-engine-needs-install-root' -and $autoNoRoot.fallback.applied -eq $true) 'auto pick with no -InstallRoot -> Vulkan plan with reason recipe-engine-needs-install-root'
+        $autoProbe.calls.Clear()
+        $autoFixture = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -NoEngineExecution
+        Check ($autoFixture.recipe.id -ceq $autoVulkanId -and $autoFixture.fallback.reason -ceq 'fixture-plan-cannot-probe-engine' -and $autoProbe.calls.Count -eq 0) 'auto pick with -NoEngineExecution (fixture plan) -> Vulkan plan with reason fixture-plan-cannot-probe-engine, nothing run'
+        # An explicit -RecipeId HIP is unchanged: missing components throw, a fixture plan throws, no fallback or pending form.
+        $explicitMissing = $null
+        try { Get-FastLlmPlan @autoBase -InstallRoot $pendingRoot -RecipeId $autoHipId | Out-Null } catch { $explicitMissing = $_.Exception }
+        Check ($null -ne $explicitMissing -and $explicitMissing.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing') "explicit -RecipeId HIP keeps today's behaviour: missing components throw needs-setup-component-missing"
+        $explicitFixture = $null
+        try { Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -RecipeId $autoHipId -NoEngineExecution | Out-Null } catch { $explicitFixture = $_.Exception }
+        Check ($null -ne $explicitFixture -and $explicitFixture.Data['FastLlmFailureCode'] -ceq 'fixture-plan-cannot-probe-engine') 'explicit -RecipeId HIP in a fixture plan still throws fixture-plan-cannot-probe-engine'
+        $explicitOk = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -RecipeId $autoHipId -ResolveFallback
+        Check (-not $explicitOk.PSObject.Properties['fallback'] -and -not $explicitOk.PSObject.Properties['setup']) 'an explicit -RecipeId has no fallback or pending fields, even with -ResolveFallback'
+        $explicitResolve = $null
+        try { Get-FastLlmPlan @autoBase -InstallRoot $pendingRoot -RecipeId $autoHipId -ResolveFallback | Out-Null } catch { $explicitResolve = $_.Exception }
+        Check ($null -ne $explicitResolve -and $explicitResolve.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing') 'an explicit -RecipeId never falls back, even with -ResolveFallback'
+        # A forced fallback with the components installed.
+        $forcedPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -FallbackFromRecipe $autoHipId -FallbackReason 'components-declined'
+        Check ($forcedPlan.recipe.id -ceq $autoVulkanId -and $forcedPlan.fallback.applied -eq $true -and $forcedPlan.fallback.fromRecipe -ceq $autoHipId -and $forcedPlan.fallback.reason -ceq 'components-declined' -and $forcedPlan.fallback.toRecipe -ceq $autoVulkanId) '-FallbackFromRecipe/-FallbackReason forces the fallback even with components installed, stamped applied'
+        # -ModelId plans are unchanged.
+        $modelIdPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -ModelId 'qwen3.8-27b-ud-q4-k-m'
+        Check ($modelIdPlan.recipe.origin -ceq 'manual' -and -not $modelIdPlan.PSObject.Properties['fallback'] -and -not $modelIdPlan.PSObject.Properties['setup'] -and (@($modelIdPlan.PSObject.Properties.Name) -join ',') -ceq $expectedFields) '-ModelId plans are unchanged (no recipe, no fallback or setup fields)'
+        # With no license-free recipe at all, the fallback is the estimated plan (toRecipe is null).
+        $onlyHipDocument = Get-Content -LiteralPath $autoRecipesPath -Raw | ConvertFrom-Json
+        $onlyHipDocument.recipes = @($onlyHipDocument.recipes | Where-Object { $_.id -ceq $autoHipId })
+        $onlyHipPath = Join-Path $hipPlanDir 'recipes-auto-hip-only.json'
+        [System.IO.File]::WriteAllText($onlyHipPath, (ConvertTo-Json -InputObject $onlyHipDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+        $onlyHipParams = @{} + $autoBase
+        $onlyHipParams.RecipesPath = $onlyHipPath
+        $estimatedFallback = Get-FastLlmPlan @onlyHipParams -InstallRoot $pendingRoot -ResolveFallback
+        Check ($estimatedFallback.recipe.origin -ceq 'estimated' -and $null -eq $estimatedFallback.fallback.toRecipe -and $estimatedFallback.fallback.fromRecipe -ceq $autoHipId -and $estimatedFallback.fallback.applied -eq $true) 'with no license-free recipe the fallback is the estimated plan, toRecipe null'
+        $estimatedPending = Get-FastLlmPlan @onlyHipParams -InstallRoot $pendingRoot
+        Check ($null -eq $estimatedPending.fallback.toRecipe -and $estimatedPending.fallback.toModelId -ceq [string] $estimatedFallback.model.id -and $estimatedPending.fallback.applied -eq $false) 'the pending form names the estimated model as its fallback when no recipe can stand in'
+        # -FallbackFromRecipe with -RecipeId is refused: an explicit recipe never falls back.
+        $bothParams = $null
+        try { Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -RecipeId $autoHipId -FallbackFromRecipe $autoHipId | Out-Null } catch { $bothParams = $_.Exception }
+        Check ($null -ne $bothParams -and $bothParams.Message -like '*cannot be combined*') '-FallbackFromRecipe together with -RecipeId is refused'
+        # Warnings: an automatic HIP plan says it falls back; an explicit one keeps the old text; the pending form carries no Vulkan-only warning.
+        Check (@($okPlan.warnings | Where-Object { $_ -like '*falls back to the Vulkan setup and says so*' }).Count -eq 1 -and @($okPlan.warnings | Where-Object { $_ -like '*will not fall back to Vulkan*' }).Count -eq 0) 'an automatic HIP plan warns that it falls back to Vulkan, not that it will not'
+        Check (@($explicitOk.warnings | Where-Object { $_ -like '*will not fall back to Vulkan on its own*' }).Count -eq 1) 'an explicit -RecipeId HIP plan keeps the no-fallback warning'
+        Check (@($pendingPlan.warnings | Where-Object { $_ -like 'Vulkan is the only enabled alpha engine lane*' }).Count -eq 0) 'the pending form does not carry the Vulkan-only warning'
+        # The fallback pass only considers recipes that can run now. A license-free recipe on an engine component that is not installed is skipped (the
+        # Vulkan recipe is used); one that is installed but cannot start does not chain into a second fallback: the fallback is refused, typed.
+        $freeDir = Join-Path $work 'hip-plan-config-free'
+        New-Item -ItemType Directory -Path $freeDir -Force | Out-Null
+        Copy-Item -LiteralPath $shippedCatalogPath -Destination (Join-Path $freeDir 'catalog.json') -Force
+        $freeComponentsDocument = Get-Content -LiteralPath $hipFx.ComponentsPath -Raw | ConvertFrom-Json
+        $freeEngine = @($freeComponentsDocument.components | Where-Object { $_.id -ceq 'eng-hip' })[0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $freeEngine.id = 'eng-hip-free'
+        $freeEngine.requires = @()
+        $freeEngine.license.consent = 'show'
+        $freeComponentsDocument.components = @($freeComponentsDocument.components) + @($freeEngine)
+        $freeComponentsPath = Join-Path $freeDir 'components.json'
+        [System.IO.File]::WriteAllText($freeComponentsPath, (ConvertTo-Json -InputObject $freeComponentsDocument -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+        $freeRecipe = $autoHipEntry | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $freeRecipe.id = 'fixture.hip-free'
+        $freeRecipe.components.engine = 'eng-hip-free'
+        $freeRecipe.expected.generationTokS = [double] $autoHipEntry.expected.generationTokS - 0.1
+        $freeDocument = Get-Content -LiteralPath $autoRecipesPath -Raw | ConvertFrom-Json
+        $freeDocument.recipes = @($freeDocument.recipes) + @($freeRecipe)
+        $freeRecipesPath = Join-Path $freeDir 'recipes.json'
+        [System.IO.File]::WriteAllText($freeRecipesPath, (ConvertTo-Json -InputObject $freeDocument -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+        $freeBase = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $freeDir 'catalog.json'); RecipesPath = $freeRecipesPath; GpuVariantsPath = $shippedVariantsPath }
+        $freeFirst = Get-FastLlmPlan @freeBase -InstallRoot $pendingRoot -ResolveFallback
+        Check ($freeFirst.recipe.id -ceq $autoVulkanId -and $freeFirst.fallback.fromRecipe -ceq $autoHipId -and $freeFirst.fallback.applied -eq $true -and $freeFirst.fallback.reason -ceq 'components-pending' -and $freeFirst.fallback.toRecipe -ceq $autoVulkanId -and -not $freeFirst.PSObject.Properties['setup']) 'the fallback skips a license-free recipe whose engine component is not installed, and lands on the runnable Vulkan recipe (one fallback only)'
+        $freeRoot = New-TestRoot
+        $null = Install-FastLlmComponent -ComponentsPath $freeComponentsPath -ComponentId 'eng-hip-free' -InstallRoot $freeRoot -AcceptLicense -Download (New-ChainSeam -Fixture $hipFx -State (New-ChainState))
+        $autoProbe.calls.Clear()
+        $autoProbe.failure = & $module { New-FastLlmHipBackendFailure -ComponentId 'eng-hip-free' -Cause 'timeout' }
+        $freeChained = $null
+        try { Get-FastLlmPlan @freeBase -InstallRoot $freeRoot -ResolveFallback | Out-Null } catch { $freeChained = $_.Exception }
+        Check ($null -ne $freeChained -and $freeChained.Data['FastLlmFailureCode'] -ceq 'fallback-unavailable' -and $freeChained.Message -like '*hip-backend-unavailable*' -and $autoProbe.calls.Count -eq 1) 'a fallback recipe that is installed but cannot start does not chain into a second fallback: fallback-unavailable after exactly one engine probe'
+        $freePending = Get-FastLlmPlan @freeBase -InstallRoot $freeRoot
+        Check ($freePending.fallback.applied -eq $false -and $freePending.fallback.reason -ceq 'components-pending' -and $null -eq $freePending.fallback.toRecipe -and $null -eq $freePending.enginePath) 'the pending form is still returned when the fallback cannot be planned (toRecipe null)'
+        $autoProbe.failure = $null
+        # The helper that matches a plan with the recipe it was planned for.
+        Check ((Test-FastLlmPlanMatchesPlannedRecipe -Plan $resolvedPlan -PlannedRecipe $autoVulkanId) -and (Test-FastLlmPlanMatchesPlannedRecipe -Plan $resolvedPlan -PlannedRecipe $autoHipId) -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $resolvedPlan -PlannedRecipe 'unrelated.recipe') -and (Test-FastLlmPlanMatchesPlannedRecipe -Plan $okPlan -PlannedRecipe $autoHipId) -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $okPlan -PlannedRecipe $autoVulkanId)) 'Test-FastLlmPlanMatchesPlannedRecipe: true for the plan''s own id and a fallback plan''s fromRecipe, false for an unrelated id'
+    }
+    finally {
+        & $module { param($B) Set-Item -Path Function:script:Invoke-FastLlmDeviceProbe -Value $B } $savedAutoProbe
     }
 
     # ---- Verified install removes the archives it downloaded (and only those) ----
@@ -1646,6 +1867,153 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ((Get-FastLlmComponentSettings -InstallRoot $freshRoot).experimentalComponents -ceq 'on') 'setting the switch creates the install root and settings.json when they do not exist'
     Check ((Get-ThrownMessage { Set-FastLlmComponentSettings -InstallRoot $settingsRoot -ExperimentalComponents 'sometimes' }) -ne $null) 'a value other than on or off is rejected'
 
+    # ---- componentLicenses setting (storage, fail-closed reads, identities, matching, standing-setting receipts) ----
+    $licRoot = New-TestRoot
+    $licDefault = Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot
+    Check ($licDefault.mode -ceq 'ask' -and @($licDefault.accepted).Count -eq 0) 'componentLicenses defaults to ask with no settings.json'
+    [System.IO.File]::WriteAllText((Join-Path $licRoot 'settings.json'), '{"vulkanBarMitigation":"on","updateCheck":"off","experimentalComponents":"on","futureKey":"keep"}', (New-Object System.Text.UTF8Encoding($false)))
+    Set-FastLlmComponentLicenseSettings -InstallRoot $licRoot -Mode 'accept-automatically' -Accepted @([pscustomobject] @{ title = 'AMD EULA'; host = 'github.com' }) -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+    $licStored = Get-Content -LiteralPath (Join-Path $licRoot 'settings.json') -Raw | ConvertFrom-Json
+    Check ($licStored.experimentalComponents -ceq 'on' -and $licStored.vulkanBarMitigation -ceq 'on' -and $licStored.updateCheck -ceq 'off' -and $licStored.futureKey -ceq 'keep') 'storing componentLicenses keeps experimentalComponents, updateCheck, vulkanBarMitigation and unknown keys'
+    $licBack = Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot
+    Check ($licBack.mode -ceq 'accept-automatically' -and $licBack.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z' -and @($licBack.accepted).Count -eq 1 -and $licBack.accepted[0].title -ceq 'AMD EULA' -and $licBack.accepted[0].host -ceq 'github.com') 'accept-automatically round-trips mode, acceptedAt and the accepted title and host'
+    Check ((Get-Content -LiteralPath (Join-Path $licRoot 'settings.json') -Raw) -match '"accepted"\s*:\s*\[') 'a one-element accepted list is stored as an array'
+    Set-FastLlmComponentSettings -InstallRoot $licRoot -ExperimentalComponents 'off'
+    Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot).mode -ceq 'accept-automatically') 'turning the experimental switch off keeps componentLicenses'
+    Set-FastLlmComponentLicenseSettings -InstallRoot $licRoot -Mode 'ask'
+    $licOff = Get-FastLlmComponentLicenseSettings -InstallRoot $licRoot
+    Check ($licOff.mode -ceq 'ask' -and @($licOff.accepted).Count -eq 0 -and (Get-Content -LiteralPath (Join-Path $licRoot 'settings.json') -Raw | ConvertFrom-Json).futureKey -ceq 'keep') 'ask turns it off, clears the list and keeps the other keys'
+    Check ($null -ne (Get-ThrownMessage { Set-FastLlmComponentLicenseSettings -InstallRoot $licRoot -Mode 'accept-automatically' -Accepted @() })) 'accept-automatically with no accepted licenses is refused at write time'
+    $licBadCases = [ordered] @{
+        'a missing file'                    = $null
+        'an empty file'                     = ''
+        'a JSON array'                      = '[]'
+        'a JSON string'                     = '"x"'
+        'componentLicenses as a string'     = '{"componentLicenses":"accept-automatically"}'
+        'componentLicenses as an array'     = '{"componentLicenses":[{"mode":"accept-automatically"}]}'
+        'an unknown mode'                   = '{"componentLicenses":{"mode":"always","acceptedAt":"x","accepted":[{"title":"t","host":"h"}]}}'
+        'a wrong-case mode'                 = '{"componentLicenses":{"mode":"Accept-Automatically","accepted":[{"title":"t","host":"h"}]}}'
+        'a missing accepted list'           = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"x"}}'
+        'accepted as a string'              = '{"componentLicenses":{"mode":"accept-automatically","accepted":"t"}}'
+        'accepted as a single object'       = '{"componentLicenses":{"mode":"accept-automatically","accepted":{"title":"t","host":"h"}}}'
+        'an entry without a title'          = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"host":"h"}]}}'
+        'an entry without a host'           = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t"}]}}'
+        'one good and one incomplete entry' = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t","host":"h"},{"title":"t2"}]}}'
+        'an entry with a control character' = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t\u0007","host":"h"}]}}'
+        'a missing acceptedAt'              = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t","host":"h"}]}}'
+        'a blank acceptedAt'                = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"  ","accepted":[{"title":"t","host":"h"}]}}'
+        'an unparsable acceptedAt'          = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"yesterday-ish","accepted":[{"title":"t","host":"h"}]}}'
+        'a numeric acceptedAt'              = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":5,"accepted":[{"title":"t","host":"h"}]}}'
+        'an empty accepted list'            = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"x","accepted":[]}}'
+        'broken JSON'                       = '{"componentLicenses":{"mode":'
+    }
+    foreach ($badName in $licBadCases.Keys) {
+        $badRoot = New-TestRoot
+        if ($null -ne $licBadCases[$badName]) { [System.IO.File]::WriteAllText((Join-Path $badRoot 'settings.json'), [string] $licBadCases[$badName], (New-Object System.Text.UTF8Encoding($false))) }
+        $badThrown = $null
+        $badRead = $null
+        try { $badRead = Get-FastLlmComponentLicenseSettings -InstallRoot $badRoot } catch { $badThrown = [string] $_.Exception.Message }
+        Check ($null -eq $badThrown -and $badRead.mode -ceq 'ask' -and @($badRead.accepted).Count -eq 0) "componentLicenses reads as ask, without throwing, for $badName"
+    }
+
+    $licShipped = @(Get-FastLlmComponents -ComponentsPath (Join-Path $repoRoot 'config/components.json'))
+    $licIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components $licShipped)
+    $licKeys = @($licIdentities | ForEach-Object { $_.title + ' @ ' + $_.host } | Sort-Object)
+    Check ($licIdentities.Count -eq 3 -and ($licKeys -join '|') -ceq 'AMD HIP SDK license page @ www.amd.com|AMD Software End User License Agreement @ github.com|llama.cpp license (MIT) @ github.com') 'the shipped components yield exactly three acceptable license identities (the Vulkan show license contributes none)'
+    $licDisclosure = @(Format-FastLlmLicenseDisclosure -Components $licShipped)
+    Check ($licDisclosure.Count -eq 3 -and @($licDisclosure | Where-Object { $_ -like 'License: llama.cpp license (MIT) https://github.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD HIP SDK license page https://www.amd.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD Software End User License Agreement https://github.com/*' }).Count -eq 1) 'the disclosure lists one "License: <title> <url>" line per acceptable identity'
+
+    $licOn = [pscustomobject] @{ mode = 'accept-automatically'; acceptedAt = '2026-10-16T10:00:00.0000000Z'; accepted = $licIdentities }
+    $licAsk = [pscustomobject] @{ mode = 'ask'; acceptedAt = ''; accepted = @() }
+    function New-PendingFor([string] $Id, [object[]] $Links) { return [pscustomobject] @{ id = $Id; consent = 'accept'; licenseLinks = @($Links) } }
+    $licHipPending = @($licShipped | Where-Object { @('amd-rocm-gfx1100-10.0.0', 'llama.cpp-hip-b11658') -ccontains [string] $_.id } | ForEach-Object { New-PendingFor ([string] $_.id) @(Get-FastLlmComponentLicenseLinks -Component $_) })
+    Check ($licHipPending.Count -eq 2 -and (Test-FastLlmLicensesCovered -Settings $licOn -Pending $licHipPending)) 'the shipped HIP chain is covered by the stored identities'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licAsk -Pending $licHipPending)) 'mode ask covers nothing'
+    $licBumped = @($licHipPending | ForEach-Object { New-PendingFor ([string] $_.id) @($_.licenseLinks | ForEach-Object { [pscustomobject] @{ title = ([string] $_.title).ToUpperInvariant(); url = ([string] $_.url) -replace 'blob/b11658', 'blob/b12000' } }) })
+    Check (Test-FastLlmLicensesCovered -Settings $licOn -Pending $licBumped) 'a changed URL path (engine tag bump) and a different title case are still covered: matching is title plus host'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'A brand new license'; url = 'https://github.com/a/b' })))) 'a new title is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = 'https://other.example.com/licenses.html' })))) 'the same title on a different host is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = 'not a url' })))) 'a link whose URL does not parse is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = ('https://www.amd.com/a' + [char] 7 + 'b') })))) 'a link whose URL has a control character is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @()))) 'an accept-type component with no license links is not covered'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @([pscustomobject] @{ id = 'v'; consent = 'show'; licenseLinks = @([pscustomobject] @{ title = 'other'; url = 'https://other.example.com/x' }) }))) 'a show-type component whose license is not in the stored set is not covered'
+    $licShippedVulkan = @($licShipped | Where-Object { $_.id -ceq 'llama.cpp-b10698-vulkan' })
+    Check ($licShippedVulkan.Count -eq 1 -and -not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'llama.cpp-b10698-vulkan' @(Get-FastLlmComponentLicenseLinks -Component $licShippedVulkan[0])))) 'the shipped Vulkan engine license is not covered by the identities stored for the HIP chain'
+
+    $licShippedPath = Join-Path $repoRoot 'config/components.json'
+    $licShippedRoot = New-TestRoot
+    Set-FastLlmComponentLicenseSettings -InstallRoot $licShippedRoot -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-b10698-vulkan') -ceq '') 'with the setting on, the shipped Vulkan engine (show license not in the set) gets no standing acceptance'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-hip-b11658') -ceq '2026-10-16T10:00:00.0000000Z') 'with the setting on, the shipped HIP chain gets the standing acceptance'
+
+    # Standing-setting receipts through the install seam (fixture chain with accept-type licenses).
+    $stFx = New-ChainFixture -Name 'fx-standing'
+    $stComponents = @(Get-FastLlmComponents -ComponentsPath $stFx.ComponentsPath)
+    $stIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components $stComponents)
+    $stRoot = New-TestRoot
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $stRoot -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '') 'with the setting off there is no standing acceptance'
+    Set-FastLlmComponentLicenseSettings -InstallRoot $stRoot -Mode 'accept-automatically' -Accepted $stIdentities -AcceptedAt '2026-10-16T11:22:33.0000000Z'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $stRoot -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '2026-10-16T11:22:33.0000000Z') 'with the setting on and covering the chain the standing acceptance is the stored acceptedAt'
+    $stPartial = New-TestRoot
+    Set-FastLlmComponentLicenseSettings -InstallRoot $stPartial -Mode 'accept-automatically' -Accepted @($stIdentities[0]) -AcceptedAt '2026-10-16T11:22:33.0000000Z'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $stPartial -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '') 'a setting that covers only some of the chain licenses gives no standing acceptance'
+    $stNone = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) }
+    Check ($stNone.code -ceq 'component-consent-required') 'neither -AcceptLicense nor -SettingAcceptedAt still needs consent'
+    $stNoList = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) }
+    Check ($stNoList.code -ceq 'component-consent-required') '-SettingAcceptedAt without the accepted licenses covers nothing'
+    $stPartialState = New-ChainState
+    $stPartialFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses @($stIdentities[0]) -Download (New-ChainSeam -Fixture $stFx -State $stPartialState) 6>$null }
+    Check ($stPartialFailure.code -ceq 'component-consent-required' -and $stPartialState.log.Count -eq 0) 'a member whose licenses are not all in the stored set still needs consent under the setting, and nothing is downloaded'
+    $stShowState = New-ChainState
+    $stShowRoot = New-TestRoot
+    $stShowFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stShowRoot -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses @([pscustomobject] @{ title = 'Unrelated license'; host = 'example.org' }) -Download (New-ChainSeam -Fixture $showFx -State $stShowState) 6>$null }
+    Check ($stShowFailure.code -ceq 'component-consent-required' -and $stShowState.log.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $stShowRoot 'consents'))) 'under the setting an unattended show-type member not in the stored set gives component-consent-required, downloads nothing and writes no receipt'
+    $stState = New-ChainState
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stRoot -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses $stIdentities -Download (New-ChainSeam -Fixture $stFx -State $stState) 6>$null
+    foreach ($stId in @('rt-hip', 'eng-hip')) {
+        $stReceiptPath = @(Get-ChildItem -LiteralPath (Join-Path $stRoot 'consents') -Filter "component-$stId-*.json")[0].FullName
+        $stReceiptText = Get-Content -LiteralPath $stReceiptPath -Raw
+        $stReceipt = $stReceiptText | ConvertFrom-Json
+        $stEntry = Get-ComponentEntry $stFx.ComponentsPath $stId
+        $stExpectedUrls = (@(& $module { param($c) Get-FastLlmComponentLicenseLinkEntries -Component $c } $stEntry) | ForEach-Object { $_.url }) -join '|'
+        Check ($stReceipt.mode -ceq 'standing-setting' -and $stReceiptText -match '"settingAcceptedAt"\s*:\s*"2026-10-16T11:22:33\.0000000Z"' -and [int] $stReceipt.schemaVersion -eq 1 -and (@($stReceipt.links | ForEach-Object { $_.url }) -join '|') -ceq $stExpectedUrls) "the $stId receipt has mode standing-setting, settingAcceptedAt and the exact license links"
+        Check (& $module { param($c, $r) Test-FastLlmComponentConsentReceipt -Component $c -InstallRoot $r } $stEntry $stRoot) "the standing-setting receipt for $stId is valid for the consent check"
+    }
+    $stExplicitRoot = New-TestRoot
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stExplicitRoot -AcceptLicense -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) 6>$null
+    $stExplicit = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath (Join-Path $stExplicitRoot 'consents') -Filter 'component-eng-hip-*.json')[0].FullName) -Raw | ConvertFrom-Json
+    Check ($stExplicit.mode -ceq 'explicit-switch' -and -not $stExplicit.PSObject.Properties['settingAcceptedAt']) '-AcceptLicense still writes an explicit-switch receipt without settingAcceptedAt'
+    $stBothRoot = New-TestRoot
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stBothRoot -AcceptLicense -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses $stIdentities -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) 6>$null
+    Check ((Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath (Join-Path $stBothRoot 'consents') -Filter 'component-eng-hip-*.json')[0].FullName) -Raw | ConvertFrom-Json).mode -ceq 'explicit-switch') 'when both are given the explicit switch wins'
+
+    # Mirror pair.
+    $mirrorSource = New-TestRoot
+    $mirrorTarget = New-TestRoot
+    Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+    $mirrored = Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget
+    Check ($mirrored.mode -ceq 'accept-automatically' -and @($mirrored.accepted).Count -eq 3 -and $mirrored.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z') 'the mirrored setting reaches the install folder'
+    Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorTarget)) 'syncing roots that already agree writes nothing'
+    Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorSource)) 'syncing a root with itself writes nothing'
+    Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'ask'
+    Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget).mode -ceq 'ask') 'turning the setting off reaches the install folder too'
+    # A failing mirror: turning the setting on goes back to what it was; turning it off always stays off in the launch root.
+    $originalSync = ${function:Sync-FastLlmComponentLicenseSetting}
+    function Sync-FastLlmComponentLicenseSetting { param($SourceRoot, $TargetRoot) throw 'simulated mirror failure' }
+    try {
+        $failSource = New-TestRoot
+        $failTarget = New-TestRoot
+        $onFailure = Get-ThrownFailure { Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $failSource -TargetRoot $failTarget -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z' }
+        Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $failSource).mode -ceq 'ask') 'a failed mirror while turning the setting on leaves the launch root as it was'
+        Set-FastLlmComponentLicenseSettings -InstallRoot $failSource -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        $offThrown = $null
+        try { Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $failSource -TargetRoot $failTarget -Mode 'ask' } catch { $offThrown = $_.Exception.Message }
+        Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $failSource).mode -ceq 'ask' -and $offThrown -and $offThrown.Contains('setting is off')) 'a failed mirror while turning the setting off still leaves ask in the launch root and says so'
+    }
+    finally { ${function:Sync-FastLlmComponentLicenseSetting} = $originalSync }
+    $componentsSourceText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'src/FastLlm.Components.ps1'))
+    Check ($componentsSourceText -cnotmatch '[^\x00-\x7F]') 'src/FastLlm.Components.ps1 is ASCII only'
+
     # The paragraph (spec 2.7).
     Check ($script:FastLlmExperimentalParagraph -like '*Experimental means*' -and $script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*listed official source*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the experimental paragraph says what experimental means, that Bitworks has not reproduced it, and that each component comes from its listed official source and is checked against its pinned hash'
     Check ($script:FastLlmExperimentalParagraph -cnotmatch '[^\x20-\x7E]') 'the experimental paragraph is ASCII'
@@ -1729,25 +2097,29 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $showFx = New-ChainFixture -Name 'fx-show-chain' -Consent 'show'
     $showList = @(Get-FastLlmComponents -ComponentsPath $showFx.ComponentsPath)
     Check (@($acceptList | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 2 -and @($showList | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 0) 'the two chain fixtures differ only in license consent (accept versus show)'
-    $chainSelect = { param($Recipe, $List, $Sink, [string] $Named, [bool] $Experimental)
+    $chainSelect = { param($Recipe, $List, $Sink, [string] $Named, [bool] $Experimental, [bool] $Exclude = $false)
         $selectParams = @{ Recipes = @($Recipe); Variants = $autoVariants; Placements = @($autoPlacement); DxgiAdapters = $autoDxgi; Catalog = $autoCatalog; Profile = 'balanced'; Components = $List }
         if ($null -ne $Sink) { $selectParams.SkippedSink = $Sink }
         if ($Named) { $selectParams.RecipeId = $Named }
         if ($Experimental) { $selectParams.IncludeExperimental = $true }
+        if ($Exclude) { $selectParams.ExcludeLicenseRecipes = $true }
         return (Select-FastLlmRecipeForPlacements @selectParams) }
     # Positive control: the same recipe on an engine chain WITHOUT accept consent is picked under the same inputs.
     $showPick = & $chainSelect $chainRecipe $showList $null '' $false
     Check ($null -ne $showPick -and $showPick.recipe.id -ceq 'chain1') 'a bitworks recipe whose engine chain has no accept consent is auto-picked (the control for the rule below)'
     $acceptSink = New-Object 'System.Collections.Generic.List[string]'
     $acceptPick = & $chainSelect $chainRecipe $acceptList $acceptSink '' $false
-    Check ($null -eq $acceptPick -and @($acceptSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'a bitworks recipe whose engine chain needs accept (engine and runtime) is not auto-selected, with the reason needs-license-acceptance'
+    Check ($null -ne $acceptPick -and $acceptPick.recipe.id -ceq 'chain1' -and $acceptSink.Count -eq 0) 'bitworks recipe whose chain needs accept is auto-selected when recommended'
+    $acceptExcludedSink = New-Object 'System.Collections.Generic.List[string]'
+    $acceptExcluded = & $chainSelect $chainRecipe $acceptList $acceptExcludedSink '' $false $true
+    Check ($null -eq $acceptExcluded -and @($acceptExcludedSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'with -ExcludeLicenseRecipes a bitworks recipe whose engine chain needs accept (engine and runtime) is skipped, with the reason needs-license-acceptance'
     $namedPick = & $chainSelect $chainRecipe $acceptList $null 'chain1' $false
     Check ($null -ne $namedPick -and $namedPick.recipe.id -ceq 'chain1') 'the same accept-chain recipe is selected when named with -Recipe'
     $runtimeOnlyAccept = @($showList | ForEach-Object { $copy = $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json; if ($copy.id -ceq 'rt-hip') { $copy.license.consent = 'accept' }; $copy })
-    Check ($null -eq (& $chainSelect $chainRecipe $runtimeOnlyAccept $null '' $false)) 'an accept consent on a REQUIRED component alone also blocks auto-selection (the whole chain is checked, not just the engine)'
+    Check ($null -eq (& $chainSelect $chainRecipe $runtimeOnlyAccept $null '' $false $true) -and $null -ne (& $chainSelect $chainRecipe $runtimeOnlyAccept $null '' $false $false)) 'an accept consent on a REQUIRED component alone also counts as a license chain (the whole chain is checked, not just the engine)'
     $reproRecipe = $chainRecipe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
     $reproRecipe.origin = 'community-reproduced'
-    Check ($null -eq (& $chainSelect $reproRecipe $acceptList $null '' $false) -and $null -ne (& $chainSelect $reproRecipe $showList $null '' $false)) 'the accept rule applies to a community-reproduced recipe too (control: picked without accept)'
+    Check ($null -eq (& $chainSelect $reproRecipe $acceptList $null '' $false) -and $null -eq (& $chainSelect $reproRecipe $acceptList $null '' $false $true) -and $null -ne (& $chainSelect $reproRecipe $showList $null '' $false)) 'community-reproduced recipe whose chain needs accept is still never auto-selected (control: picked without accept)'
     # bitworks-experimental: never auto-selected, with the switch on or off, even on a chain without accept.
     $bwExpRecipe = $chainRecipe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
     $bwExpRecipe.origin = 'bitworks-experimental'
@@ -1756,18 +2128,18 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($null -ne $bwExpNamed -and $bwExpNamed.recipe.origin -ceq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
     # The ENGINE's own accept is the only accept in the chain (runtime show), with requires and without any requires.
     $engineOnlyAccept = @($showList | ForEach-Object { $copy = $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json; if ($copy.id -ceq 'eng-hip') { $copy.license.consent = 'accept' }; $copy })
-    Check (@($engineOnlyAccept | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 1 -and $null -eq (& $chainSelect $chainRecipe $engineOnlyAccept $null '' $false) -and $null -ne (& $chainSelect $chainRecipe $engineOnlyAccept $null 'chain1' $false)) 'an accept consent on the ENGINE alone (its required runtime is show) blocks auto-selection, and naming the recipe selects it'
+    Check (@($engineOnlyAccept | Where-Object { $_.license.consent -ceq 'accept' }).Count -eq 1 -and $null -eq (& $chainSelect $chainRecipe $engineOnlyAccept $null '' $false $true) -and $null -ne (& $chainSelect $chainRecipe $engineOnlyAccept $null 'chain1' $false $true)) 'an accept consent on the ENGINE alone (its required runtime is show) is excluded with -ExcludeLicenseRecipes, and naming the recipe selects it'
     $soloEngine = $showList | Where-Object { $_.id -ceq 'eng-hip' } | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json }
     $soloEngine.requires = @()
     $soloEngine.license.consent = 'accept'
     $soloShow = $soloEngine | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $soloShow.license.consent = 'show'
-    Check ($null -eq (& $chainSelect $chainRecipe @($soloEngine) $null '' $false) -and $null -ne (& $chainSelect $chainRecipe @($soloShow) $null '' $false)) 'a single engine with accept consent and no requires is blocked (control: the same engine with show consent is picked)'
+    Check ($null -eq (& $chainSelect $chainRecipe @($soloEngine) $null '' $false $true) -and $null -ne (& $chainSelect $chainRecipe @($soloShow) $null '' $false $true)) 'a single engine with accept consent and no requires is excluded with -ExcludeLicenseRecipes (control: the same engine with show consent is picked)'
     # An unresolvable chain fails closed: the recipe is not auto-selected (control: the same list with a listed requires and show consent is picked).
     $unknownRequires = $soloShow | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $unknownRequires.requires = @('no-such-runtime')
     $unknownSink = New-Object 'System.Collections.Generic.List[string]'
-    Check ($null -eq (& $chainSelect $chainRecipe @($unknownRequires) $unknownSink '' $false) -and @($unknownSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'an engine whose requires cannot be resolved fails closed: not auto-selected, with the license-acceptance reason'
+    Check ($null -eq (& $chainSelect $chainRecipe @($unknownRequires) $unknownSink '' $false) -and @($unknownSink | Where-Object { $_ -like 'chain1: needs-license-acceptance*' }).Count -eq 1) 'an engine whose requires cannot be resolved fails closed: not auto-selected for a bitworks recipe either, with the license-acceptance reason'
 
     # Visibility and the gate, for both experimental origins.
     $bwGateRecipes = @((New-GateRecipe 'b1' 'bitworks'), (New-GateRecipe 'x1' 'bitworks-experimental'))
@@ -1795,7 +2167,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $shippedHipRefusal = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot (New-TestRoot) -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' -Recipes $shippedHipExperimental -Components $shipped }
     Check ($null -ne $shippedHipRefusal -and $shippedHipRefusal -like '*runtime amd-rocm-gfx1100-10.0.0 (https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-libraries/*, https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1100/*' -and $shippedHipRefusal -like '*engine llama.cpp-hip-b11658 (https://github.com/ggml-org/llama.cpp/releases/download/b11658/*release-assets.githubusercontent.com*') 'the shipped HIP recipe refusal lists the AMD runtime (both wheels) and the engine, with the redirect hosts'
 
-    # The shipped HIP recipes: the Vulkan recipe of each card with the HIP engine, measured by Bitworks, never recommended.
+    # The shipped HIP recipes: the Vulkan recipe of each card with the HIP engine, measured by Bitworks, and recommended over its Vulkan twin.
     foreach ($hipPair in @(@('rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k', 'rx-7900-xt'), @('rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k', 'rx-7900-xtx'))) {
         $vulkanTwin = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq $hipPair[0] })[0]
         $hipTwin = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq ($hipPair[0] + '.hip') })
@@ -1803,7 +2175,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $hipTwin = $hipTwin[0]
         Check ($hipTwin.origin -ceq 'bitworks' -and $hipTwin.label -ceq 'Measured by Bitworks on this card' -and $hipTwin.components.engine -ceq 'llama.cpp-hip-b11658' -and $hipTwin.engineBuild -ceq 'b11658') "$($hipPair[0]).hip is Bitworks-measured on the HIP engine"
         Check ($hipTwin.components.model -ceq $vulkanTwin.components.model -and $hipTwin.runtime.contextSize -eq $vulkanTwin.runtime.contextSize -and $hipTwin.runtime.cacheTypeK -ceq $vulkanTwin.runtime.cacheTypeK -and $hipTwin.runtime.cacheTypeV -ceq $vulkanTwin.runtime.cacheTypeV -and $hipTwin.gpu.variant -ceq $vulkanTwin.gpu.variant -and $hipTwin.gpu.count -eq $vulkanTwin.gpu.count) "$($hipPair[0]).hip has the same model, context size, KV cache types and card as its Vulkan recipe"
-        Check (-not $hipTwin.runtime.PSObject.Properties['vulkanBarMitigation'] -and $hipTwin.recommended -eq $false -and $null -eq $hipTwin.compelling) "$($hipPair[0]).hip has no BAR mitigation and is not recommended"
+        Check (-not $hipTwin.runtime.PSObject.Properties['vulkanBarMitigation'] -and $hipTwin.recommended -eq $true -and $vulkanTwin.recommended -eq $false -and $null -eq $hipTwin.compelling) "$($hipPair[0]).hip has no BAR mitigation and is the recommended recipe"
         Check ($hipTwin.expected.mitigation -ceq 'not-applicable' -and $hipTwin.expected.engineBuild -ceq 'b11658' -and $hipTwin.expected.promptTokens -eq 512 -and $hipTwin.expected.contextTokens -eq $hipTwin.runtime.contextSize -and $hipTwin.expected.generationTokS -gt 0 -and $hipTwin.expected.promptTokS -gt 0 -and $hipTwin.expected.firstTextS -gt 0) "$($hipPair[0]).hip carries a measured expected block for the HIP engine build"
         Check ($hipTwin.evidence.url -like 'https://bitworks.io/amd-inference/recipes/*-hip-*/#lab-observation' -and $hipTwin.evidence.publishedAt -ceq '2026-10-16' -and $hipTwin.evidence.resultId -like 'obs-*-hip-*') "$($hipPair[0]).hip links its Bitworks result page"
     }
@@ -1816,17 +2188,22 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $hipAutoPlacement = [pscustomobject] @{ adapters = @([pscustomobject] @{ name = 'n'; vramMiB = [int] $hipHardware.adapters[0].vramMiB }); selectionCapacity = 23000 }
         $shippedCatalogObject = Get-Content -LiteralPath $shippedCatalogPath -Raw | ConvertFrom-Json
         $shippedAuto = Select-FastLlmRecipeForPlacements -Recipes @($shippedRecipeDocument.recipes) -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -IncludeExperimental
-        Check ($null -ne $shippedAuto -and $shippedAuto.recipe.origin -ceq 'bitworks' -and $shippedAuto.recipe.id -notlike '*.hip') "automatic selection on $($hipHardware.adapters[0].name) keeps the shipped Vulkan recipe, even with the experimental inclusion on and the HIP components listed"
+        Check ($null -ne $shippedAuto -and $shippedAuto.recipe.origin -ceq 'bitworks' -and $shippedAuto.recipe.id -clike '*.hip' -and $shippedAuto.recipe.recommended -eq $true) "automatic selection on $($hipHardware.adapters[0].name) picks the recommended shipped HIP recipe, with the experimental inclusion on and the HIP components listed"
         $shippedAutoPlain = Select-FastLlmRecipeForPlacements -Recipes @($shippedRecipeDocument.recipes) -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped
-        Check ($null -ne $shippedAutoPlain -and $shippedAutoPlain.recipe.recommended -eq $true -and $shippedAutoPlain.recipe.id -ceq $shippedAuto.recipe.id -and $shippedAutoPlain.recipe.id -notlike '*.hip') "automatic selection on $($hipHardware.adapters[0].name) is the shipped Vulkan recipe without the experimental inclusion too (positive control)"
-        # A plain selection on this card reports exactly one informational skip: the HIP recipe, for its license acceptance.
+        Check ($null -ne $shippedAutoPlain -and $shippedAutoPlain.recipe.id -ceq $shippedAuto.recipe.id -and $shippedAutoPlain.recipe.id -clike '*.hip') "automatic selection on $($hipHardware.adapters[0].name) is the shipped HIP recipe without the experimental inclusion too (positive control)"
+        # A plain selection on this card picks the HIP recipe and reports no skip; excluding license recipes picks the Vulkan sibling with exactly one informational skip.
         $plainSink = New-Object 'System.Collections.Generic.List[string]'
         $plainPick = Select-FastLlmRecipeForPlacements -Recipes @($shippedRecipeDocument.recipes) -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -SkippedSink $plainSink
         $plainHipId = [string] (@($shippedRecipeDocument.recipes | Where-Object { $_.id -like '*.hip' -and [string] $_.gpu.variant -ceq [string] $plainPick.variant })[0]).id
-        Check ($plainSink.Count -eq 1 -and $plainSink[0] -ceq ($plainHipId + ': needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)')) "a plain selection on $($hipHardware.adapters[0].name) skips only $plainHipId, with the exact needs-license-acceptance line"
+        Check ($plainPick.recipe.id -ceq $plainHipId -and $plainSink.Count -eq 0) "a plain selection on $($hipHardware.adapters[0].name) picks $plainHipId... and skips nothing"
+        $excludedSink = New-Object 'System.Collections.Generic.List[string]'
+        $excludedPick = Select-FastLlmRecipeForPlacements -Recipes @($shippedRecipeDocument.recipes) -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -ExcludeLicenseRecipes -SkippedSink $excludedSink
+        Check ($null -ne $excludedPick -and $excludedPick.recipe.id -notlike '*.hip' -and $excludedPick.recipe.recommended -eq $false -and $excludedSink.Count -eq 1 -and $excludedSink[0] -ceq ($plainHipId + ': needs-license-acceptance (its engine components need an AMD license accepted; name the recipe with -Recipe)')) "-ExcludeLicenseRecipes on $($hipHardware.adapters[0].name) picks the Vulkan recipe and skips only $plainHipId, with the exact needs-license-acceptance line"
         $shippedHipSink = New-Object 'System.Collections.Generic.List[string]'
         $shippedHipOnly = @($shippedRecipeDocument.recipes | Where-Object { $_.id -like '*.hip' -and [string] $_.gpu.variant -ceq [string] $shippedAuto.variant })
-        Check ($shippedHipOnly.Count -eq 1 -and $shippedHipOnly[0].origin -ceq 'bitworks' -and $null -eq (Select-FastLlmRecipeForPlacements -Recipes $shippedHipOnly -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -SkippedSink $shippedHipSink) -and @($shippedHipSink | Where-Object { $_ -like '*.hip: needs-license-acceptance*' }).Count -eq 1) "the Bitworks-measured HIP recipe for $($hipHardware.adapters[0].name) is never auto-selected, even alone: its chain needs a license accepted"
+        $shippedHipAlone = Select-FastLlmRecipeForPlacements -Recipes $shippedHipOnly -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped
+        $shippedHipAloneExcluded = Select-FastLlmRecipeForPlacements -Recipes $shippedHipOnly -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -ExcludeLicenseRecipes -SkippedSink $shippedHipSink
+        Check ($shippedHipOnly.Count -eq 1 -and $shippedHipOnly[0].origin -ceq 'bitworks' -and $null -ne $shippedHipAlone -and $null -eq $shippedHipAloneExcluded -and @($shippedHipSink | Where-Object { $_ -like '*.hip: needs-license-acceptance*' }).Count -eq 1) "the Bitworks-measured HIP recipe for $($hipHardware.adapters[0].name) is auto-selected alone, and skipped alone with -ExcludeLicenseRecipes: its chain needs a license accepted"
         $shippedHipNamed = Select-FastLlmRecipeForPlacements -Recipes @($shippedRecipeDocument.recipes) -Variants $autoVariants -Placements @($hipAutoPlacement) -DxgiAdapters $hipAutoDxgi -Catalog $shippedCatalogObject -Profile 'balanced' -Components $shipped -RecipeId $shippedHipOnly[0].id
         Check ($null -ne $shippedHipNamed -and $shippedHipNamed.recipe.id -ceq $shippedHipOnly[0].id) "naming the HIP recipe for $($hipHardware.adapters[0].name) with -Recipe selects it"
     }
@@ -1942,14 +2319,14 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($hostsSample.Count -eq 1 -and $hostsSample[0] -ceq 'stable.repo.amd.com') 'the source host of a multi-part component is read from its source URLs'
 
     # fast-llm.ps1 argument rules and wiring.
-    Check ($cliText.Contains("'update-check', 'update', 'components')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
-    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
+    Check ($cliText.Contains("'update-check', 'update', 'components', 'settings')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
+    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components -Install, install and settings.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
     $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
     $assignedNames = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
-    # InstallRoot (default resolution) and DeviceBinding (lower-casing) are the two pre-existing, deliberate assignments to a parameter.
-    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding') -cnotcontains $_ })
+    # InstallRoot (default resolution), DeviceBinding and ComponentLicenses (lower-casing) are the deliberate assignments to a parameter.
+    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding', 'ComponentLicenses') -cnotcontains $_ })
     Check ($shadowed.Count -eq 0) 'fast-llm.ps1 assigns to no variable named like one of its parameters, case-insensitively'
 
     $psExecutable = (Get-Process -Id $PID).Path
@@ -1967,13 +2344,30 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components.' },
             @{ args = @('recipes', '-Detail', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('plan', '-Detail', '-AsJson', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
-            @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components.' },
+            @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components' },
+            @{ args = @('plan', '-ComponentLicenses', 'ask', '-InstallRoot', $refusalRoot); text = '-ComponentLicenses is supported only by settings.' },
+            @{ args = @('components', '-List', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-ComponentLicenses is supported only by settings.' },
+            @{ args = @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $refusalRoot); text = 'needs -AcceptLicense' },
+            @{ args = @('settings', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense with settings only goes with' },
+            @{ args = @('settings', '-ComponentLicenses', 'ask', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense with settings only goes with' },
             @{ args = @('components', '-AcceptExperimental', '-InstallRoot', $refusalRoot); text = '-AcceptExperimental is supported only by plan, start and install.' },
             @{ args = @('components', '-Install', 'a', '-Remove', 'b', '-InstallRoot', $refusalRoot); text = 'components takes one of -List, -Install <id> or -Remove <id>.' },
-            @{ args = @('components', '-List', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only with components -Install.' })) {
+            @{ args = @('components', '-List', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only with components -Install.' },
+            @{ args = @('plan', '-UseFallback', '-Recipe', 'x', '-InstallRoot', $refusalRoot); text = '-UseFallback cannot be combined with -Recipe' },
+            @{ args = @('components', '-List', '-UseFallback', '-InstallRoot', $refusalRoot); text = '-UseFallback is supported only by plan, install and start.' },
+            @{ args = @('plan', '-FallbackReason', 'components-install-failed', '-InstallRoot', $refusalRoot); text = '-FallbackReason is supported only with -UseFallback.' },
+            @{ args = @('plan', '-UseFallback', '-FallbackReason', 'not-a-reason', '-InstallRoot', $refusalRoot); text = 'FallbackReason' },
+            @{ args = @('start', '-PlannedRecipe', 'x', '-Recipe', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
+            @{ args = @('start', '-PlannedRecipe', 'x', '-ModelId', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
+            @{ args = @('plan', '-PlannedRecipe', 'x', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe is supported only by start.' },
+            @{ args = @('start', '-PlannedRecipe', '   ', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe needs a recipe id.' })) {
         $result = Invoke-CliRefusal $case.args
         Check ($result.exit -ne 0 -and $result.text.Contains($case.text)) ("fast-llm.ps1 " + ($case.args[0..1] -join ' ') + ' is refused: ' + $case.text)
     }
+    # An empty -PlannedRecipe cannot go through a native child (Windows PowerShell 5.1 drops empty arguments), so the parse-time refusal runs in-process.
+    $emptyPlannedMessage = ''
+    try { & $cliPath start -PlannedRecipe '' -InstallRoot $refusalRoot | Out-Null } catch { $emptyPlannedMessage = $_.Exception.Message }
+    Check ($emptyPlannedMessage.Contains('-PlannedRecipe needs a recipe id.')) 'fast-llm.ps1 start -PlannedRecipe with an empty value is refused (in-process)'
     # These children run fast-llm.ps1 past its parameter checks, so they reach the standard-user guard, which refuses every live action under an
     # Administrator token (the hosted Windows runner is elevated). They run as a standard user in the bench native gate; the pure source pins stay outside.
     $cliChildrenElevated = $false
@@ -2004,10 +2398,65 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($removeStopped.exit -eq 0 -and -not (Test-Path -LiteralPath $vulkanRoot)) 'components -Remove succeeds for the engine recorded in a stopped status (nothing is running)'
         Remove-Item -LiteralPath $statusRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+    # plan with a card-identified fixture: a fixture never runs an engine, so the HIP recipe is stamped as replaced (the planner's own typed reason);
+    # -UseFallback gives the stand-in stamped components-declined. Neither needs a live action, so these run as any user.
+    $fallbackFixture = Join-Path $PSScriptRoot 'fixtures/rx-7900-xt-20gb-identified.json'
+    $fixturePlanRoot = New-TestRoot
+    $fixturePlan = Invoke-CliRefusal @('plan', '-HardwareFile', $fallbackFixture, '-AsJson', '-InstallRoot', $fixturePlanRoot)
+    $fixturePlanObject = $null
+    try { $fixturePlanObject = $fixturePlan.text | ConvertFrom-Json } catch { }
+    Check ($fixturePlan.exit -eq 0 -and $null -ne $fixturePlanObject -and $fixturePlanObject.fallback.applied -eq $true -and $fixturePlanObject.fallback.fromRecipe -like '*.hip' -and $fixturePlanObject.fallback.reason -ceq 'fixture-plan-cannot-probe-engine') 'plan -AsJson on an identified XT fixture stamps the replaced HIP recipe (the fixture cannot run an engine)'
+    # The fixture plan already stands in for the HIP recipe for its own typed reason; -UseFallback keeps that reason and never relabels it as a declined license.
+    $declinedPlan = Invoke-CliRefusal @('plan', '-UseFallback', '-HardwareFile', $fallbackFixture, '-AsJson', '-InstallRoot', $fixturePlanRoot)
+    $declinedObject = $null
+    try { $declinedObject = $declinedPlan.text | ConvertFrom-Json } catch { }
+    Check ($declinedPlan.exit -eq 0 -and $null -ne $declinedObject -and $declinedObject.fallback.reason -ceq 'fixture-plan-cannot-probe-engine' -and $declinedObject.fallback.applied -eq $true -and $declinedObject.recipe.id -cnotlike '*.hip' -and -not $declinedObject.PSObject.Properties['setup']) 'plan -UseFallback -AsJson gives the Vulkan stand-in and keeps the plan''s own reason'
+    $declinedText = Invoke-CliRefusal @('plan', '-UseFallback', '-FallbackReason', 'components-install-failed', '-HardwareFile', $fallbackFixture, '-InstallRoot', $fixturePlanRoot)
+    Check ($declinedText.exit -eq 0 -and $declinedText.text.Contains('Fallback:') -and -not $declinedText.text.Contains("license wasn't accepted")) 'plan -UseFallback -FallbackReason is accepted and a typed reason is not printed as a declined license'
     $cliSource = Get-Content -LiteralPath $cliPath -Raw
     Check ($cliSource.Contains('$componentsLock = Enter-FastLlmOperation') -and $cliSource.Contains('-OperationLockHeld:') -and $cliSource -match 'if \(\$componentsLock\) \{ \$componentsLock\.Dispose\(\) \}') 'the components lock is its own variable (the failure writer only knows $operationLock), is passed to Remove, and is disposed'
+    $cliSettingsPins = $cliSource.Contains("'settings' {") -and $cliSource.Contains('-SettingAcceptedAt $settingAcceptedAt -SettingAcceptedLicenses @($settingAcceptedLicenses)') -and $cliSource.Contains('Get-FastLlmStandingAcceptance')
+    Check $cliSettingsPins 'fast-llm.ps1 has a settings branch and components -Install passes the standing acceptance through'
     if ($cliChildrenElevated) { Write-Host $cliChildSkip }
     else {
+        # settings -ComponentLicenses: refused without -AcceptLicense, shows the licenses first, stores, turns off.
+        $setRoot = New-TestRoot
+        $setFile = Join-Path $setRoot 'settings.json'
+        $setShown = Invoke-CliRefusal @('settings', '-InstallRoot', $setRoot)
+        Check ($setShown.exit -eq 0 -and $setShown.text -like '*componentLicenses: ask*') 'settings alone prints the current mode (ask)'
+        $setShownJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
+        $setObject = $setShownJson.text | ConvertFrom-Json
+        Check ($setShownJson.exit -eq 0 -and $setObject.mode -ceq 'ask' -and @($setObject.accepted).Count -eq 0) 'settings -AsJson gives an object with the mode and the accepted list'
+        $setRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $setRoot)
+        Check ($setRefused.exit -ne 0 -and $setRefused.text.Contains('needs -AcceptLicense') -and -not (Test-Path -LiteralPath $setFile)) 'settings -ComponentLicenses accept-automatically without -AcceptLicense is refused and changes nothing'
+        $setOn = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
+        $setOnLinks = [regex]::Matches($setOn.text, 'License: ').Count
+        Check ($setOn.exit -eq 0 -and $setOnLinks -eq 3 -and $setOn.text.Contains('AMD HIP SDK license page') -and $setOn.text.Contains('AMD Software End User License Agreement') -and $setOn.text.Contains('llama.cpp license (MIT)') -and $setOn.text.Contains('accept-automatically')) 'with -AcceptLicense it prints the three license links and stores the setting'
+        $setStored = Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot
+        Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 3 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the three identities'
+        $setOnJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
+        Check ((($setOnJson.text | ConvertFrom-Json).mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
+        $setMixedRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-InstallRoot', $setRoot)
+        Check ($setMixedRefused.exit -ne 0 -and $setMixedRefused.text.Contains('needs -AcceptLicense') -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically') 'a mixed-case Accept-Automatically without -AcceptLicense is refused like the lower-case value and changes nothing'
+        $setOff = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)
+        Check ($setOff.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'ask') 'settings -ComponentLicenses ask turns it off'
+        # install -DryRun is refused before any plan, download or install step runs, so -AcceptLicense with it can never fetch a component.
+        $setOnMixed = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
+        Check ($setOnMixed.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically' -and @((Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).accepted).Count -eq 3) 'a mixed-case Accept-Automatically with -AcceptLicense stores accept-automatically, not ask'
+        $null = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)
+        $setInstallDry = Invoke-CliRefusal @('install', '-DryRun', '-AcceptLicense', '-InstallRoot', $setRoot)
+        Check ($setInstallDry.exit -ne 0 -and $setInstallDry.text.Contains('install -DryRun is not supported') -and -not $setInstallDry.text.Contains('-AcceptLicense is supported only') -and -not (Test-Path -LiteralPath (Join-Path $setRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $setRoot 'downloads'))) 'install -DryRun -AcceptLicense is refused up front: -AcceptLicense is a valid install switch and nothing is downloaded or installed'
+        Check ($cliSource.Contains("if (`$Action -eq 'install' -and `$DryRun)") -and $cliSource.Contains('if (-not $DryRun -and $unverifiedPending.Count -eq 0 -and ($AcceptLicense -or $pendingAcceptedAt))')) 'the pending-components install step is guarded against a dry run as well'
+        # components -Install with the setting off still needs -AcceptLicense (nothing is downloaded before consent).
+        # A short folder: the shipped runtime's file paths must fit under the Windows path limit before consent is looked at.
+        $shortSetRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fl' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $shortSetRoot -Force | Out-Null
+        try {
+            Copy-Item -LiteralPath $setFile -Destination (Join-Path $shortSetRoot 'settings.json')
+            $setNeeds = Invoke-CliRefusal @('components', '-Install', 'llama.cpp-hip-b11658', '-Unattended', '-InstallRoot', $shortSetRoot)
+        }
+        finally { Remove-Item -LiteralPath $shortSetRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        Check ($setNeeds.exit -ne 0 -and $setNeeds.text.Contains('component-consent-required')) 'components -Install of the HIP engine with the setting off still needs -AcceptLicense'
         # components -Install and -Remove take the operation lock.
         $lockRoot = New-TestRoot
         $heldLock = Enter-FastLlmOperation -InstallRoot $lockRoot
