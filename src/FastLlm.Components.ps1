@@ -545,3 +545,12 @@ function Remove-FastLlmUiDeclinedSetup {
     $merged['declinedSetups'] = @($current | Where-Object { $_ -cne $RecipeId })
     Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
 }
+
+# The user turned the automatic install on: remembered declines no longer apply.
+function Clear-FastLlmUiDeclinedSetups {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    if (-not $merged.Contains('declinedSetups')) { return }
+    $merged['declinedSetups'] = @()
+    Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
+}

@@ -327,7 +327,7 @@ try {
     New-Item -ItemType Directory -Path $ndRoot -Force | Out-Null
     $ndModel=Join-Path $ndRoot 'model.gguf'
     $script:nd=@{log=(New-Object 'Collections.Generic.List[string]');prereq=$true;engine=$true;modelExists=$true;consent=$true;startQueue=(New-Object 'Collections.Generic.Queue[object]');recovery=$true;planCalls=0;requestedModelIds=(New-Object 'Collections.Generic.List[string]');planFailure=$null;planResolve=(New-Object 'Collections.Generic.List[bool]');planFallbackArgs=(New-Object 'Collections.Generic.List[string]')}
-    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear();$script:nd.planFailure=$null;$script:nd.planResolve.Clear();$script:nd.planFallbackArgs.Clear();$script:ndPlanRecipeId='';$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
+    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear();$script:nd.planFailure=$null;$script:nd.planResolve.Clear();$script:nd.planFallbackArgs.Clear();$script:ndPlanRecipeId='';$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndFallbackReason='components-declined';$script:ndPlanOwnReason='';$script:ndPlannedRecipe=''
         if(Test-Path -LiteralPath $ndModel){Remove-Item -LiteralPath $ndModel -Force};Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true }
     function Get-FastLlmWindowsPrerequisiteStatus { $script:nd.log.Add('prerequisites');return [pscustomobject]@{applicable=$true;ready=$script:nd.prereq} }
     function Get-FastLlmCatalog { param($CatalogPath) $script:nd.log.Add('catalog');return [pscustomobject]@{engine=[pscustomobject]@{version='b-test';assets=[pscustomobject]@{vulkan=[pscustomobject]@{enabled=$true};rocm=[pscustomobject]@{enabled=$false}}}} }
@@ -344,6 +344,7 @@ try {
             $ndPlan | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject]@{fromRecipe=$FallbackFromRecipe;toRecipe='vulkan-recipe';toModelId='nd-model';reason=$FallbackReason;applied=$true})
             return $ndPlan
         }
+        if($script:ndPlanOwnReason){$ndPlan | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject]@{fromRecipe='hip-recipe';toRecipe='vulkan-recipe';toModelId='nd-model';reason=$script:ndPlanOwnReason;applied=$false})}
         if($script:ndPlanComponent){$ndPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'llama.cpp-hip-b11658'}
         if($script:ndPlanHip){$ndPlan | Add-Member -NotePropertyName backend -NotePropertyValue 'hip'}
         return $ndPlan }
@@ -371,11 +372,11 @@ try {
         return 0 }
     $script:ndDeviceBinding='off';$script:ndPlanRecipeId=''
     $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false;$script:ndBar='auto';$script:ndHost=New-Object 'Collections.Generic.List[string]'
-    $script:ndUnattended=$true;$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
+    $script:ndUnattended=$true;$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndFallbackReason='components-declined';$script:ndPlanOwnReason='';$script:ndPlannedRecipe=''
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$script:ndDryRun;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$PlannedRecipe=$script:ndPlannedRecipe
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         function Write-Host { $script:ndHost.Add(($args -join ' ')) }
@@ -444,6 +445,16 @@ try {
     Reset-Nd; $script:ndPlanRecipeId='hip-recipe'; $script:ndPlannedRecipe='hip-recipe'; $script:ndUseFallback=$true; $script:ndPlanHip=$true
     $f=Invoke-NdStart $false
     Check ($null -eq $f -and $script:nd.planFallbackArgs.Contains('hip-recipe|components-declined') -and $script:nd.log.Contains('start') -and (Test-NdNoAcquisition)) 'start -UseFallback -PlannedRecipe <hip id>: the Vulkan stand-in is planned with reason components-declined and runs'
+    Reset-Nd; $script:ndPlanRecipeId='hip-recipe'; $script:ndPlannedRecipe='hip-recipe'; $script:ndUseFallback=$true; $script:ndPlanHip=$true; $script:ndFallbackReason='components-install-failed'; $script:ndPlanOwnReason='components-pending'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.planFallbackArgs.Contains('hip-recipe|components-install-failed')) 'start -UseFallback -FallbackReason components-install-failed: a plan waiting on components is stamped with that reason'
+    Reset-Nd; $script:ndPlanRecipeId='hip-recipe'; $script:ndPlannedRecipe='hip-recipe'; $script:ndUseFallback=$true; $script:ndPlanHip=$true; $script:ndPlanOwnReason='components-unverified'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.planFallbackArgs.Contains('hip-recipe|components-unverified') -and -not $script:nd.planFallbackArgs.Contains('hip-recipe|components-declined')) 'start -UseFallback keeps components-unverified: only a plan waiting on components is restamped'
+    Reset-Nd; $script:ndPlanRecipeId='hip-recipe'; $script:ndPlannedRecipe='hip-recipe'; $script:ndUseFallback=$true; $script:ndPlanHip=$true; $script:ndPlanOwnReason='hip-dll-blocked'; $script:ndFallbackReason='components-install-failed'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.planFallbackArgs.Contains('hip-recipe|hip-dll-blocked')) 'start -UseFallback keeps a typed reason whatever -FallbackReason says'
+    Reset-Nd
     $script:ndPlanHip=$false
     Reset-Nd; $script:ndPlanRecipeId='vulkan-only'; $script:ndUseFallback=$true
     $f=Invoke-NdStart $false
@@ -610,7 +621,7 @@ try {
     function Invoke-InsInstall([bool]$AcceptLicenseSwitch,[bool]$UnattendedSwitch,[string]$ExplicitRecipe='',[bool]$UseFallbackSwitch=$false) {
         $script:ins.log.Clear();$script:ins.resolveSeen.Clear();$script:ins.componentsInstalled=$false
         $InstallRoot='synthetic-no-files';$catalogPath='synthetic-catalog';$componentsFilePath='synthetic-components';$HardwareFile=$null;$ExpectedModelProvenanceSha256='';$EngineOnly=$false;$DryRun=$false;$AsJson=$false
-        $Unattended=$UnattendedSwitch;$AcceptModelLicense=$true;$Profile='balanced';$AcceptLicense=[switch]$AcceptLicenseSwitch;$UseFallback=[switch]$UseFallbackSwitch
+        $Unattended=$UnattendedSwitch;$AcceptModelLicense=$true;$Profile='balanced';$AcceptLicense=[switch]$AcceptLicenseSwitch;$UseFallback=[switch]$UseFallbackSwitch;$FallbackReason='components-declined'
         $selectionOptions=@{ModelId='';ContextSize=0;AllowExperimentalModel=$false;RecipeId=$ExplicitRecipe}
         $output=New-Object 'Collections.Generic.List[string]';$failure=$null
         $oldOs=$env:OS;$env:OS='Windows_NT'

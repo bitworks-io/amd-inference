@@ -375,46 +375,51 @@ function Get-FastLlmUiEvidenceUrl {
     return $null
 }
 
-# An automatic preview is started with -PlannedRecipe, so the start can still fall back to the Vulkan setup; the recipe the user picked in "Choose another
-# setup" is started with -Recipe, which never falls back. -UseFallback is added when the preview already took the fallback.
+# An automatic preview is started with -PlannedRecipe, so the start resolves the fallback again and keeps its true reason; the recipe the user picked in
+# "Choose another setup" is started with -Recipe, which never falls back. -UseFallback is added only for a real decline ('declined') or the window's own
+# failed component install ('install-failed', which also says why); 'resolve' (the preview took the fallback for a reason of its own) adds nothing.
+function Get-FastLlmUiFallbackSwitches {
+    param([string] $Request, [bool] $Preview = $false)
+    if ($Request -ceq 'declined') { return @('-UseFallback') }
+    if ($Request -ceq 'install-failed') { return @('-UseFallback', '-FallbackReason', 'components-install-failed') }
+    if ($Preview -and $Request -ceq 'resolve') { return @('-UseFallback') }
+    return @()
+}
+
 function Get-FastLlmUiStartRecipeArguments {
-    param($Plan, $ChosenRecipe)
-    if (-not $Plan -or -not $Plan.PSObject.Properties['recipe'] -or -not $Plan.recipe) { return @() }
-    $origin = [string] $Plan.recipe.origin
-    $id = $null
-    if ($Plan.recipe.PSObject.Properties['id']) { $id = [string] $Plan.recipe.id }
-    if (-not $id -or @('estimated', 'manual', '') -contains $origin) { return @() }
-    if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
-    $chosenIsPlan = [bool]($ChosenRecipe -and [string] $ChosenRecipe.id -ceq $id)
+    param($Plan, $ChosenRecipe, [string] $FallbackRequest = '')
+    if (-not $Plan) { return @() }
+    $recipeId = $null
+    $origin = ''
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) {
+        $origin = [string] $Plan.recipe.origin
+        if ($Plan.recipe.PSObject.Properties['id']) { $recipeId = [string] $Plan.recipe.id }
+    }
+    $chosenIsPlan = [bool]($ChosenRecipe -and $recipeId -and [string] $ChosenRecipe.id -ceq $recipeId)
+    # A plan that carries a fallback (a stand-in that may be an estimated plan with no recipe of its own) is started from the setup it replaced.
+    if (-not $chosenIsPlan -and $Plan.PSObject.Properties['fallback'] -and $Plan.fallback -and $Plan.fallback.PSObject.Properties['fromRecipe']) {
+        $from = [string] $Plan.fallback.fromRecipe
+        if ($from -cmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return (@('-PlannedRecipe', $from) + @(Get-FastLlmUiFallbackSwitches -Request $FallbackRequest)) }
+        return @()
+    }
+    if (-not $recipeId -or @('estimated', 'manual', '') -contains $origin) { return @() }
+    if ($recipeId -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
     # The experimental acceptance is passed on only for the recipe the user explicitly picked in the chooser (its id equals the plan's), never because a
     # plan happens to report an experimental origin.
-    if ((Test-FastLlmExperimentalOrigin -Origin $origin) -and $chosenIsPlan) { return @('-Recipe', $id, '-AcceptExperimental') }
+    if ((Test-FastLlmExperimentalOrigin -Origin $origin) -and $chosenIsPlan) { return @('-Recipe', $recipeId, '-AcceptExperimental') }
     if (-not $chosenIsPlan -and $origin -ceq 'bitworks') {
-        $fallbackTaken = $false
-        $plannedId = $id
-        $hasFallback = [bool]($Plan.PSObject.Properties['fallback'] -and $Plan.fallback)
-        if ($hasFallback) {
-            if ($Plan.fallback.PSObject.Properties['applied'] -and [bool] $Plan.fallback.applied) {
-                $fallbackTaken = $true
-                $plannedId = [string] $Plan.fallback.fromRecipe
-            }
-        }
         $hasSetup = [bool]($Plan.PSObject.Properties['setup'] -and $Plan.setup)
         $hasEngine = [bool]($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId)
-        if ($hasFallback -or $hasSetup -or $hasEngine) {
-            if ($plannedId -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { return @() }
-            if ($fallbackTaken) { return @('-PlannedRecipe', $plannedId, '-UseFallback') }
-            return @('-PlannedRecipe', $plannedId)
-        }
+        if ($hasSetup -or $hasEngine) { return (@('-PlannedRecipe', $recipeId) + @(Get-FastLlmUiFallbackSwitches -Request $FallbackRequest)) }
     }
-    return @('-Recipe', $id)
+    return @('-Recipe', $recipeId)
 }
 
 # The recipe chosen in "Choose another setup" is pinned for the preview as well, so the plan describes the recipe the user picked.
 function Get-FastLlmUiPreviewRecipeArguments {
-    param($Recipe, [switch] $UseFallback)
+    param($Recipe, [string] $FallbackRequest = '')
     # An automatic preview can be asked for the fallback setup; a chosen recipe never falls back, so it takes no such switch.
-    if (-not $Recipe) { if ($UseFallback) { return @('-UseFallback') }; return @() }
+    if (-not $Recipe) { return @(Get-FastLlmUiFallbackSwitches -Request $FallbackRequest -Preview $true) }
     $id = [string] $Recipe.id
     if ($id -cnotmatch '^[a-z0-9][a-z0-9.\-]{1,120}$') { throw 'The chosen setup has an invalid id; nothing was started.' }
     if (Test-FastLlmExperimentalOrigin -Origin ([string] $Recipe.origin)) { return @('-Recipe', $id, '-AcceptExperimental') }
@@ -607,6 +612,24 @@ function Get-FastLlmUiRunSetupLine {
     return "Setup: $([string] $State.planRecipe.label)"
 }
 
+# A short user text for a fallback reason; a code that is not listed is shown as it is.
+function Get-FastLlmUiFallbackReasonText {
+    param([string] $Reason)
+    switch -CaseSensitive ($Reason) {
+        'components-declined' { return 'AMD license not accepted' }
+        'components-pending' { return 'HIP components not installed' }
+        'components-unverified' { return 'HIP component failed its file check' }
+        'components-install-failed' { return 'HIP components could not be installed' }
+        'hip-dll-blocked' { return 'Windows blocked the HIP runtime' }
+        'hip-dll-missing' { return 'HIP runtime could not be loaded' }
+        'hip-backend-unavailable' { return 'HIP runtime could not be loaded' }
+        'hip-device-not-found' { return 'HIP could not use this card' }
+        'hip-device-ambiguous' { return 'HIP could not use this card' }
+        'start-failed' { return 'HIP server did not start' }
+        default { return $Reason }
+    }
+}
+
 # "Running on HIP (AMD ROCm 10.0)", "Running on Vulkan" or "Running on Vulkan (fallback: <reason>)", from the engine and fallback blocks of status.json.
 function Format-FastLlmUiRunEngineLine {
     param($State)
@@ -616,7 +639,7 @@ function Format-FastLlmUiRunEngineLine {
     if ($backend -ceq 'hip') { return 'Running on HIP (AMD ROCm 10.0)' }
     if ($backend -cne 'vulkan') { return $null }
     if ($State.PSObject.Properties['fallback'] -and $State.fallback -and $State.fallback.PSObject.Properties['reason'] -and -not [string]::IsNullOrWhiteSpace([string] $State.fallback.reason)) {
-        return ('Running on Vulkan (fallback: {0})' -f ([string] $State.fallback.reason))
+        return ('Running on Vulkan (fallback: {0})' -f (Get-FastLlmUiFallbackReasonText -Reason ([string] $State.fallback.reason)))
     }
     return 'Running on Vulkan'
 }
@@ -828,7 +851,7 @@ function Test-FastLlmUiStepReadsExperimentalSwitch {
 # ask first, or take the Vulkan setup (a remembered decline, or a component that failed its file check).
 function Get-FastLlmUiPendingDecision {
     param($Plan, $LicenseSettings, [object[]] $DeclinedSetups = @())
-    $none = [pscustomobject] [ordered] @{ action = 'none'; recipeId = ''; engineId = ''; rows = @(); notice = '' }
+    $none = [pscustomobject] [ordered] @{ action = 'none'; recipeId = ''; engineId = ''; rows = @(); notice = ''; fallbackRequest = '' }
     if (-not $Plan -or -not $Plan.PSObject.Properties['setup'] -or -not $Plan.setup -or -not $Plan.setup.PSObject.Properties['pendingComponents']) { return $none }
     $pending = @($Plan.setup.pendingComponents | Where-Object { $_ })
     if ($pending.Count -eq 0) { return $none }
@@ -838,16 +861,18 @@ function Get-FastLlmUiPendingDecision {
     $engineId = ''
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { $engineId = [string] $Plan.engineComponentId }
     $rows = @(Get-FastLlmUiConsentRows -Chain $pending)
-    $result = [pscustomobject] [ordered] @{ action = 'ask'; recipeId = $recipeId; engineId = $engineId; rows = $rows; notice = '' }
+    $result = [pscustomobject] [ordered] @{ action = 'ask'; recipeId = $recipeId; engineId = $engineId; rows = $rows; notice = ''; fallbackRequest = '' }
     $unverified = @($pending | Where-Object { $_.PSObject.Properties['unverified'] -and [bool] $_.unverified })
     if ($unverified.Count -gt 0) {
         $first = $unverified[0]
         $result.action = 'fallback'
+        $result.fallbackRequest = 'resolve'
         $result.notice = ('Using the Vulkan setup: {0} is installed but failed its file check. To install it again, remove it with components -Remove {1}, then start again.' -f [string] $first.name, [string] $first.id)
         return $result
     }
     if (@($DeclinedSetups | ForEach-Object { [string] $_ }) -ccontains $recipeId) {
         $result.action = 'fallback'
+        $result.fallbackRequest = 'declined'
         $result.notice = Get-FastLlmUiDeclineLine
         return $result
     }
@@ -860,6 +885,10 @@ function Get-FastLlmUiDeclineLine {
 }
 
 # The command that installs the plan's engine components on the strength of the stored setting alone: no -AcceptLicense, the child reads the setting.
+function Get-FastLlmUiInstallFailedLine {
+    return 'Using the Vulkan setup: the engine components could not be installed. Start again to retry.'
+}
+
 function Get-FastLlmUiAutomaticInstallArguments {
     param([string] $EngineId, [string] $InstallRoot)
     if ($EngineId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$' -or [string]::IsNullOrWhiteSpace($InstallRoot)) { return @() }
@@ -874,12 +903,11 @@ function Get-FastLlmUiComponentIntro {
     return "$lead It needs the components below. Missing ones are downloaded from the sources shown, not from Bitworks. Open each license link, read it, and tick I accept for every missing component to enable Install."
 }
 
-# Steps whose CLI reads the automatic-install setting from the install folder: a component install and the model install (which falls back visibly).
+# Steps whose CLI reads the automatic-install setting from the install folder: a component install.
 function Test-FastLlmUiStepReadsLicenseSetting {
     param([object[]] $Arguments)
     $items = @($Arguments | ForEach-Object { [string] $_ })
     if ($items.Count -eq 0) { return $false }
-    if ($items[0] -ceq 'install') { return $true }
     if ($items[0] -ceq 'components') { return [bool] ($items -ccontains '-Install') }
     return $false
 }

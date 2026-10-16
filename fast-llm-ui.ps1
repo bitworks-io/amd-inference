@@ -119,7 +119,7 @@ $licenseBox=New-Object Windows.Forms.CheckBox
 $licenseBox.Text='Install engine components automatically (accept their licenses for me)';$licenseBox.Location=New-Object Drawing.Point(24,822);$licenseBox.AutoSize=$true
 $licenseBox.Checked=([string](Get-FastLlmComponentLicenseSettings -InstallRoot $script:settingsRoot).mode -ceq 'accept-automatically');$form.Controls.Add($licenseBox)
 $script:licenseRevert=$false
-$script:useFallback=$false;$script:setupNotice='';$script:planComponentInstall=$false
+$script:fallbackRequest='';$script:setupNotice='';$script:planComponentInstall=$false
 # The top row is reserved for the banner, so everything above is shifted down by its height. Banner controls are added after the shift.
 $script:bannerHeight=36
 foreach($shifted in @($form.Controls)){$shifted.Top+=$script:bannerHeight}
@@ -242,6 +242,8 @@ $licenseBox.Add_CheckedChanged({
                 return
             }
             Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot -TargetRoot $target -Mode 'accept-automatically' -Accepted @($disclosure.identities) -AcceptedAt ((Get-Date).ToUniversalTime().ToString('o'))
+            # The user has changed their mind about the licenses, so earlier declines no longer apply.
+            try{Clear-FastLlmUiDeclinedSetups -InstallRoot $script:settingsRoot}catch{}
         }else{
             Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot -TargetRoot $target -Mode 'ask'
         }
@@ -370,7 +372,7 @@ function GetVcInstallDecision($Inventory,$Candidate) {
 }
 function ReadSelection {
     # A new workflow starts without the last one's fallback request, notice or pending component install.
-    $script:useFallback=$false;$script:setupNotice='';$script:planComponentInstall=$false
+    $script:fallbackRequest='';$script:setupNotice='';$script:planComponentInstall=$false
     $script:installPath=[IO.Path]::GetFullPath($pathBox.Text)
     $script:selection=@('-InstallRoot',$script:installPath,'-ContextSize',[string][int]$contextBox.Value)
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
@@ -651,7 +653,7 @@ function LaunchUiPhase {
     switch($script:flow.phase){
         'setup' { LaunchStep 'setup check' (@('doctor','-Compact')+$script:selection);return }
         'engine' { LaunchStep 'engine' (@('install','-EngineOnly')+$script:selection);return }
-        'preview' { LaunchStep 'preview' (@('plan','-AsJson')+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe)+@(Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe -UseFallback:$script:useFallback));return }
+        'preview' { LaunchStep 'preview' (@('plan','-AsJson')+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe)+@(Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest));return }
         'model-download' {
             $plan=$script:flow.pendingPlan
             if(-not $plan -or (Get-FastLlmUiModelProvenanceDigest -Model $plan.model) -cne $script:flow.pendingProvenance){
@@ -668,13 +670,13 @@ function LaunchUiPhase {
             # The preview's label and link describe the preview only; clear them until the running plan reports its own.
             $resultsLink.Visible=$false;$script:evidenceUrl=$null
             $statusLabel.Text='Starting the server...'
-            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan -ChosenRecipe $script:chosenRecipe)+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe));return
+            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan -ChosenRecipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest)+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe));return
         }
         default { throw "The control-window workflow cannot launch phase '$($script:flow.phase)'." }
     }
 }
-function RepreviewForPendingSetup([bool]$UseFallback) {
-    $script:useFallback=$UseFallback
+function RepreviewForPendingSetup([string]$Request) {
+    $script:fallbackRequest=$Request
     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'components-handled'
     if($script:flow.phase -eq 'failed'){ShowFailure $script:flow.lastStartError;return}
     LaunchUiPhase
@@ -682,7 +684,7 @@ function RepreviewForPendingSetup([bool]$UseFallback) {
 }
 function HandlePendingSetup($Plan,$Decision) {
     switch($Decision.action){
-        'fallback' {$script:setupNotice=[string]$Decision.notice;RepreviewForPendingSetup $true}
+        'fallback' {$script:setupNotice=[string]$Decision.notice;RepreviewForPendingSetup ([string]$Decision.fallbackRequest)}
         'install-now' {
             $installArgs=@(Get-FastLlmUiAutomaticInstallArguments -EngineId ([string]$Decision.engineId) -InstallRoot $script:installPath)
             if($installArgs.Count -eq 0){throw 'The engine components could not be identified; nothing was installed.'}
@@ -698,7 +700,7 @@ function HandlePendingSetup($Plan,$Decision) {
                 # Cancel remembers the decline for this setup and starts the Vulkan setup; picking the HIP setup in Choose another setup clears it.
                 try{Add-FastLlmUiDeclinedSetup -InstallRoot $script:settingsRoot -RecipeId ([string]$Decision.recipeId)}catch{}
                 $script:setupNotice=Get-FastLlmUiDeclineLine
-                RepreviewForPendingSetup $true
+                RepreviewForPendingSetup 'declined'
                 return
             }
             $script:planComponentInstall=$true
@@ -1254,7 +1256,17 @@ $timer.Add_Tick({
                 ShowFailure 'The Microsoft VC++ package could not be downloaded and verified. No installer was started. Use the official Microsoft link or try setup again later.'
                 return
             }
-            if($step -eq 'component install'){$script:pendingRecipeRow=$null;$script:planComponentInstall=$false}
+            if($step -eq 'component install'){
+                $ownInstall=[bool]$script:planComponentInstall
+                $script:pendingRecipeRow=$null;$script:planComponentInstall=$false
+                if($ownInstall -and $script:flow -and $script:flow.phase -eq 'preview'){
+                    # The install the window started from its own plan failed: no decline is recorded; the Vulkan setup runs and the next Start tries again.
+                    $script:setupNotice=Get-FastLlmUiInstallFailedLine
+                    RepreviewForPendingSetup 'install-failed'
+                    if($script:child){$output.Text=$text}
+                    return
+                }
+            }
             if($step -eq 'serving' -and $script:flow){
                 # A typed failure (HIP backend unavailable, blocked DLL, device not found or ambiguous, a missing component) is shown as its own
                 # message and is not retried: the window never falls back to another setup.
@@ -1290,7 +1302,7 @@ $timer.Add_Tick({
             'preview'{ContinueUiAfterPreview (ConvertFrom-Json $text)}
             'recipe list'{SetBusy $false;$statusLabel.Text='Choose another setup.';ContinueWithChosenRecipe (ShowRecipeChooser @((ConvertFrom-Json $text) | ForEach-Object { $_ }))}
             'component install'{
-                if($script:planComponentInstall){$script:planComponentInstall=$false;$output.Text=$text;RepreviewForPendingSetup $false}
+                if($script:planComponentInstall){$script:planComponentInstall=$false;$output.Text=$text;RepreviewForPendingSetup ''}
                 else{$chosen=$script:pendingRecipeRow;$script:pendingRecipeRow=$null;$output.Text=$text;BeginChosenRecipe $chosen}
             }
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}

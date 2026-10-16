@@ -2299,6 +2299,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('components', '-List', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only with components -Install.' },
             @{ args = @('plan', '-UseFallback', '-Recipe', 'x', '-InstallRoot', $refusalRoot); text = '-UseFallback cannot be combined with -Recipe' },
             @{ args = @('components', '-List', '-UseFallback', '-InstallRoot', $refusalRoot); text = '-UseFallback is supported only by plan, install and start.' },
+            @{ args = @('plan', '-FallbackReason', 'components-install-failed', '-InstallRoot', $refusalRoot); text = '-FallbackReason is supported only with -UseFallback.' },
+            @{ args = @('plan', '-UseFallback', '-FallbackReason', 'not-a-reason', '-InstallRoot', $refusalRoot); text = 'FallbackReason' },
             @{ args = @('start', '-PlannedRecipe', 'x', '-Recipe', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
             @{ args = @('start', '-PlannedRecipe', 'x', '-ModelId', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
             @{ args = @('plan', '-PlannedRecipe', 'x', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe is supported only by start.' },
@@ -2348,12 +2350,13 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $fixturePlanObject = $null
     try { $fixturePlanObject = $fixturePlan.text | ConvertFrom-Json } catch { }
     Check ($fixturePlan.exit -eq 0 -and $null -ne $fixturePlanObject -and $fixturePlanObject.fallback.applied -eq $true -and $fixturePlanObject.fallback.fromRecipe -like '*.hip' -and $fixturePlanObject.fallback.reason -ceq 'fixture-plan-cannot-probe-engine') 'plan -AsJson on an identified XT fixture stamps the replaced HIP recipe (the fixture cannot run an engine)'
+    # The fixture plan already stands in for the HIP recipe for its own typed reason; -UseFallback keeps that reason and never relabels it as a declined license.
     $declinedPlan = Invoke-CliRefusal @('plan', '-UseFallback', '-HardwareFile', $fallbackFixture, '-AsJson', '-InstallRoot', $fixturePlanRoot)
     $declinedObject = $null
     try { $declinedObject = $declinedPlan.text | ConvertFrom-Json } catch { }
-    Check ($declinedPlan.exit -eq 0 -and $null -ne $declinedObject -and $declinedObject.fallback.reason -ceq 'components-declined' -and $declinedObject.fallback.applied -eq $true -and $declinedObject.recipe.id -cnotlike '*.hip' -and -not $declinedObject.PSObject.Properties['setup']) 'plan -UseFallback -AsJson gives the Vulkan stand-in stamped components-declined'
-    $declinedText = Invoke-CliRefusal @('plan', '-UseFallback', '-HardwareFile', $fallbackFixture, '-InstallRoot', $fixturePlanRoot)
-    Check ($declinedText.exit -eq 0 -and $declinedText.text.Contains('Fallback:') -and $declinedText.text.Contains("Using the Vulkan setup: the AMD license wasn't accepted.")) 'plan -UseFallback prints the Fallback line and the decline wording'
+    Check ($declinedPlan.exit -eq 0 -and $null -ne $declinedObject -and $declinedObject.fallback.reason -ceq 'fixture-plan-cannot-probe-engine' -and $declinedObject.fallback.applied -eq $true -and $declinedObject.recipe.id -cnotlike '*.hip' -and -not $declinedObject.PSObject.Properties['setup']) 'plan -UseFallback -AsJson gives the Vulkan stand-in and keeps the plan''s own reason'
+    $declinedText = Invoke-CliRefusal @('plan', '-UseFallback', '-FallbackReason', 'components-install-failed', '-HardwareFile', $fallbackFixture, '-InstallRoot', $fixturePlanRoot)
+    Check ($declinedText.exit -eq 0 -and $declinedText.text.Contains('Fallback:') -and -not $declinedText.text.Contains("license wasn't accepted")) 'plan -UseFallback -FallbackReason is accepted and a typed reason is not printed as a declined license'
     $cliSource = Get-Content -LiteralPath $cliPath -Raw
     Check ($cliSource.Contains('$componentsLock = Enter-FastLlmOperation') -and $cliSource.Contains('-OperationLockHeld:') -and $cliSource -match 'if \(\$componentsLock\) \{ \$componentsLock\.Dispose\(\) \}') 'the components lock is its own variable (the failure writer only knows $operationLock), is passed to Remove, and is disposed'
     $cliSettingsPins = $cliSource.Contains("'settings' {") -and $cliSource.Contains('-SettingAcceptedAt $settingAcceptedAt') -and $cliSource.Contains('Get-FastLlmStandingAcceptance')
