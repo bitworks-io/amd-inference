@@ -370,16 +370,28 @@ class RecipeBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(br.RecipeError, "needs config/components.json"):
             br.build(root)
 
-    def test_the_hip_entry_is_a_bitworks_baseline_for_the_compelling_rule(self):
-        # The best Bitworks entry per card (highest generation rate) is the baseline, so a measured HIP entry that is faster takes over.
-        record = community("community-reproduced", generationTokS=38.0, promptTokS=900.0)
-        without_hip = br.build(self.tree([ENTRY], [record]))[0]["recipes"]
-        with_hip = br.build(self.tree_with_hip_and_record(HIP_VERIFIED, record))[0]["recipes"]
-        before = [r for r in without_hip if r["origin"] == "community-reproduced"]
-        after = [r for r in with_hip if r["origin"] == "community-reproduced"]
-        self.assertEqual(before[0]["compelling"]["baselineRecipe"], ENTRY["id"])
-        self.assertTrue(before[0]["compelling"]["isCompelling"])
-        self.assertEqual(after, [])  # +12.7% generation, +2.7% prompt over the HIP entry: no longer compelling
+    def test_compelling_compares_each_metric_with_the_best_bitworks_value_for_that_metric(self):
+        # The Vulkan entry is the best generation (32.73); a HIP entry is slower to generate (32.0) but much faster on prompt (1000.0).
+        prompt_fast = copy.deepcopy(HIP_VERIFIED); prompt_fast["expected"].update(generationTokS=32.0, promptTokS=1000.0)
+
+        def compelling_of(record):
+            document = br.build(self.tree_with_hip_and_record(prompt_fast, record))[0]
+            found = [r for r in document["recipes"] if r["origin"] == "community-reproduced"]
+            return found[0]["compelling"] if found else None
+
+        # +20% on prompt over the best prompt (HIP 1000.0) is not enough, though it is +83% over the Vulkan entry (it was compelling before).
+        self.assertIsNone(compelling_of(community("community-reproduced", generationTokS=30.0, promptTokS=1200.0)))
+        # +50% over the best prompt rate is compelling, and the block names each metric's baseline.
+        block = compelling_of(community("community-reproduced", generationTokS=30.0, promptTokS=1500.0))
+        self.assertTrue(block["isCompelling"])
+        self.assertEqual((block["baselineGeneration"], block["baselinePrompt"]), (ENTRY["id"], HIP_VERIFIED["id"]))
+        self.assertEqual(block["baselineRecipe"], block["baselineGeneration"])
+        # A record that beats both bests is compelling; one that beats the generation best by 15% is too.
+        block = compelling_of(community("community-reproduced", generationTokS=40.0, promptTokS=1600.0))
+        self.assertTrue(block["isCompelling"])
+        self.assertEqual((block["generationGainPct"], block["promptGainPct"]), (22.2, 60.0))
+        self.assertIsNone(compelling_of(community("community-reproduced", generationTokS=37.0, promptTokS=1100.0)))
+        self.assertTrue(compelling_of(community("community-reproduced", generationTokS=37.7, promptTokS=1100.0))["isCompelling"])
 
     def tree_with_hip_and_record(self, hip, record):
         root = self.tree([ENTRY, hip], [record])

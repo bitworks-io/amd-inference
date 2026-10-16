@@ -7,8 +7,8 @@ community-experimental recipes and never auto-selected by the product.
 A verified entry may name its own engine component (components.engine, e.g. the HIP lane): it is checked against config/components.json, carries
 no vulkanBarMitigation, uses expected.mitigation "not-applicable", and is never recommended; the product never picks it automatically.
 Verified and community-reproduced entries ship only with a live evidence page (evidence.url on https://bitworks.io/ and
-evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation OR >=50% prompt over the
-best Bitworks recipe for the same card and GPU count, at the same or larger context; with no Bitworks recipe to compare
+evidence.publishedAt); others are skipped and reported. Community entries get the compelling rule (>=15% generation over the highest Bitworks generation OR >=50% prompt over the
+highest Bitworks prompt rate, for the same card and GPU count, among Bitworks recipes at the same or a smaller context; with no Bitworks recipe to compare
 against, only the fastest community record for that card and GPU count). Only verified Bitworks recipes may be
 recommended. Deterministic output.
 Usage: build-recipes.py [--root R] [--check]   (exit 0 ok, 1 drift, 2 refused)
@@ -236,19 +236,23 @@ def measured_rates(recipe):
 
 
 def compelling(candidate, bitworks_recipes):
+    """Each metric is compared with the best Bitworks value for that metric (same card and GPU count, same or smaller measured context than the
+    candidate): >=15% generation over the highest Bitworks generation, or >=50% prompt over the highest Bitworks prompt rate.
+    baselineRecipe stays the generation baseline, for consumers that read a single baseline."""
     peers = [r for r in bitworks_recipes if r["gpu"] == candidate["gpu"]]
     exp = dict(candidate["expected"])
     exp["generationTokS"], exp["promptTokS"] = measured_rates(candidate)
     if not peers:
-        return {"baselineRecipe": None, "generationGainPct": None, "promptGainPct": None, "isCompelling": True}
-    best = max(peers, key=lambda r: (r["expected"]["generationTokS"], r["id"]))
-    base = best["expected"]
-    gen = round(100.0 * (exp["generationTokS"] / base["generationTokS"] - 1.0), 1)
-    prompt = round(100.0 * (exp["promptTokS"] / base["promptTokS"] - 1.0), 1)
-    same_or_larger = exp["contextTokens"] >= base["contextTokens"]
-    return {"baselineRecipe": best["id"], "generationGainPct": gen, "promptGainPct": prompt,
-            "isCompelling": bool(same_or_larger and (round(exp["generationTokS"] / base["generationTokS"], 6) >= 1.15
-                                                        or round(exp["promptTokS"] / base["promptTokS"], 6) >= 1.5))}
+        return {"baselineRecipe": None, "baselineGeneration": None, "baselinePrompt": None, "generationGainPct": None, "promptGainPct": None, "isCompelling": True}
+    eligible = [r for r in peers if exp["contextTokens"] >= r["expected"]["contextTokens"]]
+    pool = eligible or peers
+    best_gen = max(pool, key=lambda r: (r["expected"]["generationTokS"], r["id"]))
+    best_prompt = max(pool, key=lambda r: (r["expected"]["promptTokS"], r["id"]))
+    gen_ratio = exp["generationTokS"] / best_gen["expected"]["generationTokS"]
+    prompt_ratio = exp["promptTokS"] / best_prompt["expected"]["promptTokS"]
+    return {"baselineRecipe": best_gen["id"], "baselineGeneration": best_gen["id"], "baselinePrompt": best_prompt["id"],
+            "generationGainPct": round(100.0 * (gen_ratio - 1.0), 1), "promptGainPct": round(100.0 * (prompt_ratio - 1.0), 1),
+            "isCompelling": bool(eligible and (round(gen_ratio, 6) >= 1.15 or round(prompt_ratio, 6) >= 1.5))}
 
 
 def check_component_refs(recipes, components):

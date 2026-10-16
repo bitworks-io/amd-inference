@@ -68,6 +68,35 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual((best[("rx-7900-xtx", 1)]["generationTokS"], best[("rx-7900-xtx", 1)]["promptTokS"]), (33.72, 876.3))
 
 
+class PerMetricBaselineTests(unittest.TestCase):
+    """Each metric is compared with the best Bitworks value for that metric (XT: Vulkan generation 32.75, HIP prompt 799.09)."""
+
+    def screened(self, generation, prompt):
+        doc = sc.load(FIX / "cand.json")
+        record = doc["byVariant"]["rx-7900-xt-20gb"][0]
+        record["generationTps"][0]["value"] = generation
+        record["promptTps"][0]["value"] = prompt
+        return sc.screen(doc, RECIPES, COMPONENTS, VARIANTS)[0]
+
+    def test_prompt_is_measured_against_the_fastest_bitworks_prompt_rate(self):
+        row = self.screened(30.0, 780.0)  # +53.8% over the Vulkan prompt rate (it was compelling before), +/-0 over the HIP one
+        comp = row["compellingOnPaper"]
+        self.assertEqual((comp["baselineGeneration"], comp["baselinePrompt"], comp["baseline"]),
+                         ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k"))
+        self.assertFalse(comp["compelling"])
+        self.assertFalse(row["candidate"])
+        self.assertIn("not-compelling", row["reasons"])
+        self.assertLess(comp["promptGainPct"], 0)
+
+    def test_a_record_beating_both_bests_is_compelling(self):
+        for generation, prompt in ((39.3, 1300.0), (30.0, 1300.0), (39.3, 500.0)):
+            with self.subTest(generation=generation, prompt=prompt):
+                row = self.screened(generation, prompt)
+                self.assertTrue(row["compellingOnPaper"]["compelling"])
+                self.assertTrue(row["candidate"])
+        self.assertFalse(self.screened(30.0, 1100.0)["compellingOnPaper"]["compelling"])
+
+
 class RealShapeTests(unittest.TestCase):
     """Synthetic records reproducing the shape variants seen in the real website export."""
 
