@@ -3006,6 +3006,28 @@ function Get-FastLlmInstalledRequirers {
     return $found.ToArray()
 }
 
+# True when the component has at least one license link and every link matches an accepted { title; host } identity: title trimmed and
+# case-insensitive, host of an https URL case-insensitive. Fails closed on no links, an unparsable URL or a control character.
+function Test-FastLlmComponentLinksInAcceptedSet {
+    param([Parameter(Mandatory = $true)] $Component, [object[]] $Accepted = @())
+    try {
+        $links = @(Get-FastLlmComponentLicenseLinks -Component $Component)
+        if ($links.Count -eq 0) { return $false }
+        $stored = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($identity in @($Accepted)) { if ($null -ne $identity) { [void] $stored.Add(([string] $identity.title).Trim() + "`n" + ([string] $identity.host).Trim()) } }
+        foreach ($link in $links) {
+            $url = [string] $link.url
+            $title = ([string] $link.title).Trim()
+            if ([string]::IsNullOrWhiteSpace($url) -or $title.Length -eq 0 -or [regex]::IsMatch($url, '[\x00-\x1F\x7F]')) { return $false }
+            $parsed = $null
+            if (-not [Uri]::TryCreate($url.Trim(), [UriKind]::Absolute, [ref] $parsed) -or $parsed.Scheme -cne 'https' -or [string]::IsNullOrEmpty($parsed.Host)) { return $false }
+            if (-not $stored.Contains($title + "`n" + [string] $parsed.Host)) { return $false }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
 function Install-FastLlmComponent {
     [CmdletBinding()]
     param(
@@ -3022,6 +3044,10 @@ function Install-FastLlmComponent {
 
         # When the componentLicenses setting is on and covers this chain: its acceptance time. Acts like -AcceptLicense, with receipt mode standing-setting.
         [string] $SettingAcceptedAt = '',
+
+        # The license identities ({ title; host }) the setting holds. -SettingAcceptedAt stands in for consent only on chain members whose every
+        # license link matches one of these (title, case-insensitive, and URL host); without the list nothing is covered.
+        [object[]] $SettingAcceptedLicenses = @(),
 
         [switch] $Unattended,
 
@@ -3092,6 +3118,20 @@ function Install-FastLlmComponent {
         }
         else { $needsAnswer = $true }
     }
+    # A standing setting covers only members whose every license link was accepted when it was turned on; every other member asks as usual.
+    $standingSetting = (-not $AcceptLicense) -and (-not [string]::IsNullOrWhiteSpace($SettingAcceptedAt))
+    $coveredSwitch = New-Object 'System.Collections.Generic.List[object]'
+    if ($standingSetting) {
+        $stillNeedsSwitch = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($switchEntry in $needsSwitch) {
+            if (Test-FastLlmComponentLinksInAcceptedSet -Component $switchEntry -Accepted $SettingAcceptedLicenses) { $coveredSwitch.Add($switchEntry) } else { $stillNeedsSwitch.Add($switchEntry) }
+        }
+        $needsSwitch = $stillNeedsSwitch
+        $needsAnswer = $false
+        foreach ($pendingEntry in $pending) {
+            if ([string] $pendingEntry.license.consent -cne 'accept' -and -not (Test-FastLlmComponentLinksInAcceptedSet -Component $pendingEntry -Accepted $SettingAcceptedLicenses)) { $needsAnswer = $true }
+        }
+    }
     foreach ($chainEntry in $chain) {
         Write-Host "Component: $([string] $chainEntry.displayName) ($([string] $chainEntry.id) $([string] $chainEntry.version))"
         $shownHosts = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -3103,8 +3143,7 @@ function Install-FastLlmComponent {
             Write-Host "License: $([string] $licenseLink.title) $([string] $licenseLink.url)"
         }
     }
-    $standingSetting = (-not $AcceptLicense) -and (-not [string]::IsNullOrWhiteSpace($SettingAcceptedAt))
-    if (-not $AcceptLicense -and -not $standingSetting) {
+    if (-not $AcceptLicense) {
         $switchHint = "To install it, run: fast-llm.ps1 components -Install $ComponentId -AcceptLicense"
         if ($needsSwitch.Count -gt 0) {
             $acceptNames = (@($needsSwitch | ForEach-Object { "'$([string] $_.id)'" }) -join ', ')
@@ -3130,9 +3169,11 @@ function Install-FastLlmComponent {
     }
     else {
         foreach ($pendingEntry in $needsSwitch) {
-            if ($standingSetting) { Write-FastLlmComponentConsentReceipt -Component $pendingEntry -InstallRoot $InstallRoot -AcceptanceMode 'standing-setting' -SettingAcceptedAt $SettingAcceptedAt }
-            else { Write-FastLlmComponentConsentReceipt -Component $pendingEntry -InstallRoot $InstallRoot -AcceptanceMode 'explicit-switch' }
+            Write-FastLlmComponentConsentReceipt -Component $pendingEntry -InstallRoot $InstallRoot -AcceptanceMode 'explicit-switch'
         }
+    }
+    foreach ($coveredEntry in $coveredSwitch) {
+        Write-FastLlmComponentConsentReceipt -Component $coveredEntry -InstallRoot $InstallRoot -AcceptanceMode 'standing-setting' -SettingAcceptedAt $SettingAcceptedAt
     }
 
     $downloader = $Download

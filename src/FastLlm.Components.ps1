@@ -339,10 +339,17 @@ function Get-FastLlmComponentLicenseSettings {
             $accepted.Add([pscustomobject] [ordered] @{ title = $title; host = $hostName })
         }
         if ($accepted.Count -eq 0) { return $ask }
+        # A missing, blank or unparsable acceptedAt reads as ask: a receipt never carries a time that was made up.
         $acceptedAt = ''
         $atProperty = $block.PSObject.Properties['acceptedAt']
-        if ($null -ne $atProperty -and $atProperty.Value -is [string]) { $acceptedAt = [string] $atProperty.Value }
-        elseif ($null -ne $atProperty -and $atProperty.Value -is [datetime]) { $acceptedAt = ([datetime] $atProperty.Value).ToUniversalTime().ToString('o') }
+        if ($null -eq $atProperty) { return $ask }
+        if ($atProperty.Value -is [string]) {
+            $parsedAt = [datetime]::MinValue
+            if ([string]::IsNullOrWhiteSpace([string] $atProperty.Value) -or -not [datetime]::TryParse([string] $atProperty.Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref] $parsedAt)) { return $ask }
+            $acceptedAt = [string] $atProperty.Value
+        }
+        elseif ($atProperty.Value -is [datetime]) { $acceptedAt = ([datetime] $atProperty.Value).ToUniversalTime().ToString('o') }
+        else { return $ask }
         return [pscustomobject] [ordered] @{ mode = 'accept-automatically'; acceptedAt = $acceptedAt; accepted = $accepted.ToArray() }
     }
     catch { return $ask }
@@ -416,7 +423,7 @@ function Get-FastLlmAcceptableLicenseIdentities {
     }
 }
 
-# True when the setting is accept-automatically and every license link of every accept-type pending component matches a stored identity by title
+# True when the setting is accept-automatically and every license link of every pending component, whatever its consent type, matches a stored identity by title
 # (case-insensitive) and URL host, never by the full URL. A link that does not parse, or has a control character, is never covered.
 function Test-FastLlmLicensesCovered {
     param([Parameter(Mandatory = $true)] $Settings, [object[]] $Pending)
@@ -425,8 +432,6 @@ function Test-FastLlmLicensesCovered {
         $stored = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($identity in @($Settings.accepted)) { [void] $stored.Add(([string] $identity.title).Trim() + "`n" + ([string] $identity.host).Trim()) }
         foreach ($component in @($Pending | Where-Object { $_ })) {
-            $consentProperty = $component.PSObject.Properties['consent']
-            if ($null -ne $consentProperty -and [string] $consentProperty.Value -cne 'accept') { continue }
             $linksProperty = $component.PSObject.Properties['licenseLinks']
             $links = @()
             if ($null -ne $linksProperty -and $null -ne $linksProperty.Value) { $links = @($linksProperty.Value) }
@@ -457,14 +462,12 @@ function Get-FastLlmStandingAcceptance {
         if ([string] $settings.mode -cne 'accept-automatically') { return '' }
         $all = @(Get-FastLlmComponents -ComponentsPath $ComponentsPath)
         $chain = @(Get-FastLlmComponentChain -Components $all -Id $ComponentId)
+        # Every member of the chain counts, whatever its consent type: a license the user did not see when turning the setting on is never covered.
         $needing = New-Object 'System.Collections.Generic.List[object]'
         foreach ($chainEntry in $chain) {
-            if ([string] $chainEntry.license.consent -ceq 'accept') {
-                $needing.Add([pscustomobject] @{ id = [string] $chainEntry.id; consent = 'accept'; licenseLinks = @(Get-FastLlmComponentLicenseLinks -Component $chainEntry) })
-            }
+            $needing.Add([pscustomobject] @{ id = [string] $chainEntry.id; licenseLinks = @(Get-FastLlmComponentLicenseLinks -Component $chainEntry) })
         }
         if (-not (Test-FastLlmLicensesCovered -Settings $settings -Pending $needing.ToArray())) { return '' }
-        if ([string]::IsNullOrWhiteSpace([string] $settings.acceptedAt)) { return (Get-Date).ToUniversalTime().ToString('o') }
         return [string] $settings.acceptedAt
     }
     catch { return '' }

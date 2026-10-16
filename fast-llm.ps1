@@ -134,6 +134,9 @@ if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { t
 if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
 if ($AcceptLicense -and $Action -notin @('components', 'install', 'settings')) { throw '-AcceptLicense is supported only by components -Install, install and settings.' }
 if ($PSBoundParameters.ContainsKey('ComponentLicenses') -and $Action -ne 'settings') { throw '-ComponentLicenses is supported only by settings.' }
+if ($Action -eq 'settings' -and $AcceptLicense -and -not ($PSBoundParameters.ContainsKey('ComponentLicenses') -and $ComponentLicenses -ceq 'accept-automatically')) {
+    throw '-AcceptLicense with settings only goes with -ComponentLicenses accept-automatically; nothing was changed.'
+}
 if ($Action -eq 'settings' -and $PSBoundParameters.ContainsKey('ComponentLicenses') -and $ComponentLicenses -ceq 'accept-automatically' -and -not $AcceptLicense) {
     throw 'settings -ComponentLicenses accept-automatically needs -AcceptLicense: it shows the licenses first, and nothing was changed.'
 }
@@ -269,8 +272,10 @@ try {
             if ($PSBoundParameters.ContainsKey('Install')) {
                 # The standing componentLicenses setting counts as the license acceptance when it covers every license of the chain; -AcceptLicense still wins.
                 $settingAcceptedAt = ''
+                $settingAcceptedLicenses = @()
+                if (-not $AcceptLicense) { $settingAcceptedLicenses = @((Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot).accepted) }
                 if (-not $AcceptLicense) { $settingAcceptedAt = [string] (Get-FastLlmStandingAcceptance -InstallRoot $InstallRoot -ComponentsPath $componentsFilePath -ComponentId $Install) }
-                $installResult = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -SettingAcceptedAt $settingAcceptedAt -Unattended:$Unattended -PassThru
+                $installResult = Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $Install -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -SettingAcceptedAt $settingAcceptedAt -SettingAcceptedLicenses @($settingAcceptedLicenses) -Unattended:$Unattended -PassThru
                 $installedRoot = [string] $installResult.root
                 if ($AsJson) { [pscustomobject]@{ id = $Install; installed = $true; path = $installedRoot; installedComponents = @($installResult.installed) } | ConvertTo-Json -Depth 5 }
                 elseif (@($installResult.installed).Count -eq 0) { Write-Host "Component '$Install' is already installed and verified: $installedRoot" }

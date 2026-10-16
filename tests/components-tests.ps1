@@ -1858,6 +1858,10 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         'an entry without a host'           = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t"}]}}'
         'one good and one incomplete entry' = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t","host":"h"},{"title":"t2"}]}}'
         'an entry with a control character' = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t\u0007","host":"h"}]}}'
+        'a missing acceptedAt'              = '{"componentLicenses":{"mode":"accept-automatically","accepted":[{"title":"t","host":"h"}]}}'
+        'a blank acceptedAt'                = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"  ","accepted":[{"title":"t","host":"h"}]}}'
+        'an unparsable acceptedAt'          = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"yesterday-ish","accepted":[{"title":"t","host":"h"}]}}'
+        'a numeric acceptedAt'              = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":5,"accepted":[{"title":"t","host":"h"}]}}'
         'an empty accepted list'            = '{"componentLicenses":{"mode":"accept-automatically","acceptedAt":"x","accepted":[]}}'
         'broken JSON'                       = '{"componentLicenses":{"mode":'
     }
@@ -1890,7 +1894,15 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = 'not a url' })))) 'a link whose URL does not parse is not covered'
     Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @([pscustomobject] @{ title = 'AMD HIP SDK license page'; url = ('https://www.amd.com/a' + [char] 7 + 'b') })))) 'a link whose URL has a control character is not covered'
     Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'x' @()))) 'an accept-type component with no license links is not covered'
-    Check (Test-FastLlmLicensesCovered -Settings $licOn -Pending @([pscustomobject] @{ id = 'v'; consent = 'show'; licenseLinks = @([pscustomobject] @{ title = 'other'; url = 'https://other.example.com/x' }) })) 'a show-type component needs no stored acceptance'
+    Check (-not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @([pscustomobject] @{ id = 'v'; consent = 'show'; licenseLinks = @([pscustomobject] @{ title = 'other'; url = 'https://other.example.com/x' }) }))) 'a show-type component whose license is not in the stored set is not covered'
+    $licShippedVulkan = @($licShipped | Where-Object { $_.id -ceq 'llama.cpp-b10698-vulkan' })
+    Check ($licShippedVulkan.Count -eq 1 -and -not (Test-FastLlmLicensesCovered -Settings $licOn -Pending @(New-PendingFor 'llama.cpp-b10698-vulkan' @(Get-FastLlmComponentLicenseLinks -Component $licShippedVulkan[0])))) 'the shipped Vulkan engine license is not covered by the identities stored for the HIP chain'
+
+    $licShippedPath = Join-Path $repoRoot 'config/components.json'
+    $licShippedRoot = New-TestRoot
+    Set-FastLlmComponentLicenseSettings -InstallRoot $licShippedRoot -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-b10698-vulkan') -ceq '') 'with the setting on, the shipped Vulkan engine (show license not in the set) gets no standing acceptance'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-hip-b11658') -ceq '2026-10-16T10:00:00.0000000Z') 'with the setting on, the shipped HIP chain gets the standing acceptance'
 
     # Standing-setting receipts through the install seam (fixture chain with accept-type licenses).
     $stFx = New-ChainFixture -Name 'fx-standing'
@@ -1905,15 +1917,24 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ((Get-FastLlmStandingAcceptance -InstallRoot $stPartial -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip') -ceq '') 'a setting that covers only some of the chain licenses gives no standing acceptance'
     $stNone = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) }
     Check ($stNone.code -ceq 'component-consent-required') 'neither -AcceptLicense nor -SettingAcceptedAt still needs consent'
+    $stNoList = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) }
+    Check ($stNoList.code -ceq 'component-consent-required') '-SettingAcceptedAt without the accepted licenses covers nothing'
+    $stPartialState = New-ChainState
+    $stPartialFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot (New-TestRoot) -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses @($stIdentities[0]) -Download (New-ChainSeam -Fixture $stFx -State $stPartialState) 6>$null }
+    Check ($stPartialFailure.code -ceq 'component-consent-required' -and $stPartialState.log.Count -eq 0) 'a member whose licenses are not all in the stored set still needs consent under the setting, and nothing is downloaded'
+    $stShowState = New-ChainState
+    $stShowRoot = New-TestRoot
+    $stShowFailure = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $showFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stShowRoot -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses @([pscustomobject] @{ title = 'Unrelated license'; host = 'example.org' }) -Download (New-ChainSeam -Fixture $showFx -State $stShowState) 6>$null }
+    Check ($stShowFailure.code -ceq 'component-consent-required' -and $stShowState.log.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $stShowRoot 'consents'))) 'under the setting an unattended show-type member not in the stored set gives component-consent-required, downloads nothing and writes no receipt'
     $stState = New-ChainState
-    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stRoot -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -Download (New-ChainSeam -Fixture $stFx -State $stState) 6>$null
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stRoot -Unattended -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses $stIdentities -Download (New-ChainSeam -Fixture $stFx -State $stState) 6>$null
     foreach ($stId in @('rt-hip', 'eng-hip')) {
         $stReceiptPath = @(Get-ChildItem -LiteralPath (Join-Path $stRoot 'consents') -Filter "component-$stId-*.json")[0].FullName
         $stReceiptText = Get-Content -LiteralPath $stReceiptPath -Raw
         $stReceipt = $stReceiptText | ConvertFrom-Json
         $stEntry = Get-ComponentEntry $stFx.ComponentsPath $stId
         $stExpectedUrls = (@(& $module { param($c) Get-FastLlmComponentLicenseLinkEntries -Component $c } $stEntry) | ForEach-Object { $_.url }) -join '|'
-        Check ($stReceipt.mode -ceq 'standing-setting' -and $stReceiptText.Contains('"settingAcceptedAt": "2026-10-16T11:22:33.0000000Z"') -and [int] $stReceipt.schemaVersion -eq 1 -and (@($stReceipt.links | ForEach-Object { $_.url }) -join '|') -ceq $stExpectedUrls) "the $stId receipt has mode standing-setting, settingAcceptedAt and the exact license links"
+        Check ($stReceipt.mode -ceq 'standing-setting' -and $stReceiptText -match '"settingAcceptedAt"\s*:\s*"2026-10-16T11:22:33\.0000000Z"' -and [int] $stReceipt.schemaVersion -eq 1 -and (@($stReceipt.links | ForEach-Object { $_.url }) -join '|') -ceq $stExpectedUrls) "the $stId receipt has mode standing-setting, settingAcceptedAt and the exact license links"
         Check (& $module { param($c, $r) Test-FastLlmComponentConsentReceipt -Component $c -InstallRoot $r } $stEntry $stRoot) "the standing-setting receipt for $stId is valid for the consent check"
     }
     $stExplicitRoot = New-TestRoot
@@ -1921,7 +1942,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $stExplicit = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath (Join-Path $stExplicitRoot 'consents') -Filter 'component-eng-hip-*.json')[0].FullName) -Raw | ConvertFrom-Json
     Check ($stExplicit.mode -ceq 'explicit-switch' -and -not $stExplicit.PSObject.Properties['settingAcceptedAt']) '-AcceptLicense still writes an explicit-switch receipt without settingAcceptedAt'
     $stBothRoot = New-TestRoot
-    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stBothRoot -AcceptLicense -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) 6>$null
+    $null = Install-FastLlmComponent -ComponentsPath $stFx.ComponentsPath -ComponentId 'eng-hip' -InstallRoot $stBothRoot -AcceptLicense -SettingAcceptedAt '2026-10-16T11:22:33.0000000Z' -SettingAcceptedLicenses $stIdentities -Unattended -Download (New-ChainSeam -Fixture $stFx -State (New-ChainState)) 6>$null
     Check ((Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath (Join-Path $stBothRoot 'consents') -Filter 'component-eng-hip-*.json')[0].FullName) -Raw | ConvertFrom-Json).mode -ceq 'explicit-switch') 'when both are given the explicit switch wins'
 
     # Mirror pair.
@@ -2271,6 +2292,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('plan', '-ComponentLicenses', 'ask', '-InstallRoot', $refusalRoot); text = '-ComponentLicenses is supported only by settings.' },
             @{ args = @('components', '-List', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-ComponentLicenses is supported only by settings.' },
             @{ args = @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $refusalRoot); text = 'needs -AcceptLicense' },
+            @{ args = @('settings', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense with settings only goes with' },
+            @{ args = @('settings', '-ComponentLicenses', 'ask', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense with settings only goes with' },
             @{ args = @('components', '-AcceptExperimental', '-InstallRoot', $refusalRoot); text = '-AcceptExperimental is supported only by plan, start and install.' },
             @{ args = @('components', '-Install', 'a', '-Remove', 'b', '-InstallRoot', $refusalRoot); text = 'components takes one of -List, -Install <id> or -Remove <id>.' },
             @{ args = @('components', '-List', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only with components -Install.' })) {
