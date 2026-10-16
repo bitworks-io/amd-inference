@@ -18,7 +18,7 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
   - Command line: `fast-llm.ps1 settings -ComponentLicenses accept-automatically -AcceptLicense`. Turn it off with `settings -ComponentLicenses ask`.
   - It covers only the licenses (matched by title and host) shown when you turned it on. If a component needs one that is not covered, FastLLM asks again.
 - **A visible Vulkan fallback:**
-  - If the license is declined, the HIP components are missing, fail their file check or fail to install, Windows blocks or cannot load the HIP files, the card cannot use HIP, or the HIP server does not start, FastLLM starts the Vulkan setup and says so. `status.json` records it as `fallback`, and the window's status line names the engine ("Running on HIP (AMD ROCm 10.0)" or "Running on Vulkan (fallback: ...)").
+  - If the license is declined, the HIP components are missing or fail their file check (and, in the window, if they cannot be installed), Windows blocks or cannot load the HIP files, the card cannot use HIP, or the HIP server does not start, FastLLM starts the Vulkan setup and says so. `status.json` records it as `fallback`, and the window's status line names the engine ("Running on HIP (AMD ROCm 10.0)" or "Running on Vulkan (fallback: ...)").
   - It never falls back after the server was ready.
   - A declined license is remembered for that setup and not asked again until you choose it under **Choose another setup** (or turn the automatic setting on).
   - An explicit `-Recipe`, or a setup you pick under **Choose another setup**, never falls back.

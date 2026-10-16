@@ -135,6 +135,7 @@ if (($PSBoundParameters.ContainsKey('VulkanBarMitigation') -or $ThroughputCanary
 }
 # ValidateSet ignores case and keeps the typed value; every later comparison is case-sensitive, so normalise once here.
 $DeviceBinding = $DeviceBinding.ToLowerInvariant()
+if ($PSBoundParameters.ContainsKey('ComponentLicenses')) { $ComponentLicenses = ([string] $ComponentLicenses).ToLowerInvariant() }
 if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -or $DryRun)) {
     throw '-DeviceBinding is supported only by a live start.'
 }
@@ -240,7 +241,7 @@ function Write-FastLlmPlan {
         foreach ($needed in @($Plan.setup.pendingComponents)) {
             $neededState = ''
             if ([bool] $needed.unverified) { $neededState = ' (installed, but failed its file check)' }
-            Write-Host ("  - {0} {1}, {2:N1} MB, from {3}{4}" -f $needed.name, $needed.version, ([double] $needed.downloadBytes / 1MB), (@($needed.sourceHosts) -join ', '), $neededState)
+            Write-Host ("  - {0} {1}, {2} MB, from {3}{4}" -f $needed.name, $needed.version, (([double] $needed.downloadBytes / 1e6).ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture)), (@($needed.sourceHosts) -join ', '), $neededState)
             foreach ($neededLink in @($needed.licenseLinks)) { Write-Host ("      license: {0} <{1}>" -f $neededLink.title, $neededLink.url) }
         }
     }
@@ -249,11 +250,11 @@ function Write-FastLlmPlan {
         if ($Plan.fallback.toRecipe) { $fallbackTarget = [string] $Plan.fallback.toRecipe }
         if ([bool] $Plan.fallback.applied) {
             Write-Host "Fallback:  using $fallbackTarget instead of $($Plan.fallback.fromRecipe) ($($Plan.fallback.reason))"
-            if ([string] $Plan.fallback.reason -ceq 'components-pending') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. Started the Vulkan setup instead." }
-            elseif ([string] $Plan.fallback.reason -ceq 'components-unverified') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which is installed but failed its file check. Started the Vulkan setup instead." }
+            if ([string] $Plan.fallback.reason -ceq 'components-pending') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. FastLLM will use the Vulkan setup instead." }
+            elseif ([string] $Plan.fallback.reason -ceq 'components-unverified') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which is installed but failed its file check. FastLLM will use the Vulkan setup instead." }
             elseif ([string] $Plan.fallback.reason -ceq 'components-declined') { Write-Host "Using the Vulkan setup: the AMD license wasn't accepted." }
             elseif ([string] $Plan.fallback.reason -ceq 'components-install-failed') { Write-Host 'Using the Vulkan setup: the engine components could not be installed. Start again to retry.' }
-            else { Write-Host "FastLLM's best setup for your card could not run here ($($Plan.fallback.reason)). Started the Vulkan setup instead." }
+            else { Write-Host "FastLLM's best setup for your card could not run here ($($Plan.fallback.reason)). FastLLM will use the Vulkan setup instead." }
         }
         else { Write-Host "Fallback:  if the components are not installed, $fallbackTarget is used ($($Plan.fallback.reason))" }
     }
@@ -479,11 +480,11 @@ try {
                 $unverifiedPending = @(@($plan.setup.pendingComponents) | Where-Object { [bool] $_.unverified })
                 $pendingAcceptedAt = ''
                 $pendingAcceptedLicenses = @()
-                if ($unverifiedPending.Count -eq 0 -and -not $AcceptLicense) {
+                if (-not $DryRun -and $unverifiedPending.Count -eq 0 -and -not $AcceptLicense) {
                     $pendingAcceptedLicenses = @((Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot).accepted)
                     $pendingAcceptedAt = [string] (Get-FastLlmStandingAcceptance -InstallRoot $InstallRoot -ComponentsPath $componentsFilePath -ComponentId $pendingEngineId)
                 }
-                if ($unverifiedPending.Count -eq 0 -and ($AcceptLicense -or $pendingAcceptedAt)) {
+                if (-not $DryRun -and $unverifiedPending.Count -eq 0 -and ($AcceptLicense -or $pendingAcceptedAt)) {
                     Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $pendingEngineId -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -SettingAcceptedAt $pendingAcceptedAt -SettingAcceptedLicenses @($pendingAcceptedLicenses) -Unattended:$Unattended | Out-Null
                     $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
                 }

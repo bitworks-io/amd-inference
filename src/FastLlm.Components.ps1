@@ -454,7 +454,7 @@ function Format-FastLlmLicenseDisclosure {
     foreach ($link in @(Get-FastLlmAcceptableLicenseLinks -Components $Components)) { 'License: {0} {1}' -f $link.title, $link.url }
 }
 
-# The acceptance time to pass to Install-FastLlmComponent when the stored setting covers every accept-type license of the component's chain, else ''.
+# The acceptance time to pass to Install-FastLlmComponent when the stored setting covers every license link of every member of the component's chain (whatever the member's consent type), else ''.
 function Get-FastLlmStandingAcceptance {
     param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $ComponentsPath, [Parameter(Mandatory = $true)][string] $ComponentId)
     try {
@@ -486,7 +486,7 @@ function Sync-FastLlmComponentLicenseSetting {
     return $true
 }
 
-# Stores the setting under the launch root and mirrors it into the install folder; when the mirror fails the launch-root value goes back to what it was.
+# Stores the setting under the launch root and mirrors it into the install folder; when the mirror fails while turning it on, the launch-root value goes back to what it was (turning it off always stays off).
 function Set-FastLlmComponentLicenseSettingMirrored {
     param(
         [Parameter(Mandatory = $true)][string] $SourceRoot,
@@ -500,6 +500,8 @@ function Set-FastLlmComponentLicenseSettingMirrored {
     try { [void](Sync-FastLlmComponentLicenseSetting -SourceRoot $SourceRoot -TargetRoot $TargetRoot) }
     catch {
         $failure = $_.Exception.Message
+        # Turning the setting off is never undone: the launch root keeps 'ask' and only the install folder copy is stale.
+        if ($Mode -ceq 'ask') { throw "The component license setting is off, but it could not be updated in the install folder: $failure" }
         try { Set-FastLlmComponentLicenseSettings -InstallRoot $SourceRoot -Mode ([string] $previous.mode) -Accepted @($previous.accepted) -AcceptedAt ([string] $previous.acceptedAt) } catch { }
         throw "The component license setting could not be applied to the install folder, so it was not changed: $failure"
     }

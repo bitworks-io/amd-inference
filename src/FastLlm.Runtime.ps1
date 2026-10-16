@@ -497,7 +497,7 @@ function New-FastLlmHipLaunchFailure {
     if (-not $blocked -and -not $missing) { return $null }
     $stopped = 'The server was stopped.'
     $vulkan = 'FastLLM does not switch to Vulkan on its own. To use the Vulkan setup instead, start FastLLM without the HIP recipe (choose a Vulkan setup).'
-    if ($AutoSelected) { $vulkan = 'FastLLM starts the Vulkan setup instead.' }
+    if ($AutoSelected) { $vulkan = 'FastLLM tries the Vulkan setup instead.' }
     if ($blocked) {
         $code = 'hip-dll-blocked'
         $text = "Windows blocked a DLL of the HIP engine component '${ComponentId}' from loading ($detail). Smart App Control or an application-control policy (WDAC) rejects unsigned files. $stopped $vulkan"
@@ -575,7 +575,7 @@ function Get-FastLlmSelfTestFailureText {
     param([string[]] $Reasons, $Plan)
     $next = 'FastLLM tries the next cached setup.'
     if (Test-FastLlmPlanOnEngineComponent -Plan $Plan) { $next = 'FastLLM does not switch to another setup on its own.' }
-    if (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan) { $next = 'FastLLM starts the Vulkan setup instead.' }
+    if (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan) { $next = 'FastLLM tries the Vulkan setup instead.' }
     return "Self-test failed ($(@($Reasons) -join ', ')). The server was stopped; $next"
 }
 

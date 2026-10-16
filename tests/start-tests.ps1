@@ -613,15 +613,15 @@ try {
         $hipPlan=New-InsPlan 'hip-recipe' 'hip' 'hip-model'
         if($script:ins.componentsInstalled){return $hipPlan}
         $hipPlan | Add-Member -NotePropertyName engineComponentId -NotePropertyValue 'eng-hip'
-        $pendingItem=[pscustomobject]@{id='rt-hip';name='AMD ROCm runtime';kind='runtime';version='10';sourceHosts=@('repo.radeon.com');redirectHosts=@();downloadBytes=1048576;licenseLinks=@([pscustomobject]@{title='AMD EULA';url='https://www.amd.com/eula'});consent='accept';unverified=[bool]$script:ins.unverified}
+        $pendingItem=[pscustomobject]@{id='rt-hip';name='AMD ROCm runtime';kind='runtime';version='10';sourceHosts=@('repo.radeon.com');redirectHosts=@();downloadBytes=565123456;licenseLinks=@([pscustomobject]@{title='AMD EULA';url='https://www.amd.com/eula'});consent='accept';unverified=[bool]$script:ins.unverified}
         $hipPlan | Add-Member -NotePropertyName setup -NotePropertyValue ([pscustomobject]@{pendingComponents=@($pendingItem)})
         $hipPlan | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject]@{fromRecipe='hip-recipe';toRecipe='vulkan-recipe';toModelId='vk-model';reason=$(if($script:ins.unverified){'components-unverified'}else{'components-pending'});applied=$false})
         return $hipPlan
     }
-    function Invoke-InsInstall([bool]$AcceptLicenseSwitch,[bool]$UnattendedSwitch,[string]$ExplicitRecipe='',[bool]$UseFallbackSwitch=$false) {
+    function Invoke-InsInstall([bool]$AcceptLicenseSwitch,[bool]$UnattendedSwitch,[string]$ExplicitRecipe='',[bool]$UseFallbackSwitch=$false,[string]$ReasonSwitch='components-declined') {
         $script:ins.log.Clear();$script:ins.resolveSeen.Clear();$script:ins.componentsInstalled=$false
         $InstallRoot='synthetic-no-files';$catalogPath='synthetic-catalog';$componentsFilePath='synthetic-components';$HardwareFile=$null;$ExpectedModelProvenanceSha256='';$EngineOnly=$false;$DryRun=$false;$AsJson=$false
-        $Unattended=$UnattendedSwitch;$AcceptModelLicense=$true;$Profile='balanced';$AcceptLicense=[switch]$AcceptLicenseSwitch;$UseFallback=[switch]$UseFallbackSwitch;$FallbackReason='components-declined'
+        $Unattended=$UnattendedSwitch;$AcceptModelLicense=$true;$Profile='balanced';$AcceptLicense=[switch]$AcceptLicenseSwitch;$UseFallback=[switch]$UseFallbackSwitch;$FallbackReason=$ReasonSwitch
         $selectionOptions=@{ModelId='';ContextSize=0;AllowExperimentalModel=$false;RecipeId=$ExplicitRecipe}
         $output=New-Object 'Collections.Generic.List[string]';$failure=$null
         $oldOs=$env:OS;$env:OS='Windows_NT'
@@ -631,7 +631,22 @@ try {
     }
     $noAccept=Invoke-InsInstall $false $true
     Check ($null -eq $noAccept.failure -and @($noAccept.log | Where-Object { $_ -like 'INSTALL-COMPONENT*' }).Count -eq 0 -and $noAccept.log -contains 'INSTALL-MODEL:vk-model' -and $noAccept.log -notcontains 'INSTALL-MODEL:hip-model') 'install without -AcceptLicense and without a covering setting: no component is downloaded, the fallback model is installed, no failure'
-    Check ($noAccept.text.Contains("FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. Started the Vulkan setup instead.") -and $noAccept.text.Contains('-AcceptLicense') -and $noAccept.text.Contains('AMD EULA') -and $noAccept.text.Contains('https://www.amd.com/eula')) 'that install prints the fallback line, the -AcceptLicense hint and the license links'
+    Check ($noAccept.text.Contains("FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. FastLLM will use the Vulkan setup instead.") -and $noAccept.text.Contains('-AcceptLicense') -and $noAccept.text.Contains('AMD EULA') -and $noAccept.text.Contains('https://www.amd.com/eula')) 'that install prints the fallback line, the -AcceptLicense hint and the license links'
+    Write-Host $noAccept.text
+    function Get-InsPendingPlanText {
+        $script:ins.componentsInstalled=$false; $AsJson=$false
+        $pendingPlan=Get-FastLlmPlan -Hardware $null -CatalogPath 'c' -Profile 'balanced' -InstallRoot 'r'
+        $lines=New-Object 'Collections.Generic.List[string]'
+        function Write-Host { $lines.Add(($args -join ' ')) }
+        Write-FastLlmPlan -Plan $pendingPlan
+        return ($lines -join "`n")
+    }
+    $pendingText=Get-InsPendingPlanText
+    Check ($pendingText.Contains('AMD ROCm runtime 10, 565.1 MB, from repo.radeon.com') -and $pendingText.Contains('if the components are not installed')) 'the pending list shows decimal megabytes'
+    $oldCulture=[Threading.Thread]::CurrentThread.CurrentCulture
+    try { [Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('de-DE'); $germanText=Get-InsPendingPlanText } finally { [Threading.Thread]::CurrentThread.CurrentCulture=$oldCulture }
+    Check ($germanText.Contains('565.1 MB, from')) 'the pending size is formatted with the invariant culture'
+    Check (-not $noAccept.text.Contains('Started the Vulkan setup')) 'an install that only plans the Vulkan setup does not claim it was started'
     Check ($noAccept.log -contains 'standing-check') 'without the switch the standing setting is consulted'
     $accepted=Invoke-InsInstall $true $true
     Check ($null -eq $accepted.failure -and $accepted.log -contains 'INSTALL-COMPONENT:eng-hip:accept=True:setting=' -and $accepted.log -contains 'INSTALL-MODEL:hip-model' -and $accepted.log.IndexOf('INSTALL-COMPONENT:eng-hip:accept=True:setting=') -lt $accepted.log.IndexOf('INSTALL-MODEL:hip-model') -and $accepted.log -notcontains 'standing-check') 'install -AcceptLicense: the engine chain is installed first (explicit switch), then the HIP model of the re-planned setup'
@@ -647,6 +662,9 @@ try {
     $script:ins.unverified=$false
     $declined=Invoke-InsInstall $false $true '' $true
     Check ($null -eq $declined.failure -and @($declined.log | Where-Object { $_ -like 'INSTALL-COMPONENT*' }).Count -eq 0 -and $declined.log -contains 'INSTALL-MODEL:vk-model') 'install -UseFallback installs the stand-in model and no component'
+    Check ($declined.text.Contains("Using the Vulkan setup: the AMD license wasn't accepted.")) 'install -UseFallback prints that the AMD license was not accepted'
+    $installFailed=Invoke-InsInstall $false $true '' $true 'components-install-failed'
+    Check ($null -eq $installFailed.failure -and $installFailed.log -contains 'INSTALL-MODEL:vk-model' -and $installFailed.text.Contains('Using the Vulkan setup: the engine components could not be installed. Start again to retry.') -and -not $installFailed.text.Contains("license wasn't accepted")) 'install -UseFallback -FallbackReason components-install-failed prints the could-not-be-installed note, not the license line'
     # An explicit recipe keeps the refusal path, now honouring the switch and the setting for the component install.
     $explicitUnattended=Invoke-InsInstall $false $true 'hip-recipe'
     Check ($null -ne $explicitUnattended.failure -and $explicitUnattended.failure.Data['FastLlmFailureCode'] -ceq 'needs-setup-component-missing' -and @($explicitUnattended.log | Where-Object { $_ -like 'INSTALL-*' -and $_ -ne 'INSTALL-ENGINE' }).Count -eq 0) 'install -Recipe <hip> -Unattended with neither the switch nor the setting still refuses, and installs nothing'

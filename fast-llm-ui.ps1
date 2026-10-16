@@ -250,7 +250,8 @@ $licenseBox.Add_CheckedChanged({
     }
     catch{
         $statusLabel.Text='The automatic install setting could not be saved: '+$_.Exception.Message
-        $script:licenseRevert=$true;$licenseBox.Checked=(-not $wantedOn);$script:licenseRevert=$false
+        # Turning it off always stays off (the launch folder says ask); only a failed turn-on goes back to unticked.
+        $script:licenseRevert=$true;$licenseBox.Checked=$false;$script:licenseRevert=$false
     }
 })
 function SetBusy([bool]$Busy) {
@@ -287,6 +288,9 @@ function TestUiBackgroundProcess($Identity) {
         finally{$process.Dispose()}
     }catch{return $false}
 }
+function GetUiBackgroundRunStatus {
+    try{return Get-FastLlmStatus $script:installPath}catch{return $null}
+}
 function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
     $wasAttached=[bool]$script:bgState.attachedRequestId
     $wasPending=[bool]$script:bgState.pendingRequestId
@@ -303,7 +307,7 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
             -not $script:bgState.observation.servingHealthy){
         $statusLabel.Text='Background run owner is verified, but the API health check failed.'
     }elseif($script:bgState.attachedRequestId -and $HealthChecked -and $script:bgState.observation.attachable){
-        $statusLabel.Text='Ready background inference attached. API health passed; GPU residency/performance unqualified.'
+        $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API health passed; GPU residency/performance unqualified.' -State (GetUiBackgroundRunStatus)
     }elseif($wasPending -and -not $script:bgState.pendingRequestId -and $script:bgState.attention){
         $statusLabel.Text='Background launch needs attention. Review Diagnostics before another start.'
     }
@@ -813,7 +817,7 @@ function AttachUiBackground {
     }
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
-    $statusLabel.Text='Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.'
+    $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.' -State (GetUiBackgroundRunStatus)
     $output.Text="Attached to exact request $($attached.requestId) and run $($attached.runId). Closing this window detaches; Stop ends this run."
     SetBusy $false
 }

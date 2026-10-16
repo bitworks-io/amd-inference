@@ -259,7 +259,7 @@ function New-FastLlmUiFlow {
     param([ValidateSet('install','start')][string]$Mode)
     return [pscustomobject]@{
         mode=$Mode; phase='setup'
-        planAttempts=0; maxPlanAttempts=3; pendingPlan=$null
+        planAttempts=0; maxPlanAttempts=3; componentAttempts=0; maxComponentAttempts=1; pendingPlan=$null
         pendingProvenance=$null; setupDecision=$null; lastStartIdentity=$null; retryAfterFailure=$false
         lastStartError=$null; acceptNewConsent=$false
     }
@@ -318,10 +318,11 @@ function Move-FastLlmUiFlow {
             else { $Flow.phase='serving' }
         }
         'components-handled' {
-            # The preview named components that were installed or declined; the preview runs again. Counted against the same attempt limit.
+            # The preview named components that were installed or declined; the preview runs again. The component step has its own one-time
+            # budget, so the previews and the serving retry keep theirs; a second round of pending components does not stabilize.
             if ($Flow.phase -ne 'preview') { throw 'Unexpected component handling.' }
-            $Flow.planAttempts++
-            if ($Flow.planAttempts -ge $Flow.maxPlanAttempts) {
+            $Flow.componentAttempts++
+            if ($Flow.componentAttempts -gt $Flow.maxComponentAttempts) {
                 $Flow.phase='failed'; $Flow.lastStartError='Hardware/model selection did not stabilize within the UI attempt limit.'
             }
         }
@@ -898,9 +899,9 @@ function Get-FastLlmUiAutomaticInstallArguments {
 # The dialog's opening text: the setup the user picked, or the best setup FastLLM chose for the card.
 function Get-FastLlmUiComponentIntro {
     param([string] $Model, [string] $ContextText, [bool] $Chosen)
-    $lead = "You chose the $Model setup ($ContextText)."
-    if (-not $Chosen) { $lead = "FastLLM's best setup for your card ($Model, $ContextText) needs engine components." }
-    return "$lead It needs the components below. Missing ones are downloaded from the sources shown, not from Bitworks. Open each license link, read it, and tick I accept for every missing component to enable Install."
+    $opening = "You chose the $Model setup ($ContextText)."
+    if (-not $Chosen) { $opening = "FastLLM's best setup for your card ($Model, $ContextText) needs engine components." }
+    return "$opening It needs the components below. Missing ones are downloaded from the sources shown, not from Bitworks. Open each license link, read it, and tick I accept for every missing component to enable Install."
 }
 
 # Steps whose CLI reads the automatic-install setting from the install folder: a component install.
@@ -919,6 +920,14 @@ function Format-FastLlmUiReadyStatus {
     $engine = Format-FastLlmUiRunEngineLine -State $State
     if ($engine) { return "$engine. $text" }
     return $text
+}
+
+# The status line for an attached background run: the engine that runs (from status.json) in front of the given text.
+function Format-FastLlmUiBackgroundReadyStatus {
+    param([string] $Text, $State)
+    $engine = Format-FastLlmUiRunEngineLine -State $State
+    if ($engine) { return "$engine. $Text" }
+    return $Text
 }
 
 # What turning on "Install engine components automatically" shows before it is stored: every acceptable license with a link that can be opened from

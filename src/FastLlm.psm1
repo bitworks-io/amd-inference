@@ -3042,7 +3042,8 @@ function Install-FastLlmComponent {
 
         [switch] $AcceptLicense,
 
-        # When the componentLicenses setting is on and covers this chain: its acceptance time. Acts like -AcceptLicense, with receipt mode standing-setting.
+        # When the componentLicenses setting is on and covers this chain: its acceptance time. It stands in for consent only on the chain members whose every license link the setting covers (see
+        # -SettingAcceptedLicenses); any other member still needs consent. Receipt mode standing-setting.
         [string] $SettingAcceptedAt = '',
 
         # The license identities ({ title; host }) the setting holds. -SettingAcceptedAt stands in for consent only on chain members whose every

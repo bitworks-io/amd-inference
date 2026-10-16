@@ -1594,6 +1594,44 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($pendingPlan.fallback.applied -eq $false -and $pendingPlan.fallback.fromRecipe -ceq $autoHipId -and $pendingPlan.fallback.toRecipe -ceq $autoVulkanId -and $pendingPlan.fallback.toModelId -ceq [string] $autoVulkanEntry.components.model -and $pendingPlan.fallback.reason -ceq 'components-pending') 'the pending form names the Vulkan recipe and its model as the fallback, not applied, reason components-pending'
         Check ($null -eq $pendingPlan.enginePath -and @($pendingPlan.serverArguments).Count -eq 0 -and $autoProbe.calls.Count -eq 0) 'the pending form has no engine path and no arguments, and ran no engine'
         Check (-not (Test-Path -LiteralPath (Join-Path $pendingRoot 'components'))) 'the pending form installs nothing'
+        # The window receives this plan as JSON from the child: round-trip it and feed the window's helpers (src/FastLlm.UiFlow.ps1) the result.
+        if (-not (Get-Command Get-FastLlmUiPendingDecision -ErrorAction SilentlyContinue)) { . (Join-Path $repoRoot 'src/FastLlm.UiFlow.ps1') }
+        $wirePlan = ConvertTo-Json -InputObject $pendingPlan -Depth 12 | ConvertFrom-Json
+        $pendingWireIds = @($wirePlan.setup.pendingComponents | ForEach-Object { [string] $_.id })
+        $fixtureIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath $hipFx.ComponentsPath))
+        $shippedIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path (Join-Path $repoRoot 'config') 'components.json')))
+        Check ($shippedIdentities.Count -eq 3 -and $fixtureIdentities.Count -ge 1) 'license identities come from both the shipped and the fixture component lists'
+        $uiAskRoot = New-TestRoot
+        $uiOnRoot = New-TestRoot
+        $uiShippedRoot = New-TestRoot
+        Set-FastLlmComponentLicenseSettings -InstallRoot $uiOnRoot -Mode 'accept-automatically' -Accepted $fixtureIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        Set-FastLlmComponentLicenseSettings -InstallRoot $uiShippedRoot -Mode 'accept-automatically' -Accepted $shippedIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        $uiAskSettings = Get-FastLlmComponentLicenseSettings -InstallRoot $uiAskRoot
+        $uiOnSettings = Get-FastLlmComponentLicenseSettings -InstallRoot $uiOnRoot
+        $uiShippedSettings = Get-FastLlmComponentLicenseSettings -InstallRoot $uiShippedRoot
+        $wireRows = @(Get-FastLlmUiConsentRows -Chain @($wirePlan.setup.pendingComponents))
+        $wireRowsOk = ($wireRows.Count -eq $pendingWireIds.Count)
+        for ($rowIndex = 0; $wireRowsOk -and $rowIndex -lt $wireRows.Count; $rowIndex++) {
+            $wireMember = @($wirePlan.setup.pendingComponents)[$rowIndex]
+            $wireRow = $wireRows[$rowIndex]
+            if ($wireRow.id -cne [string] $wireMember.id -or -not $wireRow.needsAccept -or $wireRow.blocked -or @($wireRow.links).Count -ne @($wireMember.licenseLinks).Count -or $wireRow.links[0].url -cne [string] $wireMember.licenseLinks[0].url) { $wireRowsOk = $false }
+        }
+        Check $wireRowsOk 'the consent rows built from the JSON plan: one per pending member, needing acceptance, with that member''s license links'
+        Check ((Test-FastLlmLicensesCovered -Settings $uiOnSettings -Pending @($wirePlan.setup.pendingComponents)) -and -not (Test-FastLlmLicensesCovered -Settings $uiAskSettings -Pending @($wirePlan.setup.pendingComponents)) -and -not (Test-FastLlmLicensesCovered -Settings $uiShippedSettings -Pending @($wirePlan.setup.pendingComponents))) 'the covered test on the JSON plan: only a setting that holds those licenses covers them'
+        $askDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiAskSettings -DeclinedSetups @()
+        Check ($askDecision.action -ceq 'ask' -and $askDecision.recipeId -ceq $autoHipId -and $askDecision.engineId -ceq 'eng-hip' -and @($askDecision.rows).Count -eq $pendingWireIds.Count -and ((@($askDecision.rows | ForEach-Object { $_.id }) -join ',') -ceq ($pendingWireIds -join ',')) -and @($askDecision.rows | Where-Object { @($_.links).Count -lt 1 }).Count -eq 0) 'the JSON plan with the setting on ask: decision ask, one consent row per pending member with its license links'
+        $onDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiOnSettings -DeclinedSetups @()
+        Check ($onDecision.action -ceq 'install-now' -and $onDecision.engineId -ceq 'eng-hip') 'the JSON plan with the setting on and covering every license: install now'
+        $uncoveredDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiShippedSettings -DeclinedSetups @()
+        Check ($uncoveredDecision.action -ceq 'ask') 'the JSON plan with the setting on but holding other licenses: ask'
+        $declinedDecision = Get-FastLlmUiPendingDecision -Plan $wirePlan -LicenseSettings $uiOnSettings -DeclinedSetups @($autoHipId)
+        Check ($declinedDecision.action -ceq 'fallback' -and $declinedDecision.fallbackRequest -ceq 'declined' -and $declinedDecision.notice -ceq "Using the Vulkan setup: the AMD license wasn't accepted. You can install the HIP setup any time from Choose another setup.") 'a declined recipe on the JSON plan: fallback with the decline line'
+        $wireStart = @(Get-FastLlmUiStartRecipeArguments -Plan $wirePlan -ChosenRecipe $null -FallbackRequest '')
+        Check (($wireStart -join ' ') -ceq "-PlannedRecipe $autoHipId") 'start arguments from the JSON plan: -PlannedRecipe <hip id> alone, never -Recipe or -UseFallback'
+        $wireStartDeclined = @(Get-FastLlmUiStartRecipeArguments -Plan $wirePlan -ChosenRecipe $null -FallbackRequest 'declined')
+        Check (($wireStartDeclined -join ' ') -ceq "-PlannedRecipe $autoHipId -UseFallback") 'start arguments from the JSON plan after a decline: -PlannedRecipe <hip id> -UseFallback'
+        $wirePreview = @(Get-FastLlmUiPreviewRecipeArguments -Recipe $null -FallbackRequest 'declined')
+        Check (($wirePreview -join ' ') -ceq '-UseFallback') 'the preview after a decline asks for the fallback'
         # The same call with -ResolveFallback: the Vulkan plan, stamped.
         $resolvedPlan = Get-FastLlmPlan @autoBase -InstallRoot $pendingRoot -ResolveFallback
         Check ($resolvedPlan.recipe.id -ceq $autoVulkanId -and $resolvedPlan.backend -ieq 'vulkan' -and $resolvedPlan.fallback.applied -eq $true -and $resolvedPlan.fallback.fromRecipe -ceq $autoHipId -and $resolvedPlan.fallback.toRecipe -ceq $autoVulkanId -and $resolvedPlan.fallback.reason -ceq 'components-pending' -and -not $resolvedPlan.PSObject.Properties['setup']) 'same with -ResolveFallback -> Vulkan plan, fallback applied, no setup field'
@@ -1630,6 +1668,10 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             if ($typedCase.devices) { $autoProbe.devices = $typedCase.devices }
             $typedPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot
             Check ($typedPlan.recipe.id -ceq $autoVulkanId -and $typedPlan.backend -ieq 'vulkan' -and $typedPlan.fallback.reason -ceq $typedCase.code -and $typedPlan.fallback.applied -eq $true -and $typedPlan.fallback.fromRecipe -ceq $autoHipId) "plan-time typed HIP failure $($typedCase.code) falls back to the Vulkan plan for an auto pick, with that reason"
+            if ($typedCase.code -ceq 'hip-dll-blocked') {
+                $typedWire = ConvertTo-Json -InputObject $typedPlan -Depth 12 | ConvertFrom-Json
+                Check (((@(Get-FastLlmUiStartRecipeArguments -Plan $typedWire -ChosenRecipe $null -FallbackRequest '')) -join ' ') -ceq "-PlannedRecipe $autoHipId" -and (Get-FastLlmUiPendingDecision -Plan $typedWire -LicenseSettings $null -DeclinedSetups @()).action -ceq 'none') 'a plan-time hip-dll-blocked fallback from JSON starts with -PlannedRecipe <hip id> alone and has no pending decision'
+            }
             $typedNamed = $null
             try { Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -RecipeId $autoHipId | Out-Null } catch { $typedNamed = $_.Exception }
             Check ($null -ne $typedNamed -and $typedNamed.Data['FastLlmFailureCode'] -ceq $typedCase.code) "explicit -RecipeId HIP keeps throwing $($typedCase.code)"
@@ -1955,6 +1997,20 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorSource)) 'syncing a root with itself writes nothing'
     Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'ask'
     Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget).mode -ceq 'ask') 'turning the setting off reaches the install folder too'
+    # A failing mirror: turning the setting on goes back to what it was; turning it off always stays off in the launch root.
+    $originalSync = ${function:Sync-FastLlmComponentLicenseSetting}
+    function Sync-FastLlmComponentLicenseSetting { param($SourceRoot, $TargetRoot) throw 'simulated mirror failure' }
+    try {
+        $failSource = New-TestRoot
+        $failTarget = New-TestRoot
+        $onFailure = Get-ThrownFailure { Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $failSource -TargetRoot $failTarget -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z' }
+        Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $failSource).mode -ceq 'ask') 'a failed mirror while turning the setting on leaves the launch root as it was'
+        Set-FastLlmComponentLicenseSettings -InstallRoot $failSource -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        $offThrown = $null
+        try { Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $failSource -TargetRoot $failTarget -Mode 'ask' } catch { $offThrown = $_.Exception.Message }
+        Check ((Get-FastLlmComponentLicenseSettings -InstallRoot $failSource).mode -ceq 'ask' -and $offThrown -and $offThrown.Contains('setting is off')) 'a failed mirror while turning the setting off still leaves ask in the launch root and says so'
+    }
+    finally { ${function:Sync-FastLlmComponentLicenseSetting} = $originalSync }
     $componentsSourceText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'src/FastLlm.Components.ps1'))
     Check ($componentsSourceText -cnotmatch '[^\x00-\x7F]') 'src/FastLlm.Components.ps1 is ASCII only'
 
@@ -2269,8 +2325,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
     $assignedNames = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
-    # InstallRoot (default resolution) and DeviceBinding (lower-casing) are the two pre-existing, deliberate assignments to a parameter.
-    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding') -cnotcontains $_ })
+    # InstallRoot (default resolution), DeviceBinding and ComponentLicenses (lower-casing) are the deliberate assignments to a parameter.
+    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding', 'ComponentLicenses') -cnotcontains $_ })
     Check ($shadowed.Count -eq 0) 'fast-llm.ps1 assigns to no variable named like one of its parameters, case-insensitively'
 
     $psExecutable = (Get-Process -Id $PID).Path
@@ -2359,7 +2415,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($declinedText.exit -eq 0 -and $declinedText.text.Contains('Fallback:') -and -not $declinedText.text.Contains("license wasn't accepted")) 'plan -UseFallback -FallbackReason is accepted and a typed reason is not printed as a declined license'
     $cliSource = Get-Content -LiteralPath $cliPath -Raw
     Check ($cliSource.Contains('$componentsLock = Enter-FastLlmOperation') -and $cliSource.Contains('-OperationLockHeld:') -and $cliSource -match 'if \(\$componentsLock\) \{ \$componentsLock\.Dispose\(\) \}') 'the components lock is its own variable (the failure writer only knows $operationLock), is passed to Remove, and is disposed'
-    $cliSettingsPins = $cliSource.Contains("'settings' {") -and $cliSource.Contains('-SettingAcceptedAt $settingAcceptedAt') -and $cliSource.Contains('Get-FastLlmStandingAcceptance')
+    $cliSettingsPins = $cliSource.Contains("'settings' {") -and $cliSource.Contains('-SettingAcceptedAt $settingAcceptedAt -SettingAcceptedLicenses @($settingAcceptedLicenses)') -and $cliSource.Contains('Get-FastLlmStandingAcceptance')
     Check $cliSettingsPins 'fast-llm.ps1 has a settings branch and components -Install passes the standing acceptance through'
     if ($cliChildrenElevated) { Write-Host $cliChildSkip }
     else {
@@ -2380,10 +2436,17 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 3 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the three identities'
         $setOnJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
         Check ((($setOnJson.text | ConvertFrom-Json).mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
+        $setMixedRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-InstallRoot', $setRoot)
+        Check ($setMixedRefused.exit -ne 0 -and $setMixedRefused.text.Contains('needs -AcceptLicense') -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically') 'a mixed-case Accept-Automatically without -AcceptLicense is refused like the lower-case value and changes nothing'
         $setOff = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)
         Check ($setOff.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'ask') 'settings -ComponentLicenses ask turns it off'
-        $setInstallOk = Invoke-CliRefusal @('install', '-DryRun', '-AcceptLicense', '-InstallRoot', $setRoot)
-        Check (-not $setInstallOk.text.Contains('-AcceptLicense is supported only')) '-AcceptLicense is accepted with install'
+        # install -DryRun is refused before any plan, download or install step runs, so -AcceptLicense with it can never fetch a component.
+        $setOnMixed = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
+        Check ($setOnMixed.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically' -and @((Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).accepted).Count -eq 3) 'a mixed-case Accept-Automatically with -AcceptLicense stores accept-automatically, not ask'
+        $null = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)
+        $setInstallDry = Invoke-CliRefusal @('install', '-DryRun', '-AcceptLicense', '-InstallRoot', $setRoot)
+        Check ($setInstallDry.exit -ne 0 -and $setInstallDry.text.Contains('install -DryRun is not supported') -and -not $setInstallDry.text.Contains('-AcceptLicense is supported only') -and -not (Test-Path -LiteralPath (Join-Path $setRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $setRoot 'downloads'))) 'install -DryRun -AcceptLicense is refused up front: -AcceptLicense is a valid install switch and nothing is downloaded or installed'
+        Check ($cliSource.Contains("if (`$Action -eq 'install' -and `$DryRun)") -and $cliSource.Contains('if (-not $DryRun -and $unverifiedPending.Count -eq 0 -and ($AcceptLicense -or $pendingAcceptedAt))')) 'the pending-components install step is guarded against a dry run as well'
         # components -Install with the setting off still needs -AcceptLicense (nothing is downloaded before consent).
         # A short folder: the shipped runtime's file paths must fit under the Windows path limit before consent is looked at.
         $shortSetRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fl' + [Guid]::NewGuid().ToString('N').Substring(0, 6))

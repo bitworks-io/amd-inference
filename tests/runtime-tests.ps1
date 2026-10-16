@@ -441,13 +441,13 @@ try {
     $explicitHipPlan=[pscustomobject]@{backend='hip';engineComponentId='x';recipe=[pscustomobject]@{id='hip-recipe'};requestedRecipeId='hip-recipe'}
     $fellBackPlan=[pscustomobject]@{backend='hip';engineComponentId='x';recipe=[pscustomobject]@{id='hip-recipe'};fallback=[pscustomobject]@{applied=$true}}
     $wordingFor={ param($P) & $module { param($X) Get-FastLlmSelfTestFailureText -Reasons @('slow') -Plan $X } $P }
-    Check ((& $wordingFor $autoHipPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM starts the Vulkan setup instead.') 'an automatically chosen HIP setup''s self-test failure says the Vulkan setup is started instead'
+    Check ((& $wordingFor $autoHipPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM tries the Vulkan setup instead.') 'an automatically chosen HIP setup''s self-test failure says the Vulkan setup is started instead'
     Check ((& $wordingFor $explicitHipPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM does not switch to another setup on its own.') 'an explicit -Recipe HIP self-test failure still says FastLLM does not switch on its own'
     Check ((& $wordingFor $fellBackPlan) -ceq 'Self-test failed (slow). The server was stopped; FastLLM does not switch to another setup on its own.') 'a plan that already fell back never promises another fallback'
     foreach($wordingCase in @(@{label='hip-dll-blocked';exit=-1073740760},@{label='hip-dll-missing';exit=-1073741515})){
         $autoText=& $module { param($E) (New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode $E -AutoSelected).Message } $wordingCase.exit
         $explicitText=& $module { param($E) (New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode $E).Message } $wordingCase.exit
-        Check ($autoText -like '*FastLLM starts the Vulkan setup instead.' -and $autoText -notlike '*does not switch to Vulkan on its own*' -and $explicitText -like '*FastLLM does not switch to Vulkan on its own.*') "$($wordingCase.label): the message for an automatic choice no longer says it does not switch; for an explicit recipe it still does"
+        Check ($autoText -like '*FastLLM tries the Vulkan setup instead.' -and $autoText -notlike '*does not switch to Vulkan on its own*' -and $explicitText -like '*FastLLM does not switch to Vulkan on its own.*') "$($wordingCase.label): the message for an automatic choice no longer says it does not switch; for an explicit recipe it still does"
     }
 
     $httpHost=New-Object Bitworks.FastLlm.ProcessHost

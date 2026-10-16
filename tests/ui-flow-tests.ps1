@@ -897,6 +897,9 @@ foreach ($pair in @(@('components-declined', 'AMD license not accepted'), @('com
 Check ((Get-FastLlmUiInstallFailedLine) -ceq 'Using the Vulkan setup: the engine components could not be installed. Start again to retry.') 'the failed-install line is the specified one'
 Check ($null -eq (Format-FastLlmUiRunEngineLine -State ([pscustomobject]@{ phase = 'ready' })) -and $null -eq (Format-FastLlmUiRunEngineLine -State $null)) 'no engine block, no engine line'
 Check ((Format-FastLlmUiReadyStatus -State ([pscustomobject]@{ engine = [pscustomobject]@{ backend = 'vulkan' } })).StartsWith('Running on Vulkan. Ready - API smoke tests passed') -and (Format-FastLlmUiReadyStatus -State $null).StartsWith('Ready - API smoke tests passed')) 'the ready status line leads with the engine when known'
+$bgFallbackState = [pscustomobject]@{ engine = [pscustomobject]@{ backend = 'vulkan' }; fallback = [pscustomobject]@{ fromRecipe = $hipId; toRecipe = $vulkanId; reason = 'components-pending' } }
+Check ((Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State $bgFallbackState).StartsWith('Running on Vulkan (fallback: ') -and (Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State $bgFallbackState).EndsWith('. Ready background inference attached.')) 'an attached background run shows the engine and the fallback in front of its status text'
+Check ((Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State $null) -ceq 'Ready background inference attached.' -and (Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached.' -State ([pscustomobject]@{ phase = 'ready' })) -ceq 'Ready background inference attached.') 'an attached background run without an engine block keeps its plain text'
 
 Check ((@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'engine-1' -InstallRoot 'C:\r') -join '|') -ceq 'components|-Install|engine-1|-InstallRoot|C:\r|-Unattended') 'the automatic install carries no -AcceptLicense'
 Check (@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'x y' -InstallRoot 'C:\r').Count -eq 0 -and @(Get-FastLlmUiAutomaticInstallArguments -EngineId '' -InstallRoot 'C:\r').Count -eq 0) 'an unsafe or empty engine id installs nothing'
@@ -906,10 +909,21 @@ Check ((Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Cho
 $flowForComponents = New-FastLlmUiFlow -Mode start
 $flowForComponents.phase = 'preview'
 $flowForComponents = Move-FastLlmUiFlow -Flow $flowForComponents -Event 'components-handled'
-Check ($flowForComponents.phase -ceq 'preview' -and $flowForComponents.planAttempts -eq 1) 'handling components keeps the preview phase and counts an attempt'
+Check ($flowForComponents.phase -ceq 'preview' -and $flowForComponents.planAttempts -eq 0 -and $flowForComponents.componentAttempts -eq 1) 'handling components keeps the preview phase and uses the component budget, not a preview attempt'
 $flowForComponents = Move-FastLlmUiFlow -Flow $flowForComponents -Event 'components-handled'
-$flowForComponents = Move-FastLlmUiFlow -Flow $flowForComponents -Event 'components-handled'
-Check ($flowForComponents.phase -ceq 'failed') 'repeated component handling stops at the attempt limit'
+Check ($flowForComponents.phase -ceq 'failed' -and $flowForComponents.lastStartError -like '*did not stabilize*') 'a second round of pending components stops the flow'
+
+# A first run: components installed, model downloaded, serving still has its retry; the previews keep all three attempts.
+$firstRun = New-FastLlmUiFlow -Mode start
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'setup-complete' -SetupDecision (ReadySetup -EngineVerified:$true)
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'components-handled'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'preview-complete' -Plan $largePlan -HasConsent:$false -HasArtifact:$false
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'consent-approved'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'model-complete'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'preview-complete' -Plan $largePlan -HasConsent:$true -HasArtifact:$true
+Check ($firstRun.phase -ceq 'serving' -and $firstRun.planAttempts -eq 2) 'a first run that installed components still reaches serving with a preview attempt to spare'
+$firstRun = Move-FastLlmUiFlow -Flow $firstRun -Event 'serving-failed' -ErrorMessage 'x'
+Check ($firstRun.phase -ceq 'preview' -and $firstRun.retryAfterFailure) 'and the serving retry is still available after a component install'
 
 $licenseDisclosureComponents = @([pscustomobject]@{ id = 'r'; license = [pscustomobject]@{ consent = 'accept'; links = @([pscustomobject]@{ title = 'AMD license'; url = 'https://www.amd.com/en/legal/eula.html' }) } })
 $disclosure = Get-FastLlmUiLicenseDisclosure -Components $licenseDisclosureComponents
@@ -922,6 +936,7 @@ Check ($ui.Contains("'Install engine components automatically (accept their lice
 Check ($ui.Contains("`$dialog.Text='Install engine components'") -and -not $ui.Contains('Install community components')) 'the component dialog is titled Install engine components'
 Check ($ui.Contains('Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot') -and $ui.Contains('Sync-FastLlmComponentLicenseSetting -SourceRoot $script:settingsRoot -TargetRoot $script:installPath')) 'the license setting is stored under the launch root and mirrored into the install folder at every launch'
 Check ($ui.Contains('Get-FastLlmUiPendingDecision') -and $ui.Contains('Add-FastLlmUiDeclinedSetup') -and $ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest') -and $ui.Contains('Format-FastLlmUiReadyStatus')) 'the preview decides on pending components, remembers a decline, previews the fallback and shows the engine line'
+Check (([regex]::Matches($ui, 'Format-FastLlmUiBackgroundReadyStatus -Text')).Count -eq 2 -and $ui.Contains('GetUiBackgroundRunStatus') -and $ui.Contains('Get-FastLlmStatus $script:installPath')) 'both background attach paths read the engine and fallback from the run status'
 $chosenBody = $ui.Substring($ui.IndexOf('function ContinueWithChosenRecipe'))
 $chosenBody = $chosenBody.Substring(0, $chosenBody.IndexOf('BeginChosenRecipe $Row'))
 Check ($ui.Contains('Clear-FastLlmUiDeclinedSetups -InstallRoot $script:settingsRoot') -and $ui.Contains("RepreviewForPendingSetup 'install-failed'") -and $ui.Contains('Get-FastLlmUiInstallFailedLine')) 'accepting the automatic install clears declines; a failed own install previews the fallback without recording a decline'
