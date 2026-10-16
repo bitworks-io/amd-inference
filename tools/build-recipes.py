@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+from decimal import Decimal
 
 EXPERIMENTAL_FILE = "data/bitworks-experimental-recipes.json"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -367,8 +368,8 @@ def check_recommended_evidence(recipes):
                 continue
             gen, prompt = recipe["expected"]["generationTokS"], recipe["expected"]["promptTokS"]
             other_gen, other_prompt = other["expected"]["generationTokS"], other["expected"]["promptTokS"]
-            # 100 * gen >= 97 * other_gen is the 97% floor without the rounding noise of 0.97 * other_gen.
-            if prompt < other_prompt or 100 * gen < 97 * other_gen:
+            # Decimal(str(x)) is the number as written in the data, so the 97% floor is exact (no binary float noise at the boundary).
+            if Decimal(str(prompt)) < Decimal(str(other_prompt)) or Decimal(str(gen)) * 100 < 97 * Decimal(str(other_gen)):
                 raise RecipeError(
                     f"{recipe['id']}: recommended but not measured at least as good as {other['id']}: "
                     f"prompt {prompt} vs {other_prompt} tok/s (must be at least equal), generation {gen} vs {other_gen} tok/s (must be at least 97%)")

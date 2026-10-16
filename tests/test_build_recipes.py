@@ -358,15 +358,18 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertIn(HIP_VERIFIED["id"], str(caught.exception))
         self.assertIn(ENTRY["id"], str(caught.exception))
         self.assertIn("recommended but not measured at least as good as", str(caught.exception))
+        br.build(self.pair(hip_prompt=507.02))  # equal prompt rate passes
 
     def test_recommended_generation_floor_is_97_percent(self):
-        with self.assertRaises(br.RecipeError):
+        with self.assertRaisesRegex(br.RecipeError, "recommended but not measured at least as good as"):
             br.build(self.pair(hip_gen=31.7))
         br.build(self.pair(hip_gen=31.8))
         # The boundary compares unrounded values: exactly 97.0% passes, just under fails.
         br.build(self.pair(hip_gen=97.0, vulkan_gen=100.0))
-        with self.assertRaises(br.RecipeError):
+        with self.assertRaisesRegex(br.RecipeError, "recommended but not measured at least as good as"):
             br.build(self.pair(hip_gen=96.99, vulkan_gen=100.0))
+        # 100 * 4.85 is 484.99999999999994 in binary floats, but 4.85 is exactly 97% of 5.0.
+        br.build(self.pair(hip_gen=4.85, vulkan_gen=5.0))
 
     def test_evidence_check_is_keyed_on_variant_count_and_model(self):
         # A faster Vulkan sibling on another model or another GPU count is not compared with the recommended entry.
@@ -374,6 +377,7 @@ class RecipeBuilderTests(unittest.TestCase):
             hip["model"] = "qwen3.8-27b-ud-iq4-xs"; hip["runtime"]["contextSize"] = 16384; hip["expected"]["contextTokens"] = 16384
         br.build(self.pair(hip_prompt=500, mutate_hip=other_model))
         br.build(self.pair(hip_prompt=500, mutate_hip=lambda hip: hip.update(gpuCount=2)))
+        br.build(self.pair(hip_prompt=500, mutate_hip=lambda hip: hip.update(variant="rx-7900-xt")))
 
     def test_one_recommended_per_variant_and_count_still_enforced(self):
         vulkan = copy.deepcopy(ENTRY)
