@@ -286,7 +286,7 @@ $oldOs=$env:OS
 try {
     $env:OS='Windows_NT'
     $InstallRoot='synthetic-no-files';$catalogPath='synthetic-catalog';$ModelId=[string]$large.id;$HardwareFile=$null
-    $ExpectedModelProvenanceSha256=$digest;$EngineOnly=$false;$DryRun=$false
+    $ExpectedModelProvenanceSha256=$digest;$EngineOnly=$false;$DryRun=$false;$UseFallback=[switch]$false;$AcceptLicense=[switch]$false
     $AsJson=$true;$Unattended=$true;$AcceptModelLicense=$true;$Profile='balanced'
     $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false}
     $script:mockCatalogModel=Clone $large
@@ -295,7 +295,7 @@ try {
     function Get-FastLlmCatalog {param($CatalogPath) return [pscustomobject]@{models=@($script:mockCatalogModel)}}
     function Install-FastLlmEngines {param($CatalogPath,$InstallRoot) $script:engineCalls++}
     function Get-FastLlmHardware {param($HardwareFile,$CatalogPath,$InstallRoot) return [pscustomobject]@{backend='Vulkan'}}
-    function Get-FastLlmPlan {param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel) return [pscustomobject]@{model=$script:mockPlanModel}}
+    function Get-FastLlmPlan {param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback) return [pscustomobject]@{model=$script:mockPlanModel}}
     function Write-FastLlmPlan {param($Plan)}
     function Install-FastLlmModel {param($Plan,$InstallRoot,$AcceptModelLicense,$Unattended) $script:modelCalls++;return 'synthetic-model'}
     function Write-FastLlmState {param($InstallRoot,$State)}

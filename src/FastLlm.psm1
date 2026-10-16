@@ -3533,6 +3533,15 @@ function Start-FastLlmServer {
         throw (New-FastLlmDeviceBindingFailure -Code 'device-binding-unsupported-backend' -Message 'Device binding (enforce) is available only for the Vulkan lane; this setup runs on the HIP engine. The server was not started. Use -DeviceBinding record or -DeviceBinding off to start without this requirement.')
     }
 
+    # The pending form names components that are not installed: a start never installs them, and never launches the pending form.
+    if ($Plan.PSObject.Properties['setup'] -and $Plan.setup -and $Plan.setup.PSObject.Properties['pendingComponents'] -and @($Plan.setup.pendingComponents).Count -gt 0) {
+        $pendingList = @($Plan.setup.pendingComponents)
+        $pendingEngineId = ''
+        if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { $pendingEngineId = [string] $Plan.engineComponentId }
+        if (-not $pendingEngineId) { $pendingEngineId = [string] $pendingList[$pendingList.Count - 1].id }
+        throw (New-FastLlmComponentUnavailableFailure -EngineId $pendingEngineId -UnavailableId ([string] $pendingList[0].id) -Message "The component '$([string] $pendingList[0].id)' (for the engine component '${pendingEngineId}') is not installed. A start never installs components; run the install action first. Nothing was started.")
+    }
+
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     $backendKey = ([string] $Plan.backend).ToLowerInvariant()
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) {
@@ -3600,10 +3609,16 @@ function Start-FastLlmServer {
     if ($Plan.PSObject.Properties['recovered'] -and $Plan.recovered) { $freshRecipeOptions.Recovered = $true }
     $planRecipeId = $null
     if ($Plan.PSObject.Properties['requestedRecipeId'] -and $Plan.requestedRecipeId) { $planRecipeId = [string] $Plan.requestedRecipeId }
-    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.origin -notin @('estimated', 'manual')) {
+    $planIsFallback = [bool] ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback -and $Plan.fallback.PSObject.Properties['applied'] -and [bool] $Plan.fallback.applied)
+    if ($planIsFallback -or ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.origin -notin @('estimated', 'manual'))) {
         $freshRecipeOptions.RecipesPath = Join-Path $configRoot 'recipes.json'
         $freshRecipeOptions.GpuVariantsPath = Join-Path $configRoot 'gpu-variants.json'
         if ($planRecipeId) { $freshRecipeOptions.RecipeId = $planRecipeId }
+    }
+    # Added only for a plan that stands in for another recipe, so the default call keeps the exact parameter set it always had.
+    if ($planIsFallback) {
+        $freshRecipeOptions.FallbackFromRecipe = [string] $Plan.fallback.fromRecipe
+        $freshRecipeOptions.FallbackReason = [string] $Plan.fallback.reason
     }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
@@ -3652,6 +3667,11 @@ function Start-FastLlmServer {
         if ($backgroundRequestId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid background request correlation.' }
         $freshPlan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue $backgroundRequestId -Force
     }
+    # A plan that stands in for another recipe re-plans to the same stand-in, so the fallback is not lost (or reported as a changed recipe) at start.
+    if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback -and -not $freshPlan.PSObject.Properties['fallback']) {
+        $freshPlan | Add-Member -NotePropertyName fallback -NotePropertyValue $Plan.fallback -Force
+    }
+    $startedExplicit = [bool] $planRecipeId
     $Plan = $freshPlan
 
     # Extra supervisor options are passed only when requested, so the default call is unchanged.
@@ -3660,7 +3680,37 @@ function Start-FastLlmServer {
     if ($ThroughputCanary) { $supervisorOptions.ThroughputCanary = $true }
     if ($SelfTest) { $supervisorOptions.SelfTest = $true }
     if ($DeviceBinding -ne 'off') { $supervisorOptions.DeviceBinding = $DeviceBinding }
-    return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
+    $mayFallBack = (-not $startedExplicit) -and (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan)
+    try {
+        return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
+    }
+    catch {
+        $firstFailure = $_.Exception
+        $firstReason = ''
+        $firstCode = ''
+        if ($firstFailure.Data) { $firstReason = [string] $firstFailure.Data['FastLlmReason']; $firstCode = [string] $firstFailure.Data['FastLlmFailureCode'] }
+        # Not a failure of the HIP setup itself: a device-binding refusal, a changed plan, a model to repair or a state-write error never start another setup.
+        if (-not $mayFallBack -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed')) { throw }
+        $fallbackReasonCode = 'start-failed'
+        if ($firstCode -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,95}$') { $fallbackReasonCode = $firstCode }
+        $fromRecipeId = [string] $Plan.recipe.id
+        # The supervised run has stopped its server by now (its own cleanup), so the second launch finds the port free and the status file closed.
+        Write-Host "The HIP setup did not start ($fallbackReasonCode). Started the Vulkan setup instead."
+        $fallbackHardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot
+        $fallbackPlanOptions = @{ Hardware = $fallbackHardware; CatalogPath = $CatalogPath; Profile = ([string] $Plan.profile); InstallRoot = $InstallRoot
+            ModelId = $Plan.requestedModelId; ContextSize = $Plan.requestedContextSize; FallbackFromRecipe = $fromRecipeId; FallbackReason = $fallbackReasonCode
+            RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
+        if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
+        $fallbackPlan = Get-FastLlmPlan @fallbackPlanOptions
+        if ($Plan.PSObject.Properties['backgroundRequestId']) { $fallbackPlan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue ([string] $Plan.backgroundRequestId) -Force }
+        # The stand-in goes through the whole start again (engine, model, hash and consent checks, re-plan), with the same options. It has a
+        # `fallback`, so it can never fall back again: the second failure propagates.
+        $startAgain = @{ Plan = $fallbackPlan; CatalogPath = $CatalogPath; InstallRoot = $InstallRoot; LoadTimeoutSeconds = $LoadTimeoutSeconds; DeviceBinding = $DeviceBinding }
+        if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $startAgain.VulkanBarMitigation = $VulkanBarMitigation }
+        if ($ThroughputCanary) { $startAgain.ThroughputCanary = $true }
+        if ($SelfTest) { $startAgain.SelfTest = $true }
+        return Start-FastLlmServer @startAgain
+    }
 }
 
 Export-ModuleMember -Function @(

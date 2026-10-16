@@ -92,6 +92,13 @@ param(
     [ValidateSet('ask', 'accept-automatically')]
     [string] $ComponentLicenses,
 
+    # start only: the setup a preview showed (a recipe id). The start picks the setup automatically, like a start without -Recipe, and runs it
+    # or the Vulkan setup that stands in for it; any other final setup is refused. Not with -Recipe or -ModelId.
+    [string] $PlannedRecipe,
+
+    # plan, install and start: use the Vulkan setup that stands in for the automatically chosen HIP setup (reason components-declined). Not with -Recipe.
+    [switch] $UseFallback,
+
     # plan, start and install with -Recipe of a community-experimental or bitworks-experimental recipe: required in addition to the experimental switch being on.
     [switch] $AcceptExperimental,
 
@@ -140,6 +147,10 @@ if ($Action -eq 'settings' -and $AcceptLicense -and -not ($PSBoundParameters.Con
 if ($Action -eq 'settings' -and $PSBoundParameters.ContainsKey('ComponentLicenses') -and $ComponentLicenses -ceq 'accept-automatically' -and -not $AcceptLicense) {
     throw 'settings -ComponentLicenses accept-automatically needs -AcceptLicense: it shows the licenses first, and nothing was changed.'
 }
+if ($PSBoundParameters.ContainsKey('PlannedRecipe') -and $Action -ne 'start') { throw '-PlannedRecipe is supported only by start.' }
+if ($PSBoundParameters.ContainsKey('PlannedRecipe') -and ($Recipe -or $ModelId)) { throw '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' }
+if ($UseFallback -and $Action -notin @('plan', 'install', 'start')) { throw '-UseFallback is supported only by plan, install and start.' }
+if ($UseFallback -and $Recipe) { throw '-UseFallback cannot be combined with -Recipe: an explicit recipe never falls back.' }
 if ($AcceptExperimental -and $Action -notin @('plan', 'start', 'install')) { throw '-AcceptExperimental is supported only by plan, start and install.' }
 if ($Detail -and ($Action -ne 'recipes' -or -not $AsJson)) { throw '-Detail is supported only by recipes with -AsJson.' }
 if ($Action -eq 'components') {
@@ -217,12 +228,44 @@ function Write-FastLlmPlan {
     Write-Host "GPU plan:  $(@($Plan.selectedAdapters).Count) device(s); split mode $($Plan.splitMode)"
     Write-Host 'Placement: requested all GPU layers; startup must pass API and reported-layer checks (physical residency remains unqualified)'
     Write-Host "Endpoint:  $($Plan.endpoint)"
+    if ($Plan.PSObject.Properties['setup'] -and $Plan.setup -and $Plan.setup.PSObject.Properties['pendingComponents'] -and @($Plan.setup.pendingComponents).Count -gt 0) {
+        Write-Host 'Needs:     engine components that are not installed:'
+        foreach ($needed in @($Plan.setup.pendingComponents)) {
+            $neededState = ''
+            if ([bool] $needed.unverified) { $neededState = ' (installed, but failed its file check)' }
+            Write-Host ("  - {0} {1}, {2:N1} MB, from {3}{4}" -f $needed.name, $needed.version, ([double] $needed.downloadBytes / 1MB), (@($needed.sourceHosts) -join ', '), $neededState)
+            foreach ($neededLink in @($needed.licenseLinks)) { Write-Host ("      license: {0} <{1}>" -f $neededLink.title, $neededLink.url) }
+        }
+    }
+    if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback) {
+        $fallbackTarget = 'a Vulkan setup'
+        if ($Plan.fallback.toRecipe) { $fallbackTarget = [string] $Plan.fallback.toRecipe }
+        if ([bool] $Plan.fallback.applied) {
+            Write-Host "Fallback:  using $fallbackTarget instead of $($Plan.fallback.fromRecipe) ($($Plan.fallback.reason))"
+            if ([string] $Plan.fallback.reason -ceq 'components-pending') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which isn't installed. Started the Vulkan setup instead." }
+            elseif ([string] $Plan.fallback.reason -ceq 'components-unverified') { Write-Host "FastLLM's best setup for your card uses the AMD HIP runtime, which is installed but failed its file check. Started the Vulkan setup instead." }
+            elseif ([string] $Plan.fallback.reason -ceq 'components-declined') { Write-Host "Using the Vulkan setup: the AMD license wasn't accepted." }
+            else { Write-Host "FastLLM's best setup for your card could not run here ($($Plan.fallback.reason)). Started the Vulkan setup instead." }
+        }
+        else { Write-Host "Fallback:  if the components are not installed, $fallbackTarget is used ($($Plan.fallback.reason))" }
+    }
     if (@($Plan.warnings).Count -gt 0) {
         Write-Host 'Warnings:'
         foreach ($warning in @($Plan.warnings)) {
             Write-Host "  - $warning"
         }
     }
+}
+
+# -UseFallback: the Vulkan setup that stands in for the automatically chosen HIP setup, stamped components-declined. A plan that is not a HIP
+# setup (and has no fallback to apply) stays as it is.
+function Get-FastLlmDeclinedFallbackPlan {
+    param($Plan, $Hardware)
+    $fromRecipeId = ''
+    if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback) { $fromRecipeId = [string] $Plan.fallback.fromRecipe }
+    elseif ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip' -and $Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id']) { $fromRecipeId = [string] $Plan.recipe.id }
+    if (-not $fromRecipeId) { return $Plan }
+    return Get-FastLlmPlan -Hardware $Hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -FallbackFromRecipe $fromRecipeId -FallbackReason 'components-declined'
 }
 
 $operationLock = $null
@@ -394,21 +437,61 @@ try {
                 break
             }
             $hardware = Get-FastLlmHardware -HardwareFile $HardwareFile -CatalogPath $catalogPath -InstallRoot $InstallRoot
+            $installNote = @()
             try {
-                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -ResolveFallback:$UseFallback
             }
             catch {
-                # A recipe on an engine component that is not installed: a plain install (never a dry run or an unattended one) installs
-                # that one listed component through its license rule, then plans again. Start never does this, and nothing falls back.
+                # An explicit recipe on an engine component that is not installed: the component is installed when -AcceptLicense or the standing
+                # setting covers its licenses (a plain interactive install still shows a show-type license and asks); unattended with neither,
+                # and a dry run, refuse. Nothing falls back.
                 $missingComponentId = [string] $_.Exception.Data['FastLlmComponentId']
-                if ([string] $_.Exception.Data['FastLlmFailureCode'] -cne 'needs-setup-component-missing' -or -not $missingComponentId -or $DryRun -or $Unattended) { throw }
-                Install-FastLlmComponent -ComponentsPath (Join-Path (Join-Path $PSScriptRoot 'config') 'components.json') -ComponentId $missingComponentId -InstallRoot $InstallRoot | Out-Null
+                if ([string] $_.Exception.Data['FastLlmFailureCode'] -cne 'needs-setup-component-missing' -or -not $missingComponentId -or $DryRun) { throw }
+                $missingAcceptedAt = ''
+                $missingAcceptedLicenses = @()
+                if (-not $AcceptLicense) {
+                    $missingAcceptedLicenses = @((Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot).accepted)
+                    $missingAcceptedAt = [string] (Get-FastLlmStandingAcceptance -InstallRoot $InstallRoot -ComponentsPath $componentsFilePath -ComponentId $missingComponentId)
+                }
+                if ($Unattended -and -not $AcceptLicense -and -not $missingAcceptedAt) { throw }
+                Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $missingComponentId -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -SettingAcceptedAt $missingAcceptedAt -SettingAcceptedLicenses @($missingAcceptedLicenses) -Unattended:$Unattended | Out-Null
                 $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            }
+            if ($UseFallback) { $plan = Get-FastLlmDeclinedFallbackPlan -Plan $plan -Hardware $hardware }
+            elseif ($plan.PSObject.Properties['setup'] -and $plan.setup -and $plan.setup.PSObject.Properties['pendingComponents'] -and @($plan.setup.pendingComponents).Count -gt 0) {
+                # The automatically chosen setup needs engine components that are not installed. They are installed here only with the accepted
+                # licenses (-AcceptLicense, or the standing setting when it covers every license of the chain); otherwise the fallback setup is
+                # installed and this is said out loud. A component that is installed but failed its file check is never reinstalled in place.
+                $pendingEngineId = [string] $plan.engineComponentId
+                $unverifiedPending = @(@($plan.setup.pendingComponents) | Where-Object { [bool] $_.unverified })
+                $pendingAcceptedAt = ''
+                $pendingAcceptedLicenses = @()
+                if ($unverifiedPending.Count -eq 0 -and -not $AcceptLicense) {
+                    $pendingAcceptedLicenses = @((Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot).accepted)
+                    $pendingAcceptedAt = [string] (Get-FastLlmStandingAcceptance -InstallRoot $InstallRoot -ComponentsPath $componentsFilePath -ComponentId $pendingEngineId)
+                }
+                if ($unverifiedPending.Count -eq 0 -and ($AcceptLicense -or $pendingAcceptedAt)) {
+                    Install-FastLlmComponent -ComponentsPath $componentsFilePath -ComponentId $pendingEngineId -InstallRoot $InstallRoot -AcceptLicense:$AcceptLicense -SettingAcceptedAt $pendingAcceptedAt -SettingAcceptedLicenses @($pendingAcceptedLicenses) -Unattended:$Unattended | Out-Null
+                    $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+                }
+                else {
+                    foreach ($unverifiedItem in $unverifiedPending) {
+                        $installNote += "The component '$($unverifiedItem.id)' is installed but failed its file check, and FastLLM does not reinstall it in place. To reinstall it: run '.\fast-llm.ps1 components -Remove $($unverifiedItem.id)', then run install again."
+                    }
+                    if ($unverifiedPending.Count -eq 0) {
+                        $installNote += 'To install the HIP setup, accept these licenses by running install again with -AcceptLicense, or turn on the setting: .\fast-llm.ps1 settings -ComponentLicenses accept-automatically -AcceptLicense'
+                        foreach ($noteItem in @($plan.setup.pendingComponents)) {
+                            foreach ($noteLink in @($noteItem.licenseLinks)) { $installNote += ("  license for {0}: {1} <{2}>" -f $noteItem.name, $noteLink.title, $noteLink.url) }
+                        }
+                    }
+                    $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -FallbackFromRecipe ([string] $plan.fallback.fromRecipe) -FallbackReason ([string] $plan.fallback.reason)
+                }
             }
             if ($ExpectedModelProvenanceSha256) {
                 Assert-FastLlmUiExpectedProvenance -Model $plan.model -ExpectedSha256 $ExpectedModelProvenanceSha256
             }
             Write-FastLlmPlan -Plan $plan
+            if (-not $AsJson) { foreach ($noteLine in $installNote) { Write-Host $noteLine } }
             if ($DryRun) {
                 break
             }
@@ -421,13 +504,15 @@ try {
         }
         'plan' {
             $hardware = Get-FastLlmHardware -HardwareFile $HardwareFile -CatalogPath $catalogPath -InstallRoot $InstallRoot
-            $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+            $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -ResolveFallback:$UseFallback
+            if ($UseFallback) { $plan = Get-FastLlmDeclinedFallbackPlan -Plan $plan -Hardware $hardware }
             Write-FastLlmPlan -Plan $plan
         }
         'start' {
             if ($DryRun) {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
-                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -ResolveFallback
+                if ($UseFallback) { $plan = Get-FastLlmDeclinedFallbackPlan -Plan $plan -Hardware $hardware }
                 Write-FastLlmPlan -Plan $plan
                 break
             }
@@ -456,7 +541,15 @@ try {
             $recoveryAttempted = $false
             for ($planAttempt = 1; $planAttempt -le $maximumPlanAttempts; $planAttempt++) {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
-                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions
+                # A start never installs anything: an automatically chosen setup whose engine components are missing, unverified or unable to run
+                # resolves to the Vulkan setup that stands in for it (-ResolveFallback), and the plan says so.
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -ResolveFallback
+                if ($UseFallback) { $plan = Get-FastLlmDeclinedFallbackPlan -Plan $plan -Hardware $hardware }
+                # A window start names the setup its preview showed: the final plan is that setup or the one that stands in for it, or nothing starts.
+                # After a model recovery the plan is no longer the previewed setup by design, so the check applies to the first plans only.
+                if ($PlannedRecipe -and -not $recoveryAttempted -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $plan -PlannedRecipe $PlannedRecipe)) {
+                    throw (New-FastLlmTypedFailure -Code 'planned-recipe-not-applicable' -Message "The setup '$PlannedRecipe' does not apply to this PC any more. Nothing was started; choose a setup again.")
+                }
                 Write-FastLlmPlan -Plan $plan
                 if ($VulkanBarMitigation -in @('on', 'off') -and $plan.PSObject.Properties['backend'] -and [string] $plan.backend -ieq 'hip') {
                     Write-Host 'Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
