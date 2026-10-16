@@ -43,6 +43,7 @@ $form.BackColor=[Drawing.Color]::FromArgb(245,247,250)
 function LabelAt($Text,$X,$Y,$Width=800) {
     $control=New-Object Windows.Forms.Label
     $control.Text=$Text;$control.Location=New-Object Drawing.Point($X,$Y);$control.Size=New-Object Drawing.Size($Width,27)
+    $control.UseMnemonic=$false
     $form.Controls.Add($control);return $control
 }
 $title=LabelAt 'Local AMD inference, managed on this PC' 24 20
@@ -577,7 +578,7 @@ function ShowExactModelConsent($Plan) {
 function LaunchUiPhase {
     if(-not $script:flow){throw 'No active control-window workflow.'}
     switch($script:flow.phase){
-        'setup' { LaunchStep 'setup check' (@('doctor')+$script:selection);return }
+        'setup' { LaunchStep 'setup check' (@('doctor','-Compact')+$script:selection);return }
         'engine' { LaunchStep 'engine' (@('install','-EngineOnly')+$script:selection);return }
         'preview' { LaunchStep 'preview' (@('plan','-AsJson')+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe)+@(Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe));return }
         'model-download' {
@@ -1104,8 +1105,7 @@ $timer.Add_Tick({
         $script:child.Dispose();$script:child=$null;$script:step='idle'
         if($step -eq 'setup check'){
             if($code -notin @(0,2)){ShowFailure 'The read-only setup check could not complete. Open Diagnostics for details; no installation was attempted.';return}
-            if([string]::IsNullOrWhiteSpace($text) -or $text.Length -gt 65536){throw 'The setup check returned no usable bounded diagnostic.'}
-            $diagnostic=ConvertFrom-Json $text
+            $diagnostic=ConvertFrom-FastLlmUiSetupCheckOutput -Text $text
             $decision=Get-FastLlmUiSetupDecision -Diagnostic $diagnostic -ExitCode $code
             $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'setup-complete' -SetupDecision $decision
             if($script:flow.phase -eq 'setup-attention'){

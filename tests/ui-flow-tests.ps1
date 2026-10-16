@@ -227,7 +227,7 @@ Check ($cli.IndexOf('Assert-FastLlmUiExpectedProvenance -Model $reviewModel[0]')
     $cli.IndexOf('Install-FastLlmEngines -CatalogPath $catalogPath')) 'Stale reviewed provenance is rejected before even repairing the engine.'
 Check ($ui.Contains("'-ExpectedModelProvenanceSha256'") -and $ui.Contains('if($script:flow.acceptNewConsent)')) 'Only new GUI consent supplies the guarded acceptance switch.'
 Check (-not $ui.Contains('Read-Host')) 'The GUI never launches a hidden interactive license prompt.'
-Check ($ui.Contains("LaunchStep 'setup check' (@('doctor')+") -and
+Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+") -and
     $ui.Contains('Get-FastLlmUiSetupDecision -Diagnostic $diagnostic -ExitCode $code')) 'Both buttons reuse a validated read-only doctor child before acquisition.'
 Check ($ui.Contains('ShowSetupAttention') -and $ui.Contains("'setup-recheck'") -and $ui.Contains("'setup-defer'")) 'The setup dialog offers explicit recheck and deferral.'
 Check ($ui.Contains('https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist') -and
@@ -712,5 +712,81 @@ Check ($toggleHandler.Contains('$previousValue') -and $toggleHandler.Contains("`
 Check ((Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('recipes', '-Detail', '-AsJson', '-InstallRoot', 'C:\r')) -and (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments (@('plan', '-AsJson') + @(Get-FastLlmUiPreviewRecipeArguments -Recipe $expChosen))) -and (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments (@('start', '-Unattended') + @(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $expChosen)))) 'the recipe list and a plan or start naming an experimental recipe read the switch'
 Check (-not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('doctor', '-InstallRoot', 'C:\r')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('install', '-EngineOnly', '-InstallRoot', 'C:\r')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('plan', '-AsJson', '-InstallRoot', 'C:\r')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('start', '-Unattended', '-Recipe', 'r1')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('components', '-Install', 'x', '-AcceptLicense')) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @()) -and -not (Test-FastLlmUiStepReadsExperimentalSwitch -Arguments @('recipes', '-AsJson'))) 'diagnostics, installs, a plain plan or start and the component install never depend on the switch'
 Check ($launchStepText.Contains('catch{if(Test-FastLlmUiStepReadsExperimentalSwitch -Arguments $Arguments){throw') -and $launchStepText.IndexOf('Test-FastLlmUiStepReadsExperimentalSwitch') -lt $launchStepText.IndexOf('$script:child.Start($info)')) 'a mirror failure in LaunchStep blocks only the steps that read the switch'
+
+
+# Window setup check: bounded parse of the compact doctor report.
+$setupCheckMessage='The setup check returned no usable bounded diagnostic.'
+function ThrownMessage([scriptblock]$Action){try{& $Action|Out-Null;return ''}catch{return $_.Exception.Message}}
+Check ($script:FastLlmUiSetupCheckMaxCharacters -eq 262144) 'The setup check output limit is 262144 characters.'
+Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ''}) -ceq $setupCheckMessage) 'Empty setup check output is refused with the bounded diagnostic message.'
+Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text "  `r`n "}) -ceq $setupCheckMessage) 'Whitespace-only setup check output is refused.'
+Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $null}) -ceq $setupCheckMessage) 'Null setup check output is refused.'
+Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ('{"a":"' + ('x' * 262144) + '"}')}) -ceq $setupCheckMessage) 'Over-limit setup check output is refused.'
+$atLimit='{"a":"'+('x'*(262144-8))+'"}'
+Check ($atLimit.Length -eq 262144 -and (ConvertFrom-FastLlmUiSetupCheckOutput -Text $atLimit).a.Length -eq (262144-8)) 'Setup check output exactly at the limit is parsed.'
+$compactParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text (SetupDiagnostic | ConvertTo-Json -Depth 12 -Compress)
+Check ($compactParsed.windows -eq $true -and $compactParsed.vulkanVerified -eq $true -and $compactParsed.windowsPrerequisites.ready -eq $true) 'A compact setup report parses into its fields.'
+Check ((Get-FastLlmUiSetupDecision -Diagnostic $compactParsed -ExitCode 0).canProceed) 'A parsed compact report feeds the setup decision.'
+
+# doctor -Compact: a realistic installed layout (several hundred catalog entries and a full Authenticode result) stays small.
+function BigSignatureObject {
+    $ext=@(1..12|ForEach-Object{[pscustomobject]@{Oid=[pscustomobject]@{Value="2.5.29.$_";FriendlyName="Extension $_"};Critical=$false;RawData=@(1..60|ForEach-Object{$_ % 256})}})
+    $cert=[pscustomobject]@{Subject='CN=Example, O=Bitworks LLC';Issuer='CN=Example CA';Thumbprint=('AB'*20);Extensions=$ext;
+        PublicKey=[pscustomobject]@{Oid=[pscustomobject]@{Value='1.2.840.113549.1.1.1'};EncodedKeyValue=[pscustomobject]@{RawData=@(1..270|ForEach-Object{$_ % 256})}}}
+    return [pscustomobject]@{SignerCertificate=$cert;TimeStamperCertificate=$cert;Status='Valid';StatusMessage='Signature verified.';Path='C:\x\FastLLM.cat'}
+}
+function IntegrityFixture([bool]$Failed) {
+    $sig=[pscustomobject]@{ok=$true;reason=$null;detail=$null}
+    $sig|Add-Member -NotePropertyName signature -NotePropertyValue (BigSignatureObject)
+    $mismatches=@(); if($Failed){$mismatches=@(1..20|ForEach-Object{"src\changed-file-$_.ps1"})}
+    return [pscustomobject]@{
+        appRoot='C:\Users\Example\AppData\Local\Programs\FastLLM';status=$(if($Failed){'failed'}else{'ok'});reason=$(if($Failed){'tree'}else{$null})
+        catalogSignature=$sig;mismatches=@($mismatches);summary=$(if($Failed){'Install integrity: FAILED (tree): src\changed-file-1.ps1'}else{'Install integrity: ok'})
+        verifiedFiles=@(1..600|ForEach-Object{"src\file-$_.ps1"})
+    }
+}
+function DoctorFixture([bool]$Failed) {
+    $d=[ordered]@{timestamp='2026-10-15T12:00:00.0000000Z';windows=$true;installRoot='C:\Users\Example\AppData\Local\FastLLM';vulkanVerified=$true
+        windowsPrerequisites=(SetupDiagnostic).windowsPrerequisites;prerequisiteInventory=$null;prerequisiteInventoryError='prerequisite-inventory-unavailable'
+        installIntegrity=(IntegrityFixture $Failed);error=$(if($Failed){'Install integrity failed: (tree)'}else{$null})}
+    return $d
+}
+$fullText=(DoctorFixture $false)|ConvertTo-Json -Depth 12
+$compactReport=ConvertTo-FastLlmCompactDoctorReport -Diagnostic (DoctorFixture $false)
+$compactText=$compactReport|ConvertTo-Json -Depth 12 -Compress
+Write-Output "Compact doctor fixture: full $($fullText.Length) characters, compact $($compactText.Length) characters"
+Check ($fullText.Length -gt $compactText.Length * 10) 'The fixture would have been far larger without compaction.'
+Check ($compactText.Length -lt 65536) 'The compact doctor report is far below the setup check limit.'
+Check ($compactText -notmatch 'file-\d+\.ps1' -and $compactText -notmatch 'SignerCertificate' -and $compactText -notmatch 'verifiedFiles') 'The compact report carries no per-file list and no certificate objects.'
+$compactParsedIntegrity=(ConvertFrom-FastLlmUiSetupCheckOutput -Text $compactText).installIntegrity
+Check ($compactParsedIntegrity.status -ceq 'ok' -and $compactParsedIntegrity.summary -ceq 'Install integrity: ok' -and $compactParsedIntegrity.appRoot -ceq 'C:\Users\Example\AppData\Local\Programs\FastLLM' -and $compactParsedIntegrity.catalogSignature.ok -eq $true -and @($compactParsedIntegrity.mismatches).Count -eq 0) 'The compact report keeps the integrity status, summary, app root and signature verdict.'
+$failedCompact=(ConvertTo-FastLlmCompactDoctorReport -Diagnostic (DoctorFixture $true))|ConvertTo-Json -Depth 12 -Compress
+$failedParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text $failedCompact
+Check ($failedParsed.installIntegrity.status -ceq 'failed' -and $failedParsed.installIntegrity.reason -ceq 'tree' -and @($failedParsed.installIntegrity.mismatches).Count -eq 20 -and $failedParsed.installIntegrity.mismatches[19] -ceq 'src\changed-file-20.ps1' -and $failedParsed.error -like 'Install integrity failed*') 'The compact report keeps the full mismatch list and the error.'
+$unsignedFixture=DoctorFixture $false
+$unsignedFixture.installIntegrity.catalogSignature=[pscustomobject]@{ok=$false;reason='not-valid';detail='NotSigned'}
+$unsignedParsed=(ConvertTo-FastLlmCompactDoctorReport -Diagnostic $unsignedFixture)|ConvertTo-Json -Depth 12 -Compress|ConvertFrom-Json
+Check ($unsignedParsed.installIntegrity.catalogSignature.reason -ceq 'not-valid' -and $unsignedParsed.installIntegrity.catalogSignature.detail -ceq 'NotSigned') 'The compact report keeps the signature reason and detail.'
+$notInstalled=DoctorFixture $false
+$notInstalled.installIntegrity=[pscustomobject]@{appRoot='C:\x';status='not-installed';reason='no-catalog';catalogSignature=$null;mismatches=@();summary='Install integrity: not an installed release (no FastLLM.cat)'}
+$notInstalledParsed=(ConvertTo-FastLlmCompactDoctorReport -Diagnostic $notInstalled)|ConvertTo-Json -Depth 12 -Compress|ConvertFrom-Json
+Check ($notInstalledParsed.installIntegrity.status -ceq 'not-installed' -and $null -eq $notInstalledParsed.installIntegrity.catalogSignature -and @($notInstalledParsed.installIntegrity.mismatches).Count -eq 0) 'The compact report keeps a not-installed block without a signature.'
+
+# doctor -Compact is refused with any other action (the refusal comes before the elevation check, so this runs anywhere).
+$cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
+Check ($cli.Contains("if (`$Compact -and `$Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }") -and $cli.Contains('ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 -Compress')) 'fast-llm.ps1 refuses -Compact outside doctor and compacts only on request.'
+$host2=(Get-Process -Id $PID).Path
+foreach($otherAction in @('plan','status')){
+    # Windows PowerShell 5.1 turns a child's redirected stderr into an error record; keep it as text here.
+    $savedPreference=$ErrorActionPreference;$ErrorActionPreference='Continue'
+    try{$compactChildOutput=& $host2 -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') $otherAction -Compact 2>&1|Out-String}
+    finally{$ErrorActionPreference=$savedPreference}
+    $global:LASTEXITCODE=0
+    Check ($compactChildOutput -match '-Compact is supported only by doctor') "-Compact is refused with $otherAction."
+}
+
+# The window asks for the compact report, parses it through the bounded function, and keeps full output for Diagnostics.
+Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics keeps the full one.'
+Check ($ui.Contains('$control.UseMnemonic=$false')) 'Window labels show an ampersand instead of treating it as a mnemonic.'
 
 Write-Output "UI flow tests passed: $checks"

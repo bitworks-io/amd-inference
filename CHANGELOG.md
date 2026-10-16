@@ -2,6 +2,11 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.7 (canary)
+
+- **Install & start and Start / download work again from the window:** they no longer stop at "The setup check returned no usable bounded diagnostic." The setup check now asks for a compact report, so it fits well within the size the window reads. Diagnostics still shows the full report.
+- **Background hint text:** the hint under the background controls now shows "Install & start" instead of "Install  start".
+
 ## 2026.10.15.6 (canary)
 
 - **HIP setups for the RX 7900 XT and RX 7900 XTX are now measured by Bitworks:**
