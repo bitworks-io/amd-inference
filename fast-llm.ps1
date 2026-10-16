@@ -597,12 +597,17 @@ try {
                 }
                 catch {
                     # W03 enforce: a device-binding failure is never retried, re-planned or recovered with another model.
+                    if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
+                        $invalidModelFailure = New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.'
+                        if ($_.Exception.Data['FastLlmFallbackAttempted']) {
+                            $invalidModelFailure.Data['FastLlmFallbackAttempted'] = $true
+                            $invalidModelFailure.Data['FastLlmFallbackFirstCode'] = $_.Exception.Data['FastLlmFallbackFirstCode']
+                        }
+                        throw $invalidModelFailure
+                    }
                     # A failure of the fallback attempt (the stand-in's own start) ends the start: no re-plan onto the HIP setup, no repair, no recovery.
                     if ($_.Exception.Data['FastLlmFallbackAttempted']) { throw }
                     if ($_.Exception.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -or [string]$_.Exception.Data['FastLlmFailureCode'] -clike 'device-binding-*') { throw }
-                    if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
-                        throw (New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.')
-                    }
                     # A plan on an engine component (HIP) never recovers onto another recipe or engine: the failure is rethrown with its own code.
                     # Keyed on the PLAN, so a built-in Vulkan recipe start (including a UI-forwarded -Recipe) keeps its recovery.
                     $planOnEngineComponent = [bool](($plan.PSObject.Properties['engineComponentId'] -and $plan.engineComponentId) -or ($plan.PSObject.Properties['backend'] -and [string]$plan.backend -ieq 'hip'))

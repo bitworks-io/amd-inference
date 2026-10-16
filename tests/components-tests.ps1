@@ -2302,11 +2302,14 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('start', '-PlannedRecipe', 'x', '-Recipe', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
             @{ args = @('start', '-PlannedRecipe', 'x', '-ModelId', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
             @{ args = @('plan', '-PlannedRecipe', 'x', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe is supported only by start.' },
-            @{ args = @('start', '-PlannedRecipe', '', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe needs a recipe id.' },
             @{ args = @('start', '-PlannedRecipe', '   ', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe needs a recipe id.' })) {
         $result = Invoke-CliRefusal $case.args
         Check ($result.exit -ne 0 -and $result.text.Contains($case.text)) ("fast-llm.ps1 " + ($case.args[0..1] -join ' ') + ' is refused: ' + $case.text)
     }
+    # An empty -PlannedRecipe cannot go through a native child (Windows PowerShell 5.1 drops empty arguments), so the parse-time refusal runs in-process.
+    $emptyPlannedMessage = ''
+    try { & $cliPath start -PlannedRecipe '' -InstallRoot $refusalRoot | Out-Null } catch { $emptyPlannedMessage = $_.Exception.Message }
+    Check ($emptyPlannedMessage.Contains('-PlannedRecipe needs a recipe id.')) 'fast-llm.ps1 start -PlannedRecipe with an empty value is refused (in-process)'
     # These children run fast-llm.ps1 past its parameter checks, so they reach the standard-user guard, which refuses every live action under an
     # Administrator token (the hosted Windows runner is elevated). They run as a standard user in the bench native gate; the pure source pins stay outside.
     $cliChildrenElevated = $false

@@ -3699,13 +3699,13 @@ function Start-FastLlmServer {
         if ($firstCode -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,95}$') { $fallbackReasonCode = $firstCode }
         $fromRecipeId = [string] $Plan.recipe.id
         # The supervised run has stopped its server by now (its own cleanup), so the second launch finds the port free and the status file closed.
-        $fallbackHardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot
-        $fallbackPlanOptions = @{ Hardware = $fallbackHardware; CatalogPath = $CatalogPath; Profile = ([string] $Plan.profile); InstallRoot = $InstallRoot
+        $fallbackPlanOptions = @{ CatalogPath = $CatalogPath; Profile = ([string] $Plan.profile); InstallRoot = $InstallRoot
             ModelId = $Plan.requestedModelId; ContextSize = $Plan.requestedContextSize; FallbackFromRecipe = $fromRecipeId; FallbackReason = $fallbackReasonCode
             RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
         if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
         # From here on a failure is a failure of the fallback attempt: the CLI loop must not re-plan onto the HIP setup, repair its model or recover.
         try {
+            $fallbackPlanOptions.Hardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot
             $fallbackPlan = Get-FastLlmPlan @fallbackPlanOptions
         }
         catch {
