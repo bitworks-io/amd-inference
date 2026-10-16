@@ -532,9 +532,8 @@ function Get-FastLlmSmartAppControlState {
 # started cleanly but listed no ROCm device. The reason is never RuntimeCheckFailed (model recovery would re-plan onto Vulkan).
 function New-FastLlmHipBackendFailure {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string] $ComponentId, [Parameter(Mandatory = $true)][ValidateSet('no-device', 'timeout', 'exit', 'start')][string] $Cause, [object] $ExitCode, [switch] $AutoSelected)
+    param([Parameter(Mandatory = $true)][string] $ComponentId, [Parameter(Mandatory = $true)][ValidateSet('no-device', 'timeout', 'exit', 'start')][string] $Cause, [object] $ExitCode)
     $vulkan = 'FastLLM did not switch to Vulkan: use the Vulkan setup instead (start FastLLM without the HIP recipe).'
-    if ($AutoSelected) { $vulkan = 'FastLLM starts the Vulkan setup instead.' }
     if ($Cause -ceq 'no-device' -and (Get-FastLlmSmartAppControlState) -ceq 'enforced') {
         $failure = New-FastLlmTypedFailure -Code 'hip-dll-blocked' -Message "The HIP engine component '${ComponentId}' listed no ROCm device, and Smart App Control is on. Smart App Control blocks unsigned DLLs, and the AMD runtime DLLs are unsigned, so Windows most likely refused to load them. Nothing was started. $vulkan"
         $failure.Data['FastLlmReason'] = 'HipDllFailed'
@@ -734,6 +733,7 @@ function Invoke-FastLlmSupervisedServer {
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
     $hostProcess = New-Object Bitworks.FastLlm.ProcessHost
     $spawned = $false
+    $reachedReady = $false
     $baseUrl = $Plan.endpoint -replace '/v1$', ''
     try {
         if ($null -ne $deviceBindingGate) { throw $deviceBindingGate }
@@ -888,6 +888,7 @@ function Invoke-FastLlmSupervisedServer {
         }
         $state.phase='ready'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
+        $reachedReady = $true
         if ($state.recipe) {
             Write-FastLlmState -InstallRoot $InstallRoot -FileName ($Plan.hardwareFingerprint+'.last-ready.json') -State ([ordered]@{
                 kind='api-smoke-only';hardwareFingerprint=$Plan.hardwareFingerprint;modelId=$Plan.model.id;modelSha256=$Plan.model.sha256;catalogSha256=$state.recipe.catalogSha256
@@ -933,6 +934,8 @@ function Invoke-FastLlmSupervisedServer {
         return $exitCode
     } catch {
         $state.phase='failed'
+        # A failure after the server was ready (a crash while serving) is not a start failure: the start-time fallback never applies to it.
+        if ($reachedReady) { $_.Exception.Data['FastLlmAfterReady']=$true }
         if ($_.Exception.Data['FastLlmStateWrite'] -eq $true) {
             # A status-file write failure is not a model/runtime failure: it must never trigger model-switch recovery.
             $state.failureCode='state-write-failed'

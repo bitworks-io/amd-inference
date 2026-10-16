@@ -41,7 +41,7 @@ try {
             param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason)
             $script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
-            if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
+            if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
             return $script:startTestState.fresh
         }
         function script:Invoke-FastLlmSupervisedServer {
@@ -266,6 +266,34 @@ try {
     Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-missing' -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) 'an explicit -RecipeId HIP plan (requestedRecipeId set) never falls back'
     $outcome=Invoke-FallbackStart $plan $savedFresh @((New-FallbackTestFailure '' 'RuntimeCheckFailed'))
     Check ($null -ne $outcome.failure -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) 'a plain Vulkan plan never falls back'
+    # A crash after the server was ready, and a failure before the spawn that is not about HIP (an occupied port), are not start failures of the HIP setup.
+    $afterReadyFailure=New-FallbackTestFailure '' 'RuntimeCheckFailed'
+    $afterReadyFailure.Data['FastLlmAfterReady']=$true
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @($afterReadyFailure)
+    Check ($null -ne $outcome.failure -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) 'a failure after the server was ready never falls back (the fallback is a start-time mechanism)'
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure '' ''))
+    Check ($null -ne $outcome.failure -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) 'an untyped failure before the spawn (the port is occupied) does not fall back'
+    # The stand-in's own failure ends the attempt: tagged, with the first code, so the CLI never re-plans onto the HIP setup.
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed'),(New-FallbackTestFailure '' 'PlanChanged'))
+    Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmReason'] -ceq 'PlanChanged' -and $outcome.failure.Data['FastLlmFallbackAttempted'] -eq $true -and $outcome.failure.Data['FastLlmFallbackFirstCode'] -ceq 'hip-dll-missing' -and $state.supervisorPlans.Count -eq 2) 'a PlanChanged from the stand-in start is tagged FastLlmFallbackAttempted with the first HIP code; exactly one HIP run and one stand-in run happened'
+    # The stand-in cannot be planned: the first failure is what the user sees, with no false "started" line.
+    $state.fallbackPlan=$null
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed'))
+    # (the mock returns the HIP plan itself when no stand-in is set; make planning fail instead)
+    $state.fallbackPlan=$vulkanStandIn
+    & $module { $script:startTestState.planFailsOnFallback=$true }
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed'))
+    & $module { $script:startTestState.planFailsOnFallback=$false }
+    Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'hip-dll-missing' -and $outcome.failure.Data['FastLlmFallbackAttempted'] -eq $true -and $state.supervisorPlans.Count -eq 1 -and @($fallbackHost | Where-Object { $_ -like '*Started the Vulkan setup instead*' }).Count -eq 0) 'when the stand-in cannot be planned the first HIP failure propagates and no "started Vulkan" line was printed'
+    # The stand-in model is not installed: a typed failure names it and the install command.
+    $missingModelPlan=$vulkanStandIn | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $missingModelPlan.modelPath=Join-Path $temp 'models/not-there.gguf'
+    $state.fallbackPlan=$missingModelPlan
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed'))
+    Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'fallback-model-not-installed' -and $outcome.failure.Message -like "*$([string]$plan.model.id)*" -and $outcome.failure.Message -like '*fast-llm.ps1 install*' -and $outcome.failure.Data['FastLlmFallbackAttempted'] -eq $true -and $state.supervisorPlans.Count -eq 1) 'a missing stand-in model is the typed failure fallback-model-not-installed, naming the model and the install command'
+    $state.fallbackPlan=$vulkanStandIn
+    $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-blocked' 'HipDllFailed'))
+    Check (@($fallbackHost | Where-Object { $_ -like '*hip-dll-blocked*simulated start failure hip-dll-blocked*Started the Vulkan setup instead*' }).Count -eq 1) 'the console line keeps the first HIP failure message and code'
     # A fallback plan re-plans to the same recipe: the internal re-plan receives the fallback parameters, the recipe is unchanged and the supervisor sees the fallback.
     $state.fresh=$vulkanStandIn
     $outcome=Invoke-FallbackStart $vulkanStandIn $vulkanStandIn @()
@@ -298,7 +326,7 @@ try {
     New-Item -ItemType Directory -Path $ndRoot -Force | Out-Null
     $ndModel=Join-Path $ndRoot 'model.gguf'
     $script:nd=@{log=(New-Object 'Collections.Generic.List[string]');prereq=$true;engine=$true;modelExists=$true;consent=$true;startQueue=(New-Object 'Collections.Generic.Queue[object]');recovery=$true;planCalls=0;requestedModelIds=(New-Object 'Collections.Generic.List[string]');planFailure=$null;planResolve=(New-Object 'Collections.Generic.List[bool]');planFallbackArgs=(New-Object 'Collections.Generic.List[string]')}
-    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear();$script:nd.planFailure=$null;$script:nd.planResolve.Clear();$script:nd.planFallbackArgs.Clear();$script:ndPlanRecipeId='';$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
+    function Reset-Nd { $script:nd.log.Clear();$script:nd.prereq=$true;$script:nd.engine=$true;$script:nd.consent=$true;$script:nd.startQueue.Clear();$script:nd.recovery=$true;$script:nd.planCalls=0;$script:nd.requestedModelIds.Clear();$script:nd.planFailure=$null;$script:nd.planResolve.Clear();$script:nd.planFallbackArgs.Clear();$script:ndPlanRecipeId='';$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
         if(Test-Path -LiteralPath $ndModel){Remove-Item -LiteralPath $ndModel -Force};Set-Content -LiteralPath $ndModel -Value 'x';$script:nd.modelExists=$true }
     function Get-FastLlmWindowsPrerequisiteStatus { $script:nd.log.Add('prerequisites');return [pscustomobject]@{applicable=$true;ready=$script:nd.prereq} }
     function Get-FastLlmCatalog { param($CatalogPath) $script:nd.log.Add('catalog');return [pscustomobject]@{engine=[pscustomobject]@{version='b-test';assets=[pscustomobject]@{vulkan=[pscustomobject]@{enabled=$true};rocm=[pscustomobject]@{enabled=$false}}}} }
@@ -336,21 +364,21 @@ try {
         if($script:nd.startQueue.Count -gt 0){
             $next=$script:nd.startQueue.Dequeue()
             if($next -is [string]){$e=New-Object InvalidOperationException('simulated '+$next);$e.Data['FastLlmReason']=$next;throw $e}
-            if($next -is [hashtable]){$e=New-Object InvalidOperationException('simulated '+$next.reason);$e.Data['FastLlmReason']=$next.reason;$e.Data['FastLlmFailureCode']=$next.code;throw $e}
+            if($next -is [hashtable]){$e=New-Object InvalidOperationException('simulated '+$next.reason);$e.Data['FastLlmReason']=$next.reason;$e.Data['FastLlmFailureCode']=$next.code;if($next.ContainsKey('attempted') -and $next.attempted){$e.Data['FastLlmFallbackAttempted']=$true};throw $e}
             return [int]$next
         }
         return 0 }
     $script:ndDeviceBinding='off';$script:ndPlanRecipeId=''
     $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false;$script:ndBar='auto';$script:ndHost=New-Object 'Collections.Generic.List[string]'
-    $script:ndUnattended=$true;$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
+    $script:ndUnattended=$true;$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
-        $DryRun=$false;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
+        $DryRun=$script:ndDryRun;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
         $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$PlannedRecipe=$script:ndPlannedRecipe
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         function Write-Host { $script:ndHost.Add(($args -join ' ')) }
-        try { & $startBranch | Out-Null } catch { $failure=$_.Exception }
+        try { if($DryRun) { foreach($ndOnce in 1) { & $startBranch | Out-Null } } else { & $startBranch | Out-Null } } catch { $failure=$_.Exception }  # the dry-run branch ends with break, which must not leave the test script
         return $failure
     }
     function Get-NdCode($Failure) { if($null -eq $Failure){return $null};return $Failure.Data['FastLlmFailureCode'] }
@@ -421,6 +449,27 @@ try {
     Check ($null -eq $f -and @($script:nd.planFallbackArgs | Where-Object { $_ -ne '|' }).Count -eq 0) 'start -UseFallback on a plan that is not a HIP setup changes nothing'
     $script:ndPlanRecipeId='';$script:ndUseFallback=$false;$script:ndPlannedRecipe=''
     Check ($cliSource.Contains("-PlannedRecipe cannot be combined with -Recipe or -ModelId") -and $cliSource.Contains("-UseFallback cannot be combined with -Recipe") -and $cliSource.Contains('[string] $PlannedRecipe') -and $cliSource.Contains('[switch] $UseFallback')) 'fast-llm.ps1 declares -PlannedRecipe and -UseFallback and refuses them with an explicit recipe (-PlannedRecipe also with -ModelId)'
+
+    # -- a failure of the fallback attempt is final: no re-plan onto the HIP setup, no repair of its model, no recovery
+    foreach($taggedReason in @('PlanChanged','ModelNeedsProvisioning','RuntimeCheckFailed')){
+        Reset-Nd; $script:nd.startQueue.Enqueue(@{reason=$taggedReason;code='';attempted=$true})
+        $f=Invoke-NdStart $false
+        Check ($null -ne $f -and $f.Data['FastLlmFallbackAttempted'] -eq $true -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and -not $script:nd.log.Contains('INSTALL-MODEL')) "a tagged $taggedReason from the fallback attempt propagates: one start, no re-plan, no model repair, no recovery"
+    }
+    # An auto plan that fell back to Vulkan recovers on Vulkan as today.
+    Reset-Nd; $script:ndPlanRecipeId='hip-recipe'; $script:ndUseFallback=$true; $script:ndPlanHip=$true; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.log.Contains('recovery-plan') -and $script:nd.requestedModelIds[$script:nd.requestedModelIds.Count-1] -ceq 'other-model') 'an auto plan that fell back to the Vulkan setup gets Vulkan model recovery as today'
+    $script:ndPlanHip=$false;$script:ndUseFallback=$false;$script:ndPlanRecipeId=''
+    # start -DryRun applies the planned-recipe check too.
+    Reset-Nd; $script:ndDryRun=$true; $script:ndPlanRecipeId='other-recipe'; $script:ndPlannedRecipe='hip-recipe'
+    $f=Invoke-NdStart $false
+    Check ($null -ne $f -and (Get-NdCode $f) -ceq 'planned-recipe-not-applicable') 'start -DryRun -PlannedRecipe with an unrelated setup fails closed'
+    Reset-Nd; $script:ndDryRun=$true; $script:ndPlanRecipeId='hip-recipe'; $script:ndPlannedRecipe='hip-recipe'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and -not $script:nd.log.Contains('start')) 'start -DryRun -PlannedRecipe for the matching setup previews without starting'
+    $script:ndDryRun=$false;$script:ndPlanRecipeId='';$script:ndPlannedRecipe=''
+    Check ($cliSource.Contains('-PlannedRecipe needs a recipe id.') -and $cliSource.Contains("`$_.Exception.Data['FastLlmFallbackAttempted']")) 'fast-llm.ps1 refuses an empty -PlannedRecipe and rethrows a failed fallback attempt'
 
     # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
     Reset-Nd

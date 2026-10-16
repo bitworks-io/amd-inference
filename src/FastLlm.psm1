@@ -3688,28 +3688,56 @@ function Start-FastLlmServer {
         $firstFailure = $_.Exception
         $firstReason = ''
         $firstCode = ''
-        if ($firstFailure.Data) { $firstReason = [string] $firstFailure.Data['FastLlmReason']; $firstCode = [string] $firstFailure.Data['FastLlmFailureCode'] }
-        # Not a failure of the HIP setup itself: a device-binding refusal, a changed plan, a model to repair or a state-write error never start another setup.
-        if (-not $mayFallBack -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed')) { throw }
+        $afterReady = $false
+        if ($firstFailure.Data) { $firstReason = [string] $firstFailure.Data['FastLlmReason']; $firstCode = [string] $firstFailure.Data['FastLlmFailureCode']; $afterReady = [bool] $firstFailure.Data['FastLlmAfterReady'] }
+        # The fallback is a start-time mechanism for a failed HIP start: a typed failure, or a failure of the HIP server after it was spawned.
+        # Not eligible: a failure before the spawn that is not typed (an occupied port), a crash after the server was ready, a device-binding
+        # refusal, a changed plan, a model to repair and a state-write error.
+        $hipStartFailure = ($firstCode -ne '') -or ($firstReason -ceq 'RuntimeCheckFailed')
+        if (-not $mayFallBack -or $afterReady -or -not $hipStartFailure -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed')) { throw }
         $fallbackReasonCode = 'start-failed'
         if ($firstCode -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,95}$') { $fallbackReasonCode = $firstCode }
         $fromRecipeId = [string] $Plan.recipe.id
         # The supervised run has stopped its server by now (its own cleanup), so the second launch finds the port free and the status file closed.
-        Write-Host "The HIP setup did not start ($fallbackReasonCode). Started the Vulkan setup instead."
         $fallbackHardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot
         $fallbackPlanOptions = @{ Hardware = $fallbackHardware; CatalogPath = $CatalogPath; Profile = ([string] $Plan.profile); InstallRoot = $InstallRoot
             ModelId = $Plan.requestedModelId; ContextSize = $Plan.requestedContextSize; FallbackFromRecipe = $fromRecipeId; FallbackReason = $fallbackReasonCode
             RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
         if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
-        $fallbackPlan = Get-FastLlmPlan @fallbackPlanOptions
+        # From here on a failure is a failure of the fallback attempt: the CLI loop must not re-plan onto the HIP setup, repair its model or recover.
+        try {
+            $fallbackPlan = Get-FastLlmPlan @fallbackPlanOptions
+        }
+        catch {
+            # The stand-in could not be planned: the user sees the first failure, not a start that did not happen.
+            $firstFailure.Data['FastLlmFallbackAttempted'] = $true
+            $firstFailure.Data['FastLlmFallbackFirstCode'] = $fallbackReasonCode
+            throw $firstFailure
+        }
         if ($Plan.PSObject.Properties['backgroundRequestId']) { $fallbackPlan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue ([string] $Plan.backgroundRequestId) -Force }
-        # The stand-in goes through the whole start again (engine, model, hash and consent checks, re-plan), with the same options. It has a
+        if (-not $fallbackPlan.modelPath -or -not (Test-Path -LiteralPath ([string] $fallbackPlan.modelPath) -PathType Leaf)) {
+            $missingModelFailure = New-FastLlmTypedFailure -Code 'fallback-model-not-installed' -Message "The HIP setup did not start ($fallbackReasonCode), and the Vulkan setup that stands in for it needs the model '$([string] $fallbackPlan.model.id)', which is not installed. A start never downloads. Run: .\fast-llm.ps1 install"
+            $missingModelFailure.Data['FastLlmFallbackAttempted'] = $true
+            $missingModelFailure.Data['FastLlmFallbackFirstCode'] = $fallbackReasonCode
+            throw $missingModelFailure
+        }
+        $firstText = [regex]::Replace([string] $firstFailure.Message, '\s+', ' ').Trim()
+        Write-Host "The HIP setup did not start ($fallbackReasonCode): $firstText Started the Vulkan setup instead."
+        # The stand-in goes through the whole start again (engine, model, hash, consent checks, re-plan), with the same options. It has a
         # `fallback`, so it can never fall back again: the second failure propagates.
         $startAgain = @{ Plan = $fallbackPlan; CatalogPath = $CatalogPath; InstallRoot = $InstallRoot; LoadTimeoutSeconds = $LoadTimeoutSeconds; DeviceBinding = $DeviceBinding }
         if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $startAgain.VulkanBarMitigation = $VulkanBarMitigation }
         if ($ThroughputCanary) { $startAgain.ThroughputCanary = $true }
         if ($SelfTest) { $startAgain.SelfTest = $true }
-        return Start-FastLlmServer @startAgain
+        try {
+            return Start-FastLlmServer @startAgain
+        }
+        catch {
+            $standInFailure = $_.Exception
+            $standInFailure.Data['FastLlmFallbackAttempted'] = $true
+            $standInFailure.Data['FastLlmFallbackFirstCode'] = $fallbackReasonCode
+            throw
+        }
     }
 }
 

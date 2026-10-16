@@ -2301,7 +2301,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
             @{ args = @('components', '-List', '-UseFallback', '-InstallRoot', $refusalRoot); text = '-UseFallback is supported only by plan, install and start.' },
             @{ args = @('start', '-PlannedRecipe', 'x', '-Recipe', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
             @{ args = @('start', '-PlannedRecipe', 'x', '-ModelId', 'y', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' },
-            @{ args = @('plan', '-PlannedRecipe', 'x', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe is supported only by start.' })) {
+            @{ args = @('plan', '-PlannedRecipe', 'x', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe is supported only by start.' },
+            @{ args = @('start', '-PlannedRecipe', '', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe needs a recipe id.' },
+            @{ args = @('start', '-PlannedRecipe', '   ', '-InstallRoot', $refusalRoot); text = '-PlannedRecipe needs a recipe id.' })) {
         $result = Invoke-CliRefusal $case.args
         Check ($result.exit -ne 0 -and $result.text.Contains($case.text)) ("fast-llm.ps1 " + ($case.args[0..1] -join ' ') + ' is refused: ' + $case.text)
     }

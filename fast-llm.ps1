@@ -148,6 +148,7 @@ if ($Action -eq 'settings' -and $PSBoundParameters.ContainsKey('ComponentLicense
     throw 'settings -ComponentLicenses accept-automatically needs -AcceptLicense: it shows the licenses first, and nothing was changed.'
 }
 if ($PSBoundParameters.ContainsKey('PlannedRecipe') -and $Action -ne 'start') { throw '-PlannedRecipe is supported only by start.' }
+if ($PSBoundParameters.ContainsKey('PlannedRecipe') -and [string]::IsNullOrWhiteSpace($PlannedRecipe)) { throw '-PlannedRecipe needs a recipe id.' }
 if ($PSBoundParameters.ContainsKey('PlannedRecipe') -and ($Recipe -or $ModelId)) { throw '-PlannedRecipe cannot be combined with -Recipe or -ModelId.' }
 if ($UseFallback -and $Action -notin @('plan', 'install', 'start')) { throw '-UseFallback is supported only by plan, install and start.' }
 if ($UseFallback -and $Recipe) { throw '-UseFallback cannot be combined with -Recipe: an explicit recipe never falls back.' }
@@ -513,6 +514,9 @@ try {
                 $hardware = Get-FastLlmHardware -CatalogPath $catalogPath -InstallRoot $InstallRoot
                 $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -ResolveFallback
                 if ($UseFallback) { $plan = Get-FastLlmDeclinedFallbackPlan -Plan $plan -Hardware $hardware }
+                if ($PlannedRecipe -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $plan -PlannedRecipe $PlannedRecipe)) {
+                    throw (New-FastLlmTypedFailure -Code 'planned-recipe-not-applicable' -Message "The setup '$PlannedRecipe' does not apply to this PC any more. Nothing was started; choose a setup again.")
+                }
                 Write-FastLlmPlan -Plan $plan
                 break
             }
@@ -546,7 +550,8 @@ try {
                 $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -ResolveFallback
                 if ($UseFallback) { $plan = Get-FastLlmDeclinedFallbackPlan -Plan $plan -Hardware $hardware }
                 # A window start names the setup its preview showed: the final plan is that setup or the one that stands in for it, or nothing starts.
-                # After a model recovery the plan is no longer the previewed setup by design, so the check applies to the first plans only.
+                # After a model recovery the plan is no longer the previewed setup by design (the documented recovery to a smaller cached model, as
+                # it works today for the Vulkan setup), so the check applies to the first plans only.
                 if ($PlannedRecipe -and -not $recoveryAttempted -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $plan -PlannedRecipe $PlannedRecipe)) {
                     throw (New-FastLlmTypedFailure -Code 'planned-recipe-not-applicable' -Message "The setup '$PlannedRecipe' does not apply to this PC any more. Nothing was started; choose a setup again.")
                 }
@@ -592,6 +597,8 @@ try {
                 }
                 catch {
                     # W03 enforce: a device-binding failure is never retried, re-planned or recovered with another model.
+                    # A failure of the fallback attempt (the stand-in's own start) ends the start: no re-plan onto the HIP setup, no repair, no recovery.
+                    if ($_.Exception.Data['FastLlmFallbackAttempted']) { throw }
                     if ($_.Exception.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -or [string]$_.Exception.Data['FastLlmFailureCode'] -clike 'device-binding-*') { throw }
                     if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
                         throw (New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.')

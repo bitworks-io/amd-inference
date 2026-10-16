@@ -394,6 +394,13 @@ try {
             $built.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
             return $built
         }
+        # A run that cannot even spawn (the port is occupied) is untyped and has no runtime reason: the start-time fallback never applies to it.
+        $occupier=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$fallbackPort)
+        $occupier.Server.ExclusiveAddressUse=$true;$occupier.Start()
+        $occupiedFailure=$null
+        try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } (New-FallbackSequencePlan 'ok' 'hip-recipe') $fallbackRoot $catalog } catch { $occupiedFailure=$_.Exception } finally { $occupier.Stop() }
+        Check ($null -ne $occupiedFailure -and [string]::IsNullOrEmpty([string]$occupiedFailure.Data['FastLlmReason']) -and [string]::IsNullOrEmpty([string]$occupiedFailure.Data['FastLlmFailureCode'])) 'an occupied port fails the supervised run before the spawn with no typed code and no runtime reason (so it never falls back)'
+        Check (([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/FastLlm.Runtime.ps1'))).Contains("if (`$reachedReady) { `$_.Exception.Data['FastLlmAfterReady']=`$true }")) 'a failure after the supervisor reached ready is tagged FastLlmAfterReady'
         # First run: the server loads, then the run fails (the child is alive when the failure is raised).
         $firstFailure=$null
         try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } (New-FallbackSequencePlan 'unstable' 'hip-recipe') $fallbackRoot $catalog | Out-Null } catch { $firstFailure=$_.Exception }
@@ -442,9 +449,6 @@ try {
         $explicitText=& $module { param($E) (New-FastLlmHipLaunchFailure -ComponentId 'eng-hip' -ExitCode $E).Message } $wordingCase.exit
         Check ($autoText -like '*FastLLM starts the Vulkan setup instead.' -and $autoText -notlike '*does not switch to Vulkan on its own*' -and $explicitText -like '*FastLLM does not switch to Vulkan on its own.*') "$($wordingCase.label): the message for an automatic choice no longer says it does not switch; for an explicit recipe it still does"
     }
-    $autoBackendText=& $module { (New-FastLlmHipBackendFailure -ComponentId 'eng-hip' -Cause timeout -AutoSelected).Message }
-    $explicitBackendText=& $module { (New-FastLlmHipBackendFailure -ComponentId 'eng-hip' -Cause timeout).Message }
-    Check ($autoBackendText -like '*FastLLM starts the Vulkan setup instead.' -and $autoBackendText -notlike '*did not switch to Vulkan*' -and $explicitBackendText -like '*FastLLM did not switch to Vulkan*') 'hip-backend-unavailable: the automatic-choice wording starts the Vulkan setup; the explicit wording is unchanged'
 
     $httpHost=New-Object Bitworks.FastLlm.ProcessHost
     try {
