@@ -213,13 +213,13 @@ try{
     $module=Import-Module (Join-Path $repoRoot 'src/FastLlm.psm1') -Force -PassThru
     $moduleOut=Join-Path $root 'module.json'
     $moduleResult=& $module {
-        param($Semantic,$Workload,$TaskQuality,$Diagnostic,$Tool,$Output,$State)
+        param($Semantic,$Workload,$TaskQuality,$Diagnostic,$Tool,$Output,$State,$Response)
         . $Semantic;. $Workload;. $TaskQuality -OutputPath $Output;. $Diagnostic
         Invoke-FastLlmArithmeticDiagnosticCore -OutputPath $Output -ToolSourcePath $Tool `
             -TaskQualityToolSourcePath $TaskQuality -DeadlineSeconds 30 -RequestTimeoutSeconds 5 `
             -ReadState {$State} -CheckProcess {param($Current)if($Current.processIdentity.pid -ne 42){throw 'changed'}} `
-            -Request {param($Path,$Body,$TimeoutMs)New-TestResponse '63'}
-    } $semantic $workload $taskQuality $diagnostic $tool $moduleOut $script:state
+            -Request $Response
+    } $semantic $workload $taskQuality $diagnostic $tool $moduleOut $script:state {param($Path,$Body,$TimeoutMs)New-TestResponse '63'}
     Check ($moduleResult.reportStatus -ceq 'complete' -and $moduleResult.result.diagnosticClassification -ceq 'strict-pass') 'strict imported-module integration failed'
     Write-Host "PASS: $script:checks arithmetic diagnostic focused assertions. No engine or model invoked."
 }finally{

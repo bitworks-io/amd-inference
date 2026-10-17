@@ -81,11 +81,12 @@ Write-Output '0.00.402.123 I cmn  common_param:   - Vulkan0 : AMD Radeon RX 7900
 Write-Output '0.00.402.123 D D cmn  common_param:   - Vulkan1 : extra token (1 MiB, 1 MiB free)'
 Write-Output '0.00.402.123 0.00.402.123 D cmn  common_param:   - Vulkan2 : double timestamp (1 MiB, 1 MiB free)'
 Write-Output '0.00.402.123 D cmn  common_par:   - Vulkan3 : short cmn tag (1 MiB, 1 MiB free)'
-Write-Output ($e + '[0;34m0.00.402.123' + $e + '[0m D cmn  common_param:   - Vulkan4 : colour codes (1 MiB, 1 MiB free)')
+# Write directly so PowerShell 7 does not strip the negative-control ANSI bytes.
+[Console]::WriteLine($e + '[0;34m0.00.402.123' + $e + '[0m D cmn  common_param:   - Vulkan4 : colour codes (1 MiB, 1 MiB free)')
 Write-Output ('0.00.402.123 D cmn  common_param:   - Vulkan5 : over-long (1 MiB, 1 MiB free)' + (' ' * 200))
 Write-Output '0.01.234.567 I llama_prepare_model_devices: using device Vulkan0 (AMD Radeon RX 7900 XTX) (0000:03:00.0) - 24100 MiB free'
 Write-Output '0.01.234.567 I X llama_prepare_model_devices: using device Vulkan1 (extra token) (0000:04:00.0) - 1 MiB free'
-Write-Output ($e + '[0;34m0.01.234.567' + $e + '[0m I llama_prepare_model_devices: using device Vulkan2 (colour codes) (0000:05:00.0) - 1 MiB free')
+[Console]::WriteLine($e + '[0;34m0.01.234.567' + $e + '[0m I llama_prepare_model_devices: using device Vulkan2 (colour codes) (0000:05:00.0) - 1 MiB free')
 Write-Output ('0.01.234.567 I llama_prepare_model_devices: using device Vulkan3 (over-long) (0000:06:00.0) - 1 MiB free' + (' ' * 200))
 '@
 try {

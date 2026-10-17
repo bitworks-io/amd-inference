@@ -3,18 +3,18 @@
   "suites": [
     {
       "suite": "adlx-identity-vram-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
       "suite": "arithmetic-diagnostic-tests",
-      "class": "bench-native",
-      "reason": "first hosted run 2026-10-15: 'strict imported-module integration failed'; cause not yet diagnosed; runs in the bench native gate."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "backend-parity-diagnostic-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "background-host-tests",
@@ -53,18 +53,18 @@
     },
     {
       "suite": "context-ladder-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "cpu-reference-lab-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "device-binding-tests",
       "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "reason": "Its real CLI status and live-planning checks require a standard Windows user; the CLI rejects the elevated hosted runner before dispatching these actions."
     },
     {
       "suite": "download-progress-tests",
@@ -113,8 +113,8 @@
     },
     {
       "suite": "gpu-telemetry-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "hip-benchmark-tests",
@@ -153,8 +153,8 @@
     },
     {
       "suite": "json-format-diagnostic-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "lab-access-tests",
@@ -228,8 +228,8 @@
     },
     {
       "suite": "pci-link-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
       "suite": "prerequisite-diagnostics-tests",
@@ -238,8 +238,8 @@
     },
     {
       "suite": "process-host-device-list-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "recipes-selection-tests",
@@ -258,8 +258,8 @@
     },
     {
       "suite": "sampler-diagnostic-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "selected-device-identity-tests",
@@ -288,8 +288,8 @@
     },
     {
       "suite": "state-write-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "task-quality-benchmark-tests",
@@ -363,8 +363,8 @@
     },
     {
       "suite": "vulkan-driver-modules-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "vulkan-fit-benchmark-tests",
@@ -378,8 +378,8 @@
     },
     {
       "suite": "vulkan-luid-join-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "vulkan-memory-policy-tests",
@@ -389,17 +389,17 @@
     {
       "suite": "vulkan-vidmem-benchmark-tests",
       "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "reason": "The status round trip calls Get-FastLlmVulkanVidmemStatus, which requires a standard Windows user through Assert-FastLlmOffloadLabHost; elevated hosted runners are rejected."
     },
     {
       "suite": "vulkan-vidmem-trial-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "windows-http-transport-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "windows-vulkan-pnp-bridge-tests",

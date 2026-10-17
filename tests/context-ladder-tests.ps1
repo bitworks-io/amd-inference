@@ -345,7 +345,8 @@ try{
     $parseErrors=$null
     [void][Management.Automation.Language.Parser]::ParseFile($cliPath,[ref]$null,[ref]$parseErrors)
     Check (@($parseErrors).Count -eq 0) 'the CLI parses cleanly'
-    $psExe=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    # Exercise the CLI with this suite's host, including its matching module environment.
+    $psExe=(Get-Process -Id $PID).Path
     if($env:OS -eq 'Windows_NT' -and (Test-Path -LiteralPath $psExe)){
         New-Case
         $cliOut=Join-Path $work 'cli-report.json'
@@ -356,7 +357,10 @@ try{
         if(-not $child.WaitForExit(180000)){& taskkill.exe /PID $child.Id /T /F | Out-Null}
         $cliReport=$null
         if(Test-Path -LiteralPath $cliOut){$cliReport=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($cliOut))}
-        Check ($child.ExitCode -eq 0 -and $null -ne $cliReport -and $cliReport.completed -eq $true -and $cliReport.source.cliSha256 -eq (Get-FileHash -LiteralPath $cliPath -Algorithm SHA256).Hash.ToLowerInvariant()) 'the CLI runs the module in module scope and binds its own SHA-256'
+        $cliNote='the CLI runs the module in module scope and binds its own SHA-256 (exit='+$child.ExitCode+', report='+($null -ne $cliReport)
+        if($null -ne $cliReport){$cliNote+=(', completed='+$cliReport.completed+', abort='+$cliReport.abortReason)}
+        $cliNote+=')'
+        Check ($child.ExitCode -eq 0 -and $null -ne $cliReport -and $cliReport.completed -eq $true -and $cliReport.source.cliSha256 -eq (Get-FileHash -LiteralPath $cliPath -Algorithm SHA256).Hash.ToLowerInvariant()) $cliNote
     }
 
     Write-Host "context-ladder-tests: $($script:count) checks passed"
