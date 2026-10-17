@@ -99,6 +99,7 @@ end;
 function DirSizeBytes(const Dir: String): Int64;
 var
   FindRec: TFindRec;
+  Hi, Lo: Int64;
 begin
   Result := 0;
   if FindFirst(AddBackslash(Dir) + '*', FindRec) then
@@ -112,7 +113,12 @@ begin
             Result := Result + DirSizeBytes(AddBackslash(Dir) + FindRec.Name);
         end
         else
-          Result := Result + FindRec.SizeHigh * 4294967296 + FindRec.SizeLow;
+        begin
+          // Int64 locals: a product of the 32-bit fields would be computed in 32 bits and drop the high half of every large file.
+          Hi := FindRec.SizeHigh;
+          Lo := FindRec.SizeLow;
+          Result := Result + Hi * 65536 * 65536 + Lo;
+        end;
       end;
     until not FindNext(FindRec);
   finally
@@ -122,24 +128,27 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  DataDir, ModelsDir, EnginesDir: String;
+  DataDir, ModelsDir, EnginesDir, ComponentsDir: String;
   Bytes: Int64;
 begin
   if CurUninstallStep <> usPostUninstall then Exit;
   DataDir := ExpandConstant('{localappdata}\Bitworks\FastLLM');
   ModelsDir := DataDir + '\models';
   EnginesDir := DataDir + '\engines';
-  if UninstallSilent or not (DirExists(ModelsDir) or DirExists(EnginesDir)) then Exit;
+  ComponentsDir := DataDir + '\components';
+  if UninstallSilent or not (DirExists(ModelsDir) or DirExists(EnginesDir) or DirExists(ComponentsDir)) then Exit;
   Bytes := 0;
   if DirExists(ModelsDir) then Bytes := Bytes + DirSizeBytes(ModelsDir);
   if DirExists(EnginesDir) then Bytes := Bytes + DirSizeBytes(EnginesDir);
-  // Spec 4.1: offer to delete only the downloaded models and engines; settings, consent records and logs stay.
+  if DirExists(ComponentsDir) then Bytes := Bytes + DirSizeBytes(ComponentsDir);
+  // Spec 4.1: offer to delete only the downloaded models, engines and engine components; settings, consent records and logs stay.
   if MsgBox('Also delete the downloaded models and engines (' + IntToStr(Bytes div 1048576) + ' MB)?' + #13#10 +
-            ModelsDir + #13#10 + EnginesDir + #13#10#13#10 +
+            ModelsDir + #13#10 + EnginesDir + #13#10 + ComponentsDir + #13#10#13#10 +
             'Settings, consent records and logs are kept. Choose No to keep the models and engines for a later install.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
   begin
     if DirExists(ModelsDir) then DelTree(ModelsDir, True, True, True);
     if DirExists(EnginesDir) then DelTree(EnginesDir, True, True, True);
+    if DirExists(ComponentsDir) then DelTree(ComponentsDir, True, True, True);
   end;
 end;

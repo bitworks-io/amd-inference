@@ -15,6 +15,15 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn("DelTree(EnginesDir, ", ISS)
         self.assertNotIn("DelTree(DataDir", ISS)
 
+    def test_uninstall_size_uses_int64_and_covers_components(self):
+        self.assertNotIn("* 4294967296", ISS)
+        self.assertIn("Hi, Lo: Int64;", ISS)
+        self.assertIn("Hi * 65536 * 65536 + Lo", ISS)
+        prompt = re.search(r"(?s)MsgBox\(.*?\) = IDYES", ISS).group(0)
+        self.assertIn("ComponentsDir", prompt)
+        self.assertIn("DirSizeBytes(ComponentsDir)", ISS)
+        self.assertIn("DelTree(ComponentsDir, ", ISS)
+
     def test_install_refuses_a_foreign_non_empty_folder_before_install_delete(self):
         self.assertIn("function PrepareToInstall(var NeedsRestart: Boolean): String;", ISS)
         body = ISS[ISS.index("function PrepareToInstall"):]

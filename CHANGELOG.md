@@ -2,6 +2,18 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.10 (canary)
+
+- **No stale Ready after a restart:** after Stop and a new Start, the window no longer shows the previous run's Ready line, engine line or self-test results while the new server is still loading. They appear once the new run reports them.
+- **The uninstaller shows the real size of downloaded data:** large model files were counted by their low 32 bits only, so a 16 GB model showed as a few GB. It also now offers to remove the downloaded engine components (the HIP engine and AMD runtime) together with the models and engines. Settings, consent records and logs are still kept, and the default answer is still No.
+- **Clearer messages:**
+  - After you stop a background run, the window says "Stopped. The background run ended." instead of asking you to review it. A run that ends or changes without your Stop keeps the cautious message.
+  - When FastLLM opens, the status line reads "Not running. Install & start sets up and starts the best setup for your card." instead of telling you to install the driver and runtime first.
+  - The empty list of installed components says "No engine components are installed."
+- **Corrected setup warnings:** the Vulkan warning no longer says Vulkan is the only enabled engine, and a Bitworks-measured HIP setup is no longer called experimental. Community HIP setups keep that label.
+- **The model license review opens without the text selected,** and Enter still cancels.
+- **Long status lines are no longer cut off:** they end in an ellipsis and show the full text when you hover over them.
+
 ## 2026.10.15.9 (canary)
 
 - **Install & start and Start / download work again from the window:** 2026.10.15.7 shortened the setup check's report, but it was printed as one long line that the window's output capture cut off. It is now printed on short lines.

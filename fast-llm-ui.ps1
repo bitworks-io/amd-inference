@@ -31,6 +31,7 @@ $script:vcManifestPath=Join-Path $PSScriptRoot 'config/windows-prerequisites.jso
 $script:trayState=New-FastLlmUiTrayState; $script:trayIcon=$null; $script:trayMenu=$null
 $script:bgState=New-FastLlmUiBackgroundState; $script:bgNextPollUtc=[DateTime]::MinValue
 $script:bgStopRequested=$false
+$script:bgEndedByUserStop=$false
 $script:bgPoll=$null
 $script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
 $form=New-Object Windows.Forms.Form
@@ -93,7 +94,12 @@ $script:identifiedVariant=''
 $script:chooserNotice=''
 $chooseButton.Enabled=$false
 $backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
-$statusLabel=LabelAt 'Stopped. Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first.' 24 382
+$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382
+# One line does not fit every status: cut it with an ellipsis and keep the full text in a tooltip.
+$statusLabel.AutoEllipsis=$true
+$statusTip=New-Object Windows.Forms.ToolTip
+$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})
+$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)
 $progress=New-Object Windows.Forms.ProgressBar
 $progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
@@ -295,12 +301,15 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
     $wasAttached=[bool]$script:bgState.attachedRequestId
     $wasPending=[bool]$script:bgState.pendingRequestId
     $observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $HealthChecked -Force
-    $null=Set-FastLlmUiBackgroundObservation -State $script:bgState -Observation $observation
+    $null=Set-FastLlmUiBackgroundObservation -State $script:bgState -Observation $observation -StopRequested:$script:bgStopRequested
     $null=Test-FastLlmUiBackgroundPendingHost -State $script:bgState -TestProcess {
         param($Identity) TestUiBackgroundProcess $Identity
     }
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
-    if($wasAttached -and -not $script:bgState.attachedRequestId){
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -StopRequested:($script:bgStopRequested -or $script:bgEndedByUserStop)
+    if($wasAttached -and -not $script:bgState.attachedRequestId -and $script:bgStopRequested -and $script:bgState.observation -and -not $script:bgState.observation.active){
+        $script:bgEndedByUserStop=$true
+        $statusLabel.Text='Stopped. The background run ended.'
+    }elseif($wasAttached -and -not $script:bgState.attachedRequestId){
         $statusLabel.Text='Background run ended or changed. Its ownership has not been silently replaced.'
     }elseif($script:bgState.attachedRequestId -and $HealthChecked -and
             $script:bgState.observation.PSObject.Properties['servingHealthy'] -and
@@ -382,6 +391,7 @@ function ReadSelection {
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
 }
 function LaunchStep([string]$Step,[object[]]$Arguments) {
+    $script:bgEndedByUserStop=$false
     $script:updateOutcome=$false
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
@@ -649,6 +659,8 @@ function ShowExactModelConsent($Plan) {
     # Enter initially invokes Cancel. A deliberately focused Accept button remains
     # keyboard-accessible; Escape and closing without acceptance cancel.
     $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
+    # The read-only box takes focus first and WinForms would open it with everything selected.
+    $dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}.GetNewClosure())
     SetTrayMenuAvailable $false
     try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
 }
@@ -786,6 +798,7 @@ function StartUiBackground {
     if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
     ReadSelection
     AssertUiBackgroundNotOccupied
+    $script:bgEndedByUserStop=$false
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
         modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue)}
@@ -815,6 +828,7 @@ function AttachUiBackground {
             Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId
     }
+    $script:bgEndedByUserStop=$false
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
     $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.' -State (GetUiBackgroundRunStatus)
@@ -854,7 +868,7 @@ function FillComponentsPanel {
     catch{$rows=@();$view.message.Text="The component list could not be read: $($_.Exception.Message)"}
     if($rows.Count -eq 0){
         $none=New-Object Windows.Forms.Label
-        $none.Text='No community components are installed.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
+        $none.Text='No engine components are installed.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
         $view.panel.Controls.Add($none)
         return
     }
@@ -1203,8 +1217,9 @@ $timer.Add_Tick({
         $text=$script:child.Snapshot();$output.Text=$text;$output.SelectionStart=$output.TextLength;$output.ScrollToCaret()
         if(-not $script:child.Process.HasExited){
             if($script:step -eq 'serving'){
-                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
-                    if($s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
+                try{$s=Get-FastLlmStatus $script:installPath;$isCurrentRun=Test-FastLlmUiStatusIsCurrentRun -Status $s -PreviousRunId $script:servingPreviousRunId
+                    if($isCurrentRun -and $s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
+                    if($isCurrentRun -and $s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
                         $setupLine=Get-FastLlmUiRunSetupLine -State $s
                         if($setupLine){$lines+=$setupLine}

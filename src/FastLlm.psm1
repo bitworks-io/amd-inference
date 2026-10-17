@@ -1244,7 +1244,7 @@ function Get-FastLlmPlan {
         $warnings += "The selected '$($model.quantization)' profile uses an aggressive quantization and is experimental pending quality evaluation."
     }
     if ([string] $Hardware.backend -eq 'Vulkan') {
-        $warnings += 'Vulkan is the only enabled alpha engine lane and requires a current AMD Vulkan driver plus the Microsoft VC++ 2015-2022 x64 runtime. Flash Attention remains on auto so unsupported kernels are not forced.'
+        $warnings += 'The Vulkan setup requires a current AMD Vulkan driver plus the Microsoft VC++ 2015-2022 x64 runtime. Flash Attention remains on auto so unsupported kernels are not forced.'
     }
     if ([string] $Hardware.backend -eq 'ROCm' -and -not [bool] $catalog.engine.assets.rocm.enabled) {
         $warnings += 'This fixture describes a hypothetical ROCm plan, but automatic ROCm execution is disabled until a complete matched runtime is pinned.'
@@ -1293,7 +1293,7 @@ function Get-FastLlmPlan {
                     $planRuntimeRoots = @()
                     # The pending form is the HIP recipe's plan that cannot start yet: selectedAdapters stays as probed (no HIP device names exist before
                     # the engine runs), and the Vulkan-only warning is dropped because the plan's backend is not Vulkan.
-                    $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
+                    $warnings = @($warnings | Where-Object { $_ -notlike 'The Vulkan setup requires a current AMD Vulkan driver*' })
                 }
                 else {
                     if (-not $resolvedEngine.installed) {
@@ -1324,12 +1324,14 @@ function Get-FastLlmPlan {
                         $hipDevices = @(Invoke-FastLlmDeviceProbe -EnginePath $planEnginePath -Backend 'ROCm' -InstallRoot $InstallRoot `
                                 -TimeoutSeconds ([int] $catalog.hardwarePolicy.deviceProbeTimeoutSeconds) -Hip -RuntimeRoots $planRuntimeRoots -ComponentId $planEngineComponentId)
                         $selectedAdapters = @(Resolve-FastLlmHipSelectedAdapters -Adapters $selectedAdapters -Devices $hipDevices -ComponentId $planEngineComponentId)
-                        $warnings = @($warnings | Where-Object { $_ -notlike 'Vulkan is the only enabled alpha engine lane*' })
+                        $warnings = @($warnings | Where-Object { $_ -notlike 'The Vulkan setup requires a current AMD Vulkan driver*' })
+                        # Bitworks-measured recipes are not called experimental; community recipes keep the word.
+                        $hipLabel = if ($recipePick -and $recipePick.recipe -and [string] $recipePick.recipe.origin -ceq 'bitworks') { 'the HIP' } else { 'the experimental HIP' }
                         if ($RecipeId) {
-                            $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own.'
+                            $warnings += "This setup runs on $hipLabel (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup, and FastLLM will not fall back to Vulkan on its own."
                         }
                         else {
-                            $warnings += 'This setup runs on the experimental HIP (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup; if it cannot be used, FastLLM falls back to the Vulkan setup and says so.'
+                            $warnings += "This setup runs on $hipLabel (ROCm) engine from AMD and llama.cpp components. It is not a Vulkan setup; if it cannot be used, FastLLM falls back to the Vulkan setup and says so."
                         }
                     }
                 }

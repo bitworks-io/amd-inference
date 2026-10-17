@@ -569,6 +569,16 @@ function Get-FastLlmUiChooserNotice {
     return ($parts -join ' ')
 }
 
+# True only when the status was written by the run started after PreviousRunId. A status with no run id, or the same run id as before the
+# start, belongs to an earlier run and must not drive Ready or the self-test notes.
+function Test-FastLlmUiStatusIsCurrentRun {
+    param($Status, [string] $PreviousRunId)
+    if (-not $Status -or -not $Status.PSObject.Properties['runId']) { return $false }
+    $runId = [string] $Status.runId
+    if ([string]::IsNullOrEmpty($runId)) { return $false }
+    return -not ($runId -ceq $PreviousRunId)
+}
+
 # The failure code to trust after a failed start: the one the CLI recorded for THIS run. An unchanged run id means the start failed before it
 # wrote its own status, so a code left by an earlier run is ignored.
 function Get-FastLlmUiFailureCode {
