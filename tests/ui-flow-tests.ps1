@@ -804,6 +804,12 @@ Check ($realisticOld.Length -ge 8192 -and $realisticOld -notmatch "`n") 'The old
 Check ($realisticMax -lt 8192) 'The realistic compact report has no line of 8192 characters or more.'
 $realisticParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text $realisticText
 Check (@($realisticParsed.installIntegrity.mismatches).Count -eq 300 -and $realisticParsed.installIntegrity.status -ceq 'failed' -and $realisticParsed.windows -eq $true -and @($realisticParsed.plan.steps).Count -eq 40) 'The realistic compact report parses with its key fields.'
+# Driver guidance reads the same compact report: its entries survive compaction and still validate for the dialog.
+$guidanceDiag=DoctorFixture $false
+$guidanceDiag['driverGuidance']=@((Get-FastLlmDriverGuidance -GpuName 'AMD Radeon RX 7900 XTX' -PnpDriverVersion '32.0.31041.1004'),(Get-FastLlmDriverGuidance -GpuName 'Unknown display'))
+$guidanceParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text ((ConvertTo-FastLlmCompactDoctorReport -Diagnostic $guidanceDiag)|ConvertTo-Json -Depth 12)
+$guidanceEntries=@($guidanceParsed.driverGuidance)
+Check ($guidanceParsed.windows -eq $true -and $guidanceEntries.Count -eq 2 -and $guidanceEntries[0].inputGpuName -ceq 'AMD Radeon RX 7900 XTX' -and (Format-FastLlmDriverGuidance -Guidance $guidanceEntries[0]).Contains('Reported driver version: 32.0.31041.1004')) 'The compact report keeps driver guidance entries that the guidance dialog can validate.'
 $line8192='{"a":"'+('x'*(8192-8))+'"}'
 $line8191='{"a":"'+('x'*(8191-8))+'"}'
 $longLineMessage='The setup check returned a line longer than the window can read; open Diagnostics for the full report.'

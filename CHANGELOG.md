@@ -5,6 +5,7 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 ## 2026.10.15.9 (canary)
 
 - **Install & start and Start / download work again from the window:** 2026.10.15.7 shortened the setup check's report, but it was printed as one long line that the window's output capture cut off. It is now printed on short lines.
+- **Driver guidance opens again:** it read the full diagnostic report, which is larger than the window's output capture keeps. It now reads the shortened report, which keeps the driver guidance unchanged.
 
 ## 2026.10.15.8 (canary)
 

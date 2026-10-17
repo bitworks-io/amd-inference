@@ -26,4 +26,8 @@ $failed=$false;try{Format-FastLlmDriverGuidance $bad|Out-Null}catch{$failed=$tru
 Check $failed 'unexpected qualification flag is rejected'
 $ui=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../fast-llm-ui.ps1') -Raw
 Check ($ui.Contains("LaunchStep 'driver guidance'") -and $ui.Contains('$code -in @(0,2)')) 'guidance is asynchronous and permits a missing-engine doctor report'
+# The full doctor report is larger than the window's output capture keeps (262,144 characters), so guidance asks for the compact report
+# (driverGuidance and windows are kept as they are) and reads it with the window's bounded parser.
+Check ($ui.Contains("LaunchStep 'driver guidance' (@('doctor','-Compact')+`$script:selection)") -and -not $ui.Contains("LaunchStep 'driver guidance' (@('doctor')+")) 'guidance asks doctor for the compact report'
+Check ($ui.Contains('ShowDriverGuidance (ConvertFrom-FastLlmUiSetupCheckOutput -Text $text)') -and -not $ui.Contains('ShowDriverGuidance (ConvertFrom-Json $text)')) 'guidance reads the report with the bounded parser'
 Write-Host "$script:checks driver-guidance view checks passed. Native Windows dialog not exercised."

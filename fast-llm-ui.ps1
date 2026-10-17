@@ -844,7 +844,7 @@ $backgroundCheckButton.Add_Click({
     }catch{ShowFailure $_.Exception.Message}
 })
 $doctorButton.Add_Click({try{ReadSelection;LaunchStep 'diagnostics' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
-$driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
+$driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doctor','-Compact')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 # The installed components with their sizes and a Remove button per row. Removal is Remove-FastLlmComponent, which refuses while the server uses the component.
 $script:componentsView=$null
 function FillComponentsPanel {
@@ -1250,7 +1250,7 @@ $timer.Add_Tick({
         }
         # A missing engine can make doctor exit 2 while the independent PnP advisory is usable.
         if($step -eq 'driver guidance' -and $code -in @(0,2)){
-            SetBusy $false;ShowDriverGuidance (ConvertFrom-Json $text);return
+            SetBusy $false;ShowDriverGuidance (ConvertFrom-FastLlmUiSetupCheckOutput -Text $text);return
         }
         if($code -ne 0){
             if($step -eq 'vc prepare'){
