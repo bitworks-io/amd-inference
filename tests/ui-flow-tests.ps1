@@ -679,7 +679,7 @@ Check ($launchStepText.Contains('if($script:installPath){try{[void](Sync-FastLlm
 Check ($ui.Contains('Set-FastLlmExperimentalSwitchMirrored -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text))')) 'toggling the switch mirrors it into the install folder shown in the window'
 Check ($launchStepText.Contains('$script:servingPreviousRunId') -and $ui.Contains('Get-FastLlmUiFailureCode -Status (Get-FastLlmStatus $script:installPath) -PreviousRunId ([string]$script:servingPreviousRunId)')) 'a typed failure code is trusted only when this start wrote it'
 foreach ($planButton in @(@('installButton', 'install'), @('startButton', 'start'))) {
-    Check ([regex]::IsMatch($ui, ('\$' + $planButton[0] + '\.Add_Click\(\{try\{ReadSelection;AssertUiBackgroundNotOccupied;\$script:chosenRecipe=\$null;\$script:flow=New-FastLlmUiFlow -Mode ' + $planButton[1]))) "the $($planButton[1]) button clears a chosen recipe before it starts"
+    Check ([regex]::IsMatch($ui, ('\$' + $planButton[0] + '\.Add_Click\(\{try\{ReadSelection;AssertUiBackgroundNotOccupied;\$script:chosenRecipe=\$null;ClearPreviousRunNotes;\$script:flow=New-FastLlmUiFlow -Mode ' + $planButton[1]))) "the $($planButton[1]) button clears a chosen recipe before it starts"
 }
 $continueText = (Get-UiFunctionText 'ContinueWithChosenRecipe').Extent.Text
 Check ($continueText.Contains('Get-FastLlmUiComponentInstallArguments') -and $continueText.Contains("LaunchStep 'component install' `$installArgs") -and $continueText.Contains('$Row.experimental -and -not $experimentalBox.Checked')) 'choosing a recipe installs through the argument builder and refuses an experimental row while the switch is off'
@@ -1044,5 +1044,14 @@ $chosenBody = $chosenBody.Substring(0, $chosenBody.IndexOf('BeginChosenRecipe $R
 Check ($ui.Contains('Clear-FastLlmUiDeclinedSetups -InstallRoot $script:settingsRoot') -and $ui.Contains("RepreviewForPendingSetup 'install-failed'") -and $ui.Contains('Get-FastLlmUiInstallFailedLine')) 'accepting the automatic install clears declines; a failed own install previews the fallback without recording a decline'
 Check ($chosenBody.Contains('Remove-FastLlmUiDeclinedSetup')) 'picking a setup in the chooser clears its remembered decline'
 Check ($componentsSourceText -notmatch '[^\x00-\x7F]') 'the components script stays ASCII-only'
+
+$clearBody = $ui.Substring($ui.IndexOf('function ClearPreviousRunNotes'))
+$clearBody = $clearBody.Substring(0, $clearBody.IndexOf("`n"))
+$beginBody = $ui.Substring($ui.IndexOf('function BeginChosenRecipe'))
+$beginBody = $beginBody.Substring(0, $beginBody.IndexOf('function ContinueWithChosenRecipe'))
+$doctorLine = @($ui -split "`n" | Where-Object { $_.StartsWith('$doctorButton.Add_Click') })[0]
+Check ($clearBody.Contains("`$notesLabel.Text=''") -and $clearBody.Contains('$resultsLink.Visible=$false') -and $clearBody.Contains('$barLink.Visible=$false') -and $clearBody.Contains('$script:evidenceUrl=$null')) 'a new start clears the notes, both links and the evidence url'
+Check ($ui.Contains('ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode install') -and $ui.Contains('ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode start') -and $beginBody.Contains('ClearPreviousRunNotes')) 'Install and start, Start and a chooser pick clear the previous run notes'
+Check (-not $doctorLine.Contains('ClearPreviousRunNotes') -and ([regex]::Matches($ui, 'ClearPreviousRunNotes')).Count -eq 4) 'Diagnostics and other actions leave the notes alone'
 
 Write-Output "UI flow tests passed: $checks"

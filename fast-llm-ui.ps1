@@ -110,6 +110,8 @@ $notesLabel=New-Object Windows.Forms.Label
 $notesLabel.Location=New-Object Drawing.Point(24,676);$notesLabel.Size=New-Object Drawing.Size(796,80);$notesLabel.Text='';$form.Controls.Add($notesLabel)
 $barLink=New-Object Windows.Forms.LinkLabel;$barLink.Text='How to turn it on';$barLink.Location=New-Object Drawing.Point(24,758);$barLink.AutoSize=$true;$barLink.Visible=$false;$form.Controls.Add($barLink)
 $script:servingNotesDone=$false
+# A new foreground start flow drops the previous run's notes and links so the preview does not show them.
+function ClearPreviousRunNotes {$notesLabel.Text='';$resultsLink.Visible=$false;$barLink.Visible=$false;$script:evidenceUrl=$null;$script:servingNotesDone=$false}
 $vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$vc.Location=New-Object Drawing.Point(24,785);$vc.AutoSize=$true;$form.Controls.Add($vc)
 $amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,785);$amd.AutoSize=$true;$form.Controls.Add($amd)
 $trayButton=ButtonAt 'Minimize to tray' 440 778 175
@@ -835,8 +837,8 @@ function AttachUiBackground {
     $output.Text="Attached to exact request $($attached.requestId) and run $($attached.runId). Closing this window detaches; Stop ends this run."
     SetBusy $false
 }
-$installButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:chosenRecipe=$null;$script:flow=New-FastLlmUiFlow -Mode install;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
-$startButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:chosenRecipe=$null;$script:flow=New-FastLlmUiFlow -Mode start;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
+$installButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:chosenRecipe=$null;ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode install;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
+$startButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:chosenRecipe=$null;ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode start;LaunchUiPhase}catch{ShowFailure $_.Exception.Message}})
 $backgroundStartButton.Add_Click({
     try{$null=StartUiBackground}
     catch{
@@ -1056,6 +1058,7 @@ function BeginChosenRecipe($Row) {
     ReadSelection
     AssertUiBackgroundNotOccupied
     $script:chosenRecipe=[pscustomobject]@{id=[string]$Row.id;origin=[string]$Row.origin}
+    ClearPreviousRunNotes
     $script:flow=New-FastLlmUiFlow -Mode start
     LaunchUiPhase
 }
