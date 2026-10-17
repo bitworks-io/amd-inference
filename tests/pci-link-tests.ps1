@@ -99,7 +99,8 @@ $r=@([Bitworks.FastLlm.WindowsPciLink]::Collect($m))
 Check ($r[0].Error -like 'read-failed:*' -and $null -eq $r[0].Device.CurrentLinkSpeed.Raw) 'Read exception must be reported not thrown'
 $m=NewMock @(1..129 | ForEach-Object {"X$_"})
 Reject {[Bitworks.FastLlm.WindowsPciLink]::Collect($m)} 'Oversized device list not rejected'
-Reject {[Bitworks.FastLlm.WindowsPciLink]::Collect()} 'Native Collect must reject non-Windows host'
+# The native platform-refusal assertion applies only on non-Windows hosts.
+if(-not $IsWindows){Reject {[Bitworks.FastLlm.WindowsPciLink]::Collect()} 'Native Collect must reject non-Windows host'}
 
 # --- wrapper helpers: schema shape and overwrite refusal
 . (Join-Path $repo 'tools/collect-pci-link.ps1') -OutputPath '/unused.json' -LibraryOnly
