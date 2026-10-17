@@ -398,8 +398,8 @@
     },
     {
       "suite": "windows-http-transport-tests",
-      "class": "bench-native",
-      "reason": "Mock-only, but not yet verified on the hosted runner (first hosted run 2026-10-15 failed before reaching most of these); runs in the bench native gate until each is moved to CI individually."
+      "class": "ci",
+      "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
       "suite": "windows-vulkan-pnp-bridge-tests",
