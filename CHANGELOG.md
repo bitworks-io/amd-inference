@@ -2,7 +2,10 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
-## 2026.10.15.10 (canary)
+## 2026.10.15.11 (canary)
+
+The same changes were tagged as 2026.10.15.10, but that version was not published because a release check failed on the build runner.
+
 
 - **No stale Ready after a restart:** after Stop and a new Start, the window no longer shows the previous run's Ready line, engine line or self-test results while the new server is still loading. They appear once the new run reports them.
 - **The uninstaller shows the real size of downloaded data:** large model files were counted by their low 32 bits only, so a 16 GB model showed as a few GB. It also now offers to remove the downloaded engine components (the HIP engine and AMD runtime) together with the models and engines. Settings, consent records and logs are still kept, and the default answer is still No.
