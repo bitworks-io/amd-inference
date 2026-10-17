@@ -612,6 +612,19 @@ Check ($ui.Contains('-StopRequested:$script:bgStopRequested') -and $ui.Contains(
 Check ($ui.Contains("LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382") -and -not $ui.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first') -and $ui.Contains('No engine components are installed.') -and -not $ui.Contains('No community components are installed.')) 'the window opens with a neutral status and the empty component list says engine components'
 Check ($ui.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}') -and $ui.Contains('$dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel')) 'the model license review opens with no text selected and Enter still cancels'
 Check ($ui.Contains('$statusLabel.AutoEllipsis=$true') -and $ui.Contains('$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})')) 'a long status line is cut with an ellipsis and carries its full text in a tooltip'
+function Get-UiFunctionBody([string]$Text, [string]$Name) {
+    $m = [regex]::Match($Text, "(?ms)^function $([regex]::Escape($Name))\b.*?(?=^function |\z)")
+    return $m.Value
+}
+$exactBody = Get-UiFunctionBody $ui 'ShowExactModelConsent'
+$licenseSettingBody = Get-UiFunctionBody $ui 'ShowLicenseSettingConfirm'
+Check ($exactBody.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}') -and $exactBody.Contains('$dialog.AcceptButton=$cancel') -and $licenseSettingBody.Length -gt 0 -and -not $licenseSettingBody.Contains('$details')) 'the no-selection handler is in the exact model review only; the license setting confirmation has no details box'
+$applyBody = Get-UiFunctionBody $ui 'ApplyUiBackgroundStatus'
+$launchBody = Get-UiFunctionBody $ui 'LaunchStep'
+$startBody = Get-UiFunctionBody $ui 'StartUiBackground'
+$attachBody = Get-UiFunctionBody $ui 'AttachUiBackground'
+Check ($ui.Contains('$script:bgEndedByUserStop=$false') -and $applyBody -match '(?s)bgStopRequested -and .*?-not \$script:bgState\.observation\.active\)\{\s*\$script:bgEndedByUserStop=\$true' -and $applyBody.Contains('-StopRequested:($script:bgStopRequested -or $script:bgEndedByUserStop)')) 'the sticky stopped flag is set when the run ended after the user Stop and feeds the background text'
+Check ($launchBody.Contains('$script:bgEndedByUserStop=$false') -and $attachBody.Contains('$script:bgEndedByUserStop=$false') -and $startBody.Contains('$script:bgEndedByUserStop=$false')) 'the sticky stopped flag is cleared by a foreground start, a background start and an attach'
 $tickText = $ui.Substring($ui.IndexOf('$timer.Add_Tick'))
 Check ($tickText.Contains('Test-FastLlmUiStatusIsCurrentRun -Status $s -PreviousRunId $script:servingPreviousRunId') -and $tickText.Contains('if($isCurrentRun -and $s.active -and $s.phase -eq ''ready''){$statusLabel.Text=Format-FastLlmUiReadyStatus') -and $tickText.Contains('if($isCurrentRun -and $s.active -and $s.phase -eq ''ready'' -and -not $script:servingNotesDone){')) 'the serving tick shows Ready and the self-test notes only for the current run'
 Check ((Format-FastLlmUiTypedFailure -Code 'hip-dll-blocked' -Text "Blocked.`r`n") -ceq "Blocked.`r`n(failure code: hip-dll-blocked)") 'a typed failure shows its own message and its code'

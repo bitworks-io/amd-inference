@@ -146,4 +146,8 @@ $otherRun=New-FastLlmUiBackgroundState
 $otherRun.attachedRequestId=$requestId;$otherRun.attachedRunId='cccccccccccccccccccccccccccccccc'
 $null=Set-FastLlmUiBackgroundObservation $otherRun $ready -StopRequested
 Assert-True ($otherRun.attention -ceq 'The attached background run changed or ended. Review its status.') 'A different run that is still active is not reported as the stopped run.'
+$stickyState=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $stickyState $stoppedObs
+Assert-True ((Get-FastLlmUiBackgroundText -State $stickyState -StopRequested) -ceq 'Stopped. The background run ended.') 'An inactive, unoccupied, non-absent observation reads as stopped with the switch.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $stickyState) -ceq 'No active background host. Review the previous host status before starting again.') 'The same observation keeps the cautious text without the switch.'
 "UI background operational coordination checks passed: $passes"

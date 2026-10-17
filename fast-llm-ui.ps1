@@ -31,6 +31,7 @@ $script:vcManifestPath=Join-Path $PSScriptRoot 'config/windows-prerequisites.jso
 $script:trayState=New-FastLlmUiTrayState; $script:trayIcon=$null; $script:trayMenu=$null
 $script:bgState=New-FastLlmUiBackgroundState; $script:bgNextPollUtc=[DateTime]::MinValue
 $script:bgStopRequested=$false
+$script:bgEndedByUserStop=$false
 $script:bgPoll=$null
 $script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
 $form=New-Object Windows.Forms.Form
@@ -230,8 +231,6 @@ function ShowLicenseSettingConfirm($Disclosure) {
     $cancel.Anchor='Bottom,Right';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($cancel)
     # Enter and Escape cancel; accepting needs a click on the accept button.
     $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
-    # The read-only box takes focus first and WinForms would open it with everything selected.
-    $dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}.GetNewClosure())
     SetTrayMenuAvailable $false
     try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
 }
@@ -306,8 +305,9 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
     $null=Test-FastLlmUiBackgroundPendingHost -State $script:bgState -TestProcess {
         param($Identity) TestUiBackgroundProcess $Identity
     }
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -StopRequested:$script:bgStopRequested
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -StopRequested:($script:bgStopRequested -or $script:bgEndedByUserStop)
     if($wasAttached -and -not $script:bgState.attachedRequestId -and $script:bgStopRequested -and $script:bgState.observation -and -not $script:bgState.observation.active){
+        $script:bgEndedByUserStop=$true
         $statusLabel.Text='Stopped. The background run ended.'
     }elseif($wasAttached -and -not $script:bgState.attachedRequestId){
         $statusLabel.Text='Background run ended or changed. Its ownership has not been silently replaced.'
@@ -391,6 +391,7 @@ function ReadSelection {
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
 }
 function LaunchStep([string]$Step,[object[]]$Arguments) {
+    $script:bgEndedByUserStop=$false
     $script:updateOutcome=$false
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
@@ -658,6 +659,8 @@ function ShowExactModelConsent($Plan) {
     # Enter initially invokes Cancel. A deliberately focused Accept button remains
     # keyboard-accessible; Escape and closing without acceptance cancel.
     $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
+    # The read-only box takes focus first and WinForms would open it with everything selected.
+    $dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}.GetNewClosure())
     SetTrayMenuAvailable $false
     try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
 }
@@ -795,6 +798,7 @@ function StartUiBackground {
     if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
     ReadSelection
     AssertUiBackgroundNotOccupied
+    $script:bgEndedByUserStop=$false
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
         modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue)}
@@ -824,6 +828,7 @@ function AttachUiBackground {
             Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId
     }
+    $script:bgEndedByUserStop=$false
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
     $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.' -State (GetUiBackgroundRunStatus)
