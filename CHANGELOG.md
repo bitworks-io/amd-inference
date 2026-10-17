@@ -2,6 +2,11 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.9 (canary)
+
+- **Install & start and Start / download work again from the window:** 2026.10.15.7 shortened the setup check's report, but it was printed as one long line that the window's output capture cut off. It is now printed on short lines.
+- **Driver guidance opens again:** it read the full diagnostic report, which is larger than the window's output capture keeps. It now reads the shortened report, which keeps the driver guidance unchanged.
+
 ## 2026.10.15.8 (canary)
 
 - **HIP is now the default on the RX 7900 XT and RX 7900 XTX:**
