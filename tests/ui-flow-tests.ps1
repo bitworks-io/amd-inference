@@ -838,7 +838,7 @@ if ($env:OS -eq 'Windows_NT') {
         $capturedParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text $captured
         Check ($capturedParsed.installIntegrity.status -ceq 'failed' -and @($capturedParsed.installIntegrity.mismatches).Count -eq 300 -and $capturedParsed.windows -eq $true -and @($capturedParsed.plan.steps).Count -eq 40) 'The realistic compact report survives the real ProcessHost capture and parses.'
         $capturedOld=CaptureThroughProcessHost -Text $realisticOld -Name 'old.json'
-        Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $capturedOld}) -ne '') 'The old single-line form fails to parse after the real ProcessHost capture (the test reproduces the bug).'
+        Check ($realisticOld.Length -gt 8192 -and (ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $capturedOld}) -ceq $longLineMessage) 'The old single-line form is cut by the real ProcessHost capture and refused with the clear message (the test reproduces the bug).'
     } finally {
         if (Test-Path -LiteralPath $hostTemp) { Remove-Item -LiteralPath $hostTemp -Recurse -Force }
     }
