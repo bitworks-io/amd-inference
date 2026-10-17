@@ -2,6 +2,14 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.13 (canary)
+
+- **Diagnostics shows the whole report:** the Diagnostics button now shows the shortened report that fits the window, instead of a full report that was cut off. If a report is still too long, the window says so and names `fast-llm.ps1 doctor` for the full one.
+- **Clearer background status after signing out of Windows:** background mode runs only while you are signed in. After you sign back in, FastLLM now says the last background run ended without Stop, instead of asking you to review it. Starting in the background right after that no longer shows a false "Another background request now owns this installation" notice while the new run loads.
+- **"Stopped" stays visible:** after you stop a background run, opening Diagnostics or running a setup check no longer replaces "Stopped. The background run ended."
+- **Sizes say MiB:** component sizes and the uninstaller's size prompt are binary megabytes and are now labelled MiB.
+- **Device identity records:** a selected-device line where the engine reports an unknown device id is recorded with that reason instead of as malformed, and HIP device lines are recorded too. Neither is ever used to guess which card is in use. A cut or incomplete GGML Vulkan identity record now reports an error instead of looking like no record.
+
 ## 2026.10.15.12 (canary)
 
 - **A new start no longer shows the previous run's self-test:** after Stop and a new Start, Install & start or a setup picked from Choose another setup, the notes and the "See results" link from the earlier run are cleared while the new run previews.

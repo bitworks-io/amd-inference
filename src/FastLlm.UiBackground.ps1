@@ -52,7 +52,9 @@ function Set-FastLlmUiBackgroundObservation {
     $State.attention=$previousAttention
     $observedRequestId=if($valid.PSObject.Properties['requestId']){[string]$valid.requestId}else{$null}
     if($State.pendingRequestId){
-        if($observedRequestId -and $observedRequestId -cne [string]$State.pendingRequestId){
+        # Only a live or occupying owner of another request is a conflict. A stale record of an older request (for example after a
+        # sign-out killed its host) is replaced by the pending host, so keep waiting for it.
+        if($observedRequestId -and $observedRequestId -cne [string]$State.pendingRequestId -and $valid.occupied){
             $State.attention='Another background request now owns this installation. Review Diagnostics.'
         }elseif($observedRequestId -ceq [string]$State.pendingRequestId -and $valid.active){
             $State.attention=$null
@@ -217,6 +219,12 @@ function Get-FastLlmUiBackgroundText {
     $observedRequestId=if($State.observation.PSObject.Properties['requestId']){[string]$State.observation.requestId}else{''}
     if($observedRequestId -and $LastUserStoppedRequestId -and $observedRequestId -ceq $LastUserStoppedRequestId){
         return 'No background run. Start in background to start one.'
+    }
+    # A host that ended with no Stop and no recorded failure (for example a sign-out): nothing to review.
+    $failureCode=if($State.observation.PSObject.Properties['failureCode']){[string]$State.observation.failureCode}else{''}
+    $failureReason=if($State.observation.PSObject.Properties['failureReason']){[string]$State.observation.failureReason}else{''}
+    if($observedRequestId -and [string]$State.observation.phase -ceq 'stale' -and -not $failureCode -and -not $failureReason){
+        return 'The last background run ended without Stop (for example when you signed out). Start in background to start a new one.'
     }
     return 'No active background host. Review the previous host status before starting again.'
 }

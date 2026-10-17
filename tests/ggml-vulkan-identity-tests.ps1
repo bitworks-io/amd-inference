@@ -56,6 +56,28 @@ $snapshot.devices = @(0..8 | ForEach-Object {
 })
 Expect-Reject $snapshot 'A ninth Vulkan device must be rejected.'
 
+# A record line that is cut or incomplete is an explicit error that names the cause, never a silent "no record".
+function Expect-OutputError([string]$Text, [string]$Pattern, [string]$Message) {
+    $thrown = ''
+    try { ConvertFrom-FastLlmGgmlIdentityOutput -OutputText $Text -WasTruncated $false | Out-Null } catch { $thrown = $_.Exception.Message }
+    Check ($thrown -match $Pattern) ($Message + ' Got: ' + $thrown)
+}
+$goodRecord = 'FASTLLM_GGML_IDENTITY_JSON:' + ([pscustomobject]@{
+    schemaVersion=1; applicable=$true; qualified=$false; identityScope='independent-process-advisory'; sourceEngineArchiveSha256=$pin
+    devices=@([pscustomobject]@{ Name='Vulkan0'; Backend='Vulkan'; Description='AMD Radeon RX 7900 XT'
+        MemoryFreeBytes=[int64]20GB; MemoryTotalBytes=[int64]24GB; DeviceId=$null }) } | ConvertTo-Json -Depth 5 -Compress)
+Check ((ConvertFrom-FastLlmGgmlIdentityOutput -OutputText ("noise`r`n" + $goodRecord + "`r`n") -WasTruncated $false).devices[0].Name -ceq 'Vulkan0') 'A complete record still parses.'
+Check ($null -eq (ConvertFrom-FastLlmGgmlIdentityOutput -OutputText "no record here`r`n" -WasTruncated $false)) 'Output without a record line still returns no record.'
+$longRecord = 'FASTLLM_GGML_IDENTITY_JSON:{"schemaVersion":1,"note":"' + ('x' * 9000) + '"}'
+$cutRecord = $longRecord.Substring(0, 8192)
+Check ($longRecord.Length -gt 9000 -and $cutRecord.Length -eq 8192) 'The long record fixture is built.'
+Expect-OutputError ($cutRecord + "`r`n") 'cut at the 8192' 'A record cut at 8192 characters must fail with the cause.'
+Expect-OutputError $cutRecord 'cut at the 8192' 'A cut record with no line ending must fail with the cause.'
+Expect-OutputError ("FASTLLM_GGML_IDENTITY_JSON:" + $goodRecord.Substring(27, 60) + "`r`n") 'not a complete JSON object' 'A truncated object must fail with the cause.'
+Expect-OutputError "FASTLLM_GGML_IDENTITY_JSON:`r`n" 'not a complete JSON object' 'An empty record line must fail.'
+Expect-OutputError ("FASTLLM_GGML_IDENTITY_JSON:{`"a`":}`r`n") 'not valid JSON' 'A closed but invalid object must fail with the cause.'
+Expect-OutputError ($goodRecord + "`r`n" + $cutRecord) 'multiple records' 'A good record plus a cut one is not accepted as one record.'
+
 $workerText = Get-Content -LiteralPath (Join-Path $root 'tools/collect-ggml-vulkan-identity.ps1') -Raw
 $csText = Get-Content -LiteralPath (Join-Path $root 'src/WindowsGgmlVulkanIdentity.cs') -Raw
 $helperText = Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.GgmlVulkanIdentity.ps1') -Raw

@@ -135,6 +135,25 @@ $script:FastLlmUiSetupCheckMaxCharacters = 262144
 # The window's output capture (ProcessHost) cuts every output line to this many characters; a line this long may be cut.
 $script:FastLlmUiOutputLineCutCharacters = 8192
 
+# Steps that start or advance a run. Only these clear the "stopped by the user" background line; Diagnostics, a setup check and
+# other read-only steps leave it alone.
+function Test-FastLlmUiStepStartsRun {
+    param([AllowNull()][string]$Step)
+    return ($Step -cin @('engine', 'model download', 'serving', 'component install'))
+}
+
+# True when the window's capture may have dropped part of a child's output: the rolling total reached its limit, or a line
+# reached the per-line cut length (a line that long may have been cut).
+function Test-FastLlmUiOutputWasCut {
+    param([AllowNull()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    if ($Text.Length -ge $script:FastLlmUiSetupCheckMaxCharacters) { return $true }
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line.Length -ge $script:FastLlmUiOutputLineCutCharacters) { return $true }
+    }
+    return $false
+}
+
 function ConvertFrom-FastLlmUiSetupCheckOutput {
     param([AllowNull()][string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt $script:FastLlmUiSetupCheckMaxCharacters) {
@@ -142,7 +161,7 @@ function ConvertFrom-FastLlmUiSetupCheckOutput {
     }
     foreach ($line in ($Text -split "`r?`n")) {
         if ($line.Length -ge $script:FastLlmUiOutputLineCutCharacters) {
-            throw 'The setup check returned a line longer than the window can read; open Diagnostics for the full report.'
+            throw 'The setup check returned a line longer than the window can read; open Diagnostics for details.'
         }
     }
     return (ConvertFrom-Json $Text)

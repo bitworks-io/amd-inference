@@ -157,10 +157,46 @@ $null=Set-FastLlmUiBackgroundObservation $reopened $deadObs
 $neutral='No background run. Start in background to start one.'
 $cautious='No active background host. Review the previous host status before starting again.'
 Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId $stoppedId) -ceq $neutral) 'A host record matching the last user-stopped request reads as no background run.'
-Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') -ceq $cautious) 'A different request keeps the cautious text.'
-Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId '') -ceq $cautious -and (Get-FastLlmUiBackgroundText -State $reopened) -ceq $cautious) 'No saved stop keeps the cautious text.'
+# A host that ended with no Stop and no recorded failure (for example a sign-out) reads as a plain end, not something to review.
+$signedOut='The last background run ended without Stop (for example when you signed out). Start in background to start a new one.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') -ceq $signedOut) 'A dead host with no failure code and a different request reads as ended without Stop.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId '') -ceq $signedOut -and (Get-FastLlmUiBackgroundText -State $reopened) -ceq $signedOut) 'No saved stop reads as ended without Stop for a clean dead host.'
+$cleanEmpty=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$stoppedId;failureCode='';failureReason=$null}
+$cleanState=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $cleanState $cleanEmpty
+Assert-True ((Get-FastLlmUiBackgroundText -State $cleanState) -ceq $signedOut) 'Empty failure fields count as no recorded failure.'
+foreach($recorded in @(@{failureCode='host-exited'},@{failureReason='something happened'})){
+    $withFailure=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$stoppedId}
+    foreach($key in $recorded.Keys){$withFailure|Add-Member -NotePropertyName $key -NotePropertyValue $recorded[$key]}
+    $failState=New-FastLlmUiBackgroundState
+    $null=Set-FastLlmUiBackgroundObservation $failState $withFailure
+    Assert-True ((Get-FastLlmUiBackgroundText -State $failState) -ceq $cautious) 'A recorded failure code or reason keeps the cautious text.'
+}
 $noId=New-FastLlmUiBackgroundState
 $null=Set-FastLlmUiBackgroundObservation $noId $stoppedObs
 Assert-True ((Get-FastLlmUiBackgroundText -State $noId -LastUserStoppedRequestId $stoppedId) -ceq $cautious) 'An observation without a request id keeps the cautious text.'
 Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -StopRequested -LastUserStoppedRequestId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') -ceq 'Stopped. The background run ended.') 'The in-session stop wording still wins.'
+# After a sign-out: a stale record of an older request must not read as another owner while the new request is pending.
+$oldId='ffffffffffffffffffffffffffffffff'
+$staleOld=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$oldId;failureCode='';failureReason=$null;hostIdentity=[pscustomobject]@{pid=111;startUtcTicks=5L}}
+$afterSignOut=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $afterSignOut $absent
+$null=Invoke-FastLlmUiBackgroundStart -State $afterSignOut -Request @{} -Start {[pscustomobject]@{phase='starting';requestId=$requestId;hostIdentity=$hostIdentity}}
+$null=Set-FastLlmUiBackgroundObservation $afterSignOut $staleOld
+Assert-True (-not $afterSignOut.attention -and $afterSignOut.pendingRequestId -ceq $requestId) 'A stale record of an older request keeps waiting for the pending request.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $afterSignOut) -ceq 'Background host is starting in this Windows user session. Waiting for its verified Ready state.') 'The window keeps saying the new host is starting.'
+$null=Set-FastLlmUiBackgroundObservation $afterSignOut $lightReady
+Assert-True (-not $afterSignOut.attention -and (Get-FastLlmUiBackgroundText -State $afterSignOut) -like 'Ready background identity observed*') 'When the new record arrives the ready path is unchanged.'
+$liveOther=[pscustomobject]@{phase='loading';active=$true;attachable=$false;occupied=$true;requestId=$oldId;runId=$runId;hostIdentity=[pscustomobject]@{pid=222;startUtcTicks=6L}}
+$otherOwner=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $otherOwner $absent
+$null=Invoke-FastLlmUiBackgroundStart -State $otherOwner -Request @{} -Start {[pscustomobject]@{phase='starting';requestId=$requestId;hostIdentity=$hostIdentity}}
+$null=Set-FastLlmUiBackgroundObservation $otherOwner $liveOther
+Assert-True ($otherOwner.attention -ceq 'Another background request now owns this installation. Review Diagnostics.') 'A live other owner still raises the attention.'
+$occupiedOther=[pscustomobject]@{phase='occupied-unverified';active=$false;attachable=$false;occupied=$true;requestId=$oldId;hostIdentity=[pscustomobject]@{pid=333;startUtcTicks=7L}}
+$otherOccupied=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $otherOccupied $absent
+$null=Invoke-FastLlmUiBackgroundStart -State $otherOccupied -Request @{} -Start {[pscustomobject]@{phase='starting';requestId=$requestId;hostIdentity=$hostIdentity}}
+$null=Set-FastLlmUiBackgroundObservation $otherOccupied $occupiedOther
+Assert-True ($otherOccupied.attention -ceq 'Another background request now owns this installation. Review Diagnostics.') 'An occupying other owner still raises the attention.'
 "UI background operational coordination checks passed: $passes"

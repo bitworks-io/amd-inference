@@ -401,7 +401,7 @@ function ReadSelection {
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
 }
 function LaunchStep([string]$Step,[object[]]$Arguments) {
-    $script:bgEndedByUserStop=$false
+    if(Test-FastLlmUiStepStartsRun -Step $Step){$script:bgEndedByUserStop=$false}
     $script:updateOutcome=$false
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
@@ -868,7 +868,7 @@ $backgroundCheckButton.Add_Click({
         SetBusy $false
     }catch{ShowFailure $_.Exception.Message}
 })
-$doctorButton.Add_Click({try{ReadSelection;LaunchStep 'diagnostics' (@('doctor')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
+$doctorButton.Add_Click({try{ReadSelection;LaunchStep 'diagnostics' (@('doctor','-Compact')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 $driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doctor','-Compact')+$script:selection)}catch{ShowFailure $_.Exception.Message}})
 # The installed components with their sizes and a Remove button per row. Removal is Remove-FastLlmComponent, which refuses while the server uses the component.
 $script:componentsView=$null
@@ -1341,6 +1341,10 @@ $timer.Add_Tick({
             }
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
             'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
+            'diagnostics'{
+                SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'
+                if(Test-FastLlmUiOutputWasCut -Text $text){$output.AppendText([Environment]::NewLine+[Environment]::NewLine+'The window can show only part of this report. For the full report run: fast-llm.ps1 doctor')}
+            }
             default{SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'}
         }
     }catch{

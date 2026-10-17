@@ -142,7 +142,7 @@ begin
   if DirExists(EnginesDir) then Bytes := Bytes + DirSizeBytes(EnginesDir);
   if DirExists(ComponentsDir) then Bytes := Bytes + DirSizeBytes(ComponentsDir);
   // Spec 4.1: offer to delete only the downloaded models, engines and engine components; settings, consent records and logs stay.
-  if MsgBox('Also delete the downloaded models and engines (' + IntToStr(Bytes div 1048576) + ' MB)?' + #13#10 +
+  if MsgBox('Also delete the downloaded models and engines (' + IntToStr(Bytes div 1048576) + ' MiB)?' + #13#10 +
             ModelsDir + #13#10 + EnginesDir + #13#10 + ComponentsDir + #13#10#13#10 +
             'Settings, consent records and logs are kept. Choose No to keep the models and engines for a later install.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then

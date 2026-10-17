@@ -54,7 +54,7 @@ try {
     Check ($main.DeviceListCaptureDiagnostics() -match 'deviceInfo\(like=6, captured=4, malformed=2, dropped=0\), usingDevice\(like=4, captured=3, malformed=1, dropped=0\)' -and
            $main.DeviceListCaptureDiagnostics() -notmatch 'Radeon|secret|Vulkan|CPU') 'Diagnostics differ or leaked server text.'
     # The existing selected-device capture sees the same lines exactly as before (its pattern is unanchored, so the real prefix never mattered).
-    Check ((Normalize $main.FreezeSelectedDeviceIdentity()) -ceq "selected-device Vulkan0 0000:03:00.0`n" -and $main.SelectedDeviceLikeLines -eq 4 -and $main.SelectedDeviceMalformedLines -eq 3 -and
+    Check ((Normalize $main.FreezeSelectedDeviceIdentity()) -ceq "selected-device Vulkan0 0000:03:00.0`n" -and $main.SelectedDeviceLikeLines -eq 4 -and $main.SelectedDeviceMalformedLines -eq 1 -and
            $main.SelectedDeviceUnknownIdLines -eq 2 -and $main.SelectedDeviceBadFormatLines -eq 1 -and -not $main.SelectedDeviceIdentityOverflow) 'The existing selected-device capture changed.'
     Check ((Normalize $main.FreezeSelectedUnknownDeviceIdentity()) -ceq "selected-device-unknown Vulkan1`nselected-device-unknown Vulkan2`n") 'The existing unknown-id capture changed.'
 } finally { $main.Dispose() }

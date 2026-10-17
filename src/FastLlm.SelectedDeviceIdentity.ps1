@@ -8,6 +8,7 @@ function ConvertFrom-FastLlmSelectedDeviceIdentity {
         [string[]] $ExpectedDevices,
         [int] $LikeLines,
         [int] $MalformedLines,
+        [int] $UnknownIdLines = 0,
         [bool] $Overflow = $false
     )
     $observed = @()
@@ -17,12 +18,17 @@ function ConvertFrom-FastLlmSelectedDeviceIdentity {
         @($expected | Where-Object { $_ -cnotmatch '^Vulkan[0-9]{1,2}$' }).Count -gt 0 -or
         @($expected | Select-Object -Unique).Count -ne $expected.Count) {
         $reason = 'invalid-expected-devices'
-    } elseif ($LikeLines -lt 0 -or $MalformedLines -lt 0 -or $LikeLines -gt 1000000 -or $MalformedLines -gt $LikeLines) {
+    } elseif ($LikeLines -lt 0 -or $MalformedLines -lt 0 -or $UnknownIdLines -lt 0 -or $LikeLines -gt 1000000 -or
+              ($MalformedLines + $UnknownIdLines) -gt $LikeLines) {
         $reason = 'invalid-capture-counts'
     } elseif ($Overflow) {
         $reason = 'identity-capture-overflow'
     } elseif ($MalformedLines -gt 0) {
         $reason = 'malformed-selected-device-line'
+    } elseif ($UnknownIdLines -gt 0) {
+        # A well-formed line whose device id the engine reported as unknown. It is never mapped to an adapter and never inferred
+        # from the name, the description or layer counts.
+        $reason = 'engine-reported-unknown-device-id'
     }
     $lines = @($Text -split "`r?`n" | Where-Object { $_ -ne '' })
     if ($null -eq $reason) {
