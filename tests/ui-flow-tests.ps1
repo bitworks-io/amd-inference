@@ -834,10 +834,18 @@ $guidanceEntries=@($guidanceParsed.driverGuidance)
 Check ($guidanceParsed.windows -eq $true -and $guidanceEntries.Count -eq 2 -and $guidanceEntries[0].inputGpuName -ceq 'AMD Radeon RX 7900 XTX' -and (Format-FastLlmDriverGuidance -Guidance $guidanceEntries[0]).Contains('Reported driver version: 32.0.31041.1004')) 'The compact report keeps driver guidance entries that the guidance dialog can validate.'
 $line8192='{"a":"'+('x'*(8192-8))+'"}'
 $line8191='{"a":"'+('x'*(8191-8))+'"}'
-$longLineMessage='The setup check returned a line longer than the window can read; open Diagnostics for the full report.'
+$longLineMessage='The setup check returned a line longer than the window can read; open Diagnostics for details.'
 Check ($line8192.Length -eq 8192 -and (ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $line8192}) -ceq $longLineMessage) 'A line of exactly 8192 characters gets the clear long-line message.'
 Check ($line8191.Length -eq 8191 -and (ConvertFrom-FastLlmUiSetupCheckOutput -Text $line8191).a.Length -eq (8191-8)) 'A line of 8191 characters passes the line check.'
 Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ("{`n`"a`":1,`n`"b`":`"" + ('y'*9000) + "`"`n}")}) -ceq $longLineMessage) 'A long line among short lines is refused with the clear message.'
+
+# Cut detection for the window's capture: the rolling total limit and the per-line cut.
+Check (-not (Test-FastLlmUiOutputWasCut -Text $null) -and -not (Test-FastLlmUiOutputWasCut -Text '') -and -not (Test-FastLlmUiOutputWasCut -Text "{`n  `"a`": 1`n}")) 'A short report is not marked as cut.'
+Check (-not (Test-FastLlmUiOutputWasCut -Text ('x'*8191)) -and (Test-FastLlmUiOutputWasCut -Text ('x'*8192))) 'A line of 8192 characters is marked as cut and 8191 is not.'
+Check (Test-FastLlmUiOutputWasCut -Text ("short`r`n" + ('y'*9000) + "`r`nshort")) 'A long line among short lines is marked as cut.'
+Check (-not (Test-FastLlmUiOutputWasCut -Text ((("x"*100)+"`n")*2500)) -and (Test-FastLlmUiOutputWasCut -Text ((("x"*100)+"`n")*2700))) 'A total that reaches 262144 characters is marked as cut.'
+$cutNote='The window can show only part of this report. For the full report run: fast-llm.ps1 doctor'
+Check ($ui.Contains($cutNote) -and $ui.Contains('Test-FastLlmUiOutputWasCut -Text $text')) 'The window appends the plain note when the Diagnostics output was cut.'
 
 # The same text through the real ProcessHost (Windows only).
 if ($env:OS -eq 'Windows_NT') {
@@ -888,7 +896,7 @@ foreach($otherAction in @('plan','status')){
 }
 
 # The window asks for the compact report, parses it through the bounded function, and keeps full output for Diagnostics.
-Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics keeps the full one.'
+Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics also runs the compact report so the window can show all of it.'
 Check ($ui.Contains('$control.UseMnemonic=$false')) 'Window labels show an ampersand instead of treating it as a mnemonic.'
 
 

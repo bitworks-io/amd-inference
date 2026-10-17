@@ -92,7 +92,7 @@ Check ($source.Contains('Get-FastLlmPrerequisiteInventory') -and $source.Contain
 $package = Get-Content -LiteralPath (Join-Path $root 'tools/build-lab-package.ps1') -Raw
 Check ($package.Contains("'tools/collect-prerequisite-inventory.ps1'")) 'lab package includes the dedicated diagnostic worker'
 $ui = Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
-Check ($ui.Contains("LaunchStep 'diagnostics' (@('doctor')")) 'GUI Diagnostics uses doctor output that includes prerequisite inventory'
+Check ($ui.Contains("LaunchStep 'diagnostics' (@('doctor','-Compact')")) 'GUI Diagnostics uses doctor output that includes prerequisite inventory'
 $helperSource = Get-Content -LiteralPath $helper -Raw
 Check ($helperSource -notmatch 'WaitForExit\s*\(\s*\)' -and $helperSource.Contains('ElapsedMilliseconds -lt 20000')) 'worker exit and output delivery have no parameterless wait'
 $workerSource = Get-Content -LiteralPath $worker -Raw
