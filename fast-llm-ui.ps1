@@ -94,6 +94,11 @@ $script:chooserNotice=''
 $chooseButton.Enabled=$false
 $backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
 $statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382
+# One line does not fit every status: cut it with an ellipsis and keep the full text in a tooltip.
+$statusLabel.AutoEllipsis=$true
+$statusTip=New-Object Windows.Forms.ToolTip
+$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})
+$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)
 $progress=New-Object Windows.Forms.ProgressBar
 $progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
@@ -225,6 +230,8 @@ function ShowLicenseSettingConfirm($Disclosure) {
     $cancel.Anchor='Bottom,Right';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($cancel)
     # Enter and Escape cancel; accepting needs a click on the accept button.
     $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
+    # The read-only box takes focus first and WinForms would open it with everything selected.
+    $dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}.GetNewClosure())
     SetTrayMenuAvailable $false
     try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
 }
