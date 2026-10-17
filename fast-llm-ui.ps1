@@ -401,7 +401,7 @@ function ReadSelection {
     if($modelBox.SelectedIndex -gt 0){$script:selection+=@('-ModelId',[string]$modelBox.SelectedItem)}
 }
 function LaunchStep([string]$Step,[object[]]$Arguments) {
-    $script:bgEndedByUserStop=$false
+    if(Test-FastLlmUiStepStartsRun -Step $Step){$script:bgEndedByUserStop=$false}
     $script:updateOutcome=$false
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}

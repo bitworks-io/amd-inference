@@ -847,6 +847,11 @@ Check (-not (Test-FastLlmUiOutputWasCut -Text ((("x"*100)+"`n")*2500)) -and (Tes
 $cutNote='The window can show only part of this report. For the full report run: fast-llm.ps1 doctor'
 Check ($ui.Contains($cutNote) -and $ui.Contains('Test-FastLlmUiOutputWasCut -Text $text')) 'The window appends the plain note when the Diagnostics output was cut.'
 
+# Only steps that start a run clear the "stopped" background line.
+Check (@(@('engine','model download','serving','component install')|Where-Object{-not (Test-FastLlmUiStepStartsRun -Step $_)}).Count -eq 0) 'Engine, model download, serving and component install steps start a run.'
+Check (@(@('diagnostics','setup check','driver guidance','preview','recipe list','vc prepare','idle','','Engine')|Where-Object{Test-FastLlmUiStepStartsRun -Step $_}).Count -eq 0 -and -not (Test-FastLlmUiStepStartsRun -Step $null)) 'Diagnostics, the setup check and other read-only steps do not start a run.'
+Check ($ui.Contains('function LaunchStep([string]$Step,[object[]]$Arguments) {'+"`n"+'    if(Test-FastLlmUiStepStartsRun -Step $Step){$script:bgEndedByUserStop=$false}')) 'LaunchStep clears the stopped flag only for steps that start a run.'
+
 # The same text through the real ProcessHost (Windows only).
 if ($env:OS -eq 'Windows_NT') {
     & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
