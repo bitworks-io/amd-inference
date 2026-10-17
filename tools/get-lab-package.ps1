@@ -69,17 +69,22 @@ function Invoke-FastLlmLabHttpGet {
     param([string]$Url,[string]$Destination,[long]$MaxBytes,[Threading.CancellationToken]$Token)
     Add-Type -AssemblyName System.Net.Http
     # .NET Framework response streams may not honor a token on a blocked ReadAsync.
+    # On cancel the callback aborts the pending request, then disposes the response and the stream.
     # The callback is pure CLR code: it must not invoke PowerShell on a thread-pool thread.
-    if(-not ('FastLlmLabReadCancellation' -as [type])){
+    if(-not ('FastLlmLabReadCancellation2' -as [type])){
         Add-Type -TypeDefinition @'
 using System;
 using System.IO;
+using System.Net.Http;
 using System.Threading;
-public static class FastLlmLabReadCancellation {
-    public static CancellationTokenRegistration Register(CancellationToken token, Stream stream) {
+public static class FastLlmLabReadCancellation2 {
+    public static CancellationTokenRegistration Register(CancellationToken token, HttpClient client, HttpResponseMessage response, Stream stream) {
         return token.Register(state => {
-            try { ((Stream)state).Dispose(); } catch (Exception) { }
-        }, stream);
+            var parts = (object[])state;
+            try { ((HttpClient)parts[0]).CancelPendingRequests(); } catch (Exception) { }
+            try { ((HttpResponseMessage)parts[1]).Dispose(); } catch (Exception) { }
+            try { ((Stream)parts[2]).Dispose(); } catch (Exception) { }
+        }, new object[] { client, response, stream });
     }
 }
 '@
@@ -105,7 +110,7 @@ public static class FastLlmLabReadCancellation {
             throw 'Release Content-Length exceeds the exact expected package size.'
         }
         $stream=$response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-        $abort=[FastLlmLabReadCancellation]::Register($Token,$stream)
+        $abort=[FastLlmLabReadCancellation2]::Register($Token,$client,$response,$stream)
         $output=[IO.File]::Open($Destination,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         $buffer=New-Object byte[] 65536
         $total=0L
