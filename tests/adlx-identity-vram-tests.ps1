@@ -207,6 +207,7 @@ if(-not $IsWindows){
     $probeOut=Join-Path ([IO.Path]::GetTempPath()) ('adlx-probe-'+[guid]::NewGuid().ToString('N')+'.jsonl')
     $stderr=& $pwshPath -NoProfile -File $wrapperPath -Mode identity -ExecutablePath '/nope' -ExpectedExecutableSha256 ('0'*64) -OutputPath $probeOut 2>&1 | Out-String
     Check ($LASTEXITCODE -eq 1 -and $stderr -match '64-bit Windows' -and -not (Test-Path -LiteralPath $probeOut)) 'wrapper exits 1 on non-Windows without creating output'
+    $global:LASTEXITCODE = 0  # The expected child failure was asserted above.
 }
 
 # --- static scan: no mutating ADLX calls in the C source

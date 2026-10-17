@@ -194,6 +194,10 @@ jobs:
         shell: pwsh
         run: |
           .\tests\ui-background-tests.ps1
+      - name: adlx-identity-vram-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\adlx-identity-vram-tests.ps1
 
   release-scripts:
     runs-on: windows-latest
