@@ -250,6 +250,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\tests\pci-link-tests.ps1
+      - name: process-host-device-list-tests in Windows PowerShell 5.1 (mock only)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: .\tests\process-host-device-list-tests.ps1
+      - name: process-host-device-list-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\process-host-device-list-tests.ps1
 
   release-scripts:
     runs-on: windows-latest
