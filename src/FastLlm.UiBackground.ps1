@@ -180,7 +180,7 @@ function Invoke-FastLlmUiBackgroundStop {
 }
 
 function Get-FastLlmUiBackgroundText {
-    param([Parameter(Mandatory=$true)]$State,[switch]$StopRequested)
+    param([Parameter(Mandatory=$true)]$State,[switch]$StopRequested,[string]$LastUserStoppedRequestId)
     if($State.attention){return [string]$State.attention}
     if($State.attachedRequestId){
         if($State.observation -and $State.observation.PSObject.Properties['uiHealthChecked'] -and
@@ -212,6 +212,11 @@ function Get-FastLlmUiBackgroundText {
     if($StopRequested){return 'Stopped. The background run ended.'}
     if([string]$State.observation.phase -eq 'absent'){
         return 'Prepare with Install & start, then Stop. Background mode runs only while this Windows user is signed in.'
+    }
+    # A run the user stopped in an earlier window session: the host record's request id matches the one saved at that Stop.
+    $observedRequestId=if($State.observation.PSObject.Properties['requestId']){[string]$State.observation.requestId}else{''}
+    if($observedRequestId -and $LastUserStoppedRequestId -and $observedRequestId -ceq $LastUserStoppedRequestId){
+        return 'No background run. Start in background to start one.'
     }
     return 'No active background host. Review the previous host status before starting again.'
 }

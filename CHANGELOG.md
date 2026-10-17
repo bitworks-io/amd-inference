@@ -2,6 +2,12 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
 
+## 2026.10.15.12 (canary)
+
+- **A new start no longer shows the previous run's self-test:** after Stop and a new Start, Install & start or a setup picked from Choose another setup, the notes and the "See results" link from the earlier run are cleared while the new run previews.
+- **A stopped background run no longer reads like a problem:** after you stop a background run and reopen FastLLM, it now says there is no background run instead of asking you to review the previous one.
+- **The component consent window names the model:** it now says, for example, "Qwen3.8-27B UD-Q4_K_M" instead of the internal setup id.
+
 ## 2026.10.15.11 (canary)
 
 The same changes were tagged as 2026.10.15.10, but that version was not published because a release check failed on the build runner.

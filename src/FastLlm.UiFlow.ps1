@@ -691,7 +691,7 @@ function Read-FastLlmUiSettings {
         . (Join-Path $PSScriptRoot 'FastLlm.Update.ps1')
     }
     $update = Get-FastLlmUpdateSettings -InstallRoot $InstallRoot -AppRoot $AppRoot
-    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off' }
+    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off'; lastUserStoppedBackgroundRequestId = '' }
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -701,6 +701,9 @@ function Read-FastLlmUiSettings {
             }
             if ($stored.PSObject.Properties['experimentalComponents'] -and @('on', 'off') -ccontains [string] $stored.experimentalComponents) {
                 $settings.experimentalComponents = [string] $stored.experimentalComponents
+            }
+            if ($stored.PSObject.Properties['lastUserStoppedBackgroundRequestId'] -and [string] $stored.lastUserStoppedBackgroundRequestId -cmatch '^[0-9a-f]{32}$') {
+                $settings.lastUserStoppedBackgroundRequestId = [string] $stored.lastUserStoppedBackgroundRequestId
             }
         }
     }
@@ -740,6 +743,14 @@ function Write-FastLlmUiSettings {
     if ($experimentalProperty -and $null -ne $experimentalProperty.Value) {
         if (@('on', 'off') -cnotcontains [string] $experimentalProperty.Value) { throw 'experimentalComponents must be on or off.' }
         $merged['experimentalComponents'] = [string] $experimentalProperty.Value
+    }
+    # The request id of the background run the user last stopped: a 32-hex value sets it, an empty string removes it.
+    $stoppedProperty = $Settings.PSObject.Properties['lastUserStoppedBackgroundRequestId']
+    if ($stoppedProperty -and $null -ne $stoppedProperty.Value) {
+        $stoppedValue = [string] $stoppedProperty.Value
+        if ($stoppedValue -eq '') { $merged.Remove('lastUserStoppedBackgroundRequestId') }
+        elseif ($stoppedValue -cmatch '^[0-9a-f]{32}$') { $merged['lastUserStoppedBackgroundRequestId'] = $stoppedValue }
+        else { throw 'lastUserStoppedBackgroundRequestId must be 32 lowercase hex characters or empty.' }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
@@ -912,6 +923,19 @@ function Get-FastLlmUiAutomaticInstallArguments {
     param([string] $EngineId, [string] $InstallRoot)
     if ($EngineId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$' -or [string]::IsNullOrWhiteSpace($InstallRoot)) { return @() }
     return @('components', '-Install', $EngineId, '-InstallRoot', $InstallRoot, '-Unattended')
+}
+
+# A readable model name for the consent window, built from the catalog entry's upstream repository and quantization ("Qwen3.8-27B UD-Q4_K_M").
+# Falls back to the catalog id when either field is missing, and to an empty string for no model.
+function Get-FastLlmModelDisplayName {
+    param($Model)
+    if ($null -eq $Model) { return '' }
+    $id = if ($Model.PSObject.Properties['id']) { [string]$Model.id } else { '' }
+    $upstream = if ($Model.PSObject.Properties['upstreamModel']) { [string]$Model.upstreamModel } else { '' }
+    $quant = if ($Model.PSObject.Properties['quantization']) { [string]$Model.quantization } else { '' }
+    $name = $upstream.Substring($upstream.LastIndexOf('/') + 1).Trim()
+    if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($quant)) { return $id }
+    return "$name $($quant.Trim())"
 }
 
 # The dialog's opening text: the setup the user picked, or the best setup FastLLM chose for the card.

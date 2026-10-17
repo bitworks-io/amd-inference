@@ -356,7 +356,7 @@ Check ($ui.Contains('Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendin
 # The BAR setting is read and written under the same launch root, never the editable folder box .
 $readRoots = @([regex]::Matches($ui, '(?m)Read-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
 $writeRoots = @([regex]::Matches($ui, '(?m)Write-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
-Check ($readRoots.Count -eq 1 -and $writeRoots.Count -eq 1 -and $readRoots[0] -ceq $writeRoots[0] -and $readRoots[0] -ceq '$script:settingsRoot') 'the BAR setting is read and written under one root'
+Check ($readRoots.Count -eq 1 -and $writeRoots.Count -eq 2 -and @($writeRoots | Where-Object { $_ -cne $readRoots[0] }).Count -eq 0 -and $readRoots[0] -ceq '$script:settingsRoot') 'the BAR setting is read and written under one root'
 Check ($ui.Contains('$script:settingsRoot=$InstallRoot') -and -not [regex]::IsMatch($ui, '(?:Read|Write)-FastLlmUiSettings[^\r\n]*pathBox')) 'the settings root is the launch root, not the folder box'
 Remove-Item -LiteralPath $uiRoot -Recurse -Force
 
@@ -679,7 +679,7 @@ Check ($launchStepText.Contains('if($script:installPath){try{[void](Sync-FastLlm
 Check ($ui.Contains('Set-FastLlmExperimentalSwitchMirrored -SourceRoot $script:settingsRoot -TargetRoot ([IO.Path]::GetFullPath($pathBox.Text))')) 'toggling the switch mirrors it into the install folder shown in the window'
 Check ($launchStepText.Contains('$script:servingPreviousRunId') -and $ui.Contains('Get-FastLlmUiFailureCode -Status (Get-FastLlmStatus $script:installPath) -PreviousRunId ([string]$script:servingPreviousRunId)')) 'a typed failure code is trusted only when this start wrote it'
 foreach ($planButton in @(@('installButton', 'install'), @('startButton', 'start'))) {
-    Check ([regex]::IsMatch($ui, ('\$' + $planButton[0] + '\.Add_Click\(\{try\{ReadSelection;AssertUiBackgroundNotOccupied;\$script:chosenRecipe=\$null;\$script:flow=New-FastLlmUiFlow -Mode ' + $planButton[1]))) "the $($planButton[1]) button clears a chosen recipe before it starts"
+    Check ([regex]::IsMatch($ui, ('\$' + $planButton[0] + '\.Add_Click\(\{try\{ReadSelection;AssertUiBackgroundNotOccupied;\$script:chosenRecipe=\$null;ClearPreviousRunNotes;\$script:flow=New-FastLlmUiFlow -Mode ' + $planButton[1]))) "the $($planButton[1]) button clears a chosen recipe before it starts"
 }
 $continueText = (Get-UiFunctionText 'ContinueWithChosenRecipe').Extent.Text
 Check ($continueText.Contains('Get-FastLlmUiComponentInstallArguments') -and $continueText.Contains("LaunchStep 'component install' `$installArgs") -and $continueText.Contains('$Row.experimental -and -not $experimentalBox.Checked')) 'choosing a recipe installs through the argument builder and refuses an experimental row while the switch is off'
@@ -1006,6 +1006,15 @@ Check ((Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference 
 Check ((@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'engine-1' -InstallRoot 'C:\r') -join '|') -ceq 'components|-Install|engine-1|-InstallRoot|C:\r|-Unattended') 'the automatic install carries no -AcceptLicense'
 Check (@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'x y' -InstallRoot 'C:\r').Count -eq 0 -and @(Get-FastLlmUiAutomaticInstallArguments -EngineId '' -InstallRoot 'C:\r').Count -eq 0) 'an unsafe or empty engine id installs nothing'
 Check ((Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-Install', 'e', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('install', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('plan', '-AsJson')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-AsJson'))) 'only a component install reads the license setting'
+$displayCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
+$displayModel = @($displayCatalog.models | Where-Object { $_.id -ceq 'qwen3.8-27b-ud-q4-k-m' })[0]
+Check ((Get-FastLlmModelDisplayName -Model $displayModel) -ceq 'Qwen3.8-27B UD-Q4_K_M') 'the display name of the real catalog model is the upstream name and quantization'
+Check ((Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; quantization = 'Q4_K_M' })) -ceq 'some-id' -and
+    (Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; upstreamModel = 'Org/Name' })) -ceq 'some-id' -and
+    (Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; upstreamModel = ''; quantization = 'Q4' })) -ceq 'some-id') 'a model missing the name fields falls back to its id'
+Check ((Get-FastLlmModelDisplayName -Model $null) -ceq '') 'no model gives an empty display name'
+Check ((Get-FastLlmUiComponentIntro -Model (Get-FastLlmModelDisplayName -Model $displayModel) -ContextText '32,768 tokens' -Chosen $false).StartsWith("FastLLM's best setup for your card (Qwen3.8-27B UD-Q4_K_M, 32,768 tokens) needs engine components.")) 'the consent intro shows the display name'
+Check ($ui.Contains('Get-FastLlmModelDisplayName -Model $introModel') -and $ui.Contains('Get-FastLlmUiComponentIntro -Model $introName')) 'the consent dialog builds its intro from the display name'
 Check ((Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Chosen $true).StartsWith('You chose the m setup (32,768 tokens).') -and (Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Chosen $false).StartsWith("FastLLM's best setup for your card")) 'the dialog intro differs for a chosen and an automatic setup'
 
 $flowForComponents = New-FastLlmUiFlow -Mode start
@@ -1044,5 +1053,39 @@ $chosenBody = $chosenBody.Substring(0, $chosenBody.IndexOf('BeginChosenRecipe $R
 Check ($ui.Contains('Clear-FastLlmUiDeclinedSetups -InstallRoot $script:settingsRoot') -and $ui.Contains("RepreviewForPendingSetup 'install-failed'") -and $ui.Contains('Get-FastLlmUiInstallFailedLine')) 'accepting the automatic install clears declines; a failed own install previews the fallback without recording a decline'
 Check ($chosenBody.Contains('Remove-FastLlmUiDeclinedSetup')) 'picking a setup in the chooser clears its remembered decline'
 Check ($componentsSourceText -notmatch '[^\x00-\x7F]') 'the components script stays ASCII-only'
+
+$clearBody = $ui.Substring($ui.IndexOf('function ClearPreviousRunNotes'))
+$clearBody = $clearBody.Substring(0, $clearBody.IndexOf("`n"))
+$beginBody = $ui.Substring($ui.IndexOf('function BeginChosenRecipe'))
+$beginBody = $beginBody.Substring(0, $beginBody.IndexOf('function ContinueWithChosenRecipe'))
+$doctorLine = @($ui -split "`n" | Where-Object { $_.StartsWith('$doctorButton.Add_Click') })[0]
+Check ($clearBody.Contains("`$notesLabel.Text=''") -and $clearBody.Contains('$resultsLink.Visible=$false') -and $clearBody.Contains('$barLink.Visible=$false') -and $clearBody.Contains('$script:evidenceUrl=$null')) 'a new start clears the notes, both links and the evidence url'
+Check ($ui.Contains('ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode install') -and $ui.Contains('ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode start') -and $beginBody.Contains('ClearPreviousRunNotes')) 'Install and start, Start and a chooser pick clear the previous run notes'
+Check (-not $doctorLine.Contains('ClearPreviousRunNotes') -and ([regex]::Matches($ui, 'ClearPreviousRunNotes')).Count -eq 4) 'Diagnostics and other actions leave the notes alone'
+
+$stopRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-stop-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stopRoot | Out-Null
+$stopId = 'abcdef0123456789abcdef0123456789'
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq '') 'the last user-stopped request id defaults to empty'
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = $stopId })
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq $stopId) 'the last user-stopped request id round-trips'
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'off' })
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq $stopId) 'a write that omits the key keeps it'
+Set-Content -LiteralPath (Join-Path $stopRoot 'settings.json') -Value '{"vulkanBarMitigation":"on","lastUserStoppedBackgroundRequestId":"NOT-HEX"}' -Encoding ascii
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq '') 'a malformed stored request id reads back as empty'
+$badWrite = $false
+try { Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = 'xyz' }) } catch { $badWrite = $true }
+Check $badWrite 'a malformed request id is refused on write'
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = $stopId })
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = '' })
+Check (-not (Get-Content -LiteralPath (Join-Path $stopRoot 'settings.json') -Raw).Contains('lastUserStoppedBackgroundRequestId')) 'an empty value removes the key'
+Remove-Item -LiteralPath $stopRoot -Recurse -Force
+$applyBody = $ui.Substring($ui.IndexOf('function ApplyUiBackgroundStatus'))
+$applyBody = $applyBody.Substring(0, $applyBody.IndexOf('function SetUiBackgroundUnknown'))
+$startBgBody = $ui.Substring($ui.IndexOf('function StartUiBackground'))
+$startBgBody = $startBgBody.Substring(0, $startBgBody.IndexOf('$launched='))
+Check ($applyBody.Contains('SaveUserStoppedBackgroundRequestId $attachedBeforeId') -and $applyBody.IndexOf('$script:bgEndedByUserStop=$true') -lt $applyBody.IndexOf('SaveUserStoppedBackgroundRequestId $attachedBeforeId')) 'the stopped run request id is saved where the user stop is recorded'
+Check ($startBgBody.Contains("SaveUserStoppedBackgroundRequestId ''")) 'a new background start clears the saved stop'
+Check (([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText')).Count -eq ([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText -State \$script:bgState[^\r\n]*-LastUserStoppedRequestId \$script:lastUserStoppedRequestId')).Count) 'every background text call passes the saved request id'
 
 Write-Output "UI flow tests passed: $checks"

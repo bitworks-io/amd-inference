@@ -150,4 +150,17 @@ $stickyState=New-FastLlmUiBackgroundState
 $null=Set-FastLlmUiBackgroundObservation $stickyState $stoppedObs
 Assert-True ((Get-FastLlmUiBackgroundText -State $stickyState -StopRequested) -ceq 'Stopped. The background run ended.') 'An inactive, unoccupied, non-absent observation reads as stopped with the switch.'
 Assert-True ((Get-FastLlmUiBackgroundText -State $stickyState) -ceq 'No active background host. Review the previous host status before starting again.') 'The same observation keeps the cautious text without the switch.'
+$stoppedId='dddddddddddddddddddddddddddddddd'
+$deadObs=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$stoppedId}
+$reopened=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $reopened $deadObs
+$neutral='No background run. Start in background to start one.'
+$cautious='No active background host. Review the previous host status before starting again.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId $stoppedId) -ceq $neutral) 'A host record matching the last user-stopped request reads as no background run.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') -ceq $cautious) 'A different request keeps the cautious text.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -LastUserStoppedRequestId '') -ceq $cautious -and (Get-FastLlmUiBackgroundText -State $reopened) -ceq $cautious) 'No saved stop keeps the cautious text.'
+$noId=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $noId $stoppedObs
+Assert-True ((Get-FastLlmUiBackgroundText -State $noId -LastUserStoppedRequestId $stoppedId) -ceq $cautious) 'An observation without a request id keeps the cautious text.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $reopened -StopRequested -LastUserStoppedRequestId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') -ceq 'Stopped. The background run ended.') 'The in-session stop wording still wins.'
 "UI background operational coordination checks passed: $passes"
