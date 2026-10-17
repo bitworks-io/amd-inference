@@ -295,12 +295,14 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
     $wasAttached=[bool]$script:bgState.attachedRequestId
     $wasPending=[bool]$script:bgState.pendingRequestId
     $observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $HealthChecked -Force
-    $null=Set-FastLlmUiBackgroundObservation -State $script:bgState -Observation $observation
+    $null=Set-FastLlmUiBackgroundObservation -State $script:bgState -Observation $observation -StopRequested:$script:bgStopRequested
     $null=Test-FastLlmUiBackgroundPendingHost -State $script:bgState -TestProcess {
         param($Identity) TestUiBackgroundProcess $Identity
     }
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
-    if($wasAttached -and -not $script:bgState.attachedRequestId){
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -StopRequested:$script:bgStopRequested
+    if($wasAttached -and -not $script:bgState.attachedRequestId -and $script:bgStopRequested -and $script:bgState.observation -and -not $script:bgState.observation.active){
+        $statusLabel.Text='Stopped. The background run ended.'
+    }elseif($wasAttached -and -not $script:bgState.attachedRequestId){
         $statusLabel.Text='Background run ended or changed. Its ownership has not been silently replaced.'
     }elseif($script:bgState.attachedRequestId -and $HealthChecked -and
             $script:bgState.observation.PSObject.Properties['servingHealthy'] -and

@@ -127,4 +127,23 @@ $badPoll=Start-FastLlmUiBackgroundPoll -ScriptText 'throw "failed"' -SourceRoot 
 Wait-PollForTest $badPoll
 $badResult=Complete-FastLlmUiBackgroundPoll -Poll $badPoll -SourceRoot 'source-a' -InstallRoot 'install-a'
 Assert-True ($badResult.completed -and [bool]$badResult.error) 'Poll failures must not masquerade as verified absence.'
+# An end that follows the user's own Stop is an expected end; any other end keeps the cautious wording.
+$stoppedObs=[pscustomobject]@{phase='stopped';active=$false;attachable=$false;occupied=$false}
+$afterStop=New-FastLlmUiBackgroundState
+$afterStop.attachedRequestId=$requestId;$afterStop.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $afterStop $stoppedObs -StopRequested
+Assert-True (-not $afterStop.attachedRequestId -and -not $afterStop.attention) 'A run that ended after the user Stop clears the attachment without raising attention.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $afterStop -StopRequested) -ceq 'Stopped. The background run ended.') 'A run that ended after the user Stop reads as stopped.'
+$noStop=New-FastLlmUiBackgroundState
+$noStop.attachedRequestId=$requestId;$noStop.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $noStop $stoppedObs
+Assert-True ($noStop.attention -ceq 'The attached background run changed or ended. Review its status.') 'A run that ends without a user Stop keeps the cautious wording.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $noStop) -ceq 'The attached background run changed or ended. Review its status.') 'The cautious text is unchanged without a user Stop.'
+$noStopFallback=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $noStopFallback $stoppedObs
+Assert-True ((Get-FastLlmUiBackgroundText -State $noStopFallback) -ceq 'No active background host. Review the previous host status before starting again.') 'The fallback text is unchanged without a user Stop.'
+$otherRun=New-FastLlmUiBackgroundState
+$otherRun.attachedRequestId=$requestId;$otherRun.attachedRunId='cccccccccccccccccccccccccccccccc'
+$null=Set-FastLlmUiBackgroundObservation $otherRun $ready -StopRequested
+Assert-True ($otherRun.attention -ceq 'The attached background run changed or ended. Review its status.') 'A different run that is still active is not reported as the stopped run.'
 "UI background operational coordination checks passed: $passes"

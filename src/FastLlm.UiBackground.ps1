@@ -45,7 +45,7 @@ function Assert-FastLlmUiBackgroundObservation {
 }
 
 function Set-FastLlmUiBackgroundObservation {
-    param([Parameter(Mandatory=$true)]$State,[Parameter(Mandatory=$true)]$Observation)
+    param([Parameter(Mandatory=$true)]$State,[Parameter(Mandatory=$true)]$Observation,[switch]$StopRequested)
     $valid=Assert-FastLlmUiBackgroundObservation -Observation $Observation
     $State.observation=$valid
     $previousAttention=$State.attention
@@ -66,7 +66,9 @@ function Set-FastLlmUiBackgroundObservation {
         if(-not $valid.active -or $observedRequestId -cne [string]$State.attachedRequestId -or
            [string]$valid.runId -cne [string]$State.attachedRunId){
             $State.attachedRequestId=$null;$State.attachedRunId=$null
-            if(-not $State.attention){$State.attention='The attached background run changed or ended. Review its status.'}
+            # A run that ended after the user's own Stop is an expected end, not something to review.
+            $endedAfterStop=[bool]($StopRequested -and -not $valid.active)
+            if(-not $State.attention -and -not $endedAfterStop){$State.attention='The attached background run changed or ended. Review its status.'}
         }
     }
     return $State
@@ -178,7 +180,7 @@ function Invoke-FastLlmUiBackgroundStop {
 }
 
 function Get-FastLlmUiBackgroundText {
-    param([Parameter(Mandatory=$true)]$State)
+    param([Parameter(Mandatory=$true)]$State,[switch]$StopRequested)
     if($State.attention){return [string]$State.attention}
     if($State.attachedRequestId){
         if($State.observation -and $State.observation.PSObject.Properties['uiHealthChecked'] -and
@@ -207,6 +209,7 @@ function Get-FastLlmUiBackgroundText {
         }
         return 'Background serving or an unverified operation occupies this installation. Review Diagnostics.'
     }
+    if($StopRequested){return 'Stopped. The background run ended.'}
     if([string]$State.observation.phase -eq 'absent'){
         return 'Prepare with Install & start, then Stop. Background mode runs only while this Windows user is signed in.'
     }
