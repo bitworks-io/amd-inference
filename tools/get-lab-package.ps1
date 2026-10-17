@@ -72,7 +72,10 @@ function Invoke-FastLlmLabHttpGet {
     # On cancel the callback aborts the pending request, then disposes the response and the stream.
     # The callback is pure CLR code: it must not invoke PowerShell on a thread-pool thread.
     if(-not ('FastLlmLabReadCancellation2' -as [type])){
-        Add-Type -TypeDefinition @'
+        # Windows PowerShell compiles against .NET Framework without System.Net.Http by default; PowerShell 7 already references it.
+        $cancellationTypeArgs=@{}
+        if($PSVersionTable.PSEdition -ne 'Core'){ $cancellationTypeArgs.ReferencedAssemblies=@([Net.Http.HttpClient].Assembly.Location) }
+        Add-Type @cancellationTypeArgs -TypeDefinition @'
 using System;
 using System.IO;
 using System.Net.Http;
