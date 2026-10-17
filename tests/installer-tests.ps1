@@ -86,6 +86,8 @@ $uninstallPrompt = [regex]::Match($iss, '(?s)MsgBox\(.*?\) = IDYES').Value
 Assert-True ($uninstallPrompt -match 'downloaded models and engines' -and $uninstallPrompt -match 'ModelsDir' -and $uninstallPrompt -match 'EnginesDir' -and
     $uninstallPrompt -match 'are kept') 'the uninstall prompt must name the models and engines folders and say what is kept'
 Assert-True ($uninstallPrompt -match 'MB_YESNO or MB_DEFBUTTON2') 'the uninstall prompt must default to No'
+Assert-True ($iss -notmatch '\* 4294967296' -and $iss -match 'Hi, Lo: Int64;' -and $iss -match 'Hi \* 65536 \* 65536 \+ Lo') 'the folder size must be summed with Int64 locals, not a 32-bit product'
+Assert-True ($uninstallPrompt -match 'ComponentsDir' -and $iss -match "ComponentsDir := DataDir \+ '\\components'" -and $iss -match 'DirSizeBytes\(ComponentsDir\)' -and $iss -match 'DelTree\(ComponentsDir, ') 'downloaded engine components are counted, listed and deleted with the models and engines'
 Assert-True ($iss -match "DelTree\(ModelsDir, " -and $iss -match "DelTree\(EnginesDir, " -and $iss -notmatch "DelTree\(DataDir") 'Yes deletes only the models and engines folders, never the whole data root'
 Assert-True ($iss -notmatch '(?i)ExecutionPolicy') 'the installer script must not set an execution policy'
 
