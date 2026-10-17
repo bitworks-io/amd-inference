@@ -314,3 +314,6 @@ if ($env:OS -ne 'Windows_NT') {
     Write-Host 'SKIP: live Vulkan/DXGI/D3DKMT/SetupAPI calls require Windows.'
 }
 Write-Host "$count Vulkan LUID join checks passed; no serving-process binding or qualification is claimed."
+
+# Expected native-child failures were asserted above; do not leak them to the caller.
+$global:LASTEXITCODE = 0
