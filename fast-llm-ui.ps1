@@ -1203,8 +1203,9 @@ $timer.Add_Tick({
         $text=$script:child.Snapshot();$output.Text=$text;$output.SelectionStart=$output.TextLength;$output.ScrollToCaret()
         if(-not $script:child.Process.HasExited){
             if($script:step -eq 'serving'){
-                try{$s=Get-FastLlmStatus $script:installPath;if($s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
-                    if($s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
+                try{$s=Get-FastLlmStatus $script:installPath;$isCurrentRun=Test-FastLlmUiStatusIsCurrentRun -Status $s -PreviousRunId $script:servingPreviousRunId
+                    if($isCurrentRun -and $s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
+                    if($isCurrentRun -and $s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
                         $setupLine=Get-FastLlmUiRunSetupLine -State $s
                         if($setupLine){$lines+=$setupLine}
