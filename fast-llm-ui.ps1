@@ -990,7 +990,10 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
     $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
     $boldFont=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold)
     $intro=New-Object Windows.Forms.Label
-    $intro.Text=Get-FastLlmUiComponentIntro -Model ([string]$Row.model) -ContextText ([string]$Row.contextText) -Chosen $Chosen
+    $introModel=@($catalog.models|Where-Object{[string]$_.id -ceq [string]$Row.model})|Select-Object -First 1
+    $introName=[string](Get-FastLlmModelDisplayName -Model $introModel)
+    if(-not $introName){$introName=[string]$Row.model}
+    $intro.Text=Get-FastLlmUiComponentIntro -Model $introName -ContextText ([string]$Row.contextText) -Chosen $Chosen
     $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(740,58)
     $panel=New-Object Windows.Forms.Panel
     $panel.Location=New-Object Drawing.Point(20,80);$panel.Size=New-Object Drawing.Size(740,420);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'

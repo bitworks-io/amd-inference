@@ -1006,6 +1006,15 @@ Check ((Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference 
 Check ((@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'engine-1' -InstallRoot 'C:\r') -join '|') -ceq 'components|-Install|engine-1|-InstallRoot|C:\r|-Unattended') 'the automatic install carries no -AcceptLicense'
 Check (@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'x y' -InstallRoot 'C:\r').Count -eq 0 -and @(Get-FastLlmUiAutomaticInstallArguments -EngineId '' -InstallRoot 'C:\r').Count -eq 0) 'an unsafe or empty engine id installs nothing'
 Check ((Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-Install', 'e', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('install', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('plan', '-AsJson')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-AsJson'))) 'only a component install reads the license setting'
+$displayCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
+$displayModel = @($displayCatalog.models | Where-Object { $_.id -ceq 'qwen3.8-27b-ud-q4-k-m' })[0]
+Check ((Get-FastLlmModelDisplayName -Model $displayModel) -ceq 'Qwen3.8-27B UD-Q4_K_M') 'the display name of the real catalog model is the upstream name and quantization'
+Check ((Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; quantization = 'Q4_K_M' })) -ceq 'some-id' -and
+    (Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; upstreamModel = 'Org/Name' })) -ceq 'some-id' -and
+    (Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; upstreamModel = ''; quantization = 'Q4' })) -ceq 'some-id') 'a model missing the name fields falls back to its id'
+Check ((Get-FastLlmModelDisplayName -Model $null) -ceq '') 'no model gives an empty display name'
+Check ((Get-FastLlmUiComponentIntro -Model (Get-FastLlmModelDisplayName -Model $displayModel) -ContextText '32,768 tokens' -Chosen $false).StartsWith("FastLLM's best setup for your card (Qwen3.8-27B UD-Q4_K_M, 32,768 tokens) needs engine components.")) 'the consent intro shows the display name'
+Check ($ui.Contains('Get-FastLlmModelDisplayName -Model $introModel') -and $ui.Contains('Get-FastLlmUiComponentIntro -Model $introName')) 'the consent dialog builds its intro from the display name'
 Check ((Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Chosen $true).StartsWith('You chose the m setup (32,768 tokens).') -and (Get-FastLlmUiComponentIntro -Model 'm' -ContextText '32,768 tokens' -Chosen $false).StartsWith("FastLLM's best setup for your card")) 'the dialog intro differs for a chosen and an automatic setup'
 
 $flowForComponents = New-FastLlmUiFlow -Mode start
