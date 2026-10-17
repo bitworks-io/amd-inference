@@ -34,8 +34,8 @@ namespace Bitworks.FastLlm {
         // b10698 src/llama.cpp llama_prepare_model_devices logs the devices selected by
         // this model load. Vulkan's device_id is a full BDF when VK_EXT_pci_bus_info
         // is available. Retain only the backend name and BDF, never the description.
-        private static readonly Regex SelectedDeviceLine = new Regex(@"(?:llama_prepare_model_devices|llama_model_load_from_file_impl):\s+using device\s+(Vulkan[0-9]{1,2}|ROCm[0-9]{1,2})\s+\(.{1,512}\)\s+\(([0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7])\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-        private static readonly Regex SelectedDeviceUnknownIdLine = new Regex(@"(?:llama_prepare_model_devices|llama_model_load_from_file_impl):\s+using device\s+(Vulkan[0-9]{1,2}|ROCm[0-9]{1,2})\s+\(.{1,512}\)\s+\(unknown id\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        private static readonly Regex SelectedDeviceLine = new Regex(@"llama_prepare_model_devices:\s+using device\s+(Vulkan[0-9]{1,2}|ROCm[0-9]{1,2})\s+\(.{1,512}\)\s+\(([0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7])\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        private static readonly Regex SelectedDeviceUnknownIdLine = new Regex(@"llama_prepare_model_devices:\s+using device\s+(Vulkan[0-9]{1,2}|ROCm[0-9]{1,2})\s+\(.{1,512}\)\s+\(unknown id\)\s+-\s+[0-9]{1,12}\s+MiB free\s*$", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
         // Server device list capture (W03 enforce input). Exactly two line shapes are retained, nothing else:
         //   the level-4 device_info entries   "  - <name>: <desc> (<total> MiB, <free> MiB free)"   (common.cpp prints "  - %-8s: %s (%zu MiB, %zu MiB free)")
         //   the llama_prepare_model_devices   "using device <name> (<desc>) (<BDF or unknown id>) - <free> MiB free"   lines
@@ -105,8 +105,7 @@ namespace Bitworks.FastLlm {
                 Match offload = OffloadLine.Match(line);
                 Match buffer = BufferLine.Match(line);
                 Match cpuBuffer = CpuBufferLine.Match(line);
-                if (!selectedDeviceFrozen && (args.Data.IndexOf("llama_prepare_model_devices:", StringComparison.Ordinal) >= 0 ||
-                    args.Data.IndexOf("llama_model_load_from_file_impl:", StringComparison.Ordinal) >= 0) &&
+                if (!selectedDeviceFrozen && args.Data.IndexOf("llama_prepare_model_devices:", StringComparison.Ordinal) >= 0 &&
                     args.Data.IndexOf("using device", StringComparison.Ordinal) >= 0) {
                     selectedDeviceLikeLines++;
                     try {

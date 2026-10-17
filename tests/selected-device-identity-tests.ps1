@@ -93,7 +93,7 @@ function Capture-RealLines([string]$Body) {
     Check $c.OutputCompleted 'Real-shape child output did not complete.'
     return $c
 }
-foreach ($prefix in @('llama_model_load_from_file_impl','llama_prepare_model_devices')) {
+foreach ($prefix in @('llama_prepare_model_devices')) {
     $vk = Capture-RealLines ("Write-Output '$prefix" + ": using device Vulkan0 (AMD Radeon RX 7900 XT) (unknown id) - 19653 MiB free'")
     try {
         $vkText = $vk.FreezeSelectedDeviceIdentity()
@@ -109,9 +109,9 @@ foreach ($prefix in @('llama_model_load_from_file_impl','llama_prepare_model_dev
     } finally { $hip.Dispose() }
 }
 $bad = Capture-RealLines @'
-Write-Output 'llama_model_load_from_file_impl: using device Vulkan0 (AMD Radeon RX 7900 XT) (not a bdf) - 19653 MiB free'
-Write-Output 'llama_model_load_from_file_impl: using device Vulkan1 (AMD Radeon RX 7900 XT) (0000:03:00.0) - lots MiB free'
-Write-Output 'llama_model_load_from_file_impl: using device CUDA0 (x) (0000:03:00.0) - 5 MiB free'
+Write-Output 'llama_prepare_model_devices: using device Vulkan0 (AMD Radeon RX 7900 XT) (not a bdf) - 19653 MiB free'
+Write-Output 'llama_prepare_model_devices: using device Vulkan1 (AMD Radeon RX 7900 XT) (0000:03:00.0) - lots MiB free'
+Write-Output 'llama_prepare_model_devices: using device CUDA0 (x) (0000:03:00.0) - 5 MiB free'
 '@
 try {
     Check ($bad.SelectedDeviceIdentityDiagnostics() -ceq 'like=3, captured=0, malformed=3, unknownId=0, badFormat=3, dropped=0') 'Genuinely malformed lines stopped being malformed.'
