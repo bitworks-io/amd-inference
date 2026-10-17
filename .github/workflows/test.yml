@@ -198,6 +198,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\tests\adlx-identity-vram-tests.ps1
+      - name: arithmetic-diagnostic-tests in Windows PowerShell 5.1 (mock only)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: .\tests\arithmetic-diagnostic-tests.ps1
+      - name: arithmetic-diagnostic-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\arithmetic-diagnostic-tests.ps1
 
   release-scripts:
     runs-on: windows-latest
