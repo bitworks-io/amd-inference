@@ -722,8 +722,11 @@ Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ''}) -ceq $se
 Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text "  `r`n "}) -ceq $setupCheckMessage) 'Whitespace-only setup check output is refused.'
 Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $null}) -ceq $setupCheckMessage) 'Null setup check output is refused.'
 Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ('{"a":"' + ('x' * 262144) + '"}')}) -ceq $setupCheckMessage) 'Over-limit setup check output is refused.'
-$atLimit='{"a":"'+('x'*(262144-8))+'"}'
-Check ($atLimit.Length -eq 262144 -and (ConvertFrom-FastLlmUiSetupCheckOutput -Text $atLimit).a.Length -eq (262144-8)) 'Setup check output exactly at the limit is parsed.'
+# Exactly at the limit, spread over lines shorter than the capture cut: 32 lines of 8000 characters plus a closing line.
+$atLimitLines=@(1..32|ForEach-Object{'"k'+('{0:D2}' -f $_)+'":"'+('x'*(8000-8))+'",'})
+$atLimitHead='{'+"`n"+($atLimitLines -join "`n")+"`n"+'"z":"'
+$atLimit=$atLimitHead+('x'*(262144-$atLimitHead.Length-2))+'"}'
+Check ($atLimit.Length -eq 262144 -and (ConvertFrom-FastLlmUiSetupCheckOutput -Text $atLimit).k01.Length -eq 7992) 'Setup check output exactly at the limit is parsed.'
 $compactParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text (SetupDiagnostic | ConvertTo-Json -Depth 12 -Compress)
 Check ($compactParsed.windows -eq $true -and $compactParsed.vulkanVerified -eq $true -and $compactParsed.windowsPrerequisites.ready -eq $true) 'A compact setup report parses into its fields.'
 Check ((Get-FastLlmUiSetupDecision -Diagnostic $compactParsed -ExitCode 0).canProceed) 'A parsed compact report feeds the setup decision.'
@@ -774,7 +777,78 @@ Check ($notInstalledParsed.installIntegrity.status -ceq 'not-installed' -and $nu
 
 # doctor -Compact is refused with any other action (the refusal comes before the elevation check, so this runs anywhere).
 $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
-Check ($cli.Contains("if (`$Compact -and `$Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }") -and $cli.Contains('ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 -Compress')) 'fast-llm.ps1 refuses -Compact outside doctor and compacts only on request.'
+Check ($cli.Contains("if (`$Compact -and `$Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }") -and $cli.Contains('ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12')) 'fast-llm.ps1 refuses -Compact outside doctor and compacts only on request.'
+
+# doctor -Compact prints ordinary multi-line JSON: the window's output capture cuts every line at 8192 characters,
+# so a realistic report must have no long line, must parse, and its old single-line form must have been too long.
+Check ($script:FastLlmUiOutputLineCutCharacters -eq 8192) 'The setup check line limit matches the output capture cut of 8192.'
+function RealisticDoctorFixture {
+    $d=DoctorFixture $false
+    $d['installIntegrity'].mismatches=@(1..300|ForEach-Object{"src\components\changed-file-with-a-long-name-number-$_.ps1"})
+    $d['installIntegrity'].status='failed';$d['installIntegrity'].reason='tree'
+    $d['installIntegrity'].summary='Install integrity: FAILED (tree): src\components\changed-file-with-a-long-name-number-1.ps1'
+    $d['installIntegrity'].catalogSignature=[pscustomobject]@{ok=$true;reason=$null;detail=$null;signature=(BigSignatureObject);
+        extra=@(1..40|ForEach-Object{[pscustomobject]@{name="signer-$_";thumbprint=('CD'*20);chain=@(1..6|ForEach-Object{"CN=Example Chain Element $_, O=Bitworks LLC"})}})}
+    $d['plan']=[pscustomobject]@{recipe='example-recipe';model='example-model-q4';notes=@(1..80|ForEach-Object{"Plan note $_ explains one step of the setup in a sentence of ordinary length for the reader."})
+        steps=@(1..40|ForEach-Object{[pscustomobject]@{id="step-$_";title="Step $_";detail=('detail text '*20);download=[pscustomobject]@{url="https://example.invalid/files/$_";bytes=123456789;sha256=('ab'*32)}}})}
+    $d['windowsInventory']=[pscustomobject]@{applicable=$true;adapters=@(1..4|ForEach-Object{$o=[ordered]@{};1..40|ForEach-Object{$o["field$_"]="value-$_"};[pscustomobject]$o})}
+    $d['driverGuidance']=[pscustomobject]@{status='ok';messages=@(1..30|ForEach-Object{"Driver guidance message $_ for the installed adapter and its current driver version."});links=@(1..20|ForEach-Object{"https://example.invalid/drivers/$_"})}
+    return $d
+}
+$realisticCompact=ConvertTo-FastLlmCompactDoctorReport -Diagnostic (RealisticDoctorFixture)
+$realisticText=$realisticCompact|ConvertTo-Json -Depth 12
+$realisticOld=$realisticCompact|ConvertTo-Json -Depth 12 -Compress
+$realisticMax=($realisticText -split "`r?`n"|ForEach-Object{$_.Length}|Measure-Object -Maximum).Maximum
+Write-Output "Realistic compact doctor fixture: old single line $($realisticOld.Length) characters, new longest line $realisticMax characters"
+Check ($realisticOld.Length -ge 8192 -and $realisticOld -notmatch "`n") 'The old single-line form of the realistic report would have exceeded the capture cut.'
+Check ($realisticMax -lt 8192) 'The realistic compact report has no line of 8192 characters or more.'
+$realisticParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text $realisticText
+Check (@($realisticParsed.installIntegrity.mismatches).Count -eq 300 -and $realisticParsed.installIntegrity.status -ceq 'failed' -and $realisticParsed.windows -eq $true -and @($realisticParsed.plan.steps).Count -eq 40) 'The realistic compact report parses with its key fields.'
+$line8192='{"a":"'+('x'*(8192-8))+'"}'
+$line8191='{"a":"'+('x'*(8191-8))+'"}'
+$longLineMessage='The setup check returned a line longer than the window can read; open Diagnostics for the full report.'
+Check ($line8192.Length -eq 8192 -and (ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $line8192}) -ceq $longLineMessage) 'A line of exactly 8192 characters gets the clear long-line message.'
+Check ($line8191.Length -eq 8191 -and (ConvertFrom-FastLlmUiSetupCheckOutput -Text $line8191).a.Length -eq (8191-8)) 'A line of 8191 characters passes the line check.'
+Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ("{`n`"a`":1,`n`"b`":`"" + ('y'*9000) + "`"`n}")}) -ceq $longLineMessage) 'A long line among short lines is refused with the clear message.'
+
+# The same text through the real ProcessHost (Windows only).
+if ($env:OS -eq 'Windows_NT') {
+    & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
+    $hostTemp=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-linecap-'+[guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $hostTemp)
+    try {
+        $printer=Join-Path $hostTemp 'print.ps1'
+        [IO.File]::WriteAllText($printer,'param([string]$Path) [Console]::Out.Write([IO.File]::ReadAllText($Path)); [Console]::Out.Write("`n")')
+        function CaptureThroughProcessHost([string]$Text,[string]$Name) {
+            $file=Join-Path $hostTemp $Name
+            [IO.File]::WriteAllText($file,$Text)
+            $info=New-Object Diagnostics.ProcessStartInfo
+            $info.FileName=(Get-Process -Id $PID).Path
+            $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-NonInteractive','-File',$printer,$file)
+            $child=New-Object Bitworks.FastLlm.ProcessHost
+            try {
+                $child.Start($info)
+                if (-not $child.Process.WaitForExit(60000)) { throw 'The print child did not exit in time.' }
+                $waited=[Diagnostics.Stopwatch]::StartNew()
+                while (-not $child.OutputCompleted -and $waited.ElapsedMilliseconds -lt 10000) { Start-Sleep -Milliseconds 20 }
+                return $child.Snapshot()
+            } finally { $child.Dispose(); $global:LASTEXITCODE=0 }
+        }
+        $captured=CaptureThroughProcessHost -Text $realisticText -Name 'new.json'
+        $capturedParsed=ConvertFrom-FastLlmUiSetupCheckOutput -Text $captured
+        Check ($capturedParsed.installIntegrity.status -ceq 'failed' -and @($capturedParsed.installIntegrity.mismatches).Count -eq 300 -and $capturedParsed.windows -eq $true -and @($capturedParsed.plan.steps).Count -eq 40) 'The realistic compact report survives the real ProcessHost capture and parses.'
+        $capturedOld=CaptureThroughProcessHost -Text $realisticOld -Name 'old.json'
+        Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $capturedOld}) -ne '') 'The old single-line form fails to parse after the real ProcessHost capture (the test reproduces the bug).'
+    } finally {
+        if (Test-Path -LiteralPath $hostTemp) { Remove-Item -LiteralPath $hostTemp -Recurse -Force }
+    }
+} else {
+    Write-Output 'SKIP: the real ProcessHost capture check runs only on Windows.'
+}
+
+# Source pin: the compact path of doctor no longer compresses the JSON onto one line.
+$compactLine=@($cli -split "`r?`n"|Where-Object{$_.Contains('if ($Compact) { ConvertTo-FastLlmCompactDoctorReport')})
+Check ($compactLine.Count -eq 1 -and -not $compactLine[0].Contains('-Compress')) 'fast-llm.ps1 prints the compact doctor report without -Compress.'
 $host2=(Get-Process -Id $PID).Path
 foreach($otherAction in @('plan','status')){
     # Windows PowerShell 5.1 turns a child's redirected stderr into an error record; keep it as text here.

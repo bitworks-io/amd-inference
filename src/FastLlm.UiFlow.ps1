@@ -132,10 +132,18 @@ function Move-FastLlmUiTrayState {
 # The window's setup check asks doctor for its compact report; this is the most text the window will parse from it.
 $script:FastLlmUiSetupCheckMaxCharacters = 262144
 
+# The window's output capture (ProcessHost) cuts every output line to this many characters; a line this long may be cut.
+$script:FastLlmUiOutputLineCutCharacters = 8192
+
 function ConvertFrom-FastLlmUiSetupCheckOutput {
     param([AllowNull()][string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt $script:FastLlmUiSetupCheckMaxCharacters) {
         throw 'The setup check returned no usable bounded diagnostic.'
+    }
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line.Length -ge $script:FastLlmUiOutputLineCutCharacters) {
+            throw 'The setup check returned a line longer than the window can read; open Diagnostics for the full report.'
+        }
     }
     return (ConvertFrom-Json $Text)
 }
