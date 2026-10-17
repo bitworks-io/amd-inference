@@ -5,6 +5,7 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 ## 2026.10.15.12 (canary)
 
 - **A new start no longer shows the previous run's self-test:** after Stop and a new Start, Install & start or a setup picked from Choose another setup, the notes and the "See results" link from the earlier run are cleared while the new run previews.
+- **A stopped background run no longer reads like a problem:** after you stop a background run and reopen FastLLM, it now says there is no background run instead of asking you to review the previous one.
 - **The component consent window names the model:** it now says, for example, "Qwen3.8-27B UD-Q4_K_M" instead of the internal setup id.
 
 ## 2026.10.15.11 (canary)

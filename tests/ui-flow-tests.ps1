@@ -356,7 +356,7 @@ Check ($ui.Contains('Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendin
 # The BAR setting is read and written under the same launch root, never the editable folder box .
 $readRoots = @([regex]::Matches($ui, '(?m)Read-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
 $writeRoots = @([regex]::Matches($ui, '(?m)Write-FastLlmUiSettings -InstallRoot (\$[A-Za-z_]+(?::[A-Za-z_]+)?)') | ForEach-Object { $_.Groups[1].Value })
-Check ($readRoots.Count -eq 1 -and $writeRoots.Count -eq 1 -and $readRoots[0] -ceq $writeRoots[0] -and $readRoots[0] -ceq '$script:settingsRoot') 'the BAR setting is read and written under one root'
+Check ($readRoots.Count -eq 1 -and $writeRoots.Count -eq 2 -and @($writeRoots | Where-Object { $_ -cne $readRoots[0] }).Count -eq 0 -and $readRoots[0] -ceq '$script:settingsRoot') 'the BAR setting is read and written under one root'
 Check ($ui.Contains('$script:settingsRoot=$InstallRoot') -and -not [regex]::IsMatch($ui, '(?:Read|Write)-FastLlmUiSettings[^\r\n]*pathBox')) 'the settings root is the launch root, not the folder box'
 Remove-Item -LiteralPath $uiRoot -Recurse -Force
 
@@ -1062,5 +1062,30 @@ $doctorLine = @($ui -split "`n" | Where-Object { $_.StartsWith('$doctorButton.Ad
 Check ($clearBody.Contains("`$notesLabel.Text=''") -and $clearBody.Contains('$resultsLink.Visible=$false') -and $clearBody.Contains('$barLink.Visible=$false') -and $clearBody.Contains('$script:evidenceUrl=$null')) 'a new start clears the notes, both links and the evidence url'
 Check ($ui.Contains('ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode install') -and $ui.Contains('ClearPreviousRunNotes;$script:flow=New-FastLlmUiFlow -Mode start') -and $beginBody.Contains('ClearPreviousRunNotes')) 'Install and start, Start and a chooser pick clear the previous run notes'
 Check (-not $doctorLine.Contains('ClearPreviousRunNotes') -and ([regex]::Matches($ui, 'ClearPreviousRunNotes')).Count -eq 4) 'Diagnostics and other actions leave the notes alone'
+
+$stopRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-stop-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stopRoot | Out-Null
+$stopId = 'abcdef0123456789abcdef0123456789'
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq '') 'the last user-stopped request id defaults to empty'
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = $stopId })
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq $stopId) 'the last user-stopped request id round-trips'
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'off' })
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq $stopId) 'a write that omits the key keeps it'
+Set-Content -LiteralPath (Join-Path $stopRoot 'settings.json') -Value '{"vulkanBarMitigation":"on","lastUserStoppedBackgroundRequestId":"NOT-HEX"}' -Encoding ascii
+Check ((Read-FastLlmUiSettings -InstallRoot $stopRoot).lastUserStoppedBackgroundRequestId -ceq '') 'a malformed stored request id reads back as empty'
+$badWrite = $false
+try { Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = 'xyz' }) } catch { $badWrite = $true }
+Check $badWrite 'a malformed request id is refused on write'
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = $stopId })
+Write-FastLlmUiSettings -InstallRoot $stopRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; lastUserStoppedBackgroundRequestId = '' })
+Check (-not (Get-Content -LiteralPath (Join-Path $stopRoot 'settings.json') -Raw).Contains('lastUserStoppedBackgroundRequestId')) 'an empty value removes the key'
+Remove-Item -LiteralPath $stopRoot -Recurse -Force
+$applyBody = $ui.Substring($ui.IndexOf('function ApplyUiBackgroundStatus'))
+$applyBody = $applyBody.Substring(0, $applyBody.IndexOf('function SetUiBackgroundUnknown'))
+$startBgBody = $ui.Substring($ui.IndexOf('function StartUiBackground'))
+$startBgBody = $startBgBody.Substring(0, $startBgBody.IndexOf('$launched='))
+Check ($applyBody.Contains('SaveUserStoppedBackgroundRequestId $attachedBeforeId') -and $applyBody.IndexOf('$script:bgEndedByUserStop=$true') -lt $applyBody.IndexOf('SaveUserStoppedBackgroundRequestId $attachedBeforeId')) 'the stopped run request id is saved where the user stop is recorded'
+Check ($startBgBody.Contains("SaveUserStoppedBackgroundRequestId ''")) 'a new background start clears the saved stop'
+Check (([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText')).Count -eq ([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText -State \$script:bgState[^\r\n]*-LastUserStoppedRequestId \$script:lastUserStoppedRequestId')).Count) 'every background text call passes the saved request id'
 
 Write-Output "UI flow tests passed: $checks"

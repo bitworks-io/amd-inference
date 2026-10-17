@@ -691,7 +691,7 @@ function Read-FastLlmUiSettings {
         . (Join-Path $PSScriptRoot 'FastLlm.Update.ps1')
     }
     $update = Get-FastLlmUpdateSettings -InstallRoot $InstallRoot -AppRoot $AppRoot
-    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off' }
+    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off'; lastUserStoppedBackgroundRequestId = '' }
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -701,6 +701,9 @@ function Read-FastLlmUiSettings {
             }
             if ($stored.PSObject.Properties['experimentalComponents'] -and @('on', 'off') -ccontains [string] $stored.experimentalComponents) {
                 $settings.experimentalComponents = [string] $stored.experimentalComponents
+            }
+            if ($stored.PSObject.Properties['lastUserStoppedBackgroundRequestId'] -and [string] $stored.lastUserStoppedBackgroundRequestId -cmatch '^[0-9a-f]{32}$') {
+                $settings.lastUserStoppedBackgroundRequestId = [string] $stored.lastUserStoppedBackgroundRequestId
             }
         }
     }
@@ -740,6 +743,14 @@ function Write-FastLlmUiSettings {
     if ($experimentalProperty -and $null -ne $experimentalProperty.Value) {
         if (@('on', 'off') -cnotcontains [string] $experimentalProperty.Value) { throw 'experimentalComponents must be on or off.' }
         $merged['experimentalComponents'] = [string] $experimentalProperty.Value
+    }
+    # The request id of the background run the user last stopped: a 32-hex value sets it, an empty string removes it.
+    $stoppedProperty = $Settings.PSObject.Properties['lastUserStoppedBackgroundRequestId']
+    if ($stoppedProperty -and $null -ne $stoppedProperty.Value) {
+        $stoppedValue = [string] $stoppedProperty.Value
+        if ($stoppedValue -eq '') { $merged.Remove('lastUserStoppedBackgroundRequestId') }
+        elseif ($stoppedValue -cmatch '^[0-9a-f]{32}$') { $merged['lastUserStoppedBackgroundRequestId'] = $stoppedValue }
+        else { throw 'lastUserStoppedBackgroundRequestId must be 32 lowercase hex characters or empty.' }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"

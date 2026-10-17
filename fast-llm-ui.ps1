@@ -69,6 +69,12 @@ $barBox.Location=New-Object Drawing.Point(560,208);$barBox.Size=New-Object Drawi
 $script:barValues=@('auto','on','off')
 foreach($barItem in @('Auto (recommended)','On','Off')){[void]$barBox.Items.Add($barItem)}
 $script:uiSettings=Read-FastLlmUiSettings -InstallRoot $script:settingsRoot -AppRoot $PSScriptRoot
+$script:lastUserStoppedRequestId=[string]$script:uiSettings.lastUserStoppedBackgroundRequestId
+# Saved or cleared with the background run the user stopped; a failed write only means the cautious text later.
+function SaveUserStoppedBackgroundRequestId([string]$RequestId) {
+    $script:lastUserStoppedRequestId=$RequestId
+    try{Write-FastLlmUiSettings -InstallRoot $script:settingsRoot -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue);lastUserStoppedBackgroundRequestId=$RequestId})}catch{}
+}
 $barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string]$script:uiSettings.vulkanBarMitigation)
 $form.Controls.Add($barBox)
 function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.SelectedIndex)] }
@@ -301,15 +307,17 @@ function GetUiBackgroundRunStatus {
 }
 function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
     $wasAttached=[bool]$script:bgState.attachedRequestId
+    $attachedBeforeId=[string]$script:bgState.attachedRequestId
     $wasPending=[bool]$script:bgState.pendingRequestId
     $observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $HealthChecked -Force
     $null=Set-FastLlmUiBackgroundObservation -State $script:bgState -Observation $observation -StopRequested:$script:bgStopRequested
     $null=Test-FastLlmUiBackgroundPendingHost -State $script:bgState -TestProcess {
         param($Identity) TestUiBackgroundProcess $Identity
     }
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -StopRequested:($script:bgStopRequested -or $script:bgEndedByUserStop)
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -StopRequested:($script:bgStopRequested -or $script:bgEndedByUserStop) -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     if($wasAttached -and -not $script:bgState.attachedRequestId -and $script:bgStopRequested -and $script:bgState.observation -and -not $script:bgState.observation.active){
         $script:bgEndedByUserStop=$true
+        if($attachedBeforeId -cmatch '^[0-9a-f]{32}$'){SaveUserStoppedBackgroundRequestId $attachedBeforeId}
         $statusLabel.Text='Stopped. The background run ended.'
     }elseif($wasAttached -and -not $script:bgState.attachedRequestId){
         $statusLabel.Text='Background run ended or changed. Its ownership has not been silently replaced.'
@@ -328,7 +336,7 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
 function SetUiBackgroundUnknown {
     $script:bgState.observation=[pscustomobject]@{phase='occupied-unverified';active=$false;attachable=$false;occupied=$true}
     $script:bgState.attention='Background ownership could not be verified. Review Diagnostics; start and stop are disabled.'
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     SetBusy ([bool]($script:child -or $script:vcBroker))
 }
 function RefreshUiBackgroundStatus {
@@ -801,6 +809,7 @@ function StartUiBackground {
     ReadSelection
     AssertUiBackgroundNotOccupied
     $script:bgEndedByUserStop=$false
+    if($script:lastUserStoppedRequestId){SaveUserStoppedBackgroundRequestId ''}
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
         modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue)}
@@ -813,7 +822,7 @@ function StartUiBackground {
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
             $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation
     }
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
     $output.Text='This optional background mode is not a Windows service or auto-start task. Keep this user signed in; re-open FastLLM to attach later.'
     SetBusy $false
@@ -832,7 +841,7 @@ function AttachUiBackground {
     }
     $script:bgEndedByUserStop=$false
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
-    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+    $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.' -State (GetUiBackgroundRunStatus)
     $output.Text="Attached to exact request $($attached.requestId) and run $($attached.runId). Closing this window detaches; Stop ends this run."
     SetBusy $false
@@ -854,7 +863,7 @@ $backgroundCheckButton.Add_Click({
         if(-not $script:bgState.pendingRequestId -and -not $script:bgState.observation.occupied){
             $null=Clear-FastLlmUiBackgroundAttention -State $script:bgState
         }
-        $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState
+        $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
         $statusLabel.Text='Background ownership check completed.'
         SetBusy $false
     }catch{ShowFailure $_.Exception.Message}
