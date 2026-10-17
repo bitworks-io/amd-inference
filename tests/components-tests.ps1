@@ -1726,7 +1726,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         # Warnings: an automatic HIP plan says it falls back; an explicit one keeps the old text; the pending form carries no Vulkan-only warning.
         Check (@($okPlan.warnings | Where-Object { $_ -like '*falls back to the Vulkan setup and says so*' }).Count -eq 1 -and @($okPlan.warnings | Where-Object { $_ -like '*will not fall back to Vulkan*' }).Count -eq 0) 'an automatic HIP plan warns that it falls back to Vulkan, not that it will not'
         Check (@($explicitOk.warnings | Where-Object { $_ -like '*will not fall back to Vulkan on its own*' }).Count -eq 1) 'an explicit -RecipeId HIP plan keeps the no-fallback warning'
-        Check (@($pendingPlan.warnings | Where-Object { $_ -like 'Vulkan is the only enabled alpha engine lane*' }).Count -eq 0) 'the pending form does not carry the Vulkan-only warning'
+        Check (@($pendingPlan.warnings | Where-Object { $_ -like 'The Vulkan setup requires a current AMD Vulkan driver*' }).Count -eq 0) 'the pending form does not carry the Vulkan-only warning'
+        Check (@($okPlan.warnings | Where-Object { $_ -like 'This setup runs on the HIP (ROCm) engine*' }).Count -eq 1 -and @($explicitOk.warnings | Where-Object { $_ -like 'This setup runs on the HIP (ROCm) engine*' }).Count -eq 1 -and @($okPlan.warnings + $explicitOk.warnings | Where-Object { $_ -like '*experimental HIP*' }).Count -eq 0) 'a Bitworks-measured HIP recipe is not called experimental'
+        Check (@($okPlan.warnings | Where-Object { $_ -like 'The Vulkan setup requires*' -or $_ -like '*only enabled alpha engine lane*' }).Count -eq 0) 'the HIP plan carries no Vulkan setup warning'
         # The fallback pass only considers recipes that can run now. A license-free recipe on an engine component that is not installed is skipped (the
         # Vulkan recipe is used); one that is installed but cannot start does not chain into a second fallback: the fallback is refused, typed.
         $freeDir = Join-Path $work 'hip-plan-config-free'
