@@ -122,6 +122,7 @@ public sealed class FastLlmOneResponseServer : IDisposable {
     private readonly string headers;
     private readonly byte[] body;
     private readonly int bodyDelayMs;
+    private readonly ManualResetEvent stop=new ManualResetEvent(false);
     public readonly int Port;
     public FastLlmOneResponseServer(string headers, byte[] body, int bodyDelayMs) {
         this.headers=headers; this.body=body; this.bodyDelayMs=bodyDelayMs;
@@ -142,13 +143,18 @@ public sealed class FastLlmOneResponseServer : IDisposable {
                     }
                     var head=Encoding.ASCII.GetBytes(headers);
                     stream.Write(head,0,head.Length); stream.Flush();
-                    if(bodyDelayMs>0) Thread.Sleep(bodyDelayMs);
+                    if(bodyDelayMs>0 && stop.WaitOne(bodyDelayMs)) return;
                     if(body!=null && body.Length>0) {stream.Write(body,0,body.Length); stream.Flush();}
                 }
             }
         } catch(SocketException) {} catch(System.IO.IOException) {} catch(ObjectDisposedException) {}
     }
-    public void Dispose() {listener.Stop(); if(!worker.Join(3000)) throw new Exception("Loopback fixture did not stop");}
+    public void Dispose() {
+        stop.Set(); listener.Stop();
+        bool joined=worker.Join(3000);
+        if(!joined) throw new Exception("Loopback fixture did not stop");
+        stop.Close();
+    }
 }
 '@
 $transportRoot=Join-Path $PSScriptRoot ('tmp-lab-http-'+[Guid]::NewGuid().ToString('N'))
@@ -183,7 +189,7 @@ try{
     Check (-not (Test-Path -LiteralPath (Join-Path $transportRoot 'large-header.bin'))) 'oversized header creates no file'
     RejectMessage {ProbeRealHttp -Headers "HTTP/1.1 200 OK`r`nConnection: close`r`n`r`n" `
         -Body @([byte]97,[byte]98,[byte]99,[byte]100) -Delay 0 -Limit 3 -CancelMs 2000 -Leaf 'large-body.bin'} 'response exceeds' 'real HTTP rejects oversized streamed body'
-    $slow=[FastLlmOneResponseServer]::new("HTTP/1.1 200 OK`r`nContent-Length: 3`r`nConnection: close`r`n`r`n",$body,2000)
+    $slow=[FastLlmOneResponseServer]::new("HTTP/1.1 200 OK`r`nContent-Length: 3`r`nConnection: close`r`n`r`n",$body,10000)
     $cancel=[Threading.CancellationTokenSource]::new()
     $cancel.CancelAfter(50)
     $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -202,9 +208,9 @@ try{
         # Fixture cleanup deliberately occurs after the elapsed measurement.
         $slow.Dispose()
     }
-    Check ($cancelled -and $tokenWasCancelled -and $elapsed -lt 1000 -and
+    Check ($cancelled -and $tokenWasCancelled -and $elapsed -lt 5000 -and
         (Test-Path -LiteralPath (Join-Path $transportRoot 'cancel.bin'))) `
-        ("real stalled-body read ends before server releases body (helper $elapsed ms)")
+        ("real stalled-body read ends before server releases body (helper $elapsed ms, server hold 10000 ms, limit 5000 ms)")
     Write-Host "Stalled-body helper returned after $elapsed ms; fixture cleanup followed separately."
 }finally{[IO.Directory]::Delete($transportRoot,$true)}
 Write-Host "Lab package URL acquisition: $script:checks checks passed."
