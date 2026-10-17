@@ -449,7 +449,7 @@ $uiRows = @(
     [pscustomobject]@{ id = 'a'; kind = 'engine'; version = 'v1'; installed = $true; bytes = [int64]1048576; verified = $true },
     [pscustomobject]@{ id = 'b'; kind = 'model'; version = 'v2'; installed = $false; bytes = [int64]0; verified = $false })
 $shownRows = @(Get-FastLlmInstalledComponentRows -Inventory $uiRows)
-Check ($shownRows.Count -eq 1 -and $shownRows[0].id -ceq 'a' -and $shownRows[0].label -ceq 'a (engine, v1) - 1.0 MB') 'the Components window lists only installed components, with their sizes'
+Check ($shownRows.Count -eq 1 -and $shownRows[0].id -ceq 'a' -and $shownRows[0].label -ceq 'a (engine, v1) - 1.0 MiB') 'the Components window lists only installed components, with their sizes'
 Check (@(Get-FastLlmInstalledComponentRows -Inventory @()).Count -eq 0) 'no installed components gives an empty list'
 Check ($script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the paragraph the checkbox confirms is the spec 2.7 text'
 

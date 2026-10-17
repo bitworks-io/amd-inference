@@ -2216,11 +2216,11 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         [pscustomobject] @{ id = 'comp-b'; kind = 'model'; version = 'q4'; installed = $false; bytes = [int64] 0; verified = $false })
     $listLines = @(Format-FastLlmComponentList -Inventory $listRows)
     Check ($listLines.Count -eq 3 -and $listLines[0] -like '*id*kind*version*installed*size*verified*') 'the component list has a header and one line per component'
-    Check ($listLines[1] -like '*comp-a*engine*v1*yes*12.0 MB*yes*') 'an installed component line lists id, kind, version, installed, size in MB and verified'
+    Check ($listLines[1] -like '*comp-a*engine*v1*yes*12.0 MiB*yes*') 'an installed component line lists id, kind, version, installed, size in MiB and verified'
     Check ($listLines[2] -like '*comp-b*model*q4*no*') 'a component that is not installed is listed as not installed'
-    Check ((Format-FastLlmComponentSize -Bytes 1572864) -ceq '1.5 MB') 'the size is shown in MB with one decimal'
+    Check ((Format-FastLlmComponentSize -Bytes 1572864) -ceq '1.5 MiB') 'the size is shown in MiB with one decimal'
     $installedOnly = @(Get-FastLlmInstalledComponentRows -Inventory $listRows)
-    Check ($installedOnly.Count -eq 1 -and $installedOnly[0].id -ceq 'comp-a' -and $installedOnly[0].label -like '*comp-a*engine*v1*12.0 MB*') 'the Components window rows list only installed components, with their sizes'
+    Check ($installedOnly.Count -eq 1 -and $installedOnly[0].id -ceq 'comp-a' -and $installedOnly[0].label -like '*comp-a*engine*v1*12.0 MiB*') 'the Components window rows list only installed components, with their sizes'
 
     # The real CLI branches, taken from the AST of fast-llm.ps1 and run against fixtures.
     function Get-CliBranchBody([string] $Name) {
@@ -2250,7 +2250,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $null = Install-Fixture -Fixture $cliFixture -InstallRoot $cliRoot -Counter $cliCounter -AcceptLicense -Unattended
     $listText = @(& $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath 6>&1 | ForEach-Object { [string] $_ })
     Check ($listText.Count -ge 2 -and $listText[0] -like '*id*kind*version*installed*size*verified*') 'components -List (the default) prints a header'
-    Check (@($listText | Where-Object { $_ -like '*cli-engine-1*engine*v1*yes*MB*yes*' }).Count -eq 1) 'components -List prints id, kind, version, installed, size in MB and verified'
+    Check (@($listText | Where-Object { $_ -like '*cli-engine-1*engine*v1*yes*MiB*yes*' }).Count -eq 1) 'components -List prints id, kind, version, installed, size in MiB and verified'
     $listJson = @(& $componentsFunction -InstallRoot $cliRoot -componentsFilePath $cliFixture.ComponentsPath -AsJson 6>&1 | ForEach-Object { [string] $_ }) -join "`n" | ConvertFrom-Json
     $jsonRow = @($listJson)[0]
     Check ($jsonRow.id -ceq 'cli-engine-1' -and $jsonRow.kind -ceq 'engine' -and $jsonRow.version -ceq 'v1' -and $jsonRow.installed -eq $true -and $jsonRow.bytes -gt 0 -and $jsonRow.verified -eq $true) 'components -List -AsJson emits id, kind, version, installed, bytes and verified'
