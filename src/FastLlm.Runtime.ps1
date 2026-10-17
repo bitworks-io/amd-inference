@@ -798,7 +798,7 @@ function Invoke-FastLlmSupervisedServer {
             overflow=[bool]$hostProcess.SelectedDeviceIdentityOverflow
             diagnostics=[string]$hostProcess.SelectedDeviceIdentityDiagnostics()
         }
-        if (-not $isHipPlan) { $state.selectedDeviceIdentity=ConvertFrom-FastLlmSelectedDeviceIdentity -Text $selectedDeviceText -ExpectedDevices @($Plan.selectedAdapters.device) -LikeLines $state.selectedDeviceCapture.likeLines -MalformedLines $state.selectedDeviceCapture.malformedLines -Overflow $state.selectedDeviceCapture.overflow }
+        if (-not $isHipPlan) { $state.selectedDeviceIdentity=ConvertFrom-FastLlmSelectedDeviceIdentity -Text $selectedDeviceText -ExpectedDevices @($Plan.selectedAdapters.device) -LikeLines $state.selectedDeviceCapture.likeLines -MalformedLines $state.selectedDeviceCapture.malformedLines -UnknownIdLines ([int]$hostProcess.SelectedDeviceUnknownIdLines) -Overflow $state.selectedDeviceCapture.overflow }
         # Freeze the server device-list capture (the level-4 device_info entries and the "using device" lines) at the same point, before any
         # API canary. The capture itself never gates: any throw is recorded as { error = <exception type name> } (never its text) and is
         # swallowed here. Under -DeviceBinding enforce the post-load check below READS these entries (an error capture fails that check

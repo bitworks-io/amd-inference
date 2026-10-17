@@ -30,10 +30,17 @@ function ConvertFrom-FastLlmGgmlIdentityOutput {
     param([Parameter(Mandatory=$true)][string]$OutputText, [bool]$WasTruncated)
     if ($WasTruncated) { throw 'GGML identity worker output was truncated.' }
     if ($OutputText.Length -gt 32768) { throw 'GGML identity worker output exceeded its limit.' }
+    # Every line that starts with the record prefix must be one complete JSON object. A line the window's capture cut at its
+    # per-line limit (8192 characters) or any other incomplete record is an error, never a silent "no record".
+    $prefixLines = @([regex]::Matches($OutputText, '(?m)^FASTLLM_GGML_IDENTITY_JSON:[^\r\n]*'))
+    if ($prefixLines.Count -gt 1) { throw 'GGML identity worker returned multiple records.' }
+    if ($prefixLines.Count -eq 0) { return $null }
     $records = [regex]::Matches($OutputText, '(?m)^FASTLLM_GGML_IDENTITY_JSON:(\{[^\r\n]*\})\r?$')
-    if ($records.Count -gt 1) { throw 'GGML identity worker returned multiple records.' }
-    if ($records.Count -eq 0) { return $null }
-    $snapshot = ConvertFrom-Json -InputObject $records[0].Groups[1].Value -ErrorAction Stop
+    if ($records.Count -ne 1) {
+        throw 'GGML identity worker record is not a complete JSON object; the line may have been cut at the 8192-character output limit.'
+    }
+    try { $snapshot = ConvertFrom-Json -InputObject $records[0].Groups[1].Value -ErrorAction Stop }
+    catch { throw 'GGML identity worker record is not valid JSON; the line may have been cut at the 8192-character output limit.' }
     Assert-FastLlmGgmlVulkanIdentitySnapshot -Snapshot $snapshot
     return $snapshot
 }

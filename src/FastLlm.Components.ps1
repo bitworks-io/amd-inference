@@ -62,10 +62,10 @@ function Set-FastLlmComponentSettings {
 function Format-FastLlmComponentSize {
     param([int64] $Bytes)
     $megabytes = [double] $Bytes / 1048576.0
-    return ($megabytes.ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) + ' MB')
+    return ($megabytes.ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) + ' MiB')
 }
 
-# One line per inventory row (Get-FastLlmComponentInventory): id, kind, version, installed, size in MB, verified.
+# One line per inventory row (Get-FastLlmComponentInventory): id, kind, version, installed, size in MiB, verified.
 function Format-FastLlmComponentList {
     param([object[]] $Inventory)
     $lines = New-Object 'System.Collections.Generic.List[string]'

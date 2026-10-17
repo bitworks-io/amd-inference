@@ -199,7 +199,8 @@ try {
                 if($mode -eq 'diagflood'){
                     Check (-not $status.selectedDeviceIdentity.identityVerified -and $status.selectedDeviceIdentity.failureReason -eq 'missing-or-extra-selected-device') 'missing selected-device log remains explicitly unverified without blocking Ready'
                 }elseif($mode -eq 'diagduplicate'){
-                    Check (-not $status.selectedDeviceIdentity.identityVerified -and $status.selectedDeviceIdentity.failureReason -eq 'malformed-selected-device-line') 'malformed selected-device log remains explicitly unverified without blocking Ready'
+                    # The extra line is well formed but reports an unknown device id: it is its own reason, never verified and never mapped to an adapter.
+                    Check (-not $status.selectedDeviceIdentity.identityVerified -and $status.selectedDeviceIdentity.failureReason -eq 'engine-reported-unknown-device-id') 'an engine-reported unknown device id remains explicitly unverified without blocking Ready'
                 }else{
                     Check ($status.selectedDeviceIdentity.identityVerified -and $status.selectedDeviceIdentity.selectedDevices.Count -eq 1 -and $status.selectedDeviceIdentity.selectedDevices[0].pciBdf -eq '0000:03:00.0') 'same-child selected-device evidence persists for expected adapter'
                 }

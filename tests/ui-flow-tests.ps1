@@ -449,7 +449,7 @@ $uiRows = @(
     [pscustomobject]@{ id = 'a'; kind = 'engine'; version = 'v1'; installed = $true; bytes = [int64]1048576; verified = $true },
     [pscustomobject]@{ id = 'b'; kind = 'model'; version = 'v2'; installed = $false; bytes = [int64]0; verified = $false })
 $shownRows = @(Get-FastLlmInstalledComponentRows -Inventory $uiRows)
-Check ($shownRows.Count -eq 1 -and $shownRows[0].id -ceq 'a' -and $shownRows[0].label -ceq 'a (engine, v1) - 1.0 MB') 'the Components window lists only installed components, with their sizes'
+Check ($shownRows.Count -eq 1 -and $shownRows[0].id -ceq 'a' -and $shownRows[0].label -ceq 'a (engine, v1) - 1.0 MiB') 'the Components window lists only installed components, with their sizes'
 Check (@(Get-FastLlmInstalledComponentRows -Inventory @()).Count -eq 0) 'no installed components gives an empty list'
 Check ($script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the paragraph the checkbox confirms is the spec 2.7 text'
 
@@ -834,10 +834,23 @@ $guidanceEntries=@($guidanceParsed.driverGuidance)
 Check ($guidanceParsed.windows -eq $true -and $guidanceEntries.Count -eq 2 -and $guidanceEntries[0].inputGpuName -ceq 'AMD Radeon RX 7900 XTX' -and (Format-FastLlmDriverGuidance -Guidance $guidanceEntries[0]).Contains('Reported driver version: 32.0.31041.1004')) 'The compact report keeps driver guidance entries that the guidance dialog can validate.'
 $line8192='{"a":"'+('x'*(8192-8))+'"}'
 $line8191='{"a":"'+('x'*(8191-8))+'"}'
-$longLineMessage='The setup check returned a line longer than the window can read; open Diagnostics for the full report.'
+$longLineMessage='The setup check returned a line longer than the window can read; open Diagnostics for details.'
 Check ($line8192.Length -eq 8192 -and (ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text $line8192}) -ceq $longLineMessage) 'A line of exactly 8192 characters gets the clear long-line message.'
 Check ($line8191.Length -eq 8191 -and (ConvertFrom-FastLlmUiSetupCheckOutput -Text $line8191).a.Length -eq (8191-8)) 'A line of 8191 characters passes the line check.'
 Check ((ThrownMessage {ConvertFrom-FastLlmUiSetupCheckOutput -Text ("{`n`"a`":1,`n`"b`":`"" + ('y'*9000) + "`"`n}")}) -ceq $longLineMessage) 'A long line among short lines is refused with the clear message.'
+
+# Cut detection for the window's capture: the rolling total limit and the per-line cut.
+Check (-not (Test-FastLlmUiOutputWasCut -Text $null) -and -not (Test-FastLlmUiOutputWasCut -Text '') -and -not (Test-FastLlmUiOutputWasCut -Text "{`n  `"a`": 1`n}")) 'A short report is not marked as cut.'
+Check (-not (Test-FastLlmUiOutputWasCut -Text ('x'*8191)) -and (Test-FastLlmUiOutputWasCut -Text ('x'*8192))) 'A line of 8192 characters is marked as cut and 8191 is not.'
+Check (Test-FastLlmUiOutputWasCut -Text ("short`r`n" + ('y'*9000) + "`r`nshort")) 'A long line among short lines is marked as cut.'
+Check (-not (Test-FastLlmUiOutputWasCut -Text ((("x"*100)+"`n")*2500)) -and (Test-FastLlmUiOutputWasCut -Text ((("x"*100)+"`n")*2700))) 'A total that reaches 262144 characters is marked as cut.'
+$cutNote='The window can show only part of this report. For the full report run: fast-llm.ps1 doctor'
+Check ($ui.Contains($cutNote) -and $ui.Contains('Test-FastLlmUiOutputWasCut -Text $text')) 'The window appends the plain note when the Diagnostics output was cut.'
+
+# Only steps that start a run clear the "stopped" background line.
+Check (@(@('engine','model download','serving','component install')|Where-Object{-not (Test-FastLlmUiStepStartsRun -Step $_)}).Count -eq 0) 'Engine, model download, serving and component install steps start a run.'
+Check (@(@('diagnostics','setup check','driver guidance','preview','recipe list','vc prepare','idle','','Engine')|Where-Object{Test-FastLlmUiStepStartsRun -Step $_}).Count -eq 0 -and -not (Test-FastLlmUiStepStartsRun -Step $null)) 'Diagnostics, the setup check and other read-only steps do not start a run.'
+Check ($ui.Contains('function LaunchStep([string]$Step,[object[]]$Arguments) {'+"`n"+'    if(Test-FastLlmUiStepStartsRun -Step $Step){$script:bgEndedByUserStop=$false}')) 'LaunchStep clears the stopped flag only for steps that start a run.'
 
 # The same text through the real ProcessHost (Windows only).
 if ($env:OS -eq 'Windows_NT') {
@@ -888,7 +901,7 @@ foreach($otherAction in @('plan','status')){
 }
 
 # The window asks for the compact report, parses it through the bounded function, and keeps full output for Diagnostics.
-Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics keeps the full one.'
+Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics also runs the compact report so the window can show all of it.'
 Check ($ui.Contains('$control.UseMnemonic=$false')) 'Window labels show an ampersand instead of treating it as a mnemonic.'
 
 
