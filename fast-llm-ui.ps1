@@ -93,7 +93,7 @@ $script:identifiedVariant=''
 $script:chooserNotice=''
 $chooseButton.Enabled=$false
 $backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
-$statusLabel=LabelAt 'Stopped. Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first.' 24 382
+$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382
 $progress=New-Object Windows.Forms.ProgressBar
 $progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
@@ -856,7 +856,7 @@ function FillComponentsPanel {
     catch{$rows=@();$view.message.Text="The component list could not be read: $($_.Exception.Message)"}
     if($rows.Count -eq 0){
         $none=New-Object Windows.Forms.Label
-        $none.Text='No community components are installed.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
+        $none.Text='No engine components are installed.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
         $view.panel.Controls.Add($none)
         return
     }
