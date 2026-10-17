@@ -274,6 +274,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\tests\state-write-tests.ps1
+      - name: vulkan-driver-modules-tests in Windows PowerShell 5.1 (mock only)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: .\tests\vulkan-driver-modules-tests.ps1
+      - name: vulkan-driver-modules-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\vulkan-driver-modules-tests.ps1
 
   release-scripts:
     runs-on: windows-latest
