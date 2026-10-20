@@ -23,9 +23,15 @@ if [[ "$actual_zip_sha256" != "$sdk_zip_sha256" ]]; then
 fi
 unzip -q "$build_dir/sdk.zip" -d "$build_dir"
 sdk_dir="$build_dir/ADLX-${sdk_commit}"
+# The SDK includes <Windows.h>; Zig's MinGW headers name it windows.h. A one-line forwarding header, searched LAST (-idirafter),
+# makes the build work on case-sensitive file systems (Linux CI) without touching the SDK. On a case-insensitive file system the
+# system header is found first and the shim is never used; on a case-sensitive one only the shim matches Windows.h exactly.
+shim_dir="$build_dir/case-shim"
+mkdir "$shim_dir"
+printf '#include <windows.h>\n' > "$shim_dir/Windows.h"
 "$zig_bin" cc -target x86_64-windows-gnu -D_M_AMD64 -O2 -s \
   -Wall -Wextra -Werror -Wno-unused-function \
-  -I"$sdk_dir/SDK/Include" \
+  -I"$sdk_dir/SDK/Include" -idirafter "$shim_dir" \
   "$repo_dir/tools/adlx-identity-vram.c" \
   -o "$build_dir/adlx-identity-vram.exe"
 echo "Private build directory: $build_dir"
