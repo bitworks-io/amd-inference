@@ -4,8 +4,9 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
-- **ADLX probe component listed:** the `bitworks-adlx-probe` component (probe v3) is now listed. Install it with `fast-llm.ps1 components -Install bitworks-adlx-probe` after accepting its license.
-- **Optional ADLX probe component:** the ADLX probe (`adlx-identity-vram.exe`) can be installed as a component, `bitworks-adlx-probe`, after you accept its license (not Apache-2.0; see `licenses/adlx-probe/EULA.md`). When it is installed and verified, `tools/benchmark.ps1` uses it, so reports carry the card's PCI identity, PCIe link and in-run telemetry; `-NoAdlxProbe` turns that off and explicit `-AdlxExecutablePath` and `-AdlxExecutableSha256` arguments still win. Components gain a `tool` kind for a standalone verified binary. A separate `adlx-probe.yml` workflow builds the probe from the pinned AMD ADLX SDK, signs it and publishes it as a pre-release (tag `adlx-probe-v<N>`); the component entry itself is added after the first probe release. The measurement methodology and the producer version are unchanged. `NOTICE` and `THIRD_PARTY_NOTICES.md` describe the probe's license.
+## 2026.10.20.13 (canary)
+
+- **Optional ADLX probe component:** FastLLM can now install `bitworks-adlx-probe`, the signed ADLX probe from release `adlx-probe-v3`, after you accept its license (`fast-llm.ps1 components -Install bitworks-adlx-probe`). Its license is not Apache-2.0; see `licenses/adlx-probe/EULA.md`. Nothing installs it by default. When it is installed and verified, `tools/benchmark.ps1` uses it, so benchmark reports carry the card's PCI identity, PCIe link and in-run telemetry. `-NoAdlxProbe` turns that off, and explicit `-AdlxExecutablePath` and `-AdlxExecutableSha256` arguments still win. Components gain a `tool` kind. The measurement methodology and the producer version are unchanged. `NOTICE` and `THIRD_PARTY_NOTICES.md` describe the probe's license.
 
 ## 2026.10.20.12 (canary)
 
