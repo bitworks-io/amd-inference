@@ -2,12 +2,23 @@
 [CmdletBinding()]
 param([string]$InstallRoot=(Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks/FastLLM'),[Parameter(Mandatory=$true)][string]$OutputPath,[int[]]$PromptTokens=@(512,4096),[int]$GenerationTokens=128,[int]$Repetitions=5,
        # Optional ADLX identity and 1 Hz telemetry sidecar; both must be supplied together.
-       [string]$AdlxExecutablePath,[string]$AdlxExecutableSha256)
+       [string]$AdlxExecutablePath,[string]$AdlxExecutableSha256,
+       # Without either ADLX argument, an installed and verified ADLX probe component is used; this switch turns that lookup off.
+       [switch]$NoAdlxProbe)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '../src/FastLlm.psm1') -Force
 $adlxArguments=@{}
 if($AdlxExecutablePath){$adlxArguments['AdlxExecutablePath']=$AdlxExecutablePath}
 if($AdlxExecutableSha256){$adlxArguments['AdlxExecutableSha256']=$AdlxExecutableSha256}
+# Explicit arguments always win and are never mixed with discovery. Only the installed, Full-verified probe component is used; nothing is downloaded.
+if(-not $AdlxExecutablePath -and -not $AdlxExecutableSha256 -and -not $NoAdlxProbe){
+    $adlxProbe=Get-FastLlmInstalledToolComponent -Id 'bitworks-adlx-probe' -InstallRoot $InstallRoot -ComponentsPath (Join-Path $PSScriptRoot '../config/components.json') -ExecutableName 'adlx-identity-vram.exe'
+    if($adlxProbe){
+        $adlxArguments['AdlxExecutablePath']=$adlxProbe.path
+        $adlxArguments['AdlxExecutableSha256']=$adlxProbe.sha256
+        Write-Host "Using the installed ADLX probe component $($adlxProbe.id) $($adlxProbe.version)."
+    }
+}
 try{
     Invoke-FastLlmBenchmark -InstallRoot $InstallRoot -OutputPath $OutputPath -PromptTokens $PromptTokens -GenerationTokens $GenerationTokens -Repetitions $Repetitions @adlxArguments | Out-Null
 }catch{

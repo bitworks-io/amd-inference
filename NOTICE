@@ -6,3 +6,5 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 FastLLM downloads third-party software and model files to the user's computer at the user's request and verifies them
 against pinned SHA-256 hashes; it does not redistribute them. Their licenses and notices are listed in
 THIRD_PARTY_NOTICES.md, and the llama.cpp license text is in licenses/llama.cpp/LICENSE.
+
+The optional ADLX probe component (adlx-identity-vram.exe) is distributed by Bitworks LLC in object code only under licenses/adlx-probe/EULA.md; it is not covered by the Apache License 2.0, and it is built with the AMD ADLX SDK, which is not redistributed.

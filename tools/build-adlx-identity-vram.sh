@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Private lab build only. The pinned v1 and v2 collectors and their executables stay untouched.
+# Builds the ADLX identity collector (adlx-identity-vram.exe) from tools/adlx-identity-vram.c with Zig 0.16.0 against the pinned AMD ADLX SDK.
+# The SDK is downloaded from AMD's repository, checked against its pinned SHA-256 and used only to compile; it is never stored in this repository.
+# Usage: build-adlx-identity-vram.sh [path-to-zig]   (default: the zig on PATH, else /opt/homebrew/bin/zig)
 set -euo pipefail
 
-zig_bin="${1:-/opt/homebrew/bin/zig}"
+zig_bin="${1:-$(command -v zig || echo /opt/homebrew/bin/zig)}"
 if [[ "$("$zig_bin" version)" != '0.16.0' ]]; then
   echo 'Expected Zig 0.16.0.' >&2
   exit 1
@@ -10,7 +12,7 @@ fi
 sdk_commit='32b5a740d42295c5dfe9026b9f52683da0f3af91'
 sdk_zip_sha256='99850ddd58e3f5bbfdbe41c87248da8d5394227eaa32b19aad3206b4c3b2677c'
 repo_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
-build_dir="$(mktemp -d /private/tmp/fastllm-adlx-identity-build.XXXXXX)"
+build_dir="$(mktemp -d "${TMPDIR:-/tmp}/fastllm-adlx-identity-build.XXXXXX")"
 curl -fLsS --retry 2 --max-time 60 \
   -o "$build_dir/sdk.zip" \
   "https://github.com/GPUOpen-LibrariesAndSDKs/ADLX/archive/${sdk_commit}.zip"
