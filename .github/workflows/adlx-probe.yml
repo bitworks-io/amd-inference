@@ -154,7 +154,9 @@ jobs:
           Compress-Archive -LiteralPath (Join-Path $stage 'adlx-identity-vram.exe'), (Join-Path $stage 'EULA.txt'), (Join-Path $stage 'NOTICE.txt') -DestinationPath $zip
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
-          try { $members = @($archive.Entries | ForEach-Object { $_.FullName } | Sort-Object) } finally { $archive.Dispose() }
+          # Ordinal sort: Sort-Object is culture-aware and case-insensitive, which put adlx-identity-vram.exe first in adlx-probe-v2.
+          try { [string[]] $members = @($archive.Entries | ForEach-Object { $_.FullName }) } finally { $archive.Dispose() }
+          [Array]::Sort($members, [StringComparer]::Ordinal)
           if (($members -join '|') -ne 'EULA.txt|NOTICE.txt|adlx-identity-vram.exe') {
             Write-Error "Unexpected zip members: $($members -join ', ')"
             exit 1

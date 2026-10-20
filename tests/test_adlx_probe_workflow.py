@@ -76,6 +76,9 @@ class AdlxProbeWorkflowTests(unittest.TestCase):
 
     def test_zip_members(self):
         self.assertIn("'EULA.txt|NOTICE.txt|adlx-identity-vram.exe'", PROBE)
+        # The member list is compared in ordinal order (uppercase first), not with the culture-aware Sort-Object.
+        self.assertIn("[Array]::Sort($members, [StringComparer]::Ordinal)", PROBE)
+        self.assertNotIn("Sort-Object) } finally", PROBE)
         self.assertEqual(sorted(re.findall(r"Copy-Item .*?-Destination \(Join-Path \$stage '([^']+)'\)", PROBE)), ["EULA.txt", "adlx-identity-vram.exe"])
         self.assertIn("NOTICE.txt", PROBE)
         self.assertIn("licenses/adlx-probe/EULA.md", PROBE)
