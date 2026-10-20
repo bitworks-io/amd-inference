@@ -123,7 +123,7 @@ $script:FastLlmCpuRootPortDeviceIds = @{
 $script:FastLlmTelemetryMetricNames = @('gpuClockMHz','gpuVramClockMHz','gpuUsagePercent','gpuTotalBoardPowerW','gpuTemperatureC','gpuHotspotTemperatureC')
 $script:FastLlmTelemetryIntervalMs = 1000
 $script:FastLlmTelemetryPlannedCount = 7200
-$script:FastLlmProducerVersion = 'vnext.3'
+$script:FastLlmProducerVersion = 'vnext.4'
 # Host capture fields that must be identical before and after the timed window.
 $script:FastLlmHostStableFields = @('powerPlan','cpuTopology','smbiosMemory','boardBios')
 # Relative VRAM tolerance between the engine-reported recipe VRAM and the ADLX total VRAM.
@@ -852,7 +852,7 @@ function ConvertTo-FastLlmBenchmarkComparableName {
     return $normalized
 }
 
-# Engine view versus joined device: recipe.adapters[0].name against the bound Vulkan device name
+# Planner adapter view (recipe.adapters, from the plan-time Vulkan probe) versus joined device: recipe.adapters[0].name against the bound Vulkan device name
 # and recipe vramMiB against the ADLX totalVramMB (relative tolerance). Only an explicit mismatch
 # is a finding; missing inputs are 'not-checked' with a reason.
 function Test-FastLlmBenchmarkRecipeAdapterAgreement {
@@ -904,6 +904,61 @@ function Set-FastLlmBenchmarkBindingRecipeCrossCheck {
     $evidence = Test-FastLlmBenchmarkRecipeAdapterAgreement $Recipe $Resolved
     $binding = $Resolved.Binding
     $binding['recipeAdapterCrossCheck'] = $evidence
+    if ($evidence.status -eq 'mismatch') {
+        $binding.status = 'ambiguous'
+        $binding.reason = $evidence.reason
+        $binding.method = $null
+        $binding.selection = 'unbound'
+        $Resolved.Joined = $null
+    }
+    return $evidence
+}
+
+# Engine-reported serving device (PCI address from the engine's device list) versus the bound adapter's
+# D3DKMT address. Only an explicit disagreement is a finding; anything that cannot be compared is
+# 'not-available' with a reason. The Vulkan engine reports no address, so it is not-available there.
+function Test-FastLlmBenchmarkServingDeviceAgreement {
+    param($Capture, $Resolved)
+    $evidence = [ordered]@{ status = 'not-available'; reason = $null; servedDeviceId = $null; method = 'engine-reported-pci-address-vs-d3dkmt-address' }
+    $binding = Get-FastLlmBenchmarkProperty $Resolved 'Binding'
+    $joined = Get-FastLlmBenchmarkProperty $Resolved 'Joined'
+    if ((Get-FastLlmBenchmarkProperty $binding 'status') -ne 'bound' -or $null -eq $joined) { $evidence.reason = 'binding-not-bound'; return $evidence }
+    if ($null -eq $Capture) { $evidence.reason = 'capture-absent'; return $evidence }
+    if ($null -ne (Get-FastLlmBenchmarkProperty $Capture 'error')) { $evidence.reason = 'capture-error'; return $evidence }
+    $malformed = Get-FastLlmBenchmarkProperty $Capture 'usingDeviceMalformedLines'
+    if ((Get-FastLlmBenchmarkProperty $Capture 'usingDeviceOverflow') -eq $true -or (($malformed -is [int] -or $malformed -is [long] -or $malformed -is [double]) -and $malformed -gt 0)) { $evidence.reason = 'capture-incomplete'; return $evidence }
+    $devices = @(Get-FastLlmBenchmarkProperty $Capture 'usingDevice' | Where-Object { $null -ne $_ })
+    if ($devices.Count -eq 0) { $evidence.reason = 'no-using-device'; return $evidence }
+    if ($devices.Count -gt 1) { $evidence.status = 'mismatch'; $evidence.reason = 'multiple-using-devices'; return $evidence }
+    $servedId = Get-FastLlmBenchmarkProperty $devices[0] 'id'
+    if ($servedId -is [string]) { $evidence.servedDeviceId = $servedId }
+    if ($servedId -isnot [string] -or $servedId -ieq 'unknown') { $evidence.reason = 'engine-reported-unknown-device-id'; return $evidence }
+    $match = [regex]::Match($servedId, '^([0-9A-Fa-f]{4}):([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-7])$')
+    if (-not $match.Success) { $evidence.reason = 'served-device-id-unparsed'; return $evidence }
+    if ($match.Groups[1].Value -ne '0000') { $evidence.reason = 'served-device-pci-domain-nonzero'; return $evidence }
+    $boundAdapter = @(Get-FastLlmBenchmarkProperty $binding 'adapters')[0]
+    $kmt = Get-FastLlmBenchmarkProperty $boundAdapter 'kmt'
+    $kmtBus = Get-FastLlmBenchmarkProperty $kmt 'bus'
+    $kmtDevice = Get-FastLlmBenchmarkProperty $kmt 'device'
+    $kmtFunction = Get-FastLlmBenchmarkProperty $kmt 'function'
+    foreach ($part in @($kmtBus, $kmtDevice, $kmtFunction)) {
+        if ($part -isnot [int] -and $part -isnot [long]) { $evidence.reason = 'bound-address-unavailable'; return $evidence }
+    }
+    $servedBus = [Convert]::ToInt32($match.Groups[2].Value, 16)
+    $servedDevice = [Convert]::ToInt32($match.Groups[3].Value, 16)
+    $servedFunction = [Convert]::ToInt32($match.Groups[4].Value, 16)
+    if ([long]$kmtBus -eq $servedBus -and [long]$kmtDevice -eq $servedDevice -and [long]$kmtFunction -eq $servedFunction) { $evidence.status = 'agree'; return $evidence }
+    $evidence.status = 'mismatch'; $evidence.reason = 'serving-device-mismatch'
+    return $evidence
+}
+
+# Records the serving-device cross-check on the binding. A mismatch makes the binding ambiguous
+# (typed reason) and drops the joined device, exactly like the recipe cross-check.
+function Set-FastLlmBenchmarkBindingServingDeviceCrossCheck {
+    param($Resolved, $Capture)
+    $evidence = Test-FastLlmBenchmarkServingDeviceAgreement $Capture $Resolved
+    $binding = $Resolved.Binding
+    $binding['servingDeviceCrossCheck'] = $evidence
     if ($evidence.status -eq 'mismatch') {
         $binding.status = 'ambiguous'
         $binding.reason = $evidence.reason
@@ -1675,8 +1730,10 @@ function Invoke-FastLlmBenchmark {
         try{$preSnapshot=Get-FastLlmBenchmarkIdentitySnapshot $sidecarPaths.joinPre}catch{$probeReason=Get-FastLlmBenchmarkErrorReason $_}
         $preResolved=Resolve-FastLlmBenchmarkBinding $preSnapshot $adlx $probeReason
         $preProbeEnd=[DateTime]::UtcNow
-        # Engine view versus joined device (name, VRAM): a mismatch makes the binding ambiguous before anything is filled from it.
+        # Planner adapter view (recipe.adapters, from the plan-time Vulkan probe) versus joined device (name, VRAM), and the engine-reported serving device versus the bound adapter:
+        # a mismatch in either cross-check makes the binding ambiguous before anything is filled from it.
         Set-FastLlmBenchmarkBindingRecipeCrossCheck $preResolved $state.recipe|Out-Null
+        Set-FastLlmBenchmarkBindingServingDeviceCrossCheck $preResolved (Get-FastLlmBenchmarkProperty $state 'serverDeviceListCapture')|Out-Null
         $preFingerprint=Get-FastLlmBenchmarkBindingFingerprint $preResolved.Binding
         $recipeDriverEvidence=Set-FastLlmBenchmarkRecipeDriverVersion $state.recipe $preResolved.Binding
         $pciLink=@()
@@ -1760,6 +1817,7 @@ function Invoke-FastLlmBenchmark {
         }
         $postResolved=Resolve-FastLlmBenchmarkBinding $postSnapshot $adlxPost $probeReason
         Set-FastLlmBenchmarkBindingRecipeCrossCheck $postResolved $state.recipe|Out-Null
+        Set-FastLlmBenchmarkBindingServingDeviceCrossCheck $postResolved (Get-FastLlmBenchmarkProperty $state 'serverDeviceListCapture')|Out-Null
         $postProbeEnd=[DateTime]::UtcNow
         $postHost=Get-FastLlmBenchmarkHostCapture 'post'
         if($null -eq $postHost.PowerPlanText -or $postHost.Capture.fields.powerPlan.status -ne 'captured'){throw (New-FastLlmBenchmarkFailure 'power-plan-unreadable-post' 'The active power plan could not be read after the benchmark.')}
@@ -1816,9 +1874,12 @@ function Invoke-FastLlmBenchmark {
         $inputsEnd=Get-FastLlmBenchmarkInputHashes $inputRoot
         Assert-FastLlmBenchmarkInputsUnchanged $inputsStart $inputsEnd
         $inputs=$inputsStart.Hashes
+        $stateEngine=Get-FastLlmBenchmarkProperty $state 'engine'
+        $engineBlock=[ordered]@{}
+        foreach($engineKey in @('backend','version','componentId')){$engineValue=Get-FastLlmBenchmarkProperty $stateEngine $engineKey;$engineBlock[$engineKey]=$(if($engineValue -is [string]){$engineValue}else{$null})}
         $result=[ordered]@{
             schemaVersion=1;resultKind='native-windows-api-benchmark-not-full-qualification';recordedAt=(Get-Date).ToUniversalTime().ToString('o')
-            modelId=$state.modelId;modelSha256=$state.modelSha256;engineVersion=$state.engineVersion;recipe=$state.recipe
+            modelId=$state.modelId;modelSha256=$state.modelSha256;engineVersion=$state.engineVersion;engine=$engineBlock;recipe=$state.recipe
             os=[Environment]::OSVersion.VersionString;processorCount=[Environment]::ProcessorCount;powerPlan=$postHost.PowerPlanText
             windowsInventory=$inventory;inventoryError=$inventoryError
             methodology=@{corpus='fastllm-repeated-prose-v1';sampling='greedy-seed42';prefixCache=$false;warmupPerPrompt=1;generationTokens=$GenerationTokens;repetitions=$Repetitions;concurrency=1;randomizedPromptOrder=$true;promptArtifacts=$promptArtifacts}

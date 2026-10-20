@@ -459,7 +459,7 @@ if(-not $Worker){
         try{& $Block|Out-Null}catch{return (& $module {param($e) Get-FastLlmBenchmarkFailureReason $e} $_)}
         return $null
     }
-    Check ((& $module {$script:FastLlmProducerVersion}) -eq 'vnext.3') 'the producer version constant is vnext.3'
+    Check ((& $module {$script:FastLlmProducerVersion}) -eq 'vnext.4') 'the producer version constant is vnext.4'
 
     # 1. a partial Vulkan enumeration never binds
     $partialEnum=New-FxUniqueSnapshot $domain0;$partialEnum.vulkanError=$true
@@ -511,6 +511,69 @@ if(-not $Worker){
     $okResolved=Resolve-Fx (New-FxUniqueSnapshot $domain0) (New-FxAdlx)
     & $module {param($r,$rec) Set-FastLlmBenchmarkBindingRecipeCrossCheck $r $rec|Out-Null} $okResolved (New-FxRecipe)
     Check ($okResolved.Binding.status -eq 'bound' -and $okResolved.Binding.recipeAdapterCrossCheck.status -eq 'agree' -and $null -ne $okResolved.Joined) 'an agreeing recipe leaves the binding bound'
+
+    # 2c. engine-reported serving device versus the bound adapter's D3DKMT address
+    function Get-ServingAgreement($Capture,$Resolved){& $module {param($c,$r) Test-FastLlmBenchmarkServingDeviceAgreement $c $r} $Capture $Resolved}
+    function Set-ServingCrossCheck($Resolved,$Capture){& $module {param($r,$c) Set-FastLlmBenchmarkBindingServingDeviceCrossCheck $r $c} $Resolved $Capture}
+    function New-FxCapture($Id='0000:03:00.0'){[pscustomobject]@{deviceInfo=@();usingDevice=@([pscustomobject]@{name='ROCm0';id=$Id;freeMiB=1;description='x'});usingDeviceLikeLines=1;usingDeviceMalformedLines=0;usingDeviceOverflow=$false}}
+    function New-FxServingBound(){Resolve-Fx (New-FxUniqueSnapshot $domain0) (New-FxAdlx)}
+    $servingMethod='engine-reported-pci-address-vs-d3dkmt-address'
+    $sAgree=Get-ServingAgreement (New-FxCapture) (New-FxServingBound)
+    Check ($sAgree.status -eq 'agree' -and $null -eq $sAgree.reason -and $sAgree.servedDeviceId -ceq '0000:03:00.0' -and $sAgree.method -ceq $servingMethod -and (@($sAgree.Keys) -join ',') -eq 'status,reason,servedDeviceId,method') 'an engine-reported address equal to the bound D3DKMT address agrees'
+    $sAgreeResolved=New-FxServingBound
+    Set-ServingCrossCheck $sAgreeResolved (New-FxCapture)|Out-Null
+    Check ($sAgreeResolved.Binding.status -eq 'bound' -and $sAgreeResolved.Binding.servingDeviceCrossCheck.status -eq 'agree' -and $null -ne $sAgreeResolved.Joined) 'an agreeing serving device leaves the binding bound and records the evidence'
+    $sBadResolved=New-FxServingBound
+    $sBadResolved.Binding.adapters[0].kmt.bus=4
+    $sBad=Get-ServingAgreement (New-FxCapture) $sBadResolved
+    Check ($sBad.status -eq 'mismatch' -and $sBad.reason -eq 'serving-device-mismatch' -and $sBad.servedDeviceId -ceq '0000:03:00.0') 'an engine-reported address that differs from the bound D3DKMT address is a mismatch'
+    Set-ServingCrossCheck $sBadResolved (New-FxCapture)|Out-Null
+    Check ($sBadResolved.Binding.status -eq 'ambiguous' -and $sBadResolved.Binding.reason -eq 'serving-device-mismatch' -and $sBadResolved.Binding.selection -eq 'unbound' -and $null -eq $sBadResolved.Binding.method -and $null -eq $sBadResolved.Joined -and $sBadResolved.Binding.servingDeviceCrossCheck.status -eq 'mismatch') 'a serving device mismatch makes the binding ambiguous with a typed reason and drops the joined device'
+    $sUnknownResolved=New-FxServingBound
+    $sUnknown=Get-ServingAgreement (New-FxCapture 'unknown') $sUnknownResolved
+    Check ($sUnknown.status -eq 'not-available' -and $sUnknown.reason -eq 'engine-reported-unknown-device-id' -and $sUnknown.servedDeviceId -ceq 'unknown') 'a Vulkan engine device id of unknown is not available'
+    Set-ServingCrossCheck $sUnknownResolved (New-FxCapture 'UNKNOWN')|Out-Null
+    Check ($sUnknownResolved.Binding.status -eq 'bound' -and $sUnknownResolved.Binding.servingDeviceCrossCheck.reason -eq 'engine-reported-unknown-device-id' -and $null -ne $sUnknownResolved.Joined) 'an unknown engine device id (any case) leaves the binding bound'
+    $sBound=New-FxServingBound
+    $sAbsent=Get-ServingAgreement $null $sBound
+    Check ($sAbsent.status -eq 'not-available' -and $sAbsent.reason -eq 'capture-absent' -and $null -eq $sAbsent.servedDeviceId) 'an absent capture is not available'
+    $sError=Get-ServingAgreement ([pscustomobject]@{error='IOException'}) $sBound
+    Check ($sError.status -eq 'not-available' -and $sError.reason -eq 'capture-error') 'a failed capture is not available'
+    $overflowCapture=New-FxCapture;$overflowCapture.usingDeviceOverflow=$true
+    $malformedCapture=New-FxCapture;$malformedCapture.usingDeviceMalformedLines=1
+    Check ((Get-ServingAgreement $overflowCapture $sBound).reason -eq 'capture-incomplete' -and (Get-ServingAgreement $overflowCapture $sBound).status -eq 'not-available') 'an overflowed capture is incomplete'
+    Check ((Get-ServingAgreement $malformedCapture $sBound).reason -eq 'capture-incomplete' -and (Get-ServingAgreement $malformedCapture $sBound).status -eq 'not-available') 'a capture with malformed lines is incomplete'
+    $emptyCapture=New-FxCapture;$emptyCapture.usingDevice=@()
+    $sEmpty=Get-ServingAgreement $emptyCapture $sBound
+    Check ($sEmpty.status -eq 'not-available' -and $sEmpty.reason -eq 'no-using-device' -and $null -eq $sEmpty.servedDeviceId) 'a capture without a using device is not available'
+    $twoCapture=New-FxCapture;$twoCapture.usingDevice=@([pscustomobject]@{name='ROCm0';id='0000:03:00.0'},[pscustomobject]@{name='ROCm1';id='0000:04:00.0'})
+    $sTwoResolved=New-FxServingBound
+    $sTwo=Get-ServingAgreement $twoCapture $sTwoResolved
+    Check ($sTwo.status -eq 'mismatch' -and $sTwo.reason -eq 'multiple-using-devices' -and $null -eq $sTwo.servedDeviceId) 'two engine devices cannot be attributed to one bound adapter'
+    Set-ServingCrossCheck $sTwoResolved $twoCapture|Out-Null
+    Check ($sTwoResolved.Binding.status -eq 'ambiguous' -and $sTwoResolved.Binding.reason -eq 'multiple-using-devices' -and $null -eq $sTwoResolved.Joined) 'multiple engine devices make the binding ambiguous'
+    $sGarbage=Get-ServingAgreement (New-FxCapture 'garbage') $sBound
+    Check ($sGarbage.status -eq 'not-available' -and $sGarbage.reason -eq 'served-device-id-unparsed' -and $sGarbage.servedDeviceId -ceq 'garbage') 'an unparseable engine device id is not available'
+    $nonString=New-FxCapture;$nonString.usingDevice[0].id=7
+    Check ((Get-ServingAgreement $nonString $sBound).reason -eq 'engine-reported-unknown-device-id' -and $null -eq (Get-ServingAgreement $nonString $sBound).servedDeviceId) 'a non-string engine device id is not available and not echoed'
+    $sDomain=Get-ServingAgreement (New-FxCapture '0001:03:00.0') $sBound
+    Check ($sDomain.status -eq 'not-available' -and $sDomain.reason -eq 'served-device-pci-domain-nonzero') 'a nonzero PCI domain is not comparable to a segment-less D3DKMT address'
+    $sUnboundResolved=Resolve-Fx (New-FxTwoAmdSnapshot)
+    $sUnboundStatus=$sUnboundResolved.Binding.status;$sUnboundReason=$sUnboundResolved.Binding.reason
+    $sUnbound=Get-ServingAgreement (New-FxCapture) $sUnboundResolved
+    Set-ServingCrossCheck $sUnboundResolved (New-FxCapture)|Out-Null
+    Check ($sUnbound.status -eq 'not-available' -and $sUnbound.reason -eq 'binding-not-bound' -and $sUnboundResolved.Binding.status -eq $sUnboundStatus -and $sUnboundStatus -ne 'bound' -and $sUnboundResolved.Binding.reason -eq $sUnboundReason -and $sUnboundResolved.Binding.servingDeviceCrossCheck.reason -eq 'binding-not-bound') 'an unbound binding is not checked and left unchanged'
+    $sNoKmtResolved=New-FxServingBound
+    $sNoKmtResolved.Binding.adapters[0].Remove('kmt')
+    $sNoKmt=Get-ServingAgreement (New-FxCapture) $sNoKmtResolved
+    Check ($sNoKmt.status -eq 'not-available' -and $sNoKmt.reason -eq 'bound-address-unavailable') 'a bound adapter without a D3DKMT address is not comparable'
+    $sUpperResolved=New-FxServingBound
+    $sUpperResolved.Binding.adapters[0].kmt.bus=10
+    $sUpper=Get-ServingAgreement (New-FxCapture '0000:0A:00.0') $sUpperResolved
+    Check ($sUpper.status -eq 'agree' -and $null -eq $sUpper.reason -and $sUpper.servedDeviceId -ceq '0000:0A:00.0') 'uppercase hex is parsed and compared as integers'
+    $fpA=New-FxServingBound;$fpB=New-FxServingBound
+    Set-ServingCrossCheck $fpA (New-FxCapture)|Out-Null;Set-ServingCrossCheck $fpB (New-FxCapture)|Out-Null
+    Check ((& $module {param($b) Get-FastLlmBenchmarkBindingFingerprint $b} $fpA.Binding) -ceq (& $module {param($b) Get-FastLlmBenchmarkBindingFingerprint $b} $fpB.Binding)) 'two identical bindings with the same agreeing capture produce equal fingerprints'
 
     # 3. host capture pre/post stability
     Set-Seam 'HostInventory' {New-FxHostInventory}
@@ -644,7 +707,7 @@ if(-not $Worker){
         [IO.File]::WriteAllText($failurePart,'partial sidecar')
         $doc=& $module {param($e,$p) New-FastLlmBenchmarkFailureReport $e 'post-timing' ('c'*64) @($p,($p+'.absent')) ([ordered]@{completedMeasuredSamples=3})} $failureError $failurePart
         $docJson=$doc|ConvertTo-Json -Depth 8
-        Check ($doc.status -eq 'failed' -and $doc.reason -eq 'binding-changed' -and $doc.stage -eq 'post-timing' -and $doc.errorClass -eq 'other' -and $doc.producer.version -eq 'vnext.3' -and $doc.partial.completedMeasuredSamples -eq 3) 'a failure report carries status, typed reason, stage and partial evidence'
+        Check ($doc.status -eq 'failed' -and $doc.reason -eq 'binding-changed' -and $doc.stage -eq 'post-timing' -and $doc.errorClass -eq 'other' -and $doc.producer.version -eq 'vnext.4' -and $doc.partial.completedMeasuredSamples -eq 3) 'a failure report carries status, typed reason, stage and partial evidence'
         Check ($docJson -notmatch 'SENTINEL' -and $doc.sidecars[0].exists -eq $true -and $doc.sidecars[0].sha256 -eq (Get-FileHash -LiteralPath $failurePart -Algorithm SHA256).Hash.ToLowerInvariant() -and $doc.sidecars[1].exists -eq $false) 'the failure report binds sidecars by SHA-256 and carries no exception text'
     } finally { Remove-Item -LiteralPath $failurePart -Force -ErrorAction SilentlyContinue }
     $plainError=$null
@@ -1210,7 +1273,7 @@ try{
     Check ($report.binding.status -eq 'bound' -and $report.binding.snapshots.agree -eq $true -and $report.binding.snapshots.pre.fingerprintSha256 -eq $report.binding.snapshots.post.fingerprintSha256 -and $global:Fx.snapshotCalls -eq 2) 'the identity join runs before and after the window and agrees'
     Check ($report.binding.adlx.status -eq 'unknown' -and $report.telemetry.status -eq 'unknown' -and $report.telemetry.reason -eq 'not-configured' -and $global:Fx.telemetryStarts -eq 0) 'without ADLX the run proceeds with unknown ADLX facts and no telemetry'
     Check ($report.PSObject.Properties['hardwareIdentity'] -eq $null -and $report.hardwareIdentityOmitted.reason -eq 'pci-segment-unknown') 'hardwareIdentity is omitted with its reason when the PCI segment is not proven'
-    Check ($report.producer.version -eq 'vnext.3' -and $report.hostCaptureStability.status -eq 'stable' -and (@($report.hostCaptureStability.comparedFields) -join ',') -eq 'powerPlan,cpuTopology,smbiosMemory,boardBios') 'the report carries the producer version and the host capture stability result'
+    Check ($report.producer.version -eq 'vnext.4' -and $report.hostCaptureStability.status -eq 'stable' -and (@($report.hostCaptureStability.comparedFields) -join ',') -eq 'powerPlan,cpuTopology,smbiosMemory,boardBios') 'the report carries the producer version and the host capture stability result'
     Check ($report.binding.recipeAdapterCrossCheck.status -eq 'not-checked' -and $report.binding.recipeAdapterCrossCheck.reason -eq 'recipe-adapter-count-not-one') 'the binding records the recipe adapter cross-check even when it cannot run'
     Check ($report.producer.name -eq 'fastllm-benchmark-vnext' -and $report.producer.sourceSha256 -eq (Get-FileHash -LiteralPath (Join-Path $repo 'src/FastLlm.Benchmark.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'the producer is identified by its source SHA-256'
     Check ((Get-RequestCount)-$before -eq 13) 'v-next makes exactly one tokenize call plus 12 completions (no extra server calls)'
@@ -1461,7 +1524,7 @@ try{
     $r2=$run.Report
     $hashNames=@($r2.producer.inputSha256.PSObject.Properties|ForEach-Object Name)
     $classNames=@($r2.producer.inputClassification.PSObject.Properties|ForEach-Object Name)
-    Check ($r2.producer.version -eq 'vnext.3' -and $hashNames.Count -eq 31 -and $classNames.Count -eq 31 -and (($hashNames -join ',') -ceq ($classNames -join ',')) -and @($hashNames|Where-Object {$r2.producer.inputSha256.$_ -notmatch '^[0-9a-f]{64}$'}).Count -eq 0) 'the report lists 31 input hashes and classifies every one'
+    Check ($r2.producer.version -eq 'vnext.4' -and $hashNames.Count -eq 31 -and $classNames.Count -eq 31 -and (($hashNames -join ',') -ceq ($classNames -join ',')) -and @($hashNames|Where-Object {$r2.producer.inputSha256.$_ -notmatch '^[0-9a-f]{64}$'}).Count -eq 0) 'the report lists 31 input hashes and classifies every one'
     Check ($r2.producer.inputClassification.'src/ProcessHost.cs' -eq 'identity' -and $r2.producer.inputClassification.'tools/collect-vulkan-luid-join.ps1' -eq 'identity' -and $r2.producer.inputClassification.'src/FastLlm.psm1' -eq 'runtime' -and $r2.producer.inputClassification.'src/WindowsInventory.ps1' -eq 'runtime' -and $r2.producer.inputClassification.'src/FastLlm.FileReplace.ps1' -eq 'runtime' -and $r2.producer.inputClassification.'tools/benchmark.ps1' -eq 'runtime' -and $r2.producer.inputSha256.'tools/benchmark.ps1' -match '^[0-9a-f]{64}$') 'the report classifies collectors and C# as identity, the module scripts and the tools/benchmark.ps1 entry script as runtime, and pins tools/benchmark.ps1'
     $nameEvidence=$r2.binding.recipeAdapterCrossCheck.name
     Check ($nameEvidence.status -eq 'agree' -and $nameEvidence.recipe -ceq 'amd radeon rx 7900 xtx' -and $nameEvidence.bound -ceq 'amd radeon rx 7900 xtx' -and $nameEvidence.recipeRaw -ceq 'AMD Radeon RX 7900 XTX' -and $nameEvidence.boundRaw -ceq 'AMD Radeon RX 7900 XTX') 'name.recipe and name.bound are both normalized, with the raw strings kept in separate fields'
