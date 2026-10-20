@@ -55,7 +55,7 @@ $out=TempPath
 try{
     $report=Invoke-FastLlmSemanticSmokeCore -OutputPath $out -ReadState {$hipState} -CheckProcess {param($State)} -AcceptedLanes $bothLanes `
       -Request {param($Path,$Body,$TimeoutMs) $script:requests++;[pscustomobject]@{Status=200;Body=(@{choices=@(@{finish_reason='stop';message=@{role='assistant';content=$script:answers[$script:requests-1]}});usage=@{completion_tokens=4}}|ConvertTo-Json -Depth 8)}}
-    Check ($report.passed -eq 3 -and $report.failed -eq 0 -and -not $report.aborted -and $report.engineVersion -ceq 'b11658') 'HIP state did not pass the three fixed cases with the HIP lane enabled.'
+    Check ($report.passed -eq 3 -and $report.failed -eq 0 -and -not $report.aborted -and $report.engineVersion -ceq 'b11658' -and $report.backend -ceq 'hip') 'HIP state did not pass the three fixed cases with the HIP lane enabled.'
 }finally{if(Test-Path $out){Remove-Item -LiteralPath $out -Force}}
 $script:requests=0
 $out=TempPath
@@ -73,6 +73,7 @@ try{
         -Request {param($Path,$Body,$TimeoutMs) $script:requests++; if($Path -cne '/v1/chat/completions' -or $Body.model -cne 'qwen-test' -or $Body.temperature -ne 0 -or $Body.seed -ne 42 -or $Body.stream -ne $false -or $Body.cache_prompt -ne $false -or $Body.chat_template_kwargs.enable_thinking -ne $false -or $TimeoutMs -gt 60000){throw 'Unexpected semantic request.'};
             [pscustomobject]@{Status=200;Body=(@{choices=@(@{finish_reason='stop';message=@{role='assistant';content=$script:answers[$script:requests-1]}});usage=@{completion_tokens=4}}|ConvertTo-Json -Depth 8)}}
     Check ($report.cases.Count -eq 3 -and $report.passed -eq 3 -and $report.failed -eq 0) 'Three fixed semantic cases did not pass.'
+    Check ($report.backend -ceq 'Vulkan') 'Smoke report did not carry the serving backend.'
     Check ($script:requests -eq 3 -and $script:checks -ge 7) 'Each request lacked a process check before and after.'
     Check ($report.qualification.semanticQualified -eq $false -and $report.qualification.performanceQualified -eq $false) 'Smoke report claimed qualification.'
     $bytes=[IO.File]::ReadAllText($out)

@@ -1,5 +1,5 @@
 # Update check: versions, settings, ETag, a 24 h limit and channels.
-# Dot-sourced by the entry scripts only; NEVER by FastLlm.psm1 (the producer stays vnext.3 with 31 inputs).
+# Dot-sourced by the entry scripts only; NEVER by FastLlm.psm1 (the producer stays vnext.4 with 31 inputs).
 # Silent on failure: a failed check never writes state and never throws.
 Set-StrictMode -Version 2.0
 

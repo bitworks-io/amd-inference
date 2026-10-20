@@ -89,6 +89,8 @@ try {
         # Synthetic HIP-shaped state: the producer must pass engine and backend through verbatim.
         $state.engineVersion='b11658'
         $state.recipe=@{contextSize=256;backend='hip';requestedArguments=@('mock-argument');adapters=@(@{device='ROCm0';name='Synthetic AMD GPU';vramMiB=16384})}
+        $state.engine=@{backend='hip';version='b11658';componentId='synthetic-hip-component'}
+        $state.serverDeviceListCapture=@{deviceInfo=@();usingDevice=@(@{name='ROCm0';id='0000:03:00.0';freeMiB=16000;description='Synthetic AMD GPU'});usingDeviceLikeLines=1;usingDeviceMalformedLines=0;usingDeviceOverflow=$false}
     }
     Write-FastLlmState -InstallRoot $installRoot -State $state
     $errorText=$null
@@ -100,8 +102,11 @@ try {
         $report=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         $raw=Get-Content -LiteralPath $reportPath -Raw
         Assert-Test ($report.schemaVersion -eq 1 -and $report.resultKind -eq 'native-windows-api-benchmark-not-full-qualification' -and -not $report.qualification.approved) 'report remains unqualified native benchmark v1'
+        Assert-Test ($null -ne $report.PSObject.Properties['engine']) 'success report carries the engine block'
         if ($CaseName -eq 'hip-state') {
             Assert-Test ($report.engineVersion -ceq 'b11658' -and $report.recipe.backend -ceq 'hip') 'report carries HIP engineVersion and recipe.backend verbatim'
+            Assert-Test ($report.engine.backend -ceq 'hip' -and $report.engine.version -ceq 'b11658' -and $report.engine.componentId -ceq 'synthetic-hip-component') 'report engine block is copied from the state engine'
+            Assert-Test (@('agree','mismatch','not-available') -contains $report.binding.servingDeviceCrossCheck.status) 'report binding carries the serving device cross-check (not-available expected on a runner without an AMD adapter)'
         }
         Assert-Test ($report.samples.Count -eq 10 -and $report.summary.Count -eq 2) 'warmups discarded, five repetitions retained per prompt'
         Assert-Test ($raw -notmatch 'synthetic-completion-text-SECRET|A local inference system|"prompt"\s*:|"content"\s*:|"tokens"\s*:') 'report excludes prompt/completion text and token arrays'

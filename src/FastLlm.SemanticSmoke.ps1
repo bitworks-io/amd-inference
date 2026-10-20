@@ -219,7 +219,7 @@ function Invoke-FastLlmSemanticSmokeCore {
     $report=[ordered]@{
         schemaVersion=1;resultKind='native-windows-semantic-smoke-experiment';recordedAt=(Get-Date).ToUniversalTime().ToString('o')
         runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256
-        engineVersion=$first.engineVersion;engineSha256=$first.recipe.engineSha256;catalogSha256=$first.recipe.catalogSha256
+        engineVersion=$first.engineVersion;backend=[string]$first.recipe.backend;engineSha256=$first.recipe.engineSha256;catalogSha256=$first.recipe.catalogSha256
         endpoint=$first.endpoint;contextSize=[int]$first.recipe.contextSize;evidenceBindingSha256=$binding
         sourceProvenance=@{semanticSmokeSha256=$sourceSha;scope='on-disk SHA-256 checked at start/end; loaded-code identity is not attested'}
         methodology=@{caseSet='fastllm-fixed-semantic-smoke-v1';sampling='temperature-0-seed-42';thinkingRequested=$false;prefixCache=$false;
