@@ -75,7 +75,7 @@ Use Windows Settings, Apps, FastLLM. Downloaded models and engines are kept unle
 
 ## Optional ADLX probe
 
-An optional component adds the card's PCI identity, PCIe link and in-run telemetry to benchmark reports. It is available from release `adlx-probe-v1`; install it with `fast-llm.ps1 components -Install bitworks-adlx-probe`, which asks you to accept its license. It is not Apache-2.0 (see `licenses/adlx-probe/EULA.md`) and is not installed by default. `tools/benchmark.ps1` uses it when it is installed and verified; `-NoAdlxProbe` turns that off.
+An optional component adds the card's PCI identity, PCIe link and in-run telemetry to benchmark reports. It is available from release `adlx-probe-v3`; install it with `fast-llm.ps1 components -Install bitworks-adlx-probe`, which asks you to accept its license. It is not Apache-2.0 (see `licenses/adlx-probe/EULA.md`) and is not installed by default. `tools/benchmark.ps1` uses it when it is installed and verified; `-NoAdlxProbe` turns that off.
 
 ## Building from source and tests
 

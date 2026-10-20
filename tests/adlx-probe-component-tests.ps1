@@ -8,6 +8,7 @@ Set-StrictMode -Version 2
 $repo = Split-Path $PSScriptRoot -Parent
 $modulePath = Join-Path $repo 'src/FastLlm.psm1'
 Import-Module $modulePath -Force
+. (Join-Path $repo 'src/FastLlm.UiFlow.ps1')
 $script:checks = 0
 function Check([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
@@ -183,6 +184,17 @@ try {
 
     $runOff = Invoke-BenchmarkScript $viaScript @('-NoAdlxProbe')
     Check ($null -ne $runOff.Record -and -not [bool] $runOff.Record.pathBound -and -not [bool] $runOff.Record.shaBound -and $runOff.Output -notmatch 'Using the installed ADLX probe') '-NoAdlxProbe disables discovery'
+
+    # The shipped entry (the real config/components.json): it loads, is a tool with its executable in the pinned file list, and its license links pass the UI gate.
+    $shippedProbe = @(Get-FastLlmComponents -ComponentsPath (Join-Path $repo 'config/components.json') | Where-Object { [string] $_.id -ceq 'bitworks-adlx-probe' })
+    Check ($shippedProbe.Count -eq 1 -and [string] $shippedProbe[0].kind -ceq 'tool') 'shipped: bitworks-adlx-probe loads as a tool'
+    $shippedManifest = @($shippedProbe[0].source.fileManifest)
+    Check ([string] $shippedProbe[0].entryPoint -ceq $exeName -and @($shippedManifest | Where-Object { [string] $_.path -ceq $exeName }).Count -eq 1) 'shipped: the entry point is in the pinned file list'
+    Check ([string] (@($shippedManifest | Where-Object { [string] $_.path -ceq $exeName })[0].sha256) -ceq 'f53e3eebbf97de5bc8de97fbcbb357df83b71c16579be761d7567c0935cc2766') 'shipped: the executable is pinned to the released hash'
+    Check ([string] $shippedProbe[0].license.consent -ceq 'accept' -and @($shippedProbe[0].license.links).Count -eq 2) 'shipped: the license needs acceptance and lists two links'
+    foreach ($link in @($shippedProbe[0].license.links)) {
+        Check ($null -ne (Get-FastLlmUiSafeLicenseUrl -Url ([string] $link.url))) "shipped: the license link '$($link.title)' passes the UI safety gate"
+    }
 
     Write-Host "All $script:checks checks passed."
 }
