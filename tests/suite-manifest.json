@@ -7,6 +7,11 @@
       "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
+      "suite": "adlx-probe-component-tests",
+      "class": "ci",
+      "reason": "Tool-component discovery over fixtures built at test time plus tools/benchmark.ps1 against a stub producer in a child host; no network, no elevation, no Radeon adapter; wired in test.yml."
+    },
+    {
       "suite": "arithmetic-diagnostic-tests",
       "class": "ci",
       "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."

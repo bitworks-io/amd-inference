@@ -2131,7 +2131,7 @@ function Get-FastLlmComponents {
         }
         $label = "Component '$itemId'"
         $itemKind = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'kind' -Label $label)
-        if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft')) {
+        if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft', 'tool')) {
             throw "$label has an unsupported kind '$itemKind'."
         }
         $itemVersion = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)
@@ -2480,6 +2480,54 @@ function Test-FastLlmComponentVerifiedFull {
     $verdict = [bool] (Test-FastLlmComponentInstallation -InstallRoot $InstallRoot -Component $Component -Depth Full)
     if ($verdict -and $key) { $script:FastLlmFullVerdictMemo[$key] = $true }
     return $verdict
+}
+
+# An installed, fully verified standalone tool component (kind 'tool'): its executable path and the pinned SHA-256 of that file, or $null.
+# $null when the component is not listed, is not a tool, is not installed, has no executable to name, or does not pass the Full check (size and
+# SHA-256 of every file). Never downloads, never installs and never throws for a missing or changed install.
+function Get-FastLlmInstalledToolComponent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Id,
+
+        [Parameter(Mandatory = $true)]
+        [string] $InstallRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ComponentsPath,
+
+        # The executable's manifest path; the component's entryPoint when omitted.
+        [string] $ExecutableName
+    )
+
+    try {
+        $entry = $null
+        foreach ($candidate in @(Get-FastLlmComponents -ComponentsPath $ComponentsPath)) {
+            if ([string] $candidate.id -ceq $Id) { $entry = $candidate }
+        }
+        if ($null -eq $entry -or [string] $entry.kind -cne 'tool') { return $null }
+        if ([string]::IsNullOrWhiteSpace($ExecutableName)) {
+            $entryPointProperty = $entry.PSObject.Properties['entryPoint']
+            if ($null -eq $entryPointProperty -or [string]::IsNullOrWhiteSpace([string] $entryPointProperty.Value)) { return $null }
+            $ExecutableName = [string] $entryPointProperty.Value
+        }
+        $root = Get-FastLlmComponentRoot -InstallRoot $InstallRoot -Component $entry
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
+        $manifestEntry = $null
+        foreach ($candidateFile in @((Get-FastLlmComponentManifestAsset -Component $entry).manifest)) {
+            if ([string] $candidateFile.path -ceq $ExecutableName) { $manifestEntry = $candidateFile }
+        }
+        if ($null -eq $manifestEntry) { return $null }
+        if (-not (Test-FastLlmComponentVerifiedFull -InstallRoot $InstallRoot -Component $entry)) { return $null }
+        return [pscustomobject] [ordered] @{
+            id      = [string] $entry.id
+            version = [string] $entry.version
+            path    = [System.IO.Path]::GetFullPath((Join-FastLlmContainedPath -Root $root -Child $ExecutableName -Label 'Tool component executable'))
+            sha256  = ([string] $manifestEntry.sha256).ToLowerInvariant()
+        }
+    }
+    catch { return $null }
 }
 
 function Get-FastLlmComponentConsentPath {
@@ -3782,6 +3830,7 @@ Export-ModuleMember -Function @(
     'Get-FastLlmComponentLicenseLinks',
     'Install-FastLlmComponent',
     'Get-FastLlmComponentInventory',
+    'Get-FastLlmInstalledToolComponent',
     'Remove-FastLlmComponent',
     'New-FastLlmTypedFailure',
     'Install-FastLlmModel',

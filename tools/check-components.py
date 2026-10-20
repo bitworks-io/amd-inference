@@ -5,7 +5,7 @@ Shape (spec 2.1):
   { "schema": "bitworks.fastllm-components/v1", "components": [ Component, ... ] }
   Component = {
     "id": str                       # ^[a-z0-9][a-z0-9.\\-]{1,120}$, unique
-    "kind": "engine"|"runtime"|"model"|"draft",
+    "kind": "engine"|"runtime"|"model"|"draft"|"tool",
     "displayName": str, "version": str,
     "source": { "url": https url, "allowedRedirectHosts": [host, ...], "sha256": 64 hex, "sizeBytes": int > 0,
                 "format": "zip"|"zip-tree"|"gguf"|"vendor-installer",
@@ -17,7 +17,7 @@ Shape (spec 2.1):
                  "links": [ { "title", "url": https url }, ... ] },     # every consent needs url or links
     "platform": { "os": "windows", "arch": "x64", "backend": str },
     "adapter": str,                 # engine only
-    "entryPoint": str,              # engine only; must be a fileManifest path
+    "entryPoint": str,              # engine and tool; must be a fileManifest path (a tool: its executable)
     "requires": [component id, ...],
     "signer": str|null              # expected Authenticode publisher
   }
@@ -36,7 +36,7 @@ SCHEMA = "bitworks.fastllm-components/v1"
 ID_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{1,120}")
 RESERVED_RE = re.compile(r"(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?", re.IGNORECASE)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
-KINDS = ("engine", "runtime", "model", "draft")
+KINDS = ("engine", "runtime", "model", "draft", "tool")
 FORMATS = ("zip", "zip-tree", "gguf", "vendor-installer")
 MAX_CHAIN_DEPTH = 4
 CONSENTS = ("show", "accept")
@@ -266,6 +266,15 @@ def check_component(comp, errors):
         entry = comp.get("entryPoint")
         if not is_str(entry):
             errors.append(f"{label}: an engine needs an entryPoint")
+        elif entry not in manifest_paths:
+            errors.append(f"{label}: entryPoint {entry!r} is not in the fileManifest")
+    if comp["kind"] == "tool":
+        # A standalone verified binary: it names its executable, and has no engine role (no adapter) and no runtime path dirs.
+        if "adapter" in comp:
+            errors.append(f"{label}: a tool has no adapter")
+        entry = comp.get("entryPoint")
+        if not is_str(entry):
+            errors.append(f"{label}: a tool needs an entryPoint (its executable)")
         elif entry not in manifest_paths:
             errors.append(f"{label}: entryPoint {entry!r} is not in the fileManifest")
 

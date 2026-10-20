@@ -261,5 +261,35 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(self.errors(comp("aa", [part(["bin/a.dll"])], path_dirs=["BIN"])), [])
 
 
+
+# ---- kind "tool": a standalone verified binary ----
+def tool(**over):
+    out = comp("probe-tool", [part(["probe.exe", "EULA.txt"], fmt="zip", prefix=None)], kind="tool")
+    out["entryPoint"] = "probe.exe"
+    out["requires"] = []
+    out.update(over)
+    return out
+
+
+class ToolKindTests(unittest.TestCase):
+    def errors(self, *components):
+        return cc.validate(with_base(*components), CATALOG)
+
+    def test_valid_tool(self):
+        self.assertEqual(self.errors(tool()), [])
+
+    def test_tool_needs_an_entry_point_in_the_manifest(self):
+        bad = tool(); del bad["entryPoint"]
+        self.assertTrue(any("tool needs an entryPoint" in e for e in self.errors(bad)))
+        self.assertTrue(any("not in the fileManifest" in e for e in self.errors(tool(entryPoint="other.exe"))))
+
+    def test_tool_has_no_adapter_or_runtime_path_dirs(self):
+        self.assertTrue(any("tool has no adapter" in e for e in self.errors(tool(adapter="llama.cpp"))))
+        self.assertTrue(any("only for runtime" in e for e in self.errors(tool(runtimePathDirs=["bin"]))))
+
+    def test_unknown_kind_is_still_refused(self):
+        self.assertTrue(any("kind must be one of" in e for e in self.errors(tool(kind="plugin"))))
+
+
 if __name__ == "__main__":
     unittest.main()

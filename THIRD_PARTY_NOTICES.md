@@ -52,3 +52,10 @@ Microsoft and runs it only when the user clicks. The runtime is licensed by Micr
 
 The Windows installer is built with Inno Setup (https://jrsoftware.org/isinfo.php), Copyright (C) 1997-2026 Jordan Russell
 and Martijn Laan, used under the Inno Setup License (https://jrsoftware.org/files/is/license.txt).
+
+## ADLX probe (optional component)
+
+- What it is: `adlx-identity-vram.exe`, Bitworks' read-only collector of a card's PCI identity, PCIe link and in-run telemetry, built from `tools/adlx-identity-vram.c` against the AMD ADLX SDK at the pinned commit `32b5a740d42295c5dfe9026b9f52683da0f3af91`. It is an optional component, installed only after the user accepts its license.
+- License: Bitworks distributes this one binary in object code only, under the probe license in `licenses/adlx-probe/EULA.md`. It is not covered by the Apache License 2.0. AMD is a third-party beneficiary of that license.
+- AMD ADLX SDK: licensed by AMD under its ADLX SDK License Agreement (<https://github.com/GPUOpen-LibrariesAndSDKs/ADLX/blob/32b5a740d42295c5dfe9026b9f52683da0f3af91/ADLX%20SDK%20License%20Agreement.pdf>). FastLLM does not redistribute the SDK or its headers.
+- At run time the probe uses the ADLX library installed by the AMD driver (`amdadlx64.dll`), which FastLLM does not ship.

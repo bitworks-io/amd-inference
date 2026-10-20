@@ -1,0 +1,202 @@
+name: adlx-probe
+
+# Builds, signs and publishes the optional ADLX probe component (adlx-identity-vram.exe) as a pre-release.
+# Separate from the FastLLM release: its hashes are pinned in config/components.json by a later, ordinary change.
+on:
+  push:
+    tags: ['adlx-probe-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adlx-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Zig 0.16.0 for x86_64 Linux, from https://ziglang.org/download/index.json.
+  ZIG_URL: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+  ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+  # The reproducible build of tools/adlx-identity-vram.c against the pinned AMD ADLX SDK (tools/build-adlx-identity-vram.sh).
+  # A change to the C source or the build changes this value; update it in the same change.
+  EXPECTED_UNSIGNED_SHA256: 301c01b1b647994441fe7f522f288342a19499dd6b26338a1b174495157507cb
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      number: ${{ steps.meta.outputs.number }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve the probe number from the tag
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ] || ! [[ "$REF_NAME" =~ ^adlx-probe-v([1-9][0-9]{0,3})$ ]]; then
+            echo "The tag '$REF_NAME' is not adlx-probe-v<N> with N from 1 to 9999." >&2
+            exit 1
+          fi
+          echo "number=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+      - name: Install the pinned Zig
+        run: |
+          set -euo pipefail
+          curl -fLsS --retry 2 --max-time 300 -o "$RUNNER_TEMP/zig.tar.xz" "$ZIG_URL"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/zig"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "ZIG_BIN=$RUNNER_TEMP/zig/zig" >> "$GITHUB_ENV"
+      - name: Build the unsigned probe and check its hash
+        run: |
+          set -euo pipefail
+          bash tools/build-adlx-identity-vram.sh "$ZIG_BIN" | tee "$RUNNER_TEMP/build.log"
+          build_dir="$(sed -n 's/^Private build directory: //p' "$RUNNER_TEMP/build.log")"
+          actual="$(sha256sum "$build_dir/adlx-identity-vram.exe" | awk '{print $1}')"
+          if [ "$actual" != "$EXPECTED_UNSIGNED_SHA256" ]; then
+            echo "Unsigned adlx-identity-vram.exe is $actual, expected $EXPECTED_UNSIGNED_SHA256." >&2
+            exit 1
+          fi
+          mkdir unsigned
+          cp "$build_dir/adlx-identity-vram.exe" unsigned/adlx-identity-vram.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned
+          path: unsigned/adlx-identity-vram.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NUMBER: ${{ needs.build.outputs.number }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_CERTIFICATE: ${{ secrets.AZURE_SIGNING_CERTIFICATE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require signing secrets
+        if: ${{ env.AZURE_CLIENT_ID == '' }}
+        shell: pwsh
+        run: |
+          Write-Error 'AZURE_CLIENT_ID is not set: refusing to produce an unsigned release.'
+          exit 1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned
+          path: ${{ runner.temp }}/in
+      - name: Re-verify the unsigned hash
+        shell: pwsh
+        run: |
+          $actual = (Get-FileHash -LiteralPath (Join-Path $env:RUNNER_TEMP 'in/adlx-identity-vram.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:EXPECTED_UNSIGNED_SHA256) {
+            Write-Error "The downloaded unsigned adlx-identity-vram.exe is $actual, expected $env:EXPECTED_UNSIGNED_SHA256."
+            exit 1
+          }
+      - name: Azure login (OIDC)
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign the probe
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ secrets.AZURE_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_CERTIFICATE }}
+          files: ${{ runner.temp }}\in\adlx-identity-vram.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          cache-dependencies: false
+          exclude-environment-credential: true
+          exclude-azure-cli-credential: false
+      - name: Verify the signature
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $env:RUNNER_TEMP 'in/adlx-identity-vram.exe')
+          $subject = ''
+          if ($signature.SignerCertificate) { $subject = [string] $signature.SignerCertificate.Subject }
+          Write-Host "Signature status: $($signature.Status); signer: $subject"
+          if ([string] $signature.Status -ne 'Valid' -or -not $subject.Contains('Bitworks LLC')) {
+            Write-Error 'adlx-identity-vram.exe does not carry a valid Bitworks LLC signature.'
+            exit 1
+          }
+      - name: Build the probe zip and checksums
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          $assets = Join-Path $env:RUNNER_TEMP 'assets'
+          New-Item -ItemType Directory -Path $stage, $assets -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'in/adlx-identity-vram.exe') -Destination (Join-Path $stage 'adlx-identity-vram.exe')
+          Copy-Item -LiteralPath 'licenses/adlx-probe/EULA.md' -Destination (Join-Path $stage 'EULA.txt')
+          $notice = @(
+            'FastLLM ADLX probe (adlx-identity-vram.exe)',
+            'Copyright 2026 Bitworks LLC',
+            '',
+            'This program is distributed by Bitworks LLC in object code only, under the license in EULA.txt. It is not covered by the Apache License 2.0.',
+            'It is built with the AMD ADLX SDK at commit 32b5a740d42295c5dfe9026b9f52683da0f3af91, which is licensed by AMD under its ADLX SDK License Agreement and is not redistributed.',
+            'At run time it uses the ADLX library installed by the AMD driver (amdadlx64.dll), which is not included.',
+            ''
+          ) -join "`n"
+          [System.IO.File]::WriteAllText((Join-Path $stage 'NOTICE.txt'), $notice, (New-Object System.Text.UTF8Encoding($false)))
+          $zip = Join-Path $assets "adlx-probe-$env:NUMBER.zip"
+          Compress-Archive -LiteralPath (Join-Path $stage 'adlx-identity-vram.exe'), (Join-Path $stage 'EULA.txt'), (Join-Path $stage 'NOTICE.txt') -DestinationPath $zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try { $members = @($archive.Entries | ForEach-Object { $_.FullName } | Sort-Object) } finally { $archive.Dispose() }
+          if (($members -join '|') -ne 'EULA.txt|NOTICE.txt|adlx-identity-vram.exe') {
+            Write-Error "Unexpected zip members: $($members -join ', ')"
+            exit 1
+          }
+          $lines = @(
+            ('{0}  {1}' -f (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant(), "adlx-probe-$env:NUMBER.zip"),
+            ('{0}  {1}' -f (Get-FileHash -LiteralPath (Join-Path $stage 'adlx-identity-vram.exe') -Algorithm SHA256).Hash.ToLowerInvariant(), 'adlx-identity-vram.exe')
+          )
+          [System.IO.File]::WriteAllText((Join-Path $assets 'SHA256SUMS'), (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          Get-Content -LiteralPath (Join-Path $assets 'SHA256SUMS')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: probe-assets
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      NUMBER: ${{ needs.build.outputs.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: probe-assets
+          path: assets
+      - name: Create the GitHub pre-release
+        run: |
+          set -euo pipefail
+          cat > notes.md <<NOTES
+          The FastLLM ADLX probe, version $NUMBER: a small read-only program that reads the card's PCI identity, PCIe link and in-run telemetry from the AMD driver for FastLLM benchmark reports.
+
+          - It is optional. FastLLM does not install it by default.
+          - FastLLM installs it only through its component consent: FastLLM shows its license and asks you to accept it first.
+          - It is licensed under the probe EULA (EULA.txt in the zip, licenses/adlx-probe/EULA.md in the repository), not under the Apache License 2.0.
+          - The zip holds the Authenticode-signed adlx-identity-vram.exe, EULA.txt and NOTICE.txt. SHA256SUMS lists the zip and the signed executable.
+          NOTES
+          gh release create "$TAG" assets/adlx-probe-"$NUMBER".zip assets/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "FastLLM ADLX probe v$NUMBER" --notes-file notes.md
