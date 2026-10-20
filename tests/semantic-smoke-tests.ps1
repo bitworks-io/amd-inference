@@ -19,6 +19,52 @@ $script:state=[pscustomobject]@{
     recipe=[pscustomobject]@{backend='Vulkan';contextSize=8192;slots=1;engineSha256=('b'*64);catalogSha256=('c'*64);
         requestedArguments=@('--host','127.0.0.1','--port','8080','--alias','qwen-test','--ctx-size','8192','--parallel','1')}
 }
+function New-HipState([string]$Engine='b11658',[string]$Backend='hip',[string[]]$Devices=@('ROCm0')){
+    $copy=$script:state|ConvertTo-Json -Depth 8|ConvertFrom-Json
+    $copy.engineVersion=$Engine;$copy.recipe.backend=$Backend;$copy.placement.devices=@($Devices)
+    return $copy
+}
+$bothLanes=@('vulkan-b10698','hip-b11658')
+Check ([bool](Assert-FastLlmSemanticSmokeState $script:state)) 'Vulkan state rejected with default lanes.'
+Check ([bool](Assert-FastLlmSemanticSmokeState $script:state -AcceptedLanes $bothLanes)) 'Vulkan state rejected with both lanes.'
+Check ([bool](Assert-FastLlmSemanticSmokeState (New-HipState) -AcceptedLanes $bothLanes)) 'Synthetic HIP state rejected with HIP lane enabled.'
+Check ([bool](Assert-FastLlmSemanticSmokeState (New-HipState) -AcceptedLanes @('hip-b11658'))) 'Synthetic HIP state rejected with HIP lane only.'
+$negatives=[ordered]@{
+    'HIP state, default lanes'=@{state=(New-HipState);lanes=@('vulkan-b10698')}
+    'b11658 with Vulkan backend'=@{state=(New-HipState 'b11658' 'Vulkan' @('Vulkan0'));lanes=$bothLanes}
+    'b10698 with hip backend'=@{state=(New-HipState 'b10698' 'hip');lanes=$bothLanes}
+    'backend upper-case HIP'=@{state=(New-HipState 'b11658' 'HIP');lanes=$bothLanes}
+    'backend title-case Hip'=@{state=(New-HipState 'b11658' 'Hip');lanes=$bothLanes}
+    'b9999 with hip backend'=@{state=(New-HipState 'b9999' 'hip');lanes=$bothLanes}
+    'HIP state with Vulkan device'=@{state=(New-HipState 'b11658' 'hip' @('Vulkan0'));lanes=$bothLanes}
+    'HIP state with mixed devices'=@{state=(New-HipState 'b11658' 'hip' @('ROCm0','Vulkan0'));lanes=$bothLanes}
+    'Vulkan state with ROCm device'=@{state=(New-HipState 'b10698' 'Vulkan' @('ROCm0'));lanes=$bothLanes}
+    'Vulkan state, HIP lane only'=@{state=$script:state;lanes=@('hip-b11658')}
+}
+foreach($name in $negatives.Keys){
+    $threw=$false
+    try{$null=Assert-FastLlmSemanticSmokeState $negatives[$name].state -AcceptedLanes $negatives[$name].lanes}catch{$threw=$true}
+    Check $threw "State check accepted: $name."
+}
+$threw=$false
+try{$null=Assert-FastLlmSemanticSmokeState $script:state -AcceptedLanes @('unknown-lane')}catch{$threw=$true}
+Check $threw 'Unknown lane name was accepted.'
+$hipState=New-HipState
+$script:answers=@('12','{"name":"Ada","age":37}','READY');$script:requests=0
+$out=TempPath
+try{
+    $report=Invoke-FastLlmSemanticSmokeCore -OutputPath $out -ReadState {$hipState} -CheckProcess {param($State)} -AcceptedLanes $bothLanes `
+      -Request {param($Path,$Body,$TimeoutMs) $script:requests++;[pscustomobject]@{Status=200;Body=(@{choices=@(@{finish_reason='stop';message=@{role='assistant';content=$script:answers[$script:requests-1]}});usage=@{completion_tokens=4}}|ConvertTo-Json -Depth 8)}}
+    Check ($report.passed -eq 3 -and $report.failed -eq 0 -and -not $report.aborted -and $report.engineVersion -ceq 'b11658') 'HIP state did not pass the three fixed cases with the HIP lane enabled.'
+}finally{if(Test-Path $out){Remove-Item -LiteralPath $out -Force}}
+$script:requests=0
+$out=TempPath
+$threw=$false
+try{
+    $null=Invoke-FastLlmSemanticSmokeCore -OutputPath $out -ReadState {$hipState} -CheckProcess {param($State)} `
+      -Request {param($Path,$Body,$TimeoutMs) $script:requests++;throw 'must not be reached'}
+}catch{$threw=$true}finally{if(Test-Path $out){Remove-Item -LiteralPath $out -Force}}
+Check ($threw -and $script:requests -eq 0) 'HIP state ran the smoke without opting in.'
 $script:answers=@('12','{"name":"Ada","age":37}','READY')
 $script:requests=0;$script:checks=0
 $out=TempPath

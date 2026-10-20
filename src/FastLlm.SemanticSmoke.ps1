@@ -26,13 +26,36 @@ function Get-FastLlmSemanticSmokeBinding {
     return Get-FastLlmSemanticSmokeSha256 (ConvertTo-Json -InputObject $identity -Depth 16 -Compress)
 }
 
+# Accepted serving lanes, as an ordered list so every comparison stays case-sensitive.
+# A state is accepted only when engine version, backend and every placement device
+# belong to the same lane. This is a state-consistency check, not proof of device binding.
+function Get-FastLlmSemanticSmokeLanes {
+    return @(
+        [pscustomobject]@{name='vulkan-b10698';engine='b10698';backend='Vulkan';devicePattern='^Vulkan[0-9]{1,2}$'}
+        [pscustomobject]@{name='hip-b11658';engine='b11658';backend='hip';devicePattern='^ROCm[0-9]{1,2}$'}
+    )
+}
+
+function Test-FastLlmSemanticSmokeLane {
+    param($State,[string[]]$AcceptedLanes)
+    foreach($lane in @(Get-FastLlmSemanticSmokeLanes)){
+        if(@($AcceptedLanes) -cnotcontains $lane.name){continue}
+        if($State.engineVersion -cne $lane.engine -or $State.recipe.backend -cne $lane.backend){continue}
+        $devices=@($State.placement.devices)
+        if($devices.Count -lt 1){continue}
+        $bad=@($devices|Where-Object {$_ -isnot [string] -or $_ -cnotmatch $lane.devicePattern})
+        if($bad.Count -eq 0){return $true}
+    }
+    return $false
+}
+
 function Assert-FastLlmSemanticSmokeState {
-    param($State,[string]$ExpectedBinding)
+    param($State,[string]$ExpectedBinding,[ValidateSet('vulkan-b10698','hip-b11658')][string[]]$AcceptedLanes=@('vulkan-b10698'))
     if(-not $State -or [int]$State.schemaVersion -ne 1 -or $State.active -isnot [bool] -or -not $State.active -or $State.phase -cne 'ready' -or
        $State.endpoint -cne 'http://127.0.0.1:8080/v1' -or $State.runId -cnotmatch '^[0-9a-f]{32}$' -or
        $State.modelId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$' -or
-       $State.modelSha256 -cnotmatch '^[0-9a-f]{64}$' -or $State.engineVersion -cne 'b10698' -or
-       -not $State.recipe -or $State.recipe.backend -cne 'Vulkan' -or
+       $State.modelSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+       -not $State.recipe -or -not (Test-FastLlmSemanticSmokeLane $State $AcceptedLanes) -or
        $State.recipe.engineSha256 -cnotmatch '^[0-9a-f]{64}$' -or $State.recipe.catalogSha256 -cnotmatch '^[0-9a-f]{64}$' -or
        [int]$State.recipe.contextSize -lt 256 -or [int]$State.recipe.slots -ne 1 -or
        [int]$State.processIdentity.pid -le 0 -or [long]$State.processIdentity.startUtcTicks -le 0 -or
@@ -153,20 +176,21 @@ function ConvertFrom-FastLlmSemanticSmokeResponse {
 }
 
 function Invoke-FastLlmSemanticSmokeCore {
-    param([string]$OutputPath,[scriptblock]$ReadState,[scriptblock]$Request,[scriptblock]$CheckProcess,[int]$DeadlineSeconds=240)
+    param([string]$OutputPath,[scriptblock]$ReadState,[scriptblock]$Request,[scriptblock]$CheckProcess,[int]$DeadlineSeconds=240,
+          [ValidateSet('vulkan-b10698','hip-b11658')][string[]]$AcceptedLanes=@('vulkan-b10698'))
     if($DeadlineSeconds -lt 1 -or $DeadlineSeconds -gt 240){throw 'Semantic smoke deadline is outside fixed bounds.'}
     if(Test-Path -LiteralPath $OutputPath){throw 'Semantic smoke output already exists.'}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     $sourcePath=Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1'
     $sourceSha=(Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $first=& $ReadState
-    $binding=Assert-FastLlmSemanticSmokeState -State $first
+    $binding=Assert-FastLlmSemanticSmokeState -State $first -AcceptedLanes $AcceptedLanes
     & $CheckProcess $first
     $cases=@();$aborted=$false
     foreach($case in @(Get-FastLlmSemanticSmokeCases)){
         $outcome='inconclusive';$errorCode=$null;$outputTokens=$null;$fatal=$false
         try{
-            $current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding;& $CheckProcess $current
+            $current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes;& $CheckProcess $current
             $remaining=[int][Math]::Floor(($DeadlineSeconds-$timer.Elapsed.TotalSeconds)*1000)
             if($remaining -le 0){$errorCode='deadline';$fatal=$true}
             else{
@@ -174,7 +198,7 @@ function Invoke-FastLlmSemanticSmokeCore {
                     stream=$false;cache_prompt=$false;chat_template_kwargs=@{enable_thinking=$false}}
                 try{$response=& $Request '/v1/chat/completions' $body ([Math]::Min(60000,$remaining))}
                 catch{$errorCode='request-error'}
-                $current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding;& $CheckProcess $current
+                $current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes;& $CheckProcess $current
                 if(-not $errorCode){
                     $parsed=ConvertFrom-FastLlmSemanticSmokeResponse -Response $response -Case $case
                     $outcome=$parsed.outcome;$errorCode=$parsed.errorCode;$outputTokens=$parsed.outputTokens
@@ -186,7 +210,7 @@ function Invoke-FastLlmSemanticSmokeCore {
             outcome=$outcome;errorCode=$errorCode;outputTokens=$outputTokens}
         if($fatal){$aborted=$true;break}
     }
-    try{$current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding;& $CheckProcess $current}
+    try{$current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes;& $CheckProcess $current}
     catch{$aborted=$true}
     if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceSha){throw 'Semantic smoke source changed during evaluation.'}
     $passed=@($cases|Where-Object outcome -eq 'pass').Count
@@ -226,6 +250,7 @@ function Invoke-FastLlmSemanticSmoke {
     try{
         return Invoke-FastLlmSemanticSmokeCore -OutputPath $OutputPath -ReadState {Get-FastLlmStatus -InstallRoot $InstallRoot} `
             -Request {param($Path,$Body,$TimeoutMs) Invoke-FastLlmHttp -BaseUrl 'http://127.0.0.1:8080' -Path $Path -Body $Body -TimeoutMs $TimeoutMs} `
-            -CheckProcess {param($State) Assert-FastLlmSemanticSmokeProcess -State $State}
+            -CheckProcess {param($State) Assert-FastLlmSemanticSmokeProcess -State $State} `
+            -AcceptedLanes @('vulkan-b10698','hip-b11658')
     }finally{$lock.Dispose()}
 }

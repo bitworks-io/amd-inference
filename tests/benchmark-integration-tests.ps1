@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([switch]$Worker,[ValidateSet('success','change-run','invalid-token','fractional-prompt','fractional-predicted','duplicate-final','mixed-evaluated','string-stop','string-duration')][string]$CaseName='success',[string]$FixtureRoot)
+param([switch]$Worker,[ValidateSet('success','change-run','invalid-token','fractional-prompt','fractional-predicted','duplicate-final','mixed-evaluated','string-stop','string-duration','hip-state')][string]$CaseName='success',[string]$FixtureRoot)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
 
@@ -35,7 +35,7 @@ if (-not $Worker) {
     $FixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-benchmark-http-'+[Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $FixtureRoot -Force|Out-Null
     try {
-        foreach ($case in @('success','change-run','invalid-token','fractional-prompt','fractional-predicted','duplicate-final','mixed-evaluated','string-stop','string-duration')) {
+        foreach ($case in @('success','change-run','invalid-token','fractional-prompt','fractional-predicted','duplicate-final','mixed-evaluated','string-stop','string-duration','hip-state')) {
             $childArguments="-Worker -CaseName '$case' -FixtureRoot '$($FixtureRoot.Replace("'","''"))'"
             $process=Invoke-TestChild $PSCommandPath $childArguments
             try {
@@ -66,7 +66,8 @@ $installRoot=Join-Path $caseRoot 'install'
 $runId='a'*32
 $statePath=Join-Path $installRoot 'state/status.json'
 $fixture=Join-Path $PSScriptRoot 'helpers/mock-benchmark-server.ps1'
-$childArguments="-Port $port -Mode '$CaseName' -LogPath '$($logPath.Replace("'","''"))' -StatusPath '$($statePath.Replace("'","''"))' -OriginalRunId '$runId'"
+$serverMode=if($CaseName -eq 'hip-state'){'success'}else{$CaseName}
+$childArguments="-Port $port -Mode '$serverMode' -LogPath '$($logPath.Replace("'","''"))' -StatusPath '$($statePath.Replace("'","''"))' -OriginalRunId '$runId'"
 $server=Invoke-TestChild $fixture $childArguments
 $lock=$null
 try {
@@ -84,16 +85,24 @@ try {
         recipe=@{contextSize=256;backend='mock';requestedArguments=@('mock-argument')}
         canary=@{mockOnly=$true};placement=@{mockOnly=$true}
     }
+    if ($CaseName -eq 'hip-state') {
+        # Synthetic HIP-shaped state: the producer must pass engine and backend through verbatim.
+        $state.engineVersion='b11658'
+        $state.recipe=@{contextSize=256;backend='hip';requestedArguments=@('mock-argument');adapters=@(@{device='ROCm0';name='Synthetic AMD GPU';vramMiB=16384})}
+    }
     Write-FastLlmState -InstallRoot $installRoot -State $state
     $errorText=$null
     try { Invoke-FastLlmBenchmark -InstallRoot $installRoot -OutputPath $reportPath -PromptTokens @(16,32) -GenerationTokens 8 -Repetitions 5 | Out-Null }
     catch { $errorText=$_.Exception.Message }
-    if ($CaseName -eq 'success') {
+    if ($CaseName -eq 'success' -or $CaseName -eq 'hip-state') {
         Assert-Test (-not $errorText) "report completed: $errorText"
         Assert-Test (Test-Path -LiteralPath $reportPath -PathType Leaf) 'report written exactly once'
         $report=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         $raw=Get-Content -LiteralPath $reportPath -Raw
         Assert-Test ($report.schemaVersion -eq 1 -and $report.resultKind -eq 'native-windows-api-benchmark-not-full-qualification' -and -not $report.qualification.approved) 'report remains unqualified native benchmark v1'
+        if ($CaseName -eq 'hip-state') {
+            Assert-Test ($report.engineVersion -ceq 'b11658' -and $report.recipe.backend -ceq 'hip') 'report carries HIP engineVersion and recipe.backend verbatim'
+        }
         Assert-Test ($report.samples.Count -eq 10 -and $report.summary.Count -eq 2) 'warmups discarded, five repetitions retained per prompt'
         Assert-Test ($raw -notmatch 'synthetic-completion-text-SECRET|A local inference system|"prompt"\s*:|"content"\s*:|"tokens"\s*:') 'report excludes prompt/completion text and token arrays'
         $requests=@(Get-Content -LiteralPath $logPath)

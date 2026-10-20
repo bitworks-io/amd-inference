@@ -2,6 +2,10 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases. Stable releases are the recommended download, starting with 2026.10.20.11.
 
+## Unreleased
+
+- **Semantic smoke can accept the HIP lane:** the shared semantic-smoke state check can now accept a HIP (ROCm, llama.cpp b11658) serving state when a caller opts in. It checks that the engine version, backend and reported device names belong to the same lane. FastLLM's own semantic smoke and the bench automation opt in. The other diagnostic tools stay Vulkan-only.
+
 ## 2026.10.20.11 (stable)
 
 - **First stable release of FastLLM Preview.** FastLLM is still labelled Preview.
