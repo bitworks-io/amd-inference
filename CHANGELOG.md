@@ -4,6 +4,9 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+## 2026.10.20.12 (canary)
+
+- **No change to what FastLLM runs by default.** Both changes below affect diagnostic tools only: the benchmark report and the semantic-smoke check.
 - **Benchmark producer vnext.4: served-device cross-check:** the benchmark report's `binding.servingDeviceCrossCheck` compares the PCI address the engine reported using with the bound adapter's D3DKMT address. `agree` means the engine-reported device is the bound adapter; a `mismatch` (or an engine reporting more than one device) makes the binding `ambiguous`. The Vulkan engine reports no address, so the check is `not-available` there. `recipe.adapters[].backend` is the probe backend the planner used to find the card (Vulkan, also on HIP plans); the serving backend is `recipe.backend` and the new top-level `engine.backend` (with `engine.version` and `engine.componentId`). The binding remains a host-level single-AMD-adapter elimination, and `recipeAdapterCrossCheck: agree` on HIP is the planner's view, not the HIP runtime's. The semantic-smoke report now carries `backend`. Measurement methodology is unchanged; vnext.3 numbers remain comparable.
 - **Semantic smoke can accept the HIP lane:** the shared semantic-smoke state check can now accept a HIP (ROCm, llama.cpp b11658) serving state when a caller opts in. It checks that the engine version, backend and reported device names belong to the same lane. FastLLM's own semantic smoke and the bench automation opt in. The other diagnostic tools stay Vulkan-only.
 
