@@ -1,6 +1,16 @@
 # Changelog
 
-FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases; the first stable release is still ahead.
+FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases. Stable releases are the recommended download, starting with 2026.10.20.11.
+
+## 2026.10.20.11 (stable)
+
+- **First stable release of FastLLM Preview.** FastLLM is still labelled Preview.
+- **No app changes:** this is the same app as 2026.10.15.13 (canary), which passed Bitworks lab testing on the RX 7900 XT and XTX.
+- **Update channels:** an install follows the channel it was built for unless you change the `updateChannel` setting. The stable channel is offered only stable releases. The canary channel is offered the newest release of either kind, so it is also offered stable releases that are newer than the canary you have.
+
+## 2026.10.20.10 (canary)
+
+- Stable candidate: the same commit as 2026.10.20.11.
 
 ## 2026.10.15.13 (canary)
 
