@@ -1600,7 +1600,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $pendingWireIds = @($wirePlan.setup.pendingComponents | ForEach-Object { [string] $_.id })
         $fixtureIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath $hipFx.ComponentsPath))
         $shippedIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path (Join-Path $repoRoot 'config') 'components.json')))
-        Check ($shippedIdentities.Count -eq 3 -and $fixtureIdentities.Count -ge 1) 'license identities come from both the shipped and the fixture component lists'
+        # Shipped: llama.cpp MIT, AMD Software EULA, AMD HIP SDK license page, the FastLLM ADLX probe EULA and the AMD ADLX SDK license (title and host each).
+        Check ($shippedIdentities.Count -eq 5 -and $fixtureIdentities.Count -ge 1) 'license identities come from both the shipped and the fixture component lists'
         $uiAskRoot = New-TestRoot
         $uiOnRoot = New-TestRoot
         $uiShippedRoot = New-TestRoot
