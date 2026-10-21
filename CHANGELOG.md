@@ -4,8 +4,14 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+## 2026.10.20.14 (stable)
+
+- **Stable release:** the same app as 2026.10.20.13 (canary), which passed Bitworks lab testing on the RX 7900 XT and XTX (the live update and the serving smoke with the HIP default and the Vulkan setup). It includes the changes of 2026.10.20.12 and 2026.10.20.13 below.
+- **No change to what FastLLM runs by default.** The new optional ADLX probe component is installed only after you accept its license, and the other changes affect diagnostic tools only.
+
 ## 2026.10.20.13 (canary)
 
+- Stable candidate: the same commit as 2026.10.20.14.
 - **Optional ADLX probe component:** FastLLM can now install `bitworks-adlx-probe`, the signed ADLX probe from release `adlx-probe-v3`, after you accept its license (`fast-llm.ps1 components -Install bitworks-adlx-probe`). Its license is not Apache-2.0; see `licenses/adlx-probe/EULA.md`. Nothing installs it by default. When it is installed and verified, `tools/benchmark.ps1` uses it, so benchmark reports carry the card's PCI identity, PCIe link and in-run telemetry. `-NoAdlxProbe` turns that off, and explicit `-AdlxExecutablePath` and `-AdlxExecutableSha256` arguments still win. Components gain a `tool` kind. The measurement methodology and the producer version are unchanged. `NOTICE` and `THIRD_PARTY_NOTICES.md` describe the probe's license.
 
 ## 2026.10.20.12 (canary)
