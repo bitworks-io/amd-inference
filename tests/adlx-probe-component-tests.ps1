@@ -85,13 +85,17 @@ function Invoke-BenchmarkScript($Fixture, [string[]] $ExtraArguments) {
     Copy-Item -LiteralPath (Join-Path $repo 'tools/benchmark.ps1') -Destination (Join-Path $tree 'tools/benchmark.ps1') -Force
     Copy-Item -LiteralPath $Fixture.ComponentsPath -Destination (Join-Path $tree 'config/components.json') -Force
     $recordPath = Join-Path $Fixture.Dir 'record.json'
+    $stubResultPath = Join-Path $Fixture.Dir 'stub-result.json'
+    if (Test-Path -LiteralPath (Join-Path $Fixture.Dir 'out.json')) { Remove-Item -LiteralPath (Join-Path $Fixture.Dir 'out.json') -Force }
     if (Test-Path -LiteralPath $recordPath) { Remove-Item -LiteralPath $recordPath -Force }
     Copy-Item -Path (Join-Path $repo 'src/*') -Destination (Join-Path $tree 'src') -Recurse -Force
     $stub = @"
 
 function Invoke-FastLlmBenchmark {
-    param([string]`$InstallRoot, [string]`$OutputPath, [int[]]`$PromptTokens, [int]`$GenerationTokens, [int]`$Repetitions, [string]`$AdlxExecutablePath, [string]`$AdlxExecutableSha256)
-    [System.IO.File]::WriteAllText('$($recordPath.Replace("'", "''"))', (ConvertTo-Json -InputObject ([ordered] @{ path = `$AdlxExecutablePath; sha256 = `$AdlxExecutableSha256; pathBound = `$PSBoundParameters.ContainsKey('AdlxExecutablePath'); shaBound = `$PSBoundParameters.ContainsKey('AdlxExecutableSha256') })))
+    param([string]`$InstallRoot, [string]`$OutputPath, [int[]]`$PromptTokens, [int]`$GenerationTokens, [int]`$Repetitions, [string]`$AdlxExecutablePath, [string]`$AdlxExecutableSha256, [switch]`$AdlxOptional)
+    `$stubResult = '$($stubResultPath.Replace("'", "''"))'
+    if (Test-Path -LiteralPath `$stubResult) { Copy-Item -LiteralPath `$stubResult -Destination `$OutputPath }
+    [System.IO.File]::WriteAllText('$($recordPath.Replace("'", "''"))', (ConvertTo-Json -InputObject ([ordered] @{ path = `$AdlxExecutablePath; sha256 = `$AdlxExecutableSha256; pathBound = `$PSBoundParameters.ContainsKey('AdlxExecutablePath'); shaBound = `$PSBoundParameters.ContainsKey('AdlxExecutableSha256'); optionalBound = `$PSBoundParameters.ContainsKey('AdlxOptional'); optional = [bool]`$AdlxOptional })))
 }
 Export-ModuleMember -Function Invoke-FastLlmBenchmark
 "@
@@ -164,6 +168,19 @@ try {
     Check ($null -ne $run.Record -and [string] $run.Record.path -ceq (Join-Path $viaScript.Root $exeName) -and [string] $run.Record.sha256 -ceq $viaScript.ExeSha) 'discovery: the installed, verified probe path and sha are passed to the producer'
     Check ($run.Output -match 'Using the installed ADLX probe component bitworks-adlx-probe 1\.') 'discovery: one line says which probe component is used'
 
+    Check ($null -ne $run.Record -and [bool] $run.Record.optionalBound -and [bool] $run.Record.optional) 'discovery: the probe is passed to the producer as optional (AdlxOptional)'
+    Check ($run.Output -notmatch 'could not run here') 'discovery: no unavailable-probe line when the result does not record a failed probe'
+
+    # A result that records the optional probe as failed gets one line saying so; any other result does not.
+    $failedProbe = New-ToolFixture
+    [System.IO.File]::WriteAllText((Join-Path $failedProbe.Dir 'stub-result.json'), '{"binding":{"adlx":{"status":"unknown","reason":"optional-probe-failed","optionalFailureReason":"adlx-identity-collection-failed"}}}')
+    $runFailedProbe = Invoke-BenchmarkScript $failedProbe @()
+    Check ($runFailedProbe.Output -match 'The installed ADLX probe could not run here; the result was measured without ADLX identity and telemetry\.') 'a discovered probe recorded as failed: one line says the result was measured without ADLX'
+    $okProbe = New-ToolFixture
+    [System.IO.File]::WriteAllText((Join-Path $okProbe.Dir 'stub-result.json'), '{"binding":{"adlx":{"status":"captured","reason":null}}}')
+    $runOkProbe = Invoke-BenchmarkScript $okProbe @()
+    Check ($runOkProbe.Output -notmatch 'could not run here' -and $runOkProbe.Output -match 'Saved ') 'a discovered probe that worked: no unavailable-probe line'
+
     $runNone = Invoke-BenchmarkScript $notInstalled @()
     Check ($null -ne $runNone.Record -and -not [bool] $runNone.Record.pathBound -and -not [bool] $runNone.Record.shaBound) 'not installed: no ADLX argument is passed'
     Check ($runNone.Output -notmatch 'Using the installed ADLX probe') 'not installed: no discovery line'
@@ -173,8 +190,14 @@ try {
 
     $explicitSha = ('ab' * 32)
     $runExplicit = Invoke-BenchmarkScript $viaScript @('-AdlxExecutablePath', (Join-Path $work 'explicit.exe'), '-AdlxExecutableSha256', $explicitSha)
+    Check ($null -ne $runExplicit.Record -and -not [bool] $runExplicit.Record.optionalBound) 'explicit arguments stay fail-closed: AdlxOptional is not passed'
     Check ($null -ne $runExplicit.Record -and [string] $runExplicit.Record.path -ceq (Join-Path $work 'explicit.exe') -and [string] $runExplicit.Record.sha256 -ceq $explicitSha) 'explicit arguments win over the installed component'
     Check ($runExplicit.Output -notmatch 'Using the installed ADLX probe') 'explicit arguments: no discovery line'
+
+    $failedExplicit = New-ToolFixture
+    [System.IO.File]::WriteAllText((Join-Path $failedExplicit.Dir 'stub-result.json'), '{"binding":{"adlx":{"status":"unknown","reason":"optional-probe-failed"}}}')
+    $runExplicitFailed = Invoke-BenchmarkScript $failedExplicit @('-AdlxExecutablePath', (Join-Path $work 'explicit.exe'), '-AdlxExecutableSha256', $explicitSha)
+    Check ($null -ne $runExplicitFailed.Record -and -not [bool] $runExplicitFailed.Record.optionalBound -and $runExplicitFailed.Output -notmatch 'could not run here') 'explicit arguments: no AdlxOptional and no unavailable-probe line'
 
     $runPathOnly = Invoke-BenchmarkScript $viaScript @('-AdlxExecutablePath', (Join-Path $work 'explicit.exe'))
     Check ($null -ne $runPathOnly.Record -and [bool] $runPathOnly.Record.pathBound -and -not [bool] $runPathOnly.Record.shaBound) 'one explicit argument is never completed from discovery'

@@ -663,6 +663,18 @@ function Resolve-FastLlmBenchmarkBinding {
     elseif ($null -ne $Adlx) {
         $adlxReason = Get-FastLlmBenchmarkProperty $Adlx 'reason'
         if ($null -ne $adlxReason) { $adlxBlock.reason = [string]$adlxReason } else { $adlxBlock.reason = 'not-captured' }
+        # An optional probe that was attempted and failed carries its specific failure reason (additive; absent otherwise).
+        $optionalFailure = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureReason'
+        if ($adlxStatus -eq 'unknown' -and $adlxBlock.reason -eq 'optional-probe-failed' -and $null -ne $optionalFailure) {
+            $adlxBlock['optionalFailureReason'] = [string]$optionalFailure
+            # Diagnosis facts: the child's exit code (int or null) and a fixed token for the failing step. Never raw text.
+            $optionalExit = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureExitCode'
+            $optionalStep = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureStep'
+            $optionalCollectorExit = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureCollectorExitCode'
+            $adlxBlock['optionalFailureCollectorExitCode'] = $(if ($optionalCollectorExit -is [int]) { $optionalCollectorExit } else { $null })
+            $adlxBlock['optionalFailureExitCode'] = $(if ($optionalExit -is [int]) { $optionalExit } else { $null })
+            $adlxBlock['optionalFailureStep'] = $(if ($null -ne $optionalStep -and $script:FastLlmBenchmarkAdlxFailureSteps -ccontains [string]$optionalStep) { [string]$optionalStep } else { 'unknown' })
+        }
     }
     $header = Get-FastLlmBenchmarkProperty $Adlx 'header'
     if ($null -ne $header) {
@@ -1236,9 +1248,10 @@ function Add-FastLlmBenchmarkRootPortLinkEvidence {
 }
 
 function Assert-FastLlmBenchmarkAdlxConfig {
-    param([string]$Path, [string]$Sha256)
+    param([string]$Path, [string]$Sha256, [switch]$Optional)
     $hasPath = -not [string]::IsNullOrWhiteSpace($Path)
     $hasSha = -not [string]::IsNullOrWhiteSpace($Sha256)
+    if ($Optional -and (-not $hasPath -or -not $hasSha)) { throw 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256.' }
     if (-not $hasPath -and -not $hasSha) { return $false }
     if ($hasPath -ne $hasSha) { throw 'AdlxExecutablePath and AdlxExecutableSha256 must be supplied together.' }
     if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'AdlxExecutableSha256 must be a 64-character hexadecimal SHA-256.' }
@@ -1258,6 +1271,56 @@ function Wait-FastLlmBenchmarkChild {
     return $false
 }
 
+# Fixed step tokens for a failed ADLX identity child. The stderr text is only matched against the wrapper's own fixed messages and is never copied anywhere.
+$script:FastLlmBenchmarkAdlxFailureSteps = @('driver-not-regular','driver-signature','driver-version','executable-digest','executable-missing','host-source-missing','output-path','collector-output','driver-missing','host-compile','arguments','environment','collector-exit','collector-deadline','collector-no-records','collector-records','inputs-changed','timeout','unrecognized','unknown')
+function Get-FastLlmBenchmarkAdlxFailureStep {
+    param([string]$Text, [bool]$TimedOut = $false)
+    if ($TimedOut) { return 'timeout' }
+    if ([string]::IsNullOrEmpty($Text)) { return 'unknown' }
+    $map = @(
+        @('ADLX collector failed with exit code', 'collector-exit'),
+        @('ADLX collector exceeded its deadline.', 'collector-deadline'),
+        @('ADLX collector output did not complete before deadline.', 'collector-deadline'),
+        @('ADLX collector produced no records.', 'collector-no-records'),
+        @('Identity record count does not match the GPU count.', 'collector-records'),
+        @('Identity records are duplicated or inconsistent.', 'collector-records'),
+        @('On-disk collector inputs changed during the run.', 'inputs-changed'),
+        @('ADLX driver library is not a regular System32 file.', 'driver-not-regular'),
+        @('ADLX driver library does not have a valid AMD publisher signature.', 'driver-signature'),
+        @('ADLX driver library has no file version.', 'driver-version'),
+        @('Executable digest mismatch.', 'executable-digest'),
+        @('ExpectedExecutableSha256 must be', 'executable-digest'),
+        @('Executable path is not a regular file.', 'executable-missing'),
+        @('ExecutablePath must be an absolute file path.', 'executable-missing'),
+        @('Bounded native process host source is unavailable.', 'host-source-missing'),
+        @('OutputPath', 'output-path'),
+        @('Output parent is not a directory.', 'output-path'),
+        @('Output path traverses a reparse point.', 'output-path'),
+        @('ADLX collector output rejected', 'collector-output'),
+        @('Unexpected ADLX collector output.', 'collector-output'),
+        @('ADLX collector output kind mismatch.', 'collector-output'),
+        @('requires standard-user, 64-bit Windows.', 'environment'),
+        @('as a standard user.', 'environment'),
+        @('Mode must be identity or sample.', 'arguments'),
+        @('TimeoutSeconds must be', 'arguments')
+    )
+    foreach ($entry in $map) { if ($Text.IndexOf([string]$entry[0], [StringComparison]::Ordinal) -ge 0) { return [string]$entry[1] } }
+    if ($Text.IndexOf('Cannot find path', [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $Text.IndexOf('amdadlx64.dll', [StringComparison]::OrdinalIgnoreCase) -ge 0) { return 'driver-missing' }
+    if ($Text.IndexOf('Add-Type', [StringComparison]::Ordinal) -ge 0 -or $Text.IndexOf('error CS', [StringComparison]::Ordinal) -ge 0) { return 'host-compile' }
+    return 'unrecognized'
+}
+
+# The collector's own exit code, only the integer: the hint after the colon is never read into a result.
+function Get-FastLlmBenchmarkAdlxCollectorExitCode {
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    $match = [regex]::Match($Text, 'ADLX collector failed with exit code (-?\d+)')
+    if (-not $match.Success) { return $null }
+    $value = 0
+    if ([int]::TryParse($match.Groups[1].Value, [Globalization.NumberStyles]::AllowLeadingSign, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return [int]$value }
+    return $null
+}
+
 function Get-FastLlmBenchmarkAdlxIdentity {
     param([string]$ExecutablePath, [string]$ExpectedSha256, [string]$OutputPath)
     $seam = Get-FastLlmBenchmarkSeam 'AdlxIdentity'
@@ -1268,7 +1331,20 @@ function Get-FastLlmBenchmarkAdlxIdentity {
     $child = New-Object Bitworks.FastLlm.ProcessHost
     try {
         $child.Start($info)
-        if (-not (Wait-FastLlmBenchmarkChild $child 120000) -or $child.Process.ExitCode -ne 0) { throw (New-FastLlmBenchmarkFailure 'adlx-identity-collection-failed' 'ADLX identity collection failed.') }
+        $finished = Wait-FastLlmBenchmarkChild $child 120000
+        if (-not $finished -or $child.Process.ExitCode -ne 0) {
+            $collectionFailure = New-FastLlmBenchmarkFailure 'adlx-identity-collection-failed' 'ADLX identity collection failed.'
+            # Diagnosis facts as data on the failure object: exit code (absent on timeout) and a fixed step token; the child output is matched, never copied.
+            $exitCode = $null
+            try { if ($child.Process.HasExited) { $exitCode = [int]$child.Process.ExitCode } } catch {}
+            if ($null -ne $exitCode) { $collectionFailure.Data['fastllmAdlxExitCode'] = $exitCode }
+            $childText = $null
+            try { $childText = $child.Snapshot() } catch {}
+            $collectionFailure.Data['fastllmAdlxStep'] = (Get-FastLlmBenchmarkAdlxFailureStep $childText (-not $finished))
+            $collectorExit = Get-FastLlmBenchmarkAdlxCollectorExitCode $childText
+            if ($null -ne $collectorExit) { $collectionFailure.Data['fastllmAdlxCollectorExitCode'] = $collectorExit }
+            throw $collectionFailure
+        }
     } finally { $child.Dispose() }
     $document = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($OutputPath)) -ErrorAction Stop
     if ($document.kind -cne 'adlx-identity-report' -or $document.qualification -ne $false -or $document.footer.status -cne 'complete') {
@@ -1652,14 +1728,16 @@ function New-FastLlmBenchmarkFailureReport {
 function Invoke-FastLlmBenchmark {
     [CmdletBinding()]
     param([string]$InstallRoot,[string]$OutputPath,[int[]]$PromptTokens=@(512,4096),[ValidateRange(1,1024)][int]$GenerationTokens=128,[ValidateRange(5,100)][int]$Repetitions=5,
-          [string]$AdlxExecutablePath,[string]$AdlxExecutableSha256)
+          [string]$AdlxExecutablePath,[string]$AdlxExecutableSha256,
+          # Set only for an auto-discovered probe: a probe that cannot run (collection failed or report invalid) before the timed region no longer stops the benchmark.
+          [switch]$AdlxOptional)
     if($env:OS -ne 'Windows_NT'){throw 'Physical qualification runs require native Windows.'}
     $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Run benchmarks as a standard user.'}
     if (-not $PromptTokens -or @($PromptTokens | Select-Object -Unique).Count -ne $PromptTokens.Count) { throw 'Prompt sizes must be nonempty and unique.' }
     $activeSeams=@($script:FastLlmBenchmarkSeams.Keys|ForEach-Object{[string]$_}|Sort-Object)
     if($activeSeams.Count -gt 0 -and -not $script:FastLlmBenchmarkAllowSeams){throw 'Benchmark test seams are active; refusing to produce a result.'}
-    $adlxConfigured=Assert-FastLlmBenchmarkAdlxConfig $AdlxExecutablePath $AdlxExecutableSha256
+    $adlxConfigured=Assert-FastLlmBenchmarkAdlxConfig $AdlxExecutablePath $AdlxExecutableSha256 -Optional:$AdlxOptional
     $state=Get-FastLlmStatus $InstallRoot
     if(-not $state.active -or $state.phase -ne 'ready' -or -not $state.recipe){throw 'Start a supervised FastLLM server and wait for ready before benchmarking.'}
     foreach($length in $PromptTokens){if($length -lt 16 -or $length+$GenerationTokens+8 -gt $state.recipe.contextSize){throw 'Requested prompt/output exceeds the effective context budget.'}}
@@ -1718,11 +1796,28 @@ function Invoke-FastLlmBenchmark {
         # --- before the first timed sample: host capture, identity binding, telemetry start ---
         $preHost=Get-FastLlmBenchmarkHostCapture 'pre'
         if($preHost.Capture.fields.powerPlan.status -ne 'captured'){throw (New-FastLlmBenchmarkFailure 'power-plan-unreadable-pre' 'The active power plan could not be read before the benchmark.')}
-        $adlx=$null
+        $adlx=$null;$adlxOptionalFailure=$null
         if($adlxConfigured){
             $adlxIdentityPath=$sidecarPaths.adlxPre
             $createdFiles.Add($adlxIdentityPath)
-            $adlx=Get-FastLlmBenchmarkAdlxIdentity $AdlxExecutablePath $AdlxExecutableSha256 $adlxIdentityPath
+            try{$adlx=Get-FastLlmBenchmarkAdlxIdentity $AdlxExecutablePath $AdlxExecutableSha256 $adlxIdentityPath}
+            catch{
+                # Only the two typed pre-run probe failures are optional; a mismatch, a different error or any later failure stays a hard failure.
+                $adlxFailureReason=Get-FastLlmBenchmarkFailureReason $_
+                if(-not $AdlxOptional -or $adlxFailureReason -notin @('adlx-identity-collection-failed','adlx-identity-report-invalid')){throw}
+                $adlxOptionalFailure=$adlxFailureReason
+                $adlxConfigured=$false
+                # The pre sidecar path stays in $createdFiles: it is only listed in a failure report (with an exists flag), never hashed or required, and a partial file the probe left is evidence.
+                $adlxFailureData=$_.Exception.Data
+                $adlxFailureExit=$null;$adlxFailureStep='unknown'
+                if($null -ne $adlxFailureData -and $adlxFailureData.Contains('fastllmAdlxExitCode') -and $adlxFailureData['fastllmAdlxExitCode'] -is [int]){$adlxFailureExit=[int]$adlxFailureData['fastllmAdlxExitCode']}
+                if($null -ne $adlxFailureData -and $adlxFailureData.Contains('fastllmAdlxStep') -and $script:FastLlmBenchmarkAdlxFailureSteps -ccontains [string]$adlxFailureData['fastllmAdlxStep']){$adlxFailureStep=[string]$adlxFailureData['fastllmAdlxStep']}
+                # A report that was read but rejected has a clean exit code and no step to name.
+                if($adlxOptionalFailure -eq 'adlx-identity-report-invalid' -and $null -eq $adlxFailureExit){$adlxFailureExit=0}
+                $adlxFailureCollectorExit=$null
+                if($null -ne $adlxFailureData -and $adlxFailureData.Contains('fastllmAdlxCollectorExitCode') -and $adlxFailureData['fastllmAdlxCollectorExitCode'] -is [int]){$adlxFailureCollectorExit=[int]$adlxFailureData['fastllmAdlxCollectorExitCode']}
+                $adlx=[pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason=$adlxOptionalFailure;optionalFailureExitCode=$adlxFailureExit;optionalFailureCollectorExitCode=$adlxFailureCollectorExit;optionalFailureStep=$adlxFailureStep;records=@();header=$null}
+            }
         }
         $preSnapshot=$null;$probeReason=$null
         $preProbeStart=[DateTime]::UtcNow
@@ -1755,6 +1850,7 @@ function Invoke-FastLlmBenchmark {
         $boundPnp=$null
         if($preResolved.Binding.status -eq 'bound'){$boundPnp=$preResolved.Binding.adapters[0].pnpInstanceId}
         $telemetryUnknownReason='not-configured'
+        if($null -ne $adlxOptionalFailure){$telemetryUnknownReason='optional-probe-failed'}
         $telemetryPath=$sidecarPaths.telemetry
         $telemetryReadiness=$null
         if($adlxConfigured){
@@ -1814,6 +1910,9 @@ function Invoke-FastLlmBenchmark {
             # The ADLX identity is read again; a configured but failing ADLX is a hard failure.
             $createdFiles.Add($sidecarPaths.adlxPost)
             $adlxPost=Get-FastLlmBenchmarkAdlxIdentity $AdlxExecutablePath $AdlxExecutableSha256 $sidecarPaths.adlxPost
+        }elseif($null -ne $adlxOptionalFailure){
+            # The optional probe failed before the window and was not re-run; the same unavailable record keeps pre and post binding consistent.
+            $adlxPost=$adlx
         }
         $postResolved=Resolve-FastLlmBenchmarkBinding $postSnapshot $adlxPost $probeReason
         Set-FastLlmBenchmarkBindingRecipeCrossCheck $postResolved $state.recipe|Out-Null

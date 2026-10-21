@@ -234,6 +234,53 @@ if(-not $Worker){
     Check ($b.adapters[0].pci.vendorId -eq '1002' -and $b.adapters[0].pci.deviceId -eq '744C' -and $b.adapters[0].pci.subsystemId -eq 'E4711DA2' -and $b.adapters[0].pci.revision -eq 'C8' -and $b.adapters[0].dxgiLuid -eq $luidA -and $b.adapters[0].kmt.bus -eq 3 -and $b.adapters[0].kmt.segmentKnown -eq $false) 'the binding records PnP instance, PCI IDs, LUID and KMT address'
     Check ($b.adapters[0].driverVersion -eq '32.0.31041.1004' -and $b.adapters[0].driverVersionSources.crossCheck -eq 'not-run' -and $b.adlx.status -eq 'unknown' -and $b.adlx.reason -eq 'not-configured') 'without ADLX the cross-check is not-run and the ADLX facts are unknown'
     Check ($b.adapters[0].amdSoftwareVersion.status -eq 'unknown' -and $b.adapters[0].pcieBus.status -eq 'unknown' -and $b.adapters[0].vbios.status -eq 'unknown') 'ADLX-only fields are unknown when ADLX is absent'
+    # optional ADLX probe: the argument check and the unavailable-probe binding (pure; the end-to-end runs are in the Windows worker below)
+    Reject {& $module {Assert-FastLlmBenchmarkAdlxConfig '' '' -Optional}} 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256\.' 'AdlxOptional without either ADLX argument is an argument error'
+    Reject {& $module {Assert-FastLlmBenchmarkAdlxConfig 'C:\x\adlx.exe' $null -Optional}} 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256\.' 'AdlxOptional with only the ADLX path is an argument error'
+    Check ((& $module {Assert-FastLlmBenchmarkAdlxConfig '' ''}) -eq $false) 'without AdlxOptional and without ADLX arguments the check is unchanged (not configured)'
+    $optionalUnavailable=[pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';records=@();header=$null}
+    $optionalBinding=(Resolve-Fx (New-FxUniqueSnapshot) $optionalUnavailable).Binding
+    Check ($optionalBinding.status -eq 'bound' -and $optionalBinding.adlx.status -eq 'unknown' -and $optionalBinding.adlx.reason -eq 'optional-probe-failed' -and $optionalBinding.adlx.optionalFailureReason -eq 'adlx-identity-collection-failed' -and $optionalBinding.adlx.crossCheck -eq 'not-run') 'an unavailable optional probe is recorded as unknown with reason optional-probe-failed and its specific failure reason'
+    Check ($null -eq (Resolve-Fx (New-FxUniqueSnapshot)).Binding.adlx.PSObject.Properties['optionalFailureReason'] -and (& $module {param($x,$y) Assert-FastLlmBenchmarkBindingAgreement $x $y} $optionalBinding (Resolve-Fx (New-FxUniqueSnapshot) $optionalUnavailable).Binding) -match '^[0-9a-f]{64}$') 'optionalFailureReason is absent when ADLX was not attempted, and the pre/post agreement still holds with the same unavailable record'
+    $stepCases=@(
+        @('ADLX driver library is not a regular System32 file.','driver-not-regular'),
+        @('ADLX driver library does not have a valid AMD publisher signature.','driver-signature'),
+        @('ADLX driver library has no file version.','driver-version'),
+        @('Executable digest mismatch.','executable-digest'),
+        @('Executable path is not a regular file.','executable-missing'),
+        @('Bounded native process host source is unavailable.','host-source-missing'),
+        @('OutputPath already exists; choose a fresh report filename.','output-path'),
+        @('OutputPath must be an absolute local file path.','output-path'),
+        @('ADLX collector output rejected: too many lines.','collector-output'),
+        @('Unexpected ADLX collector output.','collector-output'),
+        @('ADLX collector output kind mismatch.','collector-output'),
+        @('Get-Item: Cannot find path ''C:\Windows\System32\amdadlx64.dll'' because it does not exist.','driver-missing'),
+        @('Add-Type: something failed','host-compile'),
+        @('x.cs(3,4): error CS1002: ; expected','host-compile'),
+        @('ADLX collector failed with exit code 3: some hint','collector-exit'),
+        @('ADLX collector exceeded its deadline.','collector-deadline'),
+        @('ADLX collector output did not complete before deadline.','collector-deadline'),
+        @('ADLX collector produced no records.','collector-no-records'),
+        @('Identity record count does not match the GPU count.','collector-records'),
+        @('Identity records are duplicated or inconsistent.','collector-records'),
+        @('On-disk collector inputs changed during the run.','inputs-changed'),
+        @('some entirely different failure text at C:\ProgramData\Example\detail.txt','unrecognized')
+    )
+    foreach($case in $stepCases){
+        $stepGot=& $module {param($t) Get-FastLlmBenchmarkAdlxFailureStep $t} $case[0]
+        Check ($stepGot -ceq $case[1]) "the ADLX failure step for '$($case[0])' is the token $($case[1])"
+    }
+    Check ((& $module {Get-FastLlmBenchmarkAdlxFailureStep 'anything' $true}) -ceq 'timeout' -and (& $module {Get-FastLlmBenchmarkAdlxFailureStep $null}) -ceq 'unknown') 'a timeout maps to timeout and no child output maps to unknown'
+    Check ((& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'adlx-identity-vram failed: ADLX collector failed with exit code -1073741819: HINT-TEXT'}) -eq -1073741819 -and (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'ADLX collector failed with exit code 7: x'}) -eq 7 -and $null -eq (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'Executable digest mismatch.'}) -and $null -eq (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode $null}) -and $null -eq (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'ADLX collector failed with exit code 99999999999: x'})) 'the collector exit code parses negative and positive, and is null when absent or not an int'
+    $collBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode=1;optionalFailureCollectorExitCode=-5;optionalFailureStep='collector-exit';records=@();header=$null})).Binding
+    Check ($collBinding.adlx.optionalFailureCollectorExitCode -eq -5 -and $collBinding.adlx.optionalFailureStep -ceq 'collector-exit') 'the binding carries the collector exit code'
+    $hintText='adlx-identity-vram failed: ADLX collector failed with exit code -3: HINT-TEXT C:\secret\path'
+    $hintBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode=1;optionalFailureCollectorExitCode=(& $module {param($t) Get-FastLlmBenchmarkAdlxCollectorExitCode $t} $hintText);optionalFailureStep=(& $module {param($t) Get-FastLlmBenchmarkAdlxFailureStep $t} $hintText);records=@();header=$null})).Binding
+    Check ($hintBinding.adlx.optionalFailureCollectorExitCode -eq -3 -and $hintBinding.adlx.optionalFailureStep -ceq 'collector-exit' -and (ConvertTo-Json -InputObject $hintBinding.adlx -Depth 5) -notmatch 'HINT-TEXT|secret') 'the collector hint text after the colon never reaches the binding'
+    $stepBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode=3;optionalFailureStep='driver-signature';records=@();header=$null})).Binding
+    Check ($stepBinding.adlx.optionalFailureExitCode -eq 3 -and $stepBinding.adlx.optionalFailureStep -ceq 'driver-signature') 'the binding carries the exit code and the step token next to the failure reason'
+    $badStepBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode='x';optionalFailureStep='C:\raw\text';records=@();header=$null})).Binding
+    Check ($null -eq $badStepBinding.adlx.optionalFailureExitCode -and $badStepBinding.adlx.optionalFailureStep -ceq 'unknown') 'a non-integer exit code and a non-token step are never copied into the binding'
     $withAdlx=Resolve-Fx (New-FxUniqueSnapshot) (New-FxAdlx)
     $b=$withAdlx.Binding
     Check ($b.status -eq 'bound' -and $b.adlx.status -eq 'captured' -and $b.adlx.crossCheck -eq 'passed' -and $b.adlx.pnpMatch -eq $true -and $b.adlx.luidMatch -eq $true -and $b.adlx.driverVersionMatch -eq $true) 'ADLX PnP, LUID and driver cross-check passes'
@@ -1484,6 +1531,77 @@ try{
     $run=Invoke-Vnext 'untyped' $adlxArguments
     $failed=Get-FxFailure 'untyped'
     Check ($null -eq $run.Report -and $null -ne $failed -and $failed.Doc.reason -eq 'unclassified' -and $failed.Doc.errorClass -eq 'other' -and $failed.Raw -notmatch 'SENTINEL' -and (Test-Path -LiteralPath (Join-Path $caseRoot 'untyped.adlx-identity.json'))) 'an untyped failure is unclassified, keeps its sidecar and records no exception text'
+    $global:FxModule=$module
+    # optional (discovered) ADLX probe: a probe that cannot run before the window no longer stops the benchmark
+    $optionalArguments=@{AdlxExecutablePath=$adlxExe;AdlxExecutableSha256=$adlxExeSha;AdlxOptional=$true}
+    foreach($optionalReason in @('adlx-identity-collection-failed','adlx-identity-report-invalid')){
+        Install-Seams
+        $global:Fx.adlxCalls=0;$global:FxOptionalReason=$optionalReason
+        if($optionalReason -eq 'adlx-identity-collection-failed'){$global:FxOptionalExit=5;$global:FxOptionalStep='collector-exit';$global:FxOptionalCollector=-1073741819}else{$global:FxOptionalCollector=$null;$global:FxOptionalExit=$null;$global:FxOptionalStep='C:\\raw\\SENTINEL-stderr-text'}
+        Set-Seam 'AdlxIdentity' {param($exe,$sha,$out) $global:Fx.adlxCalls++;throw (& $global:FxModule {param($r,$e,$st,$c) $f=New-FastLlmBenchmarkFailure $r 'synthetic probe failure';if($null -ne $e){$f.Data['fastllmAdlxExitCode']=$e};$f.Data['fastllmAdlxStep']=$st;if($null -ne $c){$f.Data['fastllmAdlxCollectorExitCode']=$c};$f} $global:FxOptionalReason $global:FxOptionalExit $global:FxOptionalStep $global:FxOptionalCollector)}
+        $global:Fx.snapshots=@($global:FxSnapDomain0)
+        Set-Seam 'Mcfg' {@(0)}
+        $name='optional-'+$optionalReason
+        $run=Invoke-Vnext $name $optionalArguments
+        Check ($null -eq $run.Error -and $null -ne $run.Report) "optional probe, $optionalReason before the window: the run completes ($($run.Error))"
+        $report=$run.Report
+        Check ($report.binding.adlx.status -eq 'unknown' -and $report.binding.adlx.reason -eq 'optional-probe-failed' -and $report.binding.adlx.optionalFailureReason -eq $optionalReason -and $report.binding.adlx.crossCheck -eq 'not-run') "optional probe, $optionalReason`: the binding records ADLX as unknown, optional-probe-failed and the specific reason"
+        if($optionalReason -eq 'adlx-identity-collection-failed'){Check ($report.binding.adlx.optionalFailureExitCode -eq 5 -and $report.binding.adlx.optionalFailureStep -ceq 'collector-exit' -and $report.binding.adlx.optionalFailureCollectorExitCode -eq -1073741819 -and $run.Raw -notmatch 'HINT-TEXT') 'optional probe: the exit code and the step token from the failure are recorded'}
+        else{Check ($report.binding.adlx.optionalFailureExitCode -eq 0 -and $report.binding.adlx.optionalFailureStep -ceq 'unknown' -and $run.Raw -notmatch 'SENTINEL-stderr-text' -and $run.Raw -notmatch 'stderr-text') 'optional probe: a report-invalid failure records exit code 0, and a non-token step (raw text) is never copied into the report'}
+        Check ($report.telemetry.status -eq 'unknown' -and $report.telemetry.reason -eq 'optional-probe-failed' -and $global:Fx.telemetryStarts -eq 0 -and $global:Fx.telemetryStops -eq 0) "optional probe, $optionalReason`: no telemetry is started and its unknown reason is optional-probe-failed"
+        Check ($global:Fx.adlxCalls -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $caseRoot ($name+'.adlx-identity-post.json'))) -and $null -eq $report.binding.adlx.PSObject.Properties['identityDocument'] -and $null -eq $report.binding.adlx.PSObject.Properties['identityDocumentPost']) "optional probe, $optionalReason`: the identity is read once (no post read) and no identity document is bound"
+        Check ($report.binding.status -eq 'bound' -and $report.binding.snapshots.agree -eq $true -and $report.samples.Count -eq 10 -and -not (Test-Path -LiteralPath (Join-Path $caseRoot ($name+'.failure.json')))) "optional probe, $optionalReason`: the binding still agrees, all samples are kept and no failure report is written"
+    }
+    # the same probe failure without AdlxOptional is unchanged: it fails the run with its typed reason
+    Install-Seams
+    $global:FxOptionalReason='adlx-identity-collection-failed'
+    Set-Seam 'AdlxIdentity' {param($exe,$sha,$out) throw (& $global:FxModule {param($r) New-FastLlmBenchmarkFailure $r 'synthetic probe failure'} $global:FxOptionalReason)}
+    $before=Get-RequestCount
+    $run=Invoke-Vnext 'notoptional' $adlxArguments
+    Check ($null -eq $run.Report -and $run.Error -match 'ADLX identity collection failed|synthetic probe failure' -and (Get-FxFailure 'notoptional').Doc.reason -eq 'adlx-identity-collection-failed' -and (Get-RequestCount)-$before -eq 1) 'without AdlxOptional an ADLX probe failure still fails the run with its typed reason'
+    # an identity disagreement stays a hard failure even when the probe is optional
+    Install-Seams
+    $global:Fx.adlxList=@($global:FxAdlxBadDriver)
+    $global:Fx.snapshots=@($global:FxSnapDomain0)
+    $run=Invoke-Vnext 'optional-mismatch' $optionalArguments
+    Check ($null -eq $run.Report -and (Get-FxFailure 'optional-mismatch').Doc.reason -eq 'adlx-driver-mismatch') 'optional probe: a captured identity that disagrees (driver mismatch) is still a hard failure'
+    Install-Seams
+    $badPnp=New-FxAdlx 'PCI\VEN_1002&DEV_744C&SUBSYS_E4711DA2&REV_C8\SYNTHETIC-99999999'
+    $global:Fx.adlxList=@($badPnp)
+    $global:Fx.snapshots=@($global:FxSnapDomain0)
+    $run=Invoke-Vnext 'optional-identity' $optionalArguments
+    Check ($null -eq $run.Report -and (Get-FxFailure 'optional-identity').Doc.reason -eq 'adlx-identity-mismatch') 'optional probe: a captured identity for a different adapter (adlx-identity-mismatch) is still a hard failure'
+    # a post-window read that fails after a successful pre read stays a hard failure
+    Install-Seams
+    $global:Fx.adlxCalls=0;$global:FxOptionalReason='adlx-identity-collection-failed'
+    Set-Seam 'AdlxIdentity' {param($exe,$sha,$out)
+        $global:Fx.adlxCalls++
+        if($global:Fx.adlxCalls -gt 1){throw (& $global:FxModule {param($r) New-FastLlmBenchmarkFailure $r 'synthetic probe failure'} $global:FxOptionalReason)}
+        [IO.File]::WriteAllText($out,'{"synthetic":true}')
+        [pscustomobject]@{status='captured';reason=$null;records=$global:FxAdlxOk.records;header=$global:FxAdlxOk.header;path=$out}}
+    $global:Fx.snapshots=@($global:FxSnapDomain0)
+    $run=Invoke-Vnext 'optional-post' $optionalArguments
+    Check ($null -eq $run.Report -and $global:Fx.adlxCalls -eq 2 -and (Get-FxFailure 'optional-post').Doc.reason -eq 'adlx-identity-collection-failed' -and (Get-FxFailure 'optional-post').Doc.stage -eq 'post-timing') 'optional probe: a post-window read failure after a successful pre read is still a hard failure'
+    # AdlxOptional without both ADLX arguments is an argument error before any request
+    Install-Seams
+    $before=Get-RequestCount
+    $run=Invoke-Vnext 'optional-noargs' @{AdlxOptional=$true}
+    Check ($run.Error -match 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256' -and (Get-RequestCount) -eq $before) 'AdlxOptional without the ADLX arguments fails before any request'
+    $run=Invoke-Vnext 'optional-pathonly' @{AdlxOptional=$true;AdlxExecutablePath=$adlxExe}
+    Check ($run.Error -match 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256' -and (Get-RequestCount) -eq $before) 'AdlxOptional with only the ADLX path fails before any request'
+    # The REAL child path, no seam: the wrapper checks, in order, the platform, the parameters, the output path, then the executable digest, and only afterwards looks for
+    # the AMD driver evidence. A regular file with a deliberately wrong digest therefore fails on 'Executable digest mismatch.' on any standard-user Windows box, with no AMD hardware.
+    Clear-Seams
+    $realExe=Join-Path $caseRoot 'real-child-probe.exe'
+    [IO.File]::WriteAllBytes($realExe,[byte[]](1,2,3,4))
+    $realOut=Join-Path $caseRoot 'real-child-identity.json'
+    $realFailure=$null
+    try{& $module {param($e,$o) Get-FastLlmBenchmarkAdlxIdentity $e ('0'*64) $o|Out-Null} $realExe $realOut}catch{$realFailure=$_}
+    $realData=$null;if($null -ne $realFailure){$realData=$realFailure.Exception.Data}
+    Check ($null -ne $realFailure -and (& $module {param($f) Get-FastLlmBenchmarkFailureReason $f} $realFailure) -ceq 'adlx-identity-collection-failed') 'the real ADLX child failing its digest check raises adlx-identity-collection-failed'
+    Check ($null -ne $realData -and $realData['fastllmAdlxExitCode'] -is [int] -and $realData['fastllmAdlxExitCode'] -ne 0) 'the real child failure carries a non-zero integer exit code'
+    Check ($null -ne $realData -and $realData['fastllmAdlxStep'] -ceq 'executable-digest') 'the real child failure maps its stderr to the executable-digest step'
+    Check (-not (Test-Path -LiteralPath $realOut)) 'the failed real child wrote no report file'
     # an existing failure report path aborts before any request
     Install-Seams
     [IO.File]::WriteAllText((Join-Path $caseRoot 'failexists.failure.json'),'x')
