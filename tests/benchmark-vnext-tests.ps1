@@ -1576,6 +1576,19 @@ try{
     Check ($run.Error -match 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256' -and (Get-RequestCount) -eq $before) 'AdlxOptional without the ADLX arguments fails before any request'
     $run=Invoke-Vnext 'optional-pathonly' @{AdlxOptional=$true;AdlxExecutablePath=$adlxExe}
     Check ($run.Error -match 'AdlxOptional requires AdlxExecutablePath and AdlxExecutableSha256' -and (Get-RequestCount) -eq $before) 'AdlxOptional with only the ADLX path fails before any request'
+    # The REAL child path, no seam: the wrapper checks, in order, the platform, the parameters, the output path, then the executable digest, and only afterwards looks for
+    # the AMD driver evidence. A regular file with a deliberately wrong digest therefore fails on 'Executable digest mismatch.' on any standard-user Windows box, with no AMD hardware.
+    Clear-Seams
+    $realExe=Join-Path $caseRoot 'real-child-probe.exe'
+    [IO.File]::WriteAllBytes($realExe,[byte[]](1,2,3,4))
+    $realOut=Join-Path $caseRoot 'real-child-identity.json'
+    $realFailure=$null
+    try{& $module {param($e,$o) Get-FastLlmBenchmarkAdlxIdentity $e ('0'*64) $o|Out-Null} $realExe $realOut}catch{$realFailure=$_}
+    $realData=$null;if($null -ne $realFailure){$realData=$realFailure.Exception.Data}
+    Check ($null -ne $realFailure -and (& $module {param($f) Get-FastLlmBenchmarkFailureReason $f} $realFailure) -ceq 'adlx-identity-collection-failed') 'the real ADLX child failing its digest check raises adlx-identity-collection-failed'
+    Check ($null -ne $realData -and $realData['fastllmAdlxExitCode'] -is [int] -and $realData['fastllmAdlxExitCode'] -ne 0) 'the real child failure carries a non-zero integer exit code'
+    Check ($null -ne $realData -and $realData['fastllmAdlxStep'] -ceq 'executable-digest') 'the real child failure maps its stderr to the executable-digest step'
+    Check (-not (Test-Path -LiteralPath $realOut)) 'the failed real child wrote no report file'
     # an existing failure report path aborts before any request
     Install-Seams
     [IO.File]::WriteAllText((Join-Path $caseRoot 'failexists.failure.json'),'x')
