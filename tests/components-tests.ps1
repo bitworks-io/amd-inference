@@ -1996,7 +1996,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $mirrorTarget = New-TestRoot
     Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
     $mirrored = Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget
-    Check ($mirrored.mode -ceq 'accept-automatically' -and @($mirrored.accepted).Count -eq 3 -and $mirrored.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z') 'the mirrored setting reaches the install folder'
+    Check ($mirrored.mode -ceq 'accept-automatically' -and @($mirrored.accepted).Count -eq 5 -and $mirrored.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z') 'the mirrored setting reaches the install folder'
     Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorTarget)) 'syncing roots that already agree writes nothing'
     Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorSource)) 'syncing a root with itself writes nothing'
     Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'ask'
