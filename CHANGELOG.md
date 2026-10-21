@@ -4,6 +4,8 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+- An installed ADLX probe that cannot run no longer stops a benchmark: the result records ADLX as unavailable (probe failed) and is measured without ADLX identity and telemetry. Explicit `-AdlxExecutablePath`/`-AdlxExecutableSha256` still fail closed.
+
 ## 2026.10.20.14 (stable)
 
 - **Stable release:** the same app as 2026.10.20.13 (canary), which passed Bitworks lab testing on the RX 7900 XT and XTX (the live update and the serving smoke with the HIP default and the Vulkan setup). It includes the changes of 2026.10.20.12 and 2026.10.20.13 below.
