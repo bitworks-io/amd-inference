@@ -187,12 +187,12 @@ try {
     # --- header/footer/document shape
     $plan=Assert-AdlxIdentityParameters -Mode sample -IntervalMs 1000 -Count 2 -TimeoutSeconds $null
     $header=New-AdlxHeaderRecord -Plan $plan -WrapperSha256 ('a'*64) -Executable ([pscustomobject]@{Sha256=('b'*64)}) `
-        -Driver ([pscustomobject]@{Path='C:\Windows\System32\amdadlx64.dll';Version='1.2.3';Sha256=('c'*64);Signer='O=Advanced Micro Devices, Inc.'}) -StartedUtc '2026-10-06T00:00:00Z'
+        -Driver ([pscustomobject]@{Path='C:\Windows\System32\amdadlx64.dll';Version='1.2.3';Sha256=('c'*64);Signer='O=Microsoft Corporation';SignatureType='Catalog'}) -StartedUtc '2026-10-06T00:00:00Z'
     $hl=ConvertTo-AdlxJsonLine $header
     $hj=$hl | ConvertFrom-Json
     Check ($hl -notmatch "`n" -and $hj.kind -ceq 'adlx-run-header' -and $hj.qualification -eq $false -and $hj.servingDeviceBound -eq $false -and
            $hj.wrapperSourceSha256 -ceq ('a'*64) -and $hj.collectorSha256 -ceq ('b'*64) -and $hj.adlxDriverSha256 -ceq ('c'*64) -and
-           $hj.adlxDriverVersion -ceq '1.2.3' -and $hj.adlxDriverSigner -like 'O=Advanced*' -and $hj.adlxDriverPath -like '*amdadlx64.dll') 'header carries wrapper, exe, DLL hash/version/signer'
+           $hj.adlxDriverVersion -ceq '1.2.3' -and $hj.adlxDriverSigner -like 'O=Microsoft*' -and $hj.adlxDriverSignatureType -ceq 'Catalog' -and $hj.adlxDriverPath -like '*amdadlx64.dll') 'header carries wrapper, exe, DLL hash/version/signer'
     $fl=ConvertTo-AdlxJsonLine (New-AdlxFooterRecord -Status failed -CollectorLines 3 -ExitCode 4 -ErrorText 'x "y"' -EndedUtc '2026-10-06T00:00:01Z')
     $fj=$fl | ConvertFrom-Json
     Check ($fj.kind -ceq 'adlx-run-footer' -and $fj.status -ceq 'failed' -and $fj.qualification -eq $false -and $fj.error -ceq 'x "y"') 'footer shape'
@@ -237,7 +237,20 @@ Check ($c.Contains('{\"raw\":%d,\"name\":')) 'enum fields keep the raw value'
 $w=Get-Content -LiteralPath $wrapperPath -Raw
 Check ($w -notmatch '\?\?' -and $w -notmatch '\[short\]' -and $w -notmatch '(?m)=\s*\$\w+\s*\?\s' -and $w -notmatch '\)\s*\?\s*[\$''"\(]') 'wrapper avoids ternary, ??, and [short]'
 Check ($w.StartsWith('#requires -Version 5.1') -and $w.Contains('Bitworks.FastLlm.ProcessHost') -and $w.Contains('Is64BitProcess') -and $w.Contains('WindowsBuiltInRole]::Administrator')) 'wrapper guards and ProcessHost reuse'
-Check ($w -match 'Get-AuthenticodeSignature' -and $w -match "SystemDirectory\) 'amdadlx64.dll'" -and $w -match 'O=Advanced Micro Devices') 'wrapper records System32 DLL signer'
+Check ($w -match 'Get-AuthenticodeSignature' -and $w -match "SystemDirectory\) 'amdadlx64.dll'" -and $w -match 'O=Advanced Micro Devices' -and $w -match 'CreateFromSignedFile') 'wrapper records System32 DLL signer'
+$amdSubject='CN=Example Publisher, O=Advanced Micro Devices, Inc., C=US'
+$msSubject='CN=Example Catalog, O=Microsoft Corporation, C=US'
+Check (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Authenticode -SignerSubject $amdSubject -EmbeddedSignerSubject $null) 'embedded AMD signature accepted'
+Check (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Catalog -SignerSubject $msSubject -EmbeddedSignerSubject $amdSubject) 'catalog Microsoft with embedded AMD accepted'
+Check (-not (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Catalog -SignerSubject $msSubject -EmbeddedSignerSubject $null)) 'catalog without embedded signer rejected'
+Check (-not (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Catalog -SignerSubject $msSubject -EmbeddedSignerSubject 'CN=x, O=Other Org')) 'catalog with embedded other org rejected'
+Check (-not (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Catalog -SignerSubject 'CN=x, O=Other Org' -EmbeddedSignerSubject $amdSubject)) 'catalog with other catalog signer rejected'
+Check (-not (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Authenticode -SignerSubject $msSubject -EmbeddedSignerSubject $amdSubject)) 'Microsoft route needs Catalog'
+foreach($st in @('NotSigned','UnknownError','HashMismatch')){
+    Check (-not (Test-AdlxDriverSignatureAcceptable -Status $st -SignatureType Authenticode -SignerSubject $amdSubject -EmbeddedSignerSubject $amdSubject)) "status $st rejected"
+}
+Check (-not (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Authenticode -SignerSubject 'CN=x, O=Advanced Micro Devices Evil' -EmbeddedSignerSubject $null)) 'spoofed signer subject rejected'
+Check (-not (Test-AdlxDriverSignatureAcceptable -Status Valid -SignatureType Catalog -SignerSubject $msSubject -EmbeddedSignerSubject 'CN=x, O=Advanced Micro Devices Evil')) 'spoofed embedded subject rejected'
 Check ($w -notmatch 'Start-Process|Invoke-Expression|\biex\b') 'wrapper avoids shell launch'
 $b=Get-Content -LiteralPath $buildPath -Raw
 Check ($b.Contains("sdk_commit='32b5a740d42295c5dfe9026b9f52683da0f3af91'") -and $b.Contains("sdk_zip_sha256='99850ddd58e3f5bbfdbe41c87248da8d5394227eaa32b19aad3206b4c3b2677c'") -and $b.Contains("!= '0.16.0'") -and $b.Contains('-Wall -Wextra -Werror') -and $b.Contains('mktemp -d')) 'build script pins SDK/Zig and uses -Werror'

@@ -261,6 +261,20 @@ function ConvertFrom-AdlxCollectorLine {
     return $row
 }
 
+function Test-AdlxDriverSignatureAcceptable {
+    param([string]$Status, [string]$SignatureType, [string]$SignerSubject, [string]$EmbeddedSignerSubject)
+    $amd = '(^|,)\s*O=Advanced Micro Devices(,|$)'
+    $microsoft = '(^|,)\s*O=Microsoft Corporation(,|$)'
+    if ($Status -cne 'Valid' -or [string]::IsNullOrEmpty($SignerSubject)) { return $false }
+    # Route A: the reported signer is AMD.
+    if ($SignerSubject -match $amd) { return $true }
+    # Route B: Windows verified the file through the driver catalog (Microsoft signer)
+    # and the file's own embedded signer is AMD.
+    if ($SignatureType -ceq 'Catalog' -and $SignerSubject -match $microsoft -and
+        -not [string]::IsNullOrEmpty($EmbeddedSignerSubject) -and $EmbeddedSignerSubject -match $amd) { return $true }
+    return $false
+}
+
 function Get-AdlxDriverEvidence {
     $dllPath = Join-Path ([Environment]::SystemDirectory) 'amdadlx64.dll'
     $dll = Get-Item -LiteralPath $dllPath -ErrorAction Stop
@@ -268,8 +282,19 @@ function Get-AdlxDriverEvidence {
         throw 'ADLX driver library is not a regular System32 file.'
     }
     $signature = Get-AuthenticodeSignature -LiteralPath $dll.FullName
-    if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or
-        $signature.SignerCertificate.Subject -notmatch '(^|,)\s*O=Advanced Micro Devices(,|$)') {
+    $signerSubject = $null
+    if ($null -ne $signature.SignerCertificate) { $signerSubject = $signature.SignerCertificate.Subject }
+    $signatureType = [string]$signature.SignatureType
+    $embeddedSubject = $null
+    if ($signatureType -ceq 'Catalog') {
+        try {
+            $embeddedSubject = [Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($dll.FullName).Subject
+        } catch {
+            $embeddedSubject = $null
+        }
+    }
+    if (-not (Test-AdlxDriverSignatureAcceptable -Status ([string]$signature.Status) -SignatureType $signatureType `
+            -SignerSubject $signerSubject -EmbeddedSignerSubject $embeddedSubject)) {
         throw 'ADLX driver library does not have a valid AMD publisher signature.'
     }
     $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($dll.FullName).FileVersion
@@ -278,7 +303,8 @@ function Get-AdlxDriverEvidence {
         Path = $dll.FullName
         Version = $version
         Sha256 = Get-AdlxIdentityFileSha256 -Path $dll.FullName
-        Signer = $signature.SignerCertificate.Subject
+        Signer = $signerSubject
+        SignatureType = $signatureType
     }
 }
 
@@ -300,6 +326,7 @@ function New-AdlxHeaderRecord {
         adlxDriverVersion = $Driver.Version
         adlxDriverSha256 = $Driver.Sha256
         adlxDriverSigner = $Driver.Signer
+        adlxDriverSignatureType = $Driver.SignatureType
         readOnly = $true
     }
 }
