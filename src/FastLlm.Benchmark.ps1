@@ -670,6 +670,8 @@ function Resolve-FastLlmBenchmarkBinding {
             # Diagnosis facts: the child's exit code (int or null) and a fixed token for the failing step. Never raw text.
             $optionalExit = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureExitCode'
             $optionalStep = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureStep'
+            $optionalCollectorExit = Get-FastLlmBenchmarkProperty $Adlx 'optionalFailureCollectorExitCode'
+            $adlxBlock['optionalFailureCollectorExitCode'] = $(if ($optionalCollectorExit -is [int]) { $optionalCollectorExit } else { $null })
             $adlxBlock['optionalFailureExitCode'] = $(if ($optionalExit -is [int]) { $optionalExit } else { $null })
             $adlxBlock['optionalFailureStep'] = $(if ($null -ne $optionalStep -and $script:FastLlmBenchmarkAdlxFailureSteps -ccontains [string]$optionalStep) { [string]$optionalStep } else { 'unknown' })
         }
@@ -1270,12 +1272,19 @@ function Wait-FastLlmBenchmarkChild {
 }
 
 # Fixed step tokens for a failed ADLX identity child. The stderr text is only matched against the wrapper's own fixed messages and is never copied anywhere.
-$script:FastLlmBenchmarkAdlxFailureSteps = @('driver-not-regular','driver-signature','driver-version','executable-digest','executable-missing','host-source-missing','output-path','collector-output','driver-missing','host-compile','arguments','environment','timeout','unrecognized','unknown')
+$script:FastLlmBenchmarkAdlxFailureSteps = @('driver-not-regular','driver-signature','driver-version','executable-digest','executable-missing','host-source-missing','output-path','collector-output','driver-missing','host-compile','arguments','environment','collector-exit','collector-deadline','collector-no-records','collector-records','inputs-changed','timeout','unrecognized','unknown')
 function Get-FastLlmBenchmarkAdlxFailureStep {
     param([string]$Text, [bool]$TimedOut = $false)
     if ($TimedOut) { return 'timeout' }
     if ([string]::IsNullOrEmpty($Text)) { return 'unknown' }
     $map = @(
+        @('ADLX collector failed with exit code', 'collector-exit'),
+        @('ADLX collector exceeded its deadline.', 'collector-deadline'),
+        @('ADLX collector output did not complete before deadline.', 'collector-deadline'),
+        @('ADLX collector produced no records.', 'collector-no-records'),
+        @('Identity record count does not match the GPU count.', 'collector-records'),
+        @('Identity records are duplicated or inconsistent.', 'collector-records'),
+        @('On-disk collector inputs changed during the run.', 'inputs-changed'),
         @('ADLX driver library is not a regular System32 file.', 'driver-not-regular'),
         @('ADLX driver library does not have a valid AMD publisher signature.', 'driver-signature'),
         @('ADLX driver library has no file version.', 'driver-version'),
@@ -1301,6 +1310,17 @@ function Get-FastLlmBenchmarkAdlxFailureStep {
     return 'unrecognized'
 }
 
+# The collector's own exit code, only the integer: the hint after the colon is never read into a result.
+function Get-FastLlmBenchmarkAdlxCollectorExitCode {
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    $match = [regex]::Match($Text, 'ADLX collector failed with exit code (-?\d+)')
+    if (-not $match.Success) { return $null }
+    $value = 0
+    if ([int]::TryParse($match.Groups[1].Value, [Globalization.NumberStyles]::AllowLeadingSign, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return [int]$value }
+    return $null
+}
+
 function Get-FastLlmBenchmarkAdlxIdentity {
     param([string]$ExecutablePath, [string]$ExpectedSha256, [string]$OutputPath)
     $seam = Get-FastLlmBenchmarkSeam 'AdlxIdentity'
@@ -1321,6 +1341,8 @@ function Get-FastLlmBenchmarkAdlxIdentity {
             $childText = $null
             try { $childText = $child.Snapshot() } catch {}
             $collectionFailure.Data['fastllmAdlxStep'] = (Get-FastLlmBenchmarkAdlxFailureStep $childText (-not $finished))
+            $collectorExit = Get-FastLlmBenchmarkAdlxCollectorExitCode $childText
+            if ($null -ne $collectorExit) { $collectionFailure.Data['fastllmAdlxCollectorExitCode'] = $collectorExit }
             throw $collectionFailure
         }
     } finally { $child.Dispose() }
@@ -1792,7 +1814,9 @@ function Invoke-FastLlmBenchmark {
                 if($null -ne $adlxFailureData -and $adlxFailureData.Contains('fastllmAdlxStep') -and $script:FastLlmBenchmarkAdlxFailureSteps -ccontains [string]$adlxFailureData['fastllmAdlxStep']){$adlxFailureStep=[string]$adlxFailureData['fastllmAdlxStep']}
                 # A report that was read but rejected has a clean exit code and no step to name.
                 if($adlxOptionalFailure -eq 'adlx-identity-report-invalid' -and $null -eq $adlxFailureExit){$adlxFailureExit=0}
-                $adlx=[pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason=$adlxOptionalFailure;optionalFailureExitCode=$adlxFailureExit;optionalFailureStep=$adlxFailureStep;records=@();header=$null}
+                $adlxFailureCollectorExit=$null
+                if($null -ne $adlxFailureData -and $adlxFailureData.Contains('fastllmAdlxCollectorExitCode') -and $adlxFailureData['fastllmAdlxCollectorExitCode'] -is [int]){$adlxFailureCollectorExit=[int]$adlxFailureData['fastllmAdlxCollectorExitCode']}
+                $adlx=[pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason=$adlxOptionalFailure;optionalFailureExitCode=$adlxFailureExit;optionalFailureCollectorExitCode=$adlxFailureCollectorExit;optionalFailureStep=$adlxFailureStep;records=@();header=$null}
             }
         }
         $preSnapshot=$null;$probeReason=$null

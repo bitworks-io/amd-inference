@@ -257,6 +257,13 @@ if(-not $Worker){
         @('Get-Item: Cannot find path ''C:\Windows\System32\amdadlx64.dll'' because it does not exist.','driver-missing'),
         @('Add-Type: something failed','host-compile'),
         @('x.cs(3,4): error CS1002: ; expected','host-compile'),
+        @('ADLX collector failed with exit code 3: some hint','collector-exit'),
+        @('ADLX collector exceeded its deadline.','collector-deadline'),
+        @('ADLX collector output did not complete before deadline.','collector-deadline'),
+        @('ADLX collector produced no records.','collector-no-records'),
+        @('Identity record count does not match the GPU count.','collector-records'),
+        @('Identity records are duplicated or inconsistent.','collector-records'),
+        @('On-disk collector inputs changed during the run.','inputs-changed'),
         @('some entirely different failure text at /home/someone/secret.txt','unrecognized')
     )
     foreach($case in $stepCases){
@@ -264,6 +271,12 @@ if(-not $Worker){
         Check ($stepGot -ceq $case[1]) "the ADLX failure step for '$($case[0])' is the token $($case[1])"
     }
     Check ((& $module {Get-FastLlmBenchmarkAdlxFailureStep 'anything' $true}) -ceq 'timeout' -and (& $module {Get-FastLlmBenchmarkAdlxFailureStep $null}) -ceq 'unknown') 'a timeout maps to timeout and no child output maps to unknown'
+    Check ((& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'adlx-identity-vram failed: ADLX collector failed with exit code -1073741819: HINT-TEXT'}) -eq -1073741819 -and (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'ADLX collector failed with exit code 7: x'}) -eq 7 -and $null -eq (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'Executable digest mismatch.'}) -and $null -eq (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode $null}) -and $null -eq (& $module {Get-FastLlmBenchmarkAdlxCollectorExitCode 'ADLX collector failed with exit code 99999999999: x'})) 'the collector exit code parses negative and positive, and is null when absent or not an int'
+    $collBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode=1;optionalFailureCollectorExitCode=-5;optionalFailureStep='collector-exit';records=@();header=$null})).Binding
+    Check ($collBinding.adlx.optionalFailureCollectorExitCode -eq -5 -and $collBinding.adlx.optionalFailureStep -ceq 'collector-exit') 'the binding carries the collector exit code'
+    $hintText='adlx-identity-vram failed: ADLX collector failed with exit code -3: HINT-TEXT C:\secret\path'
+    $hintBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode=1;optionalFailureCollectorExitCode=(& $module {param($t) Get-FastLlmBenchmarkAdlxCollectorExitCode $t} $hintText);optionalFailureStep=(& $module {param($t) Get-FastLlmBenchmarkAdlxFailureStep $t} $hintText);records=@();header=$null})).Binding
+    Check ($hintBinding.adlx.optionalFailureCollectorExitCode -eq -3 -and $hintBinding.adlx.optionalFailureStep -ceq 'collector-exit' -and (ConvertTo-Json -InputObject $hintBinding.adlx -Depth 5) -notmatch 'HINT-TEXT|secret') 'the collector hint text after the colon never reaches the binding'
     $stepBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode=3;optionalFailureStep='driver-signature';records=@();header=$null})).Binding
     Check ($stepBinding.adlx.optionalFailureExitCode -eq 3 -and $stepBinding.adlx.optionalFailureStep -ceq 'driver-signature') 'the binding carries the exit code and the step token next to the failure reason'
     $badStepBinding=(Resolve-Fx (New-FxUniqueSnapshot) ([pscustomobject]@{status='unknown';reason='optional-probe-failed';optionalFailureReason='adlx-identity-collection-failed';optionalFailureExitCode='x';optionalFailureStep='C:\raw\text';records=@();header=$null})).Binding
@@ -1524,8 +1537,8 @@ try{
     foreach($optionalReason in @('adlx-identity-collection-failed','adlx-identity-report-invalid')){
         Install-Seams
         $global:Fx.adlxCalls=0;$global:FxOptionalReason=$optionalReason
-        if($optionalReason -eq 'adlx-identity-collection-failed'){$global:FxOptionalExit=5;$global:FxOptionalStep='driver-signature'}else{$global:FxOptionalExit=$null;$global:FxOptionalStep='C:\\raw\\SENTINEL-stderr-text'}
-        Set-Seam 'AdlxIdentity' {param($exe,$sha,$out) $global:Fx.adlxCalls++;throw (& $global:FxModule {param($r,$e,$st) $f=New-FastLlmBenchmarkFailure $r 'synthetic probe failure';if($null -ne $e){$f.Data['fastllmAdlxExitCode']=$e};$f.Data['fastllmAdlxStep']=$st;$f} $global:FxOptionalReason $global:FxOptionalExit $global:FxOptionalStep)}
+        if($optionalReason -eq 'adlx-identity-collection-failed'){$global:FxOptionalExit=5;$global:FxOptionalStep='collector-exit';$global:FxOptionalCollector=-1073741819}else{$global:FxOptionalCollector=$null;$global:FxOptionalExit=$null;$global:FxOptionalStep='C:\\raw\\SENTINEL-stderr-text'}
+        Set-Seam 'AdlxIdentity' {param($exe,$sha,$out) $global:Fx.adlxCalls++;throw (& $global:FxModule {param($r,$e,$st,$c) $f=New-FastLlmBenchmarkFailure $r 'synthetic probe failure';if($null -ne $e){$f.Data['fastllmAdlxExitCode']=$e};$f.Data['fastllmAdlxStep']=$st;if($null -ne $c){$f.Data['fastllmAdlxCollectorExitCode']=$c};$f} $global:FxOptionalReason $global:FxOptionalExit $global:FxOptionalStep $global:FxOptionalCollector)}
         $global:Fx.snapshots=@($global:FxSnapDomain0)
         Set-Seam 'Mcfg' {@(0)}
         $name='optional-'+$optionalReason
@@ -1533,7 +1546,7 @@ try{
         Check ($null -eq $run.Error -and $null -ne $run.Report) "optional probe, $optionalReason before the window: the run completes ($($run.Error))"
         $report=$run.Report
         Check ($report.binding.adlx.status -eq 'unknown' -and $report.binding.adlx.reason -eq 'optional-probe-failed' -and $report.binding.adlx.optionalFailureReason -eq $optionalReason -and $report.binding.adlx.crossCheck -eq 'not-run') "optional probe, $optionalReason`: the binding records ADLX as unknown, optional-probe-failed and the specific reason"
-        if($optionalReason -eq 'adlx-identity-collection-failed'){Check ($report.binding.adlx.optionalFailureExitCode -eq 5 -and $report.binding.adlx.optionalFailureStep -ceq 'driver-signature') 'optional probe: the exit code and the step token from the failure are recorded'}
+        if($optionalReason -eq 'adlx-identity-collection-failed'){Check ($report.binding.adlx.optionalFailureExitCode -eq 5 -and $report.binding.adlx.optionalFailureStep -ceq 'collector-exit' -and $report.binding.adlx.optionalFailureCollectorExitCode -eq -1073741819 -and $run.Raw -notmatch 'HINT-TEXT') 'optional probe: the exit code and the step token from the failure are recorded'}
         else{Check ($report.binding.adlx.optionalFailureExitCode -eq 0 -and $report.binding.adlx.optionalFailureStep -ceq 'unknown' -and $run.Raw -notmatch 'SENTINEL-stderr-text' -and $run.Raw -notmatch 'stderr-text') 'optional probe: a report-invalid failure records exit code 0, and a non-token step (raw text) is never copied into the report'}
         Check ($report.telemetry.status -eq 'unknown' -and $report.telemetry.reason -eq 'optional-probe-failed' -and $global:Fx.telemetryStarts -eq 0 -and $global:Fx.telemetryStops -eq 0) "optional probe, $optionalReason`: no telemetry is started and its unknown reason is optional-probe-failed"
         Check ($global:Fx.adlxCalls -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $caseRoot ($name+'.adlx-identity-post.json'))) -and $null -eq $report.binding.adlx.PSObject.Properties['identityDocument'] -and $null -eq $report.binding.adlx.PSObject.Properties['identityDocumentPost']) "optional probe, $optionalReason`: the identity is read once (no post read) and no identity document is bound"
