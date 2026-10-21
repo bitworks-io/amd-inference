@@ -264,7 +264,7 @@ if(-not $Worker){
         @('Identity record count does not match the GPU count.','collector-records'),
         @('Identity records are duplicated or inconsistent.','collector-records'),
         @('On-disk collector inputs changed during the run.','inputs-changed'),
-        @('some entirely different failure text at /home/someone/secret.txt','unrecognized')
+        @('some entirely different failure text at C:\ProgramData\Example\detail.txt','unrecognized')
     )
     foreach($case in $stepCases){
         $stepGot=& $module {param($t) Get-FastLlmBenchmarkAdlxFailureStep $t} $case[0]
