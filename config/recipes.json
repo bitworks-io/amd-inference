@@ -1,7 +1,7 @@
 {
   "inputs": {
     "config/catalog.json": "65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6",
-    "config/components.json": "18fa55db79eaa4d65d9b8fb8cc9fe35643ca77a7932f5d8cf5640556a54f0559",
+    "config/components.json": "2b62fbfbab88569d933ad50354f0bd56cd409a5acfbb64d9913443b35bc38fdc",
     "config/gpu-variants.json": "cbbc815150015687ce736e53ba90311d72cbceb9e47e3f61526197ddf890a7d2",
     "data/bitworks-experimental-recipes.json": "93056c1341e7abb8b8febaa997c37aa3e2846fbb7a45703c0c33b713718b0fe2",
     "data/community-records.json": "201849d8ae11d656bdbf3a90d0950a941b19c4cfa05d84e7b4a75e5b406da967",

@@ -2013,6 +2013,63 @@
       ],
       "requires": [],
       "signer": null
+    },
+    {
+      "id": "bitworks-adlx-probe",
+      "kind": "tool",
+      "displayName": "FastLLM ADLX probe",
+      "version": "3",
+      "source": {
+        "url": "https://github.com/bitworks-io/amd-inference/releases/download/adlx-probe-v3/adlx-probe-3.zip",
+        "allowedRedirectHosts": [
+          "github.com",
+          "objects.githubusercontent.com",
+          "release-assets.githubusercontent.com"
+        ],
+        "sha256": "cb632d6f6508d01d7cb9220147ba21e6aedc896d635814fb7d5465fbaf5dcab9",
+        "sizeBytes": 57833,
+        "format": "zip",
+        "fileManifest": [
+          {
+            "path": "EULA.txt",
+            "sizeBytes": 10073,
+            "sha256": "3c306e553f882991fe220372cdd1553e3d3d1d0ef853b2b42f33bca6364da285"
+          },
+          {
+            "path": "NOTICE.txt",
+            "sizeBytes": 493,
+            "sha256": "023190254818f9c3f64f4e52fc4d0642fdf70620e0c7928e7d1f69f91e5656fa"
+          },
+          {
+            "path": "adlx-identity-vram.exe",
+            "sizeBytes": 101136,
+            "sha256": "f53e3eebbf97de5bc8de97fbcbb357df83b71c16579be761d7567c0935cc2766"
+          }
+        ]
+      },
+      "license": {
+        "spdx": "LicenseRef-Bitworks-ADLX-Probe-EULA",
+        "url": "https://github.com/bitworks-io/amd-inference/blob/adlx-probe-v3/licenses/adlx-probe/EULA.md",
+        "consent": "accept",
+        "links": [
+          {
+            "title": "FastLLM ADLX Probe End User License Agreement",
+            "url": "https://github.com/bitworks-io/amd-inference/blob/adlx-probe-v3/licenses/adlx-probe/EULA.md"
+          },
+          {
+            "title": "AMD ADLX SDK License Agreement",
+            "url": "https://github.com/GPUOpen-LibrariesAndSDKs/ADLX/blob/32b5a740d42295c5dfe9026b9f52683da0f3af91/ADLX%20SDK%20License%20Agreement.pdf"
+          }
+        ]
+      },
+      "platform": {
+        "os": "windows",
+        "arch": "x64",
+        "backend": "adlx"
+      },
+      "entryPoint": "adlx-identity-vram.exe",
+      "requires": [],
+      "signer": "Bitworks LLC"
     }
   ]
 }

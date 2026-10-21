@@ -168,6 +168,21 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(cc.validate(GOOD, CATALOG), [])
         self.assertEqual(cc.main([]), 0)
 
+    def test_shipped_adlx_probe_tool(self):
+        probe = {c["id"]: c for c in GOOD["components"]}["bitworks-adlx-probe"]
+        self.assertEqual(probe["kind"], "tool")
+        self.assertEqual(probe["entryPoint"], "adlx-identity-vram.exe")
+        self.assertNotIn("adapter", probe)
+        self.assertEqual(probe["requires"], [])
+        self.assertEqual(probe["signer"], "Bitworks LLC")
+        manifest = {m["path"]: m for m in probe["source"]["fileManifest"]}
+        self.assertEqual(sorted(manifest), ["EULA.txt", "NOTICE.txt", "adlx-identity-vram.exe"])
+        self.assertEqual(manifest["adlx-identity-vram.exe"]["sha256"], "f53e3eebbf97de5bc8de97fbcbb357df83b71c16579be761d7567c0935cc2766")
+        self.assertEqual(probe["license"]["consent"], "accept")
+        self.assertEqual(len(probe["license"]["links"]), 2)
+        self.assertEqual(probe["source"]["allowedRedirectHosts"], ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"])
+        self.assertEqual(cc.validate(GOOD, CATALOG), [])
+
     def test_valid_tree(self):
         ok = comp("rt", [part(["bin/a.dll", ".kpack/x.kpack", "bin/rocblas/library/y.dat"], prefix="_rocm_sdk_libraries/")], path_dirs=["bin"])
         self.assertEqual(self.errors(ok), [])

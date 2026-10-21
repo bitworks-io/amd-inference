@@ -1600,7 +1600,8 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $pendingWireIds = @($wirePlan.setup.pendingComponents | ForEach-Object { [string] $_.id })
         $fixtureIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath $hipFx.ComponentsPath))
         $shippedIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path (Join-Path $repoRoot 'config') 'components.json')))
-        Check ($shippedIdentities.Count -eq 3 -and $fixtureIdentities.Count -ge 1) 'license identities come from both the shipped and the fixture component lists'
+        # Shipped: llama.cpp MIT, AMD Software EULA, AMD HIP SDK license page, the FastLLM ADLX probe EULA and the AMD ADLX SDK license (title and host each).
+        Check ($shippedIdentities.Count -eq 5 -and $fixtureIdentities.Count -ge 1) 'license identities come from both the shipped and the fixture component lists'
         $uiAskRoot = New-TestRoot
         $uiOnRoot = New-TestRoot
         $uiShippedRoot = New-TestRoot
@@ -1921,9 +1922,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $licShipped = @(Get-FastLlmComponents -ComponentsPath (Join-Path $repoRoot 'config/components.json'))
     $licIdentities = @(Get-FastLlmAcceptableLicenseIdentities -Components $licShipped)
     $licKeys = @($licIdentities | ForEach-Object { $_.title + ' @ ' + $_.host } | Sort-Object)
-    Check ($licIdentities.Count -eq 3 -and ($licKeys -join '|') -ceq 'AMD HIP SDK license page @ www.amd.com|AMD Software End User License Agreement @ github.com|llama.cpp license (MIT) @ github.com') 'the shipped components yield exactly three acceptable license identities (the Vulkan show license contributes none)'
+    Check ($licIdentities.Count -eq 5 -and ($licKeys -join '|') -ceq 'AMD ADLX SDK License Agreement @ github.com|AMD HIP SDK license page @ www.amd.com|AMD Software End User License Agreement @ github.com|FastLLM ADLX Probe End User License Agreement @ github.com|llama.cpp license (MIT) @ github.com') 'the shipped components yield exactly five acceptable license identities: the HIP chain three and the ADLX probe two (the Vulkan show license contributes none)'
     $licDisclosure = @(Format-FastLlmLicenseDisclosure -Components $licShipped)
-    Check ($licDisclosure.Count -eq 3 -and @($licDisclosure | Where-Object { $_ -like 'License: llama.cpp license (MIT) https://github.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD HIP SDK license page https://www.amd.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD Software End User License Agreement https://github.com/*' }).Count -eq 1) 'the disclosure lists one "License: <title> <url>" line per acceptable identity'
+    Check ($licDisclosure.Count -eq 5 -and @($licDisclosure | Where-Object { $_ -like 'License: FastLLM ADLX Probe End User License Agreement https://github.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD ADLX SDK License Agreement https://github.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: llama.cpp license (MIT) https://github.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD HIP SDK license page https://www.amd.com/*' }).Count -eq 1 -and @($licDisclosure | Where-Object { $_ -like 'License: AMD Software End User License Agreement https://github.com/*' }).Count -eq 1) 'the disclosure lists one "License: <title> <url>" line per acceptable identity'
 
     $licOn = [pscustomobject] @{ mode = 'accept-automatically'; acceptedAt = '2026-10-16T10:00:00.0000000Z'; accepted = $licIdentities }
     $licAsk = [pscustomobject] @{ mode = 'ask'; acceptedAt = ''; accepted = @() }
@@ -1947,6 +1948,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Set-FastLlmComponentLicenseSettings -InstallRoot $licShippedRoot -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
     Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-b10698-vulkan') -ceq '') 'with the setting on, the shipped Vulkan engine (show license not in the set) gets no standing acceptance'
     Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-hip-b11658') -ceq '2026-10-16T10:00:00.0000000Z') 'with the setting on, the shipped HIP chain gets the standing acceptance'
+    Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'bitworks-adlx-probe') -ceq '2026-10-16T10:00:00.0000000Z') 'with the setting on and both probe licenses in the stored set, the shipped ADLX probe gets the standing acceptance'
 
     # Standing-setting receipts through the install seam (fixture chain with accept-type licenses).
     $stFx = New-ChainFixture -Name 'fx-standing'
@@ -1994,7 +1996,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $mirrorTarget = New-TestRoot
     Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
     $mirrored = Get-FastLlmComponentLicenseSettings -InstallRoot $mirrorTarget
-    Check ($mirrored.mode -ceq 'accept-automatically' -and @($mirrored.accepted).Count -eq 3 -and $mirrored.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z') 'the mirrored setting reaches the install folder'
+    Check ($mirrored.mode -ceq 'accept-automatically' -and @($mirrored.accepted).Count -eq 5 -and $mirrored.acceptedAt -ceq '2026-10-16T10:00:00.0000000Z') 'the mirrored setting reaches the install folder'
     Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorTarget)) 'syncing roots that already agree writes nothing'
     Check (-not (Sync-FastLlmComponentLicenseSetting -SourceRoot $mirrorSource -TargetRoot $mirrorSource)) 'syncing a root with itself writes nothing'
     Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $mirrorSource -TargetRoot $mirrorTarget -Mode 'ask'
@@ -2433,9 +2435,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($setRefused.exit -ne 0 -and $setRefused.text.Contains('needs -AcceptLicense') -and -not (Test-Path -LiteralPath $setFile)) 'settings -ComponentLicenses accept-automatically without -AcceptLicense is refused and changes nothing'
         $setOn = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
         $setOnLinks = [regex]::Matches($setOn.text, 'License: ').Count
-        Check ($setOn.exit -eq 0 -and $setOnLinks -eq 3 -and $setOn.text.Contains('AMD HIP SDK license page') -and $setOn.text.Contains('AMD Software End User License Agreement') -and $setOn.text.Contains('llama.cpp license (MIT)') -and $setOn.text.Contains('accept-automatically')) 'with -AcceptLicense it prints the three license links and stores the setting'
+        Check ($setOn.exit -eq 0 -and $setOnLinks -eq 5 -and $setOn.text.Contains('FastLLM ADLX Probe End User License Agreement') -and $setOn.text.Contains('AMD ADLX SDK License Agreement') -and $setOn.text.Contains('AMD HIP SDK license page') -and $setOn.text.Contains('AMD Software End User License Agreement') -and $setOn.text.Contains('llama.cpp license (MIT)') -and $setOn.text.Contains('accept-automatically')) 'with -AcceptLicense it prints the five license links and stores the setting'
         $setStored = Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot
-        Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 3 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the three identities'
+        Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 5 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the five identities'
         $setOnJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
         Check ((($setOnJson.text | ConvertFrom-Json).mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
         $setMixedRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-InstallRoot', $setRoot)
@@ -2444,7 +2446,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($setOff.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'ask') 'settings -ComponentLicenses ask turns it off'
         # install -DryRun is refused before any plan, download or install step runs, so -AcceptLicense with it can never fetch a component.
         $setOnMixed = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
-        Check ($setOnMixed.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically' -and @((Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).accepted).Count -eq 3) 'a mixed-case Accept-Automatically with -AcceptLicense stores accept-automatically, not ask'
+        Check ($setOnMixed.exit -eq 0 -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically' -and @((Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).accepted).Count -eq 5) 'a mixed-case Accept-Automatically with -AcceptLicense stores accept-automatically, not ask'
         $null = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)
         $setInstallDry = Invoke-CliRefusal @('install', '-DryRun', '-AcceptLicense', '-InstallRoot', $setRoot)
         Check ($setInstallDry.exit -ne 0 -and $setInstallDry.text.Contains('install -DryRun is not supported') -and -not $setInstallDry.text.Contains('-AcceptLicense is supported only') -and -not (Test-Path -LiteralPath (Join-Path $setRoot 'components')) -and -not (Test-Path -LiteralPath (Join-Path $setRoot 'downloads'))) 'install -DryRun -AcceptLicense is refused up front: -AcceptLicense is a valid install switch and nothing is downloaded or installed'
