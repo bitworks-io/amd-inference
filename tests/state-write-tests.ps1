@@ -353,24 +353,50 @@ try {
         } $Box $realAttributesFn
     }
     function Clear-AttributesShadow { & $module { $script:attrBox = $null } }
+    # Counts every Start-Sleep made from module code (the replace waits with Start-Sleep -Milliseconds). "No wait" is proved by zero
+    # sleeps, not by wall-clock time, which a slow CI runner can stretch; the wall-clock bound below only guards against a hang.
+    function Set-SleepCounter([hashtable]$Box) {
+        & $module {
+            param($B)
+            $script:sleepBox = $B
+            function script:Start-Sleep {
+                param([Parameter(Position = 0)][double]$Seconds, [int]$Milliseconds)
+                if ($null -ne $script:sleepBox) { $script:sleepBox.sleeps++ }
+                if ($PSBoundParameters.ContainsKey('Milliseconds')) { Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds $Milliseconds }
+                else { Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds ([int]($Seconds * 1000)) }
+            }
+        } $Box
+    }
+    function Clear-SleepCounter { & $module { $script:sleepBox = $null } }
+    # Hang guard only: well above runner noise (a no-wait write took 522 ms on a hosted runner) and below the replace budget (~1.4 s).
+    $noWaitBoundMs = 1200
+    # Positive control: the counter sees a Start-Sleep made from module scope (where the writer and the replace run), so zero is meaningful.
+    $sleepControl=@{sleeps=0}
+    Set-SleepCounter $sleepControl
+    try { & $module { Start-Sleep -Milliseconds 1 } } finally { Clear-SleepCounter }
+    Check ($sleepControl.sleeps -eq 1) 'the sleep counter sees a Start-Sleep made from module scope'
     $install=New-Install 'k1'; $dest=Join-Path $install 'state\status.json'
     Write-State $install @{v=0}
     $box=@{pattern='*status.json';attributes=-1;calls=0}
     Set-AttributesShadow $box
+    $sleepBox=@{sleeps=0}
+    Set-SleepCounter $sleepBox
     $timer=[Diagnostics.Stopwatch]::StartNew()
-    try { Write-State $install @{v=1} } finally { Clear-AttributesShadow }
+    try { Write-State $install @{v=1} } finally { Clear-AttributesShadow; Clear-SleepCounter }
     $timer.Stop()
-    Check ($box.calls -eq 1 -and (Read-FastLlmJson $dest).v -eq 1 -and $timer.ElapsedMilliseconds -lt 400) ('writer pre-check does not retry Attributes -1: one check, then the replace owns the wait (' + $box.calls + ' check, ' + $timer.ElapsedMilliseconds + ' ms)')
+    Check ($box.calls -eq 1 -and $sleepBox.sleeps -eq 0 -and (Read-FastLlmJson $dest).v -eq 1 -and $timer.ElapsedMilliseconds -lt $noWaitBoundMs) ('writer pre-check does not retry Attributes -1: one check, no sleep, then the replace owns the wait (' + $box.calls + ' check, ' + $sleepBox.sleeps + ' sleeps, ' + $timer.ElapsedMilliseconds + ' ms)')
     $box=@{pattern='*status.json';attributes=$null;calls=0}
     Set-AttributesShadow $box
     try { Write-State $install @{v=2} } finally { Clear-AttributesShadow }
     Check ($box.calls -eq 1 -and (Read-FastLlmJson $dest).v -eq 2) 'an unreadable destination (attributes null) does not block the write'
     $box=@{pattern='*status.json';attributes=1024;calls=0}
     Set-AttributesShadow $box
+    $sleepBox=@{sleeps=0}
+    Set-SleepCounter $sleepBox
     $thrown=$null; $timer=[Diagnostics.Stopwatch]::StartNew()
-    try { Write-State $install @{v=3} } catch { $thrown=$_.Exception } finally { Clear-AttributesShadow }
+    try { Write-State $install @{v=3} } catch { $thrown=$_.Exception } finally { Clear-AttributesShadow; Clear-SleepCounter }
     $timer.Stop()
-    Check ($thrown -and $thrown.Message -ceq 'Unsafe status path.' -and $thrown.Data['FastLlmStateWrite'] -eq $true -and $box.calls -eq 1 -and $timer.ElapsedMilliseconds -lt 400 -and (Read-FastLlmJson $dest).v -eq 2) 'a real reparse point is refused at once (one check, no retry) and typed as a state-write failure'
+    Check ($thrown -and $thrown.Message -ceq 'Unsafe status path.' -and $thrown.Data['FastLlmStateWrite'] -eq $true -and $box.calls -eq 1 -and $sleepBox.sleeps -eq 0 -and $timer.ElapsedMilliseconds -lt $noWaitBoundMs -and (Read-FastLlmJson $dest).v -eq 2) 'a real reparse point is refused at once (one check, no retry, no sleep) and typed as a state-write failure'
     Check (@(Get-ChildItem -LiteralPath (Join-Path $install 'state') -Filter '*.tmp').Count -eq 0) 'no temp is left when the unsafe verdict stopped the write before any temp was written'
     $realAttributes=& $module { Get-FastLlmStateFileAttributes -Path (Join-Path ([IO.Path]::GetTempPath()) ('fastllm-no-such-file-' + [Guid]::NewGuid().ToString('N'))) }
     Check ($null -eq $realAttributes) 'the real attribute reader returns null for a missing file'
