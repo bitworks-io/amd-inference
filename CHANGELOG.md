@@ -4,6 +4,11 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+## 2026.10.21.12 (stable)
+
+- **Stable release:** the same app as 2026.10.21.11 (canary), which passed Bitworks lab testing on the RX 7900 XT and XTX (the live update and the serving smoke with the HIP default and the Vulkan setup). It includes the changes of 2026.10.21.11 below.
+- **No change to what FastLLM runs by default.** The fixes affect the optional ADLX probe component only.
+
 ## 2026.10.21.11 (canary)
 
 - **No change to what FastLLM runs by default.** Both changes below affect the optional ADLX probe component only.
