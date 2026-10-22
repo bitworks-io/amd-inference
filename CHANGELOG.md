@@ -4,6 +4,9 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+## 2026.10.21.11 (canary)
+
+- **No change to what FastLLM runs by default.** Both changes below affect the optional ADLX probe component only.
 - The ADLX probe accepts AMD's driver library when Windows verifies it through the driver catalog (Microsoft-signed) and the file's embedded signer is AMD; previously only the embedded AMD signature was accepted, so the probe failed under some logon types.
 - An installed ADLX probe that cannot run no longer stops a benchmark: the result records ADLX as unavailable (probe failed) and is measured without ADLX identity and telemetry. Explicit `-AdlxExecutablePath`/`-AdlxExecutableSha256` still fail closed.
 
