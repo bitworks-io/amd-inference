@@ -1,0 +1,8 @@
+{ "schemaVersion": 1, "tiers": [
+  { "id": "4gb",  "vramMiB": 4096,  "idleFreeVramMiB": 3072,  "conservativeFreeVramMiB": 2048,  "source": "estimated" },
+  { "id": "8gb",  "vramMiB": 8192,  "idleFreeVramMiB": 7168,  "conservativeFreeVramMiB": 6144,  "source": "estimated" },
+  { "id": "12gb", "vramMiB": 12272, "idleFreeVramMiB": 11474, "conservativeFreeVramMiB": 10450, "source": "measured:RX 6700 XT,2026-11-03" },
+  { "id": "16gb", "vramMiB": 16384, "idleFreeVramMiB": 15360, "conservativeFreeVramMiB": 14336, "source": "estimated" },
+  { "id": "20gb", "vramMiB": 20480, "idleFreeVramMiB": 19456, "conservativeFreeVramMiB": 18432, "source": "estimated" },
+  { "id": "24gb", "vramMiB": 24576, "idleFreeVramMiB": 23552, "conservativeFreeVramMiB": 22528, "source": "estimated" },
+  { "id": "32gb", "vramMiB": 32768, "idleFreeVramMiB": 31744, "conservativeFreeVramMiB": 30720, "source": "estimated" } ] }

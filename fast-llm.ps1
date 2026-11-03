@@ -108,7 +108,27 @@ param(
     [switch] $AcceptExperimental,
 
     # recipes only, with -AsJson: each listed recipe with its engine's requires chain (install state, license consent kind, source hosts, license links). Read-only and offline.
-    [switch] $Detail
+    [switch] $Detail,
+
+    # models only: install the preload set (every model the planner can pick for the common VRAM tiers, plus the recommended recipes' components).
+    # Needs -ApprovedModelsPath: a model licence is accepted only for the model ids and revisions listed there, a component licence only for the listed id and version.
+    [switch] $Preload,
+
+    # models only: report the preload set state (fastllm.preload-status.v1). Read-only; never downloads.
+    [switch] $PreloadStatus,
+
+    # models -Preload only: stop after the first install (or failure). A row skipped for disk space does not count.
+    [switch] $Next,
+
+    # models -Preload and -PreloadStatus: the approved list (JSON: models[{modelId,revision}], components[{id,version}]).
+    [string] $ApprovedModelsPath,
+
+    # models -Preload and -PreloadStatus: GiB (1024^3) that must stay free after a download.
+    [ValidateRange(0, 1048576)]
+    [int] $MinFreeGB = 50,
+
+    # models -Preload and -PreloadStatus: also write the JSON (UTF-8, no BOM) to this file, atomically.
+    [string] $OutputPath
 )
 
 Set-StrictMode -Version 2.0
@@ -145,7 +165,17 @@ if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-chec
 if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { throw '-Install is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
-if ($AcceptLicense -and $Action -notin @('components', 'install', 'settings')) { throw '-AcceptLicense is supported only by components -Install, install and settings.' }
+if (($Preload -or $PreloadStatus -or $Next -or $PSBoundParameters.ContainsKey('ApprovedModelsPath') -or $PSBoundParameters.ContainsKey('MinFreeGB') -or $PSBoundParameters.ContainsKey('OutputPath')) -and $Action -ne 'models') {
+    throw '-Preload, -PreloadStatus, -Next, -ApprovedModelsPath, -MinFreeGB and -OutputPath are only valid with the models action.'
+}
+if ($Preload -and $PreloadStatus) { throw '-Preload and -PreloadStatus cannot be combined.' }
+if ($Preload -and [string]::IsNullOrWhiteSpace($ApprovedModelsPath)) { throw '-Preload requires -ApprovedModelsPath; no licence is accepted without an approved list.' }
+if ($Next -and -not $Preload) { throw '-Next is supported only with models -Preload.' }
+if (($PSBoundParameters.ContainsKey('ApprovedModelsPath') -or $PSBoundParameters.ContainsKey('MinFreeGB') -or $PSBoundParameters.ContainsKey('OutputPath')) -and -not ($Preload -or $PreloadStatus)) {
+    throw '-ApprovedModelsPath, -MinFreeGB and -OutputPath are supported only with models -Preload or -PreloadStatus.'
+}
+if ($PSBoundParameters.ContainsKey('OutputPath') -and [string]::IsNullOrWhiteSpace($OutputPath)) { throw '-OutputPath needs a file path.' }
+if ($AcceptLicense -and $Action -notin @('components', 'install', 'settings') -and -not ($Action -eq 'models' -and $Preload)) { throw '-AcceptLicense is supported only by components -Install, install and settings.' }
 if ($PSBoundParameters.ContainsKey('ComponentLicenses') -and $Action -ne 'settings') { throw '-ComponentLicenses is supported only by settings.' }
 if ($Action -eq 'settings' -and $AcceptLicense -and -not ($PSBoundParameters.ContainsKey('ComponentLicenses') -and $ComponentLicenses -ceq 'accept-automatically')) {
     throw '-AcceptLicense with settings only goes with -ComponentLicenses accept-automatically; nothing was changed.'
@@ -305,8 +335,46 @@ try {
     if ($Action -eq 'components' -and ($PSBoundParameters.ContainsKey('Install') -or $PSBoundParameters.ContainsKey('Remove'))) {
         $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
     }
+    # -OutputPath: fail fast on an unusable directory and remove any earlier file, so a failed run never leaves a stale report.
+    if (($Preload -or $PreloadStatus) -and $OutputPath) { Initialize-FastLlmPreloadOutputPath -Path $OutputPath }
+    # models -Preload takes the same operation lock as components -Install: a download must not overlap an install, start or component change.
+    if ($Action -eq 'models' -and $Preload -and -not $DryRun) {
+        if ($env:OS -ne 'Windows_NT') { throw 'Live execution is Windows-only. Use models -Preload -DryRun for offline testing.' }
+        $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
+    }
     switch ($Action) {
         'models' {
+            $preloadTiersPath = Join-Path (Join-Path $PSScriptRoot 'config') 'preload-tiers.json'
+            $preloadGpuVariantsPath = Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'
+            if ($Preload) {
+                $preloadArguments = @{
+                    CatalogPath = $catalogPath; RecipesPath = $recipesPath; GpuVariantsPath = $preloadGpuVariantsPath; TiersPath = $preloadTiersPath
+                    InstallRoot = $InstallRoot; ApprovedModelsPath = $ApprovedModelsPath; ComponentsPath = $componentsFilePath; MinFreeGB = $MinFreeGB
+                }
+                $preloadRun = Invoke-FastLlmPreloadRun -InstallArguments ($preloadArguments + @{ AcceptModelLicense = $AcceptModelLicense; AcceptLicense = $AcceptLicense; Unattended = $Unattended; Next = $Next; DryRun = $DryRun }) -OutputPath $OutputPath
+                if ($AsJson) { ConvertTo-FastLlmPreloadJson -InputObject $preloadRun }
+                else {
+                    foreach ($preloadRow in @($preloadRun.rows)) { Write-Host ('{0} {1} {2}' -f $preloadRow.kind, $preloadRow.id, $preloadRow.action) }
+                    if ($preloadRun.PSObject.Properties['error']) { Write-Host ('preload failed: ' + $preloadRun.error) }
+                }
+                exit ([int] $preloadRun.exitCode)
+            }
+            if ($PreloadStatus) {
+                $statusArguments = @{
+                    CatalogPath = $catalogPath; RecipesPath = $recipesPath; GpuVariantsPath = $preloadGpuVariantsPath; TiersPath = $preloadTiersPath
+                    InstallRoot = $InstallRoot; ComponentsPath = $componentsFilePath; MinFreeGB = $MinFreeGB; AppRoot = $projectRoot
+                }
+                if ($ApprovedModelsPath) { $statusArguments.ApprovedModelsPath = $ApprovedModelsPath }
+                $preloadState = Get-FastLlmPreloadStatus @statusArguments
+                $statusJson = ConvertTo-FastLlmPreloadJson -InputObject $preloadState
+                if ($OutputPath) { Write-FastLlmPreloadOutputFile -Path $OutputPath -Json $statusJson }
+                if ($AsJson) { $statusJson }
+                else {
+                    foreach ($statusModel in @($preloadState.models)) { Write-Host ('{0} {1}' -f $statusModel.modelId, $statusModel.reason) }
+                    foreach ($statusComponent in @($preloadState.components)) { Write-Host ('component {0} present={1} verified={2}' -f $statusComponent.id, $statusComponent.present, $statusComponent.verified) }
+                }
+                exit 0
+            }
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             if ($AsJson) { ConvertTo-Json -InputObject @($catalog.models) -Depth 12 }
             else { $catalog.models | Select-Object id, quantization, contextSize, requiredFreeVramMiB, servingMode | Format-Table -AutoSize }

@@ -32,7 +32,7 @@ New-Item -ItemType Directory -Path $stage|Out-Null
 try {
     $files=@(
         'FastLLM.cmd','Install-FastLLM-Lab.cmd','fast-llm-ui.ps1','fast-llm.ps1','README.md','SECURITY.md','THIRD_PARTY_NOTICES.md',
-        'config/catalog.json','config/catalog.sha256','config/driver-guidance.json','config/windows-prerequisites.json',
+        'config/catalog.json','config/catalog.sha256','config/preload-tiers.json','config/driver-guidance.json','config/windows-prerequisites.json',
         'config/experiments/lemonade-hip-b1339-gfx110x.json',
         'tools/benchmark.ps1','tools/soak.ps1','tools/offload-lab.ps1','tools/offload-benchmark.ps1',
         'tools/semantic-smoke.ps1','tools/collect-prerequisite-inventory.ps1','tools/collect-smbios-memory.ps1','tools/collect-vulkan-luid-join.ps1','tools/adlx-identity-vram.ps1','tools/prepare-vc-runtime.ps1','tools/install-vc-runtime.ps1','tools/install-lab-app.ps1',

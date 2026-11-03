@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    { "modelId": "qwen3.5-4b-iq4-xs", "revision": "e87f176479d0855a907a41277aca2f8ee7a09523" },
+    { "modelId": "qwen3.5-9b-q4-k-m", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5" },
+    { "modelId": "qwen3.5-9b-q6-k", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5" },
+    { "modelId": "qwen3.5-9b-q8-0", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5" },
+    { "modelId": "qwen3.8-27b-ud-iq4-xs", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
+    { "modelId": "qwen3.8-27b-ud-q4-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
+    { "modelId": "qwen3.8-27b-ud-q6-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" }
+  ],
+  "components": [
+    { "id": "llama.cpp-hip-b11658", "version": "b11658" },
+    { "id": "amd-rocm-gfx1100-10.0.0", "version": "10.0.0" }
+  ]
+}

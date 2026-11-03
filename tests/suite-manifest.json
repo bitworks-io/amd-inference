@@ -237,6 +237,11 @@
       "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
+      "suite": "preload-tests",
+      "class": "ci",
+      "reason": "Config and fixture derivation through the real planner; no engine, GPU or network required. Wired in test.yml; the fast-llm.ps1 child cases skip under an elevated token."
+    },
+    {
       "suite": "prerequisite-diagnostics-tests",
       "class": "ci",
       "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."

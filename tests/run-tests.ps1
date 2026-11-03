@@ -420,6 +420,91 @@ finally {
     }
 }
 
+# Install-FastLlmCatalogModel: exact-id lab provisioning through the shared verified-download and consent logic.
+$catalogInstallRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fastllm-catalog-install-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $catalogInstallRoot -Force | Out-Null
+$fastLlmModule = Get-Module FastLlm
+$originalSave = & $fastLlmModule { ${function:Save-FastLlmVerifiedFile} }
+$originalWriter = & $fastLlmModule { ${function:Write-FastLlmModelConsentReceipt} }
+try {
+    $realCatalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+    $targetModel = @($realCatalog.models)[0]
+    $excludedOnlyId = [string] @($realCatalog.excludedModels)[0].id
+    Assert-True (@($realCatalog.models | Where-Object { $_.id -ceq $excludedOnlyId }).Count -eq 0) 'the excluded id used by the catalog install tests is not in models[]'
+
+    & $fastLlmModule {
+        $script:catalogInstallSaves = @()
+        $script:catalogInstallReceipts = @()
+        Set-Item -Path 'function:script:Save-FastLlmVerifiedFile' -Value { param($Url, $Destination, $Sha256, $SizeBytes) $script:catalogInstallSaves += , @($Url, $Destination, $Sha256, $SizeBytes) }
+        Set-Item -Path 'function:script:Write-FastLlmModelConsentReceipt' -Value { param($Model, $InstallRoot, $AcceptanceMode) $script:catalogInstallReceipts += , @([string] $Model.id, $AcceptanceMode) }
+    }
+    $getSaves = { & $fastLlmModule { $script:catalogInstallSaves } }
+    $getReceipts = { & $fastLlmModule { $script:catalogInstallReceipts } }
+
+    $destination = Install-FastLlmCatalogModel -ModelId ([string] $targetModel.id) -CatalogPath $catalogPath -InstallRoot $catalogInstallRoot -AcceptModelLicense
+    $saves = @(& $getSaves)
+    $receipts = @(& $getReceipts)
+    Assert-True (($destination -is [string]) -and (Split-Path -Leaf $destination) -ceq [string] $targetModel.file -and (Split-Path -Leaf (Split-Path -Parent $destination)) -ceq 'models') 'catalog install returns models/<catalog file> for the exact id'
+    Assert-True ($saves.Count -eq 1 -and $saves[0][0] -ceq [string] $targetModel.url -and $saves[0][1] -ceq $destination -and $saves[0][2] -ceq [string] $targetModel.sha256 -and [int64] $saves[0][3] -eq [int64] $targetModel.sizeBytes) 'catalog install downloads exactly the catalog url, destination, sha256 and size'
+    Assert-True ($receipts.Count -eq 1 -and $receipts[0][0] -ceq [string] $targetModel.id -and $receipts[0][1] -ceq 'explicit-switch') 'catalog install with -AcceptModelLicense writes one explicit-switch receipt for that model'
+
+    $before = @(& $getSaves).Count
+    Assert-ThrowsMatching -Action { Install-FastLlmCatalogModel -ModelId ([string] $targetModel.id) -CatalogPath $catalogPath -InstallRoot (Join-Path $catalogInstallRoot 'no-consent-root') -Unattended } -Pattern 'requires -AcceptModelLicense or an existing exact consent receipt' -Message 'unattended catalog install without the switch or a receipt refuses like Install-FastLlmModel'
+    Assert-Equal -Expected $before -Actual @(& $getSaves).Count -Message 'a consent refusal downloads nothing'
+
+    foreach ($badId in @('no-such-model', ([string] $targetModel.id).ToUpperInvariant(), ([string] $targetModel.id + ' '))) {
+        $savesBefore = @(& $getSaves).Count
+        Assert-ThrowsMatching -Action { Install-FastLlmCatalogModel -ModelId $badId -CatalogPath $catalogPath -InstallRoot $catalogInstallRoot -AcceptModelLicense } -Pattern 'exact id' -Message "catalog install refuses the non-exact id '$badId'"
+        Assert-Equal -Expected $savesBefore -Actual @(& $getSaves).Count -Message "the non-exact id '$badId' substitutes no model"
+    }
+    Assert-ThrowsMatching -Action { Install-FastLlmCatalogModel -ModelId $excludedOnlyId -CatalogPath $catalogPath -InstallRoot $catalogInstallRoot -AcceptModelLicense } -Pattern 'excluded' -Message 'catalog install refuses an id that is only in excludedModels'
+
+    # A catalog with a duplicate id or a traversal file is refused by the shared loader, before any download.
+    $badCatalogRoot = Join-Path $catalogInstallRoot 'bad-catalog'
+    New-Item -ItemType Directory -Path $badCatalogRoot -Force | Out-Null
+    $savesBefore = @(& $getSaves).Count
+    $duplicate = $realCatalog | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $duplicate.models = @($duplicate.models) + @($duplicate.models[0])
+    $duplicatePath = Join-Path $badCatalogRoot 'duplicate.json'
+    $duplicate | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $duplicatePath -Encoding UTF8
+    Assert-ThrowsMatching -Action { Install-FastLlmCatalogModel -ModelId ([string] $targetModel.id) -CatalogPath $duplicatePath -InstallRoot $catalogInstallRoot -AcceptModelLicense } -Pattern 'unique|duplicate' -Message 'catalog install refuses a duplicate model id'
+    $traversal = $realCatalog | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $traversal.models[0].file = '../escape.gguf'
+    $traversalPath = Join-Path $badCatalogRoot 'traversal.json'
+    $traversal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $traversalPath -Encoding UTF8
+    Assert-ThrowsMatching -Action { Install-FastLlmCatalogModel -ModelId ([string] $targetModel.id) -CatalogPath $traversalPath -InstallRoot $catalogInstallRoot -AcceptModelLicense } -Pattern '.' -Message 'catalog install refuses a model file that would escape the models folder'
+    Assert-Equal -Expected $savesBefore -Actual @(& $getSaves).Count -Message 'bad catalogs download nothing'
+
+    # The shared helper itself enforces the contained destination even when handed a model object directly.
+    $escapeModel = $targetModel | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $escapeModel.file = '../escape.gguf'
+    Assert-ThrowsMatching -Action { & $fastLlmModule { param($Model, $Root) Install-FastLlmModelEntry -Model $Model -InstallRoot $Root -AcceptModelLicense } $escapeModel $catalogInstallRoot } -Pattern '.' -Message 'the shared install helper refuses a traversal file through the contained-path check'
+    Assert-Equal -Expected $savesBefore -Actual @(& $getSaves).Count -Message 'the traversal refusal downloads nothing'
+
+    # An existing exact receipt authorizes an unattended install with no new receipt; the real writer creates it first.
+    $receiptRoot = Join-Path $catalogInstallRoot 'receipt-root'
+    New-Item -ItemType Directory -Path $receiptRoot -Force | Out-Null
+    & $fastLlmModule { param($Writer, $Model, $Root) & $Writer -Model $Model -InstallRoot $Root -AcceptanceMode 'explicit-switch' } $originalWriter $targetModel $receiptRoot
+    $savesBefore = @(& $getSaves).Count
+    $receiptsBefore = @(& $getReceipts).Count
+    $receiptDestination = Install-FastLlmCatalogModel -ModelId ([string] $targetModel.id) -CatalogPath $catalogPath -InstallRoot $receiptRoot -Unattended
+    Assert-True ((Split-Path -Leaf $receiptDestination) -ceq [string] $targetModel.file) 'an existing exact receipt authorizes an unattended catalog install'
+    Assert-True (@(& $getSaves).Count -eq $savesBefore + 1 -and @(& $getReceipts).Count -eq $receiptsBefore) 'an existing receipt downloads once and writes no new receipt'
+
+    # Regression: Install-FastLlmModel -Plan behaves as before through the shared helper.
+    $receiptsBefore = @(& $getReceipts).Count
+    $planDestination = Install-FastLlmModel -Plan ([pscustomobject] @{ model = $targetModel }) -InstallRoot $catalogInstallRoot -AcceptModelLicense
+    Assert-Equal -Expected $destination -Actual $planDestination -Message 'Install-FastLlmModel -Plan still returns models/<file> from Plan.model'
+    Assert-Equal -Expected ($receiptsBefore + 1) -Actual @(& $getReceipts).Count -Message 'Install-FastLlmModel -Plan -AcceptModelLicense still writes its explicit-switch receipt'
+    Assert-ThrowsMatching -Action { Install-FastLlmModel -Plan ([pscustomobject] @{ model = $targetModel }) -InstallRoot (Join-Path $catalogInstallRoot 'empty-root') -Unattended } -Pattern 'requires -AcceptModelLicense or an existing exact consent receipt' -Message 'Install-FastLlmModel -Plan -Unattended without consent still refuses with the same message'
+}
+finally {
+    & $fastLlmModule { param($Save, $Writer) Set-Item -Path 'function:script:Save-FastLlmVerifiedFile' -Value $Save; Set-Item -Path 'function:script:Write-FastLlmModelConsentReceipt' -Value $Writer } $originalSave $originalWriter
+    if (Test-Path -LiteralPath $catalogInstallRoot) {
+        Remove-Item -LiteralPath $catalogInstallRoot -Recurse -Force
+    }
+}
+
 $smallPlan = Get-FixturePlan -Fixture 'amd-4gb.json'
 $largePlan = Get-FixturePlan -Fixture 'r9700-32gb.json'
 $enabledLanePlan = Get-FixturePlan -Fixture 'rx-7900-xtx-24gb.json'
