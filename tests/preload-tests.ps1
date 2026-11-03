@@ -484,3 +484,5 @@ try {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Host "preload-tests: $script:count checks passed"
+# The child-process checks above end on a deliberate non-zero exit; do not leak it into a caller that runs several suites in one session.
+$global:LASTEXITCODE = 0
