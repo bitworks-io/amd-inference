@@ -58,7 +58,7 @@ function Get-FastLlmBackgroundSourcePins {
         'src/ProcessHost.cs','src/WindowsInventory.ps1',
         'src/WindowsInventory.cs','src/WindowsGpuIdentity.cs',
         'src/WindowsHostInventory.cs','src/WindowsGpuTelemetry.cs',
-        'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1',
+        'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','src/FastLlm.Preload.ps1',
         'config/catalog.json','config/recipes.json','config/gpu-variants.json'
     )
     $pins = [ordered]@{}
