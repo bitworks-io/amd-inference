@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.SelectedDeviceIdentity.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.CardIdentity.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Recipes.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.Preload.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
@@ -1028,9 +1029,14 @@ function Get-FastLlmPlan {
         # The fallback pass never falls back again.
         [string] $FallbackFromRecipe,
 
-        [string] $FallbackReason
+        [string] $FallbackReason,
+
+        # Bench-only: when the planner's top pick is not installed (file of the catalog size plus a consent receipt), the best fitting model
+        # that is installed is planned instead, so a bench never waits for a download. Off by default; never applies to -ModelId or -RecipeId.
+        [switch] $PreferInstalledModels
     )
 
+    if ($PreferInstalledModels -and -not $InstallRoot) { throw '-PreferInstalledModels requires -InstallRoot.' }
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
     if ($RecipeId -and $FallbackFromRecipe) { throw '-Recipe and -FallbackFromRecipe cannot be combined: an explicit recipe never falls back.' }
     $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
@@ -1155,10 +1161,12 @@ function Get-FastLlmPlan {
         catch { $identifiedVariant = $null }
     }
 
+    $preferInstalledActive = [bool] ($PreferInstalledModels -and -not $ModelId -and -not $RecipeId)
+    $preferInstalled = $null
     if ($recipePick) {
         $selected = [pscustomobject] @{ model = $recipePick.model; placement = $recipePick.placement; score = 0; gpuCount = @($recipePick.placement.adapters).Count }
     }
-    else {
+    if (-not $recipePick -or $preferInstalledActive) {
         $fitting = @()
         foreach ($placement in $placements) {
             foreach ($model in @($catalog.models)) {
@@ -1182,9 +1190,17 @@ function Get-FastLlmPlan {
                 }
             }
         }
-        $selected = $fitting |
-            Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [int64] $_.model.requiredFreeVramMiB }; Descending = $true }, gpuCount, @{ Expression = { [int64] $_.placement.selectionCapacity }; Descending = $true } |
-            Select-Object -First 1
+        $sortedFitting = @($fitting |
+            Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [int64] $_.model.requiredFreeVramMiB }; Descending = $true }, gpuCount, @{ Expression = { [int64] $_.placement.selectionCapacity }; Descending = $true })
+        if (-not $recipePick) { $selected = $sortedFitting | Select-Object -First 1 }
+        if ($preferInstalledActive -and $selected -and -not (Test-FastLlmModelInstalled -Model $selected.model -InstallRoot $InstallRoot)) {
+            $installedPick = $sortedFitting | Where-Object { Test-FastLlmModelInstalled -Model $_.model -InstallRoot $InstallRoot } | Select-Object -First 1
+            if ($installedPick) {
+                $preferInstalled = [pscustomobject] [ordered] @{ from = [string] $selected.model.id; to = [string] $installedPick.model.id; reason = 'not-installed' }
+                $recipePick = $null
+                $selected = $installedPick
+            }
+        }
     }
 
     if (-not $selected) {
@@ -1433,6 +1449,10 @@ function Get-FastLlmPlan {
         serverArguments     = $arguments
         recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)) -HipBackend:($planBackend -ceq 'hip') -IdentifiedVariant $identifiedVariant)
         warnings            = $warnings
+    }
+    # Present only when -PreferInstalledModels was passed (null when nothing was substituted), so a default plan keeps exactly its fields.
+    if ($PreferInstalledModels) {
+        $planDocument | Add-Member -NotePropertyName preferInstalled -NotePropertyValue $preferInstalled
     }
     # Present only for an engine component, so a plan on the built-in engine has exactly the fields it always had.
     if ($planEngineComponentId) {
@@ -3404,7 +3424,58 @@ function Install-FastLlmModel {
         [switch] $Unattended
     )
 
-    $hasExistingConsent = Test-FastLlmModelConsentReceipt -Model $Plan.model -InstallRoot $InstallRoot
+    return Install-FastLlmModelEntry -Model $Plan.model -InstallRoot $InstallRoot -AcceptModelLicense:$AcceptModelLicense -Unattended:$Unattended
+}
+
+function Install-FastLlmCatalogModel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ModelId,
+
+        [Parameter(Mandatory = $true)]
+        [string] $CatalogPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $InstallRoot,
+
+        [switch] $AcceptModelLicense,
+
+        [switch] $Unattended
+    )
+
+    # Lab provisioning by exact id. Makes no hardware or fit claim; reuses the planner's catalog loader and validation.
+    $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
+    $found = @(@($catalog.models) | Where-Object { [string] $_.id -ceq $ModelId })
+    if ($found.Count -gt 1) {
+        throw "Catalog model id '$ModelId' is not unique."
+    }
+    if ($found.Count -eq 0) {
+        $excluded = @(@($catalog.excludedModels) | Where-Object { $_ -and [string] $_.id -ceq $ModelId })
+        if ($excluded.Count -gt 0) {
+            throw "Catalog model id '$ModelId' is excluded and cannot be installed."
+        }
+        throw "Catalog has no model with the exact id '$ModelId'."
+    }
+
+    return Install-FastLlmModelEntry -Model $found[0] -InstallRoot $InstallRoot -AcceptModelLicense:$AcceptModelLicense -Unattended:$Unattended
+}
+
+function Install-FastLlmModelEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Model,
+
+        [Parameter(Mandatory = $true)]
+        [string] $InstallRoot,
+
+        [switch] $AcceptModelLicense,
+
+        [switch] $Unattended
+    )
+
+    $hasExistingConsent = Test-FastLlmModelConsentReceipt -Model $Model -InstallRoot $InstallRoot
     $newAcceptanceMode = $null
     if (-not $hasExistingConsent) {
         if ($AcceptModelLicense) {
@@ -3414,13 +3485,13 @@ function Install-FastLlmModel {
             if ($Unattended) {
                 throw 'Unattended model installation requires -AcceptModelLicense or an existing exact consent receipt.'
             }
-            $sizeGiB = [Math]::Round(([double] $Plan.model.sizeBytes / 1GB), 2)
-            Write-Host "Model:              $($Plan.model.upstreamModel) @ $($Plan.model.upstreamRevision)"
-            Write-Host "Community artifact: $($Plan.model.repository) @ $($Plan.model.revision)"
-            Write-Host "Artifact SHA-256:    $($Plan.model.sha256)"
-            Write-Host "Serving mode:        $($Plan.model.servingMode)"
-            Write-Host "Upstream license:    $($Plan.model.upstreamLicense) ($($Plan.model.upstreamLicenseUrl))"
-            Write-Host "Artifact license:    $($Plan.model.artifactLicense) (declared by $($Plan.model.artifactProvider))"
+            $sizeGiB = [Math]::Round(([double] $Model.sizeBytes / 1GB), 2)
+            Write-Host "Model:              $($Model.upstreamModel) @ $($Model.upstreamRevision)"
+            Write-Host "Community artifact: $($Model.repository) @ $($Model.revision)"
+            Write-Host "Artifact SHA-256:    $($Model.sha256)"
+            Write-Host "Serving mode:        $($Model.servingMode)"
+            Write-Host "Upstream license:    $($Model.upstreamLicense) ($($Model.upstreamLicenseUrl))"
+            Write-Host "Artifact license:    $($Model.artifactLicense) (declared by $($Model.artifactProvider))"
             $answer = Read-Host "Download this $sizeGiB GiB community conversion? [y/N]"
             if ($answer -notmatch '^(?i)y(es)?$') {
                 throw 'Model download was not approved.'
@@ -3430,10 +3501,10 @@ function Install-FastLlmModel {
     }
 
     $modelsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'models' -Label 'Models root'
-    $destination = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $Plan.model.file) -Label 'Model destination'
-    Save-FastLlmVerifiedFile -Url ([string] $Plan.model.url) -Destination $destination -Sha256 ([string] $Plan.model.sha256) -SizeBytes ([int64] $Plan.model.sizeBytes) | Out-Null
+    $destination = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $Model.file) -Label 'Model destination'
+    Save-FastLlmVerifiedFile -Url ([string] $Model.url) -Destination $destination -Sha256 ([string] $Model.sha256) -SizeBytes ([int64] $Model.sizeBytes) | Out-Null
     if ($newAcceptanceMode) {
-        Write-FastLlmModelConsentReceipt -Model $Plan.model -InstallRoot $InstallRoot -AcceptanceMode $newAcceptanceMode
+        Write-FastLlmModelConsentReceipt -Model $Model -InstallRoot $InstallRoot -AcceptanceMode $newAcceptanceMode
     }
     return $destination
 }
@@ -3800,6 +3871,17 @@ Export-ModuleMember -Function @(
     'Get-FastLlmEngineExecutable',
     'Get-FastLlmHardware',
     'Get-FastLlmPlan',
+    'Get-FastLlmPreloadSet',
+    'Get-FastLlmPreloadStatus',
+    'Install-FastLlmPreloadSet',
+    'New-FastLlmPreloadRun',
+    'ConvertTo-FastLlmPreloadJson',
+    'Write-FastLlmPreloadOutputFile',
+    'Initialize-FastLlmPreloadOutputPath',
+    'Invoke-FastLlmPreloadRun',
+    'Read-FastLlmApprovedComponents',
+    'Read-FastLlmApprovedModels',
+    'Read-FastLlmPreloadTiers',
     'Get-FastLlmVulkanMemoryDiagnostic',
     'Get-FastLlmWindowsPrerequisiteStatus',
     'Get-FastLlmPrerequisiteInventory',
@@ -3834,6 +3916,7 @@ Export-ModuleMember -Function @(
     'Remove-FastLlmComponent',
     'New-FastLlmTypedFailure',
     'Install-FastLlmModel',
+    'Install-FastLlmCatalogModel',
     'Invoke-FastLlmDeviceProbe',
     'Read-FastLlmJson',
     'Read-FastLlmRecipes',
