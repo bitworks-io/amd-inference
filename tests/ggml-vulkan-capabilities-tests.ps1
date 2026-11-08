@@ -62,8 +62,14 @@ Reject { ConvertFrom-GgmlCapabilityWorkerOutput -Text $badMarker -Truncated:$fal
 
 $source = Get-Content -LiteralPath (Join-Path $root 'tools/collect-ggml-vulkan-capabilities.ps1') -Raw
 $native = Get-Content -LiteralPath (Join-Path $root 'src/WindowsGgmlVulkanCapabilities.cs') -Raw
-Check ($source.Contains('65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6') -and
-       ((Get-FileHash -LiteralPath (Join-Path $root 'config/catalog.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ceq '65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6')) 'Exact reviewed catalog, including manifest, must stay pinned.'
+# This diagnostic stays pinned to the reviewed 2026-08-30 catalog (tests/fixtures/reviewed-catalog-2026-08-30.json).
+# The shipped catalog has changed since, so the diagnostic refuses it until it is re-reviewed and re-pinned.
+$reviewedCatalog = Join-Path $root 'tests/fixtures/reviewed-catalog-2026-08-30.json'
+$reviewedDigest = (Get-FileHash -LiteralPath $reviewedCatalog -Algorithm SHA256).Hash.ToLowerInvariant()
+$liveDigest = (Get-FileHash -LiteralPath (Join-Path $root 'config/catalog.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+Check ($reviewedDigest -ceq '65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6') 'The reviewed catalog fixture must keep its exact 2026-08-30 bytes.'
+Check ($source.Contains("-cne '$reviewedDigest'") -and $source.Contains('Private GGML capability worker requires its reviewed catalog digest.')) 'Exact reviewed catalog, including manifest, must stay pinned.'
+Check ($liveDigest -cne $reviewedDigest) 'The shipped catalog differs from the reviewed one, so this diagnostic must refuse it until it is re-reviewed.'
 Check (([regex]::Matches($source,'Test-FastLlmEngineInstallation')).Count -ge 3 -and $source.Contains('Assert-FastLlmWindowsPrerequisites')) 'Both processes must verify exact installed manifest and Windows prerequisites.'
 Check ($source.Contains('OutputCompleted') -and $source.Contains('OutputTruncated') -and $source.Contains('WaitForExit(100)') -and -not $source.Contains('WaitForExit()')) 'Native worker and output completion must be deadline-bounded.'
 Check ($source.Contains('[IO.FileMode]::CreateNew') -and $source.Contains('servingDeviceBinding=$false') -and $source.Contains('modelLoaded=$false')) 'Fresh report must make no serving or model claim.'

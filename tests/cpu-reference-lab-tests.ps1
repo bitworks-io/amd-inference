@@ -82,14 +82,22 @@ Assert (@($cpuArgs | Where-Object {$_ -ceq 'Vulkan0' -or $_ -ceq 'all' -or $_ -c
 Assert ($cpuArgs -notcontains '--cache-ram' -and @($cpuArgs | Where-Object {$_ -ceq '--no-op-offload'}).Count -eq 1) 'extra argument introduced'
 
 # --- Catalog resolution (needs module scope) ---
-$entry=& $repoModule {param($S,$C) . $S; Get-FastLlmCpuReferenceModel $C} $source $catalogPath
+# The lab stays bound to the reviewed 2026-08-30 catalog (tests/fixtures/reviewed-catalog-2026-08-30.json). The shipped
+# catalog has changed since, so the lab must refuse it until it is re-reviewed and re-pinned.
+$reviewedCatalog=Join-Path $PSScriptRoot 'fixtures/reviewed-catalog-2026-08-30.json'
+Assert ((Get-FileHash -LiteralPath $reviewedCatalog -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $fixed.catalogSha256) 'the reviewed catalog fixture lost its exact bytes'
+Assert ((Get-FileHash -LiteralPath $catalogPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $fixed.catalogSha256) 'the shipped catalog is expected to differ from the protocol-bound one'
+$liveRefusal=$null
+try{& $repoModule {param($S,$C) . $S; Get-FastLlmCpuReferenceModel $C} $source $catalogPath | Out-Null}catch{$liveRefusal=[string]$_.Exception.Message}
+Assert ($liveRefusal -ceq 'The catalog differs from the protocol-bound catalog.') ('the shipped catalog was not refused as unreviewed: '+$liveRefusal)
+$entry=& $repoModule {param($S,$C) . $S; Get-FastLlmCpuReferenceModel $C} $source $reviewedCatalog
 Assert ($entry.model.id -ceq $fixed.modelId -and $entry.catalogSha256 -ceq $fixed.catalogSha256 -and $entry.model.sizeBytes -eq 16464440224) 'catalog resolution failed'
 $tempParent=if($env:OS -eq 'Windows_NT'){[IO.Path]::GetTempPath()}elseif(Test-Path -LiteralPath '/private/tmp' -PathType Container){'/private/tmp'}else{[IO.Path]::GetTempPath()}
 $tempRoot=Join-Path $tempParent ('fast-llm-cpu-reference-test-'+[Guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $tempRoot
 try{
     $changedCatalog=Join-Path $tempRoot 'catalog.json'
-    [IO.File]::WriteAllText($changedCatalog,([IO.File]::ReadAllText($catalogPath)+"`n"))
+    [IO.File]::WriteAllText($changedCatalog,([IO.File]::ReadAllText($reviewedCatalog)+"`n"))
     Fails {& $repoModule {param($S,$C) . $S; Get-FastLlmCpuReferenceModel $C} $source $changedCatalog} 'a changed catalog was accepted'
 
     # --- Placement acceptance and every rejection path ---
@@ -308,12 +316,13 @@ try{
     [IO.File]::WriteAllText($fakeEngine,'not an engine')
     $modelFile=Join-Path $preModels ([string]$entry.model.file)
     $scenarios=[ordered]@{
-        'engine not verified'=@{engineVerified=$false;enginePath=$fakeEngine;engineHash=$null;catalog=$catalogPath;artifact=$preArtifact;pattern='not installed and verified'}
-        'engine hash differs'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=('f'*64);catalog=$catalogPath;artifact=$preArtifact;pattern='differs from the protocol-bound engine'}
-        'model absent'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$catalogPath;artifact=$preArtifact;pattern='absent or failed verification'}
-        'model wrong size'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$catalogPath;artifact=$preArtifact;pattern='absent or failed verification';model='tiny'}
+        'engine not verified'=@{engineVerified=$false;enginePath=$fakeEngine;engineHash=$null;catalog=$reviewedCatalog;artifact=$preArtifact;pattern='not installed and verified'}
+        'engine hash differs'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=('f'*64);catalog=$reviewedCatalog;artifact=$preArtifact;pattern='differs from the protocol-bound engine'}
+        'model absent'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$reviewedCatalog;artifact=$preArtifact;pattern='absent or failed verification'}
+        'model wrong size'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$reviewedCatalog;artifact=$preArtifact;pattern='absent or failed verification';model='tiny'}
         'catalog changed'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$changedCatalog;artifact=$preArtifact;pattern='differs from the protocol-bound catalog'}
-        'overlapping roots'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$catalogPath;artifact=$preLab;pattern='non-overlapping'}
+        'shipped catalog'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$catalogPath;artifact=$preArtifact;pattern='differs from the protocol-bound catalog'}
+        'overlapping roots'=@{engineVerified=$true;enginePath=$fakeEngine;engineHash=$fixed.engineSha256;catalog=$reviewedCatalog;artifact=$preLab;pattern='non-overlapping'}
     }
     foreach($name in $scenarios.Keys){
         $scenario=$scenarios[$name]

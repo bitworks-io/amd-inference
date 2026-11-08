@@ -7,7 +7,8 @@
     { "modelId": "qwen3.5-9b-q8-0", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5" },
     { "modelId": "qwen3.8-27b-ud-iq4-xs", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
     { "modelId": "qwen3.8-27b-ud-q4-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
-    { "modelId": "qwen3.8-27b-ud-q6-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" }
+    { "modelId": "qwen3.8-27b-ud-q6-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
+    { "modelId": "qwen3.5-2b-q6-k", "revision": "f6d5376be1edb4d416d56da11e5397a961aca8ae" }
   ],
   "components": [
     { "id": "llama.cpp-hip-b11658", "version": "b11658" },

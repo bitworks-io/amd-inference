@@ -1,5 +1,5 @@
 { "schemaVersion": 1, "tiers": [
-  { "id": "4gb",  "vramMiB": 4096,  "idleFreeVramMiB": 3072,  "conservativeFreeVramMiB": 2048,  "source": "estimated" },
+  { "id": "4gb",  "vramMiB": 4080,  "idleFreeVramMiB": 3443,  "conservativeFreeVramMiB": 2419,  "source": "measured:RX 6400,2026-11-08" },
   { "id": "8gb",  "vramMiB": 8192,  "idleFreeVramMiB": 7168,  "conservativeFreeVramMiB": 6144,  "source": "estimated" },
   { "id": "12gb", "vramMiB": 12272, "idleFreeVramMiB": 11474, "conservativeFreeVramMiB": 10450, "source": "measured:RX 6700 XT,2026-11-03" },
   { "id": "16gb", "vramMiB": 16384, "idleFreeVramMiB": 15360, "conservativeFreeVramMiB": 14336, "source": "estimated" },

@@ -4,6 +4,23 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+- **4 GB cards get a model:** the preload set's 4 GB tier is now measured on an RX 6400: 3443 MiB free at idle, and 2419 MiB at the conservative budget. FastLLM now plans a model for both budgets:
+  - Qwen3.5 4B IQ4_XS needs 3200 MiB free (previously 3400), from its measured peak plus the fit target;
+  - Qwen3.5 2B Q6_K, a new catalog entry (Apache-2.0, Unsloth GGUF), needs 2112 MiB free.
+
+  Every other preload tier plans the same models as before. A card with less free VRAM than any model used to need can now plan the 2B.
+- **Catalog version 2026.11.08-alpha.1.** A plan saved under an earlier catalog version is re-planned at start.
+- **Lab diagnostics stay pinned:** these diagnostics are pinned to the reviewed 2026-08-30 catalog digest, which is kept as a test fixture:
+  - Vulkan capability snapshot;
+  - GGML Vulkan capability collector;
+  - CPU reference lab;
+  - backend parity;
+  - sampler diagnostic;
+  - Vulkan cooperative-matrix screen;
+  - Vulkan vidmem trial and benchmark.
+
+  They refuse this catalog until they are re-reviewed. The report comparators still verify 2026-08-30 reports.
+
 ## 2026.10.21.12 (stable)
 
 - **Stable release:** the same app as 2026.10.21.11 (canary), which passed Bitworks lab testing on the RX 7900 XT and XTX (the live update and the serving smoke with the HIP default and the Vulkan setup). It includes the changes of 2026.10.21.11 below.

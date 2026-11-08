@@ -53,7 +53,7 @@ try {
 
     # ---- approved models parse
     $list=@(& $module { param($p) Read-FastLlmApprovedModels -Path $p } $approved)
-    Check ($list.Count -eq 7 -and $list[0].modelId -eq 'qwen3.5-4b-iq4-xs' -and $list[0].revision -eq 'e87f176479d0855a907a41277aca2f8ee7a09523') 'approved models parse'
+    Check ($list.Count -eq 8 -and $list[0].modelId -eq 'qwen3.5-4b-iq4-xs' -and $list[0].revision -eq 'e87f176479d0855a907a41277aca2f8ee7a09523') 'approved models parse'
     $badApproved=Join-Path $work 'approved-bad.json'
     Write-Utf8 $badApproved '{"schemaVersion":2,"models":[]}'
     Throws { & $module { param($p) Read-FastLlmApprovedModels -Path $p } $badApproved } 'schemaVersion'
@@ -62,10 +62,14 @@ try {
     $set=& $module { param($c,$r,$g,$t) Get-FastLlmPreloadSet -CatalogPath $c -RecipesPath $r -GpuVariantsPath $g -TiersPath $t } $catalog $recipes $variants $tiersPath
     Check ($set.schema -eq 'fastllm.preload-set.v1') 'preload set golden: schema'
     $ids=@($set.models | ForEach-Object { $_.modelId })
-    $expected='qwen3.8-27b-ud-iq4-xs,qwen3.8-27b-ud-q4-k-m,qwen3.5-4b-iq4-xs,qwen3.5-9b-q6-k,qwen3.5-9b-q8-0,qwen3.8-27b-ud-q6-k-m'
+    $expected='qwen3.8-27b-ud-iq4-xs,qwen3.8-27b-ud-q4-k-m,qwen3.5-4b-iq4-xs,qwen3.5-2b-q6-k,qwen3.5-9b-q6-k,qwen3.5-9b-q8-0,qwen3.8-27b-ud-q6-k-m'
     Check (($ids -join ',') -eq $expected) "preload set golden: model order (observed: $($ids -join ','))"
     $empty=@($set.emptyTiers | ForEach-Object { $_.tier+'/'+$_.budget })
-    Check (($empty -join ',') -eq '4gb/idle,4gb/conservative') "preload set golden: emptyTiers (observed: $($empty -join ','))"
+    Check (($empty -join ',') -eq '') "preload set golden: emptyTiers (observed: $($empty -join ','))"
+    $iq4s=@($set.models | Where-Object { $_.modelId -eq 'qwen3.5-4b-iq4-xs' })[0]
+    Check ((@($iq4s.tiers) -join ',') -eq '4gb,8gb') "preload set golden: 4b iq4-xs tiers (observed: $(@($iq4s.tiers) -join ','))"
+    $q6s=@($set.models | Where-Object { $_.modelId -eq 'qwen3.5-2b-q6-k' })[0]
+    Check ((@($q6s.tiers) -join ',') -eq '4gb') "preload set golden: 2b q6-k tiers (observed: $(@($q6s.tiers) -join ','))"
     $iq4=@($set.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-iq4-xs' })[0]
     Check ((@($iq4.reasons) -join ',') -eq 'recipe,tier') 'preload set golden: iq4-xs reasons'
     Check ((@($iq4.tiers) -join ',') -eq '20gb') "preload set golden: iq4-xs tiers (observed: $(@($iq4.tiers) -join ','))"
@@ -163,7 +167,11 @@ try {
     $p=Get-TierPlan $hw24 $rootRecipe -Prefer
     Check ($p.model.id -eq 'qwen3.8-27b-ud-q4-k-m' -and $null -ne $p.recipe.id -and $null -eq $p.preferInstalled) 'recipe model installed keeps the recipe'
     Remove-Item -LiteralPath $rootRecipe -Recurse -Force -ErrorAction SilentlyContinue
-    Throws { Get-TierPlan (New-TierHardware '4gb' 'idle') (New-InstallRoot @('qwen3.5-4b-iq4-xs')) -Prefer } 'No catalog profile fits'
+    # measured 4gb tier: idle plans the 4B IQ4_XS, conservative only fits the 2B Q6_K
+    $p=Get-TierPlan (New-TierHardware '4gb' 'idle') (New-InstallRoot @('qwen3.5-4b-iq4-xs')) -Prefer
+    Check ($p.model.id -eq 'qwen3.5-4b-iq4-xs') "4gb idle plans the 4B (observed: $($p.model.id))"
+    $p=Get-TierPlan (New-TierHardware '4gb' 'conservative') (New-InstallRoot @('qwen3.5-4b-iq4-xs')) -Prefer
+    Check ($p.model.id -eq 'qwen3.5-2b-q6-k') "4gb conservative plans the 2B, not the installed 4B (observed: $($p.model.id))"
 
     # ---- no-download sweep: with exactly the golden set installed, every non-empty tier plans an installed model
     $sweepRoot=New-InstallRoot @($ids)
@@ -219,7 +227,7 @@ try {
     $m=Rows $rows 'model'
     Check ((Row $rows 'qwen3.8-27b-ud-q6-k-m').action -eq 'awaiting-approval') 'preload installs only approved: unlisted model awaits approval'
     Check (-not ($c1 -contains 'qwen3.8-27b-ud-q6-k-m')) 'preload installs only approved: seam never called for it'
-    Check (@($m | Where-Object { $_.id -ne 'qwen3.8-27b-ud-q6-k-m' -and $_.action -ne 'installed' }).Count -eq 0 -and $c1.Count -eq 5) 'preload installs only approved: the others are installed'
+    Check (@($m | Where-Object { $_.id -ne 'qwen3.8-27b-ud-q6-k-m' -and $_.action -ne 'installed' }).Count -eq 0 -and $c1.Count -eq 6) 'preload installs only approved: the others are installed'
     Check ((@($rows[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq $rowProps) 'row property names match the contract'
     Remove-Item -LiteralPath $r1 -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -236,7 +244,7 @@ try {
     # present is skipped
     $r3=New-InstallRoot @('qwen3.5-4b-iq4-xs'); $c3=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r3 @{Installer=(New-InstallerSeam $r3 $c3);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
-    Check ((Row $rows 'qwen3.5-4b-iq4-xs').action -eq 'present' -and -not ($c3 -contains 'qwen3.5-4b-iq4-xs') -and $c3.Count -eq 5) "present is skipped (observed: $((Row $rows 'qwen3.5-4b-iq4-xs').action); calls: $($c3 -join ','))"
+    Check ((Row $rows 'qwen3.5-4b-iq4-xs').action -eq 'present' -and -not ($c3 -contains 'qwen3.5-4b-iq4-xs') -and $c3.Count -eq 6) "present is skipped (observed: $((Row $rows 'qwen3.5-4b-iq4-xs').action); calls: $($c3 -join ','))"
     Remove-Item -LiteralPath $r3 -Recurse -Force -ErrorAction SilentlyContinue
 
     # -Next installs exactly one
@@ -251,7 +259,7 @@ try {
     $rows=Invoke-PreloadSet $r5 @{Installer=(New-InstallerSeam $r5 $c5);ComponentInstaller=(New-ComponentSeam $cc5)}
     $comp=Rows $rows 'component'
     Check ($comp.Count -eq 2 -and @($comp | Where-Object { $_.action -ne 'awaiting-component-licence' }).Count -eq 0 -and $cc5.Count -eq 0) 'components need AcceptLicense: awaiting-component-licence, seam not called'
-    Check (@(Rows $rows 'model' | Where-Object { $_.action -eq 'installed' }).Count -eq 6) 'components need AcceptLicense: the models still install'
+    Check (@(Rows $rows 'model' | Where-Object { $_.action -eq 'installed' }).Count -eq 7) 'components need AcceptLicense: the models still install'
     Remove-Item -LiteralPath $r5 -Recurse -Force -ErrorAction SilentlyContinue
     $r6=New-InstallRoot @(); $c6=New-Object System.Collections.ArrayList; $cc6=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r6 @{AcceptLicense=$true;Installer=(New-InstallerSeam $r6 $c6);ComponentInstaller=(New-ComponentSeam $cc6)}
@@ -342,7 +350,15 @@ try {
     $status=Get-Status $sr @{ApprovedModelsPath=$approved}
     Check ((@($status.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'components,emptyTiers,freeBytes,installRoot,minFreeBytes,models,release,schema') 'status contract: top-level property names'
     Check ((@($status.models[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq 'approved,consent,file,modelId,present,reason,revision,sizeBytes,sizeOk,tiers') 'status contract: models[0] property names'
-    Check ((@($status.emptyTiers[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq 'budget,tier') 'status contract: emptyTiers[0] property names'
+    Check (@($status.emptyTiers).Count -eq 0) 'status: the measured 4gb row leaves no empty tier'
+    # an empty-tier row needs a tier nothing fits: a test-local copy with a tiny 4gb budget
+    $tinyTiers=Join-Path $work 'tiers-tiny-4gb.json'
+    $tinyDoc=Get-Content -LiteralPath $tiersPath -Raw | ConvertFrom-Json
+    $tinyDoc.tiers[0].idleFreeVramMiB=1536; $tinyDoc.tiers[0].conservativeFreeVramMiB=512
+    Write-Utf8 $tinyTiers ($tinyDoc | ConvertTo-Json -Depth 6)
+    $statusTiny=Get-Status $sr @{ApprovedModelsPath=$approved;TiersPath=$tinyTiers}
+    Check ((@($statusTiny.emptyTiers | ForEach-Object { $_.tier+'/'+$_.budget }) -join ',') -eq '4gb/idle,4gb/conservative') 'status: a tier nothing fits is listed in emptyTiers'
+    Check ((@($statusTiny.emptyTiers[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq 'budget,tier') 'status contract: emptyTiers[0] property names'
     Check ((@($status.components[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq 'id,present,verified,version') 'status contract: components[0] property names'
     Check ($status.schema -eq 'fastllm.preload-status.v1' -and $status.freeBytes -eq 5368709120 -and $status.minFreeBytes -eq $GiB -and $status.installRoot -eq $sr -and $null -eq $status.release) 'status contract: schema, freeBytes, minFreeBytes (GiB), installRoot, release null without RELEASE.json'
     $s4=@($status.models | Where-Object { $_.modelId -eq 'qwen3.5-4b-iq4-xs' })[0]
@@ -414,7 +430,7 @@ try {
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-PreloadStatus', '-AsJson', '-InstallRoot', $cliRoot, '-OutputPath', $statusOut)
         $out=$g.Text; $LASTEXITCODE=$g.Code
         $cliStatus=Get-Content -LiteralPath $statusOut -Raw | ConvertFrom-Json
-        Check ($LASTEXITCODE -eq 0 -and $cliStatus.schema -eq 'fastllm.preload-status.v1' -and @($cliStatus.models).Count -eq 6) 'cli: -PreloadStatus -AsJson -OutputPath writes the status contract'
+        Check ($LASTEXITCODE -eq 0 -and $cliStatus.schema -eq 'fastllm.preload-status.v1' -and @($cliStatus.models).Count -eq 7) 'cli: -PreloadStatus -AsJson -OutputPath writes the status contract'
 
         # ---- error path: no stale report, fail fast on a bad output path, envelope on an unexpected exception
         $staleOut=Join-Path $work 'stale.json'
