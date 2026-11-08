@@ -19,6 +19,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.Update.ps1')
 # Components (the experimental switch and the list helpers) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.Components.ps1')
+# Serving settings (port) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.ServingSettings.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')

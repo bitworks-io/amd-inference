@@ -237,6 +237,8 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Update.ps1')
 # Components is dot-sourced here and in the control window, never imported through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Components.ps1')
+# Serving settings (port) is dot-sourced here and in fast-llm-ui.ps1, never imported through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ServingSettings.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.json'
 $selectionOptions = @{

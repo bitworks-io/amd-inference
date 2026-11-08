@@ -237,6 +237,11 @@
       "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
+      "suite": "serving-settings-tests",
+      "class": "ci",
+      "reason": "Serving settings (port) read/write, validation, precedence and the bench-path tripwire; temp folders only, no engine, GPU or network. Wired in test.yml."
+    },
+    {
       "suite": "default-arguments-tests",
       "class": "ci",
       "reason": "Pins the default llama-server arguments (golden fixture) through the real planner; no engine, GPU or network required. Wired in test.yml."
