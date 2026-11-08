@@ -69,6 +69,10 @@ Nothing installs without a click. `fast-llm.ps1 update-check` shows what is avai
 
 FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
 
+## Port
+
+The server listens on port 8080 by default. To change it, use Settings... in the window, or run `fast-llm.ps1 settings -Port <n>` (1024 to 65535); the change applies at the next start. The server always stays on 127.0.0.1, whatever the port. The diagnostic tools (semantic smoke, the concurrency benchmark, backend parity, the driver-module collector and the coopmat screen) need the default port 8080.
+
 ## Uninstall
 
 Use Windows Settings, Apps, FastLLM. Downloaded models and engines are kept unless you choose to delete them when asked.

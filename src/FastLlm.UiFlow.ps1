@@ -1009,3 +1009,29 @@ function Get-FastLlmUiLicenseDisclosure {
         canAccept = [bool] $canAccept
     }
 }
+
+# The API URL the window shows and copies. A run that is active reports its own endpoint, which may differ from the saved
+# setting (the port applies at the next start); otherwise the saved port is what the next start will use.
+function Get-FastLlmUiApiUrl {
+    param($Status,$Settings)
+    if ($Status -and $Status.PSObject.Properties['active'] -and [bool]$Status.active -and
+        $Status.PSObject.Properties['endpoint'] -and -not [string]::IsNullOrWhiteSpace([string]$Status.endpoint)) {
+        return [string]$Status.endpoint
+    }
+    $port = 8080
+    if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
+        $parsed = 0
+        if ([int]::TryParse([string]$Settings.serverPort,[ref]$parsed) -and $parsed -ge 1024 -and $parsed -le 65535) { $port = $parsed }
+    }
+    return 'http://127.0.0.1:' + $port + '/v1'
+}
+
+# The port of a running run's endpoint, or 0 when there is no active run with a usable endpoint.
+function Get-FastLlmUiRunningPort {
+    param($Status)
+    if (-not $Status -or -not $Status.PSObject.Properties['active'] -or -not [bool]$Status.active -or
+        -not $Status.PSObject.Properties['endpoint']) { return 0 }
+    $uri = $null
+    if ([Uri]::TryCreate([string]$Status.endpoint,[UriKind]::Absolute,[ref]$uri)) { return [int]$uri.Port }
+    return 0
+}

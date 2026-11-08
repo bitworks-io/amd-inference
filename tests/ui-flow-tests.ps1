@@ -609,7 +609,7 @@ Check ((Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'b'
 Check ((Test-FastLlmUiStatusIsCurrentRun -Status $null -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ phase = 'ready' }) -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = '' }) -PreviousRunId 'a') -eq $false) 'a missing status, a missing run id and an empty run id are not the current run'
 Check ((Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'a' }) -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'A' }) -PreviousRunId 'a') -eq $true) 'the same run id is the previous run and the comparison is case-sensitive'
 Check ($ui.Contains('-StopRequested:$script:bgStopRequested') -and $ui.Contains('$statusLabel.Text=''Stopped. The background run ended.''')) 'the window shows the stopped wording when the run ended after the user Stop'
-Check ($ui.Contains("LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382") -and -not $ui.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first') -and $ui.Contains('No engine components are installed.') -and -not $ui.Contains('No community components are installed.')) 'the window opens with a neutral status and the empty component list says engine components'
+Check ($ui.Contains("LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 426") -and -not $ui.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first') -and $ui.Contains('No engine components are installed.') -and -not $ui.Contains('No community components are installed.')) 'the window opens with a neutral status and the empty component list says engine components'
 Check ($ui.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}') -and $ui.Contains('$dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel')) 'the model license review opens with no text selected and Enter still cancels'
 Check ($ui.Contains('$statusLabel.AutoEllipsis=$true') -and $ui.Contains('$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})')) 'a long status line is cut with an ellipsis and carries its full text in a tooltip'
 function Get-UiFunctionBody([string]$Text, [string]$Name) {
@@ -1100,5 +1100,22 @@ $startBgBody = $startBgBody.Substring(0, $startBgBody.IndexOf('$launched='))
 Check ($applyBody.Contains('SaveUserStoppedBackgroundRequestId $attachedBeforeId') -and $applyBody.IndexOf('$script:bgEndedByUserStop=$true') -lt $applyBody.IndexOf('SaveUserStoppedBackgroundRequestId $attachedBeforeId')) 'the stopped run request id is saved where the user stop is recorded'
 Check ($startBgBody.Contains("SaveUserStoppedBackgroundRequestId ''")) 'a new background start clears the saved stop'
 Check (([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText')).Count -eq ([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText -State \$script:bgState[^\r\n]*-LastUserStoppedRequestId \$script:lastUserStoppedRequestId')).Count) 'every background text call passes the saved request id'
+
+# copy-url-follows-running-endpoint: a running run's own endpoint wins over the saved setting; otherwise the saved port.
+$runningStatus=[pscustomobject]@{active=$true;endpoint='http://127.0.0.1:18181/v1'}
+$idleStatus=[pscustomobject]@{active=$false;endpoint='http://127.0.0.1:18181/v1'}
+$savedSettings=[pscustomobject]@{serverPort=19191;thinking='default';chatPage=$false;malformed=$false}
+Check ((Get-FastLlmUiApiUrl -Status $runningStatus -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'copy-url-follows-running-endpoint: active run gives its endpoint'
+Check ((Get-FastLlmUiApiUrl -Status $idleStatus -Settings $savedSettings) -ceq 'http://127.0.0.1:19191/v1') 'copy-url-follows-running-endpoint: inactive gives the saved port'
+Check ((Get-FastLlmUiApiUrl -Status $null -Settings $savedSettings) -ceq 'http://127.0.0.1:19191/v1') 'no status gives the saved port'
+Check ((Get-FastLlmUiApiUrl -Status $idleStatus -Settings ([pscustomobject]@{})) -ceq 'http://127.0.0.1:8080/v1') 'settings without a port give 8080'
+Check ((Get-FastLlmUiRunningPort -Status $runningStatus) -eq 18181 -and (Get-FastLlmUiRunningPort -Status $idleStatus) -eq 0 -and (Get-FastLlmUiRunningPort -Status $null) -eq 0) 'the running port comes from the active endpoint only'
+# fast-llm-ui-parses: the window script has no syntax errors (it cannot run off Windows).
+$parseErrors=$null;$parseTokens=$null
+[void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$parseTokens,[ref]$parseErrors)
+Check (@($parseErrors).Count -eq 0) ('fast-llm-ui-parses: '+(@($parseErrors|ForEach-Object{$_.Message}) -join '; '))
+$uiText=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
+Check (-not $uiText.Contains("SetText('http://127.0.0.1:8080/v1')")) 'Copy API URL no longer hardcodes the port'
+Check ($uiText.Contains('$rowSlotX=@(24,162,300,438,576,714)')) 'the button row slot positions are declared once'
 
 Write-Output "UI flow tests passed: $checks"

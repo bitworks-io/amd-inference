@@ -17,7 +17,8 @@ function Get-FastLlmStatus {
     return $script:mockStatus
 }
 
-function Test-FastLlmBackgroundLoopbackHealth { return $true }
+$script:healthPorts = New-Object 'System.Collections.Generic.List[int]'
+function Test-FastLlmBackgroundLoopbackHealth { param([int]$Port = 8080) $script:healthPorts.Add($Port); return $true }
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-bg-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
@@ -99,6 +100,36 @@ try {
     $stopped = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
     Assert-BackgroundTest (-not $stopped.attachable -and -not $stopped.active) 'Stopped owner remained attachable.'
 
+    # The record's port drives health, ownership and attach. A record from before the port was settable has no serverPort (8080).
+    $owner.phase = 'loading'
+    $owner.serverPort = 18181
+    Write-FastLlmBackgroundDocument -Path $ownerPath -Value $owner
+    $script:mockStatus = [pscustomobject]@{active=$true;phase='ready';runId=$runA;
+        backgroundRequestId=$requestA;modelId='model-a';endpoint='http://127.0.0.1:18181/v1';
+        canary=[pscustomobject]@{passed=$true};processIdentity=$hostIdentity}
+    $script:healthPorts.Clear()
+    $portStatus = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($portStatus.attachable -and $portStatus.serverPort -eq 18181 -and $script:healthPorts.Count -eq 1 -and $script:healthPorts[0] -eq 18181) 'record-carries-port: health must be polled at the record port.'
+    $portAttached = Attach-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA -ExpectedServerPort 18181
+    Assert-BackgroundTest ($portAttached.attachable) 'An attach that expects the record port must succeed.'
+    $mismatch = $null
+    try { Attach-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA -ExpectedServerPort 8080 | Out-Null } catch { $mismatch = $_.Exception.Message }
+    Assert-BackgroundTest ($mismatch -and $mismatch.StartsWith('background-port-mismatch')) 'attach-refuses-port-mismatch: a record at 18181 must refuse an attach expecting 8080.'
+    $anyPort = Attach-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA
+    Assert-BackgroundTest ($anyPort.attachable) 'An attach with no expected port must not be blocked.'
+    # stale-record-old-fixed-port: no serverPort on the record means 8080.
+    $owner.Remove('serverPort')
+    Write-FastLlmBackgroundDocument -Path $ownerPath -Value $owner
+    $script:mockStatus.endpoint = 'http://127.0.0.1:8080/v1'
+    $script:healthPorts.Clear()
+    $oldRecord = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($oldRecord.attachable -and $oldRecord.readyIdentityVerified -and $oldRecord.serverPort -eq 8080 -and $script:healthPorts[0] -eq 8080) 'stale-record-old-fixed-port: a record without serverPort and an 8080 endpoint is owned at 8080.'
+    $script:mockStatus.endpoint = 'http://127.0.0.1:18181/v1'
+    $notOwned = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest (-not $notOwned.attachable -and -not $notOwned.readyIdentityVerified) 'stale-record-old-fixed-port: a record without serverPort must not own a run on 18181.'
+    $owner.phase = 'stopped'
+    Write-FastLlmBackgroundDocument -Path $ownerPath -Value $owner
+
     # A fresh process must read the request before any FastLlm module import.
     $bootstrapId = 'cccccccccccccccccccccccccccccccc'
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $scratch -Leaf ('background-request-' + $bootstrapId + '.json')
@@ -132,8 +163,9 @@ try {
     $script:mockStateWrites = New-Object 'System.Collections.Generic.List[object]'
     function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
     function Get-FastLlmPlan {
-        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath)
+        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath,[int]$ServerPort = 0)
         $script:mockResolveSeen.Add([bool]$ResolveFallback)
+        $script:mockPlanPort = $ServerPort
         if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         if ($script:planMode -ceq 'hip-missing' -and -not [string]$ModelId) {
             if ($ResolveFallback) {
@@ -146,6 +178,7 @@ try {
         }
         if ($script:planMode -ceq 'hip-missing') { return [pscustomobject]@{model=[pscustomobject]@{id=[string]$ModelId};recipe=$null;backend='vulkan'} }
         if ($script:planMode -ceq 'hip-ready') { return [pscustomobject]@{model=[pscustomobject]@{id='hip-model'};recipe=[pscustomobject]@{id='hip-recipe'};backend='hip';enginePath='engine'} }
+        if ($script:planMode -ceq 'with-endpoint') { return [pscustomobject]@{model=[pscustomobject]@{id='test-model'};endpoint=('http://127.0.0.1:' + $(if ($ServerPort -gt 0) { $ServerPort } else { 8080 }) + '/v1')} }
         [pscustomobject]@{model=[pscustomobject]@{id='test-model'}}
     }
     # The status the host would read back: the last document written (as the CLI-visible object, with the run id and action it was given).
@@ -214,6 +247,30 @@ try {
     Assert-BackgroundTest ($selectedCase.exit -eq 0 -and $selectedCase.plan.backend -ceq 'vulkan' -and -not $selectedCase.plan.PSObject.Properties['fallback'] -and $selectedCase.record.modelId -ceq 'chosen-model') 'A request with a model id starts the estimated plan with no fallback.'
     $readyCase = Invoke-BackgroundPlanCase 'hip-ready' '' '33333333333333333333333333333333'
     Assert-BackgroundTest ($readyCase.exit -eq 0 -and $readyCase.plan.backend -ceq 'hip' -and -not $readyCase.plan.PSObject.Properties['fallback'] -and $readyCase.record.modelId -ceq 'hip-model') 'Installed and healthy HIP components: the host starts the HIP plan.'
+    # record-carries-port: the requested port reaches the plan and the host record carries the plan endpoint's port.
+    $script:mockPlanPort = -1
+    $portId = '99999999999999999999999999999999'
+    $script:workerRequestId = $portId
+    $script:planMode = 'with-endpoint'
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $portId + '.json')) -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$portId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;serverPort=18181;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    Invoke-FastLlmBackgroundServe -RequestId $portId -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+    $portRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($script:mockPlanPort -eq 18181 -and $portRecord.serverPort -eq 18181) 'record-carries-port: the worker must plan at the requested port and record it.'
+    # A request without serverPort (written before the field existed) plans at the catalog port (0) and records 8080.
+    $oldPortId = '98989898989898989898989898989898'
+    $script:workerRequestId = $oldPortId
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $oldPortId + '.json')) -CreateNew -Value ([ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$oldPortId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+        sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    Invoke-FastLlmBackgroundServe -RequestId $oldPortId -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+    $oldPortRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($script:mockPlanPort -eq 0 -and $oldPortRecord.serverPort -eq 8080) 'A request without serverPort must plan at the catalog port and record 8080.'
     $script:planMode = ''
     $script:workerRequestId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')

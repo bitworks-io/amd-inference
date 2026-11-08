@@ -83,6 +83,9 @@ function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.Se
 function ButtonAt($Text,$X,$Y,$Width=150) {
     $button=New-Object Windows.Forms.Button;$button.Text=$Text;$button.Location=New-Object Drawing.Point($X,$Y);$button.Size=New-Object Drawing.Size($Width,38);$form.Controls.Add($button);return $button
 }
+# The third button row (Y=350, width 128) has six fixed slots; each later task adds only its own button in its slot.
+# Slot owners: 0 Settings (port, thinking, local chat page), 1 Connect an app, 2 Open chat, 3 Downloaded models, 4 Save support bundle, 5 Open logs.
+$rowSlotX=@(24,162,300,438,576,714);$rowY=350;$rowWidth=128
 $installButton=ButtonAt 'Install && start' 24 255 180
 $startButton=ButtonAt 'Start / download' 220 255 180
 $stopButton=ButtonAt 'Stop' 416 255 110
@@ -93,6 +96,7 @@ $backgroundAttachButton=ButtonAt 'Attach running' 202 303 130
 $backgroundCheckButton=ButtonAt 'Recheck background' 340 303 160
 $componentsButton=ButtonAt 'Components' 508 303 120
 $chooseButton=ButtonAt 'Choose another setup' 636 303 184
+$settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
 # A chooser pick is pinned for the preview and the start of that workflow only; the plain Install / Start buttons clear it.
 $script:previewReady=$false
 $script:chosenRecipe=$null
@@ -101,17 +105,17 @@ $script:servingPreviousRunId=''
 $script:identifiedVariant=''
 $script:chooserNotice=''
 $chooseButton.Enabled=$false
-$backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
-$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382
+$backgroundLabel=LabelAt 'Checking background host ownership.' 24 394
+$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 426
 # One line does not fit every status: cut it with an ellipsis and keep the full text in a tooltip.
 $statusLabel.AutoEllipsis=$true
 $statusTip=New-Object Windows.Forms.ToolTip
 $statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})
 $statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)
 $progress=New-Object Windows.Forms.ProgressBar
-$progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
+$progress.Location=New-Object Drawing.Point(24,458);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
-$output.Location=New-Object Drawing.Point(24,440);$output.Size=New-Object Drawing.Size(796,206);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
+$output.Location=New-Object Drawing.Point(24,484);$output.Size=New-Object Drawing.Size(796,162);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
 $script:evidenceUrl=$null
 $resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
 $notesLabel=New-Object Windows.Forms.Label
@@ -274,7 +278,7 @@ function SetBusy([bool]$Busy) {
     $Busy=[bool]($Busy -or $script:updateRun)
     $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
         $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
+    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox,$settingsButton)){$control.Enabled=(-not $Busy -and -not $occupied)}
     foreach($control in @($doctorButton,$driverButton)){$control.Enabled=-not $Busy}
     $chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)
     $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
@@ -806,6 +810,37 @@ function ShowDriverGuidance($Diagnostic) {
     try{$devices.SelectedIndex=0;[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     $statusLabel.Text='Driver guidance viewed. No driver changes made.'
 }
+function ShowUiSettings {
+    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(420,200);$dialog.StartPosition='CenterParent'
+    $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
+    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
+    $portBox=New-Object Windows.Forms.NumericUpDown
+    $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
+    $portBox.Value=[decimal][int]$current.serverPort;$dialog.Controls.Add($portBox)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(160,100);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(280,100);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
+    $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
+    $saveButton.Add_Click({
+        try{
+            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value)
+            $script:settingsSavedPort=[int]$portBox.Value
+            $dialog.DialogResult='OK';$dialog.Close()
+        }catch{
+            [void][Windows.Forms.MessageBox]::Show($dialog,[string]$_.Exception.Message,'FastLLM settings','OK','Warning')
+        }
+    })
+    SetTrayMenuAvailable $false
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort
+    try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    if([string]$result -ceq 'OK'){
+        $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
+        if($runActive -and [int]$script:settingsSavedPort -ne [int]$current.serverPort){$statusLabel.Text='The new port applies at the next start.'}
+        else{$statusLabel.Text='Settings saved.'}
+    }
+}
 function StartUiBackground {
     if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
     ReadSelection
@@ -813,16 +848,18 @@ function StartUiBackground {
     $script:bgEndedByUserStop=$false
     if($script:lastUserStoppedRequestId){SaveUserStoppedBackgroundRequestId ''}
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
+    $serving=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    if($serving.malformed){throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.'}
     $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
-        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue)}
+        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue);serverPort=[int]$serving.serverPort}
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
@@ -834,12 +871,14 @@ function AttachUiBackground {
     if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
     ReadSelection
     RefreshUiBackgroundStatus
+    # The port to expect comes from the running run's own endpoint, never from the saved setting.
+    $expectedPort=Get-FastLlmUiRunningPort -Status (GetUiBackgroundRunStatus)
     $attached=Invoke-FastLlmUiBackgroundAttach -State $script:bgState -Attach {
         param($ExpectedRequestId)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Request)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Request,$Port)
             . $Source
-            Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request
-        } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId
+            Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request -ExpectedServerPort $Port
+        } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId $expectedPort
     }
     $script:bgEndedByUserStop=$false
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
@@ -1182,7 +1221,11 @@ function CompleteUiUpdate {
 }
 $bannerButton.Add_Click({try{InvokeUiUpdate}catch{$statusLabel.Text='Update not installed: '+$_.Exception.Message+'. Nothing was changed.'}})
 $form.Add_Shown({try{StartUiStartupChecks}catch{}})
-$copyButton.Add_Click({[Windows.Forms.Clipboard]::SetText('http://127.0.0.1:8080/v1')})
+$copyButton.Add_Click({
+    try{[Windows.Forms.Clipboard]::SetText((Get-FastLlmUiApiUrl -Status (GetUiBackgroundRunStatus) -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)))}
+    catch{$statusLabel.Text='The API URL could not be copied: '+$_.Exception.Message}
+})
+$settingsButton.Add_Click({try{ShowUiSettings}catch{ShowFailure $_.Exception.Message}})
 $stopButton.Add_Click({try{StopUiOperation}catch{ShowFailure $_.Exception.Message}})
 $trayButton.Add_Click({
     try{MinimizeToTray}catch{
