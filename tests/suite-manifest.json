@@ -237,6 +237,11 @@
       "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
+      "suite": "default-arguments-tests",
+      "class": "ci",
+      "reason": "Pins the default llama-server arguments (golden fixture) through the real planner; no engine, GPU or network required. Wired in test.yml."
+    },
+    {
       "suite": "preload-tests",
       "class": "ci",
       "reason": "Config and fixture derivation through the real planner; no engine, GPU or network required. Wired in test.yml; the fast-llm.ps1 child cases skip under an elevated token."
