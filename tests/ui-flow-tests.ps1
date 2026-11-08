@@ -1200,7 +1200,7 @@ Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $before -After (
 Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $before -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='on'})) -ceq 'The new chat page setting applies at the next start.') 'settings note: chat page during a run'
 Check ((Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $before -After ([pscustomobject]@{serverPort=9090;thinking='auto';chatPage='off'})) -ceq 'Settings saved.') 'settings note: no run gives Settings saved.'
 # M6: the API URL is rebuilt on loopback from the parsed port.
-Check ((Get-FastLlmUiApiUrl -Status ([pscustomobject]@{active=$true;endpoint='http://192.168.1.5:18181/v1'}) -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'api-url: a non-loopback endpoint in the status still yields 127.0.0.1'
+Check ((Get-FastLlmUiApiUrl -Status ([pscustomobject]@{active=$true;endpoint='http://example.invalid:18181/v1'}) -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'api-url: a non-loopback endpoint in the status still yields 127.0.0.1'
 Check ((Get-FastLlmUiApiUrl -Status ([pscustomobject]@{active=$true;endpoint='http://evil.example:18181/other'}) -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'api-url: a hostile endpoint host and path are dropped'
 # The window wires the helpers: the ready branch of the foreground timer and the background status both call the chat helper, and side steps use their own slot.
 Check ($uiText.Contains('Get-FastLlmUiChatButtonState') -and (([regex]::Matches($uiText,'UpdateUiRunState [\$(]')).Count) -ge 2) 'the window updates the chat button from both the foreground timer and the background status through one helper'
