@@ -94,6 +94,26 @@ try {
         Check ($res.removed -eq $false -and $res.reason -eq 'path-outside-install-root' -and (Test-Path -LiteralPath $outside)) 'remove-refuses-path-outside-install-root'
     }
 
+    # J: a models folder that is a link is never listed from or deleted in (leftovers), as for a model file.
+    $rlf=Join-Path $work ('install-'+[Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $rlf -Force | Out-Null
+    $outsideDir=Join-Path $work ('outside-models-'+[Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $outsideDir -Force | Out-Null
+    $outsidePartial=Join-Path $outsideDir 'x.gguf.partial'
+    [IO.File]::WriteAllBytes($outsidePartial,(New-Object byte[] 64))
+    $dirLinked=$false
+    try { New-Item -ItemType SymbolicLink -Path (Join-Path $rlf 'models') -Target $outsideDir -ErrorAction Stop | Out-Null; $dirLinked=$true } catch { Write-Host 'SKIP: leftovers-refuse-linked-models-folder (symbolic links not available here)' }
+    if($dirLinked){
+        Check (([IO.File]::GetAttributes((Join-Path $rlf 'models')) -band [IO.FileAttributes]::ReparsePoint) -ne 0) 'linked-models-folder: the symlinked folder counts as a reparse point'
+        Check (@(Get-FastLlmModelLeftovers -InstallRoot $rlf).Count -eq 0) 'linked-models-folder: nothing is listed from it'
+        $res=@(Remove-FastLlmModelLeftovers -InstallRoot $rlf -Names @('x.gguf.partial'))
+        Check ($res.Count -eq 1 -and -not $res[0].removed -and $res[0].reason -eq 'path-outside-install-root' -and (Test-Path -LiteralPath $outsidePartial)) 'linked-models-folder: leftovers removal refuses with path-outside-install-root and leaves the file'
+        $res=Remove-Model $rlf $idA
+        Check ($res.removed -eq $false -and $res.reason -eq 'path-outside-install-root') 'linked-models-folder: model removal refuses too'
+    }
+    Check ((Get-FastLlmModelRemovalRefusalText -Reason 'path-outside-install-root') -ceq 'The models folder or that model file is a link, so FastLLM left it alone. Nothing was removed.') 'link refusal text fits a folder or a file'
+    Check ((Get-FastLlmModelRemovalRefusalText -Reason 'operation-in-progress') -ceq 'FastLLM is busy or serving; stop it first. Nothing was removed.') 'operation-in-progress text covers a foreground run serving'
+
     # serving: another process holds the operation lock and status.json names the model
     $rs=New-Root @($idA)
     $lockHandle=Enter-FastLlmOperation -InstallRoot $rs

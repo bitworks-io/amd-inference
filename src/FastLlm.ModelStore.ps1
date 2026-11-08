@@ -141,11 +141,19 @@ function Get-FastLlmInstalledModels {
     return @($rows)
 }
 
+function Test-FastLlmModelStoreFolderIsLink {
+    param([Parameter(Mandatory = $true)][string] $ModelsRoot)
+    if (-not (Test-Path -LiteralPath $ModelsRoot)) { return $false }
+    return [bool]((Get-Item -LiteralPath $ModelsRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
 function Get-FastLlmModelLeftovers {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $InstallRoot)
     $modelsRoot = Get-FastLlmModelStoreDirectory -InstallRoot $InstallRoot
     if (-not (Test-Path -LiteralPath $modelsRoot -PathType Container)) { return @() }
+    # A models folder that is a link could lead outside the install root: list nothing from it.
+    if (Test-FastLlmModelStoreFolderIsLink -ModelsRoot $modelsRoot) { return @() }
     $rows = New-Object System.Collections.ArrayList
     foreach ($item in @(Get-ChildItem -LiteralPath $modelsRoot -Force -File -ErrorAction Stop | Sort-Object -Property Name)) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
@@ -236,6 +244,10 @@ function Remove-FastLlmModelLeftovers {
             return @($results)
         }
         $modelsRoot = Get-FastLlmModelStoreDirectory -InstallRoot $InstallRoot
+        if (Test-FastLlmModelStoreFolderIsLink -ModelsRoot $modelsRoot) {
+            foreach ($name in @($Names)) { [void] $results.Add((& $row $name $false 'path-outside-install-root' 0)) }
+            return @($results)
+        }
         $listed = @(Get-FastLlmModelLeftovers -InstallRoot $InstallRoot)
         foreach ($name in @($Names)) {
             # Only a name the listing itself returned is ever deleted (exact, case-sensitive match).
@@ -280,10 +292,10 @@ function Get-FastLlmModelRemovalRefusalText {
         'ok'                        { return '' }
         'not-in-catalog'            { return 'FastLLM does not list that model. Nothing was removed.' }
         'not-installed'             { return 'That model file is not on this PC. Nothing was removed.' }
-        'path-outside-install-root' { return 'That model file is a link, so FastLLM left it alone. Nothing was removed.' }
+        'path-outside-install-root' { return 'The models folder or that model file is a link, so FastLLM left it alone. Nothing was removed.' }
         'serving'                   { return 'FastLLM is serving this model. Stop it first. Nothing was removed.' }
         'background-owned'          { return 'A background run uses this model. Stop it first. Nothing was removed.' }
-        'operation-in-progress'     { return 'FastLLM is busy with another install, start or download. Try again when it has finished. Nothing was removed.' }
+        'operation-in-progress'     { return 'FastLLM is busy or serving; stop it first. Nothing was removed.' }
         'download-in-progress'      { return 'This model is being downloaded right now. Nothing was removed.' }
         'in-use'                    { return 'The server still has this model file open. Stop it and try again. Nothing was removed.' }
         'access-denied'             { return 'Windows did not allow the file to be deleted. Close anything that uses it and try again. Nothing was removed.' }
