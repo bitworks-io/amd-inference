@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.CardIdentity.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Recipes.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Preload.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.ModelStore.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
@@ -3910,6 +3911,14 @@ Export-ModuleMember -Function @(
     'Get-FastLlmHardware',
     'Get-FastLlmPlan',
     'Get-FastLlmPreloadSet',
+    'Get-FastLlmInstalledModels',
+    'Get-FastLlmModelLeftovers',
+    'Remove-FastLlmInstalledModel',
+    'Remove-FastLlmModelLeftovers',
+    'Get-FastLlmModelRemovalConfirmationText',
+    'Format-FastLlmModelStoreGigabytes',
+    'Get-FastLlmModelStoreFreeBytes',
+    'Get-FastLlmModelRemovalRefusalText',
     'Get-FastLlmPreloadStatus',
     'Install-FastLlmPreloadSet',
     'New-FastLlmPreloadRun',

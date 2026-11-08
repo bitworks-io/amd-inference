@@ -69,7 +69,7 @@ param(
     # is disabled. Absent means the default start, unchanged.
     [switch] $NoDownload,
 
-    # update only: confirm the install without the interactive prompt (required with -Unattended).
+    # update and models -Remove/-RemoveQuarantined: confirm without the interactive prompt (update -Unattended requires it).
     [switch] $Yes,
 
     # update-check and update only: the release channel to follow; persisted to settings.json before the check.
@@ -81,7 +81,14 @@ param(
 
     [string] $Install,
 
+    # components -Remove <id> removes an engine component; models -Remove <id> removes a downloaded model.
     [string] $Remove,
+
+    # models only: list the downloaded models (id, size, in use, file check) and the leftover partial downloads, with the free disk space.
+    [switch] $Installed,
+
+    # models only: delete the leftover partial downloads. Needs -Yes (it is a second confirmation after the listing).
+    [switch] $RemoveQuarantined,
 
     # components -Install and install: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
     # settings: required to turn -ComponentLicenses accept-automatically on, after the licenses are shown.
@@ -180,11 +187,17 @@ if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -o
     throw '-DeviceBinding is supported only by a live start.'
 }
 if ($NoDownload -and ($Action -ne 'start' -or $DryRun)) { throw '-NoDownload is supported only by a live start.' }
-if ($Yes -and $Action -ne 'update') { throw '-Yes is supported only by update.' }
+if ($Yes -and $Action -notin @('update', 'models')) { throw '-Yes is supported only by update and models.' }
 if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-check', 'update')) { throw '-Channel is supported only by update-check and update.' }
 if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { throw '-Install is supported only by components.' }
-if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
+if ($PSBoundParameters.ContainsKey('Remove') -and $Action -notin @('components', 'models')) { throw '-Remove is supported only by components and models.' }
+if (($Installed -or $RemoveQuarantined) -and $Action -ne 'models') { throw '-Installed and -RemoveQuarantined are supported only by models.' }
+if ($Action -eq 'models' -and @(@([bool] $Installed, $PSBoundParameters.ContainsKey('Remove'), [bool] $RemoveQuarantined, [bool] $Preload, [bool] $PreloadStatus) | Where-Object { $_ }).Count -gt 1) {
+    throw 'models takes one of -Installed, -Remove <id>, -RemoveQuarantined, -Preload or -PreloadStatus.'
+}
+if ($Action -eq 'models' -and $PSBoundParameters.ContainsKey('Remove') -and [string]::IsNullOrWhiteSpace($Remove)) { throw 'models -Remove needs a model id.' }
+if ($Yes -and $Action -eq 'models' -and -not ($PSBoundParameters.ContainsKey('Remove') -or $RemoveQuarantined)) { throw '-Yes is supported only with models -Remove or -RemoveQuarantined.' }
 if (($Preload -or $PreloadStatus -or $Next -or $PSBoundParameters.ContainsKey('ApprovedModelsPath') -or $PSBoundParameters.ContainsKey('MinFreeGB') -or $PSBoundParameters.ContainsKey('OutputPath')) -and $Action -ne 'models') {
     throw '-Preload, -PreloadStatus, -Next, -ApprovedModelsPath, -MinFreeGB and -OutputPath are only valid with the models action.'
 }
@@ -360,6 +373,15 @@ function Get-FastLlmDeclinedFallbackPlan {
     return Get-FastLlmPlan -Hardware $Hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -FallbackFromRecipe $fromRecipeId -FallbackReason $stampedReason
 }
 
+# An interactive prompt only when a person can answer: not with -Unattended, -NonInteractive, redirected input or no user session.
+function Test-FastLlmCliInteractive {
+    if ($Unattended) { return $false }
+    if (-not [Environment]::UserInteractive) { return $false }
+    try { if ([Console]::IsInputRedirected) { return $false } } catch { return $false }
+    foreach ($commandLineArgument in @([Environment]::GetCommandLineArgs())) { if ([string] $commandLineArgument -like '-NonI*') { return $false } }
+    return $true
+}
+
 $operationLock = $null
 # components -Install/-Remove take the same lock for mutual exclusion only: it is a separate variable so the failure writer below never records a component
 # command in status.json.
@@ -419,6 +441,65 @@ try {
                     foreach ($statusComponent in @($preloadState.components)) { Write-Host ('component {0} present={1} verified={2}' -f $statusComponent.id, $statusComponent.present, $statusComponent.verified) }
                 }
                 exit 0
+            }
+            if ($Installed) {
+                $installedRows = @(Get-FastLlmInstalledModels -InstallRoot $InstallRoot -CatalogPath $catalogPath)
+                if ($AsJson) { ConvertTo-Json -InputObject @($installedRows) -Depth 6; break }
+                if ($installedRows.Count -eq 0) { Write-Host 'No models are downloaded.' }
+                else {
+                    Write-Host ('{0,-28} {1,8}  {2,-7}  {3}' -f 'Model', 'Size', 'In use', 'File check')
+                    foreach ($installedRow in $installedRows) {
+                        $inUseText = if ($installedRow.inUse) { 'yes (' + $installedRow.inUseReason + ')' } else { 'no' }
+                        $checkText = if ($installedRow.sizeMatches -and $installedRow.consent) { 'ok' } elseif (-not $installedRow.sizeMatches) { 'size differs' } else { 'no consent record' }
+                        Write-Host ('{0,-28} {1,5} GB  {2,-7}  {3}' -f $installedRow.id, (Format-FastLlmModelStoreGigabytes -Bytes $installedRow.sizeBytes), $inUseText, $checkText)
+                    }
+                }
+                $leftoverRows = @(Get-FastLlmModelLeftovers -InstallRoot $InstallRoot)
+                if ($leftoverRows.Count -gt 0) {
+                    Write-Host 'Leftover partial downloads (remove them with: models -RemoveQuarantined -Yes):'
+                    foreach ($leftoverRow in $leftoverRows) { Write-Host ('  {0}  {1} GB{2}' -f $leftoverRow.name, (Format-FastLlmModelStoreGigabytes -Bytes $leftoverRow.sizeBytes), $(if ($leftoverRow.locked) { '  (being downloaded)' } else { '' })) }
+                }
+                $freeBytes = Get-FastLlmModelStoreFreeBytes -InstallRoot $InstallRoot
+                if ($null -ne $freeBytes) { Write-Host ('Free disk space: {0} GB' -f (Format-FastLlmModelStoreGigabytes -Bytes $freeBytes)) }
+                break
+            }
+            if ($PSBoundParameters.ContainsKey('Remove')) {
+                $removeCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
+                $removeModel = @($removeCatalog.models | Where-Object { [string] $_.id -ceq $Remove })[0]
+                if ($null -eq $removeModel) { throw (New-FastLlmTypedFailure -Code 'not-in-catalog' -Message "There is no model '$Remove' in the catalog. Nothing was removed.") }
+                $removeRow = @(Get-FastLlmInstalledModels -InstallRoot $InstallRoot -CatalogPath $catalogPath | Where-Object { $_.id -ceq $Remove })[0]
+                if ($null -eq $removeRow) { throw (New-FastLlmTypedFailure -Code 'not-installed' -Message "The model '$Remove' is not downloaded. Nothing was removed.") }
+                $confirmationText = Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $removeModel) -SizeBytes ([int64] $removeRow.sizeBytes)
+                Write-Host $confirmationText
+                if (-not $Yes) {
+                    if (-not (Test-FastLlmCliInteractive)) {
+                        throw (New-FastLlmTypedFailure -Code 'confirmation-required' -Message 'Nothing was removed. Run the command again with -Yes to confirm.')
+                    }
+                    $answer = Read-Host 'Remove it? [y/N]'
+                    if ($answer -cnotmatch '^(?i:y|yes)$') { Write-Host 'Nothing was removed.'; break }
+                }
+                # The lock is taken after the answer, never during the prompt: a busy install, start or download means nothing is removed.
+                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
+                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy with another install, start or download for this installation. Nothing was removed.') }
+                $removal = Remove-FastLlmInstalledModel -InstallRoot $InstallRoot -CatalogPath $catalogPath -ModelId $Remove -OperationLockHeld
+                if ($AsJson) { $removal | ConvertTo-Json -Depth 4 }
+                if (-not $removal.removed) { throw (New-FastLlmTypedFailure -Code ([string] $removal.reason) -Message "Nothing was removed ($($removal.reason)).") }
+                if (-not $AsJson) { Write-Host "Removed '$Remove'." }
+                break
+            }
+            if ($RemoveQuarantined) {
+                $leftoverRows = @(Get-FastLlmModelLeftovers -InstallRoot $InstallRoot)
+                if ($leftoverRows.Count -eq 0) { Write-Host 'There are no leftover partial downloads.'; break }
+                Write-Host 'Leftover partial downloads:'
+                foreach ($leftoverRow in $leftoverRows) { Write-Host ('  {0}  {1} GB{2}' -f $leftoverRow.name, (Format-FastLlmModelStoreGigabytes -Bytes $leftoverRow.sizeBytes), $(if ($leftoverRow.locked) { '  (being downloaded, kept)' } else { '' })) }
+                if (-not $Yes) { throw (New-FastLlmTypedFailure -Code 'confirmation-required' -Message 'Nothing was removed. Run the command again with -Yes to delete the files listed above.') }
+                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
+                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy with another install, start or download for this installation. Nothing was removed.') }
+                $leftoverResults = @(Remove-FastLlmModelLeftovers -InstallRoot $InstallRoot -Names @($leftoverRows | Where-Object { -not $_.locked } | ForEach-Object { [string] $_.name }) -OperationLockHeld)
+                if ($AsJson) { ConvertTo-Json -InputObject @($leftoverResults) -Depth 4 }
+                else { foreach ($leftoverResult in $leftoverResults) { Write-Host ('{0}: {1}' -f $leftoverResult.name, $(if ($leftoverResult.removed) { 'removed' } else { 'kept (' + $leftoverResult.reason + ')' })) } }
+                if (@($leftoverResults | Where-Object { -not $_.removed }).Count -gt 0) { exit 1 }
+                break
             }
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             if ($AsJson) { ConvertTo-Json -InputObject @($catalog.models) -Depth 12 }

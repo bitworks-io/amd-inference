@@ -165,6 +165,7 @@ jobs:
           .\tests\default-arguments-tests.ps1
           .\tests\serving-settings-tests.ps1
           .\tests\preload-tests.ps1
+          .\tests\model-store-tests.ps1
           .\tests\vc-redist-tests.ps1
           .\tests\vc-redist-install-tests.ps1
           .\tests\ggml-vulkan-identity-tests.ps1
@@ -192,6 +193,7 @@ jobs:
           .\tests\default-arguments-tests.ps1
           .\tests\serving-settings-tests.ps1
           .\tests\preload-tests.ps1
+          .\tests\model-store-tests.ps1
           .\tests\vc-redist-tests.ps1
           .\tests\vc-redist-install-tests.ps1
           .\tests\ggml-vulkan-identity-tests.ps1

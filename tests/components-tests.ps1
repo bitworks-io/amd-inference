@@ -2324,7 +2324,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
 
     # fast-llm.ps1 argument rules and wiring.
     Check ($cliText.Contains("'update-check', 'update', 'components', 'settings')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
-    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components -Install, install and settings.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
+    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components and models.') -and $cliText.Contains('-AcceptLicense is supported only by components -Install, install and settings.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
     $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
@@ -2345,7 +2345,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     foreach ($case in @(
             @{ args = @('plan', '-List', '-InstallRoot', $refusalRoot); text = '-List is supported only by components.' },
             @{ args = @('plan', '-Install', 'x', '-InstallRoot', $refusalRoot); text = '-Install is supported only by components.' },
-            @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components.' },
+            @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components and models.' },
             @{ args = @('recipes', '-Detail', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('plan', '-Detail', '-AsJson', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components' },

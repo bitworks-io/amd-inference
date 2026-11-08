@@ -247,6 +247,11 @@
       "reason": "Pins the default llama-server arguments (golden fixture) through the real planner; no engine, GPU or network required. Wired in test.yml."
     },
     {
+      "suite": "model-store-tests",
+      "class": "ci",
+      "reason": "Downloaded-model list and removal, every refusal reason, leftover partials and the models CLI verbs; temp folders and sparse placeholder files only, no engine, GPU or network. Wired in test.yml; the fast-llm.ps1 child cases skip under an elevated token."
+    },
+    {
       "suite": "preload-tests",
       "class": "ci",
       "reason": "Config and fixture derivation through the real planner; no engine, GPU or network required. Wired in test.yml; the fast-llm.ps1 child cases skip under an elevated token."

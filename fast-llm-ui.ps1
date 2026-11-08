@@ -98,6 +98,7 @@ $componentsButton=ButtonAt 'Components' 508 303 120
 $chooseButton=ButtonAt 'Choose another setup' 636 303 184
 $settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
 $openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $rowWidth
+$modelsButton=ButtonAt 'Downloaded models' $rowSlotX[3] $rowY $rowWidth
 $openChatButton.Enabled=$false
 $script:chatUrl=$null
 # A chooser pick is pinned for the preview and the start of that workflow only; the plain Install / Start buttons clear it.
@@ -991,6 +992,105 @@ function ShowComponentsWindow {
     finally{$script:componentsView=$null;$dialog.Dispose()}
 }
 $componentsButton.Add_Click({try{ShowComponentsWindow}catch{ShowFailure $_.Exception.Message}})
+# The downloaded models with their sizes and a Remove button per row, the free disk space, and a button for leftover partial downloads.
+# Removal is Remove-FastLlmInstalledModel under the operation lock (taken without waiting); a refusal is shown as a plain sentence.
+$script:modelsView=$null
+function FillModelsPanel {
+    $view=$script:modelsView
+    foreach($old in @($view.panel.Controls)){$old.Dispose()}
+    $rows=@()
+    try{$rows=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file)}
+    catch{$view.message.Text="The model list could not be read: $($_.Exception.Message)"}
+    $leftovers=@()
+    try{$leftovers=@(Get-FastLlmModelLeftovers -InstallRoot $view.root)}catch{}
+    $free=Get-FastLlmModelStoreFreeBytes -InstallRoot $view.root
+    $view.free.Text=if($null -ne $free){"Free disk space: $(Format-FastLlmModelStoreGigabytes -Bytes $free) GB"}else{''}
+    $view.leftoverButton.Enabled=($leftovers.Count -gt 0)
+    $leftoverBytes=[int64]0;foreach($leftover in $leftovers){$leftoverBytes+=[int64]$leftover.sizeBytes}
+    $view.leftoverButton.Tag=@($leftovers | Where-Object{-not $_.locked} | ForEach-Object{[string]$_.name})
+    $view.leftoverText=if($leftovers.Count -gt 0){"$($leftovers.Count) leftover file(s), $(Format-FastLlmModelStoreGigabytes -Bytes $leftoverBytes) GB"}else{''}
+    if($rows.Count -eq 0){
+        $none=New-Object Windows.Forms.Label
+        $none.Text='No models are downloaded.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
+        $view.panel.Controls.Add($none)
+        return
+    }
+    $top=8
+    foreach($row in $rows){
+        $entry=@($catalog.models | Where-Object{[string]$_.id -ceq [string]$row.id})[0]
+        $name=Get-FastLlmModelDisplayName -Model $entry
+        $text="$name  -  $(Format-FastLlmModelStoreGigabytes -Bytes $row.sizeBytes) GB"
+        if($row.inUse){$text+="  (in use: $($row.inUseReason))"}
+        $rowLabel=New-Object Windows.Forms.Label
+        $rowLabel.Text=$text;$rowLabel.Location=New-Object Drawing.Point(8,($top+6));$rowLabel.Size=New-Object Drawing.Size(530,26)
+        $removeButton=New-Object Windows.Forms.Button
+        $removeButton.Text='Remove';$removeButton.Tag=[string]$row.id;$removeButton.Location=New-Object Drawing.Point(548,$top);$removeButton.Size=New-Object Drawing.Size(110,32)
+        $removeButton.Enabled=-not $row.inUse
+        $removeButton.Add_Click({param($sender,$clickArgs)RemoveModelFromWindow ([string]$sender.Tag)})
+        $view.panel.Controls.Add($rowLabel);$view.panel.Controls.Add($removeButton)
+        $top+=40
+    }
+}
+function RemoveModelFromWindow([string]$ModelId) {
+    $view=$script:modelsView
+    $entry=@($catalog.models | Where-Object{[string]$_.id -ceq $ModelId})[0]
+    $row=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file | Where-Object{$_.id -ceq $ModelId})[0]
+    if($null -eq $entry -or $null -eq $row){$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'not-installed';[void]$view.dialog.BeginInvoke([Action]{FillModelsPanel});return}
+    $text=Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $entry) -SizeBytes ([int64]$row.sizeBytes)
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,$text,'Remove model','YesNo','Question','Button2')
+    if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
+    $removeLock=$null
+    try{
+        try{$removeLock=Enter-FastLlmOperation -InstallRoot $view.root}
+        catch{$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'operation-in-progress';return}
+        $result=Remove-FastLlmInstalledModel -InstallRoot $view.root -CatalogPath $view.file -ModelId $ModelId -OperationLockHeld
+        $view.message.Text=if($result.removed){"Removed $(Get-FastLlmModelDisplayName -Model $entry)."}else{Get-FastLlmModelRemovalRefusalText -Reason ([string]$result.reason)}
+    }
+    catch{$view.message.Text="The model could not be removed: $($_.Exception.Message)"}
+    finally{if($removeLock){$removeLock.Dispose()}}
+    # Rebuilt after this Click handler returns: FillModelsPanel disposes the clicked button, which must not happen inside its own Click.
+    [void]$view.dialog.BeginInvoke([Action]{FillModelsPanel})
+}
+function RemoveLeftoversFromWindow {
+    $view=$script:modelsView
+    $names=@($view.leftoverButton.Tag)
+    if($names.Count -eq 0){return}
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?",'Remove leftover partial downloads','YesNo','Question','Button2')
+    if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
+    $removeLock=$null
+    try{
+        try{$removeLock=Enter-FastLlmOperation -InstallRoot $view.root}
+        catch{$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'operation-in-progress';return}
+        $results=@(Remove-FastLlmModelLeftovers -InstallRoot $view.root -Names $names -OperationLockHeld)
+        $kept=@($results | Where-Object{-not $_.removed})
+        $view.message.Text=if($kept.Count -eq 0){"Removed $($results.Count) leftover file(s)."}else{"Removed $($results.Count-$kept.Count) leftover file(s); $($kept.Count) could not be removed ($($kept[0].reason))."}
+    }
+    catch{$view.message.Text="The leftover files could not be removed: $($_.Exception.Message)"}
+    finally{if($removeLock){$removeLock.Dispose()}}
+    [void]$view.dialog.BeginInvoke([Action]{FillModelsPanel})
+}
+function ShowModelsWindow {
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Downloaded models';$dialog.Size=New-Object Drawing.Size(720,500)
+    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $panel=New-Object Windows.Forms.Panel
+    $panel.Location=New-Object Drawing.Point(20,20);$panel.Size=New-Object Drawing.Size(660,250);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
+    $free=New-Object Windows.Forms.Label
+    $free.Location=New-Object Drawing.Point(20,280);$free.Size=New-Object Drawing.Size(300,26);$free.Text=''
+    $leftoverButton=New-Object Windows.Forms.Button
+    $leftoverButton.Text='Remove leftover partial downloads';$leftoverButton.Location=New-Object Drawing.Point(330,276);$leftoverButton.Size=New-Object Drawing.Size(350,32);$leftoverButton.Enabled=$false
+    $leftoverButton.Add_Click({RemoveLeftoversFromWindow})
+    $message=New-Object Windows.Forms.Label
+    $message.Location=New-Object Drawing.Point(20,320);$message.Size=New-Object Drawing.Size(660,70);$message.Text=''
+    $close=New-Object Windows.Forms.Button
+    $close.Text='Close';$close.Location=New-Object Drawing.Point(570,410);$close.Size=New-Object Drawing.Size(110,32);$close.DialogResult='Cancel'
+    $dialog.Controls.Add($panel);$dialog.Controls.Add($free);$dialog.Controls.Add($leftoverButton);$dialog.Controls.Add($message);$dialog.Controls.Add($close)
+    $dialog.CancelButton=$close
+    $script:modelsView=@{dialog=$dialog;panel=$panel;free=$free;leftoverButton=$leftoverButton;message=$message;leftoverText='';root=[IO.Path]::GetFullPath($pathBox.Text);file=(Join-Path $PSScriptRoot 'config/catalog.json')}
+    try{FillModelsPanel;[void]$dialog.ShowDialog($form)}
+    finally{$script:modelsView=$null;$dialog.Dispose()}
+}
+$modelsButton.Add_Click({try{ShowModelsWindow}catch{ShowFailure $_.Exception.Message}})
 # "Choose another setup": the recipes the CLI lists for this card (`recipes -Detail -AsJson`, read-only and offline), experimental ones only while the switch is on.
 # Choosing one whose engine chain needs an AMD license opens the consent dialog; Install runs the component install as a child, then the start uses -Recipe.
 # Both dialogs are disposed only after ShowDialog returns, never inside one of their own control handlers (as in the Components window).

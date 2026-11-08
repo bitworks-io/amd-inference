@@ -81,6 +81,18 @@ Thinking is Auto by default, and Auto leaves the server arguments exactly as the
 
 The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. Benchmarks refuse a run started with the page on, so turn it off, start again, then benchmark.
 
+## Free up disk space
+
+Downloaded models are 2 to 29 GB each. The Downloaded models button in the window lists them with their size and the free disk space; Remove asks first (the answer defaults to No) and deletes only that model, which you can download again later. Your licence consent records are kept, so a model you download again does not ask again. A model that FastLLM is serving, that a background run uses, or that is being downloaded cannot be removed; the window says so and removes nothing. The Remove leftover partial downloads button is enabled only when interrupted downloads and files that failed their check are left in the models folder, and asks a second time.
+
+From a command line:
+
+- `fast-llm.ps1 models -Installed` lists the downloaded models, the leftover files and the free disk space (add `-AsJson` for the rows).
+- `fast-llm.ps1 models -Remove <model id>` shows what it removes and asks. Add `-Yes` to skip the question (a script has to).
+- `fast-llm.ps1 models -RemoveQuarantined -Yes` deletes the leftover partial downloads it lists; without `-Yes` it only lists them and stops.
+
+These take the same lock as an install or a start, so they stop with `operation-in-progress` while one is running.
+
 ## Uninstall
 
 Use Windows Settings, Apps, FastLLM. Downloaded models and engines are kept unless you choose to delete them when asked.
