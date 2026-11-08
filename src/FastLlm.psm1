@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.Preload.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.ModelStore.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.RunLog.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.VulkanMemoryPolicy.ps1')
@@ -3903,6 +3904,8 @@ function Start-FastLlmServer {
 }
 
 Export-ModuleMember -Function @(
+    'Write-FastLlmRunLogEvent',
+    'Invoke-FastLlmRunLogRotation',
     'Add-FastLlmDriverVersions',
     'Assert-FastLlmHardware',
     'ConvertFrom-LlamaDeviceList',

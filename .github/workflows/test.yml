@@ -164,6 +164,7 @@ jobs:
           .\tests\prerequisite-diagnostics-tests.ps1
           .\tests\default-arguments-tests.ps1
           .\tests\serving-settings-tests.ps1
+          .\tests\run-log-tests.ps1
           .\tests\preload-tests.ps1
           .\tests\model-store-tests.ps1
           .\tests\vc-redist-tests.ps1
@@ -192,6 +193,7 @@ jobs:
           .\tests\prerequisite-diagnostics-tests.ps1
           .\tests\default-arguments-tests.ps1
           .\tests\serving-settings-tests.ps1
+          .\tests\run-log-tests.ps1
           .\tests\preload-tests.ps1
           .\tests\model-store-tests.ps1
           .\tests\vc-redist-tests.ps1

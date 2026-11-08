@@ -49,6 +49,12 @@ param(
     # doctor only: print the report with a summarized install-integrity block, as ordinary multi-line JSON whose lines stay short, for callers that bound the output size or the length of each output line.
     [switch] $Compact,
 
+    # doctor only: write a local support bundle zip (the doctor report, the newest 5 run logs, a few settings, the installed components
+    # and the version) to this path, which must not exist yet. Nothing is uploaded. With -ListOnly the entries and the redaction count
+    # are printed as JSON and nothing is written.
+    [string] $SupportBundle,
+    [switch] $ListOnly,
+
     # Advisory post-Ready prompt-processing measurement (live start only; default off).
     [switch] $ThroughputCanary,
 
@@ -236,6 +242,8 @@ if ($Action -eq 'components') {
 if ($Action -eq 'update' -and $Unattended -and -not $Yes) { throw 'update -Unattended requires -Yes; nothing was changed.' }
 if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
 if ($Compact -and $Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }
+if ($PSBoundParameters.ContainsKey('SupportBundle') -and ($Action -ne 'doctor' -or [string]::IsNullOrWhiteSpace($SupportBundle))) { throw '-SupportBundle <zip path> is supported only by doctor.' }
+if ($ListOnly -and -not $PSBoundParameters.ContainsKey('SupportBundle')) { throw '-ListOnly is supported only with doctor -SupportBundle.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
     throw '-AsJson is supported with start only when -DryRun is also specified; a foreground server owns its console output.'
 }
@@ -272,6 +280,8 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Components.ps1')
 # Serving settings (port) is dot-sourced here and in fast-llm-ui.ps1, never imported through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ServingSettings.ps1')
+# The support bundle reads settings.json, so like the serving settings it is dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SupportBundle.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.json'
 $selectionOptions = @{
@@ -957,10 +967,17 @@ try {
                 $diagnostic.vulkanMemory = Get-FastLlmVulkanMemoryDiagnostic -AdapterNames $diagnosticAdapters -Backend $diagnosticBackend -Probe:$ProbeVulkanMemory -Adapters $diagnosticAdapterObjects
             }
             catch { $diagnostic.vulkanMemoryError = 'vulkan-memory-diagnostic-unavailable' }
-            if ($Compact) { ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 }
-            else { $diagnostic | ConvertTo-Json -Depth 12 }
-            if ($diagnostic.error) {
-                exit 2
+            if ($PSBoundParameters.ContainsKey('SupportBundle')) {
+                # Local only: the zip is written to the path the user gave and nothing is sent anywhere. A doctor error is part of the report,
+                # not a reason to withhold the bundle.
+                New-FastLlmSupportBundle -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -OutputPath $SupportBundle -Doctor $diagnostic -ListOnly:$ListOnly | ConvertTo-Json -Depth 5
+            }
+            else {
+                if ($Compact) { ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 }
+                else { $diagnostic | ConvertTo-Json -Depth 12 }
+                if ($diagnostic.error) {
+                    exit 2
+                }
             }
         }
     }

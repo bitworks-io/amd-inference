@@ -767,6 +767,11 @@ function Invoke-FastLlmSupervisedServer {
         }
     }
     $stateRoot = Get-FastLlmStateRoot -InstallRoot $InstallRoot -Create
+    # Run log (best-effort, prompt-free): the plan's own fields and phase names only. Nothing a server prints or a client sends.
+    $runPhase = 'preparing'
+    $runFailureMessage = $null
+    Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'start' -Fields { Get-FastLlmRunLogStartFields -Plan $Plan -State $state -SelfTest ([bool] $SelfTest) }
+    Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'preparing' }
     $stopPath = Join-Path $stateRoot ('stop-' + $state.runId)
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
     $hostProcess = New-Object Bitworks.FastLlm.ProcessHost
@@ -803,6 +808,8 @@ function Invoke-FastLlmSupervisedServer {
         }
         $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
+        $runPhase = 'loading'
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'loading' }
         $deadline = [Diagnostics.Stopwatch]::StartNew()
         $healthy = $false
         while ($deadline.Elapsed.TotalSeconds -lt $LoadTimeoutSeconds) {
@@ -832,6 +839,7 @@ function Invoke-FastLlmSupervisedServer {
         $startupText=$hostProcess.FreezeStartupDiagnostics()
         $requestedFlashAttention=if($state.recipe){$state.recipe.flashAttention}else{$null}
         $state.startupDiagnostics=ConvertFrom-FastLlmStartupDiagnostics -Text $startupText -Overflow $hostProcess.StartupDiagnosticsOverflow -RequestedFlashAttention $requestedFlashAttention
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'startup-diagnostics' -Fields { Get-FastLlmRunLogDiagnosticsFields -Diagnostics $state.startupDiagnostics }
         # Freeze same-child device selection before any API canary can cause
         # prompt-related output. This advisory never changes the Ready gate.
         $selectedDeviceText=$hostProcess.FreezeSelectedDeviceIdentity()
@@ -890,6 +898,7 @@ function Invoke-FastLlmSupervisedServer {
         try {
             if ($hostProcess.PlacementOverflow) { throw 'GPU placement capture exceeded its bounded limit.' }
             $state.placement = ConvertFrom-FastLlmPlacementLog -Text $placementText -Devices @($Plan.selectedAdapters.device)
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'placement' -Fields { Get-FastLlmRunLogPlacementFields -Placement $state.placement }
         }
         catch {
             Write-Host "GPU placement diagnostics: $($hostProcess.PlacementDiagnostics())"
@@ -897,7 +906,11 @@ function Invoke-FastLlmSupervisedServer {
             if ($safeLines.Count) { Write-Host ('GPU placement evidence: ' + ($safeLines -join ' | ')) }
             throw
         }
+        # From here the API is in use: a failure's own text is never logged (it could echo request text), only its code.
+        $runPhase = 'checking'
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'checking' }
         $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $Plan.model.contextSize
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'api-check' -Fields { Get-FastLlmRunLogApiCheckFields -Canary $state.canary }
         if ($hostProcess.Process.HasExited) { throw 'Server exited during canary.' }
         $hostProcess.DiscardOutput()
         # The self-test (spec 4.2 step 5, 4.3) completes BEFORE any ready announcement: the status phase stays 'checking', no Ready line is printed
@@ -913,6 +926,7 @@ function Invoke-FastLlmSupervisedServer {
             $recipeId = $null
             if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) { $recipeId = $Plan.recipe.id }
             $state.selfTest = $selfTestResult
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'self-test' -Fields { Get-FastLlmRunLogSelfTestFields -Result $selfTestResult }
             try { Write-FastLlmState -InstallRoot $InstallRoot -FileName 'selftest.json' -State ([ordered]@{ schemaVersion = 1; recipeId = $recipeId; modelId = [string] $Plan.model.id
                         engineBuild = [string] $Plan.engineVersion; result = $selfTestResult }) } catch { }
             try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { }
@@ -932,6 +946,8 @@ function Invoke-FastLlmSupervisedServer {
         $state.phase='ready'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         $reachedReady = $true
+        $runPhase = 'ready'
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'ready' }
         if ($state.recipe) {
             Write-FastLlmState -InstallRoot $InstallRoot -FileName ($Plan.hardwareFingerprint+'.last-ready.json') -State ([ordered]@{
                 kind='api-smoke-only';hardwareFingerprint=$Plan.hardwareFingerprint;modelId=$Plan.model.id;modelSha256=$Plan.model.sha256;catalogSha256=$state.recipe.catalogSha256
@@ -977,6 +993,7 @@ function Invoke-FastLlmSupervisedServer {
         return $exitCode
     } catch {
         $state.phase='failed'
+        $runFailureMessage = [string] $_.Exception.Message
         # A failure after the server was ready (a crash while serving) is not a start failure: the start-time fallback never applies to it.
         if ($reachedReady) { $_.Exception.Data['FastLlmAfterReady']=$true }
         if ($_.Exception.Data['FastLlmStateWrite'] -eq $true) {
@@ -1004,6 +1021,19 @@ function Invoke-FastLlmSupervisedServer {
         }
         throw
     } finally {
+        # Run log: the final phase and the end event (before the child is disposed, so its exit code is read if it already exited).
+        $serverExitCode = $null
+        try { if ($spawned -and $hostProcess.Process.HasExited) { $serverExitCode = [int] $hostProcess.Process.ExitCode } } catch { $null = $_ }
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields {
+            $f = [ordered] @{ phase = [string] $state.phase }
+            if ($state.failureCode) { $f.failureCode = [string] $state.failureCode }
+            $f }
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'end' -Fields {
+            $f = [ordered] @{ phase = [string] $state.phase; exitCode = $(if ($state.phase -ceq 'failed') { 1 } else { 0 }) }
+            if ($state.failureCode) { $f.failureCode = [string] $state.failureCode }
+            if ($state.phase -ceq 'failed' -and $null -ne $runFailureMessage) { $f.failedAtPhase = $runPhase; $f.failureMessage = $runFailureMessage }
+            if ($null -ne $serverExitCode) { $f.serverExitCode = $serverExitCode }
+            $f }
         try { $hostProcess.Dispose() }
         finally {
             try {

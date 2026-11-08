@@ -242,6 +242,11 @@
       "reason": "Serving settings (port) read/write, validation, precedence and the bench-path tripwire; temp folders only, no engine, GPU or network. Wired in test.yml."
     },
     {
+      "suite": "run-log-tests",
+      "class": "ci",
+      "reason": "Prompt-free run log and local support bundle: field allowlist, rotation and size caps, redaction, marker tests through a supervised start against the native mock server; temp folders only, no engine, GPU or network. Wired in test.yml."
+    },
+    {
       "suite": "default-arguments-tests",
       "class": "ci",
       "reason": "Pins the default llama-server arguments (golden fixture) through the real planner; no engine, GPU or network required. Wired in test.yml."

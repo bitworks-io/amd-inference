@@ -1077,3 +1077,27 @@ function Get-FastLlmUiMalformedSettingsNotice {
     }
     return ''
 }
+
+# ---- Save support bundle: the pure parts (the default file name and the text of the list-before-save dialog) ----
+
+function Get-FastLlmUiSupportBundleFileName {
+    param([Parameter(Mandatory = $true)][DateTime] $Now)
+    return ('FastLLM-support-{0}.zip' -f $Now.ToString('yyyyMMdd-HHmm', [Globalization.CultureInfo]::InvariantCulture))
+}
+
+# The text of the dialog shown before anything is saved: every entry with its size, the redaction count, and the plain statement that the
+# bundle stays on this PC. $Listing is the parsed `doctor -SupportBundle <path> -ListOnly` output ({ entries: [{name,sizeBytes}], redactions }).
+function Format-FastLlmUiSupportBundleList {
+    param([Parameter(Mandatory = $true)] $Listing)
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $lines.Add('The support bundle will contain these files:')
+    $lines.Add('')
+    foreach ($entry in @($Listing.entries)) {
+        $kib = [Math]::Max(1, [int][Math]::Ceiling([double] $entry.sizeBytes / 1024))
+        $lines.Add(('  {0}  ({1} KiB)' -f [string] $entry.name, $kib))
+    }
+    $lines.Add('')
+    $lines.Add(('{0} item(s) that identify this PC or you (your user name, computer name, profile folder, hardware serial-style ids) were replaced with placeholders.' -f [int] $Listing.redactions))
+    $lines.Add('The bundle is saved only where you choose. FastLLM does not upload it or send it anywhere. It never contains prompts, answers or chat text.')
+    return ($lines -join [Environment]::NewLine)
+}

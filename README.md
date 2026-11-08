@@ -81,6 +81,16 @@ Thinking is Auto by default, and Auto leaves the server arguments exactly as the
 
 The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. Benchmarks refuse a run started with the page on, so turn it off, start again, then benchmark.
 
+## Logs and support bundle
+
+Each run writes a small log to `state\logs\run-<time>-<id>.jsonl` under the install folder. FastLLM keeps the newest 20 logs, each at most 256 KiB. **Open logs** in the window opens the folder.
+
+What a log keeps: the model, recipe, engine version, context size, port, thinking and chat page settings of the run; the phases (preparing, loading, checking, ready, stopped, failed); the parsed startup and GPU placement numbers (layer counts, device names, buffer sizes in MiB); the self-test verdict, speeds and timings; failure codes; and the exit code. For a failure before the API checks start, the error message is kept as well. After that only a fixed sentence and the failure code are kept.
+
+What is never kept: prompts, answers, chat text, the self-test text, request or response bodies, or anything the server prints after it is ready. FastLLM does not pass llama-server a log file, and the server's output is discarded once it is ready.
+
+**Save support bundle...** in the window (or `fast-llm.ps1 doctor -SupportBundle <new-file>.zip`) writes one zip you can attach to a support request: the diagnostics report, the newest 5 run logs, a few settings (no licence titles or hosts), the installed components and the version. The window first lists every file and how many identifying items (user name, computer name, profile folder, Windows SIDs, MAC addresses, device instance ids) were replaced with placeholders, then asks where to save it. `-ListOnly` prints that list and writes nothing. The bundle is capped at 8 MiB, is never written over an existing file, and is saved only where you choose: FastLLM does not upload it or send it anywhere.
+
 ## Free up disk space
 
 Downloaded models are 2 to 29 GB each. The Downloaded models button in the window lists them with their size and the free disk space; Remove asks first (the answer defaults to No) and deletes only that model, which you can download again later. Your licence consent records are kept, so a model you download again does not ask again. A model that FastLLM is serving, that a background run uses, or that is being downloaded cannot be removed; the window says so and removes nothing. The Remove leftover partial downloads button is enabled only when interrupted downloads and files that failed their check are left in the models folder, and asks a second time.

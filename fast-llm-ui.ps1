@@ -21,6 +21,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.Components.ps1')
 # Serving settings (port) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.ServingSettings.ps1')
+# The support bundle (reads settings.json) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.SupportBundle.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
@@ -99,13 +101,15 @@ $chooseButton=ButtonAt 'Choose another setup' 636 303 184
 $settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
 $openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $rowWidth
 $modelsButton=ButtonAt 'Downloaded models' $rowSlotX[3] $rowY $rowWidth
+$bundleButton=ButtonAt ('Save support bundle'+[string][char]0x2026) $rowSlotX[4] $rowY $rowWidth
+$logsButton=ButtonAt 'Open logs' $rowSlotX[5] $rowY $rowWidth
 $openChatButton.Enabled=$false
 $script:chatUrl=$null
 # A chooser pick is pinned for the preview and the start of that workflow only; the plain Install / Start buttons clear it.
 $script:previewReady=$false
 $script:chosenRecipe=$null
 $script:pendingRecipeRow=$null
-$script:servingPreviousRunId=''
+$script:servingPreviousRunId='';$script:bundlePath=''
 $script:identifiedVariant=''
 $script:chooserNotice=''
 $chooseButton.Enabled=$false
@@ -284,6 +288,7 @@ function SetBusy([bool]$Busy) {
         $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
     foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
     foreach($control in @($doctorButton,$driverButton,$settingsButton)){$control.Enabled=-not $Busy}
+    $bundleButton.Enabled=-not $Busy
     $chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)
     $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
         (Test-FastLlmUiBackgroundMayStart -State $script:bgState))
@@ -1091,6 +1096,45 @@ function ShowModelsWindow {
     finally{$script:modelsView=$null;$dialog.Dispose()}
 }
 $modelsButton.Add_Click({try{ShowModelsWindow}catch{ShowFailure $_.Exception.Message}})
+# Open logs: the run logs folder (state\logs) in Explorer, created if it is not there yet.
+function OpenLogsFolder {
+    ReadSelection
+    $stateRoot=& (Get-Module FastLlm) {param($Root) Get-FastLlmStateRoot -InstallRoot $Root -Create} $script:installPath
+    $logsPath=Join-Path $stateRoot 'logs'
+    if(-not (Test-Path -LiteralPath $logsPath -PathType Container)){New-Item -ItemType Directory -Path $logsPath -Force | Out-Null}
+    Start-Process explorer.exe -ArgumentList @($logsPath)
+}
+$logsButton.Add_Click({try{OpenLogsFolder}catch{$statusLabel.Text='The logs folder could not be opened: '+$_.Exception.Message}})
+# Save support bundle: a list-only step first (nothing is written), then the list and the redaction count in a dialog, then a Save dialog
+# that defaults to the Desktop, then the write. The zip is local only; nothing is uploaded.
+function StartSupportBundle {
+    ReadSelection
+    $probe=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-support-list-'+[Guid]::NewGuid().ToString('N')+'.zip')
+    LaunchStep 'bundle list' (@('doctor','-SupportBundle',$probe,'-ListOnly')+$script:selection)
+}
+function ContinueSupportBundle([string]$Text) {
+    $listing=ConvertFrom-Json $Text
+    $answer=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiSupportBundleList -Listing $listing),'Save support bundle',[Windows.Forms.MessageBoxButtons]::OKCancel,[Windows.Forms.MessageBoxIcon]::Information)
+    if($answer -ne [Windows.Forms.DialogResult]::OK){$statusLabel.Text='Support bundle cancelled. Nothing was saved.';return}
+    $dialog=New-Object Windows.Forms.SaveFileDialog
+    try{
+        $dialog.Title='Save support bundle'
+        $dialog.Filter='Zip file (*.zip)|*.zip'
+        $dialog.DefaultExt='zip'
+        $dialog.InitialDirectory=[Environment]::GetFolderPath('Desktop')
+        $dialog.FileName=Get-FastLlmUiSupportBundleFileName -Now (Get-Date)
+        $dialog.OverwritePrompt=$false
+        $chosen=$null
+        while($null -eq $chosen){
+            if($dialog.ShowDialog($form) -ne [Windows.Forms.DialogResult]::OK){$statusLabel.Text='Support bundle cancelled. Nothing was saved.';return}
+            if(Test-Path -LiteralPath $dialog.FileName){[void][Windows.Forms.MessageBox]::Show($form,'That file already exists. A support bundle is never written over a file; choose a new name.','Save support bundle')}
+            else{$chosen=$dialog.FileName}
+        }
+    }finally{$dialog.Dispose()}
+    $script:bundlePath=$chosen
+    LaunchStep 'bundle save' (@('doctor','-SupportBundle',$chosen)+$script:selection)
+}
+$bundleButton.Add_Click({try{StartSupportBundle}catch{ShowFailure $_.Exception.Message}})
 # "Choose another setup": the recipes the CLI lists for this card (`recipes -Detail -AsJson`, read-only and offline), experimental ones only while the switch is on.
 # Choosing one whose engine chain needs an AMD license opens the consent dialog; Install runs the component install as a child, then the start uses -Recipe.
 # Both dialogs are disposed only after ShowDialog returns, never inside one of their own control handlers (as in the Components window).
@@ -1514,6 +1558,8 @@ $timer.Add_Tick({
             }
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
             'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
+            'bundle list'{SetBusy $false;$statusLabel.Text='Support bundle contents listed.';ContinueSupportBundle $text}
+            'bundle save'{SetBusy $false;$statusLabel.Text='Support bundle saved.';$output.Text='Saved to '+$script:bundlePath+[Environment]::NewLine+'The bundle stays on this PC; FastLLM did not upload it.'}
             'diagnostics'{
                 SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'
                 if(Test-FastLlmUiOutputWasCut -Text $text){$output.AppendText([Environment]::NewLine+[Environment]::NewLine+'The window can show only part of this report. For the full report run: fast-llm.ps1 doctor')}
