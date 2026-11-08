@@ -148,7 +148,8 @@ try {
     $baseJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
     $nowJson=$basePlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
     $installRoot=Join-Path $work 'install'
-    $normalize={param($Value) $t=($Value | ConvertTo-Json -Depth 12 -Compress); foreach($v in @($installRoot,$installRoot.Replace('\','\\'),$installRoot.Replace('\','/'))){if($v){$t=$t.Replace($v,'<install-root>')}}; $t.Replace('\\','/')}
+    $normalize={param($Value) $t=(ConvertTo-Json -InputObject $Value -Depth 12 -Compress); if($null -eq $t){$t='null'}; foreach($v in @($installRoot,$installRoot.Replace('\','\\'),$installRoot.Replace('\','/'))){if($v){$t=$t.Replace($v,'<install-root>')}}; $t.Replace('\\','/')}
+    Check ((& $normalize $null) -ceq 'null') 'plan-json-additive: the normalizer serializes a null value as null on every PowerShell edition'
     $missing=@();$valueDiffs=@()
     foreach($property in $baseJson.PSObject.Properties){
         if(-not $nowJson.PSObject.Properties[$property.Name]){$missing+=$property.Name;continue}
