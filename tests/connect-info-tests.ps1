@@ -59,8 +59,9 @@ try {
         Check ($text -match ('(?m)^\s*#.*'+[regex]::Escape([string]$constant.docUrl))) "every-card-has-doc-url: $($constant.id) URL also sits in a comment"
     }
 
-    Check ($codex.snippet.Contains("base_url ends in /v1 because FastLLM serves the Responses API at /v1/responses; the Codex documentation's example has no path.")) 'codex card labels the /v1 as FastLLM''s own reasoning'
-    Check ($codex.snippet.Contains("FastLLM's own fact: it sets no key")) 'codex card labels the any-text key as FastLLM''s own fact'
+    Check ($codex.snippet.Contains('follows the Codex documentation''s local example') -and $codex.snippet.Contains("FastLLM's own fact: it serves the Responses API at /v1/responses")) 'codex card cites its documented local example and labels the Responses claim as FastLLM''s own fact'
+    Check ($codex.snippet -notmatch 'env_key' -and $codex.snippet -notmatch 'OPENAI_API_KEY') 'codex card has no env_key and never names OPENAI_API_KEY'
+    Check (-not $codex.snippet.Contains('example has no path') -and $codex.docUrl -ceq 'https://learn.chatgpt.com/docs/config-file/config-advanced') 'codex card makes no false claim about its doc and cites the final doc URL'
 
     # connection-follows-port
     $moved=Get-FastLlmConnectionInfo -Status (New-Status 18181 16384)
@@ -178,7 +179,7 @@ try {
     $startAt=$entry.IndexOf("        'start' {")
     Check ($startAt -lt 0 -or $callAt -lt $startAt -or $startAt -lt $doctorAt) 'apicheck-not-in-start: not inside the start branch'
     $ui=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
-    Check ($ui.Contains("LaunchStep 'api check' (@('doctor','-ApiCheck')") -and $ui.Contains('$connectButton=ButtonAt ''Connect an app'' $rowSlotX[1] $rowY $rowWidth')) 'window runs doctor -ApiCheck as a step; button sits in slot 1'
+    Check ($ui.Contains("LaunchSideStep 'api check' (@('doctor','-ApiCheck')") -and $ui.Contains('$connectButton=ButtonAt ''Connect an app'' $rowSlotX[1] $rowY $rowWidth')) 'window runs doctor -ApiCheck as a side step; button sits in slot 1'
     $runtime=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Runtime.ps1') -Raw
     Check ($runtime -notmatch 'Invoke-FastLlm(Doctor)?ApiCheck' -and (Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw) -notmatch 'Invoke-FastLlm(Doctor)?ApiCheck') 'apicheck-not-in-start: neither the module nor the runtime mention it'
 

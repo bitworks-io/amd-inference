@@ -106,15 +106,15 @@ $env:ANTHROPIC_AUTH_TOKEN = "any-text"
 
 ```
 # Responses-format client (for example Codex), in config.toml. /v1/responses: partial at this engine version.
-# base_url ends in /v1 because FastLLM serves the Responses API at /v1/responses; the Codex documentation's example has no path.
-# env_key names the variable holding the key; FastLLM sets no key, so any text works as its value (FastLLM's own fact).
+# The provider block follows the Codex documentation's local example (base_url ends in /v1 there too, with no key setting).
+# wire_api = "responses" is the setting its other provider examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
+# FastLLM's own fact: it needs no key, so this card sets none.
 model = "<the model name>"
 model_provider = "fastllm"
 
 [model_providers.fastllm]
 name = "FastLLM"
 base_url = "http://127.0.0.1:8080/v1"
-env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 ```
 

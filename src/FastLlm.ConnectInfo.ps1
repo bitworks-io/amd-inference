@@ -97,8 +97,9 @@ FastLLM serves the model as {MODEL}.
     }
     @{
         id = 'codex'; title = 'Codex'
-        # https://developers.openai.com/codex/config-advanced (custom model providers; wire_api = "responses" appears in its Azure example)
-        docUrl = 'https://developers.openai.com/codex/config-advanced'
+        # https://learn.chatgpt.com/docs/config-file/config-advanced (custom model providers: a local Ollama provider with base_url ending in /v1 and no env_key;
+        # wire_api = "responses" appears in its other provider examples)
+        docUrl = 'https://learn.chatgpt.com/docs/config-file/config-advanced'
         template = @'
 # config.toml
 model = "{MODEL}"
@@ -107,11 +108,10 @@ model_provider = "fastllm"
 [model_providers.fastllm]
 name = "FastLLM"
 base_url = "{BASE}"
-env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 
-base_url ends in /v1 because FastLLM serves the Responses API at /v1/responses; the Codex documentation's example has no path.
-env_key names the environment variable that holds the key. FastLLM's own fact: it sets no key, so any text works as the value of OPENAI_API_KEY.
+The provider block follows the Codex documentation's local example (base_url ends in /v1 there too, with no key setting). wire_api = "responses" is the setting its other provider examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
+FastLLM's own fact: it needs no key, so this card sets none.
 /v1/responses: partial at this engine version
 {LIMIT}
 '@
