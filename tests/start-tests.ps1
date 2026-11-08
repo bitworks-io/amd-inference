@@ -24,7 +24,7 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');replanPort=-1;supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');replanPort=-1;replanParams=$null;supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
@@ -39,7 +39,7 @@ try {
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');if($script:startTestState.ContainsKey('probeFailAt') -and @($script:startTestState.events | Where-Object { $_ -ceq 'reprobe' }).Count -eq $script:startTestState.probeFailAt){throw 'simulated probe failure'};return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
             param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0)
-            $script:startTestState.replanPort=$ServerPort;$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
+            $script:startTestState.replanPort=$ServerPort;$script:startTestState.replanParams=@{};foreach($k in $PSBoundParameters.Keys){$script:startTestState.replanParams[$k]=$PSBoundParameters[$k]};$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
             if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
             return $script:startTestState.fresh
@@ -99,7 +99,7 @@ try {
     $portPlan | Add-Member -NotePropertyName requestedServerPort -NotePropertyValue 18181 -Force
     $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1
     Start-FastLlmServer -Plan $portPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
-    Check ($state.replanPort -eq 18181 -and ($state.planBound[0] -split ',') -contains 'ServerPort') 'replan-keeps-port: the forced re-plan is asked for 18181'
+    Check ($state.replanPort -eq 18181 -and $state.replanParams.ContainsKey('ServerPort') -and [int]$state.replanParams['ServerPort'] -eq 18181) 'replan-keeps-port: the forced re-plan is asked for 18181'
 
     # replan-from-4gb-plan-json (R1): the BASE plan JSON has no requested* fields; it re-plans with no exception and keeps today's arguments.
     $basePlanJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
@@ -110,8 +110,17 @@ try {
     $state.fresh=($basePlanJson | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
     $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1;$state.supervisorPlans.Clear();$baseFailure=$null
     try{Start-FastLlmServer -Plan $basePlanJson -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$baseFailure=$_.Exception}
-    $baseArgsSame=($state.supervisorPlans.Count -eq 1) -and ((@($state.supervisorPlans[0].serverArguments) -join "`n") -ceq (@($basePlanJson.serverArguments) -join "`n"))
-    Check ($null -eq $baseFailure -and $state.replanPort -eq 0 -and $baseArgsSame) ("replan-from-4gb-plan-json: re-plans with no exception and today's arguments (failure=$(if($baseFailure){$baseFailure.Message}else{'none'}) port=$($state.replanPort) plans=$($state.supervisorPlans.Count))")
+    # What the re-plan was actually asked for: no ServerPort key (or 0), and the start completed.
+    $replanAsked=$state.replanParams
+    Check ($null -ne $replanAsked -and (-not $replanAsked.ContainsKey('ServerPort') -or [int]$replanAsked['ServerPort'] -eq 0)) 'replan-from-4gb-plan-json: the re-plan call carries no ServerPort (or 0)'
+    Check ($null -eq $baseFailure -and $state.supervisorPlans.Count -eq 1 -and $state.replanPort -eq 0) 'replan-from-4gb-plan-json: the start path completes with no exception'
+    # Drive the REAL planner with exactly the parameters the re-plan call carried, and compare its arguments with the BASE JSON's.
+    $realPlanParams=@{};foreach($k in $replanAsked.Keys){$realPlanParams[$k]=$replanAsked[$k]}
+    $realPlanned=& $module { param($F,$P) & $F @P } $saved['Get-FastLlmPlan'] $realPlanParams
+    $normalizeInstall={param($Text) $t=[string]$Text;foreach($v in @($temp,$temp.Replace('\','/'),$temp.Replace('/','\'))){if($v){$t=$t.Replace($v,'<install-root>')}};$t.Replace('\','/')}
+    $realArgs=@($realPlanned.serverArguments | ForEach-Object { & $normalizeInstall $_ })
+    $baseArgs=@($basePlanJson.serverArguments | ForEach-Object { & $normalizeInstall $_ })
+    Check ($realArgs.Count -eq $baseArgs.Count -and ($realArgs -join "`n") -ceq ($baseArgs -join "`n")) 'replan-from-4gb-plan-json: the real planner, called as the re-plan calls it, yields the BASE plan arguments'
     $state.fresh=$savedFresh
     $state.events.Clear();$state.planBound.Clear()
 

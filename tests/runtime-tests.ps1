@@ -471,7 +471,7 @@ try {
             $built.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
             return $built
         }
-        # A run that cannot even spawn (the port is occupied) is untyped and has no runtime reason: the start-time fallback never applies to it.
+        # A run that cannot even spawn (the port is occupied) is the typed port-in-use failure (reason PortInUse, no runtime reason): the start-time fallback never applies to it.
         $occupier=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$fallbackPort)
         $occupier.Server.ExclusiveAddressUse=$true;$occupier.Start()
         $occupiedFailure=$null
