@@ -1559,7 +1559,7 @@ $timer.Add_Tick({
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
             'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
             'bundle list'{SetBusy $false;$statusLabel.Text='Support bundle contents listed.';ContinueSupportBundle $text}
-            'bundle save'{SetBusy $false;$statusLabel.Text='Support bundle saved.';$output.Text='Saved to '+$script:bundlePath+[Environment]::NewLine+'The bundle stays on this PC; FastLLM did not upload it.'}
+            'bundle save'{SetBusy $false;$statusLabel.Text='Support bundle saved.';$output.Text='Saved to '+$script:bundlePath+[Environment]::NewLine+'FastLLM did not upload it. Share it only with people you trust.'}
             'diagnostics'{
                 SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'
                 if(Test-FastLlmUiOutputWasCut -Text $text){$output.AppendText([Environment]::NewLine+[Environment]::NewLine+'The window can show only part of this report. For the full report run: fast-llm.ps1 doctor')}

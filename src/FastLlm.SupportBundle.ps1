@@ -4,23 +4,24 @@
 # Contents: doctor.json (the doctor report), the newest 5 run logs, settings.json (allowlisted keys only), components.json (installed rows),
 # version.json. Every entry passes through ConvertTo-FastLlmRedactedText. Prompts, completions and chat text are never in any source.
 Set-StrictMode -Version 2.0
-if ($null -eq (Get-Command Move-FastLlmFileReplacing -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'FastLlm.FileReplace.ps1') }
 
 $script:FastLlmSupportBundleMaxBytes = 8388608
 $script:FastLlmSupportBundleLogCount = 5
+$script:FastLlmRedactionOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [Text.RegularExpressions.RegexOptions]::CultureInvariant
+# Test seam: a scriptblock param($Target) run just before the final move (to prove the move never overwrites). Default $null.
+$script:FastLlmSupportBundleBeforeMove = $null
 $script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage')
 
 # Replaces what identifies the PC or the user: the profile path (as \, JSON-escaped \\ and /, any case), the computer name, the user name,
 # Windows SIDs, MAC addresses and PnP instance suffixes (the last three use the patterns of tools/leak-scan.py). Returns the redacted text;
 # -RedactionCount ([ref]$n) adds the number of replacements to $n. -ProfilePath, -ComputerName and -UserName are test seams.
-function ConvertTo-FastLlmRedactedText {
+function Get-FastLlmRedactionRules {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Text,
         [string] $ProfilePath,
         [string] $ComputerName,
         [string] $UserName,
-        [ref] $RedactionCount
+        [string] $ShortProfilePath
     )
     if (-not $PSBoundParameters.ContainsKey('ProfilePath')) {
         $ProfilePath = [string] $env:USERPROFILE
@@ -34,6 +35,10 @@ function ConvertTo-FastLlmRedactedText {
         $UserName = [string] $env:USERNAME
         if ([string]::IsNullOrWhiteSpace($UserName)) { $UserName = [string] $env:USER }
     }
+    if (-not $PSBoundParameters.ContainsKey('ShortProfilePath') -and $env:OS -ceq 'Windows_NT' -and -not [string]::IsNullOrWhiteSpace($ProfilePath)) {
+        # The 8.3 short form of the profile folder (for example JRGSMI~1) can appear in paths the system reports.
+        try { $ShortProfilePath = [string] (New-Object -ComObject Scripting.FileSystemObject).GetFolder($ProfilePath).ShortPath } catch { $ShortProfilePath = '' }
+    }
     $options = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [Text.RegularExpressions.RegexOptions]::CultureInvariant
     $rules = New-Object 'System.Collections.Generic.List[object]'
     $edge = '(?![\p{L}\p{N}_])'
@@ -45,6 +50,16 @@ function ConvertTo-FastLlmRedactedText {
             }
         }
     }
+    if (-not [string]::IsNullOrWhiteSpace($ShortProfilePath)) {
+        $shortBack = $ShortProfilePath.Trim().Replace('/', '\').TrimEnd('\')
+        if ($shortBack.Length -ge 3 -and $shortBack -cne $ProfilePath) {
+            foreach ($variant in @($shortBack.Replace('\', '\\'), $shortBack, $shortBack.Replace('\', '/'))) {
+                $rules.Add(@{ pattern = ([regex]::Escape($variant) + $edge); replacement = '%USERPROFILE%' })
+            }
+        }
+    }
+    # Any other X:\Users\<name> (another account, an 8.3 short name): the windows-user-path rule of tools/leak-scan.py, same exclusions.
+    $rules.Add(@{ pattern = '[A-Za-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)(?!(?:Public|Default|test|user|username|runneradmin|example)(?![\p{L}\p{N}_.~-]))[\p{L}\p{N}._~''-]{2,}'; replacement = '%USERPROFILE%' })
     if (-not [string]::IsNullOrWhiteSpace($ComputerName) -and $ComputerName.Trim().Length -ge 2) {
         $rules.Add(@{ pattern = ('(?<![\p{L}\p{N}_])' + [regex]::Escape($ComputerName.Trim()) + $edge); replacement = '<computer>' })
     }
@@ -55,17 +70,76 @@ function ConvertTo-FastLlmRedactedText {
     $rules.Add(@{ pattern = '\bS-1-5-21-\d{6,10}-\d{6,10}-\d{6,10}\b'; replacement = '<sid>' })
     $rules.Add(@{ pattern = '\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b'; replacement = '<mac>' })
     $rules.Add(@{ pattern = '(VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}[^\s"'']*?\\{1,2})[0-9A-F]&[0-9A-F]{6,8}&[0-9A-F]&[0-9A-F]{8}'; replacement = '${1}<instance>' })
+    return $rules.ToArray()
+}
+
+# Applies compiled rules to one string. -RedactionCount ([ref]$n) adds the number of replacements to $n.
+function Invoke-FastLlmRedactionRules {
+    param([AllowEmptyString()][string] $Text, $Rules, $RedactionCount)
     $result = $Text
     $total = 0
-    foreach ($rule in $rules) {
-        $found = [regex]::Matches($result, [string] $rule.pattern, $options)
+    foreach ($rule in $Rules) {
+        $found = [regex]::Matches($result, [string] $rule.pattern, $script:FastLlmRedactionOptions)
         if ($found.Count -gt 0) {
             $total += $found.Count
-            $result = [regex]::Replace($result, [string] $rule.pattern, [string] $rule.replacement, $options)
+            $result = [regex]::Replace($result, [string] $rule.pattern, [string] $rule.replacement, $script:FastLlmRedactionOptions)
         }
     }
-    if ($PSBoundParameters.ContainsKey('RedactionCount') -and $null -ne $RedactionCount) { $RedactionCount.Value = [int] $RedactionCount.Value + $total }
+    if ($null -ne $RedactionCount) { $RedactionCount.Value = [int] $RedactionCount.Value + $total }
     return $result
+}
+
+# Replaces what identifies the PC or the user in one string (see the rules above). -ProfilePath, -ComputerName, -UserName and
+# -ShortProfilePath are test seams; -RedactionCount ([ref]$n) adds the replacement count to $n.
+function ConvertTo-FastLlmRedactedText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Text,
+        [string] $ProfilePath,
+        [string] $ComputerName,
+        [string] $UserName,
+        [string] $ShortProfilePath,
+        [ref] $RedactionCount
+    )
+    $seams = @{}
+    foreach ($seam in @('ProfilePath', 'ComputerName', 'UserName', 'ShortProfilePath')) { if ($PSBoundParameters.ContainsKey($seam)) { $seams[$seam] = $PSBoundParameters[$seam] } }
+    $rules = Get-FastLlmRedactionRules @seams
+    $count = $null
+    if ($PSBoundParameters.ContainsKey('RedactionCount')) { $count = $RedactionCount }
+    return (Invoke-FastLlmRedactionRules -Text $Text -Rules $rules -RedactionCount $count)
+}
+
+# Redacts a parsed document: every decoded string value and every property name; numbers, bools and nulls are never touched, so the
+# result serializes to valid JSON whatever the user name is. Returns ordered dictionaries and object[] arrays.
+function ConvertTo-FastLlmRedactedObject {
+    param($Value, $Rules, [ref] $Count, [int] $Depth = 0)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return (Invoke-FastLlmRedactionRules -Text $Value -Rules $Rules -RedactionCount $Count) }
+    if ($Value -is [uri] -or $Value -is [version]) { return (Invoke-FastLlmRedactionRules -Text ([string] $Value) -Rules $Rules -RedactionCount $Count) }
+    $type = $Value.GetType()
+    if ($type.IsPrimitive -or $type.IsEnum -or $Value -is [decimal] -or $Value -is [datetime] -or $Value -is [datetimeoffset] -or $Value -is [guid] -or $Value -is [timespan]) { return $Value }
+    if ($Depth -ge 14) { return $null }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $out = [ordered] @{}
+        foreach ($key in @($Value.Keys)) {
+            $name = Invoke-FastLlmRedactionRules -Text ([string] $key) -Rules $Rules -RedactionCount $Count
+            $out[$name] = ConvertTo-FastLlmRedactedObject -Value $Value[$key] -Rules $Rules -Count $Count -Depth ($Depth + 1)
+        }
+        return $out
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($item in $Value) { $items.Add((ConvertTo-FastLlmRedactedObject -Value $item -Rules $Rules -Count $Count -Depth ($Depth + 1))) }
+        return , ([object[]] $items.ToArray())
+    }
+    $bag = [ordered] @{}
+    foreach ($property in @($Value.PSObject.Properties)) {
+        $propertyValue = $null
+        try { $propertyValue = $property.Value } catch { continue }
+        $name = Invoke-FastLlmRedactionRules -Text ([string] $property.Name) -Rules $Rules -RedactionCount $Count
+        $bag[$name] = ConvertTo-FastLlmRedactedObject -Value $propertyValue -Rules $Rules -Count $Count -Depth ($Depth + 1)
+    }
+    return $bag
 }
 
 function Get-FastLlmSupportBundleSafeValue {
@@ -115,11 +189,9 @@ function Read-FastLlmSupportBundleLog {
     finally { $stream.Dispose() }
 }
 
-# Windows PowerShell 5.1 writes & as & in JSON, which would hide a PnP instance suffix from the redaction patterns; & is valid JSON as is.
 function ConvertTo-FastLlmSupportBundleJson {
     param($Value, [int] $Depth = 12)
-    $json = ConvertTo-Json -InputObject $Value -Depth $Depth
-    return [regex]::Replace([string] $json, '\\u0026', '&')
+    return [string] (ConvertTo-Json -InputObject $Value -Depth $Depth)
 }
 
 function New-FastLlmSupportBundle {
@@ -133,17 +205,21 @@ function New-FastLlmSupportBundle {
         # Test seams for the redaction (defaults: the environment).
         [string] $ProfilePath,
         [string] $ComputerName,
-        [string] $UserName
+        [string] $UserName,
+        [string] $ShortProfilePath
     )
     $seams = @{}
-    foreach ($seam in @('ProfilePath', 'ComputerName', 'UserName')) { if ($PSBoundParameters.ContainsKey($seam)) { $seams[$seam] = $PSBoundParameters[$seam] } }
-    $target = [IO.Path]::GetFullPath($OutputPath)
+    foreach ($seam in @('ProfilePath', 'ComputerName', 'UserName', 'ShortProfilePath')) { if ($PSBoundParameters.ContainsKey($seam)) { $seams[$seam] = $PSBoundParameters[$seam] } }
+    $rules = Get-FastLlmRedactionRules @seams
+    # A relative path means relative to the PowerShell location, not to the process directory.
+    $target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
     if (Test-Path -LiteralPath $target) { throw "support-bundle-output-exists: '$target' already exists. Choose a new file name; nothing was written." }
     $folder = Split-Path -Parent $target
     if (-not (Test-Path -LiteralPath $folder -PathType Container)) { throw "support-bundle-output-folder-missing: the folder '$folder' does not exist. Nothing was written." }
 
     $raw = New-Object 'System.Collections.Generic.List[object]'
-    $raw.Add(@{ name = 'doctor.json'; text = (ConvertTo-FastLlmSupportBundleJson -Value $Doctor) })
+    # Entries are structured documents; redaction walks the decoded values and never edits serialized JSON text.
+    $raw.Add(@{ name = 'doctor.json'; value = $Doctor; depth = 12 })
     $logFolder = Join-Path (Join-Path $InstallRoot 'state') 'logs'
     try {
         if (Test-Path -LiteralPath $logFolder -PathType Container) {
@@ -152,12 +228,12 @@ function New-FastLlmSupportBundle {
                     Sort-Object -Property @{ Expression = { $_.LastWriteTimeUtc }; Descending = $true }, @{ Expression = { $_.Name }; Descending = $true } |
                     Select-Object -First $script:FastLlmSupportBundleLogCount)
             foreach ($log in $logs) {
-                try { $raw.Add(@{ name = 'logs/' + $log.Name; text = ([regex]::Replace((Read-FastLlmSupportBundleLog -Path $log.FullName), '\\u0026', '&')) }) } catch { $null = $_ }
+                try { $raw.Add(@{ name = 'logs/' + $log.Name; jsonl = (Read-FastLlmSupportBundleLog -Path $log.FullName) }) } catch { $null = $_ }
             }
         }
     }
     catch { $null = $_ }
-    $raw.Add(@{ name = 'settings.json'; text = (ConvertTo-FastLlmSupportBundleJson -Value (Get-FastLlmSupportBundleSettings -InstallRoot $InstallRoot) -Depth 4) })
+    $raw.Add(@{ name = 'settings.json'; value = (Get-FastLlmSupportBundleSettings -InstallRoot $InstallRoot); depth = 4 })
 
     $installed = @()
     $componentsUnavailable = $false
@@ -172,7 +248,7 @@ function New-FastLlmSupportBundle {
     catch { $installed = @(); $componentsUnavailable = $true }
     $components = [ordered] @{ installed = @($installed) }
     if ($componentsUnavailable) { $components.unavailable = $true }
-    $raw.Add(@{ name = 'components.json'; text = (ConvertTo-FastLlmSupportBundleJson -Value $components -Depth 5) })
+    $raw.Add(@{ name = 'components.json'; value = $components; depth = 5 })
 
     $release = $null
     if (Get-Command Read-FastLlmInstalledRelease -ErrorAction SilentlyContinue) { try { $release = Read-FastLlmInstalledRelease -AppRoot $AppRoot } catch { $release = $null } }
@@ -181,14 +257,29 @@ function New-FastLlmSupportBundle {
         powershell = [string] $PSVersionTable.PSVersion
         os         = [string] [Environment]::OSVersion.VersionString
     }
-    $raw.Add(@{ name = 'version.json'; text = (ConvertTo-FastLlmSupportBundleJson -Value $version -Depth 4) })
+    $raw.Add(@{ name = 'version.json'; value = $version; depth = 4 })
 
     $redactions = 0
     $encoding = New-Object Text.UTF8Encoding($false)
     $entries = New-Object 'System.Collections.Generic.List[object]'
     $total = 0L
     foreach ($item in $raw) {
-        $text = ConvertTo-FastLlmRedactedText -Text ([string] $item.text) -RedactionCount ([ref] $redactions) @seams
+        if ($item.ContainsKey('jsonl')) {
+            # One JSON object per line; a line that does not parse is dropped, never copied as text.
+            $lines = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($rawLine in @(([string] $item.jsonl) -split "`r?`n")) {
+                if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
+                $parsed = $null
+                try { $parsed = ConvertFrom-Json -InputObject $rawLine -ErrorAction Stop } catch { continue }
+                $clean = ConvertTo-FastLlmRedactedObject -Value $parsed -Rules $rules -Count ([ref] $redactions)
+                $lines.Add([string] (ConvertTo-Json -InputObject $clean -Compress -Depth 8))
+            }
+            $text = $(if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { '' })
+        }
+        else {
+            $clean = ConvertTo-FastLlmRedactedObject -Value $item.value -Rules $rules -Count ([ref] $redactions)
+            $text = ConvertTo-FastLlmSupportBundleJson -Value $clean -Depth ([int] $item.depth)
+        }
         $bytes = $encoding.GetBytes($text)
         $total += $bytes.LongLength
         $entries.Add(@{ name = [string] $item.name; bytes = $bytes })
@@ -200,6 +291,8 @@ function New-FastLlmSupportBundle {
         entries    = @($entries | ForEach-Object { [pscustomobject] [ordered] @{ name = [string] $_.name; sizeBytes = [long] $_.bytes.LongLength } })
         redactions = [int] $redactions
         totalBytes = [long] $total
+        path       = $target
+        saved      = $false
     }
     if ($ListOnly) { return $listing }
 
@@ -222,11 +315,18 @@ function New-FastLlmSupportBundle {
         finally { $stream.Dispose() }
         if ((New-Object IO.FileInfo $temporary).Length -gt $script:FastLlmSupportBundleMaxBytes) { throw 'support-bundle-too-large: the zip is over the 8 MiB limit. Nothing was written.' }
         if (Test-Path -LiteralPath $target) { throw "support-bundle-output-exists: '$target' already exists. Choose a new file name; nothing was written." }
-        Move-FastLlmFileReplacing -Source $temporary -Destination $target
+        if ($null -ne $script:FastLlmSupportBundleBeforeMove) { & $script:FastLlmSupportBundleBeforeMove $target }
+        # Never overwrites: File.Move without the overwrite flag fails when the target exists (also when it appeared after the check above).
+        try { [IO.File]::Move($temporary, $target) }
+        catch {
+            if (Test-Path -LiteralPath $target) { throw "support-bundle-output-exists: '$target' already exists. Choose a new file name; nothing was written." }
+            throw
+        }
         $moved = $true
     }
     finally {
         if (-not $moved) { try { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue } catch { $null = $_ } }
     }
+    $listing.saved = $true
     return $listing
 }

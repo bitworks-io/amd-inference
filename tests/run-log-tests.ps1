@@ -27,7 +27,8 @@ function Throws([scriptblock]$Action,[string]$Pattern) {
 }
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('run-log-tests-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp -Force | Out-Null
-$markers=@('FLLM-MARKER-PROMPT-7f3a','FLLM-MARKER-COMPLETION-7f3a','FLLM-MARKER-CLIENT-7f3a','FLLM-MARKER-CHATPAGE-7f3a','FLLM-MARKER-FAILURE-7f3a')
+$markers=@('FLLM-MARKER-PROMPT-7f3a','FLLM-MARKER-COMPLETION-7f3a','FLLM-MARKER-CLIENT-7f3a','FLLM-MARKER-CHATPAGE-7f3a','FLLM-MARKER-FAILURE-7f3a',
+    'A local inference system should produce accurate useful answers.','Measure speed consistently while preserving model quality.')
 function New-Dir([string]$Name){ $p=Join-Path $temp $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function Get-LogDir([string]$Install){ return (Join-Path (Join-Path $Install 'state') 'logs') }
 function Read-LogLines([string]$Path){ return @([IO.File]::ReadAllLines($Path) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json }) }
@@ -340,8 +341,8 @@ try {
     Check ($redacted -eq 6) "bundle-redacts-path-variants: the count is the total replacements ($redacted)"
     $clean=ConvertTo-FastLlmRedactedText -Text 'nothing personal here: Vulkan0 24560 MiB' -ProfilePath $profile -ComputerName $computer -UserName $userName
     Check ($clean -ceq 'nothing personal here: Vulkan0 24560 MiB') 'bundle-redacts-path-variants: clean text is unchanged'
-    $word=ConvertTo-FastLlmRedactedText -Text 'the jörgensen path' -ProfilePath $profile -ComputerName $computer -UserName $userName
-    Check ($word -ceq 'the jörgensen path') 'bundle-redacts-path-variants: a user name inside a longer word is not touched'
+    $word=ConvertTo-FastLlmRedactedText -Text ('the j'+[char]0xF6+'rgensen path') -ProfilePath $profile -ComputerName $computer -UserName $userName
+    Check ($word -ceq ('the j'+[char]0xF6+'rgensen path')) 'bundle-redacts-path-variants: a user name inside a longer word is not touched'
 
     # ---- bundle fixtures: install root with logs, settings -------------------------------------------------------------------
     $bundleInstall=New-Dir 'bundle-install'
@@ -399,6 +400,67 @@ try {
     $bareApp=New-Dir 'bundle-bare-app'
     $bare=New-FastLlmSupportBundle -InstallRoot $bareInstall -AppRoot $bareApp -OutputPath (Join-Path $outputDir 'bare.zip') -Doctor ([pscustomobject]@{a=1})
     Check (@($bare.entries | Where-Object { $_.name -like 'logs/*' }).Count -eq 0 -and (Test-Path -LiteralPath (Join-Path $outputDir 'bare.zip'))) 'bundle: tolerant of missing logs, settings, components file and release'
+
+    # ---- structural redaction: values are redacted, JSON structure never is --------------------------------------------------------
+    $parseFailures=@()
+    foreach ($entryFile in @(Get-ChildItem -LiteralPath $unz -Recurse -File)) {
+        try {
+            if ($entryFile.Extension -ceq '.jsonl') { foreach ($jl in @([IO.File]::ReadAllLines($entryFile.FullName) | Where-Object { $_ })) { $null = $jl | ConvertFrom-Json } }
+            else { $null = [IO.File]::ReadAllText($entryFile.FullName) | ConvertFrom-Json }
+        } catch { $parseFailures += $entryFile.Name }
+    }
+    Check ($parseFailures.Count -eq 0 -and @(Get-ChildItem -LiteralPath $unz -Recurse -File).Count -ge 8) "bundle: every entry still parses as JSON after redaction ($($parseFailures -join ', '))"
+    $quoteProfile='C:'+$sep+'Users'+$sep+'O'+[char]39+'Brien'
+    $quoteInstall=New-Dir 'bundle-quote'
+    $quoteLogs=Get-LogDir $quoteInstall
+    New-Item -ItemType Directory -Path $quoteLogs -Force | Out-Null
+    # Windows PowerShell 5.1 writes an apostrophe as the six characters backslash-u-0-0-2-7, and a backslash as two.
+    $escapedLine='{"event":"phase","note":"C:'+$sep+$sep+'Users'+$sep+$sep+'O'+$sep+'u0027Brien'+$sep+$sep+'AppData","ctx":1024}'
+    [IO.File]::WriteAllText((Join-Path $quoteLogs 'run-20261101T000001Z-aaaa.jsonl'),$escapedLine+"`n")
+    $quoteZip=Join-Path $outputDir 'quote.zip'
+    $quoteResult=New-FastLlmSupportBundle -InstallRoot $quoteInstall -AppRoot $appRoot -OutputPath $quoteZip -Doctor ([pscustomobject]@{ctx=1024}) -ProfilePath $quoteProfile -ComputerName $computer -UserName 'x1'
+    $quoteUnz=Expand-Bundle $quoteZip 'bundle-quote-unzipped'
+    $quoteRaw=[IO.File]::ReadAllText((Join-Path $quoteUnz 'logs/run-20261101T000001Z-aaaa.jsonl'))
+    $quoteObj=$quoteRaw | ConvertFrom-Json
+    Check ($quoteRaw.IndexOf('Brien',[StringComparison]::OrdinalIgnoreCase) -lt 0 -and [string]$quoteObj.note -ceq '%USERPROFILE%'+$sep+'AppData' -and $quoteObj.ctx -eq 1024) 'bundle-redacts-path-variants: a JSONL line with the apostrophe written as a unicode escape (as Windows PowerShell 5.1 does) is redacted'
+    Check ($quoteResult.redactions -ge 1) 'bundle: the redaction count reflects the values replaced'
+    $numInstall=New-Dir 'bundle-numeric'
+    $numZip=Join-Path $outputDir 'numeric.zip'
+    $numDoctor=[pscustomobject]@{ ctx=1024; port=1024; tokens=@(1024,2048); label='user 1024 here'; nested=[pscustomobject]@{ n=1024 } }
+    $numResult=New-FastLlmSupportBundle -InstallRoot $numInstall -AppRoot $appRoot -OutputPath $numZip -Doctor $numDoctor -ProfilePath $profile -ComputerName $computer -UserName '1024'
+    $numUnz=Expand-Bundle $numZip 'bundle-numeric-unzipped'
+    $numText=[IO.File]::ReadAllText((Join-Path $numUnz 'doctor.json'))
+    $numObj=$numText | ConvertFrom-Json
+    Check ($numObj.ctx -eq 1024 -and $numObj.port -eq 1024 -and @($numObj.tokens).Count -eq 2 -and $numObj.nested.n -eq 1024 -and [string]$numObj.label -ceq 'user <user> here') 'bundle-redacts-path-variants: a numeric user name does not touch numbers and the output still parses'
+    Check ($numResult.redactions -eq 1) "bundle: only the one string value that held the user name is counted ($($numResult.redactions))"
+
+    # ---- M1: other accounts, 8.3 short forms ---------------------------------------------------------------------------------------
+    $other=ConvertTo-FastLlmRedactedText -Text ('see D:'+$sep+'Users'+$sep+'Someone'+$sep+'x and d:/'+'users/other.name/y and C:'+$sep+$sep+'Users'+$sep+$sep+'Third'+$sep+$sep+'z') -ProfilePath $profile -ComputerName $computer -UserName $userName
+    Check ($other -ceq ('see %USERPROFILE%'+$sep+'x and %USERPROFILE%/y and %USERPROFILE%'+$sep+$sep+'z')) "bundle-redacts-path-variants: any X:\\Users\\<name> is redacted ($other)"
+    $keep='C:'+$sep+'Users'+$sep+'Public'+$sep+'Documents and C:'+$sep+'Users'+$sep+'Default'+$sep+'x'
+    Check ((ConvertTo-FastLlmRedactedText -Text $keep -ProfilePath $profile -ComputerName $computer -UserName $userName) -ceq $keep) 'bundle-redacts-path-variants: Public and Default keep the leak-scan exclusions'
+    $short='D:'+$sep+'Docs'+$sep+'J'+'RGSMI~1'
+    $shortOut=ConvertTo-FastLlmRedactedText -Text ('at '+$short+$sep+'AppData and C:'+$sep+'Users'+$sep+'JRGSMI~1'+$sep+'x') -ProfilePath $profile -ComputerName $computer -UserName $userName -ShortProfilePath $short
+    Check ($shortOut -ceq ('at %USERPROFILE%'+$sep+'AppData and %USERPROFILE%'+$sep+'x')) "bundle-redacts-path-variants: the 8.3 short form of the profile folder is redacted ($shortOut)"
+
+    # ---- M2: a relative path resolves against the PowerShell location -------------------------------------------------------------
+    $relDir=New-Dir 'bundle-relative'
+    Push-Location -LiteralPath $relDir
+    try { $rel=New-FastLlmSupportBundle -InstallRoot $bundleInstall -AppRoot $appRoot -OutputPath 'rel.zip' -Doctor ([pscustomobject]@{a=1}) }
+    finally { Pop-Location }
+    Check ((Test-Path -LiteralPath (Join-Path $relDir 'rel.zip')) -and [IO.Path]::GetFullPath([string]$rel.path) -ceq [IO.Path]::GetFullPath((Join-Path $relDir 'rel.zip')) -and $rel.saved -eq $true) 'bundle save: a relative -SupportBundle path resolves against the PowerShell location and the resolved path is returned'
+
+    # ---- M3: the final move never overwrites -------------------------------------------------------------------------------------
+    $raceDir=New-Dir 'bundle-race'
+    $raceZip=Join-Path $raceDir 'race.zip'
+    $script:FastLlmSupportBundleBeforeMove={ param($Target) [IO.File]::WriteAllText($Target,'precious') }
+    try { Throws { New-FastLlmSupportBundle -InstallRoot $bundleInstall -AppRoot $appRoot -OutputPath $raceZip -Doctor ([pscustomobject]@{a=1}) } 'support-bundle-output-exists' }
+    finally { $script:FastLlmSupportBundleBeforeMove=$null }
+    Check ([IO.File]::ReadAllText($raceZip) -ceq 'precious' -and @(Get-ChildItem -LiteralPath $raceDir -Force).Count -eq 1) 'bundle save: a target created between the check and the move is not replaced and no temp file is left'
+
+    # ---- M4: wording ---------------------------------------------------------------------------------------------------------------
+    $uiText=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
+    Check ($uiText.Contains('Share it only with people you trust') -and -not $uiText.Contains('stays on this PC')) 'window: the saved-bundle text makes no claim about where the file lives'
 
     # ---- bundle-size-cap ---------------------------------------------------------------------------------------------------------
     $capOut=Join-Path $outputDir 'cap.zip'

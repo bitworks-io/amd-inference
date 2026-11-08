@@ -1098,6 +1098,6 @@ function Format-FastLlmUiSupportBundleList {
     }
     $lines.Add('')
     $lines.Add(('{0} item(s) that identify this PC or you (your user name, computer name, profile folder, hardware serial-style ids) were replaced with placeholders.' -f [int] $Listing.redactions))
-    $lines.Add('The bundle is saved only where you choose. FastLLM does not upload it or send it anywhere. It never contains prompts, answers or chat text.')
+    $lines.Add('The bundle is saved only where you choose. FastLLM does not upload it or send it anywhere; share it only with people you trust. It never contains prompts, answers or chat text.')
     return ($lines -join [Environment]::NewLine)
 }
