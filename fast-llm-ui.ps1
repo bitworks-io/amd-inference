@@ -23,6 +23,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.ServingSettings.ps1')
 # The support bundle (reads settings.json) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.SupportBundle.ps1')
+# Connection info and the API-format check are dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.ConnectInfo.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
@@ -99,6 +101,7 @@ $backgroundCheckButton=ButtonAt 'Recheck background' 340 303 160
 $componentsButton=ButtonAt 'Components' 508 303 120
 $chooseButton=ButtonAt 'Choose another setup' 636 303 184
 $settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
+$connectButton=ButtonAt 'Connect an app' $rowSlotX[1] $rowY $rowWidth
 $openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $rowWidth
 $modelsButton=ButtonAt 'Downloaded models' $rowSlotX[3] $rowY $rowWidth
 $bundleButton=ButtonAt ('Save support bundle'+[string][char]0x2026) $rowSlotX[4] $rowY $rowWidth
@@ -1135,6 +1138,69 @@ function ContinueSupportBundle([string]$Text) {
     LaunchStep 'bundle save' (@('doctor','-SupportBundle',$chosen)+$script:selection)
 }
 $bundleButton.Add_Click({try{StartSupportBundle}catch{ShowFailure $_.Exception.Message}})
+# Connect an app: the base URLs, model name and context limit with Copy buttons, the agent warning, the endpoint list and one card per client.
+# "Check the API formats" closes the dialog and runs `doctor -ApiCheck` as a step; the pass/fail table is shown in the output box.
+function ShowConnectDialog {
+    $info=Get-FastLlmConnectionInfo -Status (GetUiBackgroundRunStatus) -InstallRoot $script:installPath
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Connect an app';$dialog.Size=New-Object Drawing.Size(820,640);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+    $panel=New-Object Windows.Forms.Panel;$panel.Location=New-Object Drawing.Point(0,0);$panel.Size=New-Object Drawing.Size(800,540);$panel.AutoScroll=$true;$dialog.Controls.Add($panel)
+    $y=12
+    $intro=New-Object Windows.Forms.Label;$intro.Location=New-Object Drawing.Point(16,$y);$intro.Size=New-Object Drawing.Size(740,40);$intro.UseMnemonic=$false
+    $intro.Text=$(if($info.state -ceq 'running'){'FastLLM is running. Use these values in your app. They stay on this computer (127.0.0.1).'}else{'FastLLM is not running. The model name and context limit appear once it is running; the address below is where it will listen.'})
+    $panel.Controls.Add($intro);$y+=46
+    $fields=@(
+        @('Base URL',[string]$info.baseUrl),
+        @('Anthropic base URL',[string]$info.anthropicBaseUrl),
+        @('Model name',$(if($null -ne $info.modelName){[string]$info.modelName}else{'(shown when running)'})),
+        @('Context limit (tokens)',$(if($null -ne $info.contextTokens){[string]$info.contextTokens}else{'(shown when running)'}))
+    )
+    foreach($field in $fields){
+        $name=New-Object Windows.Forms.Label;$name.Text=$field[0];$name.Location=New-Object Drawing.Point(16,($y+4));$name.Size=New-Object Drawing.Size(170,24);$name.UseMnemonic=$false;$panel.Controls.Add($name)
+        $box=New-Object Windows.Forms.TextBox;$box.Text=$field[1];$box.ReadOnly=$true;$box.Location=New-Object Drawing.Point(190,$y);$box.Size=New-Object Drawing.Size(450,26);$panel.Controls.Add($box)
+        $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=$field[1];$panel.Controls.Add($copy)
+        $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
+        $y+=36
+    }
+    if($info.agentWarning){
+        $warn=New-Object Windows.Forms.Label;$warn.Text=[string]$info.agentWarning;$warn.Location=New-Object Drawing.Point(16,$y);$warn.Size=New-Object Drawing.Size(740,60);$warn.UseMnemonic=$false;$warn.ForeColor=[Drawing.Color]::DarkRed
+        $panel.Controls.Add($warn);$y+=66
+    }
+    $endpointText='Endpoints on the base URL:'+[Environment]::NewLine+((@($info.endpoints)|ForEach-Object{'  '+$_.path+' - '+$_.label}) -join [Environment]::NewLine)
+    $endpointLabel=New-Object Windows.Forms.Label;$endpointLabel.Text=$endpointText;$endpointLabel.Location=New-Object Drawing.Point(16,$y);$endpointLabel.Size=New-Object Drawing.Size(740,112);$endpointLabel.UseMnemonic=$false
+    $panel.Controls.Add($endpointLabel);$y+=120
+    foreach($client in @($info.clients)){
+        $title=New-Object Windows.Forms.Label;$title.Text=[string]$client.title;$title.Font=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold);$title.Location=New-Object Drawing.Point(16,$y);$title.Size=New-Object Drawing.Size(500,24);$title.UseMnemonic=$false;$panel.Controls.Add($title)
+        $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=[string]$client.snippet;$panel.Controls.Add($copy)
+        $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
+        $y+=30
+        $lineCount=@(([string]$client.snippet) -split "`n").Count
+        $snippetBox=New-Object Windows.Forms.TextBox;$snippetBox.Multiline=$true;$snippetBox.ReadOnly=$true;$snippetBox.ScrollBars='Vertical';$snippetBox.WordWrap=$true
+        $snippetBox.Text=([string]$client.snippet) -replace "`n",[Environment]::NewLine
+        $snippetBox.Location=New-Object Drawing.Point(16,$y);$snippetBox.Size=New-Object Drawing.Size(724,[Math]::Min(190,24+18*$lineCount));$panel.Controls.Add($snippetBox);$y+=$snippetBox.Height+6
+        foreach($docUrl in @($client.docUrls)){
+            $link=New-Object Windows.Forms.LinkLabel;$link.Text='Documentation: '+$docUrl;$link.Location=New-Object Drawing.Point(16,$y);$link.AutoSize=$true;$link.Tag=[string]$docUrl;$panel.Controls.Add($link)
+            $link.Add_LinkClicked({param($sender,$e)try{if(([string]$sender.Tag).StartsWith('https://')){Start-Process ([string]$sender.Tag)}}catch{}})
+            $y+=22
+        }
+        $y+=12
+    }
+    $check=New-Object Windows.Forms.Button;$check.Text='Check the API formats';$check.Location=New-Object Drawing.Point(16,552);$check.Size=New-Object Drawing.Size(200,36);$dialog.Controls.Add($check)
+    $check.Enabled=([string]$info.state -ceq 'running' -and -not $script:child)
+    $close=New-Object Windows.Forms.Button;$close.Text='Close';$close.Location=New-Object Drawing.Point(660,552);$close.Size=New-Object Drawing.Size(120,36)
+    $close.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($close);$dialog.CancelButton=$close
+    $script:apiCheckRequested=$false
+    $check.Add_Click({$script:apiCheckRequested=$true;$dialog.Close()})
+    SetTrayMenuAvailable $false
+    try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    if($script:apiCheckRequested){
+        $script:apiCheckRequested=$false
+        ReadSelection
+        LaunchStep 'api check' (@('doctor','-ApiCheck')+$script:selection)
+    }
+}
+$connectButton.Add_Click({try{ShowConnectDialog}catch{ShowFailure $_.Exception.Message}})
 # "Choose another setup": the recipes the CLI lists for this card (`recipes -Detail -AsJson`, read-only and offline), experimental ones only while the switch is on.
 # Choosing one whose engine chain needs an AMD license opens the consent dialog; Install runs the component install as a child, then the start uses -Recipe.
 # Both dialogs are disposed only after ShowDialog returns, never inside one of their own control handlers (as in the Components window).
@@ -1500,6 +1566,14 @@ $timer.Add_Tick({
             SetBusy $false;ShowDriverGuidance (ConvertFrom-FastLlmUiSetupCheckOutput -Text $text);return
         }
         if($code -ne 0){
+            if($step -eq 'api check'){
+                # Exit 1: at least one format failed (the table says which). Exit 2: the server was not Ready (the child printed a plain message).
+                SetBusy $false
+                $checkResult=$null;try{$checkResult=ConvertFrom-Json $text}catch{}
+                $output.Text=$(if($checkResult){Format-FastLlmApiCheckTable -Result $checkResult}else{$text})
+                $statusLabel.Text=$(if($code -eq 1){'API format check finished: at least one format failed.'}else{'API format check did not run.'})
+                return
+            }
             if($step -eq 'vc prepare'){
                 if($script:flow -and $script:flow.phase -eq 'setup-attention'){
                     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'setup-defer'
@@ -1560,6 +1634,7 @@ $timer.Add_Tick({
             'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
             'bundle list'{SetBusy $false;$statusLabel.Text='Support bundle contents listed.';ContinueSupportBundle $text}
             'bundle save'{SetBusy $false;$statusLabel.Text='Support bundle saved.';$output.Text='Saved to '+$script:bundlePath+[Environment]::NewLine+'FastLLM did not upload it. Share it only with people you trust.'}
+            'api check'{SetBusy $false;$output.Text=Format-FastLlmApiCheckTable -Result (ConvertFrom-Json $text);$statusLabel.Text='API format check finished.'}
             'diagnostics'{
                 SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'
                 if(Test-FastLlmUiOutputWasCut -Text $text){$output.AppendText([Environment]::NewLine+[Environment]::NewLine+'The window can show only part of this report. For the full report run: fast-llm.ps1 doctor')}

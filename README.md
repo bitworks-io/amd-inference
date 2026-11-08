@@ -69,6 +69,55 @@ Nothing installs without a click. `fast-llm.ps1 update-check` shows what is avai
 
 FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
 
+## Use the API
+
+FastLLM serves an OpenAI-compatible API on this computer only. The **Connect an app** button in the window shows the values below for your running setup, with a Copy button for each, plus a ready-to-paste settings card for each client. `fast-llm.ps1 status` prints the same facts in its `connection` object.
+
+- **Base URL:** `http://127.0.0.1:8080/v1`. If you changed the port (see Port), use that port. For Claude Code, the Anthropic base URL is the same address without `/v1`.
+- **Model name:** the name FastLLM serves for the running setup. Send exactly that name; `GET /v1/models` lists it, and `fast-llm.ps1 status` shows it as `connection.modelName`.
+- **Context limit:** this setup's context in tokens, shown as `connection.contextTokens` and in the Connect an app window. Requests longer than the limit are refused with an error.
+- **API key:** none is set, so any key string works. Use any text where an app asks for one.
+
+**Short contexts and coding agents.** When the context limit is below 32,768 tokens, the window shows: "This setup's context is <n> tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." Chat and completion apps that send short requests are not affected by this.
+
+Endpoints on the base URL:
+
+| Path | What it is |
+| --- | --- |
+| `/v1/chat/completions` | OpenAI-compatible chat |
+| `/v1/completions` | OpenAI-compatible text completion |
+| `/v1/models` | model list |
+| `/v1/messages` | Anthropic-compatible |
+| `/v1/responses` | partial at this engine version |
+
+One short example per client type. Each client's own documentation is linked from its card in the window; FastLLM makes no claim about how well a client behaves with a local model.
+
+```
+# Any OpenAI-compatible app: Base URL http://127.0.0.1:8080/v1, Model <the model name>, API key: any text.
+curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"<the model name>","messages":[{"role":"user","content":"Hello"}],"max_tokens":16}'
+```
+
+```
+# Anthropic-format client: send to /v1/messages. For Claude Code the documented settings are:
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"
+$env:ANTHROPIC_AUTH_TOKEN = "any-text"
+# Claude Code is designed for Anthropic's Claude models; results with a local model may vary.
+```
+
+```
+# Responses-format client (for example Codex), in config.toml. /v1/responses: partial at this engine version.
+model = "<the model name>"
+model_provider = "fastllm"
+
+[model_providers.fastllm]
+name = "FastLLM"
+base_url = "http://127.0.0.1:8080/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+```
+
+**Check the API formats.** **Check the API formats** in the Connect an app window (or `fast-llm.ps1 doctor -ApiCheck`) sends one short fixed prompt to `/v1/chat/completions`, `/v1/messages` and `/v1/responses` of the running server and prints a pass or fail for each, with the HTTP status, token counts and time. It needs a Ready server, never runs on its own, and keeps no prompt or answer text; the run log records only the numbers and verdicts.
+
 ## Port
 
 The server listens on port 8080 by default. To change it, use Settings... in the window, or run `fast-llm.ps1 settings -Port <n>` (1024 to 65535); the change applies at the next start. The server always stays on 127.0.0.1, whatever the port. The diagnostic tools (semantic smoke, the concurrency benchmark, backend parity, the driver-module collector and the coopmat screen) need the default port 8080.

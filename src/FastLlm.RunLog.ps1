@@ -18,7 +18,8 @@ $script:FastLlmRunLogAllowedFields = @{
     'phase'               = @('phase', 'failureCode')
     'startup-diagnostics' = @('status', 'kvBufferCount', 'computeBufferCount', 'kvTotalMiB', 'computeTotalMiB', 'flashMode', 'flashResolved')
     'placement'           = @('reportedLayers', 'totalLayers', 'reportedAllLayers', 'deviceCount', 'devices', 'modelBufferTotalMiB')
-    'api-check'           = @('status', 'modelIdentity', 'effectiveContext', 'repeatableToken', 'synchronousChat', 'streaming')
+    # The last five are the user-run API-format check (one event per endpoint): a fixed endpoint path, a verdict and numbers only.
+    'api-check'           = @('status', 'modelIdentity', 'effectiveContext', 'repeatableToken', 'synchronousChat', 'streaming', 'endpoint', 'httpStatus', 'promptTokens', 'completionTokens', 'elapsedMs')
     'self-test'           = @('status', 'reasons', 'generationTokS', 'promptTokS', 'firstTextMs', 'expectedGenerationTokS', 'comparable')
     'end'                 = @('phase', 'failureCode', 'failedAtPhase', 'failureMessage', 'exitCode', 'serverExitCode', 'droppedEvents')
 }

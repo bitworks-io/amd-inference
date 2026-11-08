@@ -55,6 +55,10 @@ param(
     [string] $SupportBundle,
     [switch] $ListOnly,
 
+    # doctor only: send one short fixed prompt to /v1/chat/completions, /v1/messages and /v1/responses of the running server and print the
+    # pass/fail result as JSON. Needs a Ready server. Records numbers and verdicts only, never text. Never run by start.
+    [switch] $ApiCheck,
+
     # Advisory post-Ready prompt-processing measurement (live start only; default off).
     [switch] $ThroughputCanary,
 
@@ -243,6 +247,7 @@ if ($Action -eq 'update' -and $Unattended -and -not $Yes) { throw 'update -Unatt
 if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
 if ($Compact -and $Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }
 if ($PSBoundParameters.ContainsKey('SupportBundle') -and ($Action -ne 'doctor' -or [string]::IsNullOrWhiteSpace($SupportBundle))) { throw '-SupportBundle <zip path> is supported only by doctor.' }
+if ($ApiCheck -and ($Action -ne 'doctor' -or $PSBoundParameters.ContainsKey('SupportBundle'))) { throw '-ApiCheck is supported only by doctor and cannot be combined with -SupportBundle.' }
 if ($ListOnly -and -not $PSBoundParameters.ContainsKey('SupportBundle')) { throw '-ListOnly is supported only with doctor -SupportBundle.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
     throw '-AsJson is supported with start only when -DryRun is also specified; a foreground server owns its console output.'
@@ -282,6 +287,8 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ServingSettings.ps1')
 # The support bundle reads settings.json, so like the serving settings it is dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SupportBundle.ps1')
+# Connection info and the API-format check are dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ConnectInfo.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.json'
 $selectionOptions = @{
@@ -586,7 +593,10 @@ try {
             }
         }
         'status' {
-            Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12
+            $statusDocument = Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot)
+            # Additive: how to connect an app (URL, model name, context limit, client settings). A failure here never hides the status.
+            try { Add-Member -InputObject $statusDocument -MemberType NoteProperty -Name connection -Value (Get-FastLlmConnectionInfo -Status $statusDocument -InstallRoot $InstallRoot) -Force } catch { $null = $_ }
+            $statusDocument | ConvertTo-Json -Depth 12
             # Cached notice only (no network). Not in -AsJson mode: status already prints one JSON document.
             if (-not $AsJson) {
                 try {
@@ -879,6 +889,13 @@ try {
 
         }
         'doctor' {
+            if ($ApiCheck) {
+                # User-run only: never called by start or Ready. Needs a Ready server; prints the verdicts as JSON.
+                $apiCheckRun = Invoke-FastLlmDoctorApiCheck -InstallRoot $InstallRoot -Status (Get-FastLlmStatus -InstallRoot $InstallRoot)
+                if ($null -ne $apiCheckRun.message) { Write-Host $apiCheckRun.message; exit $apiCheckRun.exitCode }
+                $apiCheckRun.result | ConvertTo-Json -Depth 5
+                exit $apiCheckRun.exitCode
+            }
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             $windowsPrerequisites = Get-FastLlmWindowsPrerequisiteStatus
             $vulkanVerified = Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey 'vulkan' -Asset $catalog.engine.assets.vulkan
