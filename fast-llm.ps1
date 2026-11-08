@@ -92,6 +92,16 @@ param(
     [ValidateSet('ask', 'accept-automatically')]
     [string] $ComponentLicenses,
 
+    # start, install and plan: the loopback port the server listens on (1024-65535, default 8080). Text, not [int], so 18181.5 is refused
+    # instead of rounded; checked by ConvertTo-FastLlmServerPort. An explicit value wins over the saved setting.
+    [string] $ServerPort,
+
+    # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
+    [string] $Port,
+
+    # start, install and plan: ignore the saved settings for this run (explicit parameters still apply).
+    [switch] $IgnoreUserSettings,
+
     # start only: the setup a preview showed (a recipe id). The start picks the setup automatically, like a start without -Recipe, and runs it
     # or the Vulkan setup that stands in for it; any other final setup is refused. Not with -Recipe or -ModelId.
     [string] $PlannedRecipe,
@@ -244,6 +254,20 @@ $componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.j
 $selectionOptions = @{
     ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
     RecipesPath = $recipesPath; GpuVariantsPath = (Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'); RecipeId = $Recipe
+}
+
+# Serving settings (port). Validated here, next to the other parameter checks, and resolved once: explicit parameter, then saved
+# settings (unless -IgnoreUserSettings), then the default. The planner takes 0 for the catalog port, so the default plan call is unchanged.
+if ($PSBoundParameters.ContainsKey('ServerPort') -and $Action -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
+if ($PSBoundParameters.ContainsKey('Port') -and $Action -ne 'settings') { throw '-Port is supported only by settings.' }
+if ($IgnoreUserSettings -and $Action -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
+if ($PSBoundParameters.ContainsKey('ServerPort')) { $null = ConvertTo-FastLlmServerPort -Value $ServerPort }
+if ($PSBoundParameters.ContainsKey('Port')) { $null = ConvertTo-FastLlmServerPort -Value $Port }
+if ($Action -in @('plan', 'install', 'start', 'doctor')) {
+    $servingBound = @{}
+    if ($PSBoundParameters.ContainsKey('ServerPort')) { $servingBound.ServerPort = $ServerPort }
+    $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
+    if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -433,12 +457,19 @@ try {
                 }
                 else { Set-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot -Mode 'ask' }
             }
+            if ($PSBoundParameters.ContainsKey('Port')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ServerPort $Port }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
-            if ($AsJson) { $licenseState | ConvertTo-Json -Depth 6 }
-            elseif ([string] $licenseState.mode -ceq 'accept-automatically') {
-                Write-Host "componentLicenses: accept-automatically (turned on $($licenseState.acceptedAt); $(@($licenseState.accepted).Count) license(s) accepted)"
+            $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
+            if ($AsJson) {
+                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage } | ConvertTo-Json -Depth 6
             }
-            else { Write-Host 'componentLicenses: ask' }
+            else {
+                if ([string] $licenseState.mode -ceq 'accept-automatically') {
+                    Write-Host "componentLicenses: accept-automatically (turned on $($licenseState.acceptedAt); $(@($licenseState.accepted).Count) license(s) accepted)"
+                }
+                else { Write-Host 'componentLicenses: ask' }
+                Write-Host "serverPort: $($servingState.serverPort)"
+            }
         }
         'status' {
             Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12

@@ -384,6 +384,44 @@ function ConvertFrom-FastLlmServerDeviceListEntries {
     [pscustomobject]@{deviceInfo=$deviceInfo.ToArray(); usingDevice=$usingDevice.ToArray()}
 }
 
+# The plain refusal for an occupied loopback port. FastLlmFailureCode lets the CLI and the status file name it; FastLlmReason = PortInUse
+# keeps it out of model recovery and out of the start-time fallback (a stand-in server would need the same port).
+function New-FastLlmPortInUseFailure {
+    param([Parameter(Mandatory = $true)][int] $Port)
+    $failure = New-Object -TypeName System.InvalidOperationException -ArgumentList ("Port $Port is already in use, so FastLLM did not start. If FastLLM is already running in the background, use Attach running. Otherwise close the program that uses port $Port, or choose another port in FastLLM's settings.")
+    $failure.Data['FastLlmFailureCode'] = 'port-in-use'
+    $failure.Data['FastLlmReason'] = 'PortInUse'
+    return $failure
+}
+
+# Throws the port-in-use failure when anything listens on the port. Two checks: the listener table (any address: 127.0.0.1, 0.0.0.0,
+# ::1 or ::, which an exclusive loopback bind alone can miss), then today's exclusive trial bind of 127.0.0.1. A listener-table read
+# error fails closed. -ListenerProvider replaces the table read in tests: a scriptblock returning IPEndPoint-like objects (Port).
+function Assert-FastLlmLoopbackPortFree {
+    param([Parameter(Mandatory = $true)][int] $Port, [scriptblock] $ListenerProvider)
+    $occupied = $false
+    try {
+        if ($ListenerProvider) { $listeners = @(& $ListenerProvider) }
+        else { $listeners = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()) }
+        foreach ($endpoint in $listeners) { if ($null -ne $endpoint -and [int] $endpoint.Port -eq $Port) { $occupied = $true; break } }
+    }
+    catch { $occupied = $true }
+    if (-not $occupied) {
+        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $Port)
+        try { $listener.Server.ExclusiveAddressUse = $true; $listener.Start() }
+        catch { $occupied = $true }
+        finally { try { $listener.Stop() } catch { } }
+    }
+    if ($occupied) { throw (New-FastLlmPortInUseFailure -Port $Port) }
+}
+
+# llama-server's own bind error: "couldn't bind HTTP server socket, hostname: 127.0.0.1, port: <n>" (the same text at both engine pins).
+function Test-FastLlmServerBindFailure {
+    param([string] $Text, [Parameter(Mandatory = $true)][int] $Port)
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    return [bool] ($Text -cmatch ("couldn't bind HTTP server socket, hostname: 127\.0\.0\.1, port: $Port(?![0-9])"))
+}
+
 # A typed device-binding failure (enforce). FastLlmFailureCode is the failure code, FastLlmReason = DeviceBindingFailed is what keeps it
 # out of model recovery (the supervisor's catch keeps both; fast-llm.ps1 retries only RuntimeCheckFailed, PlanChanged and
 # ModelNeedsProvisioning, and rethrows this one).
@@ -737,11 +775,9 @@ function Invoke-FastLlmSupervisedServer {
     $baseUrl = $Plan.endpoint -replace '/v1$', ''
     try {
         if ($null -ne $deviceBindingGate) { throw $deviceBindingGate }
-        # Refuse an already occupied port. A same-user bind race after this check remains possible.
+        # Refuse an already occupied port with a plain message. A same-user bind race after this check remains possible.
         $uri = [Uri]$baseUrl
-        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $uri.Port)
-        try { $listener.Server.ExclusiveAddressUse=$true; $listener.Start() }
-        finally { $listener.Stop() }
+        Assert-FastLlmLoopbackPortFree -Port $uri.Port
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = $Plan.enginePath
         $info.Arguments = Join-FastLlmProcessArguments -Arguments $Plan.serverArguments
@@ -772,6 +808,13 @@ function Invoke-FastLlmSupervisedServer {
         while ($deadline.Elapsed.TotalSeconds -lt $LoadTimeoutSeconds) {
             if (Test-Path -LiteralPath $stopPath) { $state.phase='stopped'; return 0 }
             if ($hostProcess.Process.HasExited) {
+                # llama-server's own bind error is the same plain refusal as the pre-start check (a bind race after the check).
+                # The snapshot is the pre-Ready startup output only, so no prompt text can be in it.
+                $earlyOutputWait = [Diagnostics.Stopwatch]::StartNew()
+                while (-not $hostProcess.OutputCompleted -and $earlyOutputWait.ElapsedMilliseconds -lt 2000) { Start-Sleep -Milliseconds 50 }
+                if (Test-FastLlmServerBindFailure -Text ([string] $hostProcess.Snapshot()) -Port ([int] $uri.Port)) {
+                    throw (New-FastLlmPortInUseFailure -Port ([int] $uri.Port))
+                }
                 # A HIP server that dies on a blocked or missing DLL is a typed failure; any other early exit stays the generic one.
                 if ($isHipPlan) {
                     $hipEarlyFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -ExitCode ([int] $hostProcess.Process.ExitCode) -AutoSelected:$hipAutoSelected
@@ -948,6 +991,10 @@ function Invoke-FastLlmSupervisedServer {
             $state.failureCode=$bindingFailureCode
             # Write the sanitised value back so the supervisor state and the CLI's outer catch (which records Data into status.json) carry the same code.
             $_.Exception.Data['FastLlmFailureCode']=$bindingFailureCode
+        } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'PortInUse') {
+            # An occupied port (found before the spawn, or reported by the engine's own bind error) keeps its typed code and reason: model
+            # recovery and the start-time fallback would only meet the same port.
+            $state.failureCode='port-in-use'
         } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'HipDllFailed') {
             # A blocked or missing HIP DLL keeps its typed code and a reason that model recovery does not retry (recovery would re-plan onto Vulkan).
             $state.failureCode=[string]$_.Exception.Data['FastLlmFailureCode']

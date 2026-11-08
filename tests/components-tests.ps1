@@ -1304,7 +1304,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $expectedXt = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-iq4-xs') + $commonTail + @(
         '--ctx-size', '16384', '--parallel', '1', '--n-gpu-layers', 'all', '--fit', 'on', '--fit-target', '512', '--device', 'ROCm0', '--split-mode', 'none',
         '--flash-attn', 'auto', '--cache-type-k', 'f16', '--cache-type-v', 'f16', '--jinja', '--metrics', '--log-verbosity', '4', '--no-agent', '--no-ui')
-    $expectedFields = 'schemaVersion,catalogVersion,hardwareFingerprint,fingerprintKind,selectionMode,requestedModelId,requestedRecipeId,recovered,requestedContextSize,allowExperimentalModel,catalogContextSize,performanceQualified,candidatePlacementCount,profile,backend,engineVersion,enginePath,capacity,selectedAdapters,model,modelPath,requestedAllGpuLayers,placementVerified,splitMode,tensorSplit,endpoint,serverArguments,recipe,warnings'
+    $expectedFields = 'schemaVersion,catalogVersion,hardwareFingerprint,fingerprintKind,selectionMode,requestedModelId,requestedRecipeId,recovered,requestedContextSize,requestedServerPort,allowExperimentalModel,catalogContextSize,performanceQualified,candidatePlacementCount,profile,backend,engineVersion,enginePath,capacity,selectedAdapters,model,modelPath,requestedAllGpuLayers,placementVerified,splitMode,tensorSplit,endpoint,serverArguments,recipe,warnings'
     $shippedCases = @(
         @{ Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; Args = $expectedXtx; EnginePath = 'C:\FastLLM\vulkan\llama-server.exe' },
         @{ Hardware = $xtHardware; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k'; Args = $expectedXt; EnginePath = 'C:\FastLLM\rocm\llama-server.exe' })
@@ -2430,7 +2430,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($setShown.exit -eq 0 -and $setShown.text -like '*componentLicenses: ask*') 'settings alone prints the current mode (ask)'
         $setShownJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
         $setObject = $setShownJson.text | ConvertFrom-Json
-        Check ($setShownJson.exit -eq 0 -and $setObject.mode -ceq 'ask' -and @($setObject.accepted).Count -eq 0) 'settings -AsJson gives an object with the mode and the accepted list'
+        Check ($setShownJson.exit -eq 0 -and $setObject.componentLicenses.mode -ceq 'ask' -and @($setObject.componentLicenses.accepted).Count -eq 0 -and $setObject.serverPort -eq 8080) 'settings -AsJson gives componentLicenses (the mode and the accepted list) beside serverPort, thinking and chatPage'
         $setRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $setRoot)
         Check ($setRefused.exit -ne 0 -and $setRefused.text.Contains('needs -AcceptLicense') -and -not (Test-Path -LiteralPath $setFile)) 'settings -ComponentLicenses accept-automatically without -AcceptLicense is refused and changes nothing'
         $setOn = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
@@ -2439,7 +2439,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $setStored = Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot
         Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 5 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the five identities'
         $setOnJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
-        Check ((($setOnJson.text | ConvertFrom-Json).mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
+        Check ((($setOnJson.text | ConvertFrom-Json).componentLicenses.mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
         $setMixedRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-InstallRoot', $setRoot)
         Check ($setMixedRefused.exit -ne 0 -and $setMixedRefused.text.Contains('needs -AcceptLicense') -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically') 'a mixed-case Accept-Automatically without -AcceptLicense is refused like the lower-case value and changes nothing'
         $setOff = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)

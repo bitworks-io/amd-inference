@@ -1014,6 +1014,11 @@ function Get-FastLlmPlan {
 
         [string] $RecipeId,
 
+        # The loopback port the server listens on. 0 = the catalog value (8080). The caller validates the 1024-65535 range
+        # (the CLI and the control window do); this parameter only carries an already validated integer.
+        [ValidateRange(0, 65535)]
+        [int] $ServerPort = 0,
+
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
 
@@ -1380,6 +1385,9 @@ function Get-FastLlmPlan {
         }
     }
     $deviceNames = @($selectedAdapters | ForEach-Object { [string] $_.device })
+    # 0 = the catalog value. A requested port only replaces the number; the host stays the catalog loopback value.
+    $effectiveServerPort = [string] $catalog.hardwarePolicy.serverPort
+    if ($ServerPort -gt 0) { $effectiveServerPort = [string] $ServerPort }
     $arguments = @(
         '--model', $modelPath,
         '--offline',
@@ -1387,7 +1395,7 @@ function Get-FastLlmPlan {
         '--spec-type', 'none',
         '--alias', [string] $model.id,
         '--host', [string] $catalog.hardwarePolicy.serverHost,
-        '--port', [string] $catalog.hardwarePolicy.serverPort,
+        '--port', [string] $effectiveServerPort,
         '--cors-origins', 'localhost',
         '--no-cors-credentials',
         '--ctx-size', [string] $model.contextSize,
@@ -1424,6 +1432,7 @@ function Get-FastLlmPlan {
         requestedRecipeId   = $RecipeId
         recovered           = [bool] ($Recovered -and $ModelId)
         requestedContextSize = $ContextSize
+        requestedServerPort = $ServerPort
         allowExperimentalModel = [bool] $AllowExperimentalModel
         catalogContextSize  = $catalogContext
         performanceQualified = $false
@@ -1445,7 +1454,7 @@ function Get-FastLlmPlan {
         placementVerified   = $false
         splitMode           = $splitMode
         tensorSplit         = $tensorSplit
-        endpoint            = "http://$($catalog.hardwarePolicy.serverHost):$($catalog.hardwarePolicy.serverPort)/v1"
+        endpoint            = "http://$($catalog.hardwarePolicy.serverHost):$effectiveServerPort/v1"
         serverArguments     = $arguments
         recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)) -HipBackend:($planBackend -ceq 'hip') -IdentifiedVariant $identifiedVariant)
         warnings            = $warnings
@@ -3742,6 +3751,11 @@ function Start-FastLlmServer {
         $freshRecipeOptions.FallbackFromRecipe = [string] $Plan.fallback.fromRecipe
         $freshRecipeOptions.FallbackReason = [string] $Plan.fallback.reason
     }
+    # Added only for a non-default port, so the default call keeps the exact parameter set it always had. A plan written before the
+    # port setting existed has no requestedServerPort and re-plans on the catalog port.
+    $planServerPort = 0
+    if ($Plan.PSObject.Properties['requestedServerPort'] -and $null -ne $Plan.requestedServerPort) { $planServerPort = [int] $Plan.requestedServerPort }
+    if ($planServerPort -gt 0) { $freshRecipeOptions.ServerPort = $planServerPort }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
@@ -3813,10 +3827,10 @@ function Start-FastLlmServer {
         $afterReady = $false
         if ($firstFailure.Data) { $firstReason = [string] $firstFailure.Data['FastLlmReason']; $firstCode = [string] $firstFailure.Data['FastLlmFailureCode']; $afterReady = [bool] $firstFailure.Data['FastLlmAfterReady'] }
         # The fallback is a start-time mechanism for a failed HIP start: a typed failure, or a failure of the HIP server after it was spawned.
-        # Not eligible: a failure before the spawn that is not typed (an occupied port), a crash after the server was ready, a device-binding
+        # Not eligible: a failure before the spawn that is not typed, an occupied port (PortInUse; the stand-in would need the same port), a crash after the server was ready, a device-binding
         # refusal, a changed plan, a model to repair and a state-write error.
         $hipStartFailure = ($firstCode -ne '') -or ($firstReason -ceq 'RuntimeCheckFailed')
-        if (-not $mayFallBack -or $afterReady -or -not $hipStartFailure -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed')) { throw }
+        if (-not $mayFallBack -or $afterReady -or -not $hipStartFailure -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed', 'PortInUse')) { throw }
         $fallbackReasonCode = 'start-failed'
         if ($firstCode -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,95}$') { $fallbackReasonCode = $firstCode }
         $fromRecipeId = [string] $Plan.recipe.id
@@ -3825,6 +3839,7 @@ function Start-FastLlmServer {
             ModelId = $Plan.requestedModelId; ContextSize = $Plan.requestedContextSize; FallbackFromRecipe = $fromRecipeId; FallbackReason = $fallbackReasonCode
             RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
         if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
+        if ($Plan.PSObject.Properties['requestedServerPort'] -and $null -ne $Plan.requestedServerPort -and [int] $Plan.requestedServerPort -gt 0) { $fallbackPlanOptions.ServerPort = [int] $Plan.requestedServerPort }
         # From here on a failure is a failure of the fallback attempt: the CLI loop must not re-plan onto the HIP setup, repair its model or recover.
         try {
             $fallbackPlanOptions.Hardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot

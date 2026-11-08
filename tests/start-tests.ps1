@@ -24,7 +24,7 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');replanPort=-1;supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
@@ -38,8 +38,8 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');if($script:startTestState.ContainsKey('probeFailAt') -and @($script:startTestState.events | Where-Object { $_ -ceq 'reprobe' }).Count -eq $script:startTestState.probeFailAt){throw 'simulated probe failure'};return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason)
-            $script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0)
+            $script:startTestState.replanPort=$ServerPort;$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
             if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
             return $script:startTestState.fresh
@@ -90,6 +90,59 @@ try {
         Check ($caught -and $state.events.Count -eq 0) 'an invalid module-level policy fails before any hashing or launch'
     } finally { & $module { $script:FastLlmVulkanBarMitigationPolicy = 'off' } }
     $state.events.Clear()
+
+    # replan-keeps-port: a forced re-plan through the start loop keeps the requested port; a default plan re-plans exactly as before.
+    $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanPort -eq 0 -and ($state.planBound[0] -split ',') -notcontains 'ServerPort') 'replan-keeps-port: a default plan re-plans without a ServerPort parameter'
+    $portPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $portPlan | Add-Member -NotePropertyName requestedServerPort -NotePropertyValue 18181 -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1
+    Start-FastLlmServer -Plan $portPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanPort -eq 18181 -and ($state.planBound[0] -split ',') -contains 'ServerPort') 'replan-keeps-port: the forced re-plan is asked for 18181'
+
+    # replan-from-4gb-plan-json (R1): the BASE plan JSON has no requested* fields; it re-plans with no exception and keeps today's arguments.
+    $basePlanJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
+    Check (-not $basePlanJson.PSObject.Properties['requestedServerPort']) 'replan-from-4gb-plan-json: the fixture carries no requestedServerPort'
+    # Only the two host paths are pointed at this test's scratch install; every other property is the BASE plan's.
+    $basePlanJson.enginePath=$plan.enginePath;$basePlanJson.modelPath=$plan.modelPath
+    $savedFresh=$state.fresh
+    $state.fresh=($basePlanJson | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+    $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1;$state.supervisorPlans.Clear();$baseFailure=$null
+    try{Start-FastLlmServer -Plan $basePlanJson -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$baseFailure=$_.Exception}
+    $baseArgsSame=($state.supervisorPlans.Count -eq 1) -and ((@($state.supervisorPlans[0].serverArguments) -join "`n") -ceq (@($basePlanJson.serverArguments) -join "`n"))
+    Check ($null -eq $baseFailure -and $state.replanPort -eq 0 -and $baseArgsSame) ("replan-from-4gb-plan-json: re-plans with no exception and today's arguments (failure=$(if($baseFailure){$baseFailure.Message}else{'none'}) port=$($state.replanPort) plans=$($state.supervisorPlans.Count))")
+    $state.fresh=$savedFresh
+    $state.events.Clear();$state.planBound.Clear()
+
+    # CLI: -IgnoreUserSettings and the port validation (plan only; no engine, no network).
+    $cliRoot=Join-Path $temp 'cli-install'
+    New-Item -ItemType Directory -Path $cliRoot -Force | Out-Null
+    $pwshPath=(Get-Process -Id $PID).Path
+    function Invoke-StartTestCli([string[]]$Arguments){
+        $text=@(& $pwshPath -NoLogo -NoProfile -File (Join-Path $root 'fast-llm.ps1') @Arguments 2>&1 | ForEach-Object { [string]$_ })
+        return [pscustomobject]@{exit=$LASTEXITCODE;text=($text -join "`n")}
+    }
+    $fixture=Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json'
+    $setPort=Invoke-StartTestCli @('settings','-Port','18181','-InstallRoot',$cliRoot)
+    Check ($setPort.exit -eq 0 -and $setPort.text -like '*serverPort: 18181*') 'cli: settings -Port writes the port and prints serverPort'
+    $planSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+    $planIgnored=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$cliRoot)
+    $savedArgs=@(($planSaved.text | ConvertFrom-Json).serverArguments);$ignoredArgs=@(($planIgnored.text | ConvertFrom-Json).serverArguments)
+    Check ($savedArgs[[Array]::IndexOf($savedArgs,'--port')+1] -ceq '18181') 'cli-ignore-user-settings: without the switch the saved port 18181 is planned'
+    Check ($ignoredArgs[[Array]::IndexOf($ignoredArgs,'--port')+1] -ceq '8080') 'cli-ignore-user-settings: with the switch the plan says --port 8080'
+    $planExplicit=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-ServerPort','19191','-InstallRoot',$cliRoot)
+    $explicitArgs=@(($planExplicit.text | ConvertFrom-Json).serverArguments)
+    Check ($explicitArgs[[Array]::IndexOf($explicitArgs,'--port')+1] -ceq '19191') 'cli-ignore-user-settings: an explicit -ServerPort still wins'
+    $settingsJson=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
+    $settingsObject=$settingsJson.text | ConvertFrom-Json
+    Check ($settingsObject.serverPort -eq 18181 -and $settingsObject.thinking -ceq 'auto' -and $settingsObject.chatPage -ceq 'off' -and $settingsObject.componentLicenses.mode -ceq 'ask') 'cli: settings -AsJson shows componentLicenses, serverPort, thinking and chatPage'
+    $badPort=Invoke-StartTestCli @('settings','-Port','80','-InstallRoot',$cliRoot)
+    Check ($badPort.exit -ne 0 -and $badPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: settings -Port 80 exits non-zero with serving-settings-invalid-port'
+    $fractionPort=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-ServerPort','18181.5','-InstallRoot',$cliRoot)
+    Check ($fractionPort.exit -ne 0 -and $fractionPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: -ServerPort 18181.5 is refused, not rounded'
+    $stillSaved=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
+    Check ((($stillSaved.text | ConvertFrom-Json).serverPort) -eq 18181) 'cli-port-validation: a refused port leaves the saved value unchanged'
 
     foreach($property in @('modelPath','backend','catalogVersion')){
         $original=$fresh.$property;$fresh.$property='changed';$state.events.Clear();$reason=$null
@@ -255,8 +308,8 @@ try {
     $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed'),(New-FallbackTestFailure 'self-test-failed' 'RuntimeCheckFailed'))
     Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'self-test-failed' -and $state.supervisorPlans.Count -eq 2) 'fallback happens once: the second run''s failure propagates and there is no third run'
     # Failures that are not about the HIP setup never fall back.
-    foreach($noFallbackReason in @('DeviceBindingFailed','PlanChanged','ModelNeedsProvisioning')){
-        $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure '' $noFallbackReason))
+    foreach($noFallbackReason in @('DeviceBindingFailed','PlanChanged','ModelNeedsProvisioning','PortInUse')){
+        $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure $(if($noFallbackReason -ceq 'PortInUse'){'port-in-use'}else{''}) $noFallbackReason))
         Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmReason'] -ceq $noFallbackReason -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) "a $noFallbackReason failure does not fall back"
     }
     # An explicit recipe never falls back, and neither does a plain Vulkan plan.

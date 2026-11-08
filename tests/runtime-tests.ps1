@@ -165,7 +165,7 @@ try {
             hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}
         }
         if ($mode -in @('ok','flood','diagduplicate','diagflood')) {
-            $plan | Add-Member -NotePropertyMembers @{catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'}
+            $plan | Add-Member -NotePropertyMembers @{catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model';requestedServerPort=[int]$port}
             $plan.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
             $plan.serverArguments+=@('-Model','test-model')
             $savedEnvironment=@{}
@@ -206,6 +206,8 @@ try {
                 }
                 Check (-not $status.selectedDeviceIdentity.physicalIdentityVerified -and -not $status.selectedDeviceIdentity.physicalResidencyVerified -and -not $status.selectedDeviceIdentity.operationPlacementVerified) 'same-child selection is not promoted to physical identity, residency, or operation evidence'
                 if($mode -eq 'ok'){
+                    # start-on-custom-port-ready: the plan asks for a non-default port; the health poll, API canary and self-test all used it (the mock listens on that port only).
+                    Check ($port -ne 8080 -and [int]$plan.requestedServerPort -eq $port -and $plan.endpoint -ceq "http://127.0.0.1:$port/v1" -and $result -eq 0 -and $status.canary.streaming) 'start-on-custom-port-ready: a plan on a non-default port reaches ready, with the canary on that port'
                     Check ($status.startupDiagnostics.computeBuffers[0].sizeMiB -eq 64 -and $status.startupDiagnostics.requestedFlashAttention -eq 'auto') 'canary-time log lookalike is excluded and requested versus reported flash mode is explicit'
                     Check ((Get-Content -LiteralPath (Join-Path $runRoot 'state/status.json') -Raw) -notmatch 'private/untrusted-text|999\.00|canary-time text|0000:04:00\.0') 'untrusted startup text and canary-time lookalikes never enter persisted state'
                 }
@@ -376,6 +378,80 @@ try {
     }
 
 
+    # ================= the settable port: plain occupied-port refusal =================
+    $portCases=@{}
+    function Get-FreeTestPort { $l=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$l.Start();$p=$l.LocalEndpoint.Port;$l.Stop();return $p }
+    function New-PortTestPlan([int]$PortNumber,[string]$Mode,[string]$DiagnosticFile){
+        return [pscustomobject]@{
+            enginePath=(Get-Process -Id $PID).Path
+            serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$PortNumber",'-Mode',$Mode,'-DiagnosticPath',$DiagnosticFile)
+            endpoint="http://127.0.0.1:$PortNumber/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'}); requestedServerPort=$PortNumber
+            hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64)}
+        }
+    }
+    $busyPort=Get-FreeTestPort
+    $busyRoot=Join-Path $temp 'busy-port'
+    $busyLock=Enter-FastLlmOperation $busyRoot
+    $busyListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,$busyPort)
+    $busyListener.Server.ExclusiveAddressUse=$true;$busyListener.Start()
+    $busyDiagnostic=Join-Path $busyRoot 'mock-startup-diagnostic.txt'
+    $busyFailure=$null
+    try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } (New-PortTestPlan $busyPort 'ok' $busyDiagnostic) $busyRoot $catalog } catch { $busyFailure=$_.Exception } finally { $busyListener.Stop();$busyLock.Dispose() }
+    function Get-ExpectedPortMessage([int]$PortNumber){ return "Port $PortNumber is already in use, so FastLLM did not start. If FastLLM is already running in the background, use Attach running. Otherwise close the program that uses port $PortNumber, or choose another port in FastLLM's settings." }
+    $expectedBusyMessage=Get-ExpectedPortMessage $busyPort
+    Check ($null -ne $busyFailure -and [string]$busyFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$busyFailure.Data['FastLlmReason'] -ceq 'PortInUse') 'occupied-port-plain-message: the failure is typed port-in-use'
+    Check ($null -ne $busyFailure -and $busyFailure.Message.StartsWith("Port $busyPort is already in use") -and $busyFailure.Message -ceq $expectedBusyMessage) 'occupied-port-plain-message: the message is the plain refusal'
+    Check (-not (Test-Path -LiteralPath $busyDiagnostic)) 'occupied-port-plain-message: nothing was spawned'
+    $otherPortFree=$true;$otherProbe=New-Object Net.Sockets.TcpClient
+    try{$otherProbe.Connect('127.0.0.1',$busyPort+1);$otherPortFree=$false}catch{}finally{$otherProbe.Dispose()}
+    Check ($otherPortFree) 'occupied-port-plain-message: no second port was tried'
+    Check ($null -ne $busyFailure -and $busyFailure.Message.Contains('Attach running')) 'occupied-port-names-background-run: the message names Attach running'
+
+    # occupied-port-wildcard-listener (R2): a wildcard listener on the port refuses, although a trial bind of 127.0.0.1 alone would succeed.
+    $wildPort=Get-FreeTestPort
+    foreach($wildAddress in @([Net.IPAddress]::Any,[Net.IPAddress]::IPv6Any,[Net.IPAddress]::Loopback,[Net.IPAddress]::IPv6Loopback)){
+        $wildFailure=$null
+        $provider={ ,@((New-Object Net.IPEndPoint($wildAddress,$wildPort)),(New-Object Net.IPEndPoint([Net.IPAddress]::Loopback,1))) }.GetNewClosure()
+        try { & $module { param($N,$P) Assert-FastLlmLoopbackPortFree -Port $N -ListenerProvider $P } $wildPort $provider } catch { $wildFailure=$_.Exception }
+        Check ($null -ne $wildFailure -and [string]$wildFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and $wildFailure.Message.StartsWith("Port $wildPort is already in use")) "occupied-port-wildcard-listener: a listener on $($wildAddress.IPAddressToString) refuses (seam)"
+    }
+    $emptyFailure=$null
+    try { & $module { param($N,$P) Assert-FastLlmLoopbackPortFree -Port $N -ListenerProvider $P } $wildPort { ,@((New-Object Net.IPEndPoint([Net.IPAddress]::Any,($wildPort+1)))) } } catch { $emptyFailure=$_.Exception }
+    Check ($null -eq $emptyFailure) 'occupied-port-wildcard-listener: a listener on another port does not refuse'
+    # The real listener table sees a wildcard listener; the trial bind may or may not (platform), so only the table can be relied on here.
+    $realWildcard=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Any,0);$realWildcard.Start();$realWildPort=$realWildcard.LocalEndpoint.Port
+    $realWildFailure=$null
+    try { & $module { param($N) Assert-FastLlmLoopbackPortFree -Port $N } $realWildPort } catch { $realWildFailure=$_.Exception } finally { $realWildcard.Stop() }
+    Check ($null -ne $realWildFailure -and [string]$realWildFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use') 'occupied-port-wildcard-listener: the real listener table refuses a 0.0.0.0 listener'
+    $freshPort=Get-FreeTestPort
+    $freeFailure=$null
+    try { & $module { param($N) Assert-FastLlmLoopbackPortFree -Port $N } $freshPort } catch { $freeFailure=$_.Exception }
+    Check ($null -eq $freeFailure) 'a free port passes both the table read and the trial bind'
+
+    # occupied-port-table-error-fails-closed (R2)
+    $tableFailure=$null
+    try { & $module { param($N,$P) Assert-FastLlmLoopbackPortFree -Port $N -ListenerProvider $P } $freshPort { throw 'simulated listener table failure' } } catch { $tableFailure=$_.Exception }
+    Check ($null -ne $tableFailure -and [string]$tableFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$tableFailure.Data['FastLlmReason'] -ceq 'PortInUse') 'occupied-port-table-error-fails-closed: a table read error refuses with port-in-use'
+
+    # Test-FastLlmServerBindFailure matches llama-server's own bind error for this port only.
+    $bindText="main: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 18181"
+    Check (& $module { param($T) Test-FastLlmServerBindFailure -Text $T -Port 18181 } $bindText) 'Test-FastLlmServerBindFailure: matches the bind error for the port'
+    Check (-not (& $module { param($T) Test-FastLlmServerBindFailure -Text $T -Port 1818 } $bindText)) 'Test-FastLlmServerBindFailure: a port that is only a prefix does not match'
+    Check (-not (& $module { param($T) Test-FastLlmServerBindFailure -Text $T -Port 8080 } $bindText)) 'Test-FastLlmServerBindFailure: another port does not match'
+    Check (-not (& $module { Test-FastLlmServerBindFailure -Text 'load_tensors: offloaded 41/41 layers to GPU' -Port 18181 })) 'Test-FastLlmServerBindFailure: ordinary startup text does not match'
+
+    # server-bind-failure-mapped (R2): the child prints llama-server's bind error and exits 1 before /health.
+    $bindPort=Get-FreeTestPort
+    $bindRoot=Join-Path $temp 'bind-failure'
+    $bindLock=Enter-FastLlmOperation $bindRoot
+    $bindPlan=New-PortTestPlan $bindPort 'ok' (Join-Path $bindRoot 'unused.txt')
+    $bindCode="[Console]::Error.WriteLine(`"srv    load_model: loading`"); [Console]::Error.WriteLine(`"couldn't bind HTTP server socket, hostname: 127.0.0.1, port: $bindPort`"); exit 1"
+    $bindPlan.serverArguments=@('-NoLogo','-NoProfile','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bindCode)))
+    $bindFailure=$null
+    try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } $bindPlan $bindRoot $catalog } catch { $bindFailure=$_.Exception } finally { $bindLock.Dispose() }
+    Check ($null -ne $bindFailure -and [string]$bindFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$bindFailure.Data['FastLlmReason'] -ceq 'PortInUse' -and $bindFailure.Message -ceq (Get-ExpectedPortMessage $bindPort)) 'server-bind-failure-mapped: the engine bind error becomes the plain port-in-use refusal'
+    Check ($null -ne $bindFailure -and $bindFailure.Message -notlike '*exited before readiness*') 'server-bind-failure-mapped: not the generic early-exit text'
+
     # The start-time fallback launches a second server right after the first failed: the first one must be fully gone (child process, port, status file)
     # and the second run must carry the fallback and its own recipe into status.json and selftest.json. Same run root, same port, mock servers.
     $fallbackListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
@@ -400,7 +476,8 @@ try {
         $occupier.Server.ExclusiveAddressUse=$true;$occupier.Start()
         $occupiedFailure=$null
         try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } (New-FallbackSequencePlan 'ok' 'hip-recipe') $fallbackRoot $catalog } catch { $occupiedFailure=$_.Exception } finally { $occupier.Stop() }
-        Check ($null -ne $occupiedFailure -and [string]::IsNullOrEmpty([string]$occupiedFailure.Data['FastLlmReason']) -and [string]::IsNullOrEmpty([string]$occupiedFailure.Data['FastLlmFailureCode'])) 'an occupied port fails the supervised run before the spawn with no typed code and no runtime reason (so it never falls back)'
+        # Since the port refusal became typed (port-in-use / PortInUse), the reason PortInUse is what keeps it out of the start-time fallback (start-tests pins that).
+        Check ($null -ne $occupiedFailure -and [string]$occupiedFailure.Data['FastLlmReason'] -ceq 'PortInUse' -and [string]$occupiedFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use') 'an occupied port fails the supervised run before the spawn with the typed port-in-use failure (PortInUse keeps it from falling back)'
         Check (([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/FastLlm.Runtime.ps1'))).Contains("if (`$reachedReady) { `$_.Exception.Data['FastLlmAfterReady']=`$true }")) 'a failure after the supervisor reached ready is tagged FastLlmAfterReady'
         # First run: the server loads, then the run fails (the child is alive when the failure is raised).
         $firstFailure=$null
