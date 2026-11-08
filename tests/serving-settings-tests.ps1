@@ -50,6 +50,11 @@ try {
     # port-range
     $r=Join-Path $work 'c'; New-Item -ItemType Directory -Path $r | Out-Null
     foreach($bad in 1023,0,65536,-1){ Throws { Set-FastLlmServingSettings -InstallRoot $r -ServerPort $bad } 'serving-settings-invalid-port' }
+    foreach($bad in ([double]18181.5),'18181.5','abc','',$null){ Throws { Set-FastLlmServingSettings -InstallRoot $r -ServerPort $bad } 'serving-settings-invalid-port' }
+    Check (-not (Test-Path -LiteralPath (Join-Path $r 'settings.json'))) 'port-range: refused non-integers wrote nothing'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{ServerPort=18181.5} } 'serving-settings-invalid-port'
+    Set-FastLlmServingSettings -InstallRoot $r -ServerPort '18181'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).serverPort -eq 18181) 'port-range: integer text accepted'
     foreach($good in 1024,65535){ Set-FastLlmServingSettings -InstallRoot $r -ServerPort $good; Check ((Get-FastLlmServingSettings -InstallRoot $r).serverPort -eq $good) "port-range: $good accepted" }
     Check ((Test-FastLlmServerPort -Port 1023) -eq $false -and (Test-FastLlmServerPort -Port 1024) -eq $true -and (Test-FastLlmServerPort -Port 65535) -eq $true -and (Test-FastLlmServerPort -Port 65536) -eq $false) 'port-range: Test-FastLlmServerPort bounds'
     # invalid stored value reads as the default

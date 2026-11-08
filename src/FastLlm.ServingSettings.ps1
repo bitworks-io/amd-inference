@@ -17,6 +17,24 @@ function Test-FastLlmServerPort {
     return ($Port -ge 1024 -and $Port -le 65535)
 }
 
+# Strict port parse: integer text, or an integral int/long, then the 1024-65535 range. Anything else throws.
+function ConvertTo-FastLlmServerPort {
+    param($Value)
+    $invalid = 'serving-settings-invalid-port: the port must be a whole number from 1024 to 65535.'
+    if ($null -eq $Value) { throw $invalid }
+    if ($Value -is [bool] -or $Value -is [double] -or $Value -is [single] -or $Value -is [decimal]) {
+        # Only an integral floating value is a whole number; text form is checked below.
+        if ($Value -is [bool]) { throw $invalid }
+        if ([Math]::Floor([double] $Value) -ne [double] $Value) { throw $invalid }
+        $Value = ([decimal] $Value).ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+    $given = 0
+    $text = ([string] $Value).Trim()
+    if (-not [int]::TryParse($text, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref] $given)) { throw $invalid }
+    if (-not (Test-FastLlmServerPort -Port $given)) { throw $invalid }
+    return $given
+}
+
 # Returns @{ malformed = [bool]; object = [ordered] }. An absent file is empty and not malformed. A file over 16 KiB, a reparse
 # point, text that is not a JSON object, or text that does not parse is malformed.
 function Read-FastLlmServingSettingsObject {
@@ -58,11 +76,9 @@ function Get-FastLlmServingSettings {
 function Set-FastLlmServingSettings {
     param(
         [Parameter(Mandatory = $true)][string] $InstallRoot,
-        [int] $ServerPort
+        $ServerPort
     )
-    if ($PSBoundParameters.ContainsKey('ServerPort') -and -not (Test-FastLlmServerPort -Port $ServerPort)) {
-        throw 'serving-settings-invalid-port: the port must be a whole number from 1024 to 65535.'
-    }
+    if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort = ConvertTo-FastLlmServerPort -Value $ServerPort }
     $read = Read-FastLlmServingSettingsObject -InstallRoot $InstallRoot
     if ($read.malformed) { throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.' }
     $merged = $read.object
@@ -96,10 +112,7 @@ function Resolve-FastLlmServingOptions {
         }
     }
     if ($Bound.ContainsKey('ServerPort')) {
-        $given = 0
-        if (-not [int]::TryParse([string] $Bound['ServerPort'], [ref] $given) -or -not (Test-FastLlmServerPort -Port $given)) {
-            throw 'serving-settings-invalid-port: the port must be a whole number from 1024 to 65535.'
-        }
+        $given = ConvertTo-FastLlmServerPort -Value $Bound['ServerPort']
         $port = $given
         $source = 'parameter'
     }
