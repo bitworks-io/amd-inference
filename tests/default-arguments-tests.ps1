@@ -148,8 +148,9 @@ try {
     $baseJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
     $nowJson=$basePlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
     $installRoot=Join-Path $work 'install'
-    $normalize={param($Value) $t=(ConvertTo-Json -InputObject $Value -Depth 12 -Compress); if($null -eq $t){$t='null'}; foreach($v in @($installRoot,$installRoot.Replace('\','\\'),$installRoot.Replace('\','/'))){if($v){$t=$t.Replace($v,'<install-root>')}}; $t.Replace('\\','/')}
+    $normalize={param($Value) $t=(ConvertTo-Json -InputObject $Value -Depth 12 -Compress); if($null -eq $t){$t='null'}; $t=$t.Replace('\u003c','<').Replace('\u003e','>').Replace('\u0026','&').Replace('\u0027',"'"); foreach($v in @($installRoot,$installRoot.Replace('\','\\'),$installRoot.Replace('\','/'))){if($v){$t=$t.Replace($v,'<install-root>')}}; $t.Replace('\\','/')}
     Check ((& $normalize $null) -ceq 'null') 'plan-json-additive: the normalizer serializes a null value as null on every PowerShell edition'
+    Check ((& $normalize '<install-root>/x') -ceq '"<install-root>/x"') 'plan-json-additive: the normalizer gives the same text on Windows PowerShell 5.1 and 7 (no < escapes)'
     $missing=@();$valueDiffs=@()
     foreach($property in $baseJson.PSObject.Properties){
         if(-not $nowJson.PSObject.Properties[$property.Name]){$missing+=$property.Name;continue}
