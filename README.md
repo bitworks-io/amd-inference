@@ -78,7 +78,7 @@ FastLLM serves an OpenAI-compatible API on this computer only. The **Connect an 
 - **Context limit:** this setup's context in tokens, shown as `connection.contextTokens` and in the Connect an app window. Requests longer than the limit are refused with an error.
 - **API key:** FastLLM sets none, so any key string works (this is FastLLM's own fact, not something a client's documentation says). Use any text where an app asks for one.
 
-**Short contexts and coding agents.** When FastLLM is not running or the context limit is not known, the window shows: "FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts." When the context limit is below 32,768 tokens, the window shows: "This setup's context is <n> tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." Requests shorter than the limit fit; longer ones are refused.
+**Short contexts and coding agents.** When FastLLM is not running or the context limit is not known, the window shows: "FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts." When the context limit is below 32,768 tokens, the window shows: "This setup's context is <n> tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." A request and its answer together must fit within the limit; anything longer is refused.
 
 Endpoints on the base URL:
 
@@ -126,11 +126,11 @@ The server listens on port 8080 by default. To change it, use Settings... in the
 
 ## Thinking
 
-Thinking is Auto by default, and Auto leaves the server arguments exactly as they were. Settings... in the window (or `fast-llm.ps1 settings -Thinking off`) can turn it off. The choice reads "Off: faster answers. Quality with thinking off is not measured by Bitworks." and adds `--reasoning off` to the server arguments; the change applies at the next start. Benchmarks refuse a run started with thinking off, so set Thinking to Auto, start again, then benchmark. Each request can also ask for this itself, whatever the setting: send `reasoning_effort` or `chat_template_kwargs: {"enable_thinking": false}` in the request body.
+Thinking is Auto by default, and Auto leaves the server arguments exactly as they were. Settings... in the window (or `fast-llm.ps1 settings -Thinking off`) can turn it off. The choice reads "Off: faster answers. Quality with thinking off is not measured by Bitworks." and adds `--reasoning off` to the server arguments; the change applies at the next start. `tools/benchmark.ps1`, the benchmark report tool, refuses a run started with thinking off, so set Thinking to Auto, start again, then benchmark. Each request can also ask for this itself, whatever the setting: send `reasoning_effort` or `chat_template_kwargs: {"enable_thinking": false}` in the request body.
 
 ## Local chat page
 
-The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. Benchmarks refuse a run started with the page on, so turn it off, start again, then benchmark.
+The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. `tools/benchmark.ps1`, the benchmark report tool, refuses a run started with the page on, so turn it off, start again, then benchmark.
 
 ## Logs and support bundle
 
@@ -144,7 +144,7 @@ What is never kept: prompts, answers, chat text, the self-test text, request or 
 
 ## Free up disk space
 
-Downloaded models are 2 to 29 GB each. The Downloaded models button in the window lists them with their size and the free disk space; Remove asks first (the answer defaults to No) and deletes only that model, which you can download again later. Your licence consent records are kept, so a model you download again does not ask again. A model that FastLLM is serving, that a background run uses, or that is being downloaded cannot be removed; the window says so and removes nothing. The Remove leftover partial downloads button is enabled only when interrupted downloads and files that failed their check are left in the models folder, and asks a second time.
+Downloaded models are about 1.6 to 29 GB each. The Downloaded models button in the window lists them with their size and the free disk space; Remove asks first (the answer defaults to No) and deletes only that model, which you can download again later. Your licence consent records are kept, so a model you download again does not ask again. A model that FastLLM is serving, that a background run uses, or that is being downloaded cannot be removed; the window says so and removes nothing. The Remove leftover partial downloads button is enabled only when interrupted downloads and files that failed their check are left in the models folder, and asks a second time.
 
 From a command line:
 
@@ -152,7 +152,7 @@ From a command line:
 - `fast-llm.ps1 models -Remove <model id>` shows what it removes and asks. Add `-Yes` to skip the question (a script has to).
 - `fast-llm.ps1 models -RemoveQuarantined -Yes` deletes the leftover partial downloads it lists; without `-Yes` it only lists them and stops.
 
-These take the same lock as an install or a start, so they stop with `operation-in-progress` while one is running.
+`-Remove` and `-RemoveQuarantined` take the same lock as an install or a start, so they stop with `operation-in-progress` while one is running (`-Installed` takes no lock).
 
 ## Uninstall
 

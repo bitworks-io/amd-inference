@@ -530,7 +530,7 @@ try {
     Check ($listText.Contains('doctor.json  (3 KiB)') -and $listText.Contains('logs/run-x.jsonl  (1 KiB)') -and $listText.Contains('3 item(s)') -and $listText.Contains('does not upload it')) 'window: the list dialog shows every entry with its size, the redaction count and the local-only statement'
     $ui=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
     Check ($ui.Contains('$bundleButton=ButtonAt (''Save support bundle''+[string][char]0x2026) $rowSlotX[4] $rowY $rowWidth') -and $ui.Contains('$logsButton=ButtonAt ''Open logs'' $rowSlotX[5] $rowY $rowWidth')) 'window: Save support bundle... is in slot 4 and Open logs in slot 5'
-    Check ($ui.Contains("LaunchStep 'bundle list' (@('doctor','-SupportBundle',`$probe,'-ListOnly')+`$script:selection)") -and $ui.Contains("LaunchStep 'bundle save' (@('doctor','-SupportBundle',`$chosen)+`$script:selection)")) 'window: the list-only step runs first, the save step after the dialogs'
+    Check ($ui.Contains("LaunchSideStep 'bundle list' (@('doctor','-SupportBundle',`$probe,'-ListOnly')+`$script:selection)") -and $ui.Contains("LaunchSideStep 'bundle save' (@('doctor','-SupportBundle',`$chosen)+`$script:selection)")) 'window: the list-only step runs first, the save step after the dialogs'
     Check ($ui.Contains("InitialDirectory=[Environment]::GetFolderPath('Desktop')") -and $ui.Contains('FastLlm.SupportBundle.ps1')) 'window: the Save dialog defaults to the Desktop and the bundle file is dot-sourced'
     $parseErrors=$null;$tokens=$null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$tokens,[ref]$parseErrors)
