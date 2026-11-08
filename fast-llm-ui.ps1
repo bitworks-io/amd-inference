@@ -947,6 +947,10 @@ function ShowUiSettings {
         if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
             $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
         }
+        # The 250 ms tick rewrites the status line while a run is active, so the notes are also shown where they stay put.
+        if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$statusLabel.Text)){
+            [void][Windows.Forms.MessageBox]::Show($form,[string]$statusLabel.Text,'FastLLM settings','OK','Information')
+        }
     }
 }
 function StartUiBackground {
@@ -1494,7 +1498,7 @@ function CompleteUiStartupChecks {
 }
 function InvokeUiUpdate {
     if(-not $script:updateOffer -or $script:updateRun){return}
-    if($script:child -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before updating.';return}
+    if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before updating.';return}
     $version=[string]$script:updateOffer.version
     $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiUpdateConfirm -Version $version),'Update FastLLM','YesNo','Question','Button2')
     if($choice -ne 'Yes'){return}
@@ -1742,7 +1746,6 @@ $form.Add_FormClosing({param($sender,$event)
         SetTrayMenuAvailable $true
         return
     }
-    if($script:sideChild){$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep='idle'}
     if($script:child){
         if([Windows.Forms.MessageBox]::Show($form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){
             $event.Cancel=$true;SetTrayMenuAvailable $true;return
@@ -1750,6 +1753,8 @@ $form.Add_FormClosing({param($sender,$event)
         $script:child.Dispose();$script:child=$null
         if($script:flow){$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event stop}
     }
+    # A running check or bundle save is stopped only once closing is confirmed (or when no run needed a confirmation).
+    if($script:sideChild){$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep='idle'}
     $script:trayState=Move-FastLlmUiTrayState -State $script:trayState -Event 'close'
     DisposeTrayControls
     $timer.Stop()

@@ -134,6 +134,13 @@ function Get-FastLlmServingMalformedWarning {
     return 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.'
 }
 
+# The warning a live start prints when settings.json cannot be read; $null when the file is absent, valid or not in use.
+function Get-FastLlmServingSettingsWarning {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    if ((Get-FastLlmServingSettings -InstallRoot $InstallRoot).malformed) { return (Get-FastLlmServingMalformedWarning) }
+    return $null
+}
+
 # Precedence: explicit parameter in -Bound, then settings (unless -IgnoreUserSettings), then the default.
 function Resolve-FastLlmServingOptions {
     param(

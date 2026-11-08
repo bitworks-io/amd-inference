@@ -107,7 +107,7 @@ $env:ANTHROPIC_AUTH_TOKEN = "any-text"
 ```
 # Responses-format client (for example Codex), in config.toml. /v1/responses: partial at this engine version.
 # The provider block follows the Codex documentation's local example (base_url ends in /v1 there too, with no key setting).
-# wire_api = "responses" is the setting its other provider examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
+# wire_api = "responses" is the setting the documentation's proxy and Azure examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
 # FastLLM's own fact: it needs no key, so this card sets none.
 model = "<the model name>"
 model_provider = "fastllm"
@@ -134,7 +134,7 @@ The local chat page is off by default, and FastLLM stays API-first. Settings... 
 
 ## Logs and support bundle
 
-Each run writes a small log to `state\logs\run-<time>-<id>.jsonl` under the install folder. FastLLM keeps the newest 20 logs, each at most 256 KiB. **Open logs** in the window opens the folder.
+Each server start writes a small log to `state\logs\run-<time>-<id>.jsonl` under the install folder. FastLLM keeps the newest 20 logs, each at most 256 KiB. **Open logs** in the window opens the folder.
 
 What a log keeps: the model, recipe, engine version, context size, port, thinking and chat page settings of the run; the phases (preparing, loading, checking, ready, stopped, failed); the parsed startup and GPU placement numbers (layer counts, device names, buffer sizes in MiB); the self-test verdict, speeds and timings; failure codes; and the exit code. For a failure before the API checks start, the error message is kept as well. After that only a fixed sentence and the failure code are kept.
 

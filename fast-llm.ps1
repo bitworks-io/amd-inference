@@ -315,7 +315,10 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $servingBound.ChatPage = $ChatPage }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
-    if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and $servingOptions.settingsMalformed) { Write-Warning (Get-FastLlmServingMalformedWarning) }
+    if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
+        $servingWarning = Get-FastLlmServingSettingsWarning -InstallRoot $InstallRoot
+        if ($null -ne $servingWarning) { Write-Warning $servingWarning }
+    }
     if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
     if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
     if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
@@ -488,6 +491,9 @@ try {
                 if ($null -eq $removeModel) { throw (New-FastLlmTypedFailure -Code 'not-in-catalog' -Message "There is no model '$Remove' in the catalog. Nothing was removed.") }
                 $removeRow = @(Get-FastLlmInstalledModels -InstallRoot $InstallRoot -CatalogPath $catalogPath | Where-Object { $_.id -ceq $Remove })[0]
                 if ($null -eq $removeRow) { throw (New-FastLlmTypedFailure -Code 'not-installed' -Message "The model file for '$Remove' is not on this PC. Nothing was removed.") }
+                # The lock is taken before the question: a busy or serving install is refused without asking, and nothing is removed.
+                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
+                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy or serving for this installation; stop it first. Nothing was removed.') }
                 $confirmationText = Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $removeModel) -SizeBytes ([int64] $removeRow.sizeBytes)
                 Write-Host $confirmationText
                 if (-not $Yes) {
@@ -497,9 +503,6 @@ try {
                     $answer = Read-Host 'Remove it? [y/N]'
                     if ($answer -cnotmatch '^(?i:y|yes)$') { Write-Host 'Nothing was removed.'; break }
                 }
-                # The lock is taken after the answer, never during the prompt: a busy install, start or download means nothing is removed.
-                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
-                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy with another install, start or download for this installation. Nothing was removed.') }
                 $removal = Remove-FastLlmInstalledModel -InstallRoot $InstallRoot -CatalogPath $catalogPath -ModelId $Remove -OperationLockHeld
                 if ($AsJson) { $removal | ConvertTo-Json -Depth 4 }
                 if (-not $removal.removed) { throw (New-FastLlmTypedFailure -Code ([string] $removal.reason) -Message "Nothing was removed ($($removal.reason)).") }
@@ -509,11 +512,12 @@ try {
             if ($RemoveQuarantined) {
                 $leftoverRows = @(Get-FastLlmModelLeftovers -InstallRoot $InstallRoot)
                 if ($leftoverRows.Count -eq 0) { Write-Host 'There are no leftover partial downloads.'; break }
+                # The lock is taken before the question: a busy or serving install is refused without asking.
+                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
+                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy or serving for this installation; stop it first. Nothing was removed.') }
                 Write-Host 'Leftover partial downloads:'
                 foreach ($leftoverRow in $leftoverRows) { Write-Host ('  {0}  {1} GB{2}' -f $leftoverRow.name, (Format-FastLlmModelStoreGigabytes -Bytes $leftoverRow.sizeBytes), $(if ($leftoverRow.locked) { '  (being downloaded, kept)' } else { '' })) }
                 if (-not $Yes) { throw (New-FastLlmTypedFailure -Code 'confirmation-required' -Message 'Nothing was removed. Run the command again with -Yes to delete the files listed above.') }
-                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
-                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy with another install, start or download for this installation. Nothing was removed.') }
                 $leftoverResults = @(Remove-FastLlmModelLeftovers -InstallRoot $InstallRoot -Names @($leftoverRows | Where-Object { -not $_.locked } | ForEach-Object { [string] $_.name }) -OperationLockHeld)
                 if ($AsJson) { ConvertTo-Json -InputObject @($leftoverResults) -Depth 4 }
                 else { foreach ($leftoverResult in $leftoverResults) { Write-Host ('{0}: {1}' -f $leftoverResult.name, $(if ($leftoverResult.removed) { 'removed' } else { 'kept (' + $leftoverResult.reason + ')' })) } }

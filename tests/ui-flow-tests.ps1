@@ -1206,4 +1206,15 @@ Check ((Get-FastLlmUiApiUrl -Status ([pscustomobject]@{active=$true;endpoint='ht
 Check ($uiText.Contains('Get-FastLlmUiChatButtonState') -and (([regex]::Matches($uiText,'UpdateUiRunState [\$(]')).Count) -ge 2) 'the window updates the chat button from both the foreground timer and the background status through one helper'
 Check ($uiText.Contains('function LaunchSideStep') -and $uiText.Contains('$script:sideChild')) 'the window has a separate side-step slot'
 
+# Residual fixes: settings notes are shown in a message box during a run, an update waits for a side step, and closing keeps a side step until confirmed.
+$noteBoxAt=$uiText.IndexOf("[void][Windows.Forms.MessageBox]::Show(`$form,[string]`$statusLabel.Text,'FastLLM settings','OK','Information')")
+$noteRunAt=$uiText.IndexOf('if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$statusLabel.Text)){')
+$noteOffAt=$uiText.IndexOf('Get-FastLlmUiChatPageOffNote -Port')
+Check ($noteBoxAt -gt 0 -and $noteRunAt -gt 0 -and $noteRunAt -lt $noteBoxAt -and $noteOffAt -gt 0 -and $noteOffAt -lt $noteRunAt) 'after Save during an active run the port and chat-page notes are shown in an OK-only message box'
+$updateBody=$uiText.Substring($uiText.IndexOf('function InvokeUiUpdate {'),400)
+Check ($updateBody.Contains('if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text=''Finish or stop the current action before updating.'';return}')) 'the window refuses to start an update while a side step is running'
+$closeAt=$uiText.IndexOf("'Closing stops this window''s active download or inference process. Continue?'")
+$sideDisposeAt=$uiText.IndexOf('if($script:sideChild){$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep=''idle''}')
+Check ($closeAt -gt 0 -and $sideDisposeAt -gt $closeAt) 'closing disposes the side step only after the Closing-stops confirmation'
+
 Write-Output "UI flow tests passed: $checks"

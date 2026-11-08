@@ -337,9 +337,19 @@ try {
         [void]$holders.Add($lockHandle)
         $out=Invoke-Cli @('models','-Remove',$idA,'-Yes','-InstallRoot',$cr)
         Check ($out.Code -ne 0 -and $out.Text -match 'operation-in-progress' -and (Test-Path -LiteralPath (Join-Path (Join-Path $cr 'models') ([string]$realEntry.file)))) 'remove-refuses-operation-lock: models -Remove exits non-zero with operation-in-progress while another handle holds the lock'
+        $out=Invoke-Cli @('models','-Remove',$idA,'-InstallRoot',$cr)
+        Check ($out.Code -ne 0 -and $out.Text -match 'operation-in-progress' -and $out.Text -match 'busy or serving for this installation; stop it first\. Nothing was removed\.' -and $out.Text -notmatch 'confirmation-required' -and -not $out.Text.Contains($expectedText) -and (Test-Path -LiteralPath (Join-Path (Join-Path $cr 'models') ([string]$realEntry.file)))) 'remove-busy-before-question: models -Remove without -Yes is refused as busy before the confirmation text or question'
         $out=Invoke-Cli @('models','-RemoveQuarantined','-Yes','-InstallRoot',$cr)
         Check ($out.Code -eq 0 -and $out.Text -match 'no leftover') 'cli: -RemoveQuarantined with nothing to remove needs no lock'
+        $mdirBusy=Join-Path $cr 'models'
+        $partialBusy=Join-Path $mdirBusy ([string]$realEntry.file+'.'+([string]$realEntry.sha256).Substring(0,16)+'.partial')
+        [IO.File]::WriteAllBytes($partialBusy,(New-Object byte[] 64))
+        $out=Invoke-Cli @('models','-RemoveQuarantined','-InstallRoot',$cr)
+        Check ($out.Code -ne 0 -and $out.Text -match 'operation-in-progress' -and $out.Text -match 'busy or serving for this installation; stop it first\. Nothing was removed\.' -and $out.Text -notmatch 'confirmation-required' -and (Test-Path -LiteralPath $partialBusy)) 'remove-busy-before-question: models -RemoveQuarantined without -Yes is refused as busy before the question'
+        $out=Invoke-Cli @('models','-RemoveQuarantined','-Yes','-InstallRoot',$cr)
+        Check ($out.Code -ne 0 -and $out.Text -match 'operation-in-progress' -and (Test-Path -LiteralPath $partialBusy)) 'remove-busy-before-question: models -RemoveQuarantined -Yes is refused as busy and deletes nothing'
         Release $lockHandle
+        Remove-Item -LiteralPath $partialBusy -Force
 
         # leftovers-second-confirmation
         $mdir=Join-Path $cr 'models'
@@ -358,6 +368,18 @@ try {
         Check ($out.Code -eq 0 -and $out.Text.Contains($expectedText) -and -not (Test-Path -LiteralPath (Join-Path $mdir ([string]$realEntry.file)))) 'cli: models -Remove -Yes removes the model'
         Check (@(Get-ChildItem -LiteralPath (Join-Path $cr 'consents') -File).Count -eq $receiptCount) 'remove-keeps-consent: the CLI remove leaves the receipt'
     }
+
+    # ---- source guards (in-process, so they run under an elevated token too)
+    $cliSourceText=Get-Content -LiteralPath $cli -Raw
+    $removeStart=$cliSourceText.IndexOf("if (`$PSBoundParameters.ContainsKey('Remove')) {",$cliSourceText.IndexOf("'models' {"))
+    $removeBranch=$cliSourceText.Substring($removeStart)
+    $lockText="Enter-FastLlmOperation -InstallRoot `$InstallRoot"
+    $busyText="'FastLLM is busy or serving for this installation; stop it first. Nothing was removed.'"
+    Check ($removeBranch.Contains($busyText) -and -not $cliSourceText.Contains('FastLLM is busy with another install, start or download')) 'remove-busy-message: the models CLI uses the busy-or-serving wording and nothing else'
+    $removePart=$removeBranch.Substring(0,$removeBranch.IndexOf('if ($RemoveQuarantined) {'))
+    $quarPart=$removeBranch.Substring($removeBranch.IndexOf('if ($RemoveQuarantined) {'))
+    Check ($removePart.IndexOf($lockText) -ge 0 -and $removePart.IndexOf($lockText) -lt $removePart.IndexOf('Write-Host $confirmationText') -and $removePart.IndexOf($lockText) -lt $removePart.IndexOf("Read-Host 'Remove it? [y/N]'")) 'remove-busy-before-question: models -Remove takes the operation lock before the confirmation text and prompt'
+    Check ($quarPart.IndexOf($lockText) -ge 0 -and $quarPart.IndexOf($lockText) -lt $quarPart.IndexOf("Write-Host 'Leftover partial downloads:'") -and $quarPart.IndexOf($lockText) -lt $quarPart.IndexOf("-not `$Yes")) 'remove-busy-before-question: models -RemoveQuarantined takes the operation lock before the listing and the confirmation'
 
     # ---- source guards
     $storeText=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.ModelStore.ps1') -Raw
