@@ -110,6 +110,14 @@ try {
     $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Thinking='off'}
     Check ($x.thinking -ceq 'off') 'thinking-resolve: an explicit off applies with no settings'
     Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Thinking='maybe'} } 'serving-settings-invalid-thinking'
+    Write-Utf8 (Join-Path $r 'settings.json') '{not json'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.settingsMalformed -and $x.serverPort -eq 8080) 'malformed-settings: resolve reports malformed and uses the defaults'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{} -IgnoreUserSettings
+    Check (-not $x.settingsMalformed) 'malformed-settings: ignoring user settings does not report malformed'
+    Write-Utf8 (Join-Path $r 'settings.json') '{}'
+    Check (-not (Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}).settingsMalformed) 'malformed-settings: good settings are not malformed'
+    Check ((Get-FastLlmServingMalformedWarning) -ceq 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.') 'malformed-settings: the warning text'
 
     # chatpage-settings-roundtrip: On is stored, Off removes the key, an invalid value throws, unknown keys survive.
     $r=Join-Path $work 'chatpage'; New-Item -ItemType Directory -Path $r | Out-Null

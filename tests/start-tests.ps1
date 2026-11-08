@@ -172,6 +172,14 @@ try {
     $settingsJson=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
     $settingsObject=$settingsJson.text | ConvertFrom-Json
     Check ($settingsObject.serverPort -eq 18181 -and $settingsObject.thinking -ceq 'auto' -and $settingsObject.chatPage -ceq 'off' -and $settingsObject.componentLicenses.mode -ceq 'ask') 'cli: settings -AsJson shows componentLicenses, serverPort, thinking and chatPage'
+    # M11: a malformed settings.json is said out loud by a live start, and only there (plan -AsJson stays clean JSON).
+    $malCliRoot=Join-Path $temp 'cli-malformed'
+    New-Item -ItemType Directory -Path $malCliRoot -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $malCliRoot 'settings.json'),'{not json')
+    $malStart=Invoke-StartTestCli @('start','-InstallRoot',$malCliRoot)
+    Check ($malStart.text -like '*settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.*') 'cli-malformed-settings: a live start warns that the defaults are used'
+    $malPlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$malCliRoot)
+    Check ($malPlan.text -notlike '*not valid JSON*' -and $null -ne ($malPlan.text | ConvertFrom-Json)) 'cli-malformed-settings: plan -AsJson stays clean JSON'
     $setThinking=Invoke-StartTestCli @('settings','-Thinking','off','-InstallRoot',$cliRoot)
     Check ($setThinking.exit -eq 0 -and $setThinking.text -like '*thinking: off*') 'cli: settings -Thinking off writes the value and prints thinking: off'
     Check ((($setThinking.text -replace '\r','') -split "`n") -contains 'thinking: off') 'cli: the settings text has a thinking: line of its own'

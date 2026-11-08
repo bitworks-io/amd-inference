@@ -1010,14 +1010,13 @@ function Get-FastLlmUiLicenseDisclosure {
     }
 }
 
-# The API URL the window shows and copies. A run that is active reports its own endpoint, which may differ from the saved
-# setting (the port applies at the next start); otherwise the saved port is what the next start will use.
+# The API URL the window shows and copies. A run that is active reports its own port, which may differ from the saved
+# setting (the port applies at the next start); otherwise the saved port is what the next start will use. The address is always
+# rebuilt on 127.0.0.1 from the parsed port, never copied from the status.
 function Get-FastLlmUiApiUrl {
     param($Status,$Settings)
-    if ($Status -and $Status.PSObject.Properties['active'] -and [bool]$Status.active -and
-        $Status.PSObject.Properties['endpoint'] -and -not [string]::IsNullOrWhiteSpace([string]$Status.endpoint)) {
-        return [string]$Status.endpoint
-    }
+    $runningPort = Get-FastLlmUiRunningPort -Status $Status
+    if ($runningPort -ge 1024 -and $runningPort -le 65535) { return 'http://127.0.0.1:' + $runningPort + '/v1' }
     $port = 8080
     if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
         $parsed = 0
@@ -1044,6 +1043,51 @@ function Get-FastLlmUiChatUrl {
     $port = Get-FastLlmUiRunningPort -Status $Status
     if ($port -lt 1024 -or $port -gt 65535) { return $null }
     return 'http://127.0.0.1:' + $port + '/'
+}
+
+# True while a server this window can see is ready: a window-started (foreground) run whose status says ready, or a background run
+# that is active and whose status says ready. Anything else (nothing running, still loading, a stopped run) is false.
+function Test-FastLlmUiServingReady {
+    param($Status,[bool]$ForegroundChildActive,$BackgroundObservation)
+    if (-not $Status -or -not $Status.PSObject.Properties['active'] -or -not [bool]$Status.active) { return $false }
+    if (-not $Status.PSObject.Properties['phase'] -or [string]$Status.phase -cne 'ready') { return $false }
+    $backgroundActive = [bool]($BackgroundObservation -and $BackgroundObservation.PSObject.Properties['active'] -and [bool]$BackgroundObservation.active)
+    return [bool]($ForegroundChildActive -or $backgroundActive)
+}
+
+# The Open chat button: enabled, with its address, only while a run (foreground or background) is ready and was started with the chat page on.
+function Get-FastLlmUiChatButtonState {
+    param($Status,[bool]$ForegroundChildActive,$BackgroundObservation)
+    $url = $null
+    if (Test-FastLlmUiServingReady -Status $Status -ForegroundChildActive $ForegroundChildActive -BackgroundObservation $BackgroundObservation) {
+        $url = Get-FastLlmUiChatUrl -Status $Status
+    }
+    return @{ url = $url; enabled = [bool]$url }
+}
+
+# Which window actions are usable. A launch or install in progress locks the setup actions, but a ready server (foreground or background)
+# does not lock Settings, the API check or the support bundle: those only read, and the check runs as a separate side step.
+function Get-FastLlmUiActionAvailability {
+    param([bool]$LaunchInProgress,[bool]$Serving,[bool]$SideStepActive,[bool]$BackgroundOccupied)
+    return @{
+        settings = [bool](-not $LaunchInProgress)
+        apiCheck = [bool]($Serving -and -not $SideStepActive)
+        saveBundle = [bool](-not $LaunchInProgress -and -not $SideStepActive)
+        openLogs = $true
+        downloadedModels = $true
+        connectApp = $true
+    }
+}
+
+# The status line after Settings is saved. While a run is going, a changed value applies at the next start.
+function Get-FastLlmUiSettingsSavedNote {
+    param([bool]$RunActive,$Before,$After)
+    if ($RunActive) {
+        if ([int]$After.serverPort -ne [int]$Before.serverPort) { return 'The new port applies at the next start.' }
+        if ([string]$After.thinking -cne [string]$Before.thinking) { return 'The new thinking setting applies at the next start.' }
+        if ([string]$After.chatPage -cne [string]$Before.chatPage) { return 'The new chat page setting applies at the next start.' }
+    }
+    return 'Settings saved.'
 }
 
 # Shown when the user turns the chat page off. The browser may keep the page's cached files for the address, so the fix is on the browser side.
@@ -1073,7 +1117,7 @@ function New-FastLlmUiBackgroundRequest {
 function Get-FastLlmUiMalformedSettingsNotice {
     param($Settings)
     if ($Settings -and $Settings.PSObject.Properties['malformed'] -and [bool]$Settings.malformed) {
-        return 'settings.json is not valid JSON, so FastLLM is using the default port. Fix or delete the file to change settings.'
+        return 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.'
     }
     return ''
 }

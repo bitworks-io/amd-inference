@@ -129,6 +129,11 @@ function Set-FastLlmServingSettings {
     Move-FastLlmFileReplacing -Source $temporary -Destination $path
 }
 
+# The one line shown when settings.json cannot be read and the defaults are used instead.
+function Get-FastLlmServingMalformedWarning {
+    return 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.'
+}
+
 # Precedence: explicit parameter in -Bound, then settings (unless -IgnoreUserSettings), then the default.
 function Resolve-FastLlmServingOptions {
     param(
@@ -140,8 +145,10 @@ function Resolve-FastLlmServingOptions {
     $thinking = $script:FastLlmServingDefaultThinking
     $chatPage = $script:FastLlmServingDefaultChatPage
     $source = 'default'
+    $settingsMalformed = $false
     if (-not $IgnoreUserSettings) {
         $stored = Get-FastLlmServingSettings -InstallRoot $InstallRoot
+        $settingsMalformed = [bool]$stored.malformed
         if (-not $stored.malformed -and $stored.serverPort -ne $script:FastLlmServingDefaultPort) {
             $port = $stored.serverPort
             $source = 'settings'
@@ -168,5 +175,5 @@ function Resolve-FastLlmServingOptions {
         $chatPage = ConvertTo-FastLlmChatPage -Value $Bound['ChatPage']
         $source = 'parameter'
     }
-    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; source = $source }
+    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; source = $source; settingsMalformed = $settingsMalformed }
 }

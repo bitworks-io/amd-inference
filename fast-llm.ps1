@@ -314,6 +314,8 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $servingBound.ChatPage = $ChatPage }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
+    # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
+    if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and $servingOptions.settingsMalformed) { Write-Warning (Get-FastLlmServingMalformedWarning) }
     if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
     if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
     if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
