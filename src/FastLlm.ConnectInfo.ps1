@@ -8,6 +8,7 @@ Set-StrictMode -Version 2
 $script:FastLlmConnectAgentMinContext = 32768
 $script:FastLlmConnectResponsesLabel = '/v1/responses: partial at this engine version'
 $script:FastLlmConnectClaudeCodeNote = "Claude Code is designed for Anthropic's Claude models; results with a local model may vary."
+$script:FastLlmConnectUnknownContextNotice = 'FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts.'
 $script:FastLlmApiCheckNotReadyMessage = 'Start FastLLM and wait for Ready before running the API check.'
 $script:FastLlmApiCheckPrompt = 'Reply with one short word.'
 
@@ -31,7 +32,7 @@ $script:FastLlmConnectClients = @(
         template = @'
 Base URL: {BASE}
 Model: {MODEL}
-API key: any text (FastLLM sets no key)
+API key: any text (FastLLM's own fact: it sets no key, so any text works)
 {LIMIT}
 '@
     }
@@ -70,7 +71,7 @@ models:
         template = @'
 API Provider: OpenAI Compatible
 Base URL: {BASE}
-API Key: any text (FastLLM sets no key)
+API Key: any text (FastLLM's own fact: it sets no key, so any text works)
 Model: {MODEL}
 Model Configuration > Context Window (Cline: "Context Window size"): {CONTEXT}
 Roo Code's documentation says the model it uses must offer native tool calling.
@@ -89,7 +90,8 @@ Claude Code is designed for Anthropic's Claude models; results with a local mode
 PowerShell:
   $env:ANTHROPIC_BASE_URL = "{ANTHROPIC}"
   $env:ANTHROPIC_AUTH_TOKEN = "any-text"
-Model name FastLLM serves: {MODEL}. The Claude Code documentation describes how to select a model.
+(FastLLM's own fact: it sets no key, so any text works.)
+FastLLM serves the model as {MODEL}.
 {LIMIT}
 '@
     }
@@ -108,7 +110,8 @@ base_url = "{BASE}"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 
-Set OPENAI_API_KEY to any text (FastLLM sets no key).
+base_url ends in /v1 because FastLLM serves the Responses API at /v1/responses; the Codex documentation's example has no path.
+env_key names the environment variable that holds the key. FastLLM's own fact: it sets no key, so any text works as the value of OPENAI_API_KEY.
 /v1/responses: partial at this engine version
 {LIMIT}
 '@
@@ -121,7 +124,8 @@ function Get-FastLlmConnectProp {
     try {
         if ($Object -is [System.Collections.IDictionary]) { if ($Object.Contains($Name)) { return $Object[$Name] } else { return $null } }
         $property = $Object.PSObject.Properties[$Name]
-        if ($property) { return $property.Value }
+        # A one-element array must stay an array (the comma stops the pipeline from unrolling it).
+        if ($property) { $value = $property.Value; if ($value -is [array]) { return ,$value } else { return $value } }
     }
     catch { $null = $_ }
     return $null
@@ -173,6 +177,8 @@ function Get-FastLlmConnectionInfo {
     $baseUrl = 'http://127.0.0.1:' + $port + '/v1'
     $anthropicBaseUrl = 'http://127.0.0.1:' + $port
     $warning = Get-FastLlmConnectAgentWarning -ContextTokens $contextTokens
+    # Unknown context (not running, or an older status): a fixed notice stands in for the warning.
+    if ($null -eq $contextTokens) { $warning = $script:FastLlmConnectUnknownContextNotice }
 
     $limitLine = if ($null -ne $contextTokens) { 'Requests longer than ' + (Format-FastLlmConnectNumber -Value $contextTokens) + ' tokens are refused.' }
                  else { 'Requests longer than this setup''s context limit are refused. The limit is shown once FastLLM is running.' }
@@ -239,12 +245,12 @@ function Invoke-FastLlmApiCheck {
     }
     $message = @(@{ role = 'user'; content = $script:FastLlmApiCheckPrompt })
     $specs = @(
-        @{ path = '/v1/chat/completions'; shape = 'choices'; usage = @('prompt_tokens', 'completion_tokens')
+        @{ path = '/v1/chat/completions'; shape = 'choices'; key = 'message'; usage = @('prompt_tokens', 'completion_tokens')
            body = @{ model = $ModelName; messages = $message; max_tokens = 16; stream = $false } }
-        @{ path = '/v1/messages'; shape = 'content'; usage = @('input_tokens', 'output_tokens')
+        @{ path = '/v1/messages'; shape = 'content'; key = 'type'; usage = @('input_tokens', 'output_tokens')
            body = @{ model = $ModelName; messages = $message; max_tokens = 16; stream = $false } }
-        @{ path = '/v1/responses'; shape = 'output'; usage = @('input_tokens', 'output_tokens')
-           body = @{ model = $ModelName; input = $script:FastLlmApiCheckPrompt; max_output_tokens = 16; max_tokens = 16; stream = $false } }
+        @{ path = '/v1/responses'; shape = 'output'; key = 'type'; usage = @('input_tokens', 'output_tokens')
+           body = @{ model = $ModelName; input = $script:FastLlmApiCheckPrompt; max_output_tokens = 16; stream = $false } }
     )
     $checks = @()
     foreach ($spec in $specs) {
@@ -262,8 +268,14 @@ function Invoke-FastLlmApiCheck {
                 $parsed = $null
                 try { $parsed = ConvertFrom-Json ([string] (Get-FastLlmConnectProp $response 'Body')) } catch { $parsed = $null }
                 $shapeValue = Get-FastLlmConnectProp $parsed $spec.shape
-                # Structure only: an array of at least one element must be present. Its text is never read.
-                if ($null -ne $shapeValue -and $shapeValue -isnot [string] -and @($shapeValue).Count -ge 1) {
+                # Structure only (presence and type, never text): a non-empty array whose first element is an object holding the format's key.
+                $first = $null
+                if ($shapeValue -is [System.Collections.IList] -and $shapeValue.Count -ge 1) { $first = $shapeValue[0] }
+                $keyValue = $null
+                if ($first -is [pscustomobject]) { $keyValue = Get-FastLlmConnectProp $first $spec.key }
+                $keyOk = $false
+                if ($spec.key -ceq 'message') { $keyOk = ($keyValue -is [pscustomobject]) } else { $keyOk = ($keyValue -is [string] -and $keyValue.Length -ge 1) }
+                if ($keyOk) {
                     $passed = $true
                     $usage = Get-FastLlmApiCheckUsage -Parsed $parsed -PromptName $spec.usage[0] -CompletionName $spec.usage[1]
                     $promptTokens = $usage.prompt; $completionTokens = $usage.completion
@@ -318,7 +330,9 @@ function Invoke-FastLlmDoctorApiCheck {
 function Format-FastLlmApiCheckTable {
     param($Result)
     $lines = @('API format check (one short fixed prompt per format; nothing is kept):')
-    foreach ($check in @(Get-FastLlmConnectProp $Result 'checks')) {
+    $rows = Get-FastLlmConnectProp $Result 'checks'
+    if ($null -eq $rows) { $rows = @() }
+    foreach ($check in $rows) {
         $http = if ($null -ne $check.httpStatus) { 'HTTP ' + $check.httpStatus } else { 'no reply' }
         $tokens = if ($null -ne $check.promptTokens -or $null -ne $check.completionTokens) { ' | tokens in/out: ' + $check.promptTokens + '/' + $check.completionTokens } else { '' }
         $lines += ('{0,-22} {1,-5} {2}{3} | {4} ms' -f $check.endpoint, ([string] $check.status).ToUpperInvariant(), $http, $tokens, $check.elapsedMs)

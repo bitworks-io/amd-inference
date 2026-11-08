@@ -76,9 +76,9 @@ FastLLM serves an OpenAI-compatible API on this computer only. The **Connect an 
 - **Base URL:** `http://127.0.0.1:8080/v1`. If you changed the port (see Port), use that port. For Claude Code, the Anthropic base URL is the same address without `/v1`.
 - **Model name:** the name FastLLM serves for the running setup. Send exactly that name; `GET /v1/models` lists it, and `fast-llm.ps1 status` shows it as `connection.modelName`.
 - **Context limit:** this setup's context in tokens, shown as `connection.contextTokens` and in the Connect an app window. Requests longer than the limit are refused with an error.
-- **API key:** none is set, so any key string works. Use any text where an app asks for one.
+- **API key:** FastLLM sets none, so any key string works (this is FastLLM's own fact, not something a client's documentation says). Use any text where an app asks for one.
 
-**Short contexts and coding agents.** When the context limit is below 32,768 tokens, the window shows: "This setup's context is <n> tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." Chat and completion apps that send short requests are not affected by this.
+**Short contexts and coding agents.** When FastLLM is not running or the context limit is not known, the window shows: "FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts." When the context limit is below 32,768 tokens, the window shows: "This setup's context is <n> tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." Requests shorter than the limit fit; longer ones are refused.
 
 Endpoints on the base URL:
 
@@ -106,6 +106,8 @@ $env:ANTHROPIC_AUTH_TOKEN = "any-text"
 
 ```
 # Responses-format client (for example Codex), in config.toml. /v1/responses: partial at this engine version.
+# base_url ends in /v1 because FastLLM serves the Responses API at /v1/responses; the Codex documentation's example has no path.
+# env_key names the variable holding the key; FastLLM sets no key, so any text works as its value (FastLLM's own fact).
 model = "<the model name>"
 model_provider = "fastllm"
 

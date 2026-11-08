@@ -37,6 +37,9 @@ try {
     Check ($claude.snippet -notmatch '(?i)does not support|doesn''t support|not support') 'claude-code card does not contain "does not support"'
     Check ($claude.snippet.Contains('ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"')) 'claude-code card base URL has no /v1'
 
+    Check ($claude.snippet -notmatch 'documentation describes') 'claude-code card attributes no instruction to the docs'
+    Check ($claude.snippet.Contains('FastLLM serves the model as fastllm-test-model.')) 'claude-code card states only the served name'
+
     # responses-labelled-partial
     $responses=@($small.endpoints|Where-Object path -ceq '/v1/responses')[0]
     Check ($responses.label -ceq '/v1/responses: partial at this engine version') 'responses-labelled-partial: endpoint label'
@@ -56,6 +59,9 @@ try {
         Check ($text -match ('(?m)^\s*#.*'+[regex]::Escape([string]$constant.docUrl))) "every-card-has-doc-url: $($constant.id) URL also sits in a comment"
     }
 
+    Check ($codex.snippet.Contains("base_url ends in /v1 because FastLLM serves the Responses API at /v1/responses; the Codex documentation's example has no path.")) 'codex card labels the /v1 as FastLLM''s own reasoning'
+    Check ($codex.snippet.Contains("FastLLM's own fact: it sets no key")) 'codex card labels the any-text key as FastLLM''s own fact'
+
     # connection-follows-port
     $moved=Get-FastLlmConnectionInfo -Status (New-Status 18181 16384)
     Check ($moved.baseUrl -ceq 'http://127.0.0.1:18181/v1' -and $moved.anthropicBaseUrl -ceq 'http://127.0.0.1:18181') 'connection-follows-port: base URLs'
@@ -69,7 +75,11 @@ try {
     $r=Join-Path $work 'cfg'; New-Item -ItemType Directory -Path $r | Out-Null
     Set-FastLlmServingSettings -InstallRoot $r -ServerPort 19191
     $idle=Get-FastLlmConnectionInfo -Status ([pscustomobject]@{ phase='stopped'; active=$false }) -InstallRoot $r
-    Check ($idle.state -ceq 'not running' -and $idle.baseUrl -ceq 'http://127.0.0.1:19191/v1' -and $null -eq $idle.contextTokens -and $null -eq $idle.agentWarning -and $null -eq $idle.modelName) 'not running: configured endpoint, no context, no model'
+    Check ($idle.state -ceq 'not running' -and $idle.baseUrl -ceq 'http://127.0.0.1:19191/v1' -and $null -eq $idle.contextTokens -and $null -eq $idle.modelName) 'not running: configured endpoint, no context, no model'
+    $unknownNotice='FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts.'
+    Check ($idle.agentWarning -ceq $unknownNotice) 'unknown-context-notice: not running shows the fixed line'
+    Check ((ConvertTo-Json $idle -Depth 5).Contains('check the limit after FastLLM starts.')) 'unknown-context-notice: it is in the status JSON'
+    Check ($null -eq (Get-FastLlmConnectionInfo -Status (New-Status 8080 65536)).agentWarning -and $small.agentWarning -cne $unknownNotice) 'unknown-context-notice: known context never shows it'
     Check (@($idle.clients).Count -eq 6) 'not running: all cards still built'
 
     # estimated-setup-has-context
@@ -82,7 +92,7 @@ try {
     $old=[pscustomobject]@{ schemaVersion=1; runId='abc'; phase='ready'; active=$true; modelId='old-model'; endpoint='http://127.0.0.1:8080/v1' }
     $oldInfo=$null; $threw=$false
     try{ $oldInfo=Get-FastLlmConnectionInfo -Status $old }catch{ $threw=$true }
-    Check (-not $threw -and $oldInfo.modelName -ceq 'old-model' -and $null -eq $oldInfo.contextTokens -and $null -eq $oldInfo.agentWarning) 'connection-info-old-status: no exception, no context'
+    Check (-not $threw -and $oldInfo.modelName -ceq 'old-model' -and $null -eq $oldInfo.contextTokens -and $oldInfo.agentWarning -ceq $unknownNotice) 'connection-info-old-status: no exception, no context'
     foreach($bad in @($null,[pscustomobject]@{},[pscustomobject]@{active='yes';endpoint=5;modelId=7;recipe='x'},[pscustomobject]@{active=$true;endpoint='http://evil.example/v1';recipe=[pscustomobject]@{contextSize='many'}})){
         $threw=$false; $badInfo=$null
         try{ $badInfo=Get-FastLlmConnectionInfo -Status $bad }catch{ $threw=$true }
@@ -109,7 +119,7 @@ try {
     Check ($result.checks[0].promptTokens -eq 11 -and $result.checks[0].completionTokens -eq 3 -and $result.checks[1].promptTokens -eq 12 -and $result.checks[2].completionTokens -eq 5) 'api check: usage read per API shape'
     Check ((@($result.checks[0].PSObject.Properties.Name) -join ',') -ceq 'endpoint,status,httpStatus,promptTokens,completionTokens,elapsedMs') 'api check: only the six recorded fields'
     Check ((@($script:seen|ForEach-Object{$_[1]}) -join ',') -ceq '/v1/chat/completions,/v1/messages,/v1/responses' -and $script:seen[0][0] -ceq 'http://127.0.0.1:8080') 'api check: three formats in order against the host without /v1'
-    Check (@($script:seen|Where-Object{$_[2].stream -ne $false -or ($_[2].max_tokens -ne 16 -and $_[2].max_output_tokens -ne 16)}).Count -eq 0) 'api check: non-streaming with 16 tokens'
+    Check (@($script:seen|Where-Object{ $b=$_[2]; $cap=$(if($b.ContainsKey('max_tokens')){$b['max_tokens']}else{$b['max_output_tokens']}); $b['stream'] -ne $false -or $cap -ne 16 }).Count -eq 0) 'api check: non-streaming with 16 tokens'
     $logRoot=Join-Path $work 'logs'; New-Item -ItemType Directory -Path $logRoot | Out-Null
     $runId='aabbccdd11223344aabbccdd11223344'
     Write-FastLlmApiCheckRunLog -InstallRoot $logRoot -RunId $runId -Result $result
@@ -126,6 +136,22 @@ try {
         [pscustomobject]@{Status=200;Body='{"choices":[]}';ElapsedMs=1} }
     $bad=Invoke-FastLlmApiCheck -BaseUrl 'http://127.0.0.1:8080' -ModelName 'm' -Request $failMock
     Check ((@($bad.checks|ForEach-Object{$_.status}) -join ',') -ceq 'fail,fail,fail' -and $bad.checks[1].httpStatus -eq $null -and $bad.checks[2].httpStatus -eq 400 -and -not (ConvertTo-Json $bad -Depth 6).Contains($marker)) 'api check: empty choices, thrown error and HTTP 400 are fails and keep no text'
+
+    # structural pass criterion
+    foreach($case in @(
+        @{ body='{"choices":5}' },@{ body='{"choices":{}}' },@{ body='{"choices":[{}]}' },@{ body='{"choices":[]}' },@{ body='{"choices":["x"]}' },
+        @{ body='{"content":[{}]}' },@{ body='{"content":"x"}' },@{ body='{"output":[{}]}' },@{ body='{"output":7}' },@{ body='not json' })){
+        $script:caseBody=$case.body
+        $oneBad={ param($Root,$Path,$Body,$TimeoutMs) [pscustomobject]@{Status=200;Body=$script:caseBody;ElapsedMs=1} }
+        $r=Invoke-FastLlmApiCheck -BaseUrl 'http://127.0.0.1:8080' -ModelName 'm' -Request $oneBad
+        Check (@($r.checks|Where-Object status -ceq 'pass').Count -eq 0) "structural check: $($case.body) fails every format"
+    }
+    $partialOk={ param($Root,$Path,$Body,$TimeoutMs)
+        $b=switch($Path){ '/v1/chat/completions'{'{"choices":[{"message":{}}]}'} '/v1/messages'{'{"content":[{"type":"text"}]}'} '/v1/responses'{'{"output":[{"type":"message"}]}'} }
+        [pscustomobject]@{Status=200;Body=$b;ElapsedMs=1} }
+    $okResult=Invoke-FastLlmApiCheck -BaseUrl 'http://127.0.0.1:8080' -ModelName 'm' -Request $partialOk
+    Check (@($okResult.checks|Where-Object status -ceq 'pass').Count -eq 3) 'structural check: object with the expected key passes without any text'
+    Check (@($script:seen|Where-Object{$_[1] -ceq '/v1/responses'}|Where-Object{$_[2].ContainsKey('max_tokens')}).Count -eq 0 -and $script:seen[2][2].max_output_tokens -eq 16) 'responses body sends max_output_tokens only'
 
     # apicheck-refuses-when-not-ready
     $script:called=$false
