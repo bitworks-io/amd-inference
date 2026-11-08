@@ -38,8 +38,14 @@ Must-Reject ($sample + "`n" + ('x' * 8192)) 'Potentially truncated line must fai
 $source = Get-Content -LiteralPath (Join-Path $root 'tools/vulkan-capabilities.ps1') -Raw
 Check ($source.Contains("'--log-verbosity 5 --device Vulkan0 --log-disable --list-devices'") -and
        $source.Contains("@('--log-verbosity','5','--device','Vulkan0','--log-disable','--list-devices')")) 'Fixed arguments must enumerate Vulkan0 and drain queued debug rows before early list exit.'
-Check ($source.Contains('65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6') -and
-       ((Get-FileHash -LiteralPath (Join-Path $root 'config/catalog.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ceq '65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6')) 'Reviewed whole-catalog digest must pin the engine file manifest.'
+# This diagnostic stays pinned to the reviewed 2026-08-30 catalog (tests/fixtures/reviewed-catalog-2026-08-30.json).
+# The shipped catalog has changed since, so the diagnostic refuses it until it is re-reviewed and re-pinned.
+$reviewedCatalog = Join-Path $root 'tests/fixtures/reviewed-catalog-2026-08-30.json'
+$reviewedDigest = (Get-FileHash -LiteralPath $reviewedCatalog -Algorithm SHA256).Hash.ToLowerInvariant()
+$liveDigest = (Get-FileHash -LiteralPath (Join-Path $root 'config/catalog.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+Check ($reviewedDigest -ceq '65b8f2f9ca340dab273274086aba9e8f01cb14a2b8cf4bb65c5ed5f6e779caa6') 'The reviewed catalog fixture must keep its exact 2026-08-30 bytes.'
+Check ($source.Contains("-cne '$reviewedDigest'") -and $source.Contains('Private Vulkan capability collector requires its reviewed catalog digest.')) 'Reviewed whole-catalog digest must pin the engine file manifest.'
+Check ($liveDigest -cne $reviewedDigest) 'The shipped catalog differs from the reviewed one, so this diagnostic must refuse it until it is re-reviewed.'
 Check (([regex]::Matches($source,'Test-FastLlmEngineInstallation')).Count -ge 2) 'Exact installed file set must be verified before and after.'
 Check ($source.Contains('Test-FastLlmEnvironmentNameRequiresClearing') -and $source.Contains('New-FastLlmRuntimeSandbox')) 'Probe must reuse normal environment and config isolation.'
 Check ($source.Contains('Assert-FastLlmWindowsPrerequisites') -and $source.Contains('AMD_VULKAN_*') -and $source.Contains('normal-targeted-environment-plus-vulkan-vendor-overrides')) 'Native probe must check prerequisites and label extra vendor-environment clearing.'

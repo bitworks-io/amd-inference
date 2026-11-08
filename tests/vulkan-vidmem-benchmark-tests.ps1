@@ -73,7 +73,15 @@ try{
     $producer=Join-Path $temp 'FastLlm.Benchmark.ps1'
     Copy-Item -LiteralPath $v1 -Destination $producer
     $parser=Join-Path $root 'src/FastLlm.OffloadBenchmark.ps1'
-    $catalogFile=Join-Path $root 'config/catalog.json'
+    # Catalog fixture: the reviewed 2026-08-30 bytes the pins name. The shipped catalog has changed since, so the benchmark
+    # must refuse it until it is re-reviewed and re-pinned.
+    $catalogFile=Join-Path $root 'tests/fixtures/reviewed-catalog-2026-08-30.json'
+    $liveCatalog=Join-Path $root 'config/catalog.json'
+    Check ((Get-FileHash -LiteralPath $catalogFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $pins.catalogSha256) 'Reviewed catalog fixture does not satisfy the pin.'
+    Check ((Get-FileHash -LiteralPath $liveCatalog -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pins.catalogSha256) 'The shipped catalog is expected to differ from the reviewed one.'
+    $liveRefusal=$null
+    try{& $module {param($T,$B,$P,$S,$K) . $T;. $B;Assert-FastLlmVulkanVidmemPinnedInputs -ProducerPath $P -ParserPath $S -CatalogPath $K} $trial $benchmark $producer $parser $liveCatalog | Out-Null}catch{$liveRefusal=[string]$_.Exception.Message}
+    Check ($liveRefusal -ceq 'Catalog differs from the pinned reviewed hash; refusing.') "The shipped catalog was not refused as unreviewed: $liveRefusal"
     Check ((Get-FileHash -LiteralPath $producer -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $pins.producerSha256) 'Producer fixture does not satisfy the pin.'
     $runCore={param($Out,$Arm,$Ref,$Producer,$Parser,$Catalog,$Req)
         & $module {param($T,$B,$O,$R,$Q,$C,$A,$F,$P,$S,$K) . $T;. $B

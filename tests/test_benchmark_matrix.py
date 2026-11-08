@@ -23,7 +23,7 @@ class BenchmarkMatrixTests(unittest.TestCase):
     def test_all_serving_artifacts_and_requested_dimensions_are_explicit(self):
         models = self.catalog['models']
         rows = self.matrix['rows']
-        self.assertEqual(len(models), 10)
+        self.assertEqual(len(models), 11)
         self.assertEqual(len(rows), len(models) * 4 * 4 * 8)
         self.assertEqual({r['modelId'] for r in rows}, {m['id'] for m in models})
         self.assertEqual({r['concurrentRequests'] for r in rows}, {1, 2, 4, 8})
