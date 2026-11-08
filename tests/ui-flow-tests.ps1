@@ -1129,6 +1129,12 @@ Check ($malSettings.malformed -and $malRequest.serverPort -eq 8080) 'malformed s
 Check ((Get-FastLlmUiMalformedSettingsNotice -Settings $malSettings) -ceq 'settings.json is not valid JSON, so FastLLM is using the default port. Fix or delete the file to change settings.') 'malformed settings.json gives the notice'
 Check ((Get-FastLlmUiMalformedSettingsNotice -Settings ([pscustomobject]@{malformed=$false})) -ceq '') 'no notice for good settings'
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).serverPort -eq 18181) 'the request carries the saved port'
+Check ($malRequest.thinking -ceq 'auto') 'malformed settings.json: the background request uses thinking auto'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181;thinking='off'})).thinking -ceq 'off') 'the request carries the saved thinking off'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).thinking -ceq 'auto') 'a settings object without thinking gives auto'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{thinking='default'})).thinking -ceq 'auto') 'an unknown thinking value gives auto'
+Check ($uiText.Contains('Off: faster answers. Quality with thinking off is not measured by Bitworks.') -and $uiText.Contains('Auto (recommended)')) 'the Settings dialog carries the Thinking labels'
+Check ($uiText.Contains('-Thinking') -and $uiText.Contains('The new thinking setting applies at the next start.')) 'the Settings dialog saves Thinking and notes it applies at the next start'
 Remove-Item -LiteralPath $malRoot -Recurse -Force
 $settingsGate=$ui.Substring($ui.IndexOf('function SetBusy'));$settingsGate=$settingsGate.Substring(0,$settingsGate.IndexOf('function GetUiBackgroundStatus'))
 Check ($settingsGate.Contains('@($doctorButton,$driverButton,$settingsButton)){$control.Enabled=-not $Busy}') -and -not $settingsGate.Contains('$barBox,$settingsButton')) 'Settings is disabled only while a CLI step is busy, not while a run is active'

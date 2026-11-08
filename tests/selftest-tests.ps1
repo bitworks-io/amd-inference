@@ -62,4 +62,18 @@ foreach ($call in $completionCalls) {
     if (-not ($body.n_predict -eq 128 -and $body.temperature -eq 0 -and $body.seed -eq 42 -and $body.cache_prompt -eq $false -and $body.ignore_eos -eq $true -and $body.stream -eq $true -and @($body.prompt).Count -eq 512 -and $call.TimeoutMs -eq 120000)) { $pinned = $false }
 }
 Check $pinned 'every completion asks for 128 tokens, temperature 0, seed 42, no prompt cache, ignore_eos, streaming, a 512-token prompt, within 120000 ms'
+# selftest-unchanged: the self-test workload has no Thinking input, so its request bodies are identical whatever the Thinking setting is,
+# and it names no reasoning control. The bodies are captured once per setting through the request seam and compared.
+function Get-SelfTestBodies([string]$ThinkingSetting) {
+    $script:thinkingSetting = $ThinkingSetting
+    $script:bodies = New-Object 'System.Collections.Generic.List[string]'
+    $capture = { param($Path, $Body, $TimeoutMs) $script:bodies.Add($Path + '|' + ($Body | ConvertTo-Json -Depth 6 -Compress) + '|' + $TimeoutMs); if ($Path -eq '/tokenize') { [pscustomobject]@{ Status = 200; Body = (@{ tokens = $tokens } | ConvertTo-Json -Compress) } } else { Stream 128 } }
+    $null = & $module { param($req) Invoke-FastLlmSelfTest -BaseUrl 'http://127.0.0.1:1' -ContextSize 8192 -Expected $null -EngineBuild 'b10698' -MitigationEffective 'off' -Request $req } $capture
+    return @($script:bodies)
+}
+$autoBodies = Get-SelfTestBodies 'auto'
+$offBodies = Get-SelfTestBodies 'off'
+Check ($autoBodies.Count -eq 4 -and $offBodies.Count -eq 4 -and (($autoBodies -join "`n") -ceq ($offBodies -join "`n"))) 'selftest-unchanged: request bodies are identical with Thinking off and auto'
+Check (-not (($autoBodies -join "`n") -match 'reasoning|enable_thinking|chat_template_kwargs')) 'selftest-unchanged: no request body carries a reasoning control'
+Check (-not ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.SelfTest.ps1') -Raw) -match 'reasoning|enable_thinking|[Tt]hinking')) 'selftest-unchanged: the self-test source does not read or name the Thinking setting'
 Write-Host 'selftest-tests: PASS'

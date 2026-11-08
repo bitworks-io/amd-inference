@@ -446,6 +446,7 @@ function Start-FastLlmBackgroundHost {
           [ValidateRange(15,1800)][int]$ReadyTimeoutSeconds=420,
           [ValidateSet('off','on','auto')][string]$VulkanBarMitigation='auto',
           [int]$ServerPort=0,
+          [ValidateSet('auto','off')][string]$Thinking='auto',
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     if ($ServerPort -ne 0 -and ($ServerPort -lt 1024 -or $ServerPort -gt 65535)) { throw 'ServerPort must be 0 (catalog port) or 1024-65535.' }
@@ -461,7 +462,7 @@ function Start-FastLlmBackgroundHost {
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$requestId
         sourceRoot=$source;installRoot=$install;profile=$Profile;modelId=$ModelId
         contextSize=$ContextSize;allowExperimentalModel=[bool]$AllowExperimentalModel
-        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
     }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
@@ -535,6 +536,9 @@ function Invoke-FastLlmBackgroundServe {
             ($parsedPort -ne 0 -and ($parsedPort -lt 1024 -or $parsedPort -gt 65535))) { throw 'Background request serverPort is invalid.' }
         $requestedPort = $parsedPort
     }
+    # thinking is read tolerantly; a request written before the field existed, or with any other value, means auto.
+    $requestedThinking = 'auto'
+    if ($request.PSObject.Properties['thinking'] -and [string]$request.thinking -ceq 'off') { $requestedThinking = 'off' }
     Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
     $lease = $null
     $operation = $null
@@ -557,10 +561,12 @@ function Invoke-FastLlmBackgroundServe {
         Write-FastLlmState -InstallRoot $install -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action='start' })
         $catalog = Join-Path $source 'config\catalog.json'
         $hardware = Get-FastLlmHardware -CatalogPath $catalog -InstallRoot $install
+        $planOptions = @{}
+        if ($requestedThinking -ceq 'off') { $planOptions.Thinking = 'off' }
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
             -InstallRoot $install -ModelId ([string]$request.modelId) -ContextSize ([int]$request.contextSize) `
             -AllowExperimentalModel:([bool]$request.allowExperimentalModel) -ServerPort $requestedPort `
-            -ResolveFallback -RecipesPath (Join-Path $source 'config\recipes.json') -GpuVariantsPath (Join-Path $source 'config\gpu-variants.json')
+            -ResolveFallback -RecipesPath (Join-Path $source 'config\recipes.json') -GpuVariantsPath (Join-Path $source 'config\gpu-variants.json') @planOptions
         $plan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue $RequestId -Force
         $record.modelId = [string]$plan.model.id
         # The record carries the effective port (the plan endpoint's), so status and health follow what the run really serves on.

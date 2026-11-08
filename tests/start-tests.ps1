@@ -38,7 +38,7 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');if($script:startTestState.ContainsKey('probeFailAt') -and @($script:startTestState.events | Where-Object { $_ -ceq 'reprobe' }).Count -eq $script:startTestState.probeFailAt){throw 'simulated probe failure'};return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0)
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0,[string]$Thinking='auto')
             $script:startTestState.replanPort=$ServerPort;$script:startTestState.replanParams=@{};foreach($k in $PSBoundParameters.Keys){$script:startTestState.replanParams[$k]=$PSBoundParameters[$k]};$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
             if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
@@ -101,6 +101,19 @@ try {
     Start-FastLlmServer -Plan $portPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
     Check ($state.replanPort -eq 18181 -and $state.replanParams.ContainsKey('ServerPort') -and [int]$state.replanParams['ServerPort'] -eq 18181) 'replan-keeps-port: the forced re-plan is asked for 18181'
 
+    # replan-keeps-thinking: a forced re-plan keeps Off; a default (or old) plan re-plans without a Thinking parameter.
+    Check (-not $state.replanParams.ContainsKey('Thinking')) 'replan-keeps-thinking: a default plan re-plans without a Thinking parameter'
+    $thinkPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $thinkPlan | Add-Member -NotePropertyName requestedThinking -NotePropertyValue 'off' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $thinkPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanParams.ContainsKey('Thinking') -and [string]$state.replanParams['Thinking'] -ceq 'off') 'replan-keeps-thinking: the forced re-plan is asked for off'
+    $autoThinkPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $autoThinkPlan | Add-Member -NotePropertyName requestedThinking -NotePropertyValue 'auto' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $autoThinkPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check (-not $state.replanParams.ContainsKey('Thinking')) 'replan-keeps-thinking: an auto plan re-plans without a Thinking parameter'
+
     # replan-from-4gb-plan-json (R1): the BASE plan JSON has no requested* fields; it re-plans with no exception and keeps today's arguments.
     $basePlanJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
     Check (-not $basePlanJson.PSObject.Properties['requestedServerPort']) 'replan-from-4gb-plan-json: the fixture carries no requestedServerPort'
@@ -146,6 +159,21 @@ try {
     $settingsJson=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
     $settingsObject=$settingsJson.text | ConvertFrom-Json
     Check ($settingsObject.serverPort -eq 18181 -and $settingsObject.thinking -ceq 'auto' -and $settingsObject.chatPage -ceq 'off' -and $settingsObject.componentLicenses.mode -ceq 'ask') 'cli: settings -AsJson shows componentLicenses, serverPort, thinking and chatPage'
+    $setThinking=Invoke-StartTestCli @('settings','-Thinking','off','-InstallRoot',$cliRoot)
+    Check ($setThinking.exit -eq 0 -and $setThinking.text -like '*thinking: off*') 'cli: settings -Thinking off writes the value and prints thinking: off'
+    Check ((($setThinking.text -replace '\r','') -split "`n") -contains 'thinking: off') 'cli: the settings text has a thinking: line of its own'
+    Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"thinking": "off"*') 'cli: settings -AsJson reflects the stored thinking value'
+    $planThinkSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+    $thinkSavedArgs=@(($planThinkSaved.text | ConvertFrom-Json).serverArguments)
+    Check ($thinkSavedArgs[$thinkSavedArgs.Count-2] -ceq '--reasoning' -and $thinkSavedArgs[$thinkSavedArgs.Count-1] -ceq 'off') 'cli: the saved Off setting ends the plan arguments with --reasoning off'
+    $planThinkIgnored=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$cliRoot)
+    Check (@((($planThinkIgnored.text | ConvertFrom-Json).serverArguments) | Where-Object { $_ -ceq '--reasoning' }).Count -eq 0) 'cli: -IgnoreUserSettings plans no --reasoning argument'
+    $planThinkParam=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-Thinking','off','-InstallRoot',$cliRoot)
+    Check (((($planThinkParam.text | ConvertFrom-Json).serverArguments)[-1]) -ceq 'off') 'cli: an explicit -Thinking off applies even with -IgnoreUserSettings'
+    $badThinking=Invoke-StartTestCli @('settings','-Thinking','on','-InstallRoot',$cliRoot)
+    Check ($badThinking.exit -ne 0) 'cli: settings -Thinking on is refused'
+    $null=Invoke-StartTestCli @('settings','-Thinking','auto','-InstallRoot',$cliRoot)
+    Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"thinking": "auto"*') 'cli: settings -Thinking auto returns to auto'
     $badPort=Invoke-StartTestCli @('settings','-Port','80','-InstallRoot',$cliRoot)
     Check ($badPort.exit -ne 0 -and $badPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: settings -Port 80 exits non-zero with serving-settings-invalid-port'
     $fractionPort=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-ServerPort','18181.5','-InstallRoot',$cliRoot)

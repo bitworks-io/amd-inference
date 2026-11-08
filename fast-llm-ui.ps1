@@ -813,31 +813,39 @@ function ShowDriverGuidance($Diagnostic) {
 function ShowUiSettings {
     $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(420,200);$dialog.StartPosition='CenterParent'
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,260);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
     $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
     $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
     $portBox.Value=[decimal][int]$current.serverPort;$dialog.Controls.Add($portBox)
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(160,100);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(280,100);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(200,27);$thinkingLabel.UseMnemonic=$false;$dialog.Controls.Add($thinkingLabel)
+    $thinkingBox=New-Object Windows.Forms.ComboBox
+    $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
+    [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
+    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$dialog.Controls.Add($thinkingBox)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,160);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,160);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
         try{
-            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value)
+            $savedThinking=$(if($thinkingBox.SelectedIndex -eq 1){'off'}else{'auto'})
+            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking
             $script:settingsSavedPort=[int]$portBox.Value
+            $script:settingsSavedThinking=$savedThinking
             $dialog.DialogResult='OK';$dialog.Close()
         }catch{
             [void][Windows.Forms.MessageBox]::Show($dialog,[string]$_.Exception.Message,'FastLLM settings','OK','Warning')
         }
     })
     SetTrayMenuAvailable $false
-    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     if([string]$result -ceq 'OK'){
         $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
         if($runActive -and [int]$script:settingsSavedPort -ne [int]$current.serverPort){$statusLabel.Text='The new port applies at the next start.'}
+        elseif($runActive -and [string]$script:settingsSavedThinking -cne [string]$current.thinking){$statusLabel.Text='The new thinking setting applies at the next start.'}
         else{$statusLabel.Text='Settings saved.'}
     }
 }
@@ -854,12 +862,12 @@ function StartUiBackground {
         -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'

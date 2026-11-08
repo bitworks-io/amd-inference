@@ -163,9 +163,11 @@ try {
     $script:mockStateWrites = New-Object 'System.Collections.Generic.List[object]'
     function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
     function Get-FastLlmPlan {
-        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath,[int]$ServerPort = 0)
+        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath,[int]$ServerPort = 0,[string]$Thinking = 'auto')
         $script:mockResolveSeen.Add([bool]$ResolveFallback)
         $script:mockPlanPort = $ServerPort
+        $script:mockPlanThinking = $Thinking
+        $script:mockPlanThinkingBound = $PSBoundParameters.ContainsKey('Thinking')
         if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         if ($script:planMode -ceq 'hip-missing' -and -not [string]$ModelId) {
             if ($ResolveFallback) {
@@ -271,6 +273,20 @@ try {
     Invoke-FastLlmBackgroundServe -RequestId $oldPortId -InstallRoot $workerRoot -SourceRoot $source | Out-Null
     $oldPortRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($script:mockPlanPort -eq 0 -and $oldPortRecord.serverPort -eq 8080) 'A request without serverPort must plan at the catalog port and record 8080.'
+    # thinking-rides-the-request: thinking=off is planned as off; a request without the field (or an invalid value) plans with auto.
+    foreach($thinkCase in @(@{Id='97979797979797979797979797979797';Fields=@{thinking='off'};Expect='off'},@{Id='96969696969696969696969696969696';Fields=@{};Expect='auto'},@{Id='95959595959595959595959595959595';Fields=@{thinking='banana'};Expect='auto'},@{Id='94949494949494949494949494949494';Fields=@{thinking='auto'};Expect='auto'})){
+        $script:workerRequestId = $thinkCase.Id
+        $script:mockPlanThinking = 'unset'
+        $thinkRequest = [ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$thinkCase.Id;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30}
+        foreach($key in $thinkCase.Fields.Keys){ $thinkRequest[$key] = $thinkCase.Fields[$key] }
+        $thinkRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $thinkCase.Id + '.json')) -CreateNew -Value $thinkRequest
+        Invoke-FastLlmBackgroundServe -RequestId $thinkCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+        Assert-BackgroundTest ($script:mockPlanThinking -ceq $thinkCase.Expect -and ($script:mockPlanThinkingBound -eq ($thinkCase.Expect -ceq 'off'))) ('thinking-rides-the-request: request ' + ($thinkCase.Fields.Keys -join ',') + ' plans with ' + $thinkCase.Expect + ' (saw ' + $script:mockPlanThinking + ').')
+    }
     $script:planMode = ''
     $script:workerRequestId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')

@@ -86,6 +86,47 @@ try {
         Check ($portDiffs -eq 0) "plan-default-port-golden: -ServerPort $portCase equals the golden, every row, -ceq on every argument"
     }
 
+    # thinking-auto-golden: -Thinking auto reproduces the golden byte for byte, every row.
+    $autoLive=@(Get-FastLlmDefaultArgumentsMatrix -Root $root -InstallRoot (Join-Path $work 'install') -PlanParameters @{Thinking='auto'})
+    $autoDiffs=0
+    if($autoLive.Count -ne $goldenRows.Count){$autoDiffs=-1}
+    else{
+        for($i=0;$i -lt $goldenRows.Count;$i++){
+            $g=$goldenRows[$i];$l=$autoLive[$i]
+            $same=($g.outcome -ceq $l.outcome) -and ($g.refusal -ceq $l.refusal) -and ($g.recipeId -ceq $l.recipeId)
+            $ga=@($g.arguments);$la=@($l.arguments)
+            if($same -and $ga.Count -eq $la.Count){for($j=0;$j -lt $ga.Count;$j++){if(-not ($ga[$j] -ceq $la[$j])){$same=$false;break}}}else{$same=$false}
+            if(-not $same){$autoDiffs++}
+        }
+    }
+    Check ($autoDiffs -eq 0) 'thinking-auto-golden: -Thinking auto equals the golden, every row, -ceq on every argument'
+
+    # thinking-off-appends-one-flag: every plan row is the golden plus --reasoning off at the very end; non-plan rows are unchanged.
+    $offLive=@(Get-FastLlmDefaultArgumentsMatrix -Root $root -InstallRoot (Join-Path $work 'install') -PlanParameters @{Thinking='off'})
+    $offBad=0;$offPlanRows=0;$offSplitRows=0
+    Check ($offLive.Count -eq $goldenRows.Count) 'thinking-off-appends-one-flag: row count equals the golden'
+    for($i=0;$i -lt $goldenRows.Count;$i++){
+        $g=$goldenRows[$i];$l=$offLive[$i]
+        $ga=@($g.arguments);$la=@($l.arguments)
+        $same=($g.outcome -ceq $l.outcome) -and ($g.refusal -ceq $l.refusal) -and ($g.recipeId -ceq $l.recipeId)
+        if($g.outcome -ceq 'plan'){
+            $offPlanRows++;if($ga -ccontains '--tensor-split'){$offSplitRows++}
+            if($la.Count -ne $ga.Count+2){$same=$false}
+            else{
+                for($j=0;$j -lt $ga.Count;$j++){if(-not ($ga[$j] -ceq $la[$j])){$same=$false;break}}
+                if(-not (($la[$la.Count-2] -ceq '--reasoning') -and ($la[$la.Count-1] -ceq 'off'))){$same=$false}
+            }
+            if(@($la | Where-Object { $_ -ceq '--reasoning' }).Count -ne 1){$same=$false}
+        }
+        else{
+            if($la.Count -ne $ga.Count){$same=$false}
+            else{for($j=0;$j -lt $ga.Count;$j++){if(-not ($ga[$j] -ceq $la[$j])){$same=$false;break}}}
+        }
+        if(-not $same){$offBad++;Write-Host "DIFF off row $i tier=$($g.tier) request=$($g.request)"}
+    }
+    Check ($offBad -eq 0 -and $offPlanRows -gt 0) "thinking-off-appends-one-flag: $offPlanRows plan rows equal golden + --reasoning off at the end"
+    Check ($offSplitRows -ge 1) "thinking-off-appends-one-flag: $offSplitRows --tensor-split rows end with --reasoning off after the split"
+
     # plan-custom-port: only the --port value and the endpoint change; --host stays loopback.
     $portHardware=Read-FastLlmJson (Join-Path $root 'tests/fixtures/rx-7900-xtx-24gb.json')
     $portCommon=@{Hardware=$portHardware;CatalogPath=(Join-Path $root 'config/catalog.json');RecipesPath=(Join-Path $root 'config/recipes.json');GpuVariantsPath=(Join-Path $root 'config/gpu-variants.json');Profile='balanced';NoEngineExecution=$true;InstallRoot=(Join-Path $work 'install')}
@@ -117,7 +158,14 @@ try {
     $added=@($nowJson.PSObject.Properties.Name | Where-Object { -not $baseJson.PSObject.Properties[$_] })
     Check ($missing.Count -eq 0) 'plan-json-additive: every BASE property is still present'
     Check ($valueDiffs.Count -eq 0) ("plan-json-additive: every BASE property keeps its value ($($valueDiffs -join ','))")
-    Check (@($added | Where-Object { $_ -cnotin @('requestedServerPort','requestedThinking','requestedChatPage') }).Count -eq 0 -and $added -ccontains 'requestedServerPort') 'plan-json-additive: the only new property is requestedServerPort (of the three allowed)'
+    Check (@($added | Where-Object { $_ -cnotin @('requestedServerPort','requestedThinking','requestedChatPage') }).Count -eq 0 -and $added -ccontains 'requestedServerPort' -and $added -ccontains 'requestedThinking') 'plan-json-additive: the new properties are requestedServerPort and requestedThinking (of the three allowed)'
+    Check ([string]$basePlan.requestedThinking -ceq 'auto') 'plan-thinking: requestedThinking is auto by default'
+    $offPlan=Get-FastLlmPlan @portCommon -Thinking 'off'
+    Check ([string]$offPlan.requestedThinking -ceq 'off') 'plan-thinking: requestedThinking records off'
+    $thinkRejected=0
+    foreach($badThinking in @('on','x','banana')){try{Get-FastLlmPlan @portCommon -Thinking $badThinking | Out-Null}catch{$thinkRejected++}}
+    Check ($thinkRejected -eq 3) 'plan-thinking: the planner parameter is a closed set'
+    Check ([string](Get-FastLlmPlan @portCommon -Thinking 'OFF').requestedThinking -ceq 'off') 'plan-thinking: OFF is normalised to off'
     Write-Host "default-arguments-tests: $script:count checks passed"
 }
 finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }

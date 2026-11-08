@@ -73,6 +73,10 @@ FastLLM checks Resizable BAR (Smart Access Memory) at each start and works aroun
 
 The server listens on port 8080 by default. To change it, use Settings... in the window, or run `fast-llm.ps1 settings -Port <n>` (1024 to 65535); the change applies at the next start. The server always stays on 127.0.0.1, whatever the port. The diagnostic tools (semantic smoke, the concurrency benchmark, backend parity, the driver-module collector and the coopmat screen) need the default port 8080.
 
+## Thinking
+
+Thinking is Auto by default, and Auto leaves the server arguments exactly as they were. Settings... in the window (or `fast-llm.ps1 settings -Thinking off`) can turn it off. The choice reads "Off: faster answers. Quality with thinking off is not measured by Bitworks." and adds `--reasoning off` to the server arguments; the change applies at the next start. Benchmarks refuse a run started with thinking off, so set Thinking to Auto, start again, then benchmark. Each request can also ask for this itself, whatever the setting: send `reasoning_effort` or `chat_template_kwargs: {"enable_thinking": false}` in the request body.
+
 ## Uninstall
 
 Use Windows Settings, Apps, FastLLM. Downloaded models and engines are kept unless you choose to delete them when asked.

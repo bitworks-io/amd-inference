@@ -96,6 +96,11 @@ param(
     # instead of rounded; checked by ConvertTo-FastLlmServerPort. An explicit value wins over the saved setting.
     [string] $ServerPort,
 
+    # start, install, plan and settings: auto (default) leaves the server arguments unchanged; off appends --reasoning off.
+    # An explicit value wins over the saved setting; on settings it saves the value (auto removes it).
+    [ValidateSet('auto', 'off')]
+    [string] $Thinking,
+
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
 
@@ -260,14 +265,17 @@ $selectionOptions = @{
 # settings (unless -IgnoreUserSettings), then the default. The planner takes 0 for the catalog port, so the default plan call is unchanged.
 if ($PSBoundParameters.ContainsKey('ServerPort') -and $Action -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('Port') -and $Action -ne 'settings') { throw '-Port is supported only by settings.' }
+if ($PSBoundParameters.ContainsKey('Thinking') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
 if ($IgnoreUserSettings -and $Action -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('ServerPort')) { $null = ConvertTo-FastLlmServerPort -Value $ServerPort }
 if ($PSBoundParameters.ContainsKey('Port')) { $null = ConvertTo-FastLlmServerPort -Value $Port }
 if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     $servingBound = @{}
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $servingBound.ServerPort = $ServerPort }
+    if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
+    if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -458,6 +466,7 @@ try {
                 else { Set-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot -Mode 'ask' }
             }
             if ($PSBoundParameters.ContainsKey('Port')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ServerPort $Port }
+            if ($PSBoundParameters.ContainsKey('Thinking')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -Thinking $Thinking }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
             $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
             if ($AsJson) {
@@ -469,6 +478,7 @@ try {
                 }
                 else { Write-Host 'componentLicenses: ask' }
                 Write-Host "serverPort: $($servingState.serverPort)"
+                Write-Host "thinking: $($servingState.thinking)"
             }
         }
         'status' {

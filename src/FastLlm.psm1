@@ -1019,6 +1019,10 @@ function Get-FastLlmPlan {
         [ValidateRange(0, 65535)]
         [int] $ServerPort = 0,
 
+        # auto leaves today's arguments unchanged; off appends --reasoning off at the very end of the arguments.
+        [ValidateSet('auto', 'off')]
+        [string] $Thinking = 'auto',
+
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
 
@@ -1385,6 +1389,8 @@ function Get-FastLlmPlan {
         }
     }
     $deviceNames = @($selectedAdapters | ForEach-Object { [string] $_.device })
+    # ValidateSet ignores case; the comparisons below are exact.
+    $Thinking = $Thinking.ToLowerInvariant()
     # 0 = the catalog value. A requested port only replaces the number; the host stays the catalog loopback value.
     $effectiveServerPort = [string] $catalog.hardwarePolicy.serverPort
     if ($ServerPort -gt 0) { $effectiveServerPort = [string] $ServerPort }
@@ -1421,6 +1427,7 @@ function Get-FastLlmPlan {
     }
     # The pending form names no engine and no launch: nothing can start until the components are installed.
     if ($pendingState) { $arguments = @() }
+    elseif ($Thinking -ceq 'off') { $arguments += @('--reasoning', 'off') }
 
     $planDocument = [pscustomobject] [ordered] @{
         schemaVersion       = 1
@@ -1433,6 +1440,7 @@ function Get-FastLlmPlan {
         recovered           = [bool] ($Recovered -and $ModelId)
         requestedContextSize = $ContextSize
         requestedServerPort = $ServerPort
+        requestedThinking   = $Thinking
         allowExperimentalModel = [bool] $AllowExperimentalModel
         catalogContextSize  = $catalogContext
         performanceQualified = $false
@@ -3756,6 +3764,8 @@ function Start-FastLlmServer {
     $planServerPort = 0
     if ($Plan.PSObject.Properties['requestedServerPort'] -and $null -ne $Plan.requestedServerPort) { $planServerPort = [int] $Plan.requestedServerPort }
     if ($planServerPort -gt 0) { $freshRecipeOptions.ServerPort = $planServerPort }
+    # Added only for Off, so the default call keeps the exact parameter set it always had. A plan written before the setting existed is auto.
+    if ($Plan.PSObject.Properties['requestedThinking'] -and [string] $Plan.requestedThinking -ceq 'off') { $freshRecipeOptions.Thinking = 'off' }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
@@ -3840,6 +3850,7 @@ function Start-FastLlmServer {
             RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
         if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
         if ($Plan.PSObject.Properties['requestedServerPort'] -and $null -ne $Plan.requestedServerPort -and [int] $Plan.requestedServerPort -gt 0) { $fallbackPlanOptions.ServerPort = [int] $Plan.requestedServerPort }
+        if ($Plan.PSObject.Properties['requestedThinking'] -and [string] $Plan.requestedThinking -ceq 'off') { $fallbackPlanOptions.Thinking = 'off' }
         # From here on a failure is a failure of the fallback attempt: the CLI loop must not re-plan onto the HIP setup, repair its model or recover.
         try {
             $fallbackPlanOptions.Hardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot

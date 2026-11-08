@@ -1045,8 +1045,11 @@ function New-FastLlmUiBackgroundRequest {
         $parsed = 0
         if ([int]::TryParse([string]$Settings.serverPort,[ref]$parsed) -and $parsed -ge 1024 -and $parsed -le 65535) { $port = $parsed }
     }
+    # Thinking is read tolerantly: only a stored 'off' is carried; absent or anything else is auto.
+    $thinking = 'auto'
+    if ($Settings -and $Settings.PSObject.Properties['thinking'] -and [string]$Settings.thinking -ceq 'off') { $thinking = 'off' }
     return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
-        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port}
+        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking}
 }
 
 function Get-FastLlmUiMalformedSettingsNotice {

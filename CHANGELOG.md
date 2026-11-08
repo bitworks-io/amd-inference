@@ -4,6 +4,7 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+- **Optional Thinking setting:** Settings... in the window (and `fast-llm.ps1 settings -Thinking auto|off`, or `-Thinking off` on plan, install and start) can turn thinking off, which adds `--reasoning off` to the server arguments. Auto is the default and leaves today's arguments unchanged. Quality with thinking off is not measured by Bitworks, and benchmarks refuse a run started with it off.
 - **The port follows the setting everywhere:** the opt-in background host, the window and the status now use the configured loopback port. Settings... in the window changes it (as does `fast-llm.ps1 settings -Port <n>`), Copy API URL copies the running endpoint, and attaching to a background run refuses with `background-port-mismatch` if the run serves on a different port. The server stays on 127.0.0.1, and the diagnostic tools still need the default port 8080.
 - **4 GB cards get a model:** the preload set's 4 GB tier is now measured on an RX 6400: 3443 MiB free at idle, and 2419 MiB at the conservative budget. FastLLM now plans a model for both budgets:
   - Qwen3.5 4B IQ4_XS needs 3200 MiB free (previously 3400), from its measured peak plus the fit target;

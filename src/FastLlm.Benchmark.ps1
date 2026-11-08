@@ -1725,6 +1725,19 @@ function New-FastLlmBenchmarkFailureReport {
     }
 }
 
+# A Thinking setting is a user choice, never the recipe configuration: a run started with it off (or with any --reasoning argument) is not benchmarked.
+# state.thinking and requestedArguments are read tolerantly; a status written before the field existed is auto.
+function Assert-FastLlmBenchmarkDefaultSetup {
+    param($State)
+    $refusal = 'Benchmarks measure the default setup. Set Thinking to Auto, start again, then benchmark.'
+    if ($State.PSObject.Properties['thinking'] -and [string]$State.thinking -cne 'auto') { throw $refusal }
+    if ($State.recipe -and $State.recipe.PSObject.Properties['requestedArguments']) {
+        foreach ($argument in @($State.recipe.requestedArguments)) {
+            if (([string]$argument) -ceq '--reasoning' -or ([string]$argument).StartsWith('--reasoning=', [StringComparison]::Ordinal)) { throw $refusal }
+        }
+    }
+}
+
 function Invoke-FastLlmBenchmark {
     [CmdletBinding()]
     param([string]$InstallRoot,[string]$OutputPath,[int[]]$PromptTokens=@(512,4096),[ValidateRange(1,1024)][int]$GenerationTokens=128,[ValidateRange(5,100)][int]$Repetitions=5,
@@ -1740,6 +1753,7 @@ function Invoke-FastLlmBenchmark {
     $adlxConfigured=Assert-FastLlmBenchmarkAdlxConfig $AdlxExecutablePath $AdlxExecutableSha256 -Optional:$AdlxOptional
     $state=Get-FastLlmStatus $InstallRoot
     if(-not $state.active -or $state.phase -ne 'ready' -or -not $state.recipe){throw 'Start a supervised FastLLM server and wait for ready before benchmarking.'}
+    Assert-FastLlmBenchmarkDefaultSetup -State $state
     foreach($length in $PromptTokens){if($length -lt 16 -or $length+$GenerationTokens+8 -gt $state.recipe.contextSize){throw 'Requested prompt/output exceeds the effective context budget.'}}
     if(Test-Path -LiteralPath $OutputPath){throw 'Benchmark output already exists; choose a new result file.'}
     $benchLockPath=Join-Path (Get-FastLlmStateRoot $InstallRoot) 'benchmark.lock'

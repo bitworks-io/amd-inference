@@ -83,6 +83,34 @@ try {
     Check ($x.thinking -ceq 'auto' -and $x.chatPage -ceq 'off') 'resolve-precedence: thinking and chatPage defaults'
     Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{ServerPort=80} } 'serving-settings-invalid-port'
 
+    # thinking-settings-roundtrip: Off is stored, Auto removes the key, an invalid value throws, unknown keys survive.
+    $r=Join-Path $work 'thinking'; New-Item -ItemType Directory -Path $r | Out-Null
+    Write-Utf8 (Join-Path $r 'settings.json') '{"x":1,"serverPort":18181}'
+    Set-FastLlmServingSettings -InstallRoot $r -Thinking 'off'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check ($o.thinking -ceq 'off' -and $o.x -eq 1 -and $o.serverPort -eq 18181) 'thinking-settings-roundtrip: off is stored beside the other keys'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).thinking -ceq 'off') 'thinking-settings-roundtrip: Get reads off'
+    Set-FastLlmServingSettings -InstallRoot $r -Thinking 'auto'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'thinking') -and $o.x -eq 1 -and $o.serverPort -eq 18181) 'thinking-settings-roundtrip: auto removes the key'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).thinking -ceq 'auto') 'thinking-settings-roundtrip: Get reads auto'
+    foreach($bad in 'on','OFF','','banana',$null){ Throws { Set-FastLlmServingSettings -InstallRoot $r -Thinking $bad } 'serving-settings-invalid-thinking' }
+    foreach($bogus in '{"thinking":"on"}','{"thinking":"OFF"}','{"thinking":1}','{"thinking":null}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).thinking -ceq 'auto') "thinking-settings-roundtrip: stored $bogus reads as auto"
+    }
+    Write-Utf8 (Join-Path $r 'settings.json') '{"thinking":"off"}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.thinking -ceq 'off') 'thinking-resolve: settings give off'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Thinking='auto'}
+    Check ($x.thinking -ceq 'auto') 'thinking-resolve: an explicit parameter wins over settings'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{} -IgnoreUserSettings
+    Check ($x.thinking -ceq 'auto') 'thinking-resolve: ignore settings gives auto'
+    Write-Utf8 (Join-Path $r 'settings.json') '{}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Thinking='off'}
+    Check ($x.thinking -ceq 'off') 'thinking-resolve: an explicit off applies with no settings'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Thinking='maybe'} } 'serving-settings-invalid-thinking'
+
     # tripwire-plan-reads-no-settings
     $watched='FastLlm.psm1','FastLlm.Runtime.ps1','FastLlm.Preload.ps1','FastLlm.Recipes.ps1','FastLlm.RunLog.ps1','FastLlm.ModelStore.ps1'
     foreach($name in $watched){
