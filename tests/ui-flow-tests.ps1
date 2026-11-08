@@ -1118,4 +1118,18 @@ $uiText=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
 Check (-not $uiText.Contains("SetText('http://127.0.0.1:8080/v1')")) 'Copy API URL no longer hardcodes the port'
 Check ($uiText.Contains('$rowSlotX=@(24,162,300,438,576,714)')) 'the button row slot positions are declared once'
 
+# A malformed settings file reads as defaults; the background request still gets the default port, with a notice.
+$malRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mal-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $malRoot|Out-Null
+. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+Set-Content -LiteralPath (Join-Path $malRoot 'settings.json') -Value '{not json' -Encoding ascii
+$malSettings=Get-FastLlmServingSettings -InstallRoot $malRoot
+$malRequest=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $malRoot -ModelId $null -ContextSize 0 -BarMitigation 'auto' -Settings $malSettings
+Check ($malSettings.malformed -and $malRequest.serverPort -eq 8080) 'malformed settings.json: the background request uses the default port without throwing'
+Check ((Get-FastLlmUiMalformedSettingsNotice -Settings $malSettings) -ceq 'settings.json is not valid JSON, so FastLLM is using the default port. Fix or delete the file to change settings.') 'malformed settings.json gives the notice'
+Check ((Get-FastLlmUiMalformedSettingsNotice -Settings ([pscustomobject]@{malformed=$false})) -ceq '') 'no notice for good settings'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).serverPort -eq 18181) 'the request carries the saved port'
+Remove-Item -LiteralPath $malRoot -Recurse -Force
+$settingsGate=$ui.Substring($ui.IndexOf('function SetBusy'));$settingsGate=$settingsGate.Substring(0,$settingsGate.IndexOf('function GetUiBackgroundStatus'))
+Check ($settingsGate.Contains('@($doctorButton,$driverButton,$settingsButton)){$control.Enabled=-not $Busy}') -and -not $settingsGate.Contains('$barBox,$settingsButton')) 'Settings is disabled only while a CLI step is busy, not while a run is active'
 Write-Output "UI flow tests passed: $checks"

@@ -1035,3 +1035,24 @@ function Get-FastLlmUiRunningPort {
     if ([Uri]::TryCreate([string]$Status.endpoint,[UriKind]::Absolute,[ref]$uri)) { return [int]$uri.Port }
     return 0
 }
+
+# The background start request. A malformed settings file reads as defaults (the caller shows the notice); start still works.
+function New-FastLlmUiBackgroundRequest {
+    param([Parameter(Mandatory=$true)][string]$SourceRoot,[Parameter(Mandatory=$true)][string]$InstallRoot,
+          $ModelId,[int]$ContextSize,[string]$BarMitigation,[Parameter(Mandatory=$true)]$Settings)
+    $port = 8080
+    if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
+        $parsed = 0
+        if ([int]::TryParse([string]$Settings.serverPort,[ref]$parsed) -and $parsed -ge 1024 -and $parsed -le 65535) { $port = $parsed }
+    }
+    return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
+        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port}
+}
+
+function Get-FastLlmUiMalformedSettingsNotice {
+    param($Settings)
+    if ($Settings -and $Settings.PSObject.Properties['malformed'] -and [bool]$Settings.malformed) {
+        return 'settings.json is not valid JSON, so FastLLM is using the default port. Fix or delete the file to change settings.'
+    }
+    return ''
+}

@@ -278,8 +278,8 @@ function SetBusy([bool]$Busy) {
     $Busy=[bool]($Busy -or $script:updateRun)
     $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
         $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox,$settingsButton)){$control.Enabled=(-not $Busy -and -not $occupied)}
-    foreach($control in @($doctorButton,$driverButton)){$control.Enabled=-not $Busy}
+    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
+    foreach($control in @($doctorButton,$driverButton,$settingsButton)){$control.Enabled=-not $Busy}
     $chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)
     $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
         (Test-FastLlmUiBackgroundMayStart -State $script:bgState))
@@ -849,9 +849,9 @@ function StartUiBackground {
     if($script:lastUserStoppedRequestId){SaveUserStoppedBackgroundRequestId ''}
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $serving=Get-FastLlmServingSettings -InstallRoot $script:installPath
-    if($serving.malformed){throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.'}
-    $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
-        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue);serverPort=[int]$serving.serverPort}
+    $settingsNotice=Get-FastLlmUiMalformedSettingsNotice -Settings $serving
+    $request=New-FastLlmUiBackgroundRequest -SourceRoot $PSScriptRoot -InstallRoot $script:installPath -ModelId $selectedModel `
+        -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
         & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port)
@@ -864,6 +864,7 @@ function StartUiBackground {
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
     $output.Text='This optional background mode is not a Windows service or auto-start task. Keep this user signed in; re-open FastLLM to attach later.'
+    if($settingsNotice){$output.Text=$settingsNotice+"`r`n`r`n"+$output.Text;$statusLabel.Text=$settingsNotice}
     SetBusy $false
     return $launched
 }
