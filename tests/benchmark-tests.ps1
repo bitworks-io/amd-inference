@@ -91,6 +91,17 @@ $readyOld=[pscustomobject]@{active=$true;phase='ready';recipe=[pscustomobject]@{
 Check ($null -eq (Get-ThinkingRefusal $readyOld)) 'old-status-without-thinking: a ready state with no thinking field passes the check with no exception'
 $readyOldNoArgs=[pscustomobject]@{active=$true;phase='ready';recipe=[pscustomobject]@{contextSize=32768}}
 Check ($null -eq (Get-ThinkingRefusal $readyOldNoArgs)) 'old-status-without-thinking: a recipe with no requestedArguments passes too'
+# benchmark-refuses-chat-page: a run started with the local chat page on is never benchmarked.
+$chatMessage='Benchmarks measure the default setup. Turn the local chat page off, start again, then benchmark.'
+$readyChatOff=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+$readyChatOn=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='on';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+$readyNoUiGone=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=@('--model','<verified-model>','--port','8080','--no-agent')}}
+Check ($null -eq (Get-ThinkingRefusal $readyChatOff)) 'benchmark-refuses-chat-page: an off ready state is accepted'
+Check ((Get-ThinkingRefusal $readyChatOn) -ceq $chatMessage) 'benchmark-refuses-chat-page: state.chatPage on throws the exact message'
+Check ((Get-ThinkingRefusal $readyNoUiGone) -ceq $chatMessage) 'benchmark-refuses-chat-page: requestedArguments without --no-ui throws the exact message'
+# old-status-without-new-fields (R1): a status from the 4 GB release has no thinking and no chatPage field; the check passes with no StrictMode exception.
+$readyOldBoth=[pscustomobject]@{active=$true;phase='ready';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+Check ($null -eq (Get-ThinkingRefusal $readyOldBoth)) 'old-status-without-new-fields: a ready state with no thinking or chatPage field passes the check'
 # The refusal runs inside Invoke-FastLlmBenchmark right after the ready check and before the context budget, the lock and every request.
 $benchSource=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/FastLlm.Benchmark.ps1') -Raw
 $readyAt=$benchSource.IndexOf("throw 'Start a supervised FastLLM server and wait for ready before benchmarking.'")

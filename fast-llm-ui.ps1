@@ -97,6 +97,9 @@ $backgroundCheckButton=ButtonAt 'Recheck background' 340 303 160
 $componentsButton=ButtonAt 'Components' 508 303 120
 $chooseButton=ButtonAt 'Choose another setup' 636 303 184
 $settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
+$openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $rowWidth
+$openChatButton.Enabled=$false
+$script:chatUrl=$null
 # A chooser pick is pinned for the preview and the start of that workflow only; the plain Install / Start buttons clear it.
 $script:previewReady=$false
 $script:chosenRecipe=$null
@@ -293,6 +296,7 @@ function SetBusy([bool]$Busy) {
     $stopButton.Enabled=($null -eq $script:vcBroker -and -not $script:bgStopRequested -and
         ($script:child -or $script:bgState.attachedRequestId -or -not $occupied))
     $trayButton.Enabled=($null -eq $script:vcBroker)
+    $openChatButton.Enabled=[bool]$script:chatUrl
     $progress.Visible=$Busy
 }
 function GetUiBackgroundStatus([switch]$SkipHealth) {
@@ -337,9 +341,11 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
         $statusLabel.Text='Background launch needs attention. Review Diagnostics before another start.'
     }
     if($script:bgState.observation -and -not $script:bgState.observation.active){$script:bgStopRequested=$false}
+    try{$script:chatUrl=Get-FastLlmUiChatUrl -Status (GetUiBackgroundRunStatus)}catch{$script:chatUrl=$null}
     SetBusy ([bool]($script:child -or $script:vcBroker))
 }
 function SetUiBackgroundUnknown {
+    $script:chatUrl=$null
     $script:bgState.observation=[pscustomobject]@{phase='occupied-unverified';active=$false;attachable=$false;occupied=$true}
     $script:bgState.attention='Background ownership could not be verified. Review Diagnostics; start and stop are disabled.'
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
@@ -824,6 +830,8 @@ function ShowUiSettings {
     $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
     [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
     $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$dialog.Controls.Add($thinkingBox)
+    $chatBox=New-Object Windows.Forms.CheckBox;$chatBox.Text='Local chat page (off by default)';$chatBox.Location=New-Object Drawing.Point(20,104);$chatBox.Size=New-Object Drawing.Size(510,27)
+    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$dialog.Controls.Add($chatBox)
     $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,160);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
     $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,160);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
@@ -831,7 +839,8 @@ function ShowUiSettings {
     $saveButton.Add_Click({
         try{
             $savedThinking=$(if($thinkingBox.SelectedIndex -eq 1){'off'}else{'auto'})
-            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking
+            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'})
+            $script:settingsSavedChatPage=$(if($chatBox.Checked){'on'}else{'off'})
             $script:settingsSavedPort=[int]$portBox.Value
             $script:settingsSavedThinking=$savedThinking
             $dialog.DialogResult='OK';$dialog.Close()
@@ -840,13 +849,17 @@ function ShowUiSettings {
         }
     })
     SetTrayMenuAvailable $false
-    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     if([string]$result -ceq 'OK'){
         $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
         if($runActive -and [int]$script:settingsSavedPort -ne [int]$current.serverPort){$statusLabel.Text='The new port applies at the next start.'}
         elseif($runActive -and [string]$script:settingsSavedThinking -cne [string]$current.thinking){$statusLabel.Text='The new thinking setting applies at the next start.'}
+        elseif($runActive -and [string]$script:settingsSavedChatPage -cne [string]$current.chatPage){$statusLabel.Text='The new chat page setting applies at the next start.'}
         else{$statusLabel.Text='Settings saved.'}
+        if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
+            $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
+        }
     }
 }
 function StartUiBackground {
@@ -862,12 +875,12 @@ function StartUiBackground {
         -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
@@ -1233,6 +1246,12 @@ $form.Add_Shown({try{StartUiStartupChecks}catch{}})
 $copyButton.Add_Click({
     try{[Windows.Forms.Clipboard]::SetText((Get-FastLlmUiApiUrl -Status (GetUiBackgroundRunStatus) -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)))}
     catch{$statusLabel.Text='The API URL could not be copied: '+$_.Exception.Message}
+})
+$openChatButton.Add_Click({
+    try{
+        $chatUrl=Get-FastLlmUiChatUrl -Status (GetUiBackgroundRunStatus)
+        if($chatUrl){Start-Process $chatUrl}else{$statusLabel.Text='The chat page is available only while a run started with the local chat page is running.'}
+    }catch{$statusLabel.Text='The chat page could not be opened: '+$_.Exception.Message}
 })
 $settingsButton.Add_Click({try{ShowUiSettings}catch{ShowFailure $_.Exception.Message}})
 $stopButton.Add_Click({try{StopUiOperation}catch{ShowFailure $_.Exception.Message}})

@@ -447,6 +447,7 @@ function Start-FastLlmBackgroundHost {
           [ValidateSet('off','on','auto')][string]$VulkanBarMitigation='auto',
           [int]$ServerPort=0,
           [ValidateSet('auto','off')][string]$Thinking='auto',
+          [ValidateSet('off','on')][string]$ChatPage='off',
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     if ($ServerPort -ne 0 -and ($ServerPort -lt 1024 -or $ServerPort -gt 65535)) { throw 'ServerPort must be 0 (catalog port) or 1024-65535.' }
@@ -462,7 +463,7 @@ function Start-FastLlmBackgroundHost {
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$requestId
         sourceRoot=$source;installRoot=$install;profile=$Profile;modelId=$ModelId
         contextSize=$ContextSize;allowExperimentalModel=[bool]$AllowExperimentalModel
-        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant();sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
     }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
@@ -539,6 +540,9 @@ function Invoke-FastLlmBackgroundServe {
     # thinking is read tolerantly; a request written before the field existed, or with any other value, means auto.
     $requestedThinking = 'auto'
     if ($request.PSObject.Properties['thinking'] -and [string]$request.thinking -ceq 'off') { $requestedThinking = 'off' }
+    # chatPage is read the same way: only 'on' turns the page on.
+    $requestedChatPage = 'off'
+    if ($request.PSObject.Properties['chatPage'] -and [string]$request.chatPage -ceq 'on') { $requestedChatPage = 'on' }
     Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
     $lease = $null
     $operation = $null
@@ -563,6 +567,7 @@ function Invoke-FastLlmBackgroundServe {
         $hardware = Get-FastLlmHardware -CatalogPath $catalog -InstallRoot $install
         $planOptions = @{}
         if ($requestedThinking -ceq 'off') { $planOptions.Thinking = 'off' }
+        if ($requestedChatPage -ceq 'on') { $planOptions.ChatPage = 'on' }
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
             -InstallRoot $install -ModelId ([string]$request.modelId) -ContextSize ([int]$request.contextSize) `
             -AllowExperimentalModel:([bool]$request.allowExperimentalModel) -ServerPort $requestedPort `

@@ -38,7 +38,7 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');if($script:startTestState.ContainsKey('probeFailAt') -and @($script:startTestState.events | Where-Object { $_ -ceq 'reprobe' }).Count -eq $script:startTestState.probeFailAt){throw 'simulated probe failure'};return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0,[string]$Thinking='auto')
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0,[string]$Thinking='auto',[string]$ChatPage='off')
             $script:startTestState.replanPort=$ServerPort;$script:startTestState.replanParams=@{};foreach($k in $PSBoundParameters.Keys){$script:startTestState.replanParams[$k]=$PSBoundParameters[$k]};$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
             if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
@@ -114,6 +114,19 @@ try {
     Start-FastLlmServer -Plan $autoThinkPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
     Check (-not $state.replanParams.ContainsKey('Thinking')) 'replan-keeps-thinking: an auto plan re-plans without a Thinking parameter'
 
+    # replan-keeps-chatpage: a forced re-plan keeps On; a default (or old) plan re-plans without a ChatPage parameter.
+    Check (-not $state.replanParams.ContainsKey('ChatPage')) 'replan-keeps-chatpage: a default plan re-plans without a ChatPage parameter'
+    $chatPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $chatPlan | Add-Member -NotePropertyName requestedChatPage -NotePropertyValue 'on' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $chatPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanParams.ContainsKey('ChatPage') -and [string]$state.replanParams['ChatPage'] -ceq 'on') 'replan-keeps-chatpage: the forced re-plan is asked for on'
+    $offChatPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $offChatPlan | Add-Member -NotePropertyName requestedChatPage -NotePropertyValue 'off' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $offChatPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check (-not $state.replanParams.ContainsKey('ChatPage')) 'replan-keeps-chatpage: an off plan re-plans without a ChatPage parameter'
+
     # replan-from-4gb-plan-json (R1): the BASE plan JSON has no requested* fields; it re-plans with no exception and keeps today's arguments.
     $basePlanJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
     Check (-not $basePlanJson.PSObject.Properties['requestedServerPort']) 'replan-from-4gb-plan-json: the fixture carries no requestedServerPort'
@@ -174,6 +187,33 @@ try {
     Check ($badThinking.exit -ne 0) 'cli: settings -Thinking on is refused'
     $null=Invoke-StartTestCli @('settings','-Thinking','auto','-InstallRoot',$cliRoot)
     Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"thinking": "auto"*') 'cli: settings -Thinking auto returns to auto'
+    # chatpage CLI: saved, ignored, explicit and invalid; the text line; case normalisation (carried items 1 and 2).
+    $setChat=Invoke-StartTestCli @('settings','-ChatPage','on','-InstallRoot',$cliRoot)
+    Check ($setChat.exit -eq 0 -and ((($setChat.text -replace '\r','') -split "`n") -contains 'chatPage: on')) 'cli: settings -ChatPage on writes the value and prints a chatPage: line of its own'
+    Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"chatPage": "on"*') 'cli: settings -AsJson reflects the stored chatPage value'
+    $planChatSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+    $chatSavedJson=$planChatSaved.text | ConvertFrom-Json
+    Check (@($chatSavedJson.serverArguments | Where-Object { $_ -ceq '--no-ui' }).Count -eq 0 -and @($chatSavedJson.serverArguments) -ccontains '--no-agent' -and $chatSavedJson.requestedChatPage -ceq 'on') 'cli: the saved On setting plans without --no-ui and keeps --no-agent'
+    $planChatIgnored=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$cliRoot)
+    $chatIgnoredJson=$planChatIgnored.text | ConvertFrom-Json
+    Check (@($chatIgnoredJson.serverArguments) -ccontains '--no-ui' -and $chatIgnoredJson.requestedChatPage -ceq 'off') 'cli: -IgnoreUserSettings plans with --no-ui'
+    $planChatOff=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-ChatPage','off','-InstallRoot',$cliRoot)
+    Check (@(($planChatOff.text | ConvertFrom-Json).serverArguments) -ccontains '--no-ui') 'cli: an explicit -ChatPage off wins over the saved On'
+    $null=Invoke-StartTestCli @('settings','-ChatPage','off','-InstallRoot',$cliRoot)
+    $planChatParam=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-ChatPage','on','-InstallRoot',$cliRoot)
+    Check (@(($planChatParam.text | ConvertFrom-Json).serverArguments | Where-Object { $_ -ceq '--no-ui' }).Count -eq 0) 'cli: an explicit -ChatPage on applies even with -IgnoreUserSettings'
+    $badChat=Invoke-StartTestCli @('settings','-ChatPage','auto','-InstallRoot',$cliRoot)
+    Check ($badChat.exit -ne 0) 'cli: settings -ChatPage auto is refused'
+    # Case: the CLI lower-cases after binding, so ON and OFF give the setting instead of an error.
+    $upperChat=Invoke-StartTestCli @('settings','-ChatPage','ON','-InstallRoot',$cliRoot)
+    Check ($upperChat.exit -eq 0 -and $upperChat.text -like '*chatPage: on*') 'cli-case: settings -ChatPage ON saves on'
+    $upperThinking=Invoke-StartTestCli @('settings','-Thinking','OFF','-InstallRoot',$cliRoot)
+    Check ($upperThinking.exit -eq 0 -and $upperThinking.text -like '*thinking: off*') 'cli-case: settings -Thinking OFF saves off'
+    $upperPlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-Thinking','OFF','-ChatPage','ON','-InstallRoot',$cliRoot)
+    $upperJson=$upperPlan.text | ConvertFrom-Json
+    Check ($upperPlan.exit -eq 0 -and $upperJson.requestedThinking -ceq 'off' -and $upperJson.requestedChatPage -ceq 'on') 'cli-case: plan -Thinking OFF -ChatPage ON applies both'
+    $null=Invoke-StartTestCli @('settings','-ChatPage','off','-Thinking','auto','-InstallRoot',$cliRoot)
+    Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"chatPage": "off"*') 'cli: settings -ChatPage off returns to off'
     $badPort=Invoke-StartTestCli @('settings','-Port','80','-InstallRoot',$cliRoot)
     Check ($badPort.exit -ne 0 -and $badPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: settings -Port 80 exits non-zero with serving-settings-invalid-port'
     $fractionPort=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-ServerPort','18181.5','-InstallRoot',$cliRoot)

@@ -158,7 +158,7 @@ try {
     $added=@($nowJson.PSObject.Properties.Name | Where-Object { -not $baseJson.PSObject.Properties[$_] })
     Check ($missing.Count -eq 0) 'plan-json-additive: every BASE property is still present'
     Check ($valueDiffs.Count -eq 0) ("plan-json-additive: every BASE property keeps its value ($($valueDiffs -join ','))")
-    Check (@($added | Where-Object { $_ -cnotin @('requestedServerPort','requestedThinking','requestedChatPage') }).Count -eq 0 -and $added -ccontains 'requestedServerPort' -and $added -ccontains 'requestedThinking') 'plan-json-additive: the new properties are requestedServerPort and requestedThinking (of the three allowed)'
+    Check (@($added | Where-Object { $_ -cnotin @('requestedServerPort','requestedThinking','requestedChatPage') }).Count -eq 0 -and $added -ccontains 'requestedServerPort' -and $added -ccontains 'requestedThinking' -and $added -ccontains 'requestedChatPage' -and $added.Count -eq 3) 'plan-json-additive: the new properties are exactly requestedServerPort, requestedThinking and requestedChatPage'
     Check ([string]$basePlan.requestedThinking -ceq 'auto') 'plan-thinking: requestedThinking is auto by default'
     $offPlan=Get-FastLlmPlan @portCommon -Thinking 'off'
     Check ([string]$offPlan.requestedThinking -ceq 'off') 'plan-thinking: requestedThinking records off'
@@ -166,6 +166,62 @@ try {
     foreach($badThinking in @('on','x','banana')){try{Get-FastLlmPlan @portCommon -Thinking $badThinking | Out-Null}catch{$thinkRejected++}}
     Check ($thinkRejected -eq 3) 'plan-thinking: the planner parameter is a closed set'
     Check ([string](Get-FastLlmPlan @portCommon -Thinking 'OFF').requestedThinking -ceq 'off') 'plan-thinking: OFF is normalised to off'
+    # chatpage-off-golden: -ChatPage off reproduces the golden byte for byte, every row.
+    function Test-SameArguments($Expected,$Actual){$e=@($Expected);$a=@($Actual);if($e.Count -ne $a.Count){return $false};for($k=0;$k -lt $e.Count;$k++){if(-not ($e[$k] -ceq $a[$k])){return $false}};return $true}
+    $chatOffLive=@(Get-FastLlmDefaultArgumentsMatrix -Root $root -InstallRoot (Join-Path $work 'install') -PlanParameters @{ChatPage='off'})
+    $chatOffDiffs=0
+    if($chatOffLive.Count -ne $goldenRows.Count){$chatOffDiffs=-1}
+    else{
+        for($i=0;$i -lt $goldenRows.Count;$i++){
+            $g=$goldenRows[$i];$l=$chatOffLive[$i]
+            $same=($g.outcome -ceq $l.outcome) -and ($g.refusal -ceq $l.refusal) -and ($g.recipeId -ceq $l.recipeId) -and (Test-SameArguments $g.arguments $l.arguments)
+            if(-not $same){$chatOffDiffs++}
+        }
+    }
+    Check ($chatOffDiffs -eq 0) 'chatpage-off-golden: -ChatPage off equals the golden, every row, -ceq on every argument'
+
+    # chatpage-on-removes-only-no-ui: every plan row is the golden minus exactly the one --no-ui element, order otherwise identical.
+    $chatOnLive=@(Get-FastLlmDefaultArgumentsMatrix -Root $root -InstallRoot (Join-Path $work 'install') -PlanParameters @{ChatPage='on'})
+    Check ($chatOnLive.Count -eq $goldenRows.Count) 'chatpage-on-removes-only-no-ui: row count equals the golden'
+    $chatBad=0;$chatPlanRows=0
+    for($i=0;$i -lt $goldenRows.Count;$i++){
+        $g=$goldenRows[$i];$l=$chatOnLive[$i]
+        $same=($g.outcome -ceq $l.outcome) -and ($g.refusal -ceq $l.refusal) -and ($g.recipeId -ceq $l.recipeId)
+        if($g.outcome -ceq 'plan'){
+            $chatPlanRows++
+            $expected=@(@($g.arguments) | Where-Object { $_ -cne '--no-ui' })
+            if(@($g.arguments).Count -ne $expected.Count+1 -or -not (Test-SameArguments $expected $l.arguments)){$same=$false}
+            if(@(@($l.arguments) | Where-Object { $_ -ceq '--no-ui' }).Count -ne 0){$same=$false}
+            if(@(@($l.arguments) | Where-Object { $_ -ceq '--ui' }).Count -ne 0){$same=$false}
+        }
+        elseif(-not (Test-SameArguments $g.arguments $l.arguments)){$same=$false}
+        if(-not $same){$chatBad++;Write-Host "DIFF chat-on row $i tier=$($g.tier) request=$($g.request)"}
+    }
+    Check ($chatBad -eq 0 -and $chatPlanRows -gt 0) "chatpage-on-removes-only-no-ui: $chatPlanRows plan rows equal golden minus the one --no-ui element"
+
+    # chatpage-on-keeps-no-agent: every On plan row keeps --no-agent and --host 127.0.0.1.
+    $keepBad=0
+    foreach($l in $chatOnLive){
+        if($l.outcome -cne 'plan'){continue}
+        $la=@($l.arguments);$h=[Array]::IndexOf($la,'--host')
+        if(-not ($la -ccontains '--no-agent') -or $h -lt 0 -or -not ($la[$h+1] -ceq '127.0.0.1')){$keepBad++}
+    }
+    Check ($keepBad -eq 0) 'chatpage-on-keeps-no-agent: every On plan keeps --no-agent and --host 127.0.0.1'
+
+    # chatpage-toggle-restores-no-ui: Off after On gives the golden again (the plan keeps no state between calls).
+    $chatOn=Get-FastLlmPlan @portCommon -ChatPage 'on'
+    $chatOffAgain=Get-FastLlmPlan @portCommon -ChatPage 'off'
+    Check (-not (@($chatOn.serverArguments) -ccontains '--no-ui') -and (Test-SameArguments $basePlan.serverArguments $chatOffAgain.serverArguments) -and (@($chatOffAgain.serverArguments) -ccontains '--no-ui')) 'chatpage-toggle-restores-no-ui: Off after On gives the default arguments'
+
+    # chatpage plan field and combination with Thinking off.
+    Check ([string]$basePlan.requestedChatPage -ceq 'off' -and [string]$chatOn.requestedChatPage -ceq 'on') 'plan-chatpage: requestedChatPage records off by default and on when asked'
+    Check ([string](Get-FastLlmPlan @portCommon -ChatPage 'ON').requestedChatPage -ceq 'on') 'plan-chatpage: ON is normalised to on'
+    $chatRejected=0
+    foreach($badChat in @('auto','x','banana')){try{Get-FastLlmPlan @portCommon -ChatPage $badChat | Out-Null}catch{$chatRejected++}}
+    Check ($chatRejected -eq 3) 'plan-chatpage: the planner parameter is a closed set'
+    $both=Get-FastLlmPlan @portCommon -ChatPage 'on' -Thinking 'off'
+    $bothExpected=@(@($basePlan.serverArguments) | Where-Object { $_ -cne '--no-ui' }) + @('--reasoning','off')
+    Check (Test-SameArguments $bothExpected $both.serverArguments) 'plan-chatpage: with Thinking off the arguments are the golden minus --no-ui plus --reasoning off at the end'
     Write-Host "default-arguments-tests: $script:count checks passed"
 }
 finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }

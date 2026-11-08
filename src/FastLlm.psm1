@@ -1023,6 +1023,10 @@ function Get-FastLlmPlan {
         [ValidateSet('auto', 'off')]
         [string] $Thinking = 'auto',
 
+        # off keeps --no-ui (today's arguments); on omits only --no-ui, so the server answers with its built-in chat page. --no-agent and --host stay.
+        [ValidateSet('off', 'on')]
+        [string] $ChatPage = 'off',
+
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
 
@@ -1391,6 +1395,7 @@ function Get-FastLlmPlan {
     $deviceNames = @($selectedAdapters | ForEach-Object { [string] $_.device })
     # ValidateSet ignores case; the comparisons below are exact.
     $Thinking = $Thinking.ToLowerInvariant()
+    $ChatPage = $ChatPage.ToLowerInvariant()
     # 0 = the catalog value. A requested port only replaces the number; the host stays the catalog loopback value.
     $effectiveServerPort = [string] $catalog.hardwarePolicy.serverPort
     if ($ServerPort -gt 0) { $effectiveServerPort = [string] $ServerPort }
@@ -1427,7 +1432,11 @@ function Get-FastLlmPlan {
     }
     # The pending form names no engine and no launch: nothing can start until the components are installed.
     if ($pendingState) { $arguments = @() }
-    elseif ($Thinking -ceq 'off') { $arguments += @('--reasoning', 'off') }
+    else {
+        # The one removal: the --no-ui element only. Every other element keeps its place.
+        if ($ChatPage -ceq 'on') { $arguments = @($arguments | Where-Object { $_ -cne '--no-ui' }) }
+        if ($Thinking -ceq 'off') { $arguments += @('--reasoning', 'off') }
+    }
 
     $planDocument = [pscustomobject] [ordered] @{
         schemaVersion       = 1
@@ -1441,6 +1450,7 @@ function Get-FastLlmPlan {
         requestedContextSize = $ContextSize
         requestedServerPort = $ServerPort
         requestedThinking   = $Thinking
+        requestedChatPage   = $ChatPage
         allowExperimentalModel = [bool] $AllowExperimentalModel
         catalogContextSize  = $catalogContext
         performanceQualified = $false
@@ -3766,6 +3776,7 @@ function Start-FastLlmServer {
     if ($planServerPort -gt 0) { $freshRecipeOptions.ServerPort = $planServerPort }
     # Added only for Off, so the default call keeps the exact parameter set it always had. A plan written before the setting existed is auto.
     if ($Plan.PSObject.Properties['requestedThinking'] -and [string] $Plan.requestedThinking -ceq 'off') { $freshRecipeOptions.Thinking = 'off' }
+    if ($Plan.PSObject.Properties['requestedChatPage'] -and [string] $Plan.requestedChatPage -ceq 'on') { $freshRecipeOptions.ChatPage = 'on' }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
@@ -3851,6 +3862,7 @@ function Start-FastLlmServer {
         if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
         if ($Plan.PSObject.Properties['requestedServerPort'] -and $null -ne $Plan.requestedServerPort -and [int] $Plan.requestedServerPort -gt 0) { $fallbackPlanOptions.ServerPort = [int] $Plan.requestedServerPort }
         if ($Plan.PSObject.Properties['requestedThinking'] -and [string] $Plan.requestedThinking -ceq 'off') { $fallbackPlanOptions.Thinking = 'off' }
+        if ($Plan.PSObject.Properties['requestedChatPage'] -and [string] $Plan.requestedChatPage -ceq 'on') { $fallbackPlanOptions.ChatPage = 'on' }
         # From here on a failure is a failure of the fallback attempt: the CLI loop must not re-plan onto the HIP setup, repair its model or recover.
         try {
             $fallbackPlanOptions.Hardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot

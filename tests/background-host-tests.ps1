@@ -163,11 +163,13 @@ try {
     $script:mockStateWrites = New-Object 'System.Collections.Generic.List[object]'
     function Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:mockOrder.Add('status:' + [string]$State.phase); $script:mockStateWrites.Add($State) }
     function Get-FastLlmPlan {
-        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath,[int]$ServerPort = 0,[string]$Thinking = 'auto')
+        param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,$AllowExperimentalModel,[switch]$ResolveFallback,$RecipesPath,$GpuVariantsPath,[int]$ServerPort = 0,[string]$Thinking = 'auto',[string]$ChatPage = 'off')
         $script:mockResolveSeen.Add([bool]$ResolveFallback)
         $script:mockPlanPort = $ServerPort
         $script:mockPlanThinking = $Thinking
         $script:mockPlanThinkingBound = $PSBoundParameters.ContainsKey('Thinking')
+        $script:mockPlanChatPage = $ChatPage
+        $script:mockPlanChatPageBound = $PSBoundParameters.ContainsKey('ChatPage')
         if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         if ($script:planMode -ceq 'hip-missing' -and -not [string]$ModelId) {
             if ($ResolveFallback) {
@@ -287,6 +289,23 @@ try {
         Invoke-FastLlmBackgroundServe -RequestId $thinkCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
         Assert-BackgroundTest ($script:mockPlanThinking -ceq $thinkCase.Expect -and ($script:mockPlanThinkingBound -eq ($thinkCase.Expect -ceq 'off'))) ('thinking-rides-the-request: request ' + ($thinkCase.Fields.Keys -join ',') + ' plans with ' + $thinkCase.Expect + ' (saw ' + $script:mockPlanThinking + ').')
     }
+    # chatpage-rides-the-request: chatPage=on is planned as on; a request without the field (or an invalid value) plans without the parameter.
+    foreach($chatCase in @(@{Id='84848484848484848484848484848484';Fields=@{chatPage='on'};Expect='on'},@{Id='83838383838383838383838383838383';Fields=@{};Expect='off'},@{Id='82828282828282828282828282828282';Fields=@{chatPage='ON'};Expect='off'},@{Id='81818181818181818181818181818181';Fields=@{chatPage=$true};Expect='off'})){
+        $script:workerRequestId = $chatCase.Id
+        $script:mockPlanChatPage = 'unset'
+        $chatRequest = [ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$chatCase.Id;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30}
+        foreach($key in $chatCase.Fields.Keys){ $chatRequest[$key] = $chatCase.Fields[$key] }
+        $chatRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $chatCase.Id + '.json')) -CreateNew -Value $chatRequest
+        Invoke-FastLlmBackgroundServe -RequestId $chatCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+        Assert-BackgroundTest ($script:mockPlanChatPage -ceq $chatCase.Expect -and ($script:mockPlanChatPageBound -eq ($chatCase.Expect -ceq 'on'))) ('chatpage-rides-the-request: request ' + ($chatCase.Fields.Keys -join ',') + ' plans with ' + $chatCase.Expect + '.')
+    }
+    # Start writes the request in lower case for both choices (ValidateSet ignores case, the reader is exact).
+    $startSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
+    Assert-BackgroundTest ($startSource.Contains('thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant()')) 'Start-FastLlmBackgroundHost lower-cases Thinking and ChatPage before writing the request.'
     $script:planMode = ''
     $script:workerRequestId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')

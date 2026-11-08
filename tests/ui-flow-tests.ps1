@@ -1118,6 +1118,24 @@ $uiText=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
 Check (-not $uiText.Contains("SetText('http://127.0.0.1:8080/v1')")) 'Copy API URL no longer hardcodes the port'
 Check ($uiText.Contains('$rowSlotX=@(24,162,300,438,576,714)')) 'the button row slot positions are declared once'
 
+# chat-url-only-when-on: the chat URL exists only for an active run whose state records chatPage on.
+$chatOnRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
+$chatOffRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='off'}
+$chatOnIdle=[pscustomobject]@{active=$false;phase='stopped';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
+Check ((Get-FastLlmUiChatUrl -Status $chatOnRunning) -ceq 'http://127.0.0.1:18181/') 'chat-url-only-when-on: an active run with chatPage on gives http://127.0.0.1:<port>/'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $chatOffRunning)) 'chat-url-only-when-on: chatPage off gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $chatOnIdle)) 'chat-url-only-when-on: an inactive run gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $null)) 'chat-url-only-when-on: no status gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status ([pscustomobject]@{active=$true;chatPage='on'}))) 'chat-url-only-when-on: an active run without an endpoint gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status ([pscustomobject]@{active=$true;endpoint='http://127.0.0.1:18181/v1';chatPage='ON'}))) 'chat-url-only-when-on: only the exact value on counts'
+# old-status-without-new-fields (R1): a status from the 4 GB release has no thinking and no chatPage field; no URL, no exception under StrictMode.
+$oldRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:8080/v1';modelId='m'}
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $oldRunning)) 'old-status-without-new-fields: a running status with no thinking or chatPage field gives no chat URL'
+Check ((Get-FastLlmUiChatPageOffNote -Port 18181) -ceq "If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:18181.") 'the turn-off note names the browser site data and the current port'
+Check ($uiText.Contains("'Open chat'") -and $uiText.Contains('$openChatButton=ButtonAt ''Open chat'' $rowSlotX[2] $rowY $rowWidth') -and $uiText.Contains('Start-Process $chatUrl')) 'the Open chat button sits in slot 3 of the third row and opens the chat URL with Start-Process'
+Check ($uiText.Contains('Local chat page (off by default)') -and $uiText.Contains('-ChatPage') -and $uiText.Contains('Get-FastLlmUiChatPageOffNote')) 'the Settings dialog carries the chat page checkbox, saves ChatPage and shows the turn-off note'
+Check (-not ($uiText -match 'service worker')) 'no window copy claims anything about the page service worker'
+
 # A malformed settings file reads as defaults; the background request still gets the default port, with a notice.
 $malRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mal-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $malRoot|Out-Null
@@ -1133,6 +1151,10 @@ Check ($malRequest.thinking -ceq 'auto') 'malformed settings.json: the backgroun
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181;thinking='off'})).thinking -ceq 'off') 'the request carries the saved thinking off'
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).thinking -ceq 'auto') 'a settings object without thinking gives auto'
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{thinking='default'})).thinking -ceq 'auto') 'an unknown thinking value gives auto'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181;chatPage='on'})).chatPage -ceq 'on') 'the request carries the saved chatPage on'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).chatPage -ceq 'off') 'a settings object without chatPage gives off'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{chatPage='yes'})).chatPage -ceq 'off') 'an unknown chatPage value gives off'
+Check ($malRequest.chatPage -ceq 'off') 'malformed settings.json: the background request uses chatPage off'
 Check ($uiText.Contains('Off: faster answers. Quality with thinking off is not measured by Bitworks.') -and $uiText.Contains('Auto (recommended)')) 'the Settings dialog carries the Thinking labels'
 Check ($uiText.Contains('-Thinking') -and $uiText.Contains('The new thinking setting applies at the next start.')) 'the Settings dialog saves Thinking and notes it applies at the next start'
 Remove-Item -LiteralPath $malRoot -Recurse -Force

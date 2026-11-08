@@ -42,6 +42,13 @@ function ConvertTo-FastLlmThinking {
     throw 'serving-settings-invalid-thinking: Thinking must be auto or off.'
 }
 
+# Chat page is a closed set: off (default, --no-ui stays) or on (omits only --no-ui). The match is case-sensitive.
+function ConvertTo-FastLlmChatPage {
+    param($Value)
+    if ($Value -is [string] -and ($Value -ceq 'off' -or $Value -ceq 'on')) { return [string] $Value }
+    throw 'serving-settings-invalid-chatpage: ChatPage must be off or on.'
+}
+
 # Returns @{ malformed = [bool]; object = [ordered] }. An absent file is empty and not malformed. A file over 16 KiB, a reparse
 # point, text that is not a JSON object, or text that does not parse is malformed.
 function Read-FastLlmServingSettingsObject {
@@ -76,10 +83,15 @@ function Get-FastLlmServingSettings {
         $storedThinking = $read.object['thinking']
         if ($storedThinking -is [string] -and $storedThinking -ceq 'off') { $thinking = 'off' }
     }
+    $chatPage = $script:FastLlmServingDefaultChatPage
+    if (-not $read.malformed -and $read.object.Contains('chatPage')) {
+        $storedChatPage = $read.object['chatPage']
+        if ($storedChatPage -is [string] -and $storedChatPage -ceq 'on') { $chatPage = 'on' }
+    }
     return [pscustomobject]@{
         serverPort = $port
         thinking   = $thinking
-        chatPage   = $script:FastLlmServingDefaultChatPage
+        chatPage   = $chatPage
         malformed  = [bool] $read.malformed
     }
 }
@@ -89,10 +101,12 @@ function Set-FastLlmServingSettings {
     param(
         [Parameter(Mandatory = $true)][string] $InstallRoot,
         $ServerPort,
-        $Thinking
+        $Thinking,
+        $ChatPage
     )
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort = ConvertTo-FastLlmServerPort -Value $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = ConvertTo-FastLlmThinking -Value $Thinking }
+    if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = ConvertTo-FastLlmChatPage -Value $ChatPage }
     $read = Read-FastLlmServingSettingsObject -InstallRoot $InstallRoot
     if ($read.malformed) { throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.' }
     $merged = $read.object
@@ -103,6 +117,10 @@ function Set-FastLlmServingSettings {
     if ($PSBoundParameters.ContainsKey('Thinking')) {
         if ($Thinking -ceq $script:FastLlmServingDefaultThinking) { $merged.Remove('thinking') }
         else { $merged['thinking'] = $Thinking }
+    }
+    if ($PSBoundParameters.ContainsKey('ChatPage')) {
+        if ($ChatPage -ceq $script:FastLlmServingDefaultChatPage) { $merged.Remove('chatPage') }
+        else { $merged['chatPage'] = $ChatPage }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
@@ -132,6 +150,10 @@ function Resolve-FastLlmServingOptions {
             $thinking = $stored.thinking
             $source = 'settings'
         }
+        if (-not $stored.malformed -and $stored.chatPage -cne $script:FastLlmServingDefaultChatPage) {
+            $chatPage = $stored.chatPage
+            $source = 'settings'
+        }
     }
     if ($Bound.ContainsKey('ServerPort')) {
         $given = ConvertTo-FastLlmServerPort -Value $Bound['ServerPort']
@@ -140,6 +162,10 @@ function Resolve-FastLlmServingOptions {
     }
     if ($Bound.ContainsKey('Thinking')) {
         $thinking = ConvertTo-FastLlmThinking -Value $Bound['Thinking']
+        $source = 'parameter'
+    }
+    if ($Bound.ContainsKey('ChatPage')) {
+        $chatPage = ConvertTo-FastLlmChatPage -Value $Bound['ChatPage']
         $source = 'parameter'
     }
     return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; source = $source }

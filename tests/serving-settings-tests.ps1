@@ -111,6 +111,34 @@ try {
     Check ($x.thinking -ceq 'off') 'thinking-resolve: an explicit off applies with no settings'
     Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Thinking='maybe'} } 'serving-settings-invalid-thinking'
 
+    # chatpage-settings-roundtrip: On is stored, Off removes the key, an invalid value throws, unknown keys survive.
+    $r=Join-Path $work 'chatpage'; New-Item -ItemType Directory -Path $r | Out-Null
+    Write-Utf8 (Join-Path $r 'settings.json') '{"x":1,"serverPort":18181,"thinking":"off"}'
+    Set-FastLlmServingSettings -InstallRoot $r -ChatPage 'on'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check ($o.chatPage -ceq 'on' -and $o.x -eq 1 -and $o.serverPort -eq 18181 -and $o.thinking -ceq 'off') 'chatpage-settings-roundtrip: on is stored beside the other keys'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).chatPage -ceq 'on') 'chatpage-settings-roundtrip: Get reads on'
+    Set-FastLlmServingSettings -InstallRoot $r -ChatPage 'off'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'chatPage') -and $o.x -eq 1 -and $o.thinking -ceq 'off') 'chatpage-settings-roundtrip: off removes the key'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).chatPage -ceq 'off') 'chatpage-settings-roundtrip: Get reads off'
+    foreach($bad in 'auto','ON','','banana',$null){ Throws { Set-FastLlmServingSettings -InstallRoot $r -ChatPage $bad } 'serving-settings-invalid-chatpage' }
+    foreach($bogus in '{"chatPage":"auto"}','{"chatPage":"ON"}','{"chatPage":true}','{"chatPage":1}','{"chatPage":null}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).chatPage -ceq 'off') "chatpage-settings-roundtrip: stored $bogus reads as off"
+    }
+    Write-Utf8 (Join-Path $r 'settings.json') '{"chatPage":"on"}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.chatPage -ceq 'on') 'chatpage-resolve: settings give on'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{ChatPage='off'}
+    Check ($x.chatPage -ceq 'off') 'chatpage-resolve: an explicit parameter wins over settings'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{} -IgnoreUserSettings
+    Check ($x.chatPage -ceq 'off') 'chatpage-resolve: ignore settings gives off'
+    Write-Utf8 (Join-Path $r 'settings.json') '{}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{ChatPage='on'}
+    Check ($x.chatPage -ceq 'on') 'chatpage-resolve: an explicit on applies with no settings'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{ChatPage='maybe'} } 'serving-settings-invalid-chatpage'
+
     # tripwire-plan-reads-no-settings
     $watched='FastLlm.psm1','FastLlm.Runtime.ps1','FastLlm.Preload.ps1','FastLlm.Recipes.ps1','FastLlm.RunLog.ps1','FastLlm.ModelStore.ps1'
     foreach($name in $watched){

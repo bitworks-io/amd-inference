@@ -1036,6 +1036,22 @@ function Get-FastLlmUiRunningPort {
     return 0
 }
 
+# The built-in chat page of the running server, or $null. Only an active run whose state records chatPage='on' has one; a status written
+# before the field existed has none. The page is on the same loopback port as the API, without /v1.
+function Get-FastLlmUiChatUrl {
+    param($Status)
+    if (-not $Status -or -not $Status.PSObject.Properties['chatPage'] -or [string]$Status.chatPage -cne 'on') { return $null }
+    $port = Get-FastLlmUiRunningPort -Status $Status
+    if ($port -lt 1024 -or $port -gt 65535) { return $null }
+    return 'http://127.0.0.1:' + $port + '/'
+}
+
+# Shown when the user turns the chat page off. The browser may keep the page's cached files for the address, so the fix is on the browser side.
+function Get-FastLlmUiChatPageOffNote {
+    param([int]$Port)
+    return "If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:" + $Port + '.'
+}
+
 # The background start request. A malformed settings file reads as defaults (the caller shows the notice); start still works.
 function New-FastLlmUiBackgroundRequest {
     param([Parameter(Mandatory=$true)][string]$SourceRoot,[Parameter(Mandatory=$true)][string]$InstallRoot,
@@ -1048,8 +1064,10 @@ function New-FastLlmUiBackgroundRequest {
     # Thinking is read tolerantly: only a stored 'off' is carried; absent or anything else is auto.
     $thinking = 'auto'
     if ($Settings -and $Settings.PSObject.Properties['thinking'] -and [string]$Settings.thinking -ceq 'off') { $thinking = 'off' }
+    $chatPage = 'off'
+    if ($Settings -and $Settings.PSObject.Properties['chatPage'] -and [string]$Settings.chatPage -ceq 'on') { $chatPage = 'on' }
     return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
-        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking}
+        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage}
 }
 
 function Get-FastLlmUiMalformedSettingsNotice {

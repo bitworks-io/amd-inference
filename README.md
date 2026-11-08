@@ -77,6 +77,10 @@ The server listens on port 8080 by default. To change it, use Settings... in the
 
 Thinking is Auto by default, and Auto leaves the server arguments exactly as they were. Settings... in the window (or `fast-llm.ps1 settings -Thinking off`) can turn it off. The choice reads "Off: faster answers. Quality with thinking off is not measured by Bitworks." and adds `--reasoning off` to the server arguments; the change applies at the next start. Benchmarks refuse a run started with thinking off, so set Thinking to Auto, start again, then benchmark. Each request can also ask for this itself, whatever the setting: send `reasoning_effort` or `chat_template_kwargs: {"enable_thinking": false}` in the request body.
 
+## Local chat page
+
+The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. Benchmarks refuse a run started with the page on, so turn it off, start again, then benchmark.
+
 ## Uninstall
 
 Use Windows Settings, Apps, FastLLM. Downloaded models and engines are kept unless you choose to delete them when asked.

@@ -101,6 +101,11 @@ param(
     [ValidateSet('auto', 'off')]
     [string] $Thinking,
 
+    # start, install, plan and settings: off (default) keeps --no-ui; on omits only --no-ui so the server serves its built-in chat page.
+    # An explicit value wins over the saved setting; on settings it saves the value (off removes it).
+    [ValidateSet('off', 'on')]
+    [string] $ChatPage,
+
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
 
@@ -266,6 +271,10 @@ $selectionOptions = @{
 if ($PSBoundParameters.ContainsKey('ServerPort') -and $Action -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('Port') -and $Action -ne 'settings') { throw '-Port is supported only by settings.' }
 if ($PSBoundParameters.ContainsKey('Thinking') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('ChatPage') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
+# ValidateSet ignores case; the settings converter is exact, so the typed value is lower-cased once after binding.
+if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = $Thinking.ToLowerInvariant() }
+if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = $ChatPage.ToLowerInvariant() }
 if ($IgnoreUserSettings -and $Action -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('ServerPort')) { $null = ConvertTo-FastLlmServerPort -Value $ServerPort }
 if ($PSBoundParameters.ContainsKey('Port')) { $null = ConvertTo-FastLlmServerPort -Value $Port }
@@ -273,9 +282,11 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     $servingBound = @{}
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $servingBound.ServerPort = $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
+    if ($PSBoundParameters.ContainsKey('ChatPage')) { $servingBound.ChatPage = $ChatPage }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
     if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
+    if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -467,6 +478,7 @@ try {
             }
             if ($PSBoundParameters.ContainsKey('Port')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ServerPort $Port }
             if ($PSBoundParameters.ContainsKey('Thinking')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -Thinking $Thinking }
+            if ($PSBoundParameters.ContainsKey('ChatPage')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ChatPage $ChatPage }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
             $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
             if ($AsJson) {
@@ -479,6 +491,7 @@ try {
                 else { Write-Host 'componentLicenses: ask' }
                 Write-Host "serverPort: $($servingState.serverPort)"
                 Write-Host "thinking: $($servingState.thinking)"
+                Write-Host "chatPage: $($servingState.chatPage)"
             }
         }
         'status' {
