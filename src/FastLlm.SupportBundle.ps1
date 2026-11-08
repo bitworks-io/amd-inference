@@ -13,7 +13,7 @@ $script:FastLlmSupportBundleBeforeMove = $null
 $script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage')
 
 # Replaces what identifies the PC or the user: the profile path (as \, JSON-escaped \\ and /, any case), the computer name, the user name,
-# Windows SIDs, MAC addresses and PnP instance suffixes (the last three use the patterns of tools/leak-scan.py). Returns the redacted text;
+# Windows SIDs, MAC addresses and PnP instance suffixes (the last three use the patterns of the repository's leak scanner). Returns the redacted text;
 # -RedactionCount ([ref]$n) adds the number of replacements to $n. -ProfilePath, -ComputerName and -UserName are test seams.
 function Get-FastLlmRedactionRules {
     [CmdletBinding()]
@@ -58,7 +58,7 @@ function Get-FastLlmRedactionRules {
             }
         }
     }
-    # Any other X:\Users\<name> (another account, an 8.3 short name): the windows-user-path rule of tools/leak-scan.py, same exclusions.
+    # Any other X:\Users\<name> (another account, an 8.3 short name): the leak scanner's windows-user-path rule, same exclusions.
     $rules.Add(@{ pattern = '[A-Za-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)(?!(?:Public|Default|test|user|username|runneradmin|example)(?![\p{L}\p{N}_.~-]))[\p{L}\p{N}._~''-]{2,}'; replacement = '%USERPROFILE%' })
     if (-not [string]::IsNullOrWhiteSpace($ComputerName) -and $ComputerName.Trim().Length -ge 2) {
         $rules.Add(@{ pattern = ('(?<![\p{L}\p{N}_])' + [regex]::Escape($ComputerName.Trim()) + $edge); replacement = '<computer>' })
