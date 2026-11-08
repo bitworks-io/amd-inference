@@ -67,7 +67,7 @@ Nothing installs without a click. `fast-llm.ps1 update-check` shows what is avai
 
 ## Resizable BAR
 
-FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
+FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. The setting is Auto by default (`-VulkanBarMitigation auto`): the workaround applies only when the check confidently finds Resizable BAR off, and `-VulkanBarMitigation off` turns it off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
 
 ## Use the API
 
