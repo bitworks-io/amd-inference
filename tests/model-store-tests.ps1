@@ -64,8 +64,22 @@ try {
     # ---- refusal reasons
     $res=Remove-Model $r 'no-such-model'
     Check ($res.removed -eq $false -and $res.reason -eq 'not-in-catalog') 'remove-refuses-not-in-catalog'
-    $res=Remove-Model $r $idB
-    Check ($res.removed -eq $false -and $res.reason -eq 'not-installed' -and (Test-Path -LiteralPath (ModelPath $r $idB))) 'remove-refuses-not-installed: a short file with no receipt stays'
+    # remove-damaged-short-file / remove-damaged-no-receipt: a present file is removable even when short or receipt-less
+    Check (($rows | Where-Object { $_.id -eq $idB }).sizeBytes -eq 10) 'remove-damaged-short-file: the listed size is the real file length'
+    $rdam=New-Root @($idA,$idB)
+    $fs=[IO.File]::Open((ModelPath $rdam $idB),'Open','ReadWrite'); try { $fs.SetLength(10) } finally { $fs.Dispose() }
+    $receiptsBefore=@(Get-ChildItem -LiteralPath (Join-Path $rdam 'consents') -File).Count
+    $res=Remove-Model $rdam $idB
+    Check ($res.removed -eq $true -and $res.reason -eq 'ok' -and $res.bytes -eq 10 -and -not (Test-Path -LiteralPath (ModelPath $rdam $idB)) -and (Test-Path -LiteralPath (ModelPath $rdam $idA))) 'remove-damaged-short-file: a short file is removed'
+    Check (@(Get-ChildItem -LiteralPath (Join-Path $rdam 'consents') -File).Count -eq $receiptsBefore) 'remove-damaged-short-file: the receipts are kept'
+    $rnr=New-Root @($idA) -NoReceipt
+    $res=Remove-Model $rnr $idA
+    Check ($res.removed -eq $true -and $res.reason -eq 'ok' -and -not (Test-Path -LiteralPath (ModelPath $rnr $idA))) 'remove-damaged-no-receipt: a full-size file with no receipt is removed'
+    $rnr2=New-Root @($idA)
+    Remove-Item -LiteralPath (Join-Path $rnr2 'consents') -Recurse -Force
+    $res=Remove-Model $rnr2 $idA
+    Check ($res.removed -eq $true -and -not (Test-Path -LiteralPath (Join-Path $rnr2 'consents'))) 'remove-damaged-no-receipt: no receipt is created or needed'
+    Check ((Get-FastLlmModelRemovalRefusalText -Reason 'not-installed') -ceq 'That model file is not on this PC. Nothing was removed.' -and (Get-FastLlmModelRemovalRefusalText -Reason 'not-installed') -notmatch 'not downloaded') 'remove-damaged: the not-installed message only talks about an absent file'
     $res=Remove-Model (New-Root @()) $idA
     Check ($res.removed -eq $false -and $res.reason -eq 'not-installed') 'remove-refuses-not-installed: nothing downloaded'
 
@@ -108,11 +122,31 @@ try {
     $stateDir=Join-Path $rb2 'state'
     New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
     $record=Join-Path $stateDir 'background-host.json'
-    Write-Utf8 $record (@{schemaVersion=1;phase='loading';modelId=$idA} | ConvertTo-Json)
+    $selfProc=[Diagnostics.Process]::GetCurrentProcess()
+    $liveIdentity=@{pid=[int]$selfProc.Id;startUtcTicks=[long]$selfProc.StartTime.ToUniversalTime().Ticks}
+    $selfProc.Dispose()
+    Write-Utf8 $record (@{schemaVersion=1;phase='loading';modelId=$idA;hostIdentity=$liveIdentity} | ConvertTo-Json -Depth 4)
     $res=Remove-Model $rb2 $idA
-    Check ($res.removed -eq $false -and $res.reason -eq 'background-owned' -and (Test-Path -LiteralPath (ModelPath $rb2 $idA))) 'remove-refuses-background-owned'
+    Check ($res.removed -eq $false -and $res.reason -eq 'background-owned' -and (Test-Path -LiteralPath (ModelPath $rb2 $idA))) 'live-record-refuses: a record whose host is this live process refuses'
+    Check ((Get-FastLlmModelRemovalRefusalText -Reason 'background-owned') -ceq 'A background run uses this model. Stop it first. Nothing was removed.') 'live-record-refuses: the message is pinned'
     $res=Remove-Model $rb2 $idB
     Check ($res.removed -eq $true) 'remove-refuses-background-owned: a record for another model does not block this one'
+    # stale-record-dead-pid-allows-remove: a non-terminal record whose host process is gone does not own the model
+    $deadPid=2000000000
+    Write-Utf8 $record (@{schemaVersion=1;phase='loading';modelId=$idA;hostIdentity=@{pid=$deadPid;startUtcTicks=638000000000000000}} | ConvertTo-Json -Depth 4)
+    $res=Remove-Model $rb2 $idA
+    Check ($res.removed -eq $true) 'stale-record-dead-pid-allows-remove: a non-existent pid is stale'
+    $rb2=New-Root @($idA); New-Item -ItemType Directory -Path (Join-Path $rb2 'state') -Force | Out-Null; $record=Join-Path (Join-Path $rb2 'state') 'background-host.json'
+    Write-Utf8 $record (@{schemaVersion=1;phase='loading';modelId=$idA;hostIdentity=@{pid=$liveIdentity.pid;startUtcTicks=($liveIdentity.startUtcTicks+1)}} | ConvertTo-Json -Depth 4)
+    $res=Remove-Model $rb2 $idA
+    Check ($res.removed -eq $true) 'stale-record-dead-pid-allows-remove: a reused pid with another start time is stale'
+    $rb2=New-Root @($idA); New-Item -ItemType Directory -Path (Join-Path $rb2 'state') -Force | Out-Null; $record=Join-Path (Join-Path $rb2 'state') 'background-host.json'
+    Write-Utf8 $record (@{schemaVersion=1;phase='loading';modelId=$idA} | ConvertTo-Json)
+    $res=Remove-Model $rb2 $idA
+    Check ($res.removed -eq $false -and $res.reason -eq 'background-owned') 'live-record-refuses: a record with no host identity refuses (in doubt)'
+    Write-Utf8 $record (@{schemaVersion=1;phase='loading';modelId=$idA;hostIdentity=@{pid='x';startUtcTicks=0}} | ConvertTo-Json -Depth 4)
+    $res=Remove-Model $rb2 $idA
+    Check ($res.removed -eq $false -and $res.reason -eq 'background-owned') 'live-record-refuses: an unreadable host identity refuses (in doubt)'
     Write-Utf8 $record (@{schemaVersion=1;phase='stopped';modelId=$idA} | ConvertTo-Json)
     $res=Remove-Model $rb2 $idA
     Check ($res.removed -eq $true) 'remove-refuses-background-owned: a stopped record does not block'
@@ -276,7 +310,7 @@ try {
         $out=Invoke-Cli @('models','-Remove','no-such-model','-Yes','-InstallRoot',$cr)
         Check ($out.Code -ne 0 -and $out.Text -match 'not-in-catalog') 'cli: an unknown model id fails with not-in-catalog'
         $out=Invoke-Cli @('models','-Remove',$idB,'-Yes','-InstallRoot',$cr)
-        Check ($out.Code -ne 0 -and $out.Text -match 'not-installed') 'cli: a model that is not downloaded fails with not-installed'
+        Check ($out.Code -ne 0 -and $out.Text -match 'not-installed') 'cli: a model whose file is absent fails with not-installed'
 
         # remove-refuses-operation-lock
         $lockHandle=Enter-FastLlmOperation -InstallRoot $cr

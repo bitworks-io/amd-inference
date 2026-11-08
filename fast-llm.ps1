@@ -468,7 +468,7 @@ try {
                 $removeModel = @($removeCatalog.models | Where-Object { [string] $_.id -ceq $Remove })[0]
                 if ($null -eq $removeModel) { throw (New-FastLlmTypedFailure -Code 'not-in-catalog' -Message "There is no model '$Remove' in the catalog. Nothing was removed.") }
                 $removeRow = @(Get-FastLlmInstalledModels -InstallRoot $InstallRoot -CatalogPath $catalogPath | Where-Object { $_.id -ceq $Remove })[0]
-                if ($null -eq $removeRow) { throw (New-FastLlmTypedFailure -Code 'not-installed' -Message "The model '$Remove' is not downloaded. Nothing was removed.") }
+                if ($null -eq $removeRow) { throw (New-FastLlmTypedFailure -Code 'not-installed' -Message "The model file for '$Remove' is not on this PC. Nothing was removed.") }
                 $confirmationText = Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $removeModel) -SizeBytes ([int64] $removeRow.sizeBytes)
                 Write-Host $confirmationText
                 if (-not $Yes) {

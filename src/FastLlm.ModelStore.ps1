@@ -37,6 +37,31 @@ function Test-FastLlmModelStoreLockHeld {
     finally { if ($handle) { $handle.Dispose() } }
 }
 
+# live | dead | unknown for a background host identity {pid, startUtcTicks}: live only when a process with that pid exists and started at that tick.
+function Get-FastLlmModelStoreHostState {
+    param($Identity)
+    if ($null -eq $Identity) { return 'unknown' }
+    $pidValue = 0
+    $ticks = 0L
+    try {
+        if (-not $Identity.PSObject.Properties['pid'] -or -not $Identity.PSObject.Properties['startUtcTicks']) { return 'unknown' }
+        if (-not [int]::TryParse([string] $Identity.pid, [ref] $pidValue) -or $pidValue -le 0 -or
+            -not [long]::TryParse([string] $Identity.startUtcTicks, [ref] $ticks) -or $ticks -le 0) { return 'unknown' }
+    }
+    catch { return 'unknown' }
+    $process = $null
+    try { $process = [Diagnostics.Process]::GetProcessById($pidValue) }
+    catch [ArgumentException] { return 'dead' }
+    catch { return 'unknown' }
+    try {
+        if ($process.HasExited) { return 'dead' }
+        if ($process.StartTime.ToUniversalTime().Ticks -eq $ticks) { return 'live' }
+        return 'dead'
+    }
+    catch { return 'unknown' }
+    finally { $process.Dispose() }
+}
+
 # What the model store must respect, read once: the supervised server's status and the background host record (both tolerant reads).
 # The background record is read directly (capped at 64 KiB, a reparse point refused); in doubt, the model counts as busy.
 function Get-FastLlmModelStoreBusyContext {
@@ -59,8 +84,14 @@ function Get-FastLlmModelStoreBusyContext {
             if ($null -eq $record) { throw 'Empty background host record.' }
             $phase = if ($record.PSObject.Properties['phase']) { [string] $record.phase } else { '' }
             if ($phase -cnotin @('stopped', 'failed')) {
-                $context.backgroundBusy = $true
-                if ($record.PSObject.Properties['modelId'] -and $null -ne $record.modelId) { $context.backgroundModelId = [string] $record.modelId }
+                # No existing action rewrites a crashed host's record, so a record whose host process is provably gone does not own the model.
+                # Any doubt about the identity or the process counts as alive.
+                $hostState = Get-FastLlmModelStoreHostState -Identity $(if ($record.PSObject.Properties['hostIdentity']) { $record.hostIdentity } else { $null })
+                if ($hostState -ceq 'unknown') { throw 'Background host identity is unclear.' }
+                if ($hostState -ceq 'live') {
+                    $context.backgroundBusy = $true
+                    if ($record.PSObject.Properties['modelId'] -and $null -ne $record.modelId) { $context.backgroundModelId = [string] $record.modelId }
+                }
             }
         }
     }
@@ -99,7 +130,7 @@ function Get-FastLlmInstalledModels {
         [void] $rows.Add([pscustomobject]@{
             id           = [string] $model.id
             file         = [string] $model.file
-            sizeBytes    = [int64] $model.sizeBytes
+            sizeBytes    = [int64] $length
             present      = $true
             sizeMatches  = [bool] ($length -eq [int64] $model.sizeBytes)
             consent      = $consent
@@ -161,8 +192,9 @@ function Remove-FastLlmInstalledModel {
     foreach ($linkCandidate in @((Get-FastLlmModelStoreDirectory -InstallRoot $InstallRoot), $path)) {
         if ((Test-Path -LiteralPath $linkCandidate) -and ((Get-Item -LiteralPath $linkCandidate -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { return (& $result $false 'path-outside-install-root' 0) }
     }
-    if (-not (Test-FastLlmModelInstalled -Model $model -InstallRoot $InstallRoot)) { return (& $result $false 'not-installed' 0) }
-    $bytes = [int64] $model.sizeBytes
+    # A present file is removable even when it is short or has no consent record (those are the files users most want gone); not-installed means absent.
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return (& $result $false 'not-installed' 0) }
+    $bytes = [int64] (Get-Item -LiteralPath $path -Force).Length
     # A caller that does not hold the operation lock reads the server status first (the lock it takes next would make that status read "active" itself).
     if (-not $OperationLockHeld) {
         $earlyContext = Get-FastLlmModelStoreBusyContext -InstallRoot $InstallRoot
@@ -247,7 +279,7 @@ function Get-FastLlmModelRemovalRefusalText {
     switch ($Reason) {
         'ok'                        { return '' }
         'not-in-catalog'            { return 'FastLLM does not list that model. Nothing was removed.' }
-        'not-installed'             { return 'That model is not downloaded. Nothing was removed.' }
+        'not-installed'             { return 'That model file is not on this PC. Nothing was removed.' }
         'path-outside-install-root' { return 'That model file is a link, so FastLLM left it alone. Nothing was removed.' }
         'serving'                   { return 'FastLLM is serving this model. Stop it first. Nothing was removed.' }
         'background-owned'          { return 'A background run uses this model. Stop it first. Nothing was removed.' }
