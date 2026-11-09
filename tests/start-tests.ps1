@@ -187,7 +187,7 @@ try {
         $setThinking=Invoke-StartTestCli @('settings','-Thinking','off','-InstallRoot',$cliRoot)
         Check ($setThinking.exit -eq 0 -and $setThinking.text -like '*thinking: off*') 'cli: settings -Thinking off writes the value and prints thinking: off'
         Check ((($setThinking.text -replace '\r','') -split "`n") -contains 'thinking: off') 'cli: the settings text has a thinking: line of its own'
-        Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"thinking": "off"*') 'cli: settings -AsJson reflects the stored thinking value'
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).thinking -ceq 'off') 'cli: settings -AsJson reflects the stored thinking value'
         $planThinkSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
         $thinkSavedArgs=@(($planThinkSaved.text | ConvertFrom-Json).serverArguments)
         Check ($thinkSavedArgs[$thinkSavedArgs.Count-2] -ceq '--reasoning' -and $thinkSavedArgs[$thinkSavedArgs.Count-1] -ceq 'off') 'cli: the saved Off setting ends the plan arguments with --reasoning off'
@@ -198,11 +198,11 @@ try {
         $badThinking=Invoke-StartTestCli @('settings','-Thinking','on','-InstallRoot',$cliRoot)
         Check ($badThinking.exit -ne 0) 'cli: settings -Thinking on is refused'
         $null=Invoke-StartTestCli @('settings','-Thinking','auto','-InstallRoot',$cliRoot)
-        Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"thinking": "auto"*') 'cli: settings -Thinking auto returns to auto'
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).thinking -ceq 'auto') 'cli: settings -Thinking auto returns to auto'
         # chatpage CLI: saved, ignored, explicit and invalid; the text line; case normalisation (carried items 1 and 2).
         $setChat=Invoke-StartTestCli @('settings','-ChatPage','on','-InstallRoot',$cliRoot)
         Check ($setChat.exit -eq 0 -and ((($setChat.text -replace '\r','') -split "`n") -contains 'chatPage: on')) 'cli: settings -ChatPage on writes the value and prints a chatPage: line of its own'
-        Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"chatPage": "on"*') 'cli: settings -AsJson reflects the stored chatPage value'
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).chatPage -ceq 'on') 'cli: settings -AsJson reflects the stored chatPage value'
         $planChatSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
         $chatSavedJson=$planChatSaved.text | ConvertFrom-Json
         Check (@($chatSavedJson.serverArguments | Where-Object { $_ -ceq '--no-ui' }).Count -eq 0 -and @($chatSavedJson.serverArguments) -ccontains '--no-agent' -and $chatSavedJson.requestedChatPage -ceq 'on') 'cli: the saved On setting plans without --no-ui and keeps --no-agent'
@@ -225,7 +225,7 @@ try {
         $upperJson=$upperPlan.text | ConvertFrom-Json
         Check ($upperPlan.exit -eq 0 -and $upperJson.requestedThinking -ceq 'off' -and $upperJson.requestedChatPage -ceq 'on') 'cli-case: plan -Thinking OFF -ChatPage ON applies both'
         $null=Invoke-StartTestCli @('settings','-ChatPage','off','-Thinking','auto','-InstallRoot',$cliRoot)
-        Check ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text -like '*"chatPage": "off"*') 'cli: settings -ChatPage off returns to off'
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).chatPage -ceq 'off') 'cli: settings -ChatPage off returns to off'
         $badPort=Invoke-StartTestCli @('settings','-Port','80','-InstallRoot',$cliRoot)
         Check ($badPort.exit -ne 0 -and $badPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: settings -Port 80 exits non-zero with serving-settings-invalid-port'
         $fractionPort=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-ServerPort','18181.5','-InstallRoot',$cliRoot)
