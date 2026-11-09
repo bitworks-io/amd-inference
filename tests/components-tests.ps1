@@ -2329,9 +2329,12 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
     $assignedNames = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
-    # InstallRoot (default resolution), DeviceBinding and ComponentLicenses (lower-casing) are the deliberate assignments to a parameter.
-    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding', 'ComponentLicenses') -cnotcontains $_ })
+    # InstallRoot (default resolution), DeviceBinding, ComponentLicenses, Thinking and ChatPage (lower-casing after binding) are the deliberate assignments to a parameter.
+    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding', 'ComponentLicenses', 'Thinking', 'ChatPage') -cnotcontains $_ })
     Check ($shadowed.Count -eq 0) 'fast-llm.ps1 assigns to no variable named like one of its parameters, case-insensitively'
+    # The two lower-casing exemptions are exactly the guarded one-liners (no other assignment to Thinking or ChatPage hides behind them).
+    $lowerCaseAssignments = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and @('Thinking', 'ChatPage') -contains $node.Left.VariablePath.UserPath }, $true) | ForEach-Object { $_.Extent.Text })
+    Check ($lowerCaseAssignments.Count -eq 2 -and $lowerCaseAssignments -ccontains '$Thinking = $Thinking.ToLowerInvariant()' -and $lowerCaseAssignments -ccontains '$ChatPage = $ChatPage.ToLowerInvariant()') 'fast-llm.ps1 assigns Thinking and ChatPage only to lower-case them after binding'
 
     $psExecutable = (Get-Process -Id $PID).Path
     function Invoke-CliRefusal([string[]] $Arguments) {
