@@ -555,7 +555,10 @@ try {
     $offRestJson=if($null -ne $offRest){(($offRest | ConvertTo-Json -Depth 12 -Compress) -replace '\s+','')}else{''}
     $directOffJson=((($directOff | ConvertFrom-Json) | ConvertTo-Json -Depth 12 -Compress) -replace '\s+','')
     Check ($offRestJson.Length -gt 0 -and $offRestJson -ceq $directOffJson) 'the status action output for an off root, without the connection object, is exactly the plain status document'
-    Check ($null -ne $offView -and $null -eq $offView.PSObject.Properties['deviceBinding'] -and $null -eq $offView.PSObject.Properties['identityFingerprint'] -and -not [string]::IsNullOrEmpty($rec.state.identityFingerprint) -and (Test-NoPrivateLeaf $offView @(@($pnpA,'4&1&0&0008',$luidA,'PCI bus',$rec.state.identityFingerprint) | Where-Object { -not [string]::IsNullOrEmpty($_) })) -and $null -ne $offConnection -and @(Get-Leaves $offConnection | Where-Object { $_ -cmatch '^[0-9a-f]{64}$' }).Count -eq 0) 'privacy: the status action output for an off root holds no device-binding field, PnP id, LUID, slot key or fingerprint, and its connection object holds no 64-hex hash'
+    Check ($null -ne $offView -and $null -eq $offView.PSObject.Properties['deviceBinding'] -and $null -eq $offView.PSObject.Properties['identityFingerprint']) 'privacy: the status action output for an off root has no deviceBinding or identityFingerprint property'
+    Check (-not [string]::IsNullOrEmpty($rec.state.identityFingerprint)) 'privacy: the fingerprint needle is non-empty, so the needle scan really includes it'
+    Check ($null -ne $offView -and (Test-NoPrivateLeaf $offView @(@($pnpA,'4&1&0&0008',$luidA,'PCI bus',$rec.state.identityFingerprint) | Where-Object { -not [string]::IsNullOrEmpty($_) }))) 'privacy: no PnP id, slot key, LUID, PCI bus text or fingerprint value appears anywhere in the off-root status output'
+    Check ($null -ne $offConnection -and @(Get-Leaves $offConnection | Where-Object { $_ -cmatch '^[0-9a-f]{64}$' }).Count -eq 0) 'privacy: the connection object holds no 64-hex hash'
 
     # a second start on the same install root: unchanged, then a driver update
     $again=Invoke-BindRun -Name 'record-same' -Binding 'record' -RunRoot $rec.runRoot
