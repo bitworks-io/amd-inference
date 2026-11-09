@@ -2,9 +2,11 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/FastLlm.BackgroundHost.ps1')
 
+$script:backgroundChecks = 0
 function Assert-BackgroundTest {
     param([bool]$Condition,[string]$Message)
     if (-not $Condition) { throw $Message }
+    $script:backgroundChecks++
 }
 
 function Read-FastLlmJson {
@@ -29,7 +31,10 @@ try {
         Assert-BackgroundTest ($pinNames -contains $pinned) "Background source pins omit $pinned."
     }
     # Every file the module dot-sources is pinned, so a new module file cannot be forgotten.
-    foreach ($loaded in @([regex]::Matches((Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.psm1') -Raw), "Join-Path \$PSScriptRoot '([^']+\.ps1)'") | ForEach-Object { 'src/' + $_.Groups[1].Value })) {
+    # The pattern is single-quoted so the literal text $PSScriptRoot is matched, never the path of this run.
+    $loadedFiles = @([regex]::Matches((Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.psm1') -Raw), 'Join-Path \$PSScriptRoot ''([^'']+\.ps1)''') | ForEach-Object { 'src/' + $_.Groups[1].Value })
+    Assert-BackgroundTest ($loadedFiles.Count -gt 0 -and $loadedFiles.Count -ge 10) "The module-pin check matched only $($loadedFiles.Count) module files; expected at least 10."
+    foreach ($loaded in $loadedFiles) {
         Assert-BackgroundTest ($pinNames -contains $loaded) "Background source pins omit the module file $loaded."
     }
     $self = [Diagnostics.Process]::GetCurrentProcess()
@@ -518,7 +523,8 @@ try {
             (Test-Path -LiteralPath $freshTemp) -and (Test-Path -LiteralPath $foreignTemp)) 'The next successful background write must sweep only stale GUID temps (fresh and foreign names are kept).'
         Write-Host 'PASS: background keep-temp and stale sweep'
     }
-    'Background host identity/stop tests passed.'
+    if ($script:backgroundChecks -lt 50) { throw "Only $script:backgroundChecks background-host checks ran; expected at least 50." }
+    "$script:backgroundChecks background-host checks passed. Background host identity/stop tests passed."
 } finally {
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }
