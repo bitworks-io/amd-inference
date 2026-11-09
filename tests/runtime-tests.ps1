@@ -402,9 +402,11 @@ try {
     Check ($null -ne $busyFailure -and [string]$busyFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$busyFailure.Data['FastLlmReason'] -ceq 'PortInUse') 'occupied-port-plain-message: the failure is typed port-in-use'
     Check ($null -ne $busyFailure -and $busyFailure.Message.StartsWith("Port $busyPort is already in use") -and $busyFailure.Message -ceq $expectedBusyMessage) 'occupied-port-plain-message: the message is the plain refusal'
     Check (-not (Test-Path -LiteralPath $busyDiagnostic)) 'occupied-port-plain-message: nothing was spawned'
-    $otherPortFree=$true;$otherProbe=New-Object Net.Sockets.TcpClient
-    try{$otherProbe.Connect('127.0.0.1',$busyPort+1);$otherPortFree=$false}catch{}finally{$otherProbe.Dispose()}
-    Check ($otherPortFree) 'occupied-port-plain-message: no second port was tried'
+    # No second port: the failed-run state FastLLM wrote names the plan's one port and no process identity (nothing was spawned).
+    # (A probe of a neighbouring port cannot prove this on a shared machine: any process may listen there.)
+    $busyStatus=Get-FastLlmStatus $busyRoot
+    $busyIdentity=$(if($busyStatus.PSObject.Properties['processIdentity']){$busyStatus.processIdentity}else{$null})
+    Check ([string]$busyStatus.phase -ceq 'failed' -and [string]$busyStatus.failureCode -ceq 'port-in-use' -and [string]$busyStatus.endpoint -ceq "http://127.0.0.1:$busyPort/v1" -and ($null -eq $busyIdentity -or $null -eq $busyIdentity.pid -or [int]$busyIdentity.pid -le 0) -and -not (Test-Path -LiteralPath $busyDiagnostic)) 'occupied-port-plain-message: no second port was tried'
     Check ($null -ne $busyFailure -and $busyFailure.Message.Contains('Attach running')) 'occupied-port-names-background-run: the message names Attach running'
 
     # occupied-port-wildcard-listener (R2): a wildcard listener on the port refuses, although a trial bind of 127.0.0.1 alone would succeed.
