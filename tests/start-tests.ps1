@@ -143,7 +143,10 @@ try {
     # Drive the REAL planner with exactly the parameters the re-plan call carried, and compare its arguments with the BASE JSON's.
     $realPlanParams=@{};foreach($k in $replanAsked.Keys){$realPlanParams[$k]=$replanAsked[$k]}
     $realPlanned=& $module { param($F,$P) & $F @P } $saved['Get-FastLlmPlan'] $realPlanParams
-    $normalizeInstall={param($Text) $t=[string]$Text;foreach($v in @($temp,$temp.Replace('\','/'),$temp.Replace('/','\'))){if($v){$t=$t.Replace($v,'<install-root>')}};$t.Replace('\','/')}
+    # The planner derives paths through GetFullPath, which on Windows PowerShell 5.1 (.NET Framework) expands an 8.3 short TEMP
+    # (a RUNNER~1-style folder) to its long form: both spellings of the install root are the same root.
+    $installSpellings=@($temp,[IO.Path]::GetFullPath($temp))
+    $normalizeInstall={param($Text) $t=[string]$Text;foreach($spelling in $installSpellings){foreach($v in @($spelling,$spelling.Replace('\','/'),$spelling.Replace('/','\'))){if($v){$t=$t.Replace($v,'<install-root>')}}};$t.Replace('\','/')}
     $realArgs=@($realPlanned.serverArguments | ForEach-Object { & $normalizeInstall $_ })
     $baseArgs=@($basePlanJson.serverArguments | ForEach-Object { & $normalizeInstall $_ })
     Check ($realArgs.Count -eq $baseArgs.Count -and ($realArgs -join "`n") -ceq ($baseArgs -join "`n")) 'replan-from-4gb-plan-json: the real planner, called as the re-plan calls it, yields the BASE plan arguments'
