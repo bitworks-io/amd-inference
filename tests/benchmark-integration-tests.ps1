@@ -13,7 +13,8 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 }
 if (-not ('Bitworks.FastLlm.ProcessHost' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot '../src/ProcessHost.cs') }
 
-function Assert-Test([bool]$Condition,[string]$Message) { if (-not $Condition) { throw "FAIL: $Message" }; Write-Host "PASS: $Message" }
+$script:checkCount = 0
+function Assert-Test([bool]$Condition,[string]$Message) { if (-not $Condition) { throw "FAIL: $Message" }; $script:checkCount++; Write-Host "PASS: $Message" }
 function Invoke-TestChild([string]$Script,[string]$Arguments) {
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=(Get-Process -Id $PID).Path
@@ -46,7 +47,9 @@ if (-not $Worker) {
                 Assert-Test ($process.Process.ExitCode -eq 0) "$case integration worker completed"
             } finally { $process.Dispose() }
         }
-        Write-Host 'Native Windows mock HTTP benchmark integration passed. Synthetic fixture only; no GPU benchmark executed.'
+        # The run cannot pass without running its worker cases: one completion check per case, at least ten.
+        if ($script:checkCount -lt 10) { throw "FAIL: only $script:checkCount integration checks ran; expected at least 10." }
+        Write-Host "$script:checkCount integration checks passed. Native Windows mock HTTP benchmark integration passed. Synthetic fixture only; no GPU benchmark executed."
     } finally {
         Remove-Item -LiteralPath $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -82,13 +85,13 @@ try {
     $state=@{
         schemaVersion=1;runId=$runId;phase='ready';endpoint="http://127.0.0.1:$port/v1"
         modelId='synthetic-mock-only';modelSha256=('0'*64);engineVersion='mock-only'
-        recipe=@{contextSize=256;backend='mock';requestedArguments=@('mock-argument')}
+        recipe=@{contextSize=256;backend='mock';requestedArguments=@('mock-argument','--no-ui')}
         canary=@{mockOnly=$true};placement=@{mockOnly=$true}
     }
     if ($CaseName -eq 'hip-state') {
         # Synthetic HIP-shaped state: the producer must pass engine and backend through verbatim.
         $state.engineVersion='b11658'
-        $state.recipe=@{contextSize=256;backend='hip';requestedArguments=@('mock-argument');adapters=@(@{device='ROCm0';name='Synthetic AMD GPU';vramMiB=16384})}
+        $state.recipe=@{contextSize=256;backend='hip';requestedArguments=@('mock-argument','--no-ui');adapters=@(@{device='ROCm0';name='Synthetic AMD GPU';vramMiB=16384})}
         $state.engine=@{backend='hip';version='b11658';componentId='synthetic-hip-component'}
         $state.serverDeviceListCapture=@{deviceInfo=@();usingDevice=@(@{name='ROCm0';id='0000:03:00.0';freeMiB=16000;description='Synthetic AMD GPU'});usingDeviceLikeLines=1;usingDeviceMalformedLines=0;usingDeviceOverflow=$false}
     }

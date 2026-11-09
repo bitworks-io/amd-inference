@@ -1182,7 +1182,7 @@ try{
     Check $ready 'mock server ready within 10 seconds'
     $lock=Enter-FastLlmOperation $installRoot
     function Write-State($WithAdapters=$false,$AdapterDriver=$null,$Vram=24576,$AdapterName='AMD Radeon RX 7900 XTX'){
-        $recipe=@{contextSize=256;backend='mock';requestedArguments=@('mock-argument')}
+        $recipe=@{contextSize=256;backend='mock';requestedArguments=@('mock-argument','--no-ui')}
         if($WithAdapters){$recipe['adapters']=@(@{device='Vulkan0';name=$AdapterName;vramMiB=$Vram;driverVersion=$AdapterDriver;backend='mock'})}
         Write-FastLlmState -InstallRoot $installRoot -State @{
             schemaVersion=1;runId=$runId;phase='ready';endpoint="http://127.0.0.1:$port/v1"
