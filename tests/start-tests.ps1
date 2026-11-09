@@ -157,9 +157,14 @@ try {
     $cliRoot=Join-Path $temp 'cli-install'
     New-Item -ItemType Directory -Path $cliRoot -Force | Out-Null
     $pwshPath=(Get-Process -Id $PID).Path
+    # Windows PowerShell 5.1 turns a native child's redirected stderr line into a terminating error under ErrorActionPreference Stop,
+    # so the child runs under Continue (as Invoke-CliRefusal in components-tests does) and its exit code and text are judged instead.
     function Invoke-StartTestCli([string[]]$Arguments){
-        $text=@(& $pwshPath -NoLogo -NoProfile -File (Join-Path $root 'fast-llm.ps1') @Arguments 2>&1 | ForEach-Object { [string]$_ })
-        return [pscustomobject]@{exit=$LASTEXITCODE;text=($text -join "`n")}
+        $previousPreference=$ErrorActionPreference
+        $ErrorActionPreference='Continue'
+        try{$text=@(& $pwshPath -NoLogo -NoProfile -File (Join-Path $root 'fast-llm.ps1') @Arguments 2>&1 | ForEach-Object { [string]$_ });$exitCode=$LASTEXITCODE}
+        finally{$ErrorActionPreference=$previousPreference}
+        return [pscustomobject]@{exit=$exitCode;text=($text -join "`n")}
     }
     $fixture=Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json'
     $cliChildrenElevated=$false
