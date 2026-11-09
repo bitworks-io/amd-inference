@@ -36,6 +36,10 @@ namespace FastLlmTests {
                     if (key.StartsWith("GGML_", StringComparison.OrdinalIgnoreCase) && !String.Equals(key, "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM", StringComparison.OrdinalIgnoreCase)) { Mark(diagnosticPath, "extra-ggml-variable: " + key); Environment.Exit(74); }
                 }
             }
+            // Run-log privacy tests: "marker-<mode>" behaves as <mode>, but the server echoes every request and response body to stderr
+            // (as a verbose llama-server would) and returns a completion marker, so a leak into any FastLLM file is detectable.
+            bool echoMarkers = mode.StartsWith("marker-");
+            if (echoMarkers) mode = mode.Substring(7);
             if (mode == "exit") Environment.Exit(7);
             Mark(diagnosticPath, "mock-entered");
             Console.Error.WriteLine("load_tensors: offloaded " + (mode == "partial" ? "39" : "41") + "/41 layers to GPU");
@@ -138,6 +142,11 @@ namespace FastLlmTests {
                         if (path == "/oversize") body = new String('x', 1048577);
                         if (path == "/stall") System.Threading.Thread.Sleep(10000);
                         if (path == "/redirect") status = 302;
+                        if (echoMarkers && path != "/health" && path != "/props" && path != "/tokenize") {
+                            body = body.Replace("\"Paris\"", "\"Paris FLLM-MARKER-COMPLETION-7f3a\"").Replace("\"Hello\"", "\"Hello FLLM-MARKER-COMPLETION-7f3a\"").Replace("\"content\":\"x\"", "\"content\":\"FLLM-MARKER-COMPLETION-7f3a\"");
+                            Console.Error.WriteLine("request " + path + ": " + requestBody.ToString());
+                            Console.Error.WriteLine("response " + path + ": " + body.Replace("\n", " "));
+                        }
                         var bytes=Encoding.UTF8.GetBytes(body);
                         var header=Encoding.ASCII.GetBytes("HTTP/1.1 "+status+" OK\r\n"+(status==302?"Location: https://example.com/\r\n":"")+"Content-Length: "+bytes.Length+"\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
                         stream.Write(header,0,header.Length); stream.Write(bytes,0,bytes.Length);

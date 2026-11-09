@@ -1009,3 +1009,139 @@ function Get-FastLlmUiLicenseDisclosure {
         canAccept = [bool] $canAccept
     }
 }
+
+# The API URL the window shows and copies. A run that is active reports its own port, which may differ from the saved
+# setting (the port applies at the next start); otherwise the saved port is what the next start will use. The address is always
+# rebuilt on 127.0.0.1 from the parsed port, never copied from the status.
+function Get-FastLlmUiApiUrl {
+    param($Status,$Settings)
+    $runningPort = Get-FastLlmUiRunningPort -Status $Status
+    if ($runningPort -ge 1024 -and $runningPort -le 65535) { return 'http://127.0.0.1:' + $runningPort + '/v1' }
+    $port = 8080
+    if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
+        $parsed = 0
+        if ([int]::TryParse([string]$Settings.serverPort,[ref]$parsed) -and $parsed -ge 1024 -and $parsed -le 65535) { $port = $parsed }
+    }
+    return 'http://127.0.0.1:' + $port + '/v1'
+}
+
+# The port of a running run's endpoint, or 0 when there is no active run with a usable endpoint.
+function Get-FastLlmUiRunningPort {
+    param($Status)
+    if (-not $Status -or -not $Status.PSObject.Properties['active'] -or -not [bool]$Status.active -or
+        -not $Status.PSObject.Properties['endpoint']) { return 0 }
+    $uri = $null
+    if ([Uri]::TryCreate([string]$Status.endpoint,[UriKind]::Absolute,[ref]$uri)) { return [int]$uri.Port }
+    return 0
+}
+
+# The built-in chat page of the running server, or $null. Only an active run whose state records chatPage='on' has one; a status written
+# before the field existed has none. The page is on the same loopback port as the API, without /v1.
+function Get-FastLlmUiChatUrl {
+    param($Status)
+    if (-not $Status -or -not $Status.PSObject.Properties['chatPage'] -or [string]$Status.chatPage -cne 'on') { return $null }
+    $port = Get-FastLlmUiRunningPort -Status $Status
+    if ($port -lt 1024 -or $port -gt 65535) { return $null }
+    return 'http://127.0.0.1:' + $port + '/'
+}
+
+# True while a server this window can see is ready: a window-started (foreground) run whose status says ready, or a background run
+# that is active and whose status says ready. Anything else (nothing running, still loading, a stopped run) is false.
+function Test-FastLlmUiServingReady {
+    param($Status,[bool]$ForegroundChildActive,$BackgroundObservation)
+    if (-not $Status -or -not $Status.PSObject.Properties['active'] -or -not [bool]$Status.active) { return $false }
+    if (-not $Status.PSObject.Properties['phase'] -or [string]$Status.phase -cne 'ready') { return $false }
+    $backgroundActive = [bool]($BackgroundObservation -and $BackgroundObservation.PSObject.Properties['active'] -and [bool]$BackgroundObservation.active)
+    return [bool]($ForegroundChildActive -or $backgroundActive)
+}
+
+# The Open chat button: enabled, with its address, only while a run (foreground or background) is ready and was started with the chat page on.
+function Get-FastLlmUiChatButtonState {
+    param($Status,[bool]$ForegroundChildActive,$BackgroundObservation)
+    $url = $null
+    if (Test-FastLlmUiServingReady -Status $Status -ForegroundChildActive $ForegroundChildActive -BackgroundObservation $BackgroundObservation) {
+        $url = Get-FastLlmUiChatUrl -Status $Status
+    }
+    return @{ url = $url; enabled = [bool]$url }
+}
+
+# Which window actions are usable. A launch or install in progress locks the setup actions, but a ready server (foreground or background)
+# does not lock Settings, the API check or the support bundle: those only read, and the check runs as a separate side step.
+function Get-FastLlmUiActionAvailability {
+    param([bool]$LaunchInProgress,[bool]$Serving,[bool]$SideStepActive,[bool]$BackgroundOccupied)
+    return @{
+        settings = [bool](-not $LaunchInProgress)
+        apiCheck = [bool]($Serving -and -not $SideStepActive)
+        saveBundle = [bool](-not $LaunchInProgress -and -not $SideStepActive)
+        openLogs = $true
+        downloadedModels = $true
+        connectApp = $true
+    }
+}
+
+# The status line after Settings is saved. While a run is going, a changed value applies at the next start.
+function Get-FastLlmUiSettingsSavedNote {
+    param([bool]$RunActive,$Before,$After)
+    if ($RunActive) {
+        if ([int]$After.serverPort -ne [int]$Before.serverPort) { return 'The new port applies at the next start.' }
+        if ([string]$After.thinking -cne [string]$Before.thinking) { return 'The new thinking setting applies at the next start.' }
+        if ([string]$After.chatPage -cne [string]$Before.chatPage) { return 'The new chat page setting applies at the next start.' }
+    }
+    return 'Settings saved.'
+}
+
+# Shown when the user turns the chat page off. The browser may keep the page's cached files for the address, so the fix is on the browser side.
+function Get-FastLlmUiChatPageOffNote {
+    param([int]$Port)
+    return "If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:" + $Port + '.'
+}
+
+# The background start request. A malformed settings file reads as defaults (the caller shows the notice); start still works.
+function New-FastLlmUiBackgroundRequest {
+    param([Parameter(Mandatory=$true)][string]$SourceRoot,[Parameter(Mandatory=$true)][string]$InstallRoot,
+          $ModelId,[int]$ContextSize,[string]$BarMitigation,[Parameter(Mandatory=$true)]$Settings)
+    $port = 8080
+    if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
+        $parsed = 0
+        if ([int]::TryParse([string]$Settings.serverPort,[ref]$parsed) -and $parsed -ge 1024 -and $parsed -le 65535) { $port = $parsed }
+    }
+    # Thinking is read tolerantly: only a stored 'off' is carried; absent or anything else is auto.
+    $thinking = 'auto'
+    if ($Settings -and $Settings.PSObject.Properties['thinking'] -and [string]$Settings.thinking -ceq 'off') { $thinking = 'off' }
+    $chatPage = 'off'
+    if ($Settings -and $Settings.PSObject.Properties['chatPage'] -and [string]$Settings.chatPage -ceq 'on') { $chatPage = 'on' }
+    return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
+        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage}
+}
+
+function Get-FastLlmUiMalformedSettingsNotice {
+    param($Settings)
+    if ($Settings -and $Settings.PSObject.Properties['malformed'] -and [bool]$Settings.malformed) {
+        return 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.'
+    }
+    return ''
+}
+
+# ---- Save support bundle: the pure parts (the default file name and the text of the list-before-save dialog) ----
+
+function Get-FastLlmUiSupportBundleFileName {
+    param([Parameter(Mandatory = $true)][DateTime] $Now)
+    return ('FastLLM-support-{0}.zip' -f $Now.ToString('yyyyMMdd-HHmm', [Globalization.CultureInfo]::InvariantCulture))
+}
+
+# The text of the dialog shown before anything is saved: every entry with its size, the redaction count, and the plain statement that the
+# bundle stays on this PC. $Listing is the parsed `doctor -SupportBundle <path> -ListOnly` output ({ entries: [{name,sizeBytes}], redactions }).
+function Format-FastLlmUiSupportBundleList {
+    param([Parameter(Mandatory = $true)] $Listing)
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $lines.Add('The support bundle will contain these files:')
+    $lines.Add('')
+    foreach ($entry in @($Listing.entries)) {
+        $kib = [Math]::Max(1, [int][Math]::Ceiling([double] $entry.sizeBytes / 1024))
+        $lines.Add(('  {0}  ({1} KiB)' -f [string] $entry.name, $kib))
+    }
+    $lines.Add('')
+    $lines.Add(('{0} item(s) that identify this PC or you (your user name, computer name, profile folder, hardware serial-style ids) were replaced with placeholders.' -f [int] $Listing.redactions))
+    $lines.Add('The bundle is saved only where you choose. FastLLM does not upload it or send it anywhere; share it only with people you trust. It never contains prompts, answers or chat text.')
+    return ($lines -join [Environment]::NewLine)
+}

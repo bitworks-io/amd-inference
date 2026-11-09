@@ -1304,7 +1304,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $expectedXt = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-iq4-xs') + $commonTail + @(
         '--ctx-size', '16384', '--parallel', '1', '--n-gpu-layers', 'all', '--fit', 'on', '--fit-target', '512', '--device', 'ROCm0', '--split-mode', 'none',
         '--flash-attn', 'auto', '--cache-type-k', 'f16', '--cache-type-v', 'f16', '--jinja', '--metrics', '--log-verbosity', '4', '--no-agent', '--no-ui')
-    $expectedFields = 'schemaVersion,catalogVersion,hardwareFingerprint,fingerprintKind,selectionMode,requestedModelId,requestedRecipeId,recovered,requestedContextSize,allowExperimentalModel,catalogContextSize,performanceQualified,candidatePlacementCount,profile,backend,engineVersion,enginePath,capacity,selectedAdapters,model,modelPath,requestedAllGpuLayers,placementVerified,splitMode,tensorSplit,endpoint,serverArguments,recipe,warnings'
+    $expectedFields = 'schemaVersion,catalogVersion,hardwareFingerprint,fingerprintKind,selectionMode,requestedModelId,requestedRecipeId,recovered,requestedContextSize,requestedServerPort,requestedThinking,requestedChatPage,allowExperimentalModel,catalogContextSize,performanceQualified,candidatePlacementCount,profile,backend,engineVersion,enginePath,capacity,selectedAdapters,model,modelPath,requestedAllGpuLayers,placementVerified,splitMode,tensorSplit,endpoint,serverArguments,recipe,warnings'
     $shippedCases = @(
         @{ Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; Args = $expectedXtx; EnginePath = 'C:\FastLLM\vulkan\llama-server.exe' },
         @{ Hardware = $xtHardware; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k'; Args = $expectedXt; EnginePath = 'C:\FastLLM\rocm\llama-server.exe' })
@@ -2324,14 +2324,17 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
 
     # fast-llm.ps1 argument rules and wiring.
     Check ($cliText.Contains("'update-check', 'update', 'components', 'settings')]") -and $cliText.Contains('[switch] $List') -and $cliText.Contains('[string] $Install') -and $cliText.Contains('[string] $Remove') -and $cliText.Contains('[switch] $AcceptLicense') -and $cliText.Contains('[switch] $AcceptExperimental') -and $cliText.Contains('[switch] $Detail')) 'fast-llm.ps1 declares the components action, -List, -Install, -Remove, -AcceptLicense, -AcceptExperimental and -Detail'
-    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components.') -and $cliText.Contains('-AcceptLicense is supported only by components -Install, install and settings.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
+    Check ($cliText.Contains('-List is supported only by components.') -and $cliText.Contains('-Install is supported only by components.') -and $cliText.Contains('-Remove is supported only by components and models.') -and $cliText.Contains('-AcceptLicense is supported only by components -Install, install and settings.') -and $cliText.Contains('-AcceptExperimental is supported only by plan, start and install.')) 'fast-llm.ps1 refuses the components parameters on other actions with the supported-only-by pattern'
     $gateIndex = $cliText.IndexOf('Assert-FastLlmExperimentalRecipeAllowed -InstallRoot')
     Check ($gateIndex -ge 0 -and $gateIndex -lt $cliText.IndexOf('Enter-FastLlmOperation -InstallRoot') -and $cliText.Contains("`$Action -in @('plan', 'start', 'install', 'doctor')")) 'the experimental gate runs for plan, start, install and doctor before the operation lock'
     $cliParameterNames = @($cliTree.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
     $assignedNames = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
-    # InstallRoot (default resolution), DeviceBinding and ComponentLicenses (lower-casing) are the deliberate assignments to a parameter.
-    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding', 'ComponentLicenses') -cnotcontains $_ })
+    # InstallRoot (default resolution), DeviceBinding, ComponentLicenses, Thinking and ChatPage (lower-casing after binding) are the deliberate assignments to a parameter.
+    $shadowed = @($assignedNames | Where-Object { $cliParameterNames -contains $_ -and @('InstallRoot', 'DeviceBinding', 'ComponentLicenses', 'Thinking', 'ChatPage') -cnotcontains $_ })
     Check ($shadowed.Count -eq 0) 'fast-llm.ps1 assigns to no variable named like one of its parameters, case-insensitively'
+    # The two lower-casing exemptions are exactly the guarded one-liners (no other assignment to Thinking or ChatPage hides behind them).
+    $lowerCaseAssignments = @($cliTree.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and @('Thinking', 'ChatPage') -contains $node.Left.VariablePath.UserPath }, $true) | ForEach-Object { $_.Extent.Text })
+    Check ($lowerCaseAssignments.Count -eq 2 -and $lowerCaseAssignments -ccontains '$Thinking = $Thinking.ToLowerInvariant()' -and $lowerCaseAssignments -ccontains '$ChatPage = $ChatPage.ToLowerInvariant()') 'fast-llm.ps1 assigns Thinking and ChatPage only to lower-case them after binding'
 
     $psExecutable = (Get-Process -Id $PID).Path
     function Invoke-CliRefusal([string[]] $Arguments) {
@@ -2345,7 +2348,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     foreach ($case in @(
             @{ args = @('plan', '-List', '-InstallRoot', $refusalRoot); text = '-List is supported only by components.' },
             @{ args = @('plan', '-Install', 'x', '-InstallRoot', $refusalRoot); text = '-Install is supported only by components.' },
-            @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components.' },
+            @{ args = @('recipes', '-Remove', 'x', '-InstallRoot', $refusalRoot); text = '-Remove is supported only by components and models.' },
             @{ args = @('recipes', '-Detail', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('plan', '-Detail', '-AsJson', '-InstallRoot', $refusalRoot); text = '-Detail is supported only by recipes with -AsJson.' },
             @{ args = @('start', '-AcceptLicense', '-InstallRoot', $refusalRoot); text = '-AcceptLicense is supported only by components' },
@@ -2430,7 +2433,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($setShown.exit -eq 0 -and $setShown.text -like '*componentLicenses: ask*') 'settings alone prints the current mode (ask)'
         $setShownJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
         $setObject = $setShownJson.text | ConvertFrom-Json
-        Check ($setShownJson.exit -eq 0 -and $setObject.mode -ceq 'ask' -and @($setObject.accepted).Count -eq 0) 'settings -AsJson gives an object with the mode and the accepted list'
+        Check ($setShownJson.exit -eq 0 -and $setObject.componentLicenses.mode -ceq 'ask' -and @($setObject.componentLicenses.accepted).Count -eq 0 -and $setObject.serverPort -eq 8080) 'settings -AsJson gives componentLicenses (the mode and the accepted list) beside serverPort, thinking and chatPage'
         $setRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-InstallRoot', $setRoot)
         Check ($setRefused.exit -ne 0 -and $setRefused.text.Contains('needs -AcceptLicense') -and -not (Test-Path -LiteralPath $setFile)) 'settings -ComponentLicenses accept-automatically without -AcceptLicense is refused and changes nothing'
         $setOn = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'accept-automatically', '-AcceptLicense', '-InstallRoot', $setRoot)
@@ -2439,7 +2442,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $setStored = Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot
         Check ($setStored.mode -ceq 'accept-automatically' -and @($setStored.accepted).Count -eq 5 -and $setStored.acceptedAt -match '^\d{4}-\d\d-\d\dT') 'the stored setting has the mode, an ISO acceptedAt and the five identities'
         $setOnJson = Invoke-CliRefusal @('settings', '-AsJson', '-InstallRoot', $setRoot)
-        Check ((($setOnJson.text | ConvertFrom-Json).mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
+        Check ((($setOnJson.text | ConvertFrom-Json).componentLicenses.mode) -ceq 'accept-automatically') 'settings -AsJson reads back accept-automatically'
         $setMixedRefused = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'Accept-Automatically', '-InstallRoot', $setRoot)
         Check ($setMixedRefused.exit -ne 0 -and $setMixedRefused.text.Contains('needs -AcceptLicense') -and (Get-FastLlmComponentLicenseSettings -InstallRoot $setRoot).mode -ceq 'accept-automatically') 'a mixed-case Accept-Automatically without -AcceptLicense is refused like the lower-case value and changes nothing'
         $setOff = Invoke-CliRefusal @('settings', '-ComponentLicenses', 'ask', '-InstallRoot', $setRoot)

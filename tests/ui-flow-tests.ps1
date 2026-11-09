@@ -248,7 +248,7 @@ Check ($ui.Contains('function StopUiOperation') -and $ui.Contains('$stopButton.A
     $ui.Contains('$stopItem.Add_Click({try{StopUiOperation}')) 'Window and tray Stop use the same run-scoped cleanup action.'
 Check ($ui.Contains('DisposeTrayControls;$timer.Dispose();$form.Dispose()') -and
     $ui.Contains('DisposeTrayControls') -and
-    @([regex]::Matches($ui,'New-Object Bitworks\.FastLlm\.ProcessHost')).Count -eq 1) 'One ProcessHost owns the child and tray controls are disposed even on an exceptional close.'
+    @([regex]::Matches($ui,'New-Object Bitworks\.FastLlm\.ProcessHost')).Count -eq 2 -and $ui.Contains('if($script:sideChild){$script:sideChild.Dispose()}')) 'One ProcessHost owns the child, one the read-only side step, and both and the tray controls are disposed even on an exceptional close.'
 Check ($ui.Contains('[Windows.Forms.Application]::Run($form)') -and
     -not $ui.Contains('$form.ShowDialog()')) 'The main window uses a message loop that survives an explicit Hide-to-tray transition.'
 $trayHandlerStart=$ui.IndexOf('$trayButton.Add_Click')
@@ -609,7 +609,7 @@ Check ((Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'b'
 Check ((Test-FastLlmUiStatusIsCurrentRun -Status $null -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ phase = 'ready' }) -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = '' }) -PreviousRunId 'a') -eq $false) 'a missing status, a missing run id and an empty run id are not the current run'
 Check ((Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'a' }) -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'A' }) -PreviousRunId 'a') -eq $true) 'the same run id is the previous run and the comparison is case-sensitive'
 Check ($ui.Contains('-StopRequested:$script:bgStopRequested') -and $ui.Contains('$statusLabel.Text=''Stopped. The background run ended.''')) 'the window shows the stopped wording when the run ended after the user Stop'
-Check ($ui.Contains("LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382") -and -not $ui.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first') -and $ui.Contains('No engine components are installed.') -and -not $ui.Contains('No community components are installed.')) 'the window opens with a neutral status and the empty component list says engine components'
+Check ($ui.Contains("LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 426") -and -not $ui.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first') -and $ui.Contains('No engine components are installed.') -and -not $ui.Contains('No community components are installed.')) 'the window opens with a neutral status and the empty component list says engine components'
 Check ($ui.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}') -and $ui.Contains('$dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel')) 'the model license review opens with no text selected and Enter still cancels'
 Check ($ui.Contains('$statusLabel.AutoEllipsis=$true') -and $ui.Contains('$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})')) 'a long status line is cut with an ellipsis and carries its full text in a tooltip'
 function Get-UiFunctionBody([string]$Text, [string]$Name) {
@@ -1100,5 +1100,121 @@ $startBgBody = $startBgBody.Substring(0, $startBgBody.IndexOf('$launched='))
 Check ($applyBody.Contains('SaveUserStoppedBackgroundRequestId $attachedBeforeId') -and $applyBody.IndexOf('$script:bgEndedByUserStop=$true') -lt $applyBody.IndexOf('SaveUserStoppedBackgroundRequestId $attachedBeforeId')) 'the stopped run request id is saved where the user stop is recorded'
 Check ($startBgBody.Contains("SaveUserStoppedBackgroundRequestId ''")) 'a new background start clears the saved stop'
 Check (([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText')).Count -eq ([regex]::Matches($ui, 'Get-FastLlmUiBackgroundText -State \$script:bgState[^\r\n]*-LastUserStoppedRequestId \$script:lastUserStoppedRequestId')).Count) 'every background text call passes the saved request id'
+
+# copy-url-follows-running-endpoint: a running run's own endpoint wins over the saved setting; otherwise the saved port.
+$runningStatus=[pscustomobject]@{active=$true;endpoint='http://127.0.0.1:18181/v1'}
+$idleStatus=[pscustomobject]@{active=$false;endpoint='http://127.0.0.1:18181/v1'}
+$savedSettings=[pscustomobject]@{serverPort=19191;thinking='default';chatPage=$false;malformed=$false}
+Check ((Get-FastLlmUiApiUrl -Status $runningStatus -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'copy-url-follows-running-endpoint: active run gives its endpoint'
+Check ((Get-FastLlmUiApiUrl -Status $idleStatus -Settings $savedSettings) -ceq 'http://127.0.0.1:19191/v1') 'copy-url-follows-running-endpoint: inactive gives the saved port'
+Check ((Get-FastLlmUiApiUrl -Status $null -Settings $savedSettings) -ceq 'http://127.0.0.1:19191/v1') 'no status gives the saved port'
+Check ((Get-FastLlmUiApiUrl -Status $idleStatus -Settings ([pscustomobject]@{})) -ceq 'http://127.0.0.1:8080/v1') 'settings without a port give 8080'
+Check ((Get-FastLlmUiRunningPort -Status $runningStatus) -eq 18181 -and (Get-FastLlmUiRunningPort -Status $idleStatus) -eq 0 -and (Get-FastLlmUiRunningPort -Status $null) -eq 0) 'the running port comes from the active endpoint only'
+# fast-llm-ui-parses: the window script has no syntax errors (it cannot run off Windows).
+$parseErrors=$null;$parseTokens=$null
+[void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$parseTokens,[ref]$parseErrors)
+Check (@($parseErrors).Count -eq 0) ('fast-llm-ui-parses: '+(@($parseErrors|ForEach-Object{$_.Message}) -join '; '))
+$uiText=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
+Check (-not $uiText.Contains("SetText('http://127.0.0.1:8080/v1')")) 'Copy API URL no longer hardcodes the port'
+Check ($uiText.Contains('$rowSlotX=@(24,162,300,438,576,714)')) 'the button row slot positions are declared once'
+
+# chat-url-only-when-on: the chat URL exists only for an active run whose state records chatPage on.
+$chatOnRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
+$chatOffRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='off'}
+$chatOnIdle=[pscustomobject]@{active=$false;phase='stopped';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
+Check ((Get-FastLlmUiChatUrl -Status $chatOnRunning) -ceq 'http://127.0.0.1:18181/') 'chat-url-only-when-on: an active run with chatPage on gives http://127.0.0.1:<port>/'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $chatOffRunning)) 'chat-url-only-when-on: chatPage off gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $chatOnIdle)) 'chat-url-only-when-on: an inactive run gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $null)) 'chat-url-only-when-on: no status gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status ([pscustomobject]@{active=$true;chatPage='on'}))) 'chat-url-only-when-on: an active run without an endpoint gives null'
+Check ($null -eq (Get-FastLlmUiChatUrl -Status ([pscustomobject]@{active=$true;endpoint='http://127.0.0.1:18181/v1';chatPage='ON'}))) 'chat-url-only-when-on: only the exact value on counts'
+# old-status-without-new-fields (R1): a status from the 4 GB release has no thinking and no chatPage field; no URL, no exception under StrictMode.
+$oldRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:8080/v1';modelId='m'}
+Check ($null -eq (Get-FastLlmUiChatUrl -Status $oldRunning)) 'old-status-without-new-fields: a running status with no thinking or chatPage field gives no chat URL'
+Check ((Get-FastLlmUiChatPageOffNote -Port 18181) -ceq "If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:18181.") 'the turn-off note names the browser site data and the current port'
+Check ($uiText.Contains("'Open chat'") -and $uiText.Contains('$openChatButton=ButtonAt ''Open chat'' $rowSlotX[2] $rowY $rowWidth') -and $uiText.Contains('Start-Process $chatUrl')) 'the Open chat button sits in slot 3 of the third row and opens the chat URL with Start-Process'
+Check ($uiText.Contains('Local chat page (off by default)') -and $uiText.Contains('-ChatPage') -and $uiText.Contains('Get-FastLlmUiChatPageOffNote')) 'the Settings dialog carries the chat page checkbox, saves ChatPage and shows the turn-off note'
+Check (-not ($uiText -match 'service worker')) 'no window copy claims anything about the page service worker'
+
+# A malformed settings file reads as defaults; the background request still gets the default port, with a notice.
+$malRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-mal-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $malRoot|Out-Null
+. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+Set-Content -LiteralPath (Join-Path $malRoot 'settings.json') -Value '{not json' -Encoding ascii
+$malSettings=Get-FastLlmServingSettings -InstallRoot $malRoot
+$malRequest=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $malRoot -ModelId $null -ContextSize 0 -BarMitigation 'auto' -Settings $malSettings
+Check ($malSettings.malformed -and $malRequest.serverPort -eq 8080) 'malformed settings.json: the background request uses the default port without throwing'
+Check ((Get-FastLlmUiMalformedSettingsNotice -Settings $malSettings) -ceq 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.') 'malformed settings.json gives the notice'
+Check ((Get-FastLlmUiMalformedSettingsNotice -Settings ([pscustomobject]@{malformed=$false})) -ceq '') 'no notice for good settings'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).serverPort -eq 18181) 'the request carries the saved port'
+Check ($malRequest.thinking -ceq 'auto') 'malformed settings.json: the background request uses thinking auto'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181;thinking='off'})).thinking -ceq 'off') 'the request carries the saved thinking off'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).thinking -ceq 'auto') 'a settings object without thinking gives auto'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{thinking='default'})).thinking -ceq 'auto') 'an unknown thinking value gives auto'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181;chatPage='on'})).chatPage -ceq 'on') 'the request carries the saved chatPage on'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).chatPage -ceq 'off') 'a settings object without chatPage gives off'
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{chatPage='yes'})).chatPage -ceq 'off') 'an unknown chatPage value gives off'
+Check ($malRequest.chatPage -ceq 'off') 'malformed settings.json: the background request uses chatPage off'
+Check ($uiText.Contains('Off: faster answers. Quality with thinking off is not measured by Bitworks.') -and $uiText.Contains('Auto (recommended)')) 'the Settings dialog carries the Thinking labels'
+Check ($uiText.Contains('-Thinking') -and $uiText.Contains('Get-FastLlmUiSettingsSavedNote')) 'the Settings dialog saves Thinking and takes its saved note from the helper'
+Check ($uiText.Contains('Chats are kept by your browser, not by FastLLM.')) 'the Settings dialog carries the chat privacy line under the chat page checkbox'
+Check ($uiText.Contains('$script:servingSettingsNotice=Get-FastLlmUiMalformedSettingsNotice') -and $uiText.Contains('$lines+=[string]$script:servingSettingsNotice')) 'a foreground start shows the same malformed settings notice as the background start'
+Remove-Item -LiteralPath $malRoot -Recurse -Force
+# I1: Open chat follows the ready run, foreground or background.
+$fgReadyOn=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
+$fgReadyOff=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='off'}
+$fgLoadingOn=[pscustomobject]@{active=$true;phase='loading';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
+$bgActiveObs=[pscustomobject]@{active=$true;occupied=$true}
+$bgIdleObs=[pscustomobject]@{active=$false;occupied=$false}
+$chatState=Get-FastLlmUiChatButtonState -Status $fgReadyOn -ForegroundChildActive $true -BackgroundObservation $null
+Check ($chatState.enabled -and $chatState.url -ceq 'http://127.0.0.1:18181/') 'chat-button: a foreground ready run with chatPage on enables Open chat'
+$chatState=Get-FastLlmUiChatButtonState -Status $fgReadyOff -ForegroundChildActive $true -BackgroundObservation $null
+Check (-not $chatState.enabled -and $null -eq $chatState.url) 'chat-button: a foreground ready run with chatPage off does not'
+$chatState=Get-FastLlmUiChatButtonState -Status $fgLoadingOn -ForegroundChildActive $true -BackgroundObservation $null
+Check (-not $chatState.enabled -and $null -eq $chatState.url) 'chat-button: a foreground run still loading does not'
+$chatState=Get-FastLlmUiChatButtonState -Status $fgReadyOn -ForegroundChildActive $false -BackgroundObservation $bgActiveObs
+Check ($chatState.enabled -and $chatState.url -ceq 'http://127.0.0.1:18181/') 'chat-button: a background ready run with chatPage on enables Open chat'
+$chatState=Get-FastLlmUiChatButtonState -Status $fgReadyOn -ForegroundChildActive $false -BackgroundObservation $bgIdleObs
+Check (-not $chatState.enabled -and $null -eq $chatState.url) 'chat-button: a stale status with no foreground child and no active background run does not'
+$chatState=Get-FastLlmUiChatButtonState -Status $null -ForegroundChildActive $false -BackgroundObservation $null
+Check (-not $chatState.enabled -and $null -eq $chatState.url) 'chat-button: nothing running gives disabled with a null URL'
+$chatState=Get-FastLlmUiChatButtonState -Status $fgReadyOn -ForegroundChildActive $false -BackgroundObservation $null
+Check (-not $chatState.enabled -and $null -eq $chatState.url) 'chat-button: after the child exits (no child, no background) the URL is cleared'
+
+# I2: which actions are usable.
+$a=Get-FastLlmUiActionAvailability -LaunchInProgress $true -Serving $false -SideStepActive $false -BackgroundOccupied $false
+Check (-not $a.settings -and -not $a.apiCheck -and -not $a.saveBundle -and $a.openLogs -and $a.connectApp -and $a.downloadedModels) 'availability: during a launch or install only logs, Connect and models stay usable'
+$a=Get-FastLlmUiActionAvailability -LaunchInProgress $false -Serving $true -SideStepActive $false -BackgroundOccupied $false
+Check ($a.settings -and $a.apiCheck -and $a.saveBundle) 'availability: a foreground ready run keeps Settings, the API check and the bundle usable'
+$a=Get-FastLlmUiActionAvailability -LaunchInProgress $false -Serving $true -SideStepActive $false -BackgroundOccupied $true
+Check ($a.settings -and $a.apiCheck -and $a.saveBundle) 'availability: a background ready run keeps them usable'
+$a=Get-FastLlmUiActionAvailability -LaunchInProgress $false -Serving $true -SideStepActive $true -BackgroundOccupied $false
+Check ($a.settings -and -not $a.apiCheck -and -not $a.saveBundle -and $a.openLogs) 'availability: only one side step at a time'
+$a=Get-FastLlmUiActionAvailability -LaunchInProgress $false -Serving $false -SideStepActive $false -BackgroundOccupied $false
+Check ($a.settings -and -not $a.apiCheck -and $a.saveBundle) 'availability: idle allows Settings and the bundle but not the API check'
+$a=Get-FastLlmUiActionAvailability -LaunchInProgress $false -Serving $false -SideStepActive $true -BackgroundOccupied $false
+Check ($a.settings -and -not $a.apiCheck -and -not $a.saveBundle -and $a.connectApp -and $a.openLogs -and $a.downloadedModels) 'availability: a side step on an idle window blocks a second one'
+$before=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'}
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $before -After ([pscustomobject]@{serverPort=9090;thinking='auto';chatPage='off'})) -ceq 'The new port applies at the next start.') 'settings note: a port change during a run applies at the next start'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $before -After ([pscustomobject]@{serverPort=8080;thinking='off';chatPage='off'})) -ceq 'The new thinking setting applies at the next start.') 'settings note: thinking during a run'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $before -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='on'})) -ceq 'The new chat page setting applies at the next start.') 'settings note: chat page during a run'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $before -After ([pscustomobject]@{serverPort=9090;thinking='auto';chatPage='off'})) -ceq 'Settings saved.') 'settings note: no run gives Settings saved.'
+# M6: the API URL is rebuilt on loopback from the parsed port.
+Check ((Get-FastLlmUiApiUrl -Status ([pscustomobject]@{active=$true;endpoint='http://example.invalid:18181/v1'}) -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'api-url: a non-loopback endpoint in the status still yields 127.0.0.1'
+Check ((Get-FastLlmUiApiUrl -Status ([pscustomobject]@{active=$true;endpoint='http://evil.example:18181/other'}) -Settings $savedSettings) -ceq 'http://127.0.0.1:18181/v1') 'api-url: a hostile endpoint host and path are dropped'
+# The window wires the helpers: the ready branch of the foreground timer and the background status both call the chat helper, and side steps use their own slot.
+Check ($uiText.Contains('Get-FastLlmUiChatButtonState') -and (([regex]::Matches($uiText,'UpdateUiRunState [\$(]')).Count) -ge 2) 'the window updates the chat button from both the foreground timer and the background status through one helper'
+Check ($uiText.Contains('function LaunchSideStep') -and $uiText.Contains('$script:sideChild')) 'the window has a separate side-step slot'
+
+# Residual fixes: settings notes are shown in a message box during a run, an update waits for a side step, and closing keeps a side step until confirmed.
+$noteBoxAt=$uiText.IndexOf("[void][Windows.Forms.MessageBox]::Show(`$form,[string]`$statusLabel.Text,'FastLLM settings','OK','Information')")
+$noteRunAt=$uiText.IndexOf('if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$statusLabel.Text)){')
+$noteOffAt=$uiText.IndexOf('Get-FastLlmUiChatPageOffNote -Port')
+Check ($noteBoxAt -gt 0 -and $noteRunAt -gt 0 -and $noteRunAt -lt $noteBoxAt -and $noteOffAt -gt 0 -and $noteOffAt -lt $noteRunAt) 'after Save during an active run the port and chat-page notes are shown in an OK-only message box'
+$updateBody=$uiText.Substring($uiText.IndexOf('function InvokeUiUpdate {'),400)
+Check ($updateBody.Contains('if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text=''Finish or stop the current action before updating.'';return}')) 'the window refuses to start an update while a side step is running'
+$closeAt=$uiText.IndexOf("'Closing stops this window''s active download or inference process. Continue?'")
+$sideDisposeAt=$uiText.IndexOf('if($script:sideChild){$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep=''idle''}')
+Check ($closeAt -gt 0 -and $sideDisposeAt -gt $closeAt) 'closing disposes the side step only after the Closing-stops confirmation'
 
 Write-Output "UI flow tests passed: $checks"

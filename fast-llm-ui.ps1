@@ -19,6 +19,12 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.Update.ps1')
 # Components (the experimental switch and the list helpers) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.Components.ps1')
+# Serving settings (port) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.ServingSettings.ps1')
+# The support bundle (reads settings.json) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.SupportBundle.ps1')
+# Connection info and the API-format check are dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
+. (Join-Path $PSScriptRoot 'src/FastLlm.ConnectInfo.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
@@ -81,6 +87,9 @@ function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.Se
 function ButtonAt($Text,$X,$Y,$Width=150) {
     $button=New-Object Windows.Forms.Button;$button.Text=$Text;$button.Location=New-Object Drawing.Point($X,$Y);$button.Size=New-Object Drawing.Size($Width,38);$form.Controls.Add($button);return $button
 }
+# The third button row (Y=350, width 128) has six fixed slots; each later task adds only its own button in its slot.
+# Slot owners: 0 Settings (port, thinking, local chat page), 1 Connect an app, 2 Open chat, 3 Downloaded models, 4 Save support bundle, 5 Open logs.
+$rowSlotX=@(24,162,300,438,576,714);$rowY=350;$rowWidth=128
 $installButton=ButtonAt 'Install && start' 24 255 180
 $startButton=ButtonAt 'Start / download' 220 255 180
 $stopButton=ButtonAt 'Stop' 416 255 110
@@ -91,25 +100,35 @@ $backgroundAttachButton=ButtonAt 'Attach running' 202 303 130
 $backgroundCheckButton=ButtonAt 'Recheck background' 340 303 160
 $componentsButton=ButtonAt 'Components' 508 303 120
 $chooseButton=ButtonAt 'Choose another setup' 636 303 184
+$settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
+$connectButton=ButtonAt 'Connect an app' $rowSlotX[1] $rowY $rowWidth
+$openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $rowWidth
+$modelsButton=ButtonAt 'Downloaded models' $rowSlotX[3] $rowY $rowWidth
+$bundleButton=ButtonAt ('Save support bundle'+[string][char]0x2026) $rowSlotX[4] $rowY $rowWidth
+$logsButton=ButtonAt 'Open logs' $rowSlotX[5] $rowY $rowWidth
+$openChatButton.Enabled=$false
+$script:chatUrl=$null
+# A read-only side step (API check, support bundle) runs in its own slot, so a serving child keeps $script:child and $script:step to itself.
+$script:sideChild=$null;$script:sideStep='idle';$script:runReady=$false;$script:servingSettingsNotice=''
 # A chooser pick is pinned for the preview and the start of that workflow only; the plain Install / Start buttons clear it.
 $script:previewReady=$false
 $script:chosenRecipe=$null
 $script:pendingRecipeRow=$null
-$script:servingPreviousRunId=''
+$script:servingPreviousRunId='';$script:bundlePath=''
 $script:identifiedVariant=''
 $script:chooserNotice=''
 $chooseButton.Enabled=$false
-$backgroundLabel=LabelAt 'Checking background host ownership.' 24 350
-$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 382
+$backgroundLabel=LabelAt 'Checking background host ownership.' 24 394
+$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 426
 # One line does not fit every status: cut it with an ellipsis and keep the full text in a tooltip.
 $statusLabel.AutoEllipsis=$true
 $statusTip=New-Object Windows.Forms.ToolTip
 $statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})
 $statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)
 $progress=New-Object Windows.Forms.ProgressBar
-$progress.Location=New-Object Drawing.Point(24,414);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
+$progress.Location=New-Object Drawing.Point(24,458);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
-$output.Location=New-Object Drawing.Point(24,440);$output.Size=New-Object Drawing.Size(796,206);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
+$output.Location=New-Object Drawing.Point(24,484);$output.Size=New-Object Drawing.Size(796,162);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
 $script:evidenceUrl=$null
 $resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
 $notesLabel=New-Object Windows.Forms.Label
@@ -273,7 +292,11 @@ function SetBusy([bool]$Busy) {
     $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
         $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
     foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
+    # A ready server (foreground or background) does not lock Settings or the support bundle; a launch, install, update or Microsoft setup does.
+    $availability=GetUiActionAvailabilityNow $Busy
     foreach($control in @($doctorButton,$driverButton)){$control.Enabled=-not $Busy}
+    $settingsButton.Enabled=[bool]$availability.settings
+    $bundleButton.Enabled=[bool]$availability.saveBundle
     $chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)
     $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
         (Test-FastLlmUiBackgroundMayStart -State $script:bgState))
@@ -287,7 +310,24 @@ function SetBusy([bool]$Busy) {
     $stopButton.Enabled=($null -eq $script:vcBroker -and -not $script:bgStopRequested -and
         ($script:child -or $script:bgState.attachedRequestId -or -not $occupied))
     $trayButton.Enabled=($null -eq $script:vcBroker)
+    $openChatButton.Enabled=[bool]$script:chatUrl
     $progress.Visible=$Busy
+}
+function GetUiActionAvailabilityNow([bool]$Busy) {
+    $foregroundServing=[bool]($script:child -and $script:step -ceq 'serving' -and $script:runReady)
+    $launch=[bool]($Busy -and (-not $foregroundServing -or $script:updateRun -or $script:vcBroker))
+    $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
+        $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
+    return Get-FastLlmUiActionAvailability -LaunchInProgress $launch -Serving ([bool]$script:runReady) -SideStepActive ([bool]$script:sideChild) -BackgroundOccupied $occupied
+}
+# Reads the Open chat button and the ready flag from a run status (foreground child or background run). Returns $true when either changed.
+function UpdateUiRunState($Status,[bool]$ForegroundChildActive) {
+    $observation=$script:bgState.observation
+    $chat=Get-FastLlmUiChatButtonState -Status $Status -ForegroundChildActive $ForegroundChildActive -BackgroundObservation $observation
+    $ready=[bool](Test-FastLlmUiServingReady -Status $Status -ForegroundChildActive $ForegroundChildActive -BackgroundObservation $observation)
+    $changed=([string]$script:chatUrl -cne [string]$chat.url) -or ([bool]$script:runReady -ne $ready)
+    $script:chatUrl=$chat.url;$script:runReady=$ready
+    return $changed
 }
 function GetUiBackgroundStatus([switch]$SkipHealth) {
     return & (Get-Module FastLlm) {param($Source,$Install,$Project,$Skip)
@@ -331,9 +371,12 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
         $statusLabel.Text='Background launch needs attention. Review Diagnostics before another start.'
     }
     if($script:bgState.observation -and -not $script:bgState.observation.active){$script:bgStopRequested=$false}
+    # A foreground child owns the run state through the timer; the background poll must not clear it.
+    if(-not $script:child){try{[void](UpdateUiRunState (GetUiBackgroundRunStatus) $false)}catch{$script:chatUrl=$null;$script:runReady=$false}}
     SetBusy ([bool]($script:child -or $script:vcBroker))
 }
 function SetUiBackgroundUnknown {
+    $script:chatUrl=$null;$script:runReady=$false
     $script:bgState.observation=[pscustomobject]@{phase='occupied-unverified';active=$false;attachable=$false;occupied=$true}
     $script:bgState.attention='Background ownership could not be verified. Review Diagnostics; start and stop are disabled.'
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
@@ -429,7 +472,64 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
     $script:step=$Step
     try{$script:child.Start($info)}catch{$script:child.Dispose();$script:child=$null;$script:step='idle';SetBusy $false;throw}
     SetBusy $true;$statusLabel.Text=$Step;$output.Text=''
-    if($Step -ceq 'serving'){$script:servingNotesDone=$false;$notesLabel.Text='';$barLink.Visible=$false}
+    if($Step -ceq 'serving'){
+        $script:servingNotesDone=$false;$notesLabel.Text='';$barLink.Visible=$false
+        # A settings file that cannot be read means defaults; say so, as the background start does.
+        $script:servingSettingsNotice=''
+        try{$script:servingSettingsNotice=Get-FastLlmUiMalformedSettingsNotice -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)}catch{}
+        if($script:servingSettingsNotice){$notesLabel.Text=$script:servingSettingsNotice}
+    }
+}
+# A read-only doctor step (API check, support bundle list and save) in its own process slot, so it never touches the serving child, its step
+# or its output. One at a time. Results are shown in a dialog because the serving output box and status line are rewritten by the timer.
+function LaunchSideStep([string]$Step,[object[]]$Arguments) {
+    if($Step -cnotin @('api check','bundle list','bundle save')){throw 'That step cannot run beside a server.'}
+    if($script:sideChild){throw 'Another check is still running. Wait for it to finish.'}
+    $info=New-Object Diagnostics.ProcessStartInfo
+    $info.FileName=(Get-Process -Id $PID).Path
+    $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $PSScriptRoot 'fast-llm.ps1'))+$Arguments
+    $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
+    $script:sideChild=New-Object Bitworks.FastLlm.ProcessHost
+    $script:sideStep=$Step
+    try{$script:sideChild.Start($info)}catch{$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep='idle';SetBusy ([bool]($script:child -or $script:vcBroker));throw}
+    SetBusy ([bool]($script:child -or $script:vcBroker))
+    $statusLabel.Text=$(if($Step -ceq 'api check'){'Checking the API formats...'}else{'Preparing the support bundle...'})
+}
+function ShowUiSideResult([string]$Title,[string]$Text) {
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text=$Title;$dialog.Size=New-Object Drawing.Size(760,480);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $box=New-Object Windows.Forms.TextBox;$box.Multiline=$true;$box.ReadOnly=$true;$box.ScrollBars='Vertical';$box.Location=New-Object Drawing.Point(16,16);$box.Size=New-Object Drawing.Size(710,360)
+    $box.Text=($Text -replace "(?<!\r)\n",[Environment]::NewLine)
+    $close=New-Object Windows.Forms.Button;$close.Text='Close';$close.Location=New-Object Drawing.Point(606,390);$close.Size=New-Object Drawing.Size(120,36);$close.DialogResult=[Windows.Forms.DialogResult]::OK
+    $dialog.Controls.Add($box);$dialog.Controls.Add($close);$dialog.AcceptButton=$close;$dialog.CancelButton=$close
+    try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose()}
+}
+function CompleteUiSideStep {
+    if(-not $script:sideChild){return}
+    if(-not $script:sideChild.Process.HasExited){return}
+    $script:sideChild.Process.WaitForExit();$text=$script:sideChild.Snapshot();$code=$script:sideChild.Process.ExitCode;$step=$script:sideStep
+    $script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep='idle'
+    SetBusy ([bool]($script:child -or $script:vcBroker))
+    try{
+        switch($step){
+            'api check'{
+                # Exit 1: at least one format failed (the table says which). Exit 2: the server was not Ready (the child printed a plain message).
+                $checkResult=$null;try{$checkResult=ConvertFrom-Json $text}catch{}
+                $shown=$(if($checkResult){Format-FastLlmApiCheckTable -Result $checkResult}else{$text})
+                $statusLabel.Text=$(if($code -eq 0){'API format check finished.'}elseif($code -eq 1){'API format check finished: at least one format failed.'}else{'API format check did not run.'})
+                ShowUiSideResult 'API format check' $shown
+            }
+            'bundle list'{
+                if($code -ne 0){$statusLabel.Text='The support bundle could not be prepared. Nothing was saved.';ShowUiSideResult 'Save support bundle' $text;return}
+                $statusLabel.Text='Support bundle contents listed.';ContinueSupportBundle $text
+            }
+            'bundle save'{
+                if($code -ne 0){$statusLabel.Text='The support bundle could not be saved.';ShowUiSideResult 'Save support bundle' $text;return}
+                $statusLabel.Text='Support bundle saved.'
+                ShowUiSideResult 'Save support bundle' ('Saved to '+$script:bundlePath+[Environment]::NewLine+'FastLLM did not upload it. Share it only with people you trust.')
+            }
+        }
+    }catch{$statusLabel.Text='The check could not be shown: '+$_.Exception.Message}
 }
 function RevealUiForAction {
     if($script:trayState.visibility -eq 'tray'){RestoreFromTray}
@@ -512,6 +612,7 @@ function StopUiOperation {
     }
     if($script:child){
         $script:child.Dispose();$script:child=$null;$script:step='idle'
+        $script:chatUrl=$null;$script:runReady=$false
         if($script:flow){$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event stop}
         RefreshUiBackgroundStatus
         $statusLabel.Text=if($script:bgState.observation.occupied){
@@ -804,6 +905,54 @@ function ShowDriverGuidance($Diagnostic) {
     try{$devices.SelectedIndex=0;[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     $statusLabel.Text='Driver guidance viewed. No driver changes made.'
 }
+function ShowUiSettings {
+    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,260);$dialog.StartPosition='CenterParent'
+    $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
+    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
+    $portBox=New-Object Windows.Forms.NumericUpDown
+    $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
+    $portBox.Value=[decimal][int]$current.serverPort;$dialog.Controls.Add($portBox)
+    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(200,27);$thinkingLabel.UseMnemonic=$false;$dialog.Controls.Add($thinkingLabel)
+    $thinkingBox=New-Object Windows.Forms.ComboBox
+    $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
+    [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
+    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$dialog.Controls.Add($thinkingBox)
+    $chatBox=New-Object Windows.Forms.CheckBox;$chatBox.Text='Local chat page (off by default)';$chatBox.Location=New-Object Drawing.Point(20,104);$chatBox.Size=New-Object Drawing.Size(510,27)
+    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$dialog.Controls.Add($chatBox)
+    $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$dialog.Controls.Add($chatPrivacy)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,164);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,164);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
+    $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
+    $saveButton.Add_Click({
+        try{
+            $savedThinking=$(if($thinkingBox.SelectedIndex -eq 1){'off'}else{'auto'})
+            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'})
+            $script:settingsSavedChatPage=$(if($chatBox.Checked){'on'}else{'off'})
+            $script:settingsSavedPort=[int]$portBox.Value
+            $script:settingsSavedThinking=$savedThinking
+            $dialog.DialogResult='OK';$dialog.Close()
+        }catch{
+            [void][Windows.Forms.MessageBox]::Show($dialog,[string]$_.Exception.Message,'FastLLM settings','OK','Warning')
+        }
+    })
+    SetTrayMenuAvailable $false
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage
+    try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    if([string]$result -ceq 'OK'){
+        $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
+        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage})
+        if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
+            $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
+        }
+        # The 250 ms tick rewrites the status line while a run is active, so the notes are also shown where they stay put.
+        if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$statusLabel.Text)){
+            [void][Windows.Forms.MessageBox]::Show($form,[string]$statusLabel.Text,'FastLLM settings','OK','Information')
+        }
+    }
+}
 function StartUiBackground {
     if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
     ReadSelection
@@ -811,20 +960,23 @@ function StartUiBackground {
     $script:bgEndedByUserStop=$false
     if($script:lastUserStoppedRequestId){SaveUserStoppedBackgroundRequestId ''}
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
-    $request=[pscustomobject]@{sourceRoot=$PSScriptRoot;installRoot=$script:installPath;profile='balanced';
-        modelId=$selectedModel;contextSize=[int]$contextBox.Value;vulkanBarMitigation=(GetBarValue)}
+    $serving=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    $settingsNotice=Get-FastLlmUiMalformedSettingsNotice -Settings $serving
+    $request=New-FastLlmUiBackgroundRequest -SourceRoot $PSScriptRoot -InstallRoot $script:installPath -ModelId $selectedModel `
+        -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
     $output.Text='This optional background mode is not a Windows service or auto-start task. Keep this user signed in; re-open FastLLM to attach later.'
+    if($settingsNotice){$output.Text=$settingsNotice+"`r`n`r`n"+$output.Text;$statusLabel.Text=$settingsNotice}
     SetBusy $false
     return $launched
 }
@@ -832,12 +984,14 @@ function AttachUiBackground {
     if($script:child -or $script:vcBroker){throw 'Finish the active setup or foreground operation first.'}
     ReadSelection
     RefreshUiBackgroundStatus
+    # The port to expect comes from the running run's own endpoint, never from the saved setting.
+    $expectedPort=Get-FastLlmUiRunningPort -Status (GetUiBackgroundRunStatus)
     $attached=Invoke-FastLlmUiBackgroundAttach -State $script:bgState -Attach {
         param($ExpectedRequestId)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Request)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Request,$Port)
             . $Source
-            Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request
-        } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId
+            Attach-FastLlmBackgroundHost -InstallRoot $Install -SourceRoot $Project -ExpectedRequestId $Request -ExpectedServerPort $Port
+        } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $PSScriptRoot $script:installPath $ExpectedRequestId $expectedPort
     }
     $script:bgEndedByUserStop=$false
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
@@ -928,6 +1082,211 @@ function ShowComponentsWindow {
     finally{$script:componentsView=$null;$dialog.Dispose()}
 }
 $componentsButton.Add_Click({try{ShowComponentsWindow}catch{ShowFailure $_.Exception.Message}})
+# The downloaded models with their sizes and a Remove button per row, the free disk space, and a button for leftover partial downloads.
+# Removal is Remove-FastLlmInstalledModel under the operation lock (taken without waiting); a refusal is shown as a plain sentence.
+$script:modelsView=$null
+function FillModelsPanel {
+    $view=$script:modelsView
+    foreach($old in @($view.panel.Controls)){$old.Dispose()}
+    $rows=@()
+    try{$rows=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file)}
+    catch{$view.message.Text="The model list could not be read: $($_.Exception.Message)"}
+    $leftovers=@()
+    try{$leftovers=@(Get-FastLlmModelLeftovers -InstallRoot $view.root)}catch{}
+    $free=Get-FastLlmModelStoreFreeBytes -InstallRoot $view.root
+    $view.free.Text=if($null -ne $free){"Free disk space: $(Format-FastLlmModelStoreGigabytes -Bytes $free) GB"}else{''}
+    $view.leftoverButton.Enabled=($leftovers.Count -gt 0)
+    $leftoverBytes=[int64]0;foreach($leftover in $leftovers){$leftoverBytes+=[int64]$leftover.sizeBytes}
+    $view.leftoverButton.Tag=@($leftovers | Where-Object{-not $_.locked} | ForEach-Object{[string]$_.name})
+    $view.leftoverText=if($leftovers.Count -gt 0){"$($leftovers.Count) leftover file(s), $(Format-FastLlmModelStoreGigabytes -Bytes $leftoverBytes) GB"}else{''}
+    if($rows.Count -eq 0){
+        $none=New-Object Windows.Forms.Label
+        $none.Text='No models are downloaded.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
+        $view.panel.Controls.Add($none)
+        return
+    }
+    $top=8
+    foreach($row in $rows){
+        $entry=@($catalog.models | Where-Object{[string]$_.id -ceq [string]$row.id})[0]
+        $name=Get-FastLlmModelDisplayName -Model $entry
+        $text="$name  -  $(Format-FastLlmModelStoreGigabytes -Bytes $row.sizeBytes) GB"
+        if($row.inUse){$text+="  (in use: $($row.inUseReason))"}
+        $rowLabel=New-Object Windows.Forms.Label
+        $rowLabel.Text=$text;$rowLabel.Location=New-Object Drawing.Point(8,($top+6));$rowLabel.Size=New-Object Drawing.Size(530,26)
+        $removeButton=New-Object Windows.Forms.Button
+        $removeButton.Text='Remove';$removeButton.Tag=[string]$row.id;$removeButton.Location=New-Object Drawing.Point(548,$top);$removeButton.Size=New-Object Drawing.Size(110,32)
+        $removeButton.Enabled=-not $row.inUse
+        $removeButton.Add_Click({param($sender,$clickArgs)RemoveModelFromWindow ([string]$sender.Tag)})
+        $view.panel.Controls.Add($rowLabel);$view.panel.Controls.Add($removeButton)
+        $top+=40
+    }
+}
+function RemoveModelFromWindow([string]$ModelId) {
+    $view=$script:modelsView
+    $entry=@($catalog.models | Where-Object{[string]$_.id -ceq $ModelId})[0]
+    $row=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file | Where-Object{$_.id -ceq $ModelId})[0]
+    if($null -eq $entry -or $null -eq $row){$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'not-installed';[void]$view.dialog.BeginInvoke([Action]{FillModelsPanel});return}
+    $text=Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $entry) -SizeBytes ([int64]$row.sizeBytes)
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,$text,'Remove model','YesNo','Question','Button2')
+    if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
+    $removeLock=$null
+    try{
+        try{$removeLock=Enter-FastLlmOperation -InstallRoot $view.root}
+        catch{$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'operation-in-progress';return}
+        $result=Remove-FastLlmInstalledModel -InstallRoot $view.root -CatalogPath $view.file -ModelId $ModelId -OperationLockHeld
+        $view.message.Text=if($result.removed){"Removed $(Get-FastLlmModelDisplayName -Model $entry)."}else{Get-FastLlmModelRemovalRefusalText -Reason ([string]$result.reason)}
+    }
+    catch{$view.message.Text="The model could not be removed: $($_.Exception.Message)"}
+    finally{if($removeLock){$removeLock.Dispose()}}
+    # Rebuilt after this Click handler returns: FillModelsPanel disposes the clicked button, which must not happen inside its own Click.
+    [void]$view.dialog.BeginInvoke([Action]{FillModelsPanel})
+}
+function RemoveLeftoversFromWindow {
+    $view=$script:modelsView
+    $names=@($view.leftoverButton.Tag)
+    if($names.Count -eq 0){return}
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?",'Remove leftover partial downloads','YesNo','Question','Button2')
+    if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
+    $removeLock=$null
+    try{
+        try{$removeLock=Enter-FastLlmOperation -InstallRoot $view.root}
+        catch{$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'operation-in-progress';return}
+        $results=@(Remove-FastLlmModelLeftovers -InstallRoot $view.root -Names $names -OperationLockHeld)
+        $kept=@($results | Where-Object{-not $_.removed})
+        $view.message.Text=if($kept.Count -eq 0){"Removed $($results.Count) leftover file(s)."}else{"Removed $($results.Count-$kept.Count) leftover file(s); $($kept.Count) could not be removed ($($kept[0].reason))."}
+    }
+    catch{$view.message.Text="The leftover files could not be removed: $($_.Exception.Message)"}
+    finally{if($removeLock){$removeLock.Dispose()}}
+    [void]$view.dialog.BeginInvoke([Action]{FillModelsPanel})
+}
+function ShowModelsWindow {
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Downloaded models';$dialog.Size=New-Object Drawing.Size(720,500)
+    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $panel=New-Object Windows.Forms.Panel
+    $panel.Location=New-Object Drawing.Point(20,20);$panel.Size=New-Object Drawing.Size(660,250);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
+    $free=New-Object Windows.Forms.Label
+    $free.Location=New-Object Drawing.Point(20,280);$free.Size=New-Object Drawing.Size(300,26);$free.Text=''
+    $leftoverButton=New-Object Windows.Forms.Button
+    $leftoverButton.Text='Remove leftover partial downloads';$leftoverButton.Location=New-Object Drawing.Point(330,276);$leftoverButton.Size=New-Object Drawing.Size(350,32);$leftoverButton.Enabled=$false
+    $leftoverButton.Add_Click({RemoveLeftoversFromWindow})
+    $message=New-Object Windows.Forms.Label
+    $message.Location=New-Object Drawing.Point(20,320);$message.Size=New-Object Drawing.Size(660,70);$message.Text=''
+    $close=New-Object Windows.Forms.Button
+    $close.Text='Close';$close.Location=New-Object Drawing.Point(570,410);$close.Size=New-Object Drawing.Size(110,32);$close.DialogResult='Cancel'
+    $dialog.Controls.Add($panel);$dialog.Controls.Add($free);$dialog.Controls.Add($leftoverButton);$dialog.Controls.Add($message);$dialog.Controls.Add($close)
+    $dialog.CancelButton=$close
+    $script:modelsView=@{dialog=$dialog;panel=$panel;free=$free;leftoverButton=$leftoverButton;message=$message;leftoverText='';root=[IO.Path]::GetFullPath($pathBox.Text);file=(Join-Path $PSScriptRoot 'config/catalog.json')}
+    try{FillModelsPanel;[void]$dialog.ShowDialog($form)}
+    finally{$script:modelsView=$null;$dialog.Dispose()}
+}
+$modelsButton.Add_Click({try{ShowModelsWindow}catch{ShowFailure $_.Exception.Message}})
+# Open logs: the run logs folder (state\logs) in Explorer, created if it is not there yet.
+function OpenLogsFolder {
+    ReadSideSelection
+    $stateRoot=& (Get-Module FastLlm) {param($Root) Get-FastLlmStateRoot -InstallRoot $Root -Create} $script:installPath
+    $logsPath=Join-Path $stateRoot 'logs'
+    if(-not (Test-Path -LiteralPath $logsPath -PathType Container)){New-Item -ItemType Directory -Path $logsPath -Force | Out-Null}
+    Start-Process explorer.exe -ArgumentList @($logsPath)
+}
+$logsButton.Add_Click({try{OpenLogsFolder}catch{$statusLabel.Text='The logs folder could not be opened: '+$_.Exception.Message}})
+# Save support bundle: a list-only step first (nothing is written), then the list and the redaction count in a dialog, then a Save dialog
+# that defaults to the Desktop, then the write. The zip is local only; nothing is uploaded.
+function ReadSideSelection {
+    # While a run is going, its own selection stays; re-reading would reset the window's per-workflow notes.
+    if(-not $script:child){ReadSelection}
+}
+function StartSupportBundle {
+    ReadSideSelection
+    $probe=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-support-list-'+[Guid]::NewGuid().ToString('N')+'.zip')
+    LaunchSideStep 'bundle list' (@('doctor','-SupportBundle',$probe,'-ListOnly')+$script:selection)
+}
+function ContinueSupportBundle([string]$Text) {
+    $listing=ConvertFrom-Json $Text
+    $answer=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiSupportBundleList -Listing $listing),'Save support bundle',[Windows.Forms.MessageBoxButtons]::OKCancel,[Windows.Forms.MessageBoxIcon]::Information)
+    if($answer -ne [Windows.Forms.DialogResult]::OK){$statusLabel.Text='Support bundle cancelled. Nothing was saved.';return}
+    $dialog=New-Object Windows.Forms.SaveFileDialog
+    try{
+        $dialog.Title='Save support bundle'
+        $dialog.Filter='Zip file (*.zip)|*.zip'
+        $dialog.DefaultExt='zip'
+        $dialog.InitialDirectory=[Environment]::GetFolderPath('Desktop')
+        $dialog.FileName=Get-FastLlmUiSupportBundleFileName -Now (Get-Date)
+        $dialog.OverwritePrompt=$false
+        $chosen=$null
+        while($null -eq $chosen){
+            if($dialog.ShowDialog($form) -ne [Windows.Forms.DialogResult]::OK){$statusLabel.Text='Support bundle cancelled. Nothing was saved.';return}
+            if(Test-Path -LiteralPath $dialog.FileName){[void][Windows.Forms.MessageBox]::Show($form,'That file already exists. A support bundle is never written over a file; choose a new name.','Save support bundle')}
+            else{$chosen=$dialog.FileName}
+        }
+    }finally{$dialog.Dispose()}
+    $script:bundlePath=$chosen
+    LaunchSideStep 'bundle save' (@('doctor','-SupportBundle',$chosen)+$script:selection)
+}
+$bundleButton.Add_Click({try{StartSupportBundle}catch{ShowFailure $_.Exception.Message}})
+# Connect an app: the base URLs, model name and context limit with Copy buttons, the agent warning, the endpoint list and one card per client.
+# "Check the API formats" closes the dialog and runs `doctor -ApiCheck` as a side step (beside a serving run); the pass/fail table opens in a dialog.
+function ShowConnectDialog {
+    $info=Get-FastLlmConnectionInfo -Status (GetUiBackgroundRunStatus) -InstallRoot $script:installPath
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Connect an app';$dialog.Size=New-Object Drawing.Size(820,640);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+    $panel=New-Object Windows.Forms.Panel;$panel.Location=New-Object Drawing.Point(0,0);$panel.Size=New-Object Drawing.Size(800,540);$panel.AutoScroll=$true;$dialog.Controls.Add($panel)
+    $y=12
+    $intro=New-Object Windows.Forms.Label;$intro.Location=New-Object Drawing.Point(16,$y);$intro.Size=New-Object Drawing.Size(740,40);$intro.UseMnemonic=$false
+    $intro.Text=$(if($info.state -ceq 'running'){'FastLLM is running. Use these values in your app. They stay on this computer (127.0.0.1).'}else{'FastLLM is not running. The model name and context limit appear once it is running; the address below is where it will listen.'})
+    $panel.Controls.Add($intro);$y+=46
+    $fields=@(
+        @('Base URL',[string]$info.baseUrl),
+        @('Anthropic base URL',[string]$info.anthropicBaseUrl),
+        @('Model name',$(if($null -ne $info.modelName){[string]$info.modelName}else{'(shown when running)'})),
+        @('Context limit (tokens)',$(if($null -ne $info.contextTokens){[string]$info.contextTokens}else{'(shown when running)'}))
+    )
+    foreach($field in $fields){
+        $name=New-Object Windows.Forms.Label;$name.Text=$field[0];$name.Location=New-Object Drawing.Point(16,($y+4));$name.Size=New-Object Drawing.Size(170,24);$name.UseMnemonic=$false;$panel.Controls.Add($name)
+        $box=New-Object Windows.Forms.TextBox;$box.Text=$field[1];$box.ReadOnly=$true;$box.Location=New-Object Drawing.Point(190,$y);$box.Size=New-Object Drawing.Size(450,26);$panel.Controls.Add($box)
+        $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=$field[1];$panel.Controls.Add($copy)
+        $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
+        $y+=36
+    }
+    if($info.agentWarning){
+        $warn=New-Object Windows.Forms.Label;$warn.Text=[string]$info.agentWarning;$warn.Location=New-Object Drawing.Point(16,$y);$warn.Size=New-Object Drawing.Size(740,60);$warn.UseMnemonic=$false;$warn.ForeColor=[Drawing.Color]::DarkRed
+        $panel.Controls.Add($warn);$y+=66
+    }
+    $endpointText='Endpoints on the base URL:'+[Environment]::NewLine+((@($info.endpoints)|ForEach-Object{'  '+$_.path+' - '+$_.label}) -join [Environment]::NewLine)
+    $endpointLabel=New-Object Windows.Forms.Label;$endpointLabel.Text=$endpointText;$endpointLabel.Location=New-Object Drawing.Point(16,$y);$endpointLabel.Size=New-Object Drawing.Size(740,112);$endpointLabel.UseMnemonic=$false
+    $panel.Controls.Add($endpointLabel);$y+=120
+    foreach($client in @($info.clients)){
+        $title=New-Object Windows.Forms.Label;$title.Text=[string]$client.title;$title.Font=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold);$title.Location=New-Object Drawing.Point(16,$y);$title.Size=New-Object Drawing.Size(500,24);$title.UseMnemonic=$false;$panel.Controls.Add($title)
+        $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=[string]$client.snippet;$panel.Controls.Add($copy)
+        $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
+        $y+=30
+        $lineCount=@(([string]$client.snippet) -split "`n").Count
+        $snippetBox=New-Object Windows.Forms.TextBox;$snippetBox.Multiline=$true;$snippetBox.ReadOnly=$true;$snippetBox.ScrollBars='Vertical';$snippetBox.WordWrap=$true
+        $snippetBox.Text=([string]$client.snippet) -replace "`n",[Environment]::NewLine
+        $snippetBox.Location=New-Object Drawing.Point(16,$y);$snippetBox.Size=New-Object Drawing.Size(724,[Math]::Min(190,24+18*$lineCount));$panel.Controls.Add($snippetBox);$y+=$snippetBox.Height+6
+        foreach($docUrl in @($client.docUrls)){
+            $link=New-Object Windows.Forms.LinkLabel;$link.Text='Documentation: '+$docUrl;$link.Location=New-Object Drawing.Point(16,$y);$link.AutoSize=$true;$link.Tag=[string]$docUrl;$panel.Controls.Add($link)
+            $link.Add_LinkClicked({param($sender,$e)try{if(([string]$sender.Tag).StartsWith('https://')){Start-Process ([string]$sender.Tag)}}catch{}})
+            $y+=22
+        }
+        $y+=12
+    }
+    $check=New-Object Windows.Forms.Button;$check.Text='Check the API formats';$check.Location=New-Object Drawing.Point(16,552);$check.Size=New-Object Drawing.Size(200,36);$dialog.Controls.Add($check)
+    $check.Enabled=([string]$info.state -ceq 'running' -and [bool](GetUiActionAvailabilityNow ([bool]($script:child -or $script:vcBroker -or $script:updateRun))).apiCheck)
+    $close=New-Object Windows.Forms.Button;$close.Text='Close';$close.Location=New-Object Drawing.Point(660,552);$close.Size=New-Object Drawing.Size(120,36)
+    $close.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($close);$dialog.CancelButton=$close
+    $script:apiCheckRequested=$false
+    $check.Add_Click({$script:apiCheckRequested=$true;$dialog.Close()})
+    SetTrayMenuAvailable $false
+    try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    if($script:apiCheckRequested){
+        $script:apiCheckRequested=$false
+        ReadSideSelection
+        LaunchSideStep 'api check' (@('doctor','-ApiCheck')+$script:selection)
+    }
+}
+$connectButton.Add_Click({try{ShowConnectDialog}catch{ShowFailure $_.Exception.Message}})
 # "Choose another setup": the recipes the CLI lists for this card (`recipes -Detail -AsJson`, read-only and offline), experimental ones only while the switch is on.
 # Choosing one whose engine chain needs an AMD license opens the consent dialog; Install runs the component install as a child, then the start uses -Recipe.
 # Both dialogs are disposed only after ShowDialog returns, never inside one of their own control handlers (as in the Components window).
@@ -1139,7 +1498,7 @@ function CompleteUiStartupChecks {
 }
 function InvokeUiUpdate {
     if(-not $script:updateOffer -or $script:updateRun){return}
-    if($script:child -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before updating.';return}
+    if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before updating.';return}
     $version=[string]$script:updateOffer.version
     $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiUpdateConfirm -Version $version),'Update FastLLM','YesNo','Question','Button2')
     if($choice -ne 'Yes'){return}
@@ -1180,7 +1539,17 @@ function CompleteUiUpdate {
 }
 $bannerButton.Add_Click({try{InvokeUiUpdate}catch{$statusLabel.Text='Update not installed: '+$_.Exception.Message+'. Nothing was changed.'}})
 $form.Add_Shown({try{StartUiStartupChecks}catch{}})
-$copyButton.Add_Click({[Windows.Forms.Clipboard]::SetText('http://127.0.0.1:8080/v1')})
+$copyButton.Add_Click({
+    try{[Windows.Forms.Clipboard]::SetText((Get-FastLlmUiApiUrl -Status (GetUiBackgroundRunStatus) -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)))}
+    catch{$statusLabel.Text='The API URL could not be copied: '+$_.Exception.Message}
+})
+$openChatButton.Add_Click({
+    try{
+        $chatUrl=[string]$script:chatUrl
+        if($chatUrl){Start-Process $chatUrl}else{$statusLabel.Text='The chat page is available only while a run started with the local chat page is running.'}
+    }catch{$statusLabel.Text='The chat page could not be opened: '+$_.Exception.Message}
+})
+$settingsButton.Add_Click({try{ShowUiSettings}catch{ShowFailure $_.Exception.Message}})
 $stopButton.Add_Click({try{StopUiOperation}catch{ShowFailure $_.Exception.Message}})
 $trayButton.Add_Click({
     try{MinimizeToTray}catch{
@@ -1227,18 +1596,23 @@ $timer.Add_Tick({
         $script:bgNextPollUtc=[DateTime]::UtcNow.AddSeconds($(if($script:bgState.attachedRequestId){5}elseif($script:bgState.pendingRequestId){2}else{5}))
         StartUiBackgroundPoll
     }
+    CompleteUiSideStep
     if(-not $script:child){return}
     try{
         $text=$script:child.Snapshot();$output.Text=$text;$output.SelectionStart=$output.TextLength;$output.ScrollToCaret()
         if(-not $script:child.Process.HasExited){
             if($script:step -eq 'serving'){
                 try{$s=Get-FastLlmStatus $script:installPath;$isCurrentRun=Test-FastLlmUiStatusIsCurrentRun -Status $s -PreviousRunId $script:servingPreviousRunId
+                    # Open chat and the ready-only actions follow this window's own run, not only a background one.
+                    $runStatus=$null;if($isCurrentRun){$runStatus=$s}
+                    if(UpdateUiRunState $runStatus $true){SetBusy $true}
                     if($isCurrentRun -and $s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
                     if($isCurrentRun -and $s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
                         $setupLine=Get-FastLlmUiRunSetupLine -State $s
                         if($setupLine){$lines+=$setupLine}
                         if($script:setupNotice){$lines+=[string]$script:setupNotice}
+                        if($script:servingSettingsNotice){$lines+=[string]$script:servingSettingsNotice}
                         if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}
                         $barNote=Get-FastLlmUiBarNote -State $s
                         if($barNote){$lines+=$barNote;$barLink.Visible=$true}
@@ -1250,6 +1624,7 @@ $timer.Add_Tick({
         }
         $script:child.Process.WaitForExit();$text=$script:child.Snapshot();$code=$script:child.Process.ExitCode;$step=$script:step
         $script:child.Dispose();$script:child=$null;$script:step='idle'
+        $script:chatUrl=$null;$script:runReady=$false
         if($step -eq 'setup check'){
             if($code -notin @(0,2)){ShowFailure 'The read-only setup check could not complete. Open Diagnostics for details; no installation was attempted.';return}
             $diagnostic=ConvertFrom-FastLlmUiSetupCheckOutput -Text $text
@@ -1348,7 +1723,7 @@ $timer.Add_Tick({
             default{SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'}
         }
     }catch{
-        if($script:child){$script:child.Dispose();$script:child=$null}
+        if($script:child){$script:child.Dispose();$script:child=$null;$script:chatUrl=$null;$script:runReady=$false}
         if(-not $script:vcBroker -and $script:flow -and $script:flow.phase -eq 'setup-attention'){
             $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'setup-defer'
         }
@@ -1378,6 +1753,8 @@ $form.Add_FormClosing({param($sender,$event)
         $script:child.Dispose();$script:child=$null
         if($script:flow){$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event stop}
     }
+    # A running check or bundle save is stopped only once closing is confirmed (or when no run needed a confirmation).
+    if($script:sideChild){$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep='idle'}
     $script:trayState=Move-FastLlmUiTrayState -State $script:trayState -Event 'close'
     DisposeTrayControls
     $timer.Stop()
@@ -1389,6 +1766,7 @@ $form.Add_FormClosing({param($sender,$event)
 $timer.Start()
 try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application]::Run($form)}finally{
     if($script:child){$script:child.Dispose()}
+    if($script:sideChild){$script:sideChild.Dispose()}
     Close-FastLlmUiBackgroundPoll $script:bgPoll
     # An elevated Microsoft broker is outside the ProcessHost job. Never kill or dispose it here.
     DisposeTrayControls;$timer.Dispose();$form.Dispose()

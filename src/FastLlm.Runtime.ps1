@@ -384,6 +384,44 @@ function ConvertFrom-FastLlmServerDeviceListEntries {
     [pscustomobject]@{deviceInfo=$deviceInfo.ToArray(); usingDevice=$usingDevice.ToArray()}
 }
 
+# The plain refusal for an occupied loopback port. FastLlmFailureCode lets the CLI and the status file name it; FastLlmReason = PortInUse
+# keeps it out of model recovery and out of the start-time fallback (a stand-in server would need the same port).
+function New-FastLlmPortInUseFailure {
+    param([Parameter(Mandatory = $true)][int] $Port)
+    $failure = New-Object -TypeName System.InvalidOperationException -ArgumentList ("Port $Port is already in use, so FastLLM did not start. If FastLLM is already running in the background, use Attach running. Otherwise close the program that uses port $Port, or choose another port in FastLLM's settings.")
+    $failure.Data['FastLlmFailureCode'] = 'port-in-use'
+    $failure.Data['FastLlmReason'] = 'PortInUse'
+    return $failure
+}
+
+# Throws the port-in-use failure when anything listens on the port. Two checks: the listener table (any address: 127.0.0.1, 0.0.0.0,
+# ::1 or ::, which an exclusive loopback bind alone can miss), then today's exclusive trial bind of 127.0.0.1. A listener-table read
+# error fails closed. -ListenerProvider replaces the table read in tests: a scriptblock returning IPEndPoint-like objects (Port).
+function Assert-FastLlmLoopbackPortFree {
+    param([Parameter(Mandatory = $true)][int] $Port, [scriptblock] $ListenerProvider)
+    $occupied = $false
+    try {
+        if ($ListenerProvider) { $listeners = @(& $ListenerProvider) }
+        else { $listeners = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()) }
+        foreach ($endpoint in $listeners) { if ($null -ne $endpoint -and [int] $endpoint.Port -eq $Port) { $occupied = $true; break } }
+    }
+    catch { $occupied = $true }
+    if (-not $occupied) {
+        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $Port)
+        try { $listener.Server.ExclusiveAddressUse = $true; $listener.Start() }
+        catch { $occupied = $true }
+        finally { try { $listener.Stop() } catch { } }
+    }
+    if ($occupied) { throw (New-FastLlmPortInUseFailure -Port $Port) }
+}
+
+# llama-server's own bind error: "couldn't bind HTTP server socket, hostname: 127.0.0.1, port: <n>" (the same text at both engine pins).
+function Test-FastLlmServerBindFailure {
+    param([string] $Text, [Parameter(Mandatory = $true)][int] $Port)
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    return [bool] ($Text -cmatch ("couldn't bind HTTP server socket, hostname: 127\.0\.0\.1, port: $Port(?![0-9])"))
+}
+
 # A typed device-binding failure (enforce). FastLlmFailureCode is the failure code, FastLlmReason = DeviceBindingFailed is what keeps it
 # out of model recovery (the supervisor's catch keeps both; fast-llm.ps1 retries only RuntimeCheckFailed, PlanChanged and
 # ModelNeedsProvisioning, and rethrows this one).
@@ -593,7 +631,7 @@ function Invoke-FastLlmSupervisedServer {
     # ValidateSet ignores case and keeps the typed value, but the enforce checks below are case-sensitive: normalise once, first.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     Initialize-FastLlmProcessHost
-    $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
+    $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; thinking=$(if ($Plan.PSObject.Properties['requestedThinking'] -and [string]$Plan.requestedThinking -ceq 'off') { 'off' } else { 'auto' }); chatPage=$(if ($Plan.PSObject.Properties['requestedChatPage'] -and [string]$Plan.requestedChatPage -ceq 'on') { 'on' } else { 'off' }); processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
     # A HIP plan (the engine component's lane) has no Vulkan memory policy, BAR mitigation, device binding or Vulkan identity capture.
     $isHipPlan = [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
     $hipAutoSelected = Test-FastLlmPlanFallsBackOnFailure -Plan $Plan
@@ -729,6 +767,11 @@ function Invoke-FastLlmSupervisedServer {
         }
     }
     $stateRoot = Get-FastLlmStateRoot -InstallRoot $InstallRoot -Create
+    # Run log (best-effort, prompt-free): the plan's own fields and phase names only. Nothing a server prints or a client sends.
+    $runPhase = 'preparing'
+    $runFailureMessage = $null
+    Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'start' -Fields { Get-FastLlmRunLogStartFields -Plan $Plan -State $state -SelfTest ([bool] $SelfTest) }
+    Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'preparing' }
     $stopPath = Join-Path $stateRoot ('stop-' + $state.runId)
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
     $hostProcess = New-Object Bitworks.FastLlm.ProcessHost
@@ -737,11 +780,9 @@ function Invoke-FastLlmSupervisedServer {
     $baseUrl = $Plan.endpoint -replace '/v1$', ''
     try {
         if ($null -ne $deviceBindingGate) { throw $deviceBindingGate }
-        # Refuse an already occupied port. A same-user bind race after this check remains possible.
+        # Refuse an already occupied port with a plain message. A same-user bind race after this check remains possible.
         $uri = [Uri]$baseUrl
-        $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $uri.Port)
-        try { $listener.Server.ExclusiveAddressUse=$true; $listener.Start() }
-        finally { $listener.Stop() }
+        Assert-FastLlmLoopbackPortFree -Port $uri.Port
         $info = New-Object Diagnostics.ProcessStartInfo
         $info.FileName = $Plan.enginePath
         $info.Arguments = Join-FastLlmProcessArguments -Arguments $Plan.serverArguments
@@ -767,11 +808,20 @@ function Invoke-FastLlmSupervisedServer {
         }
         $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
+        $runPhase = 'loading'
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'loading' }
         $deadline = [Diagnostics.Stopwatch]::StartNew()
         $healthy = $false
         while ($deadline.Elapsed.TotalSeconds -lt $LoadTimeoutSeconds) {
             if (Test-Path -LiteralPath $stopPath) { $state.phase='stopped'; return 0 }
             if ($hostProcess.Process.HasExited) {
+                # llama-server's own bind error is the same plain refusal as the pre-start check (a bind race after the check).
+                # The snapshot is the pre-Ready startup output only, so no prompt text can be in it.
+                $earlyOutputWait = [Diagnostics.Stopwatch]::StartNew()
+                while (-not $hostProcess.OutputCompleted -and $earlyOutputWait.ElapsedMilliseconds -lt 2000) { Start-Sleep -Milliseconds 50 }
+                if (Test-FastLlmServerBindFailure -Text ([string] $hostProcess.Snapshot()) -Port ([int] $uri.Port)) {
+                    throw (New-FastLlmPortInUseFailure -Port ([int] $uri.Port))
+                }
                 # A HIP server that dies on a blocked or missing DLL is a typed failure; any other early exit stays the generic one.
                 if ($isHipPlan) {
                     $hipEarlyFailure = New-FastLlmHipLaunchFailure -ComponentId $hipComponentId -ExitCode ([int] $hostProcess.Process.ExitCode) -AutoSelected:$hipAutoSelected
@@ -789,6 +839,7 @@ function Invoke-FastLlmSupervisedServer {
         $startupText=$hostProcess.FreezeStartupDiagnostics()
         $requestedFlashAttention=if($state.recipe){$state.recipe.flashAttention}else{$null}
         $state.startupDiagnostics=ConvertFrom-FastLlmStartupDiagnostics -Text $startupText -Overflow $hostProcess.StartupDiagnosticsOverflow -RequestedFlashAttention $requestedFlashAttention
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'startup-diagnostics' -Fields { Get-FastLlmRunLogDiagnosticsFields -Diagnostics $state.startupDiagnostics }
         # Freeze same-child device selection before any API canary can cause
         # prompt-related output. This advisory never changes the Ready gate.
         $selectedDeviceText=$hostProcess.FreezeSelectedDeviceIdentity()
@@ -847,6 +898,7 @@ function Invoke-FastLlmSupervisedServer {
         try {
             if ($hostProcess.PlacementOverflow) { throw 'GPU placement capture exceeded its bounded limit.' }
             $state.placement = ConvertFrom-FastLlmPlacementLog -Text $placementText -Devices @($Plan.selectedAdapters.device)
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'placement' -Fields { Get-FastLlmRunLogPlacementFields -Placement $state.placement }
         }
         catch {
             Write-Host "GPU placement diagnostics: $($hostProcess.PlacementDiagnostics())"
@@ -854,7 +906,11 @@ function Invoke-FastLlmSupervisedServer {
             if ($safeLines.Count) { Write-Host ('GPU placement evidence: ' + ($safeLines -join ' | ')) }
             throw
         }
+        # From here the API is in use: a failure's own text is never logged (it could echo request text), only its code.
+        $runPhase = 'checking'
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'checking' }
         $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $Plan.model.contextSize
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'api-check' -Fields { Get-FastLlmRunLogApiCheckFields -Canary $state.canary }
         if ($hostProcess.Process.HasExited) { throw 'Server exited during canary.' }
         $hostProcess.DiscardOutput()
         # The self-test (spec 4.2 step 5, 4.3) completes BEFORE any ready announcement: the status phase stays 'checking', no Ready line is printed
@@ -870,6 +926,7 @@ function Invoke-FastLlmSupervisedServer {
             $recipeId = $null
             if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) { $recipeId = $Plan.recipe.id }
             $state.selfTest = $selfTestResult
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'self-test' -Fields { Get-FastLlmRunLogSelfTestFields -Result $selfTestResult }
             try { Write-FastLlmState -InstallRoot $InstallRoot -FileName 'selftest.json' -State ([ordered]@{ schemaVersion = 1; recipeId = $recipeId; modelId = [string] $Plan.model.id
                         engineBuild = [string] $Plan.engineVersion; result = $selfTestResult }) } catch { }
             try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { }
@@ -889,6 +946,8 @@ function Invoke-FastLlmSupervisedServer {
         $state.phase='ready'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         $reachedReady = $true
+        $runPhase = 'ready'
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'ready' }
         if ($state.recipe) {
             Write-FastLlmState -InstallRoot $InstallRoot -FileName ($Plan.hardwareFingerprint+'.last-ready.json') -State ([ordered]@{
                 kind='api-smoke-only';hardwareFingerprint=$Plan.hardwareFingerprint;modelId=$Plan.model.id;modelSha256=$Plan.model.sha256;catalogSha256=$state.recipe.catalogSha256
@@ -934,6 +993,7 @@ function Invoke-FastLlmSupervisedServer {
         return $exitCode
     } catch {
         $state.phase='failed'
+        $runFailureMessage = [string] $_.Exception.Message
         # A failure after the server was ready (a crash while serving) is not a start failure: the start-time fallback never applies to it.
         if ($reachedReady) { $_.Exception.Data['FastLlmAfterReady']=$true }
         if ($_.Exception.Data['FastLlmStateWrite'] -eq $true) {
@@ -948,6 +1008,10 @@ function Invoke-FastLlmSupervisedServer {
             $state.failureCode=$bindingFailureCode
             # Write the sanitised value back so the supervisor state and the CLI's outer catch (which records Data into status.json) carry the same code.
             $_.Exception.Data['FastLlmFailureCode']=$bindingFailureCode
+        } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'PortInUse') {
+            # An occupied port (found before the spawn, or reported by the engine's own bind error) keeps its typed code and reason: model
+            # recovery and the start-time fallback would only meet the same port.
+            $state.failureCode='port-in-use'
         } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'HipDllFailed') {
             # A blocked or missing HIP DLL keeps its typed code and a reason that model recovery does not retry (recovery would re-plan onto Vulkan).
             $state.failureCode=[string]$_.Exception.Data['FastLlmFailureCode']
@@ -957,6 +1021,19 @@ function Invoke-FastLlmSupervisedServer {
         }
         throw
     } finally {
+        # Run log: the final phase and the end event (before the child is disposed, so its exit code is read if it already exited).
+        $serverExitCode = $null
+        try { if ($spawned -and $hostProcess.Process.HasExited) { $serverExitCode = [int] $hostProcess.Process.ExitCode } } catch { $null = $_ }
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields {
+            $f = [ordered] @{ phase = [string] $state.phase }
+            if ($state.failureCode) { $f.failureCode = [string] $state.failureCode }
+            $f }
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'end' -Fields {
+            $f = [ordered] @{ phase = [string] $state.phase; exitCode = $(if ($state.phase -ceq 'failed') { 1 } else { 0 }) }
+            if ($state.failureCode) { $f.failureCode = [string] $state.failureCode }
+            if ($state.phase -ceq 'failed' -and $null -ne $runFailureMessage) { $f.failedAtPhase = $runPhase; $f.failureMessage = $runFailureMessage }
+            if ($null -ne $serverExitCode) { $f.serverExitCode = $serverExitCode }
+            $f }
         try { $hostProcess.Dispose() }
         finally {
             try {

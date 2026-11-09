@@ -187,6 +187,20 @@ try {
 
     Remove-Item -LiteralPath $sweepRoot -Recurse -Force -ErrorAction SilentlyContinue
 
+    # ---- remove-then-prefer-installed-replans: removing the top pick re-plans onto the next installed fitting model, or reports the original as missing
+    $rRemove=New-InstallRoot @('qwen3.5-9b-q8-0','qwen3.5-9b-q6-k')
+    $p=Get-TierPlan $hw16 $rRemove -Prefer
+    Check ($p.model.id -eq 'qwen3.5-9b-q8-0' -and $null -eq $p.preferInstalled) 'remove-then-prefer-installed-replans: the top pick is used while installed'
+    $removal=Remove-FastLlmInstalledModel -InstallRoot $rRemove -CatalogPath $smallCatalog -ModelId 'qwen3.5-9b-q8-0'
+    Check ($removal.removed -eq $true -and $removal.reason -eq 'ok') 'remove-then-prefer-installed-replans: the top pick is removed'
+    $p=Get-TierPlan $hw16 $rRemove -Prefer
+    Check ($p.model.id -eq 'qwen3.5-9b-q6-k' -and $p.preferInstalled.from -eq 'qwen3.5-9b-q8-0' -and $p.preferInstalled.to -eq 'qwen3.5-9b-q6-k' -and $p.preferInstalled.reason -eq 'not-installed') "remove-then-prefer-installed-replans: the next installed fitting model is picked (observed: $($p.model.id))"
+    $removal=Remove-FastLlmInstalledModel -InstallRoot $rRemove -CatalogPath $smallCatalog -ModelId 'qwen3.5-9b-q6-k'
+    $p=Get-TierPlan $hw16 $rRemove -Prefer
+    $missingModel=& $module { param($m,$r) Test-FastLlmModelInstalled -Model $m -InstallRoot $r } $p.model $rRemove
+    Check ($p.model.id -eq 'qwen3.5-9b-q8-0' -and $null -eq $p.preferInstalled -and $missingModel -eq $false) 'remove-then-prefer-installed-replans: with nothing installed the original pick is reported as missing, no exception'
+    Remove-Item -LiteralPath $rRemove -Recurse -Force -ErrorAction SilentlyContinue
+
     # ---- approved components reader
     $approvedComponents=@(& $module { param($p) Read-FastLlmApprovedComponents -Path $p } $approved)
     Check ($approvedComponents.Count -eq 2 -and $approvedComponents[0].id -eq 'llama.cpp-hip-b11658' -and $approvedComponents[0].version -eq 'b11658') 'approved components parse'

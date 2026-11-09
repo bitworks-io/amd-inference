@@ -24,7 +24,7 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');replanPort=-1;replanParams=$null;supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
@@ -38,8 +38,8 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');if($script:startTestState.ContainsKey('probeFailAt') -and @($script:startTestState.events | Where-Object { $_ -ceq 'reprobe' }).Count -eq $script:startTestState.probeFailAt){throw 'simulated probe failure'};return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason)
-            $script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0,[string]$Thinking='auto',[string]$ChatPage='off')
+            $script:startTestState.replanPort=$ServerPort;$script:startTestState.replanParams=@{};foreach($k in $PSBoundParameters.Keys){$script:startTestState.replanParams[$k]=$PSBoundParameters[$k]};$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
             if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
             return $script:startTestState.fresh
@@ -90,6 +90,164 @@ try {
         Check ($caught -and $state.events.Count -eq 0) 'an invalid module-level policy fails before any hashing or launch'
     } finally { & $module { $script:FastLlmVulkanBarMitigationPolicy = 'off' } }
     $state.events.Clear()
+
+    # replan-keeps-port: a forced re-plan through the start loop keeps the requested port; a default plan re-plans exactly as before.
+    $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1
+    Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanPort -eq 0 -and ($state.planBound[0] -split ',') -notcontains 'ServerPort') 'replan-keeps-port: a default plan re-plans without a ServerPort parameter'
+    $portPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $portPlan | Add-Member -NotePropertyName requestedServerPort -NotePropertyValue 18181 -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1
+    Start-FastLlmServer -Plan $portPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanPort -eq 18181 -and $state.replanParams.ContainsKey('ServerPort') -and [int]$state.replanParams['ServerPort'] -eq 18181) 'replan-keeps-port: the forced re-plan is asked for 18181'
+
+    # replan-keeps-thinking: a forced re-plan keeps Off; a default (or old) plan re-plans without a Thinking parameter.
+    Check (-not $state.replanParams.ContainsKey('Thinking')) 'replan-keeps-thinking: a default plan re-plans without a Thinking parameter'
+    $thinkPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $thinkPlan | Add-Member -NotePropertyName requestedThinking -NotePropertyValue 'off' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $thinkPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanParams.ContainsKey('Thinking') -and [string]$state.replanParams['Thinking'] -ceq 'off') 'replan-keeps-thinking: the forced re-plan is asked for off'
+    $autoThinkPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $autoThinkPlan | Add-Member -NotePropertyName requestedThinking -NotePropertyValue 'auto' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $autoThinkPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check (-not $state.replanParams.ContainsKey('Thinking')) 'replan-keeps-thinking: an auto plan re-plans without a Thinking parameter'
+
+    # replan-keeps-chatpage: a forced re-plan keeps On; a default (or old) plan re-plans without a ChatPage parameter.
+    Check (-not $state.replanParams.ContainsKey('ChatPage')) 'replan-keeps-chatpage: a default plan re-plans without a ChatPage parameter'
+    $chatPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $chatPlan | Add-Member -NotePropertyName requestedChatPage -NotePropertyValue 'on' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $chatPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanParams.ContainsKey('ChatPage') -and [string]$state.replanParams['ChatPage'] -ceq 'on') 'replan-keeps-chatpage: the forced re-plan is asked for on'
+    $offChatPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $offChatPlan | Add-Member -NotePropertyName requestedChatPage -NotePropertyValue 'off' -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $offChatPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check (-not $state.replanParams.ContainsKey('ChatPage')) 'replan-keeps-chatpage: an off plan re-plans without a ChatPage parameter'
+
+    # replan-from-4gb-plan-json (R1): the BASE plan JSON has no requested* fields; it re-plans with no exception and keeps today's arguments.
+    $basePlanJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
+    Check (-not $basePlanJson.PSObject.Properties['requestedServerPort']) 'replan-from-4gb-plan-json: the fixture carries no requestedServerPort'
+    # Only the two host paths are pointed at this test's scratch install; every other property is the BASE plan's.
+    $basePlanJson.enginePath=$plan.enginePath;$basePlanJson.modelPath=$plan.modelPath
+    $savedFresh=$state.fresh
+    $state.fresh=($basePlanJson | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+    $state.events.Clear();$state.planBound.Clear();$state.replanPort=-1;$state.supervisorPlans.Clear();$baseFailure=$null
+    try{Start-FastLlmServer -Plan $basePlanJson -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$baseFailure=$_.Exception}
+    # What the re-plan was actually asked for: no ServerPort key (or 0), and the start completed.
+    $replanAsked=$state.replanParams
+    Check ($null -ne $replanAsked -and (-not $replanAsked.ContainsKey('ServerPort') -or [int]$replanAsked['ServerPort'] -eq 0)) 'replan-from-4gb-plan-json: the re-plan call carries no ServerPort (or 0)'
+    Check ($null -eq $baseFailure -and $state.supervisorPlans.Count -eq 1 -and $state.replanPort -eq 0) 'replan-from-4gb-plan-json: the start path completes with no exception'
+    # Drive the REAL planner with exactly the parameters the re-plan call carried, and compare its arguments with the BASE JSON's.
+    $realPlanParams=@{};foreach($k in $replanAsked.Keys){$realPlanParams[$k]=$replanAsked[$k]}
+    $realPlanned=& $module { param($F,$P) & $F @P } $saved['Get-FastLlmPlan'] $realPlanParams
+    # The planner derives paths through GetFullPath, which on Windows PowerShell 5.1 (.NET Framework) expands an 8.3 short TEMP
+    # (a RUNNER~1-style folder) to its long form: both spellings of the install root are the same root.
+    $installSpellings=@($temp,[IO.Path]::GetFullPath($temp))
+    $normalizeInstall={param($Text) $t=[string]$Text;foreach($spelling in $installSpellings){foreach($v in @($spelling,$spelling.Replace('\','/'),$spelling.Replace('/','\'))){if($v){$t=$t.Replace($v,'<install-root>')}}};$t.Replace('\','/')}
+    $realArgs=@($realPlanned.serverArguments | ForEach-Object { & $normalizeInstall $_ })
+    $baseArgs=@($basePlanJson.serverArguments | ForEach-Object { & $normalizeInstall $_ })
+    Check ($realArgs.Count -eq $baseArgs.Count -and ($realArgs -join "`n") -ceq ($baseArgs -join "`n")) 'replan-from-4gb-plan-json: the real planner, called as the re-plan calls it, yields the BASE plan arguments'
+    $state.fresh=$savedFresh
+    $state.events.Clear();$state.planBound.Clear()
+
+    # CLI: -IgnoreUserSettings and the port validation (plan only; no engine, no network).
+    $cliRoot=Join-Path $temp 'cli-install'
+    New-Item -ItemType Directory -Path $cliRoot -Force | Out-Null
+    $pwshPath=(Get-Process -Id $PID).Path
+    # Windows PowerShell 5.1 turns a native child's redirected stderr line into a terminating error under ErrorActionPreference Stop,
+    # so the child runs under Continue (as Invoke-CliRefusal in components-tests does) and its exit code and text are judged instead.
+    function Invoke-StartTestCli([string[]]$Arguments){
+        $previousPreference=$ErrorActionPreference
+        $ErrorActionPreference='Continue'
+        try{$text=@(& $pwshPath -NoLogo -NoProfile -File (Join-Path $root 'fast-llm.ps1') @Arguments 2>&1 | ForEach-Object { [string]$_ });$exitCode=$LASTEXITCODE}
+        finally{$ErrorActionPreference=$previousPreference}
+        return [pscustomobject]@{exit=$exitCode;text=($text -join "`n")}
+    }
+    $fixture=Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json'
+    $cliChildrenElevated=$false
+    if($env:OS -eq 'Windows_NT'){ $cliChildrenElevated=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+    if($cliChildrenElevated){ Write-Host 'SKIP: settings and saved-settings plan CLI child cases (fast-llm.ps1 refuses a live operation under an elevated token; they run as a standard user in the bench native gate)' }
+    else {
+        $setPort=Invoke-StartTestCli @('settings','-Port','18181','-InstallRoot',$cliRoot)
+        Check ($setPort.exit -eq 0 -and $setPort.text -like '*serverPort: 18181*') 'cli: settings -Port writes the port and prints serverPort'
+        $planSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+        $planIgnored=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$cliRoot)
+        $savedArgs=@(($planSaved.text | ConvertFrom-Json).serverArguments);$ignoredArgs=@(($planIgnored.text | ConvertFrom-Json).serverArguments)
+        Check ($savedArgs[[Array]::IndexOf($savedArgs,'--port')+1] -ceq '18181') 'cli-ignore-user-settings: without the switch the saved port 18181 is planned'
+        Check ($ignoredArgs[[Array]::IndexOf($ignoredArgs,'--port')+1] -ceq '8080') 'cli-ignore-user-settings: with the switch the plan says --port 8080'
+        $planExplicit=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-ServerPort','19191','-InstallRoot',$cliRoot)
+        $explicitArgs=@(($planExplicit.text | ConvertFrom-Json).serverArguments)
+        Check ($explicitArgs[[Array]::IndexOf($explicitArgs,'--port')+1] -ceq '19191') 'cli-ignore-user-settings: an explicit -ServerPort still wins'
+        $settingsJson=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
+        $settingsObject=$settingsJson.text | ConvertFrom-Json
+        Check ($settingsObject.serverPort -eq 18181 -and $settingsObject.thinking -ceq 'auto' -and $settingsObject.chatPage -ceq 'off' -and $settingsObject.componentLicenses.mode -ceq 'ask') 'cli: settings -AsJson shows componentLicenses, serverPort, thinking and chatPage'
+        $setThinking=Invoke-StartTestCli @('settings','-Thinking','off','-InstallRoot',$cliRoot)
+        Check ($setThinking.exit -eq 0 -and $setThinking.text -like '*thinking: off*') 'cli: settings -Thinking off writes the value and prints thinking: off'
+        Check ((($setThinking.text -replace '\r','') -split "`n") -contains 'thinking: off') 'cli: the settings text has a thinking: line of its own'
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).thinking -ceq 'off') 'cli: settings -AsJson reflects the stored thinking value'
+        $planThinkSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+        $thinkSavedArgs=@(($planThinkSaved.text | ConvertFrom-Json).serverArguments)
+        Check ($thinkSavedArgs[$thinkSavedArgs.Count-2] -ceq '--reasoning' -and $thinkSavedArgs[$thinkSavedArgs.Count-1] -ceq 'off') 'cli: the saved Off setting ends the plan arguments with --reasoning off'
+        $planThinkIgnored=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$cliRoot)
+        Check (@((($planThinkIgnored.text | ConvertFrom-Json).serverArguments) | Where-Object { $_ -ceq '--reasoning' }).Count -eq 0) 'cli: -IgnoreUserSettings plans no --reasoning argument'
+        $planThinkParam=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-Thinking','off','-InstallRoot',$cliRoot)
+        Check (((($planThinkParam.text | ConvertFrom-Json).serverArguments)[-1]) -ceq 'off') 'cli: an explicit -Thinking off applies even with -IgnoreUserSettings'
+        $badThinking=Invoke-StartTestCli @('settings','-Thinking','on','-InstallRoot',$cliRoot)
+        Check ($badThinking.exit -ne 0) 'cli: settings -Thinking on is refused'
+        $null=Invoke-StartTestCli @('settings','-Thinking','auto','-InstallRoot',$cliRoot)
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).thinking -ceq 'auto') 'cli: settings -Thinking auto returns to auto'
+        # chatpage CLI: saved, ignored, explicit and invalid; the text line; case normalisation (carried items 1 and 2).
+        $setChat=Invoke-StartTestCli @('settings','-ChatPage','on','-InstallRoot',$cliRoot)
+        Check ($setChat.exit -eq 0 -and ((($setChat.text -replace '\r','') -split "`n") -contains 'chatPage: on')) 'cli: settings -ChatPage on writes the value and prints a chatPage: line of its own'
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).chatPage -ceq 'on') 'cli: settings -AsJson reflects the stored chatPage value'
+        $planChatSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+        $chatSavedJson=$planChatSaved.text | ConvertFrom-Json
+        Check (@($chatSavedJson.serverArguments | Where-Object { $_ -ceq '--no-ui' }).Count -eq 0 -and @($chatSavedJson.serverArguments) -ccontains '--no-agent' -and $chatSavedJson.requestedChatPage -ceq 'on') 'cli: the saved On setting plans without --no-ui and keeps --no-agent'
+        $planChatIgnored=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$cliRoot)
+        $chatIgnoredJson=$planChatIgnored.text | ConvertFrom-Json
+        Check (@($chatIgnoredJson.serverArguments) -ccontains '--no-ui' -and $chatIgnoredJson.requestedChatPage -ceq 'off') 'cli: -IgnoreUserSettings plans with --no-ui'
+        $planChatOff=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-ChatPage','off','-InstallRoot',$cliRoot)
+        Check (@(($planChatOff.text | ConvertFrom-Json).serverArguments) -ccontains '--no-ui') 'cli: an explicit -ChatPage off wins over the saved On'
+        $null=Invoke-StartTestCli @('settings','-ChatPage','off','-InstallRoot',$cliRoot)
+        $planChatParam=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-ChatPage','on','-InstallRoot',$cliRoot)
+        Check (@(($planChatParam.text | ConvertFrom-Json).serverArguments | Where-Object { $_ -ceq '--no-ui' }).Count -eq 0) 'cli: an explicit -ChatPage on applies even with -IgnoreUserSettings'
+        $badChat=Invoke-StartTestCli @('settings','-ChatPage','auto','-InstallRoot',$cliRoot)
+        Check ($badChat.exit -ne 0) 'cli: settings -ChatPage auto is refused'
+        # Case: the CLI lower-cases after binding, so ON and OFF give the setting instead of an error.
+        $upperChat=Invoke-StartTestCli @('settings','-ChatPage','ON','-InstallRoot',$cliRoot)
+        Check ($upperChat.exit -eq 0 -and $upperChat.text -like '*chatPage: on*') 'cli-case: settings -ChatPage ON saves on'
+        $upperThinking=Invoke-StartTestCli @('settings','-Thinking','OFF','-InstallRoot',$cliRoot)
+        Check ($upperThinking.exit -eq 0 -and $upperThinking.text -like '*thinking: off*') 'cli-case: settings -Thinking OFF saves off'
+        $upperPlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-Thinking','OFF','-ChatPage','ON','-InstallRoot',$cliRoot)
+        $upperJson=$upperPlan.text | ConvertFrom-Json
+        Check ($upperPlan.exit -eq 0 -and $upperJson.requestedThinking -ceq 'off' -and $upperJson.requestedChatPage -ceq 'on') 'cli-case: plan -Thinking OFF -ChatPage ON applies both'
+        $null=Invoke-StartTestCli @('settings','-ChatPage','off','-Thinking','auto','-InstallRoot',$cliRoot)
+        Check (((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).chatPage -ceq 'off') 'cli: settings -ChatPage off returns to off'
+        $badPort=Invoke-StartTestCli @('settings','-Port','80','-InstallRoot',$cliRoot)
+        Check ($badPort.exit -ne 0 -and $badPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: settings -Port 80 exits non-zero with serving-settings-invalid-port'
+        $fractionPort=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-ServerPort','18181.5','-InstallRoot',$cliRoot)
+        Check ($fractionPort.exit -ne 0 -and $fractionPort.text -like '*serving-settings-invalid-port*') 'cli-port-validation: -ServerPort 18181.5 is refused, not rounded'
+        $stillSaved=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
+        Check ((($stillSaved.text | ConvertFrom-Json).serverPort) -eq 18181) 'cli-port-validation: a refused port leaves the saved value unchanged'
+    }
+    # M11: a malformed settings.json is said out loud by a live start, and only there. The decision is a pure function, tested in-process;
+    # a real 'start' child is never run by a mock suite (it would take the lock, write status and probe hardware).
+    . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+    $malCliRoot=Join-Path $temp 'cli-malformed'
+    New-Item -ItemType Directory -Path $malCliRoot -Force | Out-Null
+    Check ($null -eq (Get-FastLlmServingSettingsWarning -InstallRoot $malCliRoot)) 'cli-malformed-settings: an absent settings.json gives no warning'
+    [IO.File]::WriteAllText((Join-Path $malCliRoot 'settings.json'),'{not json')
+    Check ((Get-FastLlmServingSettingsWarning -InstallRoot $malCliRoot) -ceq 'settings.json is not valid JSON, so FastLLM is using the default settings. Fix or delete the file to change settings.') 'cli-malformed-settings: a malformed settings.json gives the defaults-are-used warning'
+    [IO.File]::WriteAllText((Join-Path $malCliRoot 'settings.json'),'{"serverPort":18181}')
+    Check ($null -eq (Get-FastLlmServingSettingsWarning -InstallRoot $malCliRoot)) 'cli-malformed-settings: a valid settings.json gives no warning'
+    [IO.File]::WriteAllText((Join-Path $malCliRoot 'settings.json'),'{not json')
+    $liveStartSource=[IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
+    Check ($liveStartSource.Contains("if (`$Action -eq 'start' -and -not `$DryRun -and -not `$AsJson -and -not `$IgnoreUserSettings) {") -and $liveStartSource.Contains('$servingWarning = Get-FastLlmServingSettingsWarning -InstallRoot $InstallRoot') -and $liveStartSource.Contains('Write-Warning $servingWarning')) 'cli-malformed-settings: fast-llm.ps1 warns through Get-FastLlmServingSettingsWarning on a live start only (not dry run, JSON or ignored settings)'
+    $malPlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$malCliRoot)
+    Check ($malPlan.text -notlike '*not valid JSON*' -and $null -ne ($malPlan.text | ConvertFrom-Json)) 'cli-malformed-settings: plan -AsJson stays clean JSON'
 
     foreach($property in @('modelPath','backend','catalogVersion')){
         $original=$fresh.$property;$fresh.$property='changed';$state.events.Clear();$reason=$null
@@ -255,8 +413,8 @@ try {
     $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed'),(New-FallbackTestFailure 'self-test-failed' 'RuntimeCheckFailed'))
     Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'self-test-failed' -and $state.supervisorPlans.Count -eq 2) 'fallback happens once: the second run''s failure propagates and there is no third run'
     # Failures that are not about the HIP setup never fall back.
-    foreach($noFallbackReason in @('DeviceBindingFailed','PlanChanged','ModelNeedsProvisioning')){
-        $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure '' $noFallbackReason))
+    foreach($noFallbackReason in @('DeviceBindingFailed','PlanChanged','ModelNeedsProvisioning','PortInUse')){
+        $outcome=Invoke-FallbackStart $autoHip $autoHip @((New-FallbackTestFailure $(if($noFallbackReason -ceq 'PortInUse'){'port-in-use'}else{''}) $noFallbackReason))
         Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmReason'] -ceq $noFallbackReason -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) "a $noFallbackReason failure does not fall back"
     }
     # An explicit recipe never falls back, and neither does a plain Vulkan plan.
@@ -570,7 +728,7 @@ try {
     $updateCheckClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update-check'" })[0]
     $updateClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'update'" })[0]
     Check ($cliSource.Contains("'stop', 'update-check', 'update', 'components', 'settings')]") -and $cliSource.Contains('[switch] $Yes') -and $cliSource.Contains("[ValidateSet('stable', 'canary')]") -and $cliSource.Contains('[string] $Channel')) 'fast-llm.ps1 declares update-check, update, -Yes and -Channel stable|canary'
-    Check ($cliSource.Contains("-Yes is supported only by update.") -and $cliSource.Contains("-Channel is supported only by update-check and update.") -and $cliSource.Contains("`$PSBoundParameters.ContainsKey('Channel')")) 'fast-llm.ps1 refuses -Yes and -Channel for any other action'
+    Check ($cliSource.Contains("-Yes is supported only by update and models.") -and $cliSource.Contains("-Channel is supported only by update-check and update.") -and $cliSource.Contains("`$PSBoundParameters.ContainsKey('Channel')")) 'fast-llm.ps1 refuses -Yes and -Channel for any other action'
     Check ($cliSource.Contains('$Action -eq ''update'' -and $Unattended -and -not $Yes') -and $cliSource.Contains('update -Unattended requires -Yes')) 'update refuses -Unattended without -Yes before doing anything'
     Check ($cliSource.Contains("FastLlm.Update.ps1") -and -not ([IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.psm1'))).Contains('FastLlm.Update.ps1')) 'FastLlm.Update.ps1 is dot-sourced by fast-llm.ps1 and never by FastLlm.psm1'
     Check ($null -ne $statusClause -and $null -ne $updateCheckClause -and $null -ne $updateClause) 'the status, update-check and update clauses exist'

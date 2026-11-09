@@ -130,7 +130,8 @@ $script:FastLlmHostStableFields = @('powerPlan','cpuTopology','smbiosMemory','bo
 $script:FastLlmRecipeVramTolerance = 0.06
 $script:FastLlmBenchmarkInputRelativePaths = @('src/WindowsCpuTopology.cs','src/WindowsSmbiosMemory.cs','src/WindowsVulkanLuidJoin.cs','src/WindowsPciAddress.cs','src/WindowsPciLink.cs','src/WindowsAcpiMcfg.cs','src/WindowsInventory.ps1','src/WindowsInventory.cs','src/WindowsGpuIdentity.cs','src/WindowsHostInventory.cs','src/ProcessHost.cs','src/FastLlm.Runtime.ps1','src/FastLlm.psm1','tools/collect-vulkan-luid-join.ps1','tools/adlx-identity-vram.ps1','tools/benchmark.ps1',
     'src/FastLlm.FileReplace.ps1','src/FastLlm.SelectedDeviceIdentity.ps1','src/FastLlm.OffloadLab.ps1','src/FastLlm.VulkanMemoryPolicy.ps1','src/FastLlm.DeviceBinding.ps1',
-    'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','src/FastLlm.Preload.ps1','src/FastLlm.SelfTest.ps1',
+    'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','src/FastLlm.Preload.ps1','src/FastLlm.SelfTest.ps1'
+    'src/FastLlm.ModelStore.ps1','src/FastLlm.RunLog.ps1',
     'src/FastLlm.OffloadBenchmark.ps1','src/FastLlm.Soak.ps1','src/FastLlm.DriverGuidance.ps1','src/FastLlm.DriverGuidanceView.ps1','src/FastLlm.PrerequisiteDiagnostics.ps1',
     'src/WindowsBootTime.cs','src/WindowsGpuTelemetry.cs')
 # Every file the module loads at import (the dot-sourced .ps1 files, transitively, and the C# sources they Add-Type) is listed above, except this
@@ -1725,6 +1726,25 @@ function New-FastLlmBenchmarkFailureReport {
     }
 }
 
+# A Thinking setting is a user choice, never the recipe configuration: a run started with it off (or with any --reasoning argument) is not benchmarked.
+# The local chat page is the same: a run started with it on (or without --no-ui) is not benchmarked.
+# state.thinking, state.chatPage and requestedArguments are read tolerantly; a status written before a field existed means the default.
+function Assert-FastLlmBenchmarkDefaultSetup {
+    param($State)
+    $refusal = 'Benchmarks measure the default setup. Set Thinking to Auto, start again, then benchmark.'
+    $chatRefusal = 'Benchmarks measure the default setup. Turn the local chat page off, start again, then benchmark.'
+    if ($State.PSObject.Properties['thinking'] -and [string]$State.thinking -cne 'auto') { throw $refusal }
+    if ($State.PSObject.Properties['chatPage'] -and [string]$State.chatPage -cne 'off') { throw $chatRefusal }
+    if ($State.recipe -and $State.recipe.PSObject.Properties['requestedArguments']) {
+        $hasNoUi = $false
+        foreach ($argument in @($State.recipe.requestedArguments)) { if (([string]$argument) -ceq '--no-ui') { $hasNoUi = $true } }
+        if (-not $hasNoUi) { throw $chatRefusal }
+        foreach ($argument in @($State.recipe.requestedArguments)) {
+            if (([string]$argument) -ceq '--reasoning' -or ([string]$argument).StartsWith('--reasoning=', [StringComparison]::Ordinal)) { throw $refusal }
+        }
+    }
+}
+
 function Invoke-FastLlmBenchmark {
     [CmdletBinding()]
     param([string]$InstallRoot,[string]$OutputPath,[int[]]$PromptTokens=@(512,4096),[ValidateRange(1,1024)][int]$GenerationTokens=128,[ValidateRange(5,100)][int]$Repetitions=5,
@@ -1740,6 +1760,7 @@ function Invoke-FastLlmBenchmark {
     $adlxConfigured=Assert-FastLlmBenchmarkAdlxConfig $AdlxExecutablePath $AdlxExecutableSha256 -Optional:$AdlxOptional
     $state=Get-FastLlmStatus $InstallRoot
     if(-not $state.active -or $state.phase -ne 'ready' -or -not $state.recipe){throw 'Start a supervised FastLLM server and wait for ready before benchmarking.'}
+    Assert-FastLlmBenchmarkDefaultSetup -State $state
     foreach($length in $PromptTokens){if($length -lt 16 -or $length+$GenerationTokens+8 -gt $state.recipe.contextSize){throw 'Requested prompt/output exceeds the effective context budget.'}}
     if(Test-Path -LiteralPath $OutputPath){throw 'Benchmark output already exists; choose a new result file.'}
     $benchLockPath=Join-Path (Get-FastLlmStateRoot $InstallRoot) 'benchmark.lock'

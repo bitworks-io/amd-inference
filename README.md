@@ -67,7 +67,92 @@ Nothing installs without a click. `fast-llm.ps1 update-check` shows what is avai
 
 ## Resizable BAR
 
-FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
+FastLLM checks Resizable BAR (Smart Access Memory) at each start and works around it being off. The setting is Auto by default (`-VulkanBarMitigation auto`): the workaround applies only when the check confidently finds Resizable BAR off, and `-VulkanBarMitigation off` turns it off. See [docs/RESIZABLE-BAR.md](docs/RESIZABLE-BAR.md) for what it does and how to turn it on.
+
+## Use the API
+
+FastLLM serves an OpenAI-compatible API on this computer only. The **Connect an app** button in the window shows the values below for your running setup, with a Copy button for each, plus a ready-to-paste settings card for each client. `fast-llm.ps1 status` prints the same facts in its `connection` object.
+
+- **Base URL:** `http://127.0.0.1:8080/v1`. If you changed the port (see Port), use that port. For Claude Code, the Anthropic base URL is the same address without `/v1`.
+- **Model name:** the name FastLLM serves for the running setup. Send exactly that name; `GET /v1/models` lists it, and `fast-llm.ps1 status` shows it as `connection.modelName`.
+- **Context limit:** this setup's context in tokens, shown as `connection.contextTokens` and in the Connect an app window. Requests longer than the limit are refused with an error.
+- **API key:** FastLLM sets none, so any key string works (this is FastLLM's own fact, not something a client's documentation says). Use any text where an app asks for one.
+
+**Short contexts and coding agents.** When FastLLM is not running or the context limit is not known, the window shows: "FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts." When the context limit is below 32,768 tokens, the window shows: "This setup's context is <n> tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." A request and its answer together must fit within the limit; anything longer is refused.
+
+Endpoints on the base URL:
+
+| Path | What it is |
+| --- | --- |
+| `/v1/chat/completions` | OpenAI-compatible chat |
+| `/v1/completions` | OpenAI-compatible text completion |
+| `/v1/models` | model list |
+| `/v1/messages` | Anthropic-compatible |
+| `/v1/responses` | partial at this engine version |
+
+One short example per client type. Each client's own documentation is linked from its card in the window; FastLLM makes no claim about how well a client behaves with a local model.
+
+```
+# Any OpenAI-compatible app: Base URL http://127.0.0.1:8080/v1, Model <the model name>, API key: any text.
+curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"<the model name>","messages":[{"role":"user","content":"Hello"}],"max_tokens":16}'
+```
+
+```
+# Anthropic-format client: send to /v1/messages. For Claude Code the documented settings are:
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"
+$env:ANTHROPIC_AUTH_TOKEN = "any-text"
+# Claude Code is designed for Anthropic's Claude models; results with a local model may vary.
+```
+
+```
+# Responses-format client (for example Codex), in config.toml. /v1/responses: partial at this engine version.
+# The provider block follows the Codex documentation's local example (base_url ends in /v1 there too, with no key setting).
+# wire_api = "responses" is the setting the documentation's proxy and Azure examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
+# FastLLM's own fact: it needs no key, so this card sets none.
+model = "<the model name>"
+model_provider = "fastllm"
+
+[model_providers.fastllm]
+name = "FastLLM"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+```
+
+**Check the API formats.** **Check the API formats** in the Connect an app window (or `fast-llm.ps1 doctor -ApiCheck`) sends one short fixed prompt to `/v1/chat/completions`, `/v1/messages` and `/v1/responses` of the running server and prints a pass or fail for each, with the HTTP status, token counts and time. It needs a Ready server, never runs on its own, and keeps no prompt or answer text; the run log records only the numbers and verdicts.
+
+## Port
+
+The server listens on port 8080 by default. To change it, use Settings... in the window, or run `fast-llm.ps1 settings -Port <n>` (1024 to 65535); the change applies at the next start. The server always stays on 127.0.0.1, whatever the port. The diagnostic tools (semantic smoke, the concurrency benchmark, backend parity, the driver-module collector and the coopmat screen) need the default port 8080.
+
+## Thinking
+
+Thinking is Auto by default, and Auto leaves the server arguments exactly as they were. Settings... in the window (or `fast-llm.ps1 settings -Thinking off`) can turn it off. The choice reads "Off: faster answers. Quality with thinking off is not measured by Bitworks." and adds `--reasoning off` to the server arguments; the change applies at the next start. `tools/benchmark.ps1`, the benchmark report tool, refuses a run started with thinking off, so set Thinking to Auto, start again, then benchmark. Each request can also ask for this itself, whatever the setting: send `reasoning_effort` or `chat_template_kwargs: {"enable_thinking": false}` in the request body.
+
+## Local chat page
+
+The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. `tools/benchmark.ps1`, the benchmark report tool, refuses a run started with the page on, so turn it off, start again, then benchmark.
+
+## Logs and support bundle
+
+Each server start writes a small log to `state\logs\run-<time>-<id>.jsonl` under the install folder. FastLLM keeps the newest 20 logs, each at most 256 KiB. **Open logs** in the window opens the folder.
+
+What a log keeps: the model, recipe, engine version, context size, port, thinking and chat page settings of the run; the phases (preparing, loading, checking, ready, stopped, failed); the parsed startup and GPU placement numbers (layer counts, device names, buffer sizes in MiB); the self-test verdict, speeds and timings; failure codes; and the exit code. For a failure before the API checks start, the error message is kept as well. After that only a fixed sentence and the failure code are kept.
+
+What is never kept: prompts, answers, chat text, the self-test text, request or response bodies, or anything the server prints after it is ready. FastLLM does not pass llama-server a log file, and the server's output is discarded once it is ready.
+
+**Save support bundle...** in the window (or `fast-llm.ps1 doctor -SupportBundle <new-file>.zip`) writes one zip you can attach to a support request: the diagnostics report, the newest 5 run logs, a few settings (no licence titles or hosts), the installed components and the version. The window first lists every file and how many identifying items (user name, computer name, profile folder, Windows SIDs, MAC addresses, device instance ids) were replaced with placeholders, then asks where to save it. `-ListOnly` prints that list and writes nothing. The bundle is capped at 8 MiB, is never written over an existing file, and is saved only where you choose: FastLLM does not upload it or send it anywhere.
+
+## Free up disk space
+
+Downloaded models are about 1.6 to 29 GB each. The Downloaded models button in the window lists them with their size and the free disk space; Remove asks first (the answer defaults to No) and deletes only that model, which you can download again later. Your licence consent records are kept, so a model you download again does not ask again. A model that FastLLM is serving, that a background run uses, or that is being downloaded cannot be removed; the window says so and removes nothing. The Remove leftover partial downloads button is enabled only when interrupted downloads and files that failed their check are left in the models folder, and asks a second time.
+
+From a command line:
+
+- `fast-llm.ps1 models -Installed` lists the downloaded models, the leftover files and the free disk space (add `-AsJson` for the rows).
+- `fast-llm.ps1 models -Remove <model id>` shows what it removes and asks. Add `-Yes` to skip the question (a script has to).
+- `fast-llm.ps1 models -RemoveQuarantined -Yes` deletes the leftover partial downloads it lists; without `-Yes` it only lists them and stops.
+
+`-Remove` and `-RemoveQuarantined` take the same lock as an install or a start, so they stop with `operation-in-progress` while one is running (`-Installed` takes no lock).
 
 ## Uninstall
 

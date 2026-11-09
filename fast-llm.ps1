@@ -49,6 +49,16 @@ param(
     # doctor only: print the report with a summarized install-integrity block, as ordinary multi-line JSON whose lines stay short, for callers that bound the output size or the length of each output line.
     [switch] $Compact,
 
+    # doctor only: write a local support bundle zip (the doctor report, the newest 5 run logs, a few settings, the installed components
+    # and the version) to this path, which must not exist yet. Nothing is uploaded. With -ListOnly the entries and the redaction count
+    # are printed as JSON and nothing is written.
+    [string] $SupportBundle,
+    [switch] $ListOnly,
+
+    # doctor only: send one short fixed prompt to /v1/chat/completions, /v1/messages and /v1/responses of the running server and print the
+    # pass/fail result as JSON. Needs a Ready server. Records numbers and verdicts only, never text. Never run by start.
+    [switch] $ApiCheck,
+
     # Advisory post-Ready prompt-processing measurement (live start only; default off).
     [switch] $ThroughputCanary,
 
@@ -69,7 +79,7 @@ param(
     # is disabled. Absent means the default start, unchanged.
     [switch] $NoDownload,
 
-    # update only: confirm the install without the interactive prompt (required with -Unattended).
+    # update and models -Remove/-RemoveQuarantined: confirm without the interactive prompt (update -Unattended requires it).
     [switch] $Yes,
 
     # update-check and update only: the release channel to follow; persisted to settings.json before the check.
@@ -81,7 +91,14 @@ param(
 
     [string] $Install,
 
+    # components -Remove <id> removes an engine component; models -Remove <id> removes a downloaded model.
     [string] $Remove,
+
+    # models only: list the downloaded models (id, size, in use, file check) and the leftover partial downloads, with the free disk space.
+    [switch] $Installed,
+
+    # models only: delete the leftover partial downloads. Needs -Yes (it is a second confirmation after the listing).
+    [switch] $RemoveQuarantined,
 
     # components -Install and install: accept an accept-type component license on the command line (a show-type license is displayed, not accepted).
     # settings: required to turn -ComponentLicenses accept-automatically on, after the licenses are shown.
@@ -91,6 +108,26 @@ param(
     # (title and host) count as accepted by you, so components can be installed without -AcceptLicense. Needs -AcceptLicense to turn on; ask turns it off.
     [ValidateSet('ask', 'accept-automatically')]
     [string] $ComponentLicenses,
+
+    # start, install and plan: the loopback port the server listens on (1024-65535, default 8080). Text, not [int], so 18181.5 is refused
+    # instead of rounded; checked by ConvertTo-FastLlmServerPort. An explicit value wins over the saved setting.
+    [string] $ServerPort,
+
+    # start, install, plan and settings: auto (default) leaves the server arguments unchanged; off appends --reasoning off.
+    # An explicit value wins over the saved setting; on settings it saves the value (auto removes it).
+    [ValidateSet('auto', 'off')]
+    [string] $Thinking,
+
+    # start, install, plan and settings: off (default) keeps --no-ui; on omits only --no-ui so the server serves its built-in chat page.
+    # An explicit value wins over the saved setting; on settings it saves the value (off removes it).
+    [ValidateSet('off', 'on')]
+    [string] $ChatPage,
+
+    # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
+    [string] $Port,
+
+    # start, install and plan: ignore the saved settings for this run (explicit parameters still apply).
+    [switch] $IgnoreUserSettings,
 
     # start only: the setup a preview showed (a recipe id). The start picks the setup automatically, like a start without -Recipe, and runs it
     # or the Vulkan setup that stands in for it; any other final setup is refused. Not with -Recipe or -ModelId.
@@ -160,11 +197,17 @@ if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -o
     throw '-DeviceBinding is supported only by a live start.'
 }
 if ($NoDownload -and ($Action -ne 'start' -or $DryRun)) { throw '-NoDownload is supported only by a live start.' }
-if ($Yes -and $Action -ne 'update') { throw '-Yes is supported only by update.' }
+if ($Yes -and $Action -notin @('update', 'models')) { throw '-Yes is supported only by update and models.' }
 if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-check', 'update')) { throw '-Channel is supported only by update-check and update.' }
 if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { throw '-Install is supported only by components.' }
-if ($PSBoundParameters.ContainsKey('Remove') -and $Action -ne 'components') { throw '-Remove is supported only by components.' }
+if ($PSBoundParameters.ContainsKey('Remove') -and $Action -notin @('components', 'models')) { throw '-Remove is supported only by components and models.' }
+if (($Installed -or $RemoveQuarantined) -and $Action -ne 'models') { throw '-Installed and -RemoveQuarantined are supported only by models.' }
+if ($Action -eq 'models' -and @(@([bool] $Installed, $PSBoundParameters.ContainsKey('Remove'), [bool] $RemoveQuarantined, [bool] $Preload, [bool] $PreloadStatus) | Where-Object { $_ }).Count -gt 1) {
+    throw 'models takes one of -Installed, -Remove <id>, -RemoveQuarantined, -Preload or -PreloadStatus.'
+}
+if ($Action -eq 'models' -and $PSBoundParameters.ContainsKey('Remove') -and [string]::IsNullOrWhiteSpace($Remove)) { throw 'models -Remove needs a model id.' }
+if ($Yes -and $Action -eq 'models' -and -not ($PSBoundParameters.ContainsKey('Remove') -or $RemoveQuarantined)) { throw '-Yes is supported only with models -Remove or -RemoveQuarantined.' }
 if (($Preload -or $PreloadStatus -or $Next -or $PSBoundParameters.ContainsKey('ApprovedModelsPath') -or $PSBoundParameters.ContainsKey('MinFreeGB') -or $PSBoundParameters.ContainsKey('OutputPath')) -and $Action -ne 'models') {
     throw '-Preload, -PreloadStatus, -Next, -ApprovedModelsPath, -MinFreeGB and -OutputPath are only valid with the models action.'
 }
@@ -203,6 +246,9 @@ if ($Action -eq 'components') {
 if ($Action -eq 'update' -and $Unattended -and -not $Yes) { throw 'update -Unattended requires -Yes; nothing was changed.' }
 if ($ProbeVulkanMemory -and $Action -ne 'doctor') { throw '-ProbeVulkanMemory is supported only by doctor.' }
 if ($Compact -and $Action -ne 'doctor') { throw '-Compact is supported only by doctor.' }
+if ($PSBoundParameters.ContainsKey('SupportBundle') -and ($Action -ne 'doctor' -or [string]::IsNullOrWhiteSpace($SupportBundle))) { throw '-SupportBundle <zip path> is supported only by doctor.' }
+if ($ApiCheck -and ($Action -ne 'doctor' -or $PSBoundParameters.ContainsKey('SupportBundle'))) { throw '-ApiCheck is supported only by doctor and cannot be combined with -SupportBundle.' }
+if ($ListOnly -and -not $PSBoundParameters.ContainsKey('SupportBundle')) { throw '-ListOnly is supported only with doctor -SupportBundle.' }
 if ($Action -eq 'start' -and $AsJson -and -not $DryRun) {
     throw '-AsJson is supported with start only when -DryRun is also specified; a foreground server owns its console output.'
 }
@@ -237,11 +283,45 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Update.ps1')
 # Components is dot-sourced here and in the control window, never imported through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Components.ps1')
+# Serving settings (port) is dot-sourced here and in fast-llm-ui.ps1, never imported through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ServingSettings.ps1')
+# The support bundle reads settings.json, so like the serving settings it is dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SupportBundle.ps1')
+# Connection info and the API-format check are dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ConnectInfo.ps1')
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.json'
 $selectionOptions = @{
     ModelId = $ModelId; ContextSize = $ContextSize; AllowExperimentalModel = $AllowExperimentalModel
     RecipesPath = $recipesPath; GpuVariantsPath = (Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'); RecipeId = $Recipe
+}
+
+# Serving settings (port). Validated here, next to the other parameter checks, and resolved once: explicit parameter, then saved
+# settings (unless -IgnoreUserSettings), then the default. The planner takes 0 for the catalog port, so the default plan call is unchanged.
+if ($PSBoundParameters.ContainsKey('ServerPort') -and $Action -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
+if ($PSBoundParameters.ContainsKey('Port') -and $Action -ne 'settings') { throw '-Port is supported only by settings.' }
+if ($PSBoundParameters.ContainsKey('Thinking') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('ChatPage') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
+# ValidateSet ignores case; the settings converter is exact, so the typed value is lower-cased once after binding.
+if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = $Thinking.ToLowerInvariant() }
+if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = $ChatPage.ToLowerInvariant() }
+if ($IgnoreUserSettings -and $Action -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
+if ($PSBoundParameters.ContainsKey('ServerPort')) { $null = ConvertTo-FastLlmServerPort -Value $ServerPort }
+if ($PSBoundParameters.ContainsKey('Port')) { $null = ConvertTo-FastLlmServerPort -Value $Port }
+if ($Action -in @('plan', 'install', 'start', 'doctor')) {
+    $servingBound = @{}
+    if ($PSBoundParameters.ContainsKey('ServerPort')) { $servingBound.ServerPort = $ServerPort }
+    if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
+    if ($PSBoundParameters.ContainsKey('ChatPage')) { $servingBound.ChatPage = $ChatPage }
+    $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
+    # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
+    if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
+        $servingWarning = Get-FastLlmServingSettingsWarning -InstallRoot $InstallRoot
+        if ($null -ne $servingWarning) { Write-Warning $servingWarning }
+    }
+    if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
+    if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
+    if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -315,6 +395,15 @@ function Get-FastLlmDeclinedFallbackPlan {
     return Get-FastLlmPlan -Hardware $Hardware -CatalogPath $catalogPath -Profile $Profile -InstallRoot $InstallRoot @selectionOptions -FallbackFromRecipe $fromRecipeId -FallbackReason $stampedReason
 }
 
+# An interactive prompt only when a person can answer: not with -Unattended, -NonInteractive, redirected input or no user session.
+function Test-FastLlmCliInteractive {
+    if ($Unattended) { return $false }
+    if (-not [Environment]::UserInteractive) { return $false }
+    try { if ([Console]::IsInputRedirected) { return $false } } catch { return $false }
+    foreach ($commandLineArgument in @([Environment]::GetCommandLineArgs())) { if ([string] $commandLineArgument -like '-NonI*') { return $false } }
+    return $true
+}
+
 $operationLock = $null
 # components -Install/-Remove take the same lock for mutual exclusion only: it is a separate variable so the failure writer below never records a component
 # command in status.json.
@@ -375,6 +464,66 @@ try {
                 }
                 exit 0
             }
+            if ($Installed) {
+                $installedRows = @(Get-FastLlmInstalledModels -InstallRoot $InstallRoot -CatalogPath $catalogPath)
+                if ($AsJson) { ConvertTo-Json -InputObject @($installedRows) -Depth 6; break }
+                if ($installedRows.Count -eq 0) { Write-Host 'No models are downloaded.' }
+                else {
+                    Write-Host ('{0,-28} {1,8}  {2,-7}  {3}' -f 'Model', 'Size', 'In use', 'File check')
+                    foreach ($installedRow in $installedRows) {
+                        $inUseText = if ($installedRow.inUse) { 'yes (' + $installedRow.inUseReason + ')' } else { 'no' }
+                        $checkText = if ($installedRow.sizeMatches -and $installedRow.consent) { 'ok' } elseif (-not $installedRow.sizeMatches) { 'size differs' } else { 'no consent record' }
+                        Write-Host ('{0,-28} {1,5} GB  {2,-7}  {3}' -f $installedRow.id, (Format-FastLlmModelStoreGigabytes -Bytes $installedRow.sizeBytes), $inUseText, $checkText)
+                    }
+                }
+                $leftoverRows = @(Get-FastLlmModelLeftovers -InstallRoot $InstallRoot)
+                if ($leftoverRows.Count -gt 0) {
+                    Write-Host 'Leftover partial downloads (remove them with: models -RemoveQuarantined -Yes):'
+                    foreach ($leftoverRow in $leftoverRows) { Write-Host ('  {0}  {1} GB{2}' -f $leftoverRow.name, (Format-FastLlmModelStoreGigabytes -Bytes $leftoverRow.sizeBytes), $(if ($leftoverRow.locked) { '  (being downloaded)' } else { '' })) }
+                }
+                $freeBytes = Get-FastLlmModelStoreFreeBytes -InstallRoot $InstallRoot
+                if ($null -ne $freeBytes) { Write-Host ('Free disk space: {0} GB' -f (Format-FastLlmModelStoreGigabytes -Bytes $freeBytes)) }
+                break
+            }
+            if ($PSBoundParameters.ContainsKey('Remove')) {
+                $removeCatalog = Get-FastLlmCatalog -CatalogPath $catalogPath
+                $removeModel = @($removeCatalog.models | Where-Object { [string] $_.id -ceq $Remove })[0]
+                if ($null -eq $removeModel) { throw (New-FastLlmTypedFailure -Code 'not-in-catalog' -Message "There is no model '$Remove' in the catalog. Nothing was removed.") }
+                $removeRow = @(Get-FastLlmInstalledModels -InstallRoot $InstallRoot -CatalogPath $catalogPath | Where-Object { $_.id -ceq $Remove })[0]
+                if ($null -eq $removeRow) { throw (New-FastLlmTypedFailure -Code 'not-installed' -Message "The model file for '$Remove' is not on this PC. Nothing was removed.") }
+                # The lock is taken before the question: a busy or serving install is refused without asking, and nothing is removed.
+                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
+                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy or serving for this installation; stop it first. Nothing was removed.') }
+                $confirmationText = Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $removeModel) -SizeBytes ([int64] $removeRow.sizeBytes)
+                Write-Host $confirmationText
+                if (-not $Yes) {
+                    if (-not (Test-FastLlmCliInteractive)) {
+                        throw (New-FastLlmTypedFailure -Code 'confirmation-required' -Message 'Nothing was removed. Run the command again with -Yes to confirm.')
+                    }
+                    $answer = Read-Host 'Remove it? [y/N]'
+                    if ($answer -cnotmatch '^(?i:y|yes)$') { Write-Host 'Nothing was removed.'; break }
+                }
+                $removal = Remove-FastLlmInstalledModel -InstallRoot $InstallRoot -CatalogPath $catalogPath -ModelId $Remove -OperationLockHeld
+                if ($AsJson) { $removal | ConvertTo-Json -Depth 4 }
+                if (-not $removal.removed) { throw (New-FastLlmTypedFailure -Code ([string] $removal.reason) -Message "Nothing was removed ($($removal.reason)).") }
+                if (-not $AsJson) { Write-Host "Removed '$Remove'." }
+                break
+            }
+            if ($RemoveQuarantined) {
+                $leftoverRows = @(Get-FastLlmModelLeftovers -InstallRoot $InstallRoot)
+                if ($leftoverRows.Count -eq 0) { Write-Host 'There are no leftover partial downloads.'; break }
+                # The lock is taken before the question: a busy or serving install is refused without asking.
+                try { $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot }
+                catch { throw (New-FastLlmTypedFailure -Code 'operation-in-progress' -Message 'FastLLM is busy or serving for this installation; stop it first. Nothing was removed.') }
+                Write-Host 'Leftover partial downloads:'
+                foreach ($leftoverRow in $leftoverRows) { Write-Host ('  {0}  {1} GB{2}' -f $leftoverRow.name, (Format-FastLlmModelStoreGigabytes -Bytes $leftoverRow.sizeBytes), $(if ($leftoverRow.locked) { '  (being downloaded, kept)' } else { '' })) }
+                if (-not $Yes) { throw (New-FastLlmTypedFailure -Code 'confirmation-required' -Message 'Nothing was removed. Run the command again with -Yes to delete the files listed above.') }
+                $leftoverResults = @(Remove-FastLlmModelLeftovers -InstallRoot $InstallRoot -Names @($leftoverRows | Where-Object { -not $_.locked } | ForEach-Object { [string] $_.name }) -OperationLockHeld)
+                if ($AsJson) { ConvertTo-Json -InputObject @($leftoverResults) -Depth 4 }
+                else { foreach ($leftoverResult in $leftoverResults) { Write-Host ('{0}: {1}' -f $leftoverResult.name, $(if ($leftoverResult.removed) { 'removed' } else { 'kept (' + $leftoverResult.reason + ')' })) } }
+                if (@($leftoverResults | Where-Object { -not $_.removed }).Count -gt 0) { exit 1 }
+                break
+            }
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             if ($AsJson) { ConvertTo-Json -InputObject @($catalog.models) -Depth 12 }
             else { $catalog.models | Select-Object id, quantization, contextSize, requiredFreeVramMiB, servingMode | Format-Table -AutoSize }
@@ -431,15 +580,29 @@ try {
                 }
                 else { Set-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot -Mode 'ask' }
             }
+            if ($PSBoundParameters.ContainsKey('Port')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ServerPort $Port }
+            if ($PSBoundParameters.ContainsKey('Thinking')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -Thinking $Thinking }
+            if ($PSBoundParameters.ContainsKey('ChatPage')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ChatPage $ChatPage }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
-            if ($AsJson) { $licenseState | ConvertTo-Json -Depth 6 }
-            elseif ([string] $licenseState.mode -ceq 'accept-automatically') {
-                Write-Host "componentLicenses: accept-automatically (turned on $($licenseState.acceptedAt); $(@($licenseState.accepted).Count) license(s) accepted)"
+            $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
+            if ($AsJson) {
+                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage } | ConvertTo-Json -Depth 6
             }
-            else { Write-Host 'componentLicenses: ask' }
+            else {
+                if ([string] $licenseState.mode -ceq 'accept-automatically') {
+                    Write-Host "componentLicenses: accept-automatically (turned on $($licenseState.acceptedAt); $(@($licenseState.accepted).Count) license(s) accepted)"
+                }
+                else { Write-Host 'componentLicenses: ask' }
+                Write-Host "serverPort: $($servingState.serverPort)"
+                Write-Host "thinking: $($servingState.thinking)"
+                Write-Host "chatPage: $($servingState.chatPage)"
+            }
         }
         'status' {
-            Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot) | ConvertTo-Json -Depth 12
+            $statusDocument = Remove-FastLlmDeviceBindingPrivateFields -Status (Get-FastLlmStatus -InstallRoot $InstallRoot)
+            # Additive: how to connect an app (URL, model name, context limit, client settings). A failure here never hides the status.
+            try { Add-Member -InputObject $statusDocument -MemberType NoteProperty -Name connection -Value (Get-FastLlmConnectionInfo -Status $statusDocument -InstallRoot $InstallRoot) -Force } catch { $null = $_ }
+            $statusDocument | ConvertTo-Json -Depth 12
             # Cached notice only (no network). Not in -AsJson mode: status already prints one JSON document.
             if (-not $AsJson) {
                 try {
@@ -732,6 +895,13 @@ try {
 
         }
         'doctor' {
+            if ($ApiCheck) {
+                # User-run only: never called by start or Ready. Needs a Ready server; prints the verdicts as JSON.
+                $apiCheckRun = Invoke-FastLlmDoctorApiCheck -InstallRoot $InstallRoot -Status (Get-FastLlmStatus -InstallRoot $InstallRoot)
+                if ($null -ne $apiCheckRun.message) { Write-Host $apiCheckRun.message; exit $apiCheckRun.exitCode }
+                $apiCheckRun.result | ConvertTo-Json -Depth 5
+                exit $apiCheckRun.exitCode
+            }
             $catalog = Get-FastLlmCatalog -CatalogPath $catalogPath
             $windowsPrerequisites = Get-FastLlmWindowsPrerequisiteStatus
             $vulkanVerified = Test-FastLlmEngineInstallation -InstallRoot $InstallRoot -EngineVersion ([string] $catalog.engine.version) -BackendKey 'vulkan' -Asset $catalog.engine.assets.vulkan
@@ -820,10 +990,17 @@ try {
                 $diagnostic.vulkanMemory = Get-FastLlmVulkanMemoryDiagnostic -AdapterNames $diagnosticAdapters -Backend $diagnosticBackend -Probe:$ProbeVulkanMemory -Adapters $diagnosticAdapterObjects
             }
             catch { $diagnostic.vulkanMemoryError = 'vulkan-memory-diagnostic-unavailable' }
-            if ($Compact) { ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 }
-            else { $diagnostic | ConvertTo-Json -Depth 12 }
-            if ($diagnostic.error) {
-                exit 2
+            if ($PSBoundParameters.ContainsKey('SupportBundle')) {
+                # Local only: the zip is written to the path the user gave and nothing is sent anywhere. A doctor error is part of the report,
+                # not a reason to withhold the bundle.
+                New-FastLlmSupportBundle -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -OutputPath $SupportBundle -Doctor $diagnostic -ListOnly:$ListOnly | ConvertTo-Json -Depth 5
+            }
+            else {
+                if ($Compact) { ConvertTo-FastLlmCompactDoctorReport -Diagnostic $diagnostic | ConvertTo-Json -Depth 12 }
+                else { $diagnostic | ConvertTo-Json -Depth 12 }
+                if ($diagnostic.error) {
+                    exit 2
+                }
             }
         }
     }
