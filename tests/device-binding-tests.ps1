@@ -544,7 +544,18 @@ try {
     Check ($cliStatus.exited -and $cliStatus.exit -eq 0 -and $null -ne $cliView -and $cliView.deviceBinding.status -ceq 'bound' -and $null -eq $cliView.PSObject.Properties['identityFingerprint'] -and $null -eq $cliView.deviceBinding.device.PSObject.Properties['pnpInstanceId'] -and (Test-NoPrivateLeaf $cliView @($pnpA,'4&1&0&0008',$luidA,'PCI bus',$rec.state.identityFingerprint))) 'the real status action shows the binding without the PnP id, fingerprint, LUID or slot key'
     $cliOff=Invoke-Cli ('status -InstallRoot "'+$off.runRoot+'"')
     $directOff=((Get-FastLlmStatus $off.runRoot) | ConvertTo-Json -Depth 12)
-    Check ($cliOff.exited -and $cliOff.exit -eq 0 -and ($cliOff.text.Trim() -replace '\s+','') -ceq ($directOff.Trim() -replace '\s+','')) 'the status action output for an off root is exactly the plain status document'
+    # The status action adds one additive `connection` object (how to connect an app). With it removed, the output is exactly the plain status document.
+    $offView=$null;try{$offView=$cliOff.text | ConvertFrom-Json}catch{}
+    $connectionKeys=@('state','baseUrl','anthropicBaseUrl','modelName','contextTokens','agentWarning','endpoints','clients')
+    Check ($cliOff.exited -and $cliOff.exit -eq 0 -and $null -ne $offView) 'the status action output for an off root is one JSON document'
+    $offConnection=$null;if($null -ne $offView -and $null -ne $offView.PSObject.Properties['connection']){$offConnection=$offView.connection}
+    Check ($null -ne $offConnection -and ((@($offConnection.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ((@($connectionKeys) | Sort-Object) -join ','))) 'the status action output for an off root carries a connection object with exactly the connection-info keys'
+    $offRest=$null
+    if($null -ne $offView){$offRest=$offView | Select-Object -Property * -ExcludeProperty connection}
+    $offRestJson=if($null -ne $offRest){(($offRest | ConvertTo-Json -Depth 12 -Compress) -replace '\s+','')}else{''}
+    $directOffJson=((($directOff | ConvertFrom-Json) | ConvertTo-Json -Depth 12 -Compress) -replace '\s+','')
+    Check ($offRestJson.Length -gt 0 -and $offRestJson -ceq $directOffJson) 'the status action output for an off root, without the connection object, is exactly the plain status document'
+    Check ($null -ne $offView -and $null -eq $offView.PSObject.Properties['deviceBinding'] -and $null -eq $offView.PSObject.Properties['identityFingerprint'] -and (Test-NoPrivateLeaf $offView @($pnpA,'4&1&0&0008',$luidA,'PCI bus',$rec.state.identityFingerprint)) -and @(Get-Leaves $offView | Where-Object { $_ -cmatch '^[0-9a-f]{64}$' }).Count -eq 0) 'privacy: the status action output for an off root (connection object included) holds no device-binding field, PnP id, LUID, slot key or fingerprint'
 
     # a second start on the same install root: unchanged, then a driver update
     $again=Invoke-BindRun -Name 'record-same' -Binding 'record' -RunRoot $rec.runRoot
