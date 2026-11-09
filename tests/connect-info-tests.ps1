@@ -170,7 +170,7 @@ try {
     # apicheck-not-in-start
     $files=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' -File)+@(Get-Item (Join-Path $root 'fast-llm.ps1'),(Join-Path $root 'fast-llm-ui.ps1'),(Join-Path $root 'src/FastLlm.psm1'))
     $users=@($files|Where-Object{ (Get-Content -LiteralPath $_.FullName -Raw) -match 'Invoke-FastLlm(Doctor)?ApiCheck' }|ForEach-Object{$_.Name}|Sort-Object -Unique)
-    Check (($users -join ',') -ceq 'fast-llm.ps1,FastLlm.ConnectInfo.ps1') "apicheck-not-in-start: only the definitions and the doctor branch name it ($($users -join ','))"
+    Check ($users.Count -eq 2 -and ($users -ccontains 'fast-llm.ps1') -and ($users -ccontains 'FastLlm.ConnectInfo.ps1')) "apicheck-not-in-start: only the definitions and the doctor branch name it ($($users -join ','))"
     $entry=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
     $doctorAt=$entry.IndexOf("        'doctor' {")
     $guardAt=$entry.IndexOf('if ($ApiCheck) {')
