@@ -228,7 +228,8 @@ jobs:
       CHANNEL: ${{ needs.build.outputs.channel }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      # The tag annotation becomes the release notes, so this job needs the repository's tags.
+      # The release notes come from the annotated release tag (release/release_notes.py), so this job needs the repository's tags.
+      # A lightweight or empty tag fails the release before anything is published.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -240,9 +241,9 @@ jobs:
       - name: Create the GitHub release
         run: |
           set -euo pipefail
-          annotation="$(git tag -l --format='%(contents)' "$TAG")"
-          fixed="FastLLM $VER, Preview, for Windows PCs with AMD Radeon graphics. Install with FastLLM-Setup-$VER.exe; checksums are in SHA256SUMS."
+          git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          python3 release/release_notes.py "$TAG" "$VER" > "$RUNNER_TEMP/release-notes.md"
           flags=(--verify-tag --generate-notes --title "FastLLM $VER (Preview)" \
-                 --notes "$(printf '%s\n\n%s' "$annotation" "$fixed")")
+                 --notes-file "$RUNNER_TEMP/release-notes.md")
           if [ "$CHANNEL" = "canary" ]; then flags+=(--prerelease); fi
           gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" "${flags[@]}"
