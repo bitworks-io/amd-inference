@@ -2,7 +2,7 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases. Stable releases are the recommended download, starting with 2026.10.20.11.
 
-## Unreleased
+## 2026.11.12.1 (canary)
 
 - **No change to what FastLLM runs by default.** Every new serving setting below is off or at its default, so a start with no new options launches the same server arguments as before.
 - **Settable port:** Settings... in the window (and `fast-llm.ps1 settings -Port <n>`) chooses the loopback port. The opt-in background host, the window and the status all use it, Copy API URL copies the running endpoint, and attaching to a background run on a different port is refused. The server stays on 127.0.0.1, and the diagnostic tools still need the default port 8080. The default is 8080.
