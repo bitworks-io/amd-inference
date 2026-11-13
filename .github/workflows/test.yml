@@ -79,6 +79,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\tests\gpu-telemetry-tests.ps1
+      - name: gpu-process-memory-tests in Windows PowerShell 5.1 (mock only)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: .\tests\gpu-process-memory-tests.ps1
+      - name: gpu-process-memory-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\gpu-process-memory-tests.ps1
       - name: json-format-diagnostic-tests in Windows PowerShell 5.1 (mock only)
         if: ${{ !cancelled() }}
         shell: powershell

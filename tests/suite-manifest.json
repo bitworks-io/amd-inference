@@ -117,6 +117,11 @@
       "reason": "Read-only standard-user probe of the host's real display-class PnP records."
     },
     {
+      "suite": "gpu-process-memory-tests",
+      "class": "ci",
+      "reason": "Compiles the D3DKMT statistics reader and checks its header-derived layout constants and split logic; no adapter or live query; wired in test.yml."
+    },
+    {
       "suite": "gpu-telemetry-tests",
       "class": "ci",
       "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
