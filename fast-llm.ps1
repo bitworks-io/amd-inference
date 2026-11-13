@@ -123,6 +123,11 @@ param(
     [ValidateSet('off', 'on')]
     [string] $ChatPage,
 
+    # start, install, plan and settings: stop the server after this many minutes without requests, which frees its GPU memory: 0 (never, the
+    # default), 15, 30 or 60. The server arguments are the same either way. An explicit value wins over the saved setting (and is not saved);
+    # on settings it saves the value (0 removes it). Text, checked by ConvertTo-FastLlmIdleStopMinutes, so any other value is refused.
+    [string] $IdleStopMinutes,
+
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
 
@@ -302,6 +307,8 @@ if ($PSBoundParameters.ContainsKey('ServerPort') -and $Action -notin @('plan', '
 if ($PSBoundParameters.ContainsKey('Port') -and $Action -ne 'settings') { throw '-Port is supported only by settings.' }
 if ($PSBoundParameters.ContainsKey('Thinking') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('ChatPage') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('IdleStopMinutes') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-IdleStopMinutes is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $null = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
 # ValidateSet ignores case; the settings converter is exact, so the typed value is lower-cased once after binding.
 if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = $Thinking.ToLowerInvariant() }
 if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = $ChatPage.ToLowerInvariant() }
@@ -313,6 +320,7 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $servingBound.ServerPort = $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $servingBound.ChatPage = $ChatPage }
+    if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $servingBound.IdleStopMinutes = $IdleStopMinutes }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
     if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
@@ -322,6 +330,8 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
     if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
     if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
+    # The idle stop never reaches the planner: it changes no server argument. It is handed to the start only.
+    $effectiveIdleStopMinutes = [int] $servingOptions.idleStopMinutes
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -583,10 +593,11 @@ try {
             if ($PSBoundParameters.ContainsKey('Port')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ServerPort $Port }
             if ($PSBoundParameters.ContainsKey('Thinking')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -Thinking $Thinking }
             if ($PSBoundParameters.ContainsKey('ChatPage')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ChatPage $ChatPage }
+            if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -IdleStopMinutes $IdleStopMinutes }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
             $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
             if ($AsJson) {
-                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage } | ConvertTo-Json -Depth 6
+                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage; idleStopMinutes = $servingState.idleStopMinutes } | ConvertTo-Json -Depth 6
             }
             else {
                 if ([string] $licenseState.mode -ceq 'accept-automatically') {
@@ -596,6 +607,7 @@ try {
                 Write-Host "serverPort: $($servingState.serverPort)"
                 Write-Host "thinking: $($servingState.thinking)"
                 Write-Host "chatPage: $($servingState.chatPage)"
+                Write-Host "idleStopMinutes: $($servingState.idleStopMinutes)"
             }
         }
         'status' {
@@ -839,6 +851,7 @@ try {
                 if ($ThroughputCanary) { $startPolicyOptions.ThroughputCanary = $true }
                 if (-not $SkipSelfTest) { $startPolicyOptions.SelfTest = $true }
                 if ($DeviceBinding -ne 'off') { $startPolicyOptions.DeviceBinding = $DeviceBinding }
+                if ($effectiveIdleStopMinutes -gt 0) { $startPolicyOptions.IdleStopMinutes = $effectiveIdleStopMinutes }
                 try {
                     $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions
                 }
@@ -887,6 +900,13 @@ try {
                     throw "llama-server exited with code $exitCode."
                 }
                 $serverCompleted = $true
+                # An idle stop is a normal end (exit 0); the status says why, and so does this line.
+                if ($effectiveIdleStopMinutes -gt 0) {
+                    try {
+                        $idleFinalStatus = Get-FastLlmStatus -InstallRoot $InstallRoot
+                        if ($idleFinalStatus.PSObject.Properties['stopReason'] -and [string] $idleFinalStatus.stopReason -ceq 'idle') { Write-Host (Get-FastLlmUiIdleStopText -Minutes $effectiveIdleStopMinutes) }
+                    } catch { $null = $_ }
+                }
                 break
             }
             if (-not $serverCompleted) {

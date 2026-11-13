@@ -1090,13 +1090,38 @@ function Get-FastLlmUiActionAvailability {
     }
 }
 
+# The status line when a run ended because it was idle for the set time (the opt-in idle stop). Minutes is the saved setting of that run.
+function Get-FastLlmUiIdleStopText {
+    param($Minutes)
+    $count = 0
+    if (-not [int]::TryParse([string]$Minutes,[ref]$count) -or $count -le 0) {
+        return 'Stopped after being idle to free GPU memory. Apps get no answer until you start FastLLM again.'
+    }
+    return 'Stopped after ' + $count + ' min idle to free GPU memory. Apps get no answer until you start FastLLM again.'
+}
+
+# The status line when the foreground service ended. An idle stop says why; any other end keeps the plain wording.
+function Get-FastLlmUiServiceStoppedText {
+    param($Status)
+    if ($Status -and $Status.PSObject.Properties['stopReason'] -and [string]$Status.stopReason -ceq 'idle') {
+        $minutes = 0
+        if ($Status.PSObject.Properties['idleStopMinutes']) { $minutes = $Status.idleStopMinutes }
+        return (Get-FastLlmUiIdleStopText -Minutes $minutes)
+    }
+    return 'Service stopped.'
+}
+
 # The status line after Settings is saved. While a run is going, a changed value applies at the next start.
+# The idle stop is read tolerantly: a caller that has no such value means no change.
 function Get-FastLlmUiSettingsSavedNote {
     param([bool]$RunActive,$Before,$After)
     if ($RunActive) {
         if ([int]$After.serverPort -ne [int]$Before.serverPort) { return 'The new port applies at the next start.' }
         if ([string]$After.thinking -cne [string]$Before.thinking) { return 'The new thinking setting applies at the next start.' }
         if ([string]$After.chatPage -cne [string]$Before.chatPage) { return 'The new chat page setting applies at the next start.' }
+        $beforeIdle = if ($Before.PSObject.Properties['idleStopMinutes']) { [string]$Before.idleStopMinutes } else { '0' }
+        $afterIdle = if ($After.PSObject.Properties['idleStopMinutes']) { [string]$After.idleStopMinutes } else { '0' }
+        if ($afterIdle -cne $beforeIdle) { return 'The new idle stop setting applies at the next start.' }
     }
     return 'Settings saved.'
 }
@@ -1121,8 +1146,11 @@ function New-FastLlmUiBackgroundRequest {
     if ($Settings -and $Settings.PSObject.Properties['thinking'] -and [string]$Settings.thinking -ceq 'off') { $thinking = 'off' }
     $chatPage = 'off'
     if ($Settings -and $Settings.PSObject.Properties['chatPage'] -and [string]$Settings.chatPage -ceq 'on') { $chatPage = 'on' }
+    # The idle stop is read tolerantly too: only 15, 30 or 60 (a whole number) is carried; anything else is 0 (never).
+    $idleStop = 0
+    if ($Settings -and $Settings.PSObject.Properties['idleStopMinutes'] -and ($Settings.idleStopMinutes -is [int] -or $Settings.idleStopMinutes -is [long]) -and @(15,30,60) -contains [int]$Settings.idleStopMinutes) { $idleStop = [int]$Settings.idleStopMinutes }
     return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
-        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage}
+        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage;idleStopMinutes=$idleStop}
 }
 
 function Get-FastLlmUiMalformedSettingsNotice {

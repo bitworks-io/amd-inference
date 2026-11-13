@@ -383,6 +383,9 @@ function Get-FastLlmBackgroundHostStatus {
         modelId = if ($active) { [string]$status.modelId } else { [string]$owner.modelId }
         failureCode = if (-not $alive) { [string]$owner.failureCode } else { $null }
         failureReason = if (-not $alive -and $owner.PSObject.Properties['failureReason'] -and $owner.failureReason) { [string]$owner.failureReason } else { $null }
+        # The opt-in idle stop: only the exact reason idle is carried, with the minutes it was set to.
+        stopReason = if (-not $alive -and $owner.PSObject.Properties['stopReason'] -and [string]$owner.stopReason -ceq 'idle') { 'idle' } else { $null }
+        idleStopMinutes = if (-not $alive -and $owner.PSObject.Properties['stopReason'] -and [string]$owner.stopReason -ceq 'idle' -and $owner.PSObject.Properties['idleStopMinutes'] -and @(15,30,60) -contains [int]$owner.idleStopMinutes) { [int]$owner.idleStopMinutes } else { 0 }
         performanceQualified = $false
     }
 }
@@ -449,6 +452,7 @@ function Start-FastLlmBackgroundHost {
           [int]$ServerPort=0,
           [ValidateSet('auto','off')][string]$Thinking='auto',
           [ValidateSet('off','on')][string]$ChatPage='off',
+          [ValidateSet(0,15,30,60)][int]$IdleStopMinutes=0,
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     if ($ServerPort -ne 0 -and ($ServerPort -lt 1024 -or $ServerPort -gt 65535)) { throw 'ServerPort must be 0 (catalog port) or 1024-65535.' }
@@ -464,7 +468,7 @@ function Start-FastLlmBackgroundHost {
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$requestId
         sourceRoot=$source;installRoot=$install;profile=$Profile;modelId=$ModelId
         contextSize=$ContextSize;allowExperimentalModel=[bool]$AllowExperimentalModel
-        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant();sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant();idleStopMinutes=$IdleStopMinutes;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
     }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
@@ -544,6 +548,9 @@ function Invoke-FastLlmBackgroundServe {
     # chatPage is read the same way: only 'on' turns the page on.
     $requestedChatPage = 'off'
     if ($request.PSObject.Properties['chatPage'] -and [string]$request.chatPage -ceq 'on') { $requestedChatPage = 'on' }
+    # idleStopMinutes is read the same way: only a whole 15, 30 or 60 counts; absent or anything else is 0 (never).
+    $requestedIdleStop = 0
+    if ($request.PSObject.Properties['idleStopMinutes'] -and ($request.idleStopMinutes -is [int] -or $request.idleStopMinutes -is [long]) -and @(15,30,60) -contains [int]$request.idleStopMinutes) { $requestedIdleStop = [int]$request.idleStopMinutes }
     Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
     $lease = $null
     $operation = $null
@@ -586,9 +593,18 @@ function Invoke-FastLlmBackgroundServe {
         # This validates the installed engine, full model hash, exact consent,
         # then re-probes before using the normal supervised server. No install,
         # download, quarantine, or consent path is reachable here.
+        $serverOptions = @{}
+        if ($requestedIdleStop -gt 0) { $serverOptions.IdleStopMinutes = $requestedIdleStop }
         $exit = Start-FastLlmServer -Plan $plan -CatalogPath $catalog -InstallRoot $install `
-            -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -VulkanBarMitigation $barMitigation -SelfTest
+            -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -VulkanBarMitigation $barMitigation -SelfTest @serverOptions
         $record.phase = 'stopped'
+        # An idle stop ends the run normally; the record says why so the window can show it (the status document has the same reason).
+        if ($requestedIdleStop -gt 0) {
+            try {
+                $finalStatus = Get-FastLlmStatus -InstallRoot $install
+                if ($finalStatus.PSObject.Properties['stopReason'] -and [string]$finalStatus.stopReason -ceq 'idle') { $record.stopReason = 'idle'; $record.idleStopMinutes = $requestedIdleStop }
+            } catch { $null = $_ }
+        }
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
         return $exit
     } catch {

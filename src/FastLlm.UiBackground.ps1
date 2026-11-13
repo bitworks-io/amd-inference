@@ -48,6 +48,8 @@ function Set-FastLlmUiBackgroundObservation {
     param([Parameter(Mandatory=$true)]$State,[Parameter(Mandatory=$true)]$Observation,[switch]$StopRequested)
     $valid=Assert-FastLlmUiBackgroundObservation -Observation $Observation
     $State.observation=$valid
+    # A run that ended because it was idle for the set time (opt-in) is an expected end, like the user's own Stop.
+    $endedIdle=[bool](-not $valid.active -and $valid.PSObject.Properties['stopReason'] -and [string]$valid.stopReason -ceq 'idle')
     $previousAttention=$State.attention
     $State.attention=$previousAttention
     $observedRequestId=if($valid.PSObject.Properties['requestId']){[string]$valid.requestId}else{$null}
@@ -69,7 +71,7 @@ function Set-FastLlmUiBackgroundObservation {
            [string]$valid.runId -cne [string]$State.attachedRunId){
             $State.attachedRequestId=$null;$State.attachedRunId=$null
             # A run that ended after the user's own Stop is an expected end, not something to review.
-            $endedAfterStop=[bool]($StopRequested -and -not $valid.active)
+            $endedAfterStop=[bool](($StopRequested -and -not $valid.active) -or $endedIdle)
             if(-not $State.attention -and -not $endedAfterStop){$State.attention='The attached background run changed or ended. Review its status.'}
         }
     }
@@ -212,6 +214,14 @@ function Get-FastLlmUiBackgroundText {
         return 'Background serving or an unverified operation occupies this installation. Review Diagnostics.'
     }
     if($StopRequested){return 'Stopped. The background run ended.'}
+    # The idle stop (opt-in): the host record says why it ended. Same sentence as the window and the CLI.
+    if($State.observation.PSObject.Properties['stopReason'] -and [string]$State.observation.stopReason -ceq 'idle'){
+        $idleMinutes=0
+        if($State.observation.PSObject.Properties['idleStopMinutes'] -and [int]::TryParse([string]$State.observation.idleStopMinutes,[ref]$idleMinutes) -and $idleMinutes -gt 0){
+            return 'Stopped after '+$idleMinutes+' min idle to free GPU memory. Apps get no answer until you start FastLLM again.'
+        }
+        return 'Stopped after being idle to free GPU memory. Apps get no answer until you start FastLLM again.'
+    }
     if([string]$State.observation.phase -eq 'absent'){
         return 'Prepare with Install & start, then Stop. Background mode runs only while this Windows user is signed in.'
     }

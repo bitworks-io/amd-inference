@@ -10,6 +10,8 @@ if (-not (Get-Command -Name Move-FastLlmFileReplacing -ErrorAction SilentlyConti
 $script:FastLlmServingDefaultPort = 8080
 $script:FastLlmServingDefaultThinking = 'auto'
 $script:FastLlmServingDefaultChatPage = 'off'
+$script:FastLlmServingDefaultIdleStopMinutes = 0
+$script:FastLlmServingIdleStopChoices = @(0, 15, 30, 60)
 $script:FastLlmServingSettingsMaxBytes = 16384
 
 function Test-FastLlmServerPort {
@@ -47,6 +49,19 @@ function ConvertTo-FastLlmChatPage {
     param($Value)
     if ($Value -is [string] -and ($Value -ceq 'off' -or $Value -ceq 'on')) { return [string] $Value }
     throw 'serving-settings-invalid-chatpage: ChatPage must be off or on.'
+}
+
+# Idle stop is a closed set of minutes: 0 (Never, the default), 15, 30 or 60. An integer or its plain digits as text; nothing else.
+function ConvertTo-FastLlmIdleStopMinutes {
+    param($Value)
+    $invalid = 'serving-settings-invalid-idle-stop: the idle stop must be 0 (never), 15, 30 or 60 minutes.'
+    if ($null -eq $Value -or $Value -is [bool]) { throw $invalid }
+    $given = 0
+    if ($Value -is [int] -or $Value -is [long]) { if ($Value -lt 0 -or $Value -gt 60) { throw $invalid }; $given = [int] $Value }
+    elseif ($Value -is [string] -and $Value -cmatch '^(0|15|30|60)$') { $given = [int] $Value }
+    else { throw $invalid }
+    if ($script:FastLlmServingIdleStopChoices -notcontains $given) { throw $invalid }
+    return $given
 }
 
 # Returns @{ malformed = [bool]; object = [ordered] }. An absent file is empty and not malformed. A file over 16 KiB, a reparse
@@ -88,11 +103,17 @@ function Get-FastLlmServingSettings {
         $storedChatPage = $read.object['chatPage']
         if ($storedChatPage -is [string] -and $storedChatPage -ceq 'on') { $chatPage = 'on' }
     }
+    $idleStop = $script:FastLlmServingDefaultIdleStopMinutes
+    if (-not $read.malformed -and $read.object.Contains('idleStopMinutes')) {
+        $storedIdle = $read.object['idleStopMinutes']
+        if (($storedIdle -is [int] -or $storedIdle -is [long]) -and $script:FastLlmServingIdleStopChoices -contains [int] ([Math]::Min([long] $storedIdle, 2147483647L))) { $idleStop = [int] $storedIdle }
+    }
     return [pscustomobject]@{
-        serverPort = $port
-        thinking   = $thinking
-        chatPage   = $chatPage
-        malformed  = [bool] $read.malformed
+        serverPort       = $port
+        thinking         = $thinking
+        chatPage         = $chatPage
+        idleStopMinutes  = $idleStop
+        malformed        = [bool] $read.malformed
     }
 }
 
@@ -102,11 +123,13 @@ function Set-FastLlmServingSettings {
         [Parameter(Mandatory = $true)][string] $InstallRoot,
         $ServerPort,
         $Thinking,
-        $ChatPage
+        $ChatPage,
+        $IdleStopMinutes
     )
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort = ConvertTo-FastLlmServerPort -Value $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = ConvertTo-FastLlmThinking -Value $Thinking }
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = ConvertTo-FastLlmChatPage -Value $ChatPage }
+    if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $IdleStopMinutes = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
     $read = Read-FastLlmServingSettingsObject -InstallRoot $InstallRoot
     if ($read.malformed) { throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.' }
     $merged = $read.object
@@ -121,6 +144,10 @@ function Set-FastLlmServingSettings {
     if ($PSBoundParameters.ContainsKey('ChatPage')) {
         if ($ChatPage -ceq $script:FastLlmServingDefaultChatPage) { $merged.Remove('chatPage') }
         else { $merged['chatPage'] = $ChatPage }
+    }
+    if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) {
+        if ($IdleStopMinutes -eq $script:FastLlmServingDefaultIdleStopMinutes) { $merged.Remove('idleStopMinutes') }
+        else { $merged['idleStopMinutes'] = $IdleStopMinutes }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
@@ -151,6 +178,7 @@ function Resolve-FastLlmServingOptions {
     $port = $script:FastLlmServingDefaultPort
     $thinking = $script:FastLlmServingDefaultThinking
     $chatPage = $script:FastLlmServingDefaultChatPage
+    $idleStop = $script:FastLlmServingDefaultIdleStopMinutes
     $source = 'default'
     $settingsMalformed = $false
     if (-not $IgnoreUserSettings) {
@@ -168,6 +196,10 @@ function Resolve-FastLlmServingOptions {
             $chatPage = $stored.chatPage
             $source = 'settings'
         }
+        if (-not $stored.malformed -and $stored.idleStopMinutes -ne $script:FastLlmServingDefaultIdleStopMinutes) {
+            $idleStop = $stored.idleStopMinutes
+            $source = 'settings'
+        }
     }
     if ($Bound.ContainsKey('ServerPort')) {
         $given = ConvertTo-FastLlmServerPort -Value $Bound['ServerPort']
@@ -182,5 +214,9 @@ function Resolve-FastLlmServingOptions {
         $chatPage = ConvertTo-FastLlmChatPage -Value $Bound['ChatPage']
         $source = 'parameter'
     }
-    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; source = $source; settingsMalformed = $settingsMalformed }
+    if ($Bound.ContainsKey('IdleStopMinutes')) {
+        $idleStop = ConvertTo-FastLlmIdleStopMinutes -Value $Bound['IdleStopMinutes']
+        $source = 'parameter'
+    }
+    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; source = $source; settingsMalformed = $settingsMalformed }
 }

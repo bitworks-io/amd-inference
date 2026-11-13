@@ -147,6 +147,44 @@ try {
     Check ($x.chatPage -ceq 'on') 'chatpage-resolve: an explicit on applies with no settings'
     Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{ChatPage='maybe'} } 'serving-settings-invalid-chatpage'
 
+    # idle-stop-settings: opt-in stop after N idle minutes; 0 (Never) is the default and removes the key.
+    $r=Join-Path $work 'idle'; New-Item -ItemType Directory -Path $r | Out-Null
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq 0) 'idle-stop-settings: absent file reads 0 (Never)'
+    Write-Utf8 (Join-Path $r 'settings.json') '{"x":1,"serverPort":18181}'
+    foreach($minutes in 15,30,60){
+        Set-FastLlmServingSettings -InstallRoot $r -IdleStopMinutes $minutes
+        $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+        Check ($o.idleStopMinutes -eq $minutes -and $o.x -eq 1 -and $o.serverPort -eq 18181) "idle-stop-settings: $minutes is stored as a number beside the other keys"
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq $minutes) "idle-stop-settings: Get reads $minutes"
+    }
+    Set-FastLlmServingSettings -InstallRoot $r -IdleStopMinutes '30'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq 30) 'idle-stop-settings: the text 30 is accepted'
+    Set-FastLlmServingSettings -InstallRoot $r -IdleStopMinutes 0
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'idleStopMinutes') -and $o.x -eq 1) 'idle-stop-settings: 0 removes the key and keeps the others'
+    foreach($bad in 1,10,45,90,-15,'auto','15.5','',' ',$null,$true,15.5,'0x0F'){ Throws { Set-FastLlmServingSettings -InstallRoot $r -IdleStopMinutes $bad } 'serving-settings-invalid-idle-stop' }
+    Set-FastLlmServingSettings -InstallRoot $r -IdleStopMinutes 15
+    Set-FastLlmServingSettings -InstallRoot $r -ServerPort 18182
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq 15) 'idle-stop-settings: saving another setting keeps the idle stop'
+    foreach($bogus in '{"idleStopMinutes":"15"}','{"idleStopMinutes":45}','{"idleStopMinutes":true}','{"idleStopMinutes":-15}','{"idleStopMinutes":15.5}','{"idleStopMinutes":null}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq 0) "idle-stop-settings: stored $bogus reads as 0"
+    }
+    Write-Utf8 (Join-Path $r 'settings.json') '{"idleStopMinutes":30}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.idleStopMinutes -eq 30 -and $x.source -ceq 'settings') 'idle-stop-resolve: settings give 30'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{IdleStopMinutes=60}
+    Check ($x.idleStopMinutes -eq 60 -and $x.source -ceq 'parameter') 'idle-stop-resolve: an explicit parameter wins over settings'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{IdleStopMinutes=0}
+    Check ($x.idleStopMinutes -eq 0) 'idle-stop-resolve: an explicit 0 turns it off for this run'
+    Check ((Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json).idleStopMinutes -eq 30) 'idle-stop-resolve: a per-run value is never written to settings.json'
+    # The bench path reads no user settings: its effective idle stop is 0 whatever is saved.
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{} -IgnoreUserSettings
+    Check ($x.idleStopMinutes -eq 0) 'idle-stop-bench: with user settings ignored the effective idle stop is 0'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{IdleStopMinutes=45} } 'serving-settings-invalid-idle-stop'
+    Write-Utf8 (Join-Path $r 'settings.json') '{ not json'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq 0) 'idle-stop-settings: a malformed file reads 0'
+
     # tripwire-plan-reads-no-settings
     $watched='FastLlm.psm1','FastLlm.Runtime.ps1','FastLlm.Preload.ps1','FastLlm.Recipes.ps1','FastLlm.RunLog.ps1','FastLlm.ModelStore.ps1'
     foreach($name in $watched){

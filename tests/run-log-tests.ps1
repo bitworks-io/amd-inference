@@ -58,6 +58,9 @@ try {
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'phase' -Fields @{ completion='x' } } 'run-log-field-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'start' -Fields @{ phase='loading' } } 'run-log-field-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'chat' -Fields @{} } 'run-log-event-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'idle-stop' -Fields @{ idleStopMinutes=30; prompt='hello' } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'idle-stop' -Fields @{ metrics='llamacpp:prompt_tokens_total 1' } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'idle-check-failed' -Fields @{ detail='x' } } 'run-log-field-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'phase' -Fields @{ phase=@('a','b') } } 'run-log-value-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'phase' -Fields @{ phase=@{ a=1 } } } 'run-log-value-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId '..\evil' -Event 'phase' -Fields @{ phase='loading' } } 'run-log-run-id'
@@ -69,6 +72,8 @@ try {
         'placement'=@{ reportedLayers=41; totalLayers=41; reportedAllLayers=$true; deviceCount=1; devices='Vulkan0'; modelBufferTotalMiB=1200 }
         'api-check'=@{ status='pass'; modelIdentity=$true; effectiveContext=1024; repeatableToken=$true; synchronousChat=$true; streaming=$true }
         'self-test'=@{ status='pass'; reasons='a-b'; generationTokS=50.5; promptTokS=900; firstTextMs=120; expectedGenerationTokS=48; comparable=$true }
+        'idle-stop'=@{ idleStopMinutes=30; lastActivityUtc='2026-11-13T12:00:00.0000000Z'; stoppedAtUtc='2026-11-13T12:30:00.0000000Z' }
+        'idle-check-failed'=@{}
         'end'=@{ phase='stopped'; failureCode='x'; failedAtPhase='loading'; failureMessage='Server exited before readiness.'; exitCode=0; droppedEvents=0 }
     }
     foreach ($eventName in $allowed.Keys) {
@@ -77,7 +82,7 @@ try {
     $files=@(Get-ChildItem -LiteralPath (Get-LogDir $r) -Filter 'run-*.jsonl')
     Check ($files.Count -eq 1 -and $files[0].Name -cmatch '^run-\d{8}T\d{6}Z-0123456789abcdef0123456789abcdef\.jsonl$') 'field-allowlist: one file run-<yyyyMMddTHHmmssZ>-<runId>.jsonl'
     $lines=@(Read-LogLines $files[0].FullName)
-    Check ($lines.Count -eq 7) 'field-allowlist: every allowed event is one JSON line'
+    Check ($lines.Count -eq 9) 'field-allowlist: every allowed event is one JSON line'
     $envelope=@('ts','runId','event')
     $mismatch=0
     foreach ($line in $lines) {

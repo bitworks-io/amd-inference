@@ -1236,4 +1236,38 @@ Check ((Get-FastLlmUiBackgroundFailureHint -Message 'No consented model is prepa
 Check ((Get-FastLlmUiBackgroundFailureHint -Message 'background state path is not owned by the current user.') -ceq $preparedHint) 'the guard prefixes match case-sensitively'
 Check ($uiText.Contains('Get-FastLlmUiBackgroundFailureHint -Message $message')) 'the Start in background failure path takes its hint from the helper'
 
+# ---- idle stop (opt-in): status text, saved note, background request and the Settings row ----
+$idleSentence='Stopped after 30 min idle to free GPU memory. Apps get no answer until you start FastLLM again.'
+Check ((Get-FastLlmUiIdleStopText -Minutes 30) -ceq $idleSentence) 'idle-text: the status sentence names the minutes and says apps get no answer until you start FastLLM again'
+Check ((Get-FastLlmUiIdleStopText -Minutes 15) -ceq 'Stopped after 15 min idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'idle-text: 15 minutes'
+Check ((Get-FastLlmUiIdleStopText -Minutes 0) -ceq 'Stopped after being idle to free GPU memory. Apps get no answer until you start FastLLM again.' -and (Get-FastLlmUiIdleStopText -Minutes $null) -ceq 'Stopped after being idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'idle-text: a missing or zero value still gives a plain sentence'
+Check (-not ((Get-FastLlmUiIdleStopText -Minutes 30) -match 'next request|starts again on|automatically')) 'idle-text: no wording promises a restart on the next request'
+Check ((Get-FastLlmUiServiceStoppedText -Status ([pscustomobject]@{stopReason='idle';idleStopMinutes=60})) -ceq 'Stopped after 60 min idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'idle-text: a foreground run that stopped when idle shows the sentence'
+Check ((Get-FastLlmUiServiceStoppedText -Status ([pscustomobject]@{stopReason='user'})) -ceq 'Service stopped.' -and (Get-FastLlmUiServiceStoppedText -Status ([pscustomobject]@{phase='stopped'})) -ceq 'Service stopped.' -and (Get-FastLlmUiServiceStoppedText -Status $null) -ceq 'Service stopped.') 'idle-text: a user stop, an old status and no status keep Service stopped.'
+Check ($uiText.Contains('Get-FastLlmUiServiceStoppedText -Status (GetUiBackgroundRunStatus)')) 'idle-text: the foreground completion line takes its text from the helper'
+Check ($uiText.Contains('Get-FastLlmUiIdleStopText -Minutes $script:bgState.observation.idleStopMinutes')) 'idle-text: an attached background run that stopped when idle shows the sentence in the status line'
+$idleBefore=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0}
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $idleBefore -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=30})) -ceq 'The new idle stop setting applies at the next start.') 'idle-note: an idle stop change during a run applies at the next start'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $idleBefore -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=30})) -ceq 'Settings saved.') 'idle-note: no run gives Settings saved.'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $idleBefore -After $idleBefore) -ceq 'Settings saved.') 'idle-note: an unchanged idle stop gives Settings saved.'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'}) -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'})) -ceq 'Settings saved.') 'idle-note: objects with no idleStopMinutes read as never, with no exception'
+$idleRequestRoot=Join-Path ([IO.Path]::GetTempPath()) 'fastllm-idle-request'
+foreach($case in @(@{Value=30;Expect=30},@{Value=15;Expect=15},@{Value=60;Expect=60},@{Value=0;Expect=0},@{Value=45;Expect=0},@{Value='30';Expect=0},@{Value=$true;Expect=0},@{Value=-15;Expect=0})){
+    $idleRequest=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $idleRequestRoot -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181;idleStopMinutes=$case.Value})
+    Check ($idleRequest.idleStopMinutes -eq $case.Expect) ("idle-request: a saved idleStopMinutes of $($case.Value) is carried as $($case.Expect)")
+}
+Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $idleRequestRoot -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).idleStopMinutes -eq 0) 'idle-request: a settings object without idleStopMinutes gives 0'
+Check ($uiText.Contains('-ChatPage $ChatPage -IdleStopMinutes $IdleStop -NoWait') -and $uiText.Contains('$Request.chatPage $Request.idleStopMinutes')) 'idle-request: Start in background hands the saved idle stop to the host'
+# The Settings dialog row: Never / after 15 / 30 / 60 minutes, saved through Set-FastLlmServingSettings, no label over its control, below the chat page rows and above the buttons.
+Check ($uiText.Contains("Text='Stop the model when idle'") -and $uiText.Contains("'Never (default)','After 15 minutes','After 30 minutes','After 60 minutes'")) 'idle-dialog: the row is Stop the model when idle with Never, After 15, 30 and 60 minutes'
+Check ($uiText.Contains('-IdleStopMinutes $savedIdle') -and $uiText.Contains('@(0,15,30,60)[')) 'idle-dialog: Save writes the chosen minutes through Set-FastLlmServingSettings'
+Check ((SettingsRect 'idleLabel').right -le (SettingsRect 'idleBox').left) 'idle-dialog: the Settings idle stop label ends before the idle stop drop-down starts'
+function SettingsTop([string]$Name){ $m=[regex]::Match($uiText,'\$'+$Name+'\.Location=New-Object Drawing\.Point\(\d+,(\d+)\)'); if(-not $m.Success){throw "FAIL: could not read the Settings dialog top of $Name"}; return [int]$m.Groups[1].Value }
+function SettingsHeight([string]$Name){ $m=[regex]::Match($uiText,'\$'+$Name+'\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)'); if(-not $m.Success){throw "FAIL: could not read the Settings dialog height of $Name"}; return [int]$m.Groups[1].Value }
+Check ((SettingsTop 'idleLabel') -ge ((SettingsTop 'chatPrivacy')+(SettingsHeight 'chatPrivacy')) -and (SettingsTop 'idleBox') -ge ((SettingsTop 'chatPrivacy')+(SettingsHeight 'chatPrivacy'))) 'idle-dialog: the idle stop row sits below the chat page rows, not over them'
+Check ((SettingsTop 'idleHelp') -ge ((SettingsTop 'idleBox')+(SettingsHeight 'idleBox')) -and (SettingsTop 'saveButton') -ge ((SettingsTop 'idleHelp')+(SettingsHeight 'idleHelp')) -and (SettingsTop 'cancelButton') -ge ((SettingsTop 'idleHelp')+(SettingsHeight 'idleHelp'))) 'idle-dialog: the help line sits under the drop-down and the buttons under the help line'
+$dialogHeight=[int][regex]::Match($uiText,"\`$dialog\.Text='FastLLM settings';\`$dialog\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)").Groups[1].Value
+Check ($dialogHeight -ge ((SettingsTop 'saveButton')+(SettingsHeight 'saveButton')+40)) 'idle-dialog: the dialog is tall enough for the buttons below the new row'
+Check ($uiText.Contains('[int]$script:settingsSavedIdle') -and $uiText.Contains('idleStopMinutes=[int]$script:settingsSavedIdle')) 'idle-dialog: the saved note is given the idle stop as well'
+
 Write-Output "UI flow tests passed: $checks"

@@ -771,6 +771,129 @@ try {
         Check ($null -ne $enforceRun.failure -and $enforceRun.failure.Data['FastLlmFailureCode'] -ceq 'device-binding-unsupported-backend' -and $enforceRun.failure.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -and $enforceRun.state.failureCode -ceq 'device-binding-unsupported-backend' -and $null -eq $enforceRun.state.processIdentity) '-DeviceBinding enforce on a HIP plan fails device-binding-unsupported-backend before any server process is spawned (positive control: the generic run recorded a pid)'
     }
     else { Write-Host 'SKIP: supervised HIP early-exit starts need a Windows child process' }
+
+    # ---- idle stop (opt-in): the pure detector over /metrics, the poll wrapper and the post-Ready loop hook ----
+    function Get-IdleMetrics($Prompt,$Predicted,$Processing=0,$Deferred=0,[string]$Newline="`n"){
+        $lines=@('# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.','# TYPE llamacpp:prompt_tokens_total counter',"llamacpp:prompt_tokens_total $Prompt",
+            '# HELP llamacpp:tokens_predicted_total Number of generation tokens processed.','# TYPE llamacpp:tokens_predicted_total counter',"llamacpp:tokens_predicted_total $Predicted",
+            '# HELP llamacpp:requests_processing Number of requests processing.','# TYPE llamacpp:requests_processing gauge',"llamacpp:requests_processing $Processing",
+            '# HELP llamacpp:requests_deferred Number of requests deferred.','# TYPE llamacpp:requests_deferred gauge',"llamacpp:requests_deferred $Deferred",
+            'llamacpp:n_busy_slots_per_decode 1.5','llamacpp:prompt_seconds_total 3.25')
+        return (($lines -join $Newline)+$Newline)
+    }
+    $idleMetricsParse=& $module { param($T) ConvertFrom-FastLlmIdleMetrics -Text $T } (Get-IdleMetrics 120 45 1 2)
+    Check ($null -ne $idleMetricsParse -and $idleMetricsParse.promptTokens -eq 120 -and $idleMetricsParse.predictedTokens -eq 45 -and $idleMetricsParse.processing -eq 1 -and $idleMetricsParse.deferred -eq 2) 'idle-metrics: the four counters are read from HELP/TYPE-annotated text'
+    $idleMetricsCrLf=& $module { param($T) ConvertFrom-FastLlmIdleMetrics -Text $T } (Get-IdleMetrics '12345.0' '6.78e+02' 0 0 "`r`n")
+    Check ($null -ne $idleMetricsCrLf -and $idleMetricsCrLf.promptTokens -eq 12345 -and $idleMetricsCrLf.predictedTokens -eq 678) 'idle-metrics: CRLF line endings, decimal and exponent values are read'
+    $idleMetricsBare=& $module { param($T) ConvertFrom-FastLlmIdleMetrics -Text $T } "llamacpp:prompt_tokens_total 1`nllamacpp:tokens_predicted_total 2`nllamacpp:requests_processing 0`nllamacpp:requests_deferred 0"
+    Check ($null -ne $idleMetricsBare -and $idleMetricsBare.promptTokens -eq 1) 'idle-metrics: bare name-value lines with no comments and no final newline are read'
+    $idleMetricsLabeled=& $module { param($T) ConvertFrom-FastLlmIdleMetrics -Text $T } "llamacpp:prompt_tokens_total{slot=`"0`"} 7`nllamacpp:tokens_predicted_total 2`nllamacpp:requests_processing 0`nllamacpp:requests_deferred 0`n"
+    Check ($null -ne $idleMetricsLabeled -and $idleMetricsLabeled.promptTokens -eq 7) 'idle-metrics: a labelled sample is read'
+    $unreadableIndex=0
+    foreach($unreadable in @($null,'','   ','not metrics at all','llamacpp:prompt_tokens_total 1',"llamacpp:prompt_tokens_total abc`nllamacpp:tokens_predicted_total 2`nllamacpp:requests_processing 0`nllamacpp:requests_deferred 0","llamacpp:prompt_tokens_total NaN`nllamacpp:tokens_predicted_total 2`nllamacpp:requests_processing 0`nllamacpp:requests_deferred 0","llamacpp:prompt_tokens_total 1`nllamacpp:tokens_predicted_total 2`nllamacpp:requests_processing 0")){
+        $unreadableIndex++
+        Check ($null -eq (& $module { param($T) ConvertFrom-FastLlmIdleMetrics -Text $T } $unreadable)) "idle-metrics: unreadable text gives null (case $unreadableIndex)"
+    }
+    $idleT0=[DateTime]::new(2026,11,13,12,0,0,[DateTimeKind]::Utc)
+    function Step-Idle($State,$Text,[double]$Seconds,[int]$Minutes){ return (& $module { param($S,$T,$N,$M) Step-FastLlmIdleDetector -State $S -MetricsText $T -Now $N -IdleMinutes $M } $State $Text $idleT0.AddSeconds($Seconds) $Minutes) }
+    function New-IdleState { return (& $module { param($N) New-FastLlmIdleDetectorState -Now $N } $idleT0) }
+    # idle: counters never move, a stop at N minutes (15 here), never before.
+    $idleState=New-IdleState; $idleStopAt=$null; $idleEarly=$false
+    for($t=30;$t -le 1200;$t+=30){
+        $idleStep=Step-Idle $idleState (Get-IdleMetrics 100 50) $t 15; $idleState=$idleStep.state
+        if($idleStep.shouldStop -and $null -eq $idleStopAt){$idleStopAt=$t}
+        if($idleStep.shouldStop -and $t -lt 900){$idleEarly=$true}
+    }
+    Check ($null -ne $idleStopAt -and -not $idleEarly -and $idleStopAt -ge 900 -and $idleStopAt -le 960) "idle-detector: no activity stops at 15 minutes and not before (first stop at $idleStopAt s)"
+    # the same for 30 and 60 minutes
+    foreach($minutes in 30,60){
+        $idleState=New-IdleState; $idleStopAt=$null
+        for($t=30;$t -le (($minutes*60)+60);$t+=30){ $idleStep=Step-Idle $idleState (Get-IdleMetrics 9 9) $t $minutes; $idleState=$idleStep.state; if($idleStep.shouldStop -and $null -eq $idleStopAt){$idleStopAt=$t} }
+        Check ($null -ne $idleStopAt -and $idleStopAt -ge $minutes*60 -and $idleStopAt -le ($minutes*60)+60) "idle-detector: $minutes minutes stops after $minutes minutes (at $idleStopAt s)"
+    }
+    # a minutes value of 0 never stops
+    $idleState=New-IdleState; $idleNever=$false
+    for($t=30;$t -le 7200;$t+=30){ $idleStep=Step-Idle $idleState (Get-IdleMetrics 1 1) $t 0; $idleState=$idleStep.state; if($idleStep.shouldStop){$idleNever=$true} }
+    Check (-not $idleNever) 'idle-detector: 0 minutes (Never) never asks for a stop'
+    # activity resets the clock: prompt tokens move at 10 minutes, so the stop moves to 25 minutes.
+    $idleState=New-IdleState; $idleStopAt=$null
+    for($t=30;$t -le 2400;$t+=30){
+        $prompt=100; if($t -ge 600){$prompt=200}
+        $idleStep=Step-Idle $idleState (Get-IdleMetrics $prompt 50) $t 15; $idleState=$idleStep.state
+        if($idleStep.shouldStop -and $null -eq $idleStopAt){$idleStopAt=$t}
+    }
+    Check ($null -ne $idleStopAt -and $idleStopAt -ge 1500 -and $idleStopAt -le 1560) "idle-detector: a change in prompt tokens resets the clock (stop at $idleStopAt s, not 900 s)"
+    $idleState=New-IdleState; $idleStopAt=$null
+    for($t=30;$t -le 2400;$t+=30){
+        $predicted=50; if($t -ge 600){$predicted=51}
+        $idleStep=Step-Idle $idleState (Get-IdleMetrics 100 $predicted) $t 15; $idleState=$idleStep.state
+        if($idleStep.shouldStop -and $null -eq $idleStopAt){$idleStopAt=$t}
+    }
+    Check ($null -ne $idleStopAt -and $idleStopAt -ge 1500 -and $idleStopAt -le 1560) 'idle-detector: a change in generated tokens resets the clock'
+    # counters going backwards (the server restarted) are activity too.
+    $idleState=New-IdleState
+    $idleStep=Step-Idle $idleState (Get-IdleMetrics 500 500) 30 15; $idleState=$idleStep.state
+    $idleStep=Step-Idle $idleState (Get-IdleMetrics 5 5) 60 15
+    Check ($idleStep.activity -eq $true) 'idle-detector: a counter that went down counts as activity'
+    # the request in flight is never cut off, even with the timer long past.
+    foreach($busy in @(@{Processing=1;Deferred=0;Name='requests_processing'},@{Processing=0;Deferred=2;Name='requests_deferred'})){
+        $idleState=New-IdleState
+        for($t=30;$t -le 960;$t+=30){ $idleStep=Step-Idle $idleState (Get-IdleMetrics 100 50) $t 15; $idleState=$idleStep.state }
+        Check ($idleStep.shouldStop -eq $true) ("idle-detector: precondition, the timer has elapsed before the $($busy.Name) poll")
+        $idleBusyStep=Step-Idle $idleState (Get-IdleMetrics 100 50 $busy.Processing $busy.Deferred) 990 15
+        Check ($idleBusyStep.shouldStop -eq $false -and $idleBusyStep.activity -eq $true) ("idle-detector: $($busy.Name) greater than 0 is never cut off, even with the idle timer elapsed")
+        $idleAfter=Step-Idle $idleBusyStep.state (Get-IdleMetrics 100 50) 1020 15
+        Check ($idleAfter.shouldStop -eq $false) ("idle-detector: after $($busy.Name) the clock starts again from zero")
+    }
+    # a read failure never stops and never advances the clock.
+    $idleState=New-IdleState
+    for($t=30;$t -le 600;$t+=30){ $idleStep=Step-Idle $idleState (Get-IdleMetrics 100 50) $t 15; $idleState=$idleStep.state }
+    $idleSecondsBefore=[double]$idleState.idleSeconds
+    $failedSteps=@()
+    for($t=630;$t -le 4200;$t+=30){ $idleStep=Step-Idle $idleState $null $t 15; $idleState=$idleStep.state; $failedSteps+=$idleStep }
+    Check (@($failedSteps | Where-Object { $_.shouldStop }).Count -eq 0 -and @($failedSteps | Where-Object { -not $_.readFailed }).Count -eq 0) 'idle-detector: an hour of failed reads never asks for a stop'
+    Check ([double]$idleState.idleSeconds -eq $idleSecondsBefore) 'idle-detector: failed reads do not advance the idle clock'
+    $idleStep=Step-Idle $idleState (Get-IdleMetrics 100 50) 4230 15
+    Check ($idleStep.shouldStop -eq $false) 'idle-detector: the first good read after a long failure does not stop on the failed time'
+    Check ([int]$failedSteps[-1].state.failedReads -eq $failedSteps.Count -and [int]$idleStep.state.failedReads -eq 0) 'idle-detector: failed reads in a row are counted and a good read clears the count'
+    $idleState=New-IdleState
+    $idleStep=Step-Idle $idleState 'llamacpp:prompt_tokens_total 1' 30 15
+    Check ($idleStep.readFailed -eq $true -and $idleStep.shouldStop -eq $false) 'idle-detector: text without the four counters is a failed read'
+    # a long gap between polls (the PC slept) adds a bounded amount of idle time.
+    $idleState=New-IdleState
+    $idleStep=Step-Idle $idleState (Get-IdleMetrics 1 1) 30 15; $idleState=$idleStep.state
+    $idleStep=Step-Idle $idleState (Get-IdleMetrics 1 1) 36000 15
+    Check ($idleStep.shouldStop -eq $false) 'idle-detector: a ten-hour gap between two polls does not stop the server by itself'
+    # the poll wrapper: a throwing or non-200 fetch is a failed read, a good one steps the detector.
+    $wrapper=& $module { param($N) $s=New-FastLlmIdleDetectorState -Now $N; Invoke-FastLlmIdleStopPoll -State $s -Fetch { throw 'connection refused' } -Now $N.AddSeconds(30) -IdleMinutes 15 } $idleT0
+    Check ($wrapper.readFailed -eq $true -and $wrapper.shouldStop -eq $false) 'idle-poll: a fetch that throws is a failed read and never stops'
+    $wrapperGood=& $module { param($N,$T) $s=New-FastLlmIdleDetectorState -Now $N; Invoke-FastLlmIdleStopPoll -State $s -Fetch { $T } -Now $N.AddSeconds(30) -IdleMinutes 15 } $idleT0 (Get-IdleMetrics 1 1)
+    Check ($wrapperGood.readFailed -eq $false) 'idle-poll: a fetch that returns the text steps the detector'
+    # the metrics fetch used by the loop is a loopback GET of /metrics with a short timeout and only a 200 body counts.
+    $fetchSource=(& $module { (Get-Command Get-FastLlmIdleMetricsText).ScriptBlock.ToString() })
+    Check ($fetchSource.Contains("-Path '/metrics'") -and $fetchSource -match 'TimeoutMs\s+250\b' -and $fetchSource.Contains('200') -and $fetchSource -notmatch '-Body\s+@') 'idle-fetch: GET /metrics through the loopback helper with a short timeout, 200 only'
+    # the post-Ready loop: user stop first (250 ms cadence unchanged), the poll only when idle stop is on, the stop is the same exit path.
+    $loopAt=$runtimeText.IndexOf('while (-not $hostProcess.Process.WaitForExit(250)) {')
+    Check ($loopAt -gt 0 -and $runtimeText.IndexOf('WaitForExit(250)') -eq $runtimeText.LastIndexOf('WaitForExit(250)')) 'idle-loop: the post-Ready wait loop keeps its 250 ms WaitForExit and is the only one'
+    $loopEnd=$runtimeText.IndexOf('$exitCode = $hostProcess.Process.ExitCode',$loopAt)
+    $loopText=$runtimeText.Substring($loopAt,$loopEnd-$loopAt)
+    $userStopAt=$loopText.IndexOf('Test-Path -LiteralPath $stopPath')
+    $idlePollAt=$loopText.IndexOf('Invoke-FastLlmIdleStopPoll')
+    Check ($userStopAt -ge 0 -and $idlePollAt -gt $userStopAt) 'idle-loop: the user stop file is checked before any idle poll'
+    Check ($loopText.Contains("`$state.stopReason='user'") -and $loopText.Contains("`$state.stopReason='idle'")) 'idle-loop: a user stop records stopReason user and an idle stop records stopReason idle'
+    Check ($loopText -match 'if \(\$IdleStopMinutes -gt 0') 'idle-loop: nothing is polled when idle stop is off'
+    Check ($loopText -match 'shouldStop -and -not \(Test-Path -LiteralPath \$stopPath\)') 'idle-loop: a user Stop that arrives during a poll wins over the idle stop'
+    Check ($loopText -match 'failedReads -eq 1' -and $loopText.Contains("-Event 'idle-check-failed'")) 'idle-loop: a run of failed reads is logged once, at its first failure, and never stops the server'
+    Check ($loopText -match "\`$state\.phase\s*=\s*'stopped'" -and $loopText.Contains('return 0')) 'idle-loop: an idle stop ends through the same phase stopped and return 0 as a user stop'
+    Check ($loopText.Contains('stoppedAtUtc') -and $loopText.Contains("-Event 'idle-stop'")) 'idle-loop: an idle stop writes stoppedAtUtc and the idle-stop run-log event'
+    Check ($runtimeText -match '\[int\]\s*\$IdleStopMinutes\s*=\s*0' -and $runtimeText -match 'ValidateSet\(0,\s*15,\s*30,\s*60\)') 'idle-supervisor: Invoke-FastLlmSupervisedServer takes IdleStopMinutes, default 0, closed set'
+    $startFunctionText=(& $module { (Get-Command Start-FastLlmServer).ScriptBlock.ToString() })
+    Check ($startFunctionText -match 'ValidateSet\(0,\s*15,\s*30,\s*60\)\]\s*\[int\]\s*\$IdleStopMinutes\s*=\s*0' -and $startFunctionText.Contains('$supervisorOptions.IdleStopMinutes') -and $startFunctionText.Contains('$startAgain.IdleStopMinutes')) 'idle-start: Start-FastLlmServer defaults to 0, passes it on and keeps it for the stand-in start'
+    # The bench path never opts in: no bench caller passes IdleStopMinutes, so a direct caller gets 0.
+    $benchCallers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1') -and ([IO.File]::ReadAllText($_.FullName)).Contains('IdleStopMinutes') })
+    Check ($benchCallers.Count -eq 0) ('idle-bench: no lab, benchmark or diagnostic source passes IdleStopMinutes: ['+(($benchCallers | ForEach-Object Name) -join ',')+']')
+    # no argument text: the idle stop never reaches the server arguments.
+    Check (-not ($runtimeText -match "--sleep-idle-seconds") -and -not ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw) -match '--sleep-idle-seconds')) 'idle-args: the engine sleep option is not used'
     $suitePassed=$true
 } finally {
     if($lock){$lock.Dispose()}
