@@ -347,6 +347,7 @@ try {
     # The window reads the host record through Get-FastLlmBackgroundHostStatus: only the exact reason idle is carried.
     $statusSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     Assert-BackgroundTest ($statusSource.Contains("[string]`$owner.stopReason -ceq 'idle'") -and $statusSource.Contains('idleStopMinutes = if (-not $alive')) 'idle-stop-status: the host status carries stopReason and idleStopMinutes only for a finished run with the exact reason idle.'
+    Assert-BackgroundTest ($statusSource.Contains("-ceq 'idle') { 'idle' } else { `$null }")) 'idle-stop-status: an unknown or missing stop reason in the owner record gives no stop reason in the host status (the generic stopped text), never an error.'
     Assert-BackgroundTest ($statusSource.Contains('[ValidateSet(0,15,30,60)][int]$IdleStopMinutes=0') -and $statusSource.Contains('idleStopMinutes=$IdleStopMinutes;sourcePins')) 'idle-stop-start: Start-FastLlmBackgroundHost takes IdleStopMinutes (closed set, default 0) and writes it into the request.'
     # Start writes the request in lower case for both choices (ValidateSet ignores case, the reader is exact).
     $startSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
