@@ -122,6 +122,11 @@
       "reason": "Compiles the D3DKMT statistics reader and checks its header-derived layout constants and split logic; no adapter or live query; wired in test.yml."
     },
     {
+      "suite": "gpu-adapter-select-tests",
+      "class": "ci",
+      "reason": "Compiles the D3DKMT adapter enumerator, checks its header-derived layout and LUID format, and runs the pure process-adapter selection rule on fixtures; no adapter or live query; wired in test.yml."
+    },
+    {
       "suite": "gpu-telemetry-tests",
       "class": "ci",
       "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."

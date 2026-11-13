@@ -18,6 +18,12 @@ namespace Bitworks.FastLlm {
         public string Error { get; set; }
     }
 
+    // Adapter LUIDs as Read() accepts them (16 lowercase hex digits, high part then low part), or a short error code.
+    public sealed class GpuAdapterEnumeration {
+        public string[] Luids { get; set; }
+        public string Error { get; set; }
+    }
+
     public static class WindowsGpuProcessMemory {
         // sizeof(D3DKMT_QUERYSTATISTICS) on AMD64 (C_ASSERT == 0x328 in the System Informer header).
         public const int StatisticsSize = 0x328;
@@ -47,9 +53,124 @@ namespace Bitworks.FastLlm {
         // D3DKMT_MAX_SEGMENT_COUNT in d3dkmthk.h; a larger NbSegments is treated as an unexpected answer.
         public const int MaxSegments = 32;
 
+        // D3DKMT_ENUMADAPTERS2 { ULONG NumAdapters; D3DKMT_ADAPTERINFO* pAdapters; } on x64 (System Informer d3dkmthk.h and Wine
+        // include/ddk/d3dkmthk.h agree): NumAdapters at 0, pointer 8-byte aligned at 8, size 16.
+        public const int EnumAdapters2Size = 16;
+        public const int OffsetEnumNumAdapters = 0;
+        public const int OffsetEnumAdapters = 8;
+        // D3DKMT_ADAPTERINFO { D3DKMT_HANDLE hAdapter; LUID AdapterLuid; ULONG NumOfSources; BOOL bPrecisePresentRegionsPreferred; }
+        // (same two headers): all 4-byte members, so 4-byte aligned and 20 bytes with no padding.
+        public const int AdapterInfoSize = 20;
+        public const int OffsetInfoHandle = 0;
+        public const int OffsetInfoLuidLow = 4;
+        public const int OffsetInfoLuidHigh = 8;
+        public const int OffsetInfoNumOfSources = 12;
+        public const int OffsetInfoPrecisePresent = 16;
+        // D3DKMT_CLOSEADAPTER { D3DKMT_HANDLE hAdapter; } (D3DKMT_HANDLE is a UINT).
+        public const int CloseAdapterSize = 4;
+        // Upper bound on the adapter count accepted from the first (count-only) call; a larger answer is an unexpected one.
+        public const int MaxEnumAdapters = 64;
+
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("gdi32.dll", EntryPoint="D3DKMTQueryStatistics", ExactSpelling=true)]
         private static extern int QueryStatistics(IntPtr data);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("gdi32.dll", EntryPoint="D3DKMTEnumAdapters2", ExactSpelling=true)]
+        private static extern int EnumAdapters2(IntPtr data);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("gdi32.dll", EntryPoint="D3DKMTCloseAdapter", ExactSpelling=true)]
+        private static extern int CloseAdapter(IntPtr data);
+
+        public static bool EnumLayoutIsExpected() {
+            return IntPtr.Size == 8 &&
+                EnumAdapters2Size == 16 && OffsetEnumNumAdapters == 0 && OffsetEnumAdapters == 8 && OffsetEnumAdapters % 8 == 0 &&
+                OffsetEnumAdapters + IntPtr.Size == EnumAdapters2Size &&
+                AdapterInfoSize == 20 && OffsetInfoHandle == 0 && OffsetInfoLuidLow == OffsetInfoHandle + 4 &&
+                OffsetInfoLuidHigh == OffsetInfoLuidLow + 4 && OffsetInfoNumOfSources == OffsetInfoLuidHigh + 4 &&
+                OffsetInfoPrecisePresent == OffsetInfoNumOfSources + 4 && OffsetInfoPrecisePresent + 4 == AdapterInfoSize &&
+                CloseAdapterSize == 4 && MaxEnumAdapters > 0;
+        }
+
+        // The text form of an adapter LUID: high part then low part, 16 lowercase hex digits (what Read() parses).
+        public static string FormatLuid(uint low, int high) {
+            return unchecked((uint)high).ToString("x8", CultureInfo.InvariantCulture) + low.ToString("x8", CultureInfo.InvariantCulture);
+        }
+
+        public static bool TryParseLuid(string luidHex, out uint low, out int high) {
+            low = 0; high = 0;
+            if (luidHex == null || luidHex.Length != 16) return false;
+            uint h, l;
+            if (!UInt32.TryParse(luidHex.Substring(0,8), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out h) ||
+                !UInt32.TryParse(luidHex.Substring(8,8), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out l)) return false;
+            low = l; high = unchecked((int)h);
+            return true;
+        }
+
+        // Every adapter LUID the system knows, as text in the Read() format. Two calls: count first (pAdapters = NULL), then the array.
+        // Every returned adapter handle is closed again. Never throws: any failure is a short error code and no LUIDs.
+        public static GpuAdapterEnumeration EnumerateAdapterLuids() {
+            try { return EnumerateCore(); }
+            catch (PlatformNotSupportedException) { return Fail("not-windows"); }
+            catch (DllNotFoundException) { return Fail("enum-unavailable"); }
+            catch (EntryPointNotFoundException) { return Fail("enum-unavailable"); }
+            catch (Exception) { return Fail("enum-failed"); }
+        }
+
+        private static GpuAdapterEnumeration Fail(string code) { return new GpuAdapterEnumeration { Luids = new string[0], Error = code }; }
+
+        private static GpuAdapterEnumeration EnumerateCore() {
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT || IntPtr.Size != 8) return Fail("not-windows");
+            if (!EnumLayoutIsExpected()) return Fail("layout-unexpected");
+            IntPtr request = IntPtr.Zero, infos = IntPtr.Zero;
+            int returned = 0;
+            try {
+                request = Marshal.AllocHGlobal(EnumAdapters2Size);
+                for (int i=0;i<EnumAdapters2Size;i+=8) Marshal.WriteInt64(request,i,0);
+                int status = EnumAdapters2(request);
+                if (status != 0) return Fail(Status("enum-count", status));
+                int count = Marshal.ReadInt32(request, OffsetEnumNumAdapters);
+                if (count < 0 || count > MaxEnumAdapters) return Fail("adapter-count-unexpected");
+                if (count == 0) return new GpuAdapterEnumeration { Luids = new string[0], Error = null };
+                int bytes = count * AdapterInfoSize;
+                infos = Marshal.AllocHGlobal(bytes);
+                for (int i=0;i<bytes;i++) Marshal.WriteByte(infos,i,0);
+                Marshal.WriteInt32(request, OffsetEnumNumAdapters, count);
+                Marshal.WriteInt64(request, OffsetEnumAdapters, infos.ToInt64());
+                status = EnumAdapters2(request);
+                if (status != 0) return Fail(Status("enum-adapters", status));
+                returned = Marshal.ReadInt32(request, OffsetEnumNumAdapters);
+                if (returned < 0 || returned > count) { returned = 0; return Fail("adapter-count-unexpected"); }
+                var luids = new List<string>(returned);
+                for (int i=0;i<returned;i++) {
+                    int baseOffset = i * AdapterInfoSize;
+                    uint low = unchecked((uint)Marshal.ReadInt32(infos, baseOffset + OffsetInfoLuidLow));
+                    int high = Marshal.ReadInt32(infos, baseOffset + OffsetInfoLuidHigh);
+                    luids.Add(FormatLuid(low, high));
+                }
+                return new GpuAdapterEnumeration { Luids = luids.ToArray(), Error = null };
+            } finally {
+                if (infos != IntPtr.Zero) {
+                    for (int i=0;i<returned;i++) CloseOne(Marshal.ReadInt32(infos, i * AdapterInfoSize + OffsetInfoHandle));
+                    Marshal.FreeHGlobal(infos);
+                }
+                if (request != IntPtr.Zero) Marshal.FreeHGlobal(request);
+            }
+        }
+
+        private static void CloseOne(int handle) {
+            if (handle == 0) return;
+            IntPtr close = IntPtr.Zero;
+            try {
+                close = Marshal.AllocHGlobal(CloseAdapterSize);
+                Marshal.WriteInt32(close, 0, handle);
+                CloseAdapter(close);
+            } catch (Exception) {
+            } finally {
+                if (close != IntPtr.Zero) Marshal.FreeHGlobal(close);
+            }
+        }
 
         public static bool LayoutIsExpected() {
             return IntPtr.Size == 8 &&
@@ -124,16 +245,14 @@ namespace Bitworks.FastLlm {
                 throw new PlatformNotSupportedException("GPU process-memory query requires 64-bit Windows.");
             if (luidHex == null || luidHex.Length != 16) throw new ArgumentException("DXGI LUID must be 16 hexadecimal digits.", "luidHex");
             if (process == null) throw new ArgumentNullException("process");
-            uint high, low;
-            if (!UInt32.TryParse(luidHex.Substring(0,8), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out high) ||
-                !UInt32.TryParse(luidHex.Substring(8,8), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out low))
+            uint low; int highSigned;
+            if (!TryParseLuid(luidHex, out low, out highSigned))
                 throw new ArgumentException("DXGI LUID must be 16 hexadecimal digits.", "luidHex");
             var result = new GpuProcessMemoryObservation { Luid=luidHex.ToLowerInvariant() };
             if (!LayoutIsExpected()) { result.Error="layout-unexpected"; return result; }
             IntPtr handle;
             try { result.ProcessId = process.Id; handle = process.Handle; }
             catch (Exception) { result.Error="process-handle-unavailable"; return result; }
-            int highSigned = unchecked((int)high);
             IntPtr buffer = IntPtr.Zero;
             try {
                 buffer = Marshal.AllocHGlobal(StatisticsSize);
