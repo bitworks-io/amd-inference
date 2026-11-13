@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.VulkanMemoryPolicy.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.SelfTest.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DeviceBinding.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.SpillCheck.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DriverGuidance.ps1')
@@ -3978,6 +3979,8 @@ Export-ModuleMember -Function @(
     'Get-FastLlmRecipeLabel',
     'Test-FastLlmExperimentalOrigin',
     'Remove-FastLlmDeviceBindingPrivateFields',
+    'Get-FastLlmSpillCheckVerdict',
+    'Get-FastLlmSpillCheckText',
     'Save-FastLlmVerifiedFile',
     'Start-FastLlmServer',
     'Test-FastLlmEngineInstallation',

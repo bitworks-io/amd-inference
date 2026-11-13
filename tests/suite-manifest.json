@@ -322,6 +322,11 @@
       "reason": "Inventory/hardware-report logic over fixtures; already wired in test.yml."
     },
     {
+      "suite": "spill-check-tests",
+      "class": "ci",
+      "reason": "GPU memory (spill) check state machine, texts, self-test marking, benchmark refusal and loop schedule against an injected reader and fake clock; no adapter or live query; wired in test.yml."
+    },
+    {
       "suite": "start-tests",
       "class": "ci",
       "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."

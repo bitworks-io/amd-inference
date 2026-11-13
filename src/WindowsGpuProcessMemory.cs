@@ -77,6 +77,25 @@ namespace Bitworks.FastLlm {
             return true;
         }
 
+        // The same read, bounded in time: it runs on a background thread and the caller waits at most timeoutMs. A read that has not
+        // finished by then is reported as read-timeout (the thread is left to finish on its own and never keeps the process alive).
+        // Never throws: every failure becomes a short error code on the observation.
+        public static GpuProcessMemoryObservation ReadWithin(string luidHex, Process process, int timeoutMs) {
+            GpuProcessMemoryObservation observation = null;
+            string failure = null;
+            var worker = new System.Threading.Thread(delegate() {
+                try { observation = Read(luidHex, process); }
+                catch (PlatformNotSupportedException) { failure = "not-windows"; }
+                catch (Exception) { failure = "read-failed"; }
+            });
+            worker.IsBackground = true;
+            worker.Start();
+            if (timeoutMs < 1) timeoutMs = 1;
+            if (!worker.Join(timeoutMs)) return new GpuProcessMemoryObservation { Luid = luidHex, Error = "read-timeout" };
+            if (observation != null) return observation;
+            return new GpuProcessMemoryObservation { Luid = luidHex, Error = failure ?? "read-failed" };
+        }
+
         private static string Status(string step, int status) { return step + "-ntstatus-" + ((uint)status).ToString("x8"); }
 
         private static void Prepare(IntPtr buffer, int type, uint low, int high, IntPtr process, int segmentId) {

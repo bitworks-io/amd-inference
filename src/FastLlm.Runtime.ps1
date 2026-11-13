@@ -764,6 +764,8 @@ function Invoke-FastLlmSupervisedServer {
     # the start. enforce does: a binding that is not 'bound' becomes a typed gate (below) that is thrown before the port probe and the spawn.
     $deviceIdentity = $null
     $deviceBindingGate = $null
+    # The adapter LUID the device binding resolved, for the GPU memory check (in memory only; absent when the binding is off).
+    $spillBindingLuid = $null
     if ($isHipPlan -and $DeviceBinding -ne 'off') {
         # Device binding and the Vulkan identity capture are Vulkan-only: record observes nothing here, and enforce refuses before any launch.
         $state.deviceBinding = [pscustomobject][ordered]@{ mode = $DeviceBinding; status = 'not-applicable'; reason = 'unsupported-backend' }
@@ -777,6 +779,7 @@ function Invoke-FastLlmSupervisedServer {
         try {
             $binding = Invoke-FastLlmDeviceBinding -Plan $Plan -InstallRoot $InstallRoot -BarDecision $state.vulkanMemoryPolicy -Mode $DeviceBinding
             $state.deviceBinding = $binding.record
+            $spillBindingLuid = $binding.luid
             if ($null -ne $binding.identity) {
                 $deviceIdentity = $binding.identity
                 $state.identityFingerprint = [string]$binding.identity.fingerprint
@@ -1008,6 +1011,7 @@ function Invoke-FastLlmSupervisedServer {
         $hostProcess.DiscardOutput()
         # The self-test (spec 4.2 step 5, 4.3) completes BEFORE any ready announcement: the status phase stays 'checking', no Ready line is printed
         # and the last-ready recovery record is not rewritten until the verdict is in. A hard fail therefore leaves the previous record intact for recovery.
+        $spillStep = $null
         if ($SelfTest) {
             $expected = $null
             if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.expected) { $expected = $Plan.recipe.expected }
@@ -1016,6 +1020,9 @@ function Invoke-FastLlmSupervisedServer {
             $mitigation = 'off'
             if ($state.vulkanMemoryPolicy -and $state.vulkanMemoryPolicy.effective -eq 'on') { $mitigation = 'on' }
             $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation
+            # The GPU memory check right after the self-test (the KV buffer exists by now). A state that is not ok makes the numbers not comparable.
+            $spillStep = Invoke-FastLlmSpillCheckAtReady -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $spillBindingLuid -BarDecision $state.vulkanMemoryPolicy -Process $hostProcess.Process
+            $selfTestResult = Set-FastLlmSelfTestSpillMark -SelfTest $selfTestResult -SpillCheck $spillStep.spillCheck
             $recipeId = $null
             if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe) { $recipeId = $Plan.recipe.id }
             $state.selfTest = $selfTestResult
@@ -1036,6 +1043,10 @@ function Invoke-FastLlmSupervisedServer {
                 throw $failure
             }
         }
+        if ($null -eq $spillStep) { $spillStep = Invoke-FastLlmSpillCheckAtReady -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $spillBindingLuid -BarDecision $state.vulkanMemoryPolicy -Process $hostProcess.Process }
+        $state.spillCheck = $spillStep.spillCheck
+        $spillLuid = [string] $spillStep.luid
+        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'spill-check' -Fields { Get-FastLlmSpillCheckEventFields -Step $spillStep }
         $state.phase='ready'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         $reachedReady = $true
@@ -1057,6 +1068,10 @@ function Invoke-FastLlmSupervisedServer {
             } catch { }
         }
         Write-Host "Ready: $($Plan.endpoint) - API smoke test and reported GPU layers passed; physical residency/performance remain unqualified."
+        # The GPU memory check line (never a layer-based claim). The unavailable text is shown once per run, here or at its first change.
+        $spillUnknownShown = $false
+        $spillReadyText = Get-FastLlmSpillCheckText -SpillCheck $state.spillCheck
+        if ($spillReadyText) { Write-Host $spillReadyText; if ([string] $state.spillCheck.state -ceq 'unknown') { $spillUnknownShown = $true } }
         if ($ThroughputCanary) {
             # Advisory only: every failure is recorded and swallowed; it can never fail the start or trigger recovery.
             try {
@@ -1084,8 +1099,25 @@ function Invoke-FastLlmSupervisedServer {
             $idleDetector = New-FastLlmIdleDetectorState -Now $idleNow
             $idleNextPoll = $idleNow.AddSeconds($script:FastLlmIdlePollSeconds)
         }
+        $spillNextCheck = (Get-Date).ToUniversalTime().AddSeconds([int] $script:FastLlmSpillCheckIntervalSeconds)
         while (-not $hostProcess.Process.WaitForExit(250)) {
             if (Test-Path -LiteralPath $stopPath) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
+            # The GPU memory re-check, every 60 s. The read is time-boxed (200 ms), so the stop file above is still seen within one pass.
+            # Only a change of state is logged and printed; the status always carries the latest numbers.
+            $spillTick = Invoke-FastLlmSpillCheckTick -Previous $state.spillCheck -Now (Get-Date).ToUniversalTime() -NextDueUtc $spillNextCheck -Luid $spillLuid -Process $hostProcess.Process
+            if ($null -ne $spillTick) {
+                $spillNextCheck = $spillTick.nextDueUtc
+                $state.spillCheck = $spillTick.spillCheck
+                if ($spillTick.event -ceq 'spill-check-changed') {
+                    Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'spill-check-changed' -Fields { Get-FastLlmSpillCheckEventFields -Step $spillTick }
+                    $spillChangeText = Get-FastLlmSpillCheckText -SpillCheck $state.spillCheck
+                    if ($spillChangeText -and ([string] $state.spillCheck.state -cne 'unknown' -or -not $spillUnknownShown)) {
+                        Write-Host $spillChangeText
+                        if ([string] $state.spillCheck.state -ceq 'unknown') { $spillUnknownShown = $true }
+                    }
+                }
+                try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { }
+            }
             if ($IdleStopMinutes -gt 0) {
                 $idleNow = (Get-Date).ToUniversalTime()
                 if ($idleNow -ge $idleNextPoll) {
