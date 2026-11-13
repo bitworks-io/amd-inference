@@ -9,6 +9,11 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 - **Stop when idle (optional):** Settings... (and `fast-llm.ps1 settings -IdleStopMinutes`) can stop the model after 15, 30 or 60 minutes without requests, which frees its GPU memory. Off by default; the server arguments are unchanged. Apps get no answer until you start FastLLM again. `tools/benchmark.ps1`, the benchmark report tool, refuses a run started with it on.
 - **GPU memory check:** after start and every minute while serving, FastLLM checks whether part of the model's memory has spilled from the GPU into system RAM (this happens when another app uses the GPU, even one started later) and says so. Measurements taken while spilled are not comparable, so a spill makes the benchmark tool (`tools/benchmark.ps1`) refuse or fail the run. The check reads the GPU memory split of the server FastLLM started, as the standard user; if it cannot run (for example on the HIP engine), FastLLM says so once, the benchmark still runs and its result is labelled "GPU memory check unavailable". Serving is never stopped by it.
 
+## 2026.11.12.2 (stable)
+
+- **Stable release:** the same app as 2026.11.12.1 (canary), which passed Bitworks lab testing on the RX 7900 XTX (the HIP default and the Vulkan setup, Thinking off, the local chat page and a different port) and as an update from 2026.10.21.12 with FastLLM's own updater. It includes the changes of 2026.11.12.1 below.
+- **No change to what FastLLM runs by default.**
+
 ## 2026.11.12.1 (canary)
 
 - **No change to what FastLLM runs by default.** Every new serving setting below is off or at its default, so a start with no new options launches the same server arguments as before.
