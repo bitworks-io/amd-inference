@@ -914,7 +914,7 @@ function ShowUiSettings {
     $portBox=New-Object Windows.Forms.NumericUpDown
     $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
     $portBox.Value=[decimal][int]$current.serverPort;$dialog.Controls.Add($portBox)
-    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(200,27);$thinkingLabel.UseMnemonic=$false;$dialog.Controls.Add($thinkingLabel)
+    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(95,27);$thinkingLabel.UseMnemonic=$false;$dialog.Controls.Add($thinkingLabel)
     $thinkingBox=New-Object Windows.Forms.ComboBox
     $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
     [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
@@ -1007,7 +1007,7 @@ $backgroundStartButton.Add_Click({
     catch{
         $message=$_.Exception.Message
         RefreshUiBackgroundStatus
-        ShowFailure ($message+"`r`nBackground mode needs an already prepared, consented model. Use Install & start first, then Stop and try Start in background.")
+        ShowFailure ($message+"`r`n"+(Get-FastLlmUiBackgroundFailureHint -Message $message))
     }
 })
 $backgroundAttachButton.Add_Click({try{AttachUiBackground}catch{RefreshUiBackgroundStatus;ShowFailure $_.Exception.Message}})

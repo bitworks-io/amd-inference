@@ -1217,4 +1217,23 @@ $closeAt=$uiText.IndexOf("'Closing stops this window''s active download or infer
 $sideDisposeAt=$uiText.IndexOf('if($script:sideChild){$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep=''idle''}')
 Check ($closeAt -gt 0 -and $sideDisposeAt -gt $closeAt) 'closing disposes the side step only after the Closing-stops confirmation'
 
+# Settings dialog: no label may sit over its control.
+function SettingsRect([string]$Name){
+    $m=[regex]::Match($uiText,'\$'+$Name+'\.Location=New-Object Drawing\.Point\((\d+),(\d+)\)')
+    $z=[regex]::Match($uiText,'\$'+$Name+'\.Size=New-Object Drawing\.Size\((\d+),(\d+)\)')
+    if(-not $m.Success -or -not $z.Success){throw "FAIL: could not read the Settings dialog geometry of $Name"}
+    return @{left=[int]$m.Groups[1].Value;right=[int]$m.Groups[1].Value+[int]$z.Groups[1].Value}
+}
+Check ((SettingsRect 'thinkingLabel').right -le (SettingsRect 'thinkingBox').left) 'the Settings Thinking label ends before the Thinking drop-down starts'
+Check ((SettingsRect 'portLabel').right -le (SettingsRect 'portBox').left) 'the Settings port label ends before the port box starts'
+# Start in background: the hint after a refusal names the real cause.
+$folderHint='Background mode needs an install and model folder that only your Windows user owns, such as the default folder in your profile. Choose such a folder, then try Start in background again.'
+$preparedHint='Background mode needs an already prepared, consented model. Use Install & start first, then Stop and try Start in background.'
+foreach($guardMessage in @('Background state path is not owned by the current user.','Background state path grants write access to another principal.','Unsafe background state path.')){
+    Check ((Get-FastLlmUiBackgroundFailureHint -Message $guardMessage) -ceq $folderHint) "the background ownership refusal '$guardMessage' gets the folder hint"
+}
+Check ((Get-FastLlmUiBackgroundFailureHint -Message 'No consented model is prepared for background use.') -ceq $preparedHint) 'an unrelated background refusal keeps the prepared-model hint'
+Check ((Get-FastLlmUiBackgroundFailureHint -Message 'background state path is not owned by the current user.') -ceq $preparedHint) 'the guard prefixes match case-sensitively'
+Check ($uiText.Contains('Get-FastLlmUiBackgroundFailureHint -Message $message')) 'the Start in background failure path takes its hint from the helper'
+
 Write-Output "UI flow tests passed: $checks"

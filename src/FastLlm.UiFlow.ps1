@@ -1065,6 +1065,17 @@ function Get-FastLlmUiChatButtonState {
     return @{ url = $url; enabled = [bool]$url }
 }
 
+# The hint under a refused Start in background. A refusal from the background state ownership guard is about the folder, not a missing model.
+function Get-FastLlmUiBackgroundFailureHint {
+    param([string]$Message)
+    foreach ($prefix in @('Background state path is not owned by','Background state path grants write access','Unsafe background state path')) {
+        if ($Message.StartsWith($prefix, [StringComparison]::Ordinal)) {
+            return 'Background mode needs an install and model folder that only your Windows user owns, such as the default folder in your profile. Choose such a folder, then try Start in background again.'
+        }
+    }
+    return 'Background mode needs an already prepared, consented model. Use Install & start first, then Stop and try Start in background.'
+}
+
 # Which window actions are usable. A launch or install in progress locks the setup actions, but a ready server (foreground or background)
 # does not lock Settings, the API check or the support bundle: those only read, and the check runs as a separate side step.
 function Get-FastLlmUiActionAvailability {

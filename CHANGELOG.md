@@ -2,6 +2,10 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases. Stable releases are the recommended download, starting with 2026.10.20.11.
 
+## Unreleased
+
+- **Settings and Start in background:** the Thinking choice in Settings is now shown in full instead of being partly covered by its label. A refused Start in background caused by who owns the install or model folder now says to use a folder that only your Windows user owns, instead of suggesting a model is missing.
+
 ## 2026.11.12.1 (canary)
 
 - **No change to what FastLLM runs by default.** Every new serving setting below is off or at its default, so a start with no new options launches the same server arguments as before.
