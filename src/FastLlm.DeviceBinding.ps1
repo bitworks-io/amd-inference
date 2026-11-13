@@ -431,7 +431,8 @@ function Invoke-FastLlmDeviceBinding {
         mode = $Mode; status = 'unavailable'; reason = $null; rawDeviceCount = 0; distinctAdapterCount = 0; duplicateLuidEntries = 0
         device = $null; planMatch = $null; barSnapshot = 'not-applicable'; collector = $collector
     }
-    $outcome = [pscustomobject]@{ record = $null; identity = $null; change = $null; lines = @() }
+    # luid: the adapter LUID of the bound device, kept in memory only (never in the record or status) for the GPU memory check.
+    $outcome = [pscustomobject]@{ record = $null; identity = $null; change = $null; lines = @(); luid = $null }
     try {
         if ($env:OS -ne 'Windows_NT') { $record.reason = 'unsupported-platform' }
         else {
@@ -445,6 +446,7 @@ function Invoke-FastLlmDeviceBinding {
                     $report = $collected.report
                     $resolved = Resolve-FastLlmDeviceBindingFromReport -Plan $Plan -Report $report -BarDecision $BarDecision
                     foreach ($property in $resolved.PSObject.Properties) { $record[$property.Name] = $property.Value }
+                    $outcome.luid = Get-FastLlmDeviceBindingLuid -Report $report -Resolved $resolved
                     $collector.scriptSha256 = Get-FastLlmDeviceBindingSourceHash -Report $report -Name 'tools/collect-vulkan-luid-join.ps1'
                     $collector.joinSourceSha256 = Get-FastLlmDeviceBindingSourceHash -Report $report -Name 'src/WindowsVulkanLuidJoin.cs'
                     $collector.loaderVersion = Get-FastLlmDeviceBindingLoaderVersion
@@ -466,7 +468,7 @@ function Invoke-FastLlmDeviceBinding {
             mode = $Mode; status = 'unavailable'; reason = 'binding-internal-error'; rawDeviceCount = 0; distinctAdapterCount = 0; duplicateLuidEntries = 0
             device = $null; planMatch = $null; barSnapshot = 'not-applicable'; collector = $collector; errorType = $errorType
         }
-        $outcome.identity = $null; $outcome.change = $null; $outcome.lines = @()
+        $outcome.identity = $null; $outcome.change = $null; $outcome.lines = @(); $outcome.luid = $null
     }
     $record.collector = $collector
     $outcome.record = [pscustomobject]$record

@@ -215,6 +215,8 @@ $otherReason=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occ
 $otherReasonState=New-FastLlmUiBackgroundState
 $null=Set-FastLlmUiBackgroundObservation $otherReasonState $otherReason
 Assert-True ((Get-FastLlmUiBackgroundText -State $otherReasonState) -ceq 'The last background run ended without Stop (for example when you signed out). Start in background to start a new one.') 'Only the exact reason idle changes the text.'
+$newReason=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$idleId;stopReason='something-new'};$newReasonState=New-FastLlmUiBackgroundState;$null=Set-FastLlmUiBackgroundObservation $newReasonState $newReason
+Assert-True ((Get-FastLlmUiBackgroundText -State $newReasonState) -ceq 'The last background run ended without Stop (for example when you signed out). Start in background to start a new one.') 'An unknown stop reason gives the generic ended text without an error.'
 $idleAttached=New-FastLlmUiBackgroundState
 $idleAttached.attachedRequestId=$requestId;$idleAttached.attachedRunId=$runId
 $idleEndObs=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$requestId;stopReason='idle';idleStopMinutes=15}

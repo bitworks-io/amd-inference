@@ -978,14 +978,27 @@ function Test-FastLlmUiStepReadsLicenseSetting {
 function Format-FastLlmUiReadyStatus {
     param($State)
     $text = 'Ready - API smoke tests passed; GPU residency/performance unqualified.'
+    $text = Add-FastLlmUiSpillCheckText -Text $text -State $State
     $engine = Format-FastLlmUiRunEngineLine -State $State
     if ($engine) { return "$engine. $text" }
     return $text
 }
 
+# The GPU memory check sentence (from the status block) after the given text. Same plain info text for every state: no colour or style.
+# A status without the block (an older run) adds nothing.
+function Add-FastLlmUiSpillCheckText {
+    param([string] $Text, $State)
+    $block = $null
+    if ($State -and $State.PSObject.Properties['spillCheck']) { $block = $State.spillCheck }
+    $spill = Get-FastLlmSpillCheckText -SpillCheck $block
+    if ($spill) { return "$Text $spill" }
+    return $Text
+}
+
 # The status line for an attached background run: the engine that runs (from status.json) in front of the given text.
 function Format-FastLlmUiBackgroundReadyStatus {
     param([string] $Text, $State)
+    $Text = Add-FastLlmUiSpillCheckText -Text $Text -State $State
     $engine = Format-FastLlmUiRunEngineLine -State $State
     if ($engine) { return "$engine. $Text" }
     return $Text

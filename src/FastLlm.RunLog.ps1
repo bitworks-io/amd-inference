@@ -24,6 +24,9 @@ $script:FastLlmRunLogAllowedFields = @{
     # Opt-in idle stop: the minutes setting and two times. The check-failed event has no field; it is written once per run.
     'idle-stop'           = @('idleStopMinutes', 'lastActivityUtc', 'stoppedAtUtc')
     'idle-check-failed'   = @()
+    # GPU memory check: the state names and numbers only (MiB); no text.
+    'spill-check'         = @('state', 'sharedMiB', 'dedicatedMiB', 'floorMiB')
+    'spill-check-changed' = @('from', 'to', 'sharedMiB', 'dedicatedMiB')
     'end'                 = @('phase', 'failureCode', 'failedAtPhase', 'failureMessage', 'exitCode', 'serverExitCode', 'droppedEvents')
 }
 
