@@ -1,6 +1,5 @@
 # Prototype (not loaded by FastLlm.psm1): pick the display adapter that holds OUR llama-server child's memory, for the HIP engine
 # where no adapter LUID is known. Pure rule over per-adapter observations, no native calls.
-Set-StrictMode -Version 2
 
 function Select-FastLlmProcessAdapter {
     [CmdletBinding()]
