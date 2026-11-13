@@ -5,6 +5,7 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 ## Unreleased
 
 - **Settings and Start in background:** the Thinking choice in Settings is now shown in full instead of being partly covered by its label. A refused Start in background caused by who owns the install or model folder now says to use a folder that only your Windows user owns, instead of suggesting a model is missing.
+- **Release notes:** the GitHub release text is now read from the annotated release tag. A tag without an annotation stops the release instead of publishing the commit message as the notes.
 
 ## 2026.11.12.1 (canary)
 
