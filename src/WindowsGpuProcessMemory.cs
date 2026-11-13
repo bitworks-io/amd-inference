@@ -80,7 +80,16 @@ namespace Bitworks.FastLlm {
         // The same read, bounded in time: it runs on a background thread and the caller waits at most timeoutMs. A read that has not
         // finished by then is reported as read-timeout (the thread is left to finish on its own and never keeps the process alive).
         // Never throws: every failure becomes a short error code on the observation.
+        // While a timed-out read is still running, later calls return read-busy without starting another thread, so at most one
+        // stuck read ever exists per process.
+        private static readonly object StuckReadGate = new object();
+        private static System.Threading.Thread stuckRead;
+
         public static GpuProcessMemoryObservation ReadWithin(string luidHex, Process process, int timeoutMs) {
+            lock (StuckReadGate) {
+                if (stuckRead != null && stuckRead.IsAlive) return new GpuProcessMemoryObservation { Luid = luidHex, Error = "read-busy" };
+                stuckRead = null;
+            }
             GpuProcessMemoryObservation observation = null;
             string failure = null;
             var worker = new System.Threading.Thread(delegate() {
@@ -91,7 +100,10 @@ namespace Bitworks.FastLlm {
             worker.IsBackground = true;
             worker.Start();
             if (timeoutMs < 1) timeoutMs = 1;
-            if (!worker.Join(timeoutMs)) return new GpuProcessMemoryObservation { Luid = luidHex, Error = "read-timeout" };
+            if (!worker.Join(timeoutMs)) {
+                lock (StuckReadGate) { stuckRead = worker; }
+                return new GpuProcessMemoryObservation { Luid = luidHex, Error = "read-timeout" };
+            }
             if (observation != null) return observation;
             return new GpuProcessMemoryObservation { Luid = luidHex, Error = failure ?? "read-failed" };
         }
