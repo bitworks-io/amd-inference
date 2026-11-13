@@ -359,6 +359,9 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
         $script:bgEndedByUserStop=$true
         if($attachedBeforeId -cmatch '^[0-9a-f]{32}$'){SaveUserStoppedBackgroundRequestId $attachedBeforeId}
         $statusLabel.Text='Stopped. The background run ended.'
+    }elseif($wasAttached -and -not $script:bgState.attachedRequestId -and $script:bgState.observation -and -not $script:bgState.observation.active -and
+            $script:bgState.observation.PSObject.Properties['stopReason'] -and [string]$script:bgState.observation.stopReason -ceq 'idle'){
+        $statusLabel.Text=Get-FastLlmUiIdleStopText -Minutes $script:bgState.observation.idleStopMinutes
     }elseif($wasAttached -and -not $script:bgState.attachedRequestId){
         $statusLabel.Text='Background run ended or changed. Its ownership has not been silently replaced.'
     }elseif($script:bgState.attachedRequestId -and $HealthChecked -and
@@ -908,7 +911,7 @@ function ShowDriverGuidance($Diagnostic) {
 function ShowUiSettings {
     $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,260);$dialog.StartPosition='CenterParent'
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,326);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
     $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
@@ -922,14 +925,22 @@ function ShowUiSettings {
     $chatBox=New-Object Windows.Forms.CheckBox;$chatBox.Text='Local chat page (off by default)';$chatBox.Location=New-Object Drawing.Point(20,104);$chatBox.Size=New-Object Drawing.Size(510,27)
     $chatBox.Checked=([string]$current.chatPage -ceq 'on');$dialog.Controls.Add($chatBox)
     $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$dialog.Controls.Add($chatPrivacy)
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,164);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,164);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $idleLabel=New-Object Windows.Forms.Label;$idleLabel.Text='Stop the model when idle';$idleLabel.Location=New-Object Drawing.Point(20,168);$idleLabel.Size=New-Object Drawing.Size(200,27);$idleLabel.UseMnemonic=$false;$dialog.Controls.Add($idleLabel)
+    $idleBox=New-Object Windows.Forms.ComboBox
+    $idleBox.DropDownStyle='DropDownList';$idleBox.Location=New-Object Drawing.Point(230,166);$idleBox.Size=New-Object Drawing.Size(300,27)
+    foreach($idleChoice in @('Never (default)','After 15 minutes','After 30 minutes','After 60 minutes')){[void]$idleBox.Items.Add($idleChoice)}
+    $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$dialog.Controls.Add($idleBox)
+    $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$dialog.Controls.Add($idleHelp)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,230);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,230);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
         try{
             $savedThinking=$(if($thinkingBox.SelectedIndex -eq 1){'off'}else{'auto'})
-            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'})
+            $savedIdle=@(0,15,30,60)[[Math]::Max(0,[int]$idleBox.SelectedIndex)]
+            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'}) -IdleStopMinutes $savedIdle
+            $script:settingsSavedIdle=[int]$savedIdle
             $script:settingsSavedChatPage=$(if($chatBox.Checked){'on'}else{'off'})
             $script:settingsSavedPort=[int]$portBox.Value
             $script:settingsSavedThinking=$savedThinking
@@ -939,11 +950,11 @@ function ShowUiSettings {
         }
     })
     SetTrayMenuAvailable $false
-    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     if([string]$result -ceq 'OK'){
         $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage})
+        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage;idleStopMinutes=[int]$script:settingsSavedIdle})
         if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
             $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
         }
@@ -966,12 +977,12 @@ function StartUiBackground {
         -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
@@ -1715,7 +1726,7 @@ $timer.Add_Tick({
                 else{$chosen=$script:pendingRecipeRow;$script:pendingRecipeRow=$null;$output.Text=$text;BeginChosenRecipe $chosen}
             }
             'model download'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'model-complete';LaunchUiPhase}
-            'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text='Service stopped.'}}
+            'serving'{$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-complete';SetBusy $false;$output.Text=$text;if(-not $script:updateRun -and -not $script:updateOutcome){$statusLabel.Text=Get-FastLlmUiServiceStoppedText -Status (GetUiBackgroundRunStatus)}}
             'diagnostics'{
                 SetBusy $false;$output.Text=$text;$statusLabel.Text='Operation finished.'
                 if(Test-FastLlmUiOutputWasCut -Text $text){$output.AppendText([Environment]::NewLine+[Environment]::NewLine+'The window can show only part of this report. For the full report run: fast-llm.ps1 doctor')}

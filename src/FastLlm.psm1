@@ -3668,7 +3668,10 @@ function Start-FastLlmServer {
         # W03 Phase A per-start device binding. off is byte-identical to a start without the parameter; record observes only;
         # enforce fails the start (typed, never recovered) when the binding is not bound or the post-load device check fails.
         [ValidateSet('off', 'record', 'enforce')]
-        [string] $DeviceBinding = 'off'
+        [string] $DeviceBinding = 'off',
+
+        # Opt-in: stop the server after this many minutes without requests (0 = never). Only the CLI and the background host pass it.
+        [ValidateSet(0, 15, 30, 60)] [int] $IdleStopMinutes = 0
     )
 
     # ValidateSet ignores case and keeps the typed value; normalise once, before any comparison or forwarding.
@@ -3839,6 +3842,7 @@ function Start-FastLlmServer {
     if ($ThroughputCanary) { $supervisorOptions.ThroughputCanary = $true }
     if ($SelfTest) { $supervisorOptions.SelfTest = $true }
     if ($DeviceBinding -ne 'off') { $supervisorOptions.DeviceBinding = $DeviceBinding }
+    if ($IdleStopMinutes -gt 0) { $supervisorOptions.IdleStopMinutes = $IdleStopMinutes }
     $mayFallBack = (-not $startedExplicit) -and (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan)
     try {
         return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
@@ -3891,6 +3895,7 @@ function Start-FastLlmServer {
         if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $startAgain.VulkanBarMitigation = $VulkanBarMitigation }
         if ($ThroughputCanary) { $startAgain.ThroughputCanary = $true }
         if ($SelfTest) { $startAgain.SelfTest = $true }
+        if ($IdleStopMinutes -gt 0) { $startAgain.IdleStopMinutes = $IdleStopMinutes }
         try {
             return Start-FastLlmServer @startAgain
         }

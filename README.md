@@ -132,6 +132,8 @@ Thinking is Auto by default, and Auto leaves the server arguments exactly as the
 
 The local chat page is off by default, and FastLLM stays API-first. Settings... in the window (or `fast-llm.ps1 settings -ChatPage on`) can turn it on; the change applies at the next start, and an Open chat button then opens it in your browser while the run is serving. Turning it on omits only the `--no-ui` server argument: the page runs on 127.0.0.1 only, with the same port as the API, and has no built-in tools (`--no-agent` stays). Chats are kept by your browser, not by FastLLM. If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:<port>. `tools/benchmark.ps1`, the benchmark report tool, refuses a run started with the page on, so turn it off, start again, then benchmark.
 
+Stop the model when idle is off (Never) by default. Settings... in the window (or `fast-llm.ps1 settings -IdleStopMinutes 15`, `30` or `60`; `0` is Never) can stop the model after that many minutes without requests, which frees its GPU memory. The server arguments are the same either way. The window and the CLI then say "Stopped after N min idle to free GPU memory. Apps get no answer until you start FastLLM again." and nothing answers on the port until you start again. A request that arrives in the second before the stop gets a dropped connection. `start -IdleStopMinutes <n>` sets it for that run only. The benchmark report tool refuses a run started with it on.
+
 ## Logs and support bundle
 
 Each server start writes a small log to `state\logs\run-<time>-<id>.jsonl` under the install folder. FastLLM keeps the newest 20 logs, each at most 256 KiB. **Open logs** in the window opens the folder.

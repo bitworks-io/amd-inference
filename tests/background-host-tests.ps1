@@ -198,7 +198,9 @@ try {
     function Get-FastLlmStatus { param($InstallRoot) $last = $script:mockStateWrites[$script:mockStateWrites.Count - 1]; $copy = [pscustomobject]@{}; foreach ($key in $last.Keys) { $copy | Add-Member -NotePropertyName $key -NotePropertyValue $last[$key] }; $copy }
     function Enter-FastLlmOperation { param($InstallRoot) $script:mockOrder.Add('lock'); $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
-        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest)
+        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest,$IdleStopMinutes)
+        $script:mockIdleStop = $(if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $IdleStopMinutes } else { 'unset' })
+        if ($script:serverIdleStop) { $script:mockStateWrites.Add([ordered]@{ schemaVersion = 1; runId = 'supervisor'; phase = 'stopped'; stopReason = 'idle'; idleStopMinutes = $IdleStopMinutes }) }
         Assert-BackgroundTest ([bool]$SelfTest) 'Background worker did not request the post-load self-test.'
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
         $script:mockBarPolicy = $VulkanBarMitigation
@@ -222,6 +224,7 @@ try {
     $script:throwPlanChanged = $false
     $script:throwPlan = $false
     $script:serverMovesStatus = $false
+    $script:serverIdleStop = $false
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
@@ -312,6 +315,39 @@ try {
         Invoke-FastLlmBackgroundServe -RequestId $chatCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
         Assert-BackgroundTest ($script:mockPlanChatPage -ceq $chatCase.Expect -and ($script:mockPlanChatPageBound -eq ($chatCase.Expect -ceq 'on'))) ('chatpage-rides-the-request: request ' + ($chatCase.Fields.Keys -join ',') + ' plans with ' + $chatCase.Expect + '.')
     }
+    # idle-stop-rides-the-request: 15, 30 and 60 reach Start-FastLlmServer; absent or any other value does not pass the parameter (so 0).
+    foreach($idleCase in @(@{Id='80808080808080808080808080808080';Fields=@{idleStopMinutes=30};Expect=30},@{Id='7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f';Fields=@{idleStopMinutes=15};Expect=15},@{Id='7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e';Fields=@{idleStopMinutes=60};Expect=60},@{Id='7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d';Fields=@{};Expect='unset'},@{Id='7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c';Fields=@{idleStopMinutes=0};Expect='unset'},@{Id='7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b';Fields=@{idleStopMinutes=45};Expect='unset'},@{Id='7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a';Fields=@{idleStopMinutes='30'};Expect='unset'},@{Id='79797979797979797979797979797979';Fields=@{idleStopMinutes=$true};Expect='unset'})){
+        $script:workerRequestId = $idleCase.Id
+        $script:mockIdleStop = 'seen-nothing'
+        $idleRequest = [ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$idleCase.Id;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30}
+        foreach($key in $idleCase.Fields.Keys){ $idleRequest[$key] = $idleCase.Fields[$key] }
+        $idleRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $idleCase.Id + '.json')) -CreateNew -Value $idleRequest
+        Invoke-FastLlmBackgroundServe -RequestId $idleCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+        Assert-BackgroundTest ([string]$script:mockIdleStop -ceq [string]$idleCase.Expect) ('idle-stop-rides-the-request: request ' + ($idleCase.Fields.Keys -join ',') + '=' + ($idleCase.Fields.Values -join ',') + ' hands ' + $idleCase.Expect + ' to the server (saw ' + $script:mockIdleStop + ').')
+        $idleRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+        Assert-BackgroundTest (-not $idleRecord.PSObject.Properties['stopReason']) 'idle-stop-record: a run that did not stop on the idle stop records no stop reason.'
+    }
+    # idle-stop-record: a run the supervisor ended on the idle stop records it in the host record, with the minutes.
+    $script:serverIdleStop = $true
+    $script:workerRequestId = '78787878787878787878787878787878'
+    $idleStopRequest = [ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;idleStopMinutes=30}
+    $idleStopRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value $idleStopRequest
+    $idleExit = Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source
+    $idleStopRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($idleExit -eq 0 -and [string]$idleStopRecord.phase -ceq 'stopped' -and [string]$idleStopRecord.stopReason -ceq 'idle' -and [int]$idleStopRecord.idleStopMinutes -eq 30) 'idle-stop-record: a run that ended on the idle stop exits 0 and the host record says stopReason idle with the minutes.'
+    $script:serverIdleStop = $false
+    # The window reads the host record through Get-FastLlmBackgroundHostStatus: only the exact reason idle is carried.
+    $statusSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
+    Assert-BackgroundTest ($statusSource.Contains("[string]`$owner.stopReason -ceq 'idle'") -and $statusSource.Contains('idleStopMinutes = if (-not $alive')) 'idle-stop-status: the host status carries stopReason and idleStopMinutes only for a finished run with the exact reason idle.'
+    Assert-BackgroundTest ($statusSource.Contains('[ValidateSet(0,15,30,60)][int]$IdleStopMinutes=0') -and $statusSource.Contains('idleStopMinutes=$IdleStopMinutes;sourcePins')) 'idle-stop-start: Start-FastLlmBackgroundHost takes IdleStopMinutes (closed set, default 0) and writes it into the request.'
     # Start writes the request in lower case for both choices (ValidateSet ignores case, the reader is exact).
     $startSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     Assert-BackgroundTest ($startSource.Contains('thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant()')) 'Start-FastLlmBackgroundHost lower-cases Thinking and ChatPage before writing the request.'

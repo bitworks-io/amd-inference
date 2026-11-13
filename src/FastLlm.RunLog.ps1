@@ -21,6 +21,9 @@ $script:FastLlmRunLogAllowedFields = @{
     # The last five are the user-run API-format check (one event per endpoint): a fixed endpoint path, a verdict and numbers only.
     'api-check'           = @('status', 'modelIdentity', 'effectiveContext', 'repeatableToken', 'synchronousChat', 'streaming', 'endpoint', 'httpStatus', 'promptTokens', 'completionTokens', 'elapsedMs')
     'self-test'           = @('status', 'reasons', 'generationTokS', 'promptTokS', 'firstTextMs', 'expectedGenerationTokS', 'comparable')
+    # Opt-in idle stop: the minutes setting and two times. The check-failed event has no field; it is written once per run.
+    'idle-stop'           = @('idleStopMinutes', 'lastActivityUtc', 'stoppedAtUtc')
+    'idle-check-failed'   = @()
     'end'                 = @('phase', 'failureCode', 'failedAtPhase', 'failureMessage', 'exitCode', 'serverExitCode', 'droppedEvents')
 }
 

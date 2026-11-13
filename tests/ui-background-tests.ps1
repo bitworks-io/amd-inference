@@ -199,4 +199,31 @@ $null=Set-FastLlmUiBackgroundObservation $otherOccupied $absent
 $null=Invoke-FastLlmUiBackgroundStart -State $otherOccupied -Request @{} -Start {[pscustomobject]@{phase='starting';requestId=$requestId;hostIdentity=$hostIdentity}}
 $null=Set-FastLlmUiBackgroundObservation $otherOccupied $occupiedOther
 Assert-True ($otherOccupied.attention -ceq 'Another background request now owns this installation. Review Diagnostics.') 'An occupying other owner still raises the attention.'
+# The opt-in idle stop: a background run that ended because it was idle is an expected end, with its own sentence.
+$idleId='ffffffffffffffffffffffffffffffff'
+$idleObs=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$idleId;stopReason='idle';idleStopMinutes=30}
+$idleState=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $idleState $idleObs
+Assert-True ((Get-FastLlmUiBackgroundText -State $idleState) -ceq 'Stopped after 30 min idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'A host record that ended on the idle stop reads as stopped when idle, with the minutes.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $idleState -LastUserStoppedRequestId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') -ceq 'Stopped after 30 min idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'The idle sentence does not depend on the saved user-stop id.'
+Assert-True (-not ((Get-FastLlmUiBackgroundText -State $idleState) -match 'next request|starts again on|automatically')) 'The idle sentence promises no restart on the next request.'
+$idleNoMinutes=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$idleId;stopReason='idle'}
+$idleNoMinutesState=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $idleNoMinutesState $idleNoMinutes
+Assert-True ((Get-FastLlmUiBackgroundText -State $idleNoMinutesState) -ceq 'Stopped after being idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'An idle stop with no minutes in the record still gives a plain sentence.'
+$otherReason=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$idleId;stopReason='user'}
+$otherReasonState=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $otherReasonState $otherReason
+Assert-True ((Get-FastLlmUiBackgroundText -State $otherReasonState) -ceq 'The last background run ended without Stop (for example when you signed out). Start in background to start a new one.') 'Only the exact reason idle changes the text.'
+$idleAttached=New-FastLlmUiBackgroundState
+$idleAttached.attachedRequestId=$requestId;$idleAttached.attachedRunId=$runId
+$idleEndObs=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$requestId;stopReason='idle';idleStopMinutes=15}
+$null=Set-FastLlmUiBackgroundObservation $idleAttached $idleEndObs
+Assert-True (-not $idleAttached.attachedRequestId -and -not $idleAttached.attention) 'An attached run that ended on the idle stop clears the attachment without raising attention.'
+Assert-True ((Get-FastLlmUiBackgroundText -State $idleAttached) -ceq 'Stopped after 15 min idle to free GPU memory. Apps get no answer until you start FastLLM again.') 'An attached run that ended on the idle stop reads as stopped when idle.'
+Assert-True (Test-FastLlmUiBackgroundMayStart -State $idleAttached) 'After an idle stop a new background start is allowed.'
+$idleActive=New-FastLlmUiBackgroundState
+$idleActive.attachedRequestId=$requestId;$idleActive.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $idleActive $ready
+Assert-True ($null -ne $idleActive.attachedRequestId) 'A run that is still active keeps its attachment (the idle handling needs an inactive run).'
 "UI background operational coordination checks passed: $passes"

@@ -102,6 +102,17 @@ Check ((Get-ThinkingRefusal $readyNoUiGone) -ceq $chatMessage) 'benchmark-refuse
 # old-status-without-new-fields (R1): a status from the 4 GB release has no thinking and no chatPage field; the check passes with no StrictMode exception.
 $readyOldBoth=[pscustomobject]@{active=$true;phase='ready';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
 Check ($null -eq (Get-ThinkingRefusal $readyOldBoth)) 'old-status-without-new-fields: a ready state with no thinking or chatPage field passes the check'
+# benchmark-refuses-idle-stop: a run started with the idle stop on may stop itself mid-measurement, so it is never benchmarked.
+$idleMessage='Benchmarks measure the default setup. Set Stop the model when idle to Never, start again, then benchmark.'
+foreach($idleMinutes in 15,30,60){
+    $readyIdle=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';idleStopMinutes=$idleMinutes;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+    Check ((Get-ThinkingRefusal $readyIdle) -ceq $idleMessage) "benchmark-refuses-idle-stop: state.idleStopMinutes $idleMinutes throws the exact message"
+}
+$readyIdleNever=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';idleStopMinutes=0;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+Check ($null -eq (Get-ThinkingRefusal $readyIdleNever)) 'benchmark-refuses-idle-stop: an idle stop of 0 is accepted'
+Check ($null -eq (Get-ThinkingRefusal $readyChatOff)) 'old-status-without-new-fields: a ready state with no idleStopMinutes field passes the idle check'
+$readyIdleThinking=[pscustomobject]@{active=$true;phase='ready';thinking='off';chatPage='off';idleStopMinutes=30;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+Check ((Get-ThinkingRefusal $readyIdleThinking) -ceq $thinkingMessage) 'benchmark-refuses-idle-stop: the existing Thinking refusal still comes first'
 # The refusal runs inside Invoke-FastLlmBenchmark right after the ready check and before the context budget, the lock and every request.
 $benchSource=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/FastLlm.Benchmark.ps1') -Raw
 $readyAt=$benchSource.IndexOf("throw 'Start a supervised FastLLM server and wait for ready before benchmarking.'")

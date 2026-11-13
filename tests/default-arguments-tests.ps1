@@ -168,6 +168,12 @@ try {
     foreach($badThinking in @('on','x','banana')){try{Get-FastLlmPlan @portCommon -Thinking $badThinking | Out-Null}catch{$thinkRejected++}}
     Check ($thinkRejected -eq 3) 'plan-thinking: the planner parameter is a closed set'
     Check ([string](Get-FastLlmPlan @portCommon -Thinking 'OFF').requestedThinking -ceq 'off') 'plan-thinking: OFF is normalised to off'
+    # idle-stop-golden: the opt-in idle stop uses /metrics, which the default arguments already enable, so the planner has no idle stop
+    # parameter and the plan has no idle stop field: the golden stays as it is and the arguments are identical with it on or off.
+    Check (-not (Get-Command Get-FastLlmPlan).Parameters.ContainsKey('IdleStopMinutes')) 'idle-stop-golden: the planner takes no IdleStopMinutes parameter, so no row can differ'
+    Check (-not $basePlan.PSObject.Properties['requestedIdleStopMinutes'] -and -not $basePlan.PSObject.Properties['idleStopMinutes']) 'idle-stop-golden: the plan carries no idle stop field'
+    Check (@($goldenRows | Where-Object { $_.outcome -ceq 'plan' -and @($_.arguments) -ccontains '--metrics' }).Count -eq @($goldenRows | Where-Object { $_.outcome -ceq 'plan' }).Count -and @($goldenRows | Where-Object { $_.outcome -ceq 'plan' }).Count -gt 0) 'idle-stop-golden: every golden plan row already enables --metrics, which the idle detector reads'
+    Check (@($goldenRows | Where-Object { @($_.arguments) -match 'idle|sleep' }).Count -eq 0) 'idle-stop-golden: no golden row has an idle or sleep option'
     # chatpage-off-golden: -ChatPage off reproduces the golden byte for byte, every row.
     function Test-SameArguments($Expected,$Actual){$e=@($Expected);$a=@($Actual);if($e.Count -ne $a.Count){return $false};for($k=0;$k -lt $e.Count;$k++){if(-not ($e[$k] -ceq $a[$k])){return $false}};return $true}
     $chatOffLive=@(Get-FastLlmDefaultArgumentsMatrix -Root $root -InstallRoot (Join-Path $work 'install') -PlanParameters @{ChatPage='off'})

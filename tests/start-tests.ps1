@@ -233,6 +233,36 @@ try {
         $stillSaved=Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)
         Check ((($stillSaved.text | ConvertFrom-Json).serverPort) -eq 18181) 'cli-port-validation: a refused port leaves the saved value unchanged'
     }
+    # Idle stop on the CLI: saved by settings, a per-run override that is never saved, closed set, and no change to the server arguments.
+    if(-not $cliChildrenElevated){
+        $null=Invoke-StartTestCli @('settings','-IdleStopMinutes','0','-InstallRoot',$cliRoot)
+        $planNoIdle=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+        $setIdle=Invoke-StartTestCli @('settings','-IdleStopMinutes','30','-InstallRoot',$cliRoot)
+        Check ($setIdle.exit -eq 0 -and ((($setIdle.text -replace '\r','') -split "`n") -contains 'idleStopMinutes: 30')) 'idle-cli: settings -IdleStopMinutes 30 writes the value and prints idleStopMinutes: 30'
+        $idleJson=(Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json
+        Check ($idleJson.idleStopMinutes -eq 30 -and ((Get-Content -LiteralPath (Join-Path $cliRoot 'settings.json') -Raw | ConvertFrom-Json).idleStopMinutes -eq 30)) 'idle-cli: settings -AsJson and settings.json carry idleStopMinutes 30'
+        $planIdleSaved=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$cliRoot)
+        $planIdleParam=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IdleStopMinutes','60','-InstallRoot',$cliRoot)
+        $planIdleNever=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IdleStopMinutes','0','-InstallRoot',$cliRoot)
+        Check ($planNoIdle.exit -eq 0 -and $planIdleSaved.exit -eq 0 -and $planIdleParam.exit -eq 0 -and $planIdleNever.exit -eq 0) 'idle-cli: plan with the idle stop saved, per run and 0 all succeed'
+        Check ($planIdleSaved.text -ceq $planNoIdle.text -and $planIdleParam.text -ceq $planNoIdle.text -and $planIdleNever.text -ceq $planNoIdle.text) 'idle-golden: the whole plan, server arguments included, is byte-identical with the idle stop off, saved at 30 and given as 60'
+        $idleArgsOff=@(($planNoIdle.text | ConvertFrom-Json).serverArguments);$idleArgsOn=@(($planIdleParam.text | ConvertFrom-Json).serverArguments)
+        Check ($idleArgsOff.Count -gt 0 -and $idleArgsOff.Count -eq $idleArgsOn.Count -and ($idleArgsOff -join "`n") -ceq ($idleArgsOn -join "`n") -and ($idleArgsOn -ccontains '--metrics') -and -not ($idleArgsOn -match 'idle|sleep')) 'idle-golden: the server arguments are the same with the idle stop on, --metrics is among them, no idle or sleep option is added'
+        $stillThirty=(Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json
+        Check ($stillThirty.idleStopMinutes -eq 30) 'idle-cli: a per-run -IdleStopMinutes on plan is not written to settings.json'
+        foreach($badIdle in @('45','10','auto','-15','15.5','')){
+            $badIdleRun=Invoke-StartTestCli @('settings','-IdleStopMinutes',$badIdle,'-InstallRoot',$cliRoot)
+            Check ($badIdleRun.exit -ne 0) "idle-cli: settings -IdleStopMinutes '$badIdle' is refused"
+        }
+        $badIdlePlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-IdleStopMinutes','45','-InstallRoot',$cliRoot)
+        Check ($badIdlePlan.exit -ne 0 -and $badIdlePlan.text -like '*serving-settings-invalid-idle-stop*') 'idle-cli: plan -IdleStopMinutes 45 is refused with serving-settings-invalid-idle-stop'
+        $badIdleSave=Invoke-StartTestCli @('settings','-IdleStopMinutes','45','-InstallRoot',$cliRoot)
+        Check ($badIdleSave.text -like '*serving-settings-invalid-idle-stop*' -and ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$cliRoot)).text | ConvertFrom-Json).idleStopMinutes -eq 30) 'idle-cli: a refused value leaves the saved value unchanged'
+        $wrongAction=Invoke-StartTestCli @('status','-IdleStopMinutes','30','-InstallRoot',$cliRoot)
+        Check ($wrongAction.exit -ne 0 -and $wrongAction.text -like '*-IdleStopMinutes is supported only by plan, install, start and settings*') 'idle-cli: -IdleStopMinutes on another action is refused'
+        $null=Invoke-StartTestCli @('settings','-IdleStopMinutes','0','-InstallRoot',$cliRoot)
+        Check (-not ((Get-Content -LiteralPath (Join-Path $cliRoot 'settings.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name -contains 'idleStopMinutes')) 'idle-cli: settings -IdleStopMinutes 0 removes the key'
+    }
     # M11: a malformed settings.json is said out loud by a live start, and only there. The decision is a pure function, tested in-process;
     # a real 'start' child is never run by a mock suite (it would take the lock, write status and probe hardware).
     . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
@@ -519,7 +549,7 @@ try {
     function Invoke-RestMethod { $script:nd.log.Add('NETWORK-REST') }
     function Get-FastLlmRecoveryPlan { param($Hardware,$CatalogPath,$InstallRoot,$Profile,$FailedModelId,$RequestedModelId,$ContextSize)
         $script:nd.log.Add('recovery-plan');if($script:nd.recovery){return [pscustomobject]@{model=[pscustomobject]@{id='other-model'}}};return $null }
-    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest)
+    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes)
         $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object);$script:nd.startBar=$VulkanBarMitigation
         if($script:nd.startQueue.Count -gt 0){
             $next=$script:nd.startQueue.Dequeue()
@@ -528,13 +558,13 @@ try {
             return [int]$next
         }
         return 0 }
-    $script:ndDeviceBinding='off';$script:ndPlanRecipeId=''
+    $script:ndDeviceBinding='off';$script:ndPlanRecipeId='';$script:ndIdleStop=0
     $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false;$script:ndBar='auto';$script:ndHost=New-Object 'Collections.Generic.List[string]'
     $script:ndUnattended=$true;$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndFallbackReason='components-declined';$script:ndPlanOwnReason='';$script:ndPlannedRecipe=''
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$script:ndDryRun;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$effectiveIdleStopMinutes=[int]$script:ndIdleStop;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         function Write-Host { $script:ndHost.Add(($args -join ' ')) }
@@ -644,6 +674,24 @@ try {
     $script:ndDryRun=$false;$script:ndPlanRecipeId='';$script:ndPlannedRecipe=''
     Check ($cliSource.Contains('-PlannedRecipe needs a recipe id.') -and $cliSource.Contains("`$_.Exception.Data['FastLlmFallbackAttempted']")) 'fast-llm.ps1 refuses an empty -PlannedRecipe and rethrows a failed fallback attempt'
 
+    # -- idle stop (opt-in): the CLI hands it to Start-FastLlmServer only when it is on, and says why when the run ended on it
+    if(-not (Get-Command Get-FastLlmUiIdleStopText -ErrorAction SilentlyContinue)){ . (Join-Path $root 'src/FastLlm.UiFlow.ps1') }
+    function Get-FastLlmStatus { param($InstallRoot) return $script:ndIdleStatus }
+    $script:ndIdleStatus=[pscustomobject]@{phase='stopped';active=$false;stopReason='idle';idleStopMinutes=30}
+    Reset-Nd; $script:ndIdleStop=30; $script:ndHost.Clear()
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,IdleStopMinutes,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation') 'idle-start: Start-FastLlmServer receives IdleStopMinutes when it is on'
+    Check (@($script:ndHost | Where-Object { $_ -ceq 'Stopped after 30 min idle to free GPU memory. Apps get no answer until you start FastLLM again.' }).Count -eq 1) 'idle-start: a start that ended on the idle stop says so (exit 0, no failure)'
+    $script:ndIdleStatus=[pscustomobject]@{phase='stopped';active=$false;stopReason='user'}
+    Reset-Nd; $script:ndIdleStop=30; $script:ndHost.Clear()
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and @($script:ndHost | Where-Object { $_ -like 'Stopped after*' }).Count -eq 0) 'idle-start: a start that ended on a user stop prints no idle sentence'
+    $script:ndIdleStatus=[pscustomobject]@{phase='stopped';active=$false;stopReason='idle';idleStopMinutes=30}
+    Reset-Nd; $script:ndIdleStop=0; $script:ndHost.Clear()
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and @($script:ndHost | Where-Object { $_ -like 'Stopped after*' }).Count -eq 0) 'idle-start: with the idle stop off nothing is passed and nothing is printed'
+    $script:ndIdleStop=0
+    Remove-Item -Path Function:Get-FastLlmStatus -ErrorAction SilentlyContinue
     # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
     Reset-Nd
     $f=Invoke-NdStart $false

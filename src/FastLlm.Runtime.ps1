@@ -307,6 +307,95 @@ function Invoke-FastLlmHttp {
     return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576)
 }
 
+# ---- idle stop (opt-in) ----
+# The server counts what it has processed on GET /metrics (enabled by the default arguments, so nothing about the arguments depends
+# on this). The detector is pure: it takes the previous state, the new /metrics text (or $null when it could not be read), the time and
+# the idle minutes, and returns the new state and whether to stop. It never stops on a failed read and the idle clock does not advance
+# on one. A request that is processing or deferred is never cut off.
+$script:FastLlmIdleCounterNames = @('llamacpp:prompt_tokens_total', 'llamacpp:tokens_predicted_total', 'llamacpp:requests_processing', 'llamacpp:requests_deferred')
+$script:FastLlmIdlePollSeconds = 30
+# One poll interval can add at most this much idle time, so a sleeping PC or a clock jump cannot count as hours of idleness.
+$script:FastLlmIdleMaxStepSeconds = 120
+
+# Returns $null unless all four counters are present and numeric. Tolerant of HELP/TYPE lines, blank lines, CRLF and labels.
+function ConvertFrom-FastLlmIdleMetrics {
+    param([AllowNull()][string] $Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $found = @{}
+    foreach ($line in ($Text -split "`n")) {
+        $trimmed = $line.Trim()
+        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith('#')) { continue }
+        if ($trimmed -cmatch '^(llamacpp:[A-Za-z0-9_]+)(?:\{[^}]*\})?\s+([-+]?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?)(?:\s+-?[0-9]+)?$') {
+            $name = $Matches[1]
+            if ($script:FastLlmIdleCounterNames -contains $name -and -not $found.ContainsKey($name)) {
+                $number = 0.0
+                if ([double]::TryParse($Matches[2], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref] $number) -and -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)) { $found[$name] = $number }
+            }
+        }
+    }
+    foreach ($required in $script:FastLlmIdleCounterNames) { if (-not $found.ContainsKey($required)) { return $null } }
+    return [pscustomobject]@{
+        promptTokens    = [double] $found['llamacpp:prompt_tokens_total']
+        predictedTokens = [double] $found['llamacpp:tokens_predicted_total']
+        processing      = [double] $found['llamacpp:requests_processing']
+        deferred        = [double] $found['llamacpp:requests_deferred']
+    }
+}
+
+function New-FastLlmIdleDetectorState {
+    param([Parameter(Mandatory = $true)][datetime] $Now)
+    return [pscustomobject]@{ lastPollUtc = $Now; lastActivityUtc = $Now; idleSeconds = 0.0; promptTokens = $null; predictedTokens = $null; failedReads = 0 }
+}
+
+function Step-FastLlmIdleDetector {
+    param(
+        [Parameter(Mandatory = $true)] $State,
+        [AllowNull()][string] $MetricsText,
+        [Parameter(Mandatory = $true)][datetime] $Now,
+        [Parameter(Mandatory = $true)][int] $IdleMinutes
+    )
+    $metrics = ConvertFrom-FastLlmIdleMetrics -Text $MetricsText
+    if ($null -eq $metrics) {
+        # Unreadable: no activity is assumed and no idle time is added. The time since the last poll is not counted later either.
+        $failed = [pscustomobject]@{ lastPollUtc = $Now; lastActivityUtc = $State.lastActivityUtc; idleSeconds = [double] $State.idleSeconds; promptTokens = $State.promptTokens; predictedTokens = $State.predictedTokens; failedReads = ([int] $State.failedReads + 1) }
+        return [pscustomobject]@{ state = $failed; shouldStop = $false; readFailed = $true; activity = $false }
+    }
+    $elapsed = ($Now - [datetime] $State.lastPollUtc).TotalSeconds
+    if ($elapsed -lt 0) { $elapsed = 0 }
+    if ($elapsed -gt $script:FastLlmIdleMaxStepSeconds) { $elapsed = $script:FastLlmIdleMaxStepSeconds }
+    $activity = ($metrics.processing -gt 0 -or $metrics.deferred -gt 0)
+    if ($null -ne $State.promptTokens -and ($metrics.promptTokens -ne [double] $State.promptTokens -or $metrics.predictedTokens -ne [double] $State.predictedTokens)) { $activity = $true }
+    $idleSeconds = [double] $State.idleSeconds
+    $lastActivity = $State.lastActivityUtc
+    if ($activity) { $idleSeconds = 0.0; $lastActivity = $Now }
+    elseif ($null -ne $State.promptTokens) { $idleSeconds += $elapsed }
+    $next = [pscustomobject]@{ lastPollUtc = $Now; lastActivityUtc = $lastActivity; idleSeconds = $idleSeconds; promptTokens = $metrics.promptTokens; predictedTokens = $metrics.predictedTokens; failedReads = 0 }
+    $stop = ($IdleMinutes -gt 0 -and -not $activity -and $metrics.processing -eq 0 -and $metrics.deferred -eq 0 -and $idleSeconds -ge ($IdleMinutes * 60))
+    return [pscustomobject]@{ state = $next; shouldStop = [bool] $stop; readFailed = $false; activity = [bool] $activity }
+}
+
+# GET /metrics on the loopback address with a short timeout (250 ms, so a poll never delays the loop's stop check by more than that;
+# a read that times out is a failed read, which never stops the server). Only a 200 body counts; anything else is $null (a failed read).
+function Get-FastLlmIdleMetricsText {
+    param([Parameter(Mandatory = $true)][string] $BaseUrl)
+    $response = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/metrics' -TimeoutMs 250
+    if ($null -ne $response -and $response.Status -eq 200) { return [string] $response.Body }
+    return $null
+}
+
+# One poll: a fetch that throws or returns nothing is a failed read.
+function Invoke-FastLlmIdleStopPoll {
+    param(
+        [Parameter(Mandatory = $true)] $State,
+        [Parameter(Mandatory = $true)][scriptblock] $Fetch,
+        [Parameter(Mandatory = $true)][datetime] $Now,
+        [Parameter(Mandatory = $true)][int] $IdleMinutes
+    )
+    $text = $null
+    try { $text = & $Fetch } catch { $text = $null }
+    return (Step-FastLlmIdleDetector -State $State -MetricsText ([string] $text) -Now $Now -IdleMinutes $IdleMinutes)
+}
+
 function Test-FastLlmApiCanary {
     [CmdletBinding()]
     param([string] $BaseUrl, [string] $ModelId, [int] $ContextSize)
@@ -627,11 +716,15 @@ function Invoke-FastLlmSupervisedServer {
           # W03 Phase A device binding. Absent or off: nothing below runs and no field is added. record observes only.
           # enforce additionally fails a start whose binding is not bound (before launch) or whose post-load device check fails;
           # both failures are typed (FastLlmReason DeviceBindingFailed) and never trigger model recovery.
-          [ValidateSet('off','record','enforce')][string] $DeviceBinding='off')
+          [ValidateSet('off','record','enforce')][string] $DeviceBinding='off',
+          # Opt-in: stop the server after this many minutes without requests (0 = never). Only the CLI and the background host pass it; every other caller, the bench path included, gets 0.
+          [ValidateSet(0,15,30,60)][int] $IdleStopMinutes=0)
     # ValidateSet ignores case and keeps the typed value, but the enforce checks below are case-sensitive: normalise once, first.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     Initialize-FastLlmProcessHost
     $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; thinking=$(if ($Plan.PSObject.Properties['requestedThinking'] -and [string]$Plan.requestedThinking -ceq 'off') { 'off' } else { 'auto' }); chatPage=$(if ($Plan.PSObject.Properties['requestedChatPage'] -and [string]$Plan.requestedChatPage -ceq 'on') { 'on' } else { 'off' }); processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
+    # Recorded from the start (only when on) so the Ready status already says so; the status of a default run is unchanged.
+    if ($IdleStopMinutes -gt 0) { $state.idleStopMinutes = $IdleStopMinutes }
     # A HIP plan (the engine component's lane) has no Vulkan memory policy, BAR mitigation, device binding or Vulkan identity capture.
     $isHipPlan = [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
     $hipAutoSelected = Test-FastLlmPlanFallsBackOnFailure -Plan $Plan
@@ -984,8 +1077,37 @@ function Invoke-FastLlmSupervisedServer {
             $canaryFloor = if ($null -ne $state.throughputCanary.floor) { "floor $($state.throughputCanary.floor)" } else { 'no reviewed floor for this model and card' }
             Write-Host "Throughput canary (advisory): PP512 $($state.throughputCanary.ppTokPerS) tok/s, $canaryFloor, status $($state.throughputCanary.status).$canaryNote"
         }
+        $idleDetector = $null
+        $idleNextPoll = [DateTime]::MaxValue
+        if ($IdleStopMinutes -gt 0) {
+            $idleNow = (Get-Date).ToUniversalTime()
+            $idleDetector = New-FastLlmIdleDetectorState -Now $idleNow
+            $idleNextPoll = $idleNow.AddSeconds($script:FastLlmIdlePollSeconds)
+        }
         while (-not $hostProcess.Process.WaitForExit(250)) {
-            if (Test-Path -LiteralPath $stopPath) { $state.phase='stopped'; return 0 }
+            if (Test-Path -LiteralPath $stopPath) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
+            if ($IdleStopMinutes -gt 0) {
+                $idleNow = (Get-Date).ToUniversalTime()
+                if ($idleNow -ge $idleNextPoll) {
+                    $idleNextPoll = $idleNow.AddSeconds($script:FastLlmIdlePollSeconds)
+                    $idleStep = Invoke-FastLlmIdleStopPoll -State $idleDetector -Fetch { Get-FastLlmIdleMetricsText -BaseUrl $baseUrl } -Now $idleNow -IdleMinutes $IdleStopMinutes
+                    $idleDetector = $idleStep.state
+                    if ($idleStep.readFailed -and [int] $idleDetector.failedReads -eq 1) {
+                        # Logged once for each run of failed reads in a row, however long it lasts. Nothing is stopped for it.
+                        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'idle-check-failed' -Fields @{}
+                    }
+                    # A user Stop that arrived during the poll wins: the next pass sees the stop file and records a user stop.
+                    if ($idleStep.shouldStop -and -not (Test-Path -LiteralPath $stopPath)) {
+                        $state.stopReason='idle'
+                        $state.stoppedAtUtc=$idleNow.ToString('o')
+                        $idleLastActivity = ([datetime] $idleDetector.lastActivityUtc).ToUniversalTime().ToString('o')
+                        Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'idle-stop' -Fields {
+                            [ordered] @{ idleStopMinutes = [int] $IdleStopMinutes; lastActivityUtc = $idleLastActivity; stoppedAtUtc = [string] $state.stoppedAtUtc } }
+                        $state.phase='stopped'
+                        return 0
+                    }
+                }
+            }
         }
         $exitCode = $hostProcess.Process.ExitCode
         if ($exitCode -ne 0) { throw 'Server exited unexpectedly after readiness.' }
