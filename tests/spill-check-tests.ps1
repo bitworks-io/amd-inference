@@ -110,7 +110,7 @@ Check ((Get-FastLlmSpillCheckVerdict -Status ([pscustomobject]@{ spillCheck = [p
 Check ((Get-FastLlmSpillCheckVerdict -Status ([pscustomobject]@{ spillCheck = $null })) -ceq 'unknown') 'a null block is unknown'
 Check ((Get-FastLlmSpillCheckVerdict -Status ([ordered]@{ spillCheck = [ordered]@{ state = 'spilled' } })) -ceq 'spilled') 'a dictionary status works as well'
 $helperSource = (Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.SpillCheck.ps1') -Raw)
-Check ($helperSource -match '(?s)function Get-FastLlmSpillCheckVerdict.{0,1500}' -and $helperSource -match 'ANY point during a (bench )?test run' -and $helperSource -match 'test-validity stop') 'the verdict helper documents that spilled at any point in a test run is a test-validity stop for the caller'
+Check ($helperSource -match '(?s)function Get-FastLlmSpillCheckVerdict.{0,1500}' -and $helperSource -match 'ANY point during a (bench )?test run' -and $helperSource -match 'test-validity stop' -and $helperSource -match 'never a stop') 'the verdict helper documents that spilled at any point in a test run is a test-validity stop for the caller'
 
 # ---- self-test marking ----
 $st = [pscustomobject]@{ status = 'pass'; reasons = @(); generationTokS = 32; promptTokS = 650; firstTextMs = 900; expectedGenerationTokS = 32.7; comparable = $true }
@@ -122,26 +122,61 @@ Check ((Mark ([pscustomobject]@{ status = 'pass'; comparable = $false }) 'ok').c
 Check ($null -eq (InModule { Set-FastLlmSelfTestSpillMark -SelfTest $null -SpillCheck ([pscustomobject]@{ state = 'spilled' }) })) 'no self-test, nothing to mark'
 
 # ---- the benchmark refuses, and invalidates on a change ----
-function BenchAssert($state, [string]$phase = 'start') { try { InModule { param($sc, $p) Assert-FastLlmBenchmarkSpillOk -Status ([pscustomobject]@{ spillCheck = $sc }) -Phase $p } @($state, $phase); return $null } catch { return $_ } }
-Check ($null -eq (BenchAssert ([pscustomobject]@{ state = 'ok' }))) 'the benchmark accepts an ok state'
-$x = BenchAssert ([pscustomobject]@{ state = 'spilled' })
-Check ($x -and [string]$x.Exception.Data['FastLlmBenchmarkFailureCode'] -ceq 'gpu-memory-spill' -or ($x -and $x.Exception.Message -match 'spill')) 'the benchmark refuses a spilled state'
-$x2 = BenchAssert ([pscustomobject]@{ state = 'unknown' })
-Check ($null -ne $x2) 'the benchmark refuses an unknown state'
-$x3 = BenchAssert $null
-Check ($null -ne $x3) 'the benchmark refuses a status without the block'
-$x4 = BenchAssert ([pscustomobject]@{ state = 'spilled' }) 'run'
-Check ($null -ne $x4 -and $x4.Exception.Message -match 'during') 'a change away from ok during the run invalidates the benchmark and says so'
+function Track($states, [string[]]$phases) {
+    try {
+        $argv = New-Object 'object[]' 2
+        $argv[0] = @($states)
+        $argv[1] = $phases
+        $r = InModule {
+            param($list, $ph)
+            $track = $null
+            for ($i = 0; $i -lt $list.Count; $i++) {
+                $sc = $list[$i]
+                $status = if ($null -eq $sc) { [pscustomobject]@{ phase = 'ready' } } else { [pscustomobject]@{ spillCheck = $sc } }
+                $track = Step-FastLlmBenchmarkSpillTrack -Track $track -Status $status -Phase $ph[$i]
+            }
+            $track
+        } $argv
+        return $r
+    } catch { return $_ }
+}
+function Okst { [pscustomobject]@{ state = 'ok' } }
+function Unkst { [pscustomobject]@{ state = 'unknown'; error = 'no-luid' } }
+function Spst { [pscustomobject]@{ state = 'spilled' } }
+$tUnk = Track @((Unkst), (Unkst)) @('start', 'run')
+Check ($tUnk.state -ceq 'unknown' -and $tUnk.label -ceq 'GPU memory check unavailable' -and $tUnk.checks -eq 2) 'an unknown check (HIP, no LUID) does not refuse at start or in the run; it labels the result'
+$tMissing = Track @($null) @('start')
+Check ($tMissing.state -ceq 'unknown' -and $tMissing.label -ceq 'GPU memory check unavailable') 'a status without the block is unknown: labelled, never refused'
+$tSeq = Track @((Okst), (Okst), (Unkst), (Okst)) @('start', 'run', 'run', 'run')
+Check ($tSeq.state -ceq 'unknown' -and $tSeq.label -ceq 'GPU memory check unavailable' -and $tSeq.checks -eq 4) 'ok, ok, unknown, ok ends unknown with the label after 4 checks'
+$tOk = Track @((Okst), (Okst)) @('start', 'run')
+Check ($tOk.state -ceq 'ok' -and $null -eq $tOk.label -and $tOk.checks -eq 2) 'all ok: state ok, no label'
+$x = Track @((Spst)) @('start')
+Check ($x -is [System.Management.Automation.ErrorRecord] -and [string]$x.Exception.Data['fastllmFailureReason'] -ceq 'gpu-memory-spill') 'spilled at start refuses with gpu-memory-spill'
+$x4 = Track @((Okst), (Spst)) @('start', 'run')
+Check ($x4 -is [System.Management.Automation.ErrorRecord] -and [string]$x4.Exception.Data['fastllmFailureReason'] -ceq 'gpu-memory-spill' -and $x4.Exception.Message -match 'during') 'ok at start then spilled in the run fails with gpu-memory-spill and the run message'
+$x5 = Track @((Unkst), (Spst)) @('start', 'run')
+Check ($x5 -is [System.Management.Automation.ErrorRecord]) 'unknown then spilled still fails'
+function Outcome($sc, [bool]$missing = $false) { InModule { param($s) Get-FastLlmSpillCheckBenchOutcome -Status $s } @(, $(if ($missing) { [pscustomobject]@{ phase = 'ready' } } else { [pscustomobject]@{ spillCheck = $sc } })) }
+Check ((Get-Module FastLlm).ExportedFunctions.ContainsKey('Get-FastLlmSpillCheckBenchOutcome')) 'Get-FastLlmSpillCheckBenchOutcome is exported'
+Check ((Outcome (Okst)) -ceq 'ok') 'bench outcome: ok'
+Check ((Outcome (Spst)) -ceq 'validity-stop') 'bench outcome: spilled is a validity stop'
+Check ((Outcome (Unkst)) -ceq 'note') 'bench outcome: unknown is a note'
+Check ((Outcome $null $true) -ceq 'note') 'bench outcome: a missing block is a note'
+Check ((Outcome ([pscustomobject]@{ state = 'weird' })) -ceq 'note') 'bench outcome: an unrecognised state is a note'
+Check ($helperSource -notmatch 'gpu-memory-check-unavailable') 'the gpu-memory-check-unavailable failure code is gone'
 $benchText = Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Benchmark.ps1') -Raw
 $startAt = $benchText.IndexOf('function Invoke-FastLlmBenchmark {')
 $benchBody = $benchText.Substring($startAt)
 $readyGate = $benchBody.IndexOf("Start a supervised FastLLM server and wait for ready")
-$firstAssert = $benchBody.IndexOf("Assert-FastLlmBenchmarkSpillOk -Status `$state -Phase 'start'")
+$firstAssert = $benchBody.IndexOf("Step-FastLlmBenchmarkSpillTrack -Track `$null -Status `$state -Phase 'start'")
 Check ($readyGate -gt 0 -and $firstAssert -gt $readyGate) 'the benchmark checks the spill state at the start, right after the ready gate and before any work'
 Check ($benchBody.IndexOf('benchLockPath') -gt $firstAssert) 'the start refusal comes before the benchmark lock is taken'
 $timedAt = $benchBody.IndexOf("`$stage='timed'")
-$runAsserts = ([regex]::Matches($benchBody.Substring($timedAt), [regex]::Escape("Assert-FastLlmBenchmarkSpillOk -Status `$current -Phase 'run'"))).Count
+$runAsserts = ([regex]::Matches($benchBody.Substring($timedAt), [regex]::Escape("Step-FastLlmBenchmarkSpillTrack -Track `$spillTrack -Status `$current -Phase 'run'"))).Count
 Check ($runAsserts -ge 2) 'every status read inside and right after the timed region re-checks the spill state'
+Check ($benchBody -match '(?s)\$result=\[ordered\]@\{.{0,6000}gpuMemoryCheck=\[ordered\]@\{state=\$spillTrack\.state;label=\$spillTrack\.label;checks=\$spillTrack\.checks\}') 'the benchmark result carries gpuMemoryCheck built from the track'
+Check ($benchBody -match 'GPU memory check unavailable: this benchmark result is labelled') 'an unknown track prints one console line before returning'
 
 # ---- the post-Ready loop schedule ----
 # A simulated 250 ms loop over a fake clock: the check runs on schedule, not on every pass.

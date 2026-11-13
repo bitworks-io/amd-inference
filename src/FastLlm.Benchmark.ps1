@@ -1764,8 +1764,8 @@ function Invoke-FastLlmBenchmark {
     $adlxConfigured=Assert-FastLlmBenchmarkAdlxConfig $AdlxExecutablePath $AdlxExecutableSha256 -Optional:$AdlxOptional
     $state=Get-FastLlmStatus $InstallRoot
     if(-not $state.active -or $state.phase -ne 'ready' -or -not $state.recipe){throw 'Start a supervised FastLLM server and wait for ready before benchmarking.'}
-    # A model that spilled out of GPU memory (or a check that could not run) gives measurements that cannot be compared: refuse before anything starts.
-    Assert-FastLlmBenchmarkSpillOk -Status $state -Phase 'start'
+    # A model that spilled out of GPU memory gives measurements that cannot be compared: refuse before anything starts. A check that could not run only labels the result.
+    $spillTrack=Step-FastLlmBenchmarkSpillTrack -Track $null -Status $state -Phase 'start'
     Assert-FastLlmBenchmarkDefaultSetup -State $state
     foreach($length in $PromptTokens){if($length -lt 16 -or $length+$GenerationTokens+8 -gt $state.recipe.contextSize){throw 'Requested prompt/output exceeds the effective context budget.'}}
     if(Test-Path -LiteralPath $OutputPath){throw 'Benchmark output already exists; choose a new result file.'}
@@ -1898,8 +1898,8 @@ function Invoke-FastLlmBenchmark {
             foreach($length in @($PromptTokens | Sort-Object {Get-Random})){
                 $current=Get-FastLlmStatus $InstallRoot
                 if(-not $current.active -or $current.phase -ne 'ready' -or $current.runId -ne $state.runId){throw 'Server identity changed during benchmark.'}
-                # The server re-checks every 60 s: a change away from ok at any point in the run makes the result invalid.
-                Assert-FastLlmBenchmarkSpillOk -Status $current -Phase 'run'
+                # The server re-checks every 60 s: a spill at any point in the run makes the result invalid.
+                $spillTrack=Step-FastLlmBenchmarkSpillTrack -Track $spillTrack -Status $current -Phase 'run'
                 $startedAt=[DateTime]::UtcNow
                 $response=Invoke-FastLlmHttp -BaseUrl $baseUrl -Path '/completion' -TimeoutMs 180000 -Body @{
                     prompt=$promptArrays[$length];n_predict=$GenerationTokens;temperature=0;seed=42;cache_prompt=$false;ignore_eos=$true;stream=$true
@@ -1926,7 +1926,7 @@ function Invoke-FastLlmBenchmark {
         }
         $current=Get-FastLlmStatus $InstallRoot
         if(-not $current.active -or $current.phase -ne 'ready' -or $current.runId -ne $state.runId){throw (New-FastLlmBenchmarkFailure 'server-changed' 'Server changed before benchmark completion.')}
-        Assert-FastLlmBenchmarkSpillOk -Status $current -Phase 'run'
+        $spillTrack=Step-FastLlmBenchmarkSpillTrack -Track $spillTrack -Status $current -Phase 'run'
         $summary=@(foreach($length in $PromptTokens){$group=@($samples|Where-Object requestedPromptTokens -eq $length);[pscustomobject]@{promptTokens=$length;generation=Get-FastLlmStatistics $group.generationTokensPerSecond;prefill=Get-FastLlmStatistics $group.promptTokensPerSecond;firstText=Get-FastLlmStatistics $group.timeToFirstTextMs;completion=Get-FastLlmStatistics $group.completionMs}})
 
         $stage='post-timing'
@@ -2013,6 +2013,7 @@ function Invoke-FastLlmBenchmark {
             windowsInventory=$inventory;inventoryError=$inventoryError
             methodology=@{corpus='fastllm-repeated-prose-v1';sampling='greedy-seed42';prefixCache=$false;warmupPerPrompt=1;generationTokens=$GenerationTokens;repetitions=$Repetitions;concurrency=1;randomizedPromptOrder=$true;promptArtifacts=$promptArtifacts}
             canary=$state.canary;placement=$state.placement;samples=$samples;summary=$summary
+            gpuMemoryCheck=[ordered]@{state=$spillTrack.state;label=$spillTrack.label;checks=$spillTrack.checks}
             qualification=@{approved=$false;qualityEvaluation=$false;physicalResidency=$false;peakVramMeasured=$false;soak=$false;exclusiveWorkloadConfirmed=$false}
             producer=[ordered]@{name='fastllm-benchmark-vnext';version=$script:FastLlmProducerVersion;sourceSha256=$producerSha;sampleSemanticsBaselineSha256='c8b64fe0a2e78e3974b63a127da9ae385ca84b51fba69505ee323ab5d464a43b';activeSeams=@($activeSeams);inputSha256=$inputs;inputClassification=(Get-FastLlmBenchmarkInputClassification)}
             hostCapture=@($preHost.Capture,$postHost.Capture)
@@ -2035,6 +2036,7 @@ function Invoke-FastLlmBenchmark {
         # Serialize first, then CreateNew (never replaces another experiment); a failed write deletes only the file this call created. No prompt/completion text is exported.
         $resultBytes=[Text.Encoding]::UTF8.GetBytes(($result|ConvertTo-Json -Depth 16))
         Write-FastLlmBenchmarkOutputFile $outputFull $resultBytes
+        if($spillTrack.state -ceq 'unknown'){Write-Host 'GPU memory check unavailable: this benchmark result is labelled and its numbers cannot be confirmed as GPU-only.'}
         return $result
     }catch{
         # Evidence is preserved on failure: the sidecars stay on disk and a failure report records the

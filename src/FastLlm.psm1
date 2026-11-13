@@ -3980,6 +3980,7 @@ Export-ModuleMember -Function @(
     'Test-FastLlmExperimentalOrigin',
     'Remove-FastLlmDeviceBindingPrivateFields',
     'Get-FastLlmSpillCheckVerdict',
+    'Get-FastLlmSpillCheckBenchOutcome',
     'Get-FastLlmSpillCheckText',
     'Save-FastLlmVerifiedFile',
     'Start-FastLlmServer',

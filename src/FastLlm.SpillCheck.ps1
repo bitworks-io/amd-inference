@@ -166,7 +166,8 @@ function Set-FastLlmSelfTestSpillMark {
 #
 # FOR CALLERS: a verdict of 'spilled' at ANY point during a bench test run is a test-validity stop. The measurements taken so far
 # cannot be compared with healthy runs, so the run is not graded. Re-read the status during the run (the server re-checks every
-# 60 seconds), not only at its start. 'unknown' is recorded and needs review; it is never treated as ok.
+# 60 seconds), not only at its start. 'unknown' is recorded as a note on the result ("GPU memory check unavailable"); it is
+# never a stop and never treated as ok (no residency claim is made from it).
 function Get-FastLlmSpillCheckVerdict {
     [CmdletBinding()]
     param($Status)
@@ -176,17 +177,37 @@ function Get-FastLlmSpillCheckVerdict {
     return 'unknown'
 }
 
-# Benchmark gate. At the start a state that is not ok refuses the run; during the run a change away from ok invalidates it.
-function Assert-FastLlmBenchmarkSpillOk {
-    param($Status, [ValidateSet('start', 'run')][string] $Phase = 'start')
+# For the bench path: 'ok', 'validity-stop' (spilled) or 'note' (unknown, including a missing block). Never a stop for unknown.
+function Get-FastLlmSpillCheckBenchOutcome {
+    [CmdletBinding()]
+    param($Status)
     $verdict = Get-FastLlmSpillCheckVerdict -Status $Status
-    if ($verdict -ceq 'ok') { return }
+    if ($verdict -ceq 'ok') { return 'ok' }
+    if ($verdict -ceq 'spilled') { return 'validity-stop' }
+    return 'note'
+}
+
+# Benchmark tracker. A spill refuses the run at the start and fails it during the run. An unavailable check (for example the HIP
+# engine, which has no adapter LUID) never refuses: the track records the worst state seen and the result is labelled.
+# Returns the updated track { state = ok|unknown; label = $null|'GPU memory check unavailable'; checks = count }. A $null Track starts one.
+function Step-FastLlmBenchmarkSpillTrack {
+    param($Track, $Status, [ValidateSet('start', 'run')][string] $Phase = 'start')
+    $verdict = Get-FastLlmSpillCheckVerdict -Status $Status
     if ($verdict -ceq 'spilled') {
         if ($Phase -ceq 'run') { throw (New-FastLlmBenchmarkFailure 'gpu-memory-spill' 'Part of the model memory spilled to system RAM during the benchmark; the result is invalid. Close other GPU apps and restart FastLLM.') }
         throw (New-FastLlmBenchmarkFailure 'gpu-memory-spill' 'Part of the model memory spilled to system RAM, so measurements would not be comparable. Close other GPU apps and restart FastLLM.')
     }
-    if ($Phase -ceq 'run') { throw (New-FastLlmBenchmarkFailure 'gpu-memory-check-unavailable' 'The GPU memory check was not ok during the benchmark; the result is invalid.') }
-    throw (New-FastLlmBenchmarkFailure 'gpu-memory-check-unavailable' 'The GPU memory check is unavailable, so measurements would not be comparable.')
+    $checks = 0
+    $wasUnknown = $false
+    if ($null -ne $Track) {
+        $checks = [int] $Track.checks
+        $wasUnknown = ([string] $Track.state -ceq 'unknown')
+    }
+    $unknown = ($wasUnknown -or $verdict -cne 'ok')
+    $state = 'ok'
+    $label = $null
+    if ($unknown) { $state = 'unknown'; $label = 'GPU memory check unavailable' }
+    return [pscustomobject][ordered]@{ state = $state; label = $label; checks = ($checks + 1) }
 }
 
 # The adapter LUID (16 lowercase hex digits) of the device the binding resolved, from the Vulkan to DXGI join report. $null unless the
