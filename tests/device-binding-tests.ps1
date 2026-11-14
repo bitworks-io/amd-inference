@@ -622,7 +622,15 @@ try {
 
     # a second start on the same install root: unchanged, then a driver update
     $again=Invoke-BindRun -Name 'record-same' -Binding 'record' -RunRoot $rec.runRoot
-    Check ($again.exit -eq 0 -and $null -eq $again.state.PSObject.Properties['identityChange'] -and @($again.console | Where-Object { $_ -like 'GPU*' -or $_ -like 'Driver*' }).Count -eq 0 -and $again.state.identityRecord -ceq 'recorded') 'record: an unchanged second start prints nothing and sets no identityChange'
+    # "Prints nothing" means no identity-change notice. Since #49 the GPU memory check prints one line after Ready that also starts with "GPU", so:
+    # (a) no line starts with any of the three identity-change prefixes (src/FastLlm.DeviceBinding.ps1, the GPU / slot / driver notices), AND
+    # (b) every GPU*/Driver* line is exactly one of the GPU memory check's own two lines (read from the module), so any other GPU or driver notice still fails.
+    $identityPrefixes=@('GPU changed since the last recorded start:','GPU moved to another slot since the last recorded start:','Driver updated since the last recorded start:')
+    $memoryCheckLines=@(& $module { $script:FastLlmSpillOkText; $script:FastLlmSpillUnknownText })
+    $againIdentityLines=@($again.console | Where-Object { $line=[string]$_; @($identityPrefixes | Where-Object { $line.StartsWith($_,[StringComparison]::Ordinal) }).Count -gt 0 })
+    $againOtherGpuLines=@($again.console | Where-Object { $line=[string]$_; ($line -like 'GPU*' -or $line -like 'Driver*') -and -not ($memoryCheckLines -ccontains $line) })
+    Check ($memoryCheckLines.Count -eq 2 -and -not [string]::IsNullOrEmpty($memoryCheckLines[0]) -and -not [string]::IsNullOrEmpty($memoryCheckLines[1])) 'the GPU memory check''s two console lines are read from the module'
+    Check ($again.exit -eq 0 -and $null -eq $again.state.PSObject.Properties['identityChange'] -and $againIdentityLines.Count -eq 0 -and $againOtherGpuLines.Count -eq 0 -and $again.state.identityRecord -ceq 'recorded') ("record: an unchanged second start prints no identity-change line (every GPU*/Driver* line is a GPU memory check line) and sets no identityChange (other GPU*/Driver* lines: " + ($againOtherGpuLines -join ' | ') + ')')
     $newDriver=New-Report @(Vk 0 $luidA $uuidA 0x1002 0x744c $xtx) @(Dx 3 $luidA 0x1002 0x744c) @(Km $luidA 3 0 0) @(Sa $pnpA $locA '32.0.9.9' $xtx) $xtxHeaps
     Set-RealProbe $newDriver
     $upd=Invoke-BindRun -Name 'record-driver' -Binding 'record' -RunRoot $rec.runRoot
