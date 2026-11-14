@@ -303,9 +303,9 @@ Check ($null -ne $rewritten -and $rewritten.adapters[0].name -ceq $xt) 'the file
 Set-Content -LiteralPath $identFile -Value 'not json'
 
 # ---------- the bounded collector wrapper and the orchestrator (module seams replaced by mocks) ----------
-$bt=@{collectorCalls=0;probeCalls=0;report=$null;failure=$null;probeThrow=$null;order=(New-Object 'Collections.Generic.List[string]')}
+$bt=@{collectorCalls=0;probeCalls=0;report=$null;failure=$null;probeThrow=$null;order=(New-Object 'Collections.Generic.List[string]');origs=@{}}
 $saved=@{}
-foreach($name in @('Invoke-FastLlmDeviceBindingCollector','Invoke-FastLlmVulkanHeapProbe','Resolve-FastLlmDeviceBindingFromReport','Write-FastLlmDeviceIdentityRecord','Get-FastLlmDeviceBindingLoaderVersion','ConvertFrom-FastLlmServerDeviceListEntries')){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
+foreach($name in @('Invoke-FastLlmDeviceBindingCollector','Invoke-FastLlmVulkanHeapProbe','Resolve-FastLlmDeviceBindingFromReport','Write-FastLlmDeviceIdentityRecord','Get-FastLlmDeviceBindingLoaderVersion','ConvertFrom-FastLlmServerDeviceListEntries','Initialize-FastLlmEngineStartInfo','Invoke-FastLlmSpillCheckAtReady','Invoke-FastLlmSelfTest')){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name;$bt.origs[$name]=$saved[$name]}
 function Restore-Mocks{foreach($name in $saved.Keys){& $module {param($N,$B) Set-Item -Path ('Function:script:'+$N) -Value $B} $name $saved[$name]}}
 & $module {
     param($S)
@@ -313,10 +313,29 @@ function Restore-Mocks{foreach($name in $saved.Keys){& $module {param($N,$B) Set
     function script:Invoke-FastLlmVulkanHeapProbe {
         param($TimeoutSeconds,$CollectorPath)
         $script:bindTest.probeCalls++
+        $script:bindTest.order.Add('probe')
         if($script:bindTest.probeThrow){$e=New-Object InvalidOperationException 'secret-probe-message-text';$e.Data['FastLlmProbeCategory']=$script:bindTest.probeThrow;throw $e}
         return $script:bindTest.report
     }
     function script:Get-FastLlmDeviceBindingLoaderVersion { return '1.3.999.0' }
+    # Order markers (pass-through wrappers): 'launch' is the last step before the server process is spawned, 'self-test' and 'spill-check' are the
+    # post-load steps. The collector mock above adds 'probe'. Invoke-BindRun clears the list per start and returns it as .order.
+    function script:Initialize-FastLlmEngineStartInfo {
+        [CmdletBinding()]
+        param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo] $StartInfo, [Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [switch] $VulkanBarMitigation)
+        $script:bindTest.order.Add('launch')
+        & $script:bindTest.origs['Initialize-FastLlmEngineStartInfo'] -StartInfo $StartInfo -Plan $Plan -Sandbox $Sandbox -VulkanBarMitigation:$VulkanBarMitigation
+    }
+    function script:Invoke-FastLlmSelfTest {
+        param([string] $BaseUrl, [int] $ContextSize, $Expected, [string] $EngineBuild, [string] $MitigationEffective, [scriptblock] $Request)
+        $script:bindTest.order.Add('self-test')
+        & $script:bindTest.origs['Invoke-FastLlmSelfTest'] -BaseUrl $BaseUrl -ContextSize $ContextSize -Expected $Expected -EngineBuild $EngineBuild -MitigationEffective $MitigationEffective -Request $Request
+    }
+    function script:Invoke-FastLlmSpillCheckAtReady {
+        param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision, $Process, [scriptblock] $Reader)
+        $script:bindTest.order.Add('spill-check')
+        & $script:bindTest.origs['Invoke-FastLlmSpillCheckAtReady'] -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $KnownLuid -BarDecision $BarDecision -Process $Process -Reader $Reader
+    }
 } $bt
 function Run-Binding($Plan,[string]$Dir,$Bar=$null){& $module {param($P,$D,$B) Invoke-FastLlmDeviceBinding -Plan $P -InstallRoot $D -BarDecision $B} $Plan $Dir $Bar}
 if($true){
@@ -446,6 +465,7 @@ $suitePassed=$false
 $lock=$null
 function Invoke-BindRun {
     param([string]$Name,[string]$Binding='record',[string]$Policy='off',[string]$Mode='ok',[string]$Backend='Vulkan',[string]$RunRoot,[switch]$AutoStop)
+    $bt.order.Clear()
     $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
     $listener.Start();$port=$listener.LocalEndpoint.Port;$listener.Stop()
     if($RunRoot){$runRoot=$RunRoot}else{$runRoot=Join-Path $temp $Name}
@@ -479,7 +499,7 @@ function Invoke-BindRun {
         if($stopper){$stopperOk=$stopper.WaitForExit(10000) -and $stopper.ExitCode -eq 0}
         $dumpText='';if(Test-Path -LiteralPath $dump){$dumpText=[IO.File]::ReadAllText($dump)}
         $dumpText=$dumpText.Replace($runRoot,'<root>') -replace "(?<![0-9])$port(?![0-9])",'<port>' -replace 'runtime-sandboxes\\[0-9a-f]{32}','runtime-sandboxes\<id>'
-        return [pscustomobject]@{exit=$exit;failure=$failure;console=@($console);state=(Get-FastLlmStatus $runRoot);dump=$dumpText;runRoot=$runRoot;stopperOk=$stopperOk;plan=$enginePlan}
+        return [pscustomobject]@{exit=$exit;failure=$failure;console=@($console);state=(Get-FastLlmStatus $runRoot);dump=$dumpText;runRoot=$runRoot;stopperOk=$stopperOk;plan=$enginePlan;order=@($bt.order)}
     } finally {
         if($stopper){if(-not $stopper.HasExited){$stopper.Kill()};$stopper.Dispose()}
         $script:lock.Dispose();$script:lock=$null
@@ -504,6 +524,31 @@ function Test-NoPrivateLeaf($Node,[string[]]$Needles){
     foreach($leaf in @(Get-Leaves $Node)){foreach($needle in $Needles){if($leaf.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -ge 0){return $false}}}
     return $true
 }
+# The collector markers of one start, in order: positions of 'probe' against the 'launch', 'self-test' and 'spill-check' markers.
+function Get-ProbeOrder($Run){
+    $o=@($Run.order);$probes=@(for($i=0;$i -lt $o.Count;$i++){if($o[$i] -ceq 'probe'){$i}})
+    $launch=[Array]::IndexOf($o,'launch');$selfTest=[Array]::IndexOf($o,'self-test');$spill=[Array]::IndexOf($o,'spill-check')
+    $afterLaunch=($launch -ge 0 -and $probes.Count -gt 0 -and $probes[$probes.Count-1] -gt $launch)
+    $afterPost=($spill -ge 0 -and $probes.Count -gt 0 -and $probes[$probes.Count-1] -gt $spill -and ($selfTest -lt 0 -or $probes[$probes.Count-1] -gt $selfTest))
+    [pscustomobject]@{count=$probes.Count;launched=($launch -ge 0);before=@($probes | Where-Object { $launch -lt 0 -or $_ -lt $launch }).Count;afterLaunch=$afterLaunch;afterPost=$afterPost;text=($o -join '>')}
+}
+# Every file under a run's install root (recursive, hidden included, shared read) searched for the bound device's LUID in the forms the code could
+# render it: the 16-hex string in either case (a 0x prefix contains it) and the low half on its own (a split high/low rendering). ASCII and UTF-16 text.
+function Find-LuidInTree([string]$Root,[string]$Luid){
+    $needles=@($Luid.ToLowerInvariant(),$Luid.ToUpperInvariant(),$Luid.Substring(8).ToLowerInvariant(),$Luid.Substring(8).ToUpperInvariant())
+    $hits=@();$scanned=0;$unreadable=0
+    foreach($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue)){
+        try{
+            $stream=[IO.File]::Open($file.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            try{$bytes=New-Object byte[] ([int]$stream.Length);$null=$stream.Read($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
+        }catch{$unreadable++;continue}
+        $scanned++
+        $texts=@([Text.Encoding]::GetEncoding(28591).GetString($bytes),[Text.Encoding]::Unicode.GetString($bytes))
+        if($bytes.Length -gt 1){$texts+=[Text.Encoding]::Unicode.GetString($bytes,1,$bytes.Length-1)}
+        foreach($text in $texts){foreach($n in $needles){if($text.IndexOf($n,[StringComparison]::Ordinal) -ge 0){$hits+=$file.Name;break}}}
+    }
+    [pscustomobject]@{scanned=$scanned;unreadable=$unreadable;hits=@($hits | Select-Object -Unique)}
+}
 function Set-RealProbe($Report){$bt.report=$Report;$bt.probeCalls=0;$bt.probeThrow=$null}
 try {
     $bt.collectorCalls=0
@@ -511,10 +556,25 @@ try {
 
     # off: no child, no field, no file, and the very same server argv and environment as record
     $off=Invoke-BindRun -Name 'off' -Binding 'off'
-    Check ($off.exit -eq 0 -and $off.stopperOk -and $off.state.phase -ceq 'stopped' -and $bt.probeCalls -eq 0) 'off: the start completes and no collector child runs'
+    $offOrder=Get-ProbeOrder $off
+    Check ($off.exit -eq 0 -and $off.stopperOk -and $off.state.phase -ceq 'stopped') 'off: the start completes'
+    Check ($offOrder.launched -and $offOrder.before -eq 0) "off: no collector child runs before the launch (order: $($offOrder.text))"
+    Check ($offOrder.count -eq 1 -and $offOrder.afterLaunch -and $offOrder.afterPost -and $bt.probeCalls -eq 1) "off: exactly one collector child runs, after the launch and after the self-test / GPU memory check step begins, for the GPU memory check (order: $($offOrder.text))"
     Check ($null -eq $off.state.PSObject.Properties['deviceBinding'] -and $null -eq $off.state.PSObject.Properties['identityFingerprint'] -and $null -eq $off.state.PSObject.Properties['identityFingerprintKind'] -and $null -eq $off.state.PSObject.Properties['identityChange'] -and $null -eq $off.state.PSObject.Properties['identityRecord']) 'off: status.json has no deviceBinding, identityFingerprint, identityChange or identityRecord field'
     Check (-not (Test-Path -LiteralPath (Join-Path (Join-Path $off.runRoot 'state') 'device-identity.json'))) 'off: device-identity.json is neither read nor written'
+    $offLuid=Find-LuidInTree $off.runRoot $luidA
+    Check ($offLuid.scanned -gt 0 -and $offLuid.unreadable -eq 0 -and $offLuid.hits.Count -eq 0) ("off: the GPU-memory-check LUID never reaches status, records, run log or any file under the install root (scanned $($offLuid.scanned), unreadable $($offLuid.unreadable), hits: $($offLuid.hits -join ','))")
+    Check ((Get-Content -LiteralPath (Join-Path (Join-Path $off.runRoot 'state') 'status.json') -Raw) -notmatch "(?i)$luidA" -and @($off.console | Where-Object { $_ -match "(?i)$luidA" }).Count -eq 0) 'off: the LUID is in neither status.json nor the console'
     $offDefault=Invoke-BindRun -Name 'off-default' -Binding 'off'
+    $offDefaultOrder=Get-ProbeOrder $offDefault
+    Check ($offDefaultOrder.launched -and $offDefaultOrder.before -eq 0 -and $offDefaultOrder.count -eq 1 -and $offDefaultOrder.afterLaunch -and $offDefaultOrder.afterPost) "off-default: no collector child before the launch, exactly one after it for the GPU memory check (order: $($offDefaultOrder.text))"
+    $offDefaultLuid=Find-LuidInTree $offDefault.runRoot $luidA
+    Check ($offDefaultLuid.scanned -gt 0 -and $offDefaultLuid.unreadable -eq 0 -and $offDefaultLuid.hits.Count -eq 0) 'off-default: the GPU-memory-check LUID never reaches status, records, run log or any file under the install root'
+    Set-RealProbe $xtxReport
+    $offRocm=Invoke-BindRun -Name 'off-rocm' -Binding 'off' -Backend 'ROCm'
+    $offRocmOrder=Get-ProbeOrder $offRocm
+    Check ($offRocm.exit -eq 0 -and $offRocm.stopperOk -and $offRocmOrder.count -eq 0 -and $bt.probeCalls -eq 0 -and $null -eq $offRocm.state.PSObject.Properties['deviceBinding']) "off on a non-Vulkan lane: no collector child at all (order: $($offRocmOrder.text))"
+    Set-RealProbe $xtxReport
     Check (($off.state.PSObject.Properties.Name -join ',') -ceq ($offDefault.state.PSObject.Properties.Name -join ',')) 'off: the state field set is the same on every start'
 
     $rec=Invoke-BindRun -Name 'record' -Binding 'record'
@@ -645,9 +705,10 @@ try {
     Set-RealProbe $xtxReport
     $autoOff=Invoke-BindRun -Name 'auto-off' -Binding 'off' -Policy 'auto'
     $autoOffProbeCalls=$bt.probeCalls
+    $autoOffOrder=Get-ProbeOrder $autoOff
     Set-RealProbe $xtxReport
     $autoRec=Invoke-BindRun -Name 'auto-record' -Binding 'record' -Policy 'auto'
-    Check ($autoOff.exit -eq 0 -and $autoRec.exit -eq 0 -and $autoOffProbeCalls -eq 1 -and $bt.probeCalls -eq 2) 'BAR auto: one child for the BAR probe; with record a second child for the binding (two in total)'
+    Check ($autoOff.exit -eq 0 -and $autoRec.exit -eq 0 -and $autoOffProbeCalls -eq 2 -and $autoOffOrder.before -eq 1 -and $autoOffOrder.count -eq 2 -and $bt.probeCalls -eq 2) 'BAR auto: off runs one child before the launch for the BAR probe and one after the self-test step for the GPU memory check; with record a second child for the binding (two in total)'
     Check ($autoRec.state.vulkanMemoryPolicy.requested -ceq 'auto' -and $autoRec.state.vulkanMemoryPolicy.effective -ceq $autoOff.state.vulkanMemoryPolicy.effective -and $autoRec.state.vulkanMemoryPolicy.reason -ceq $autoOff.state.vulkanMemoryPolicy.reason -and $autoRec.state.vulkanMemoryPolicy.rebarDetected -ceq $autoOff.state.vulkanMemoryPolicy.rebarDetected) 'the BAR decision is the same with and without record'
     Check ($autoRec.dump -ceq $autoOff.dump) 'BAR auto: record launches with the same argv and environment as off'
     Check ($autoRec.state.deviceBinding.barSnapshot -ceq 'not-available') 'BAR auto on a live start: barSnapshot is not-available because the decision carries no PnP instance'
@@ -716,7 +777,8 @@ try {
     }
     Set-RealProbe $xtxReport
     $offCase=Invoke-BindRun -Name 'off-case-upper' -Binding 'OFF'
-    Check ($offCase.exit -eq 0 -and $offCase.stopperOk -and $bt.probeCalls -eq 0 -and $null -eq $offCase.state.PSObject.Properties['deviceBinding'] -and $offCase.dump -ceq $off.dump -and ($off.state.PSObject.Properties.Name -join ',') -ceq ($offCase.state.PSObject.Properties.Name -join ',')) "-DeviceBinding OFF is byte-identical to off: no collector child, no deviceBinding field, same argv, environment and state field set"
+    $offCaseOrder=Get-ProbeOrder $offCase
+    Check ($offCase.exit -eq 0 -and $offCase.stopperOk -and $offCaseOrder.before -eq 0 -and $offCaseOrder.count -eq 1 -and $offCaseOrder.afterLaunch -and $offCaseOrder.afterPost -and $null -eq $offCase.state.PSObject.Properties['deviceBinding'] -and $offCase.dump -ceq $off.dump -and ($off.state.PSObject.Properties.Name -join ',') -ceq ($offCase.state.PSObject.Properties.Name -join ',')) "-DeviceBinding OFF is byte-identical to off: no collector child before the launch (one after, for the GPU memory check), no deviceBinding field, same argv, environment and state field set"
     Set-RealProbe $xtxReport
     $enfCasePass=Invoke-BindRun -Name 'enforce-case-pass' -Binding 'Enforce'
     Check ($enfCasePass.exit -eq 0 -and $enfCasePass.stopperOk -and $enfCasePass.state.deviceBinding.mode -ceq 'enforce' -and $enfCasePass.state.deviceBinding.postLoadCheck.result -ceq 'passed') '-DeviceBinding Enforce on a matching device list reaches Ready and records mode enforce (lowercase)'
