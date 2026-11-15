@@ -48,6 +48,9 @@ HIP_VERIFIED = {"id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip", "variant": "r
                 "evidence": {"url": "https://bitworks.io/amd-inference/recipes/x-hip/#lab-observation", "resultId": "r2", "publishedAt": "2026-10-16"}}
 
 
+SYNTHETIC = json.loads((ROOT / "tests" / "fixtures" / "community-synthetic-record.json").read_text(encoding="utf-8"))
+
+
 class RecipeBuilderTests(unittest.TestCase):
     def tree(self, entries=None, records=None):
         root = Path(tempfile.mkdtemp())
@@ -156,6 +159,37 @@ class RecipeBuilderTests(unittest.TestCase):
         document, skipped = br.build(self.tree([ENTRY], [record]))
         self.assertEqual(skipped, [])
         self.assertEqual(sorted(r["origin"] for r in document["recipes"]), ["bitworks", "community-experimental"])
+
+    def test_hostile_source_text_is_refused(self):
+        long_url = "https://example.com/" + "a" * 290
+        cases = {
+            "javascript url": ("url", "javascript:alert(1)"),
+            "http url": ("url", "http://example.com/p"),
+            "data url": ("url", "data:text/html,x"),
+            "scheme only": ("url", "https://"),
+            "url with a control character": ("url", "https://example.com/p\u0007"),
+            "url with a newline": ("url", "https://example.com/p\nx"),
+            "over-long url": ("url", long_url),
+            "control character in the author": ("author", "a\u001b[31mred"),
+            "newline in the author": ("author", "a\nb"),
+            "bidi override in the author": ("author", "a\u202eb"),
+            "over-long author": ("author", "a" * 81),
+            "non-text author": ("author", ["a"]),
+        }
+        for name, (field, value) in cases.items():
+            for origin in ("community-experimental", "community-reproduced"):
+                with self.subTest(name + " " + origin):
+                    record = community(origin)
+                    record["source"][field] = value
+                    with self.assertRaises(br.RecipeError):
+                        br.build(self.tree([ENTRY], [record]))
+
+    def test_source_text_at_the_limits_is_accepted(self):
+        record = community("community-experimental")
+        record["source"]["author"] = "a" * 80
+        record["source"]["url"] = "https://example.com/" + "a" * 280
+        self.assertEqual(len(record["source"]["url"]), 300)
+        br.build(self.tree([ENTRY], [record]))
 
     def test_recommended_is_for_verified_bitworks_recipes_only(self):
         # No Bitworks recipe for this card, so the "more than one recommended" rule cannot be what rejects the record.
@@ -550,6 +584,40 @@ class RecipeBuilderTests(unittest.TestCase):
         record = community("bitworks-experimental", generationTokS=40.0)
         with self.assertRaises(br.RecipeError):
             br.build(self.tree([ENTRY], [record]))
+
+
+class SyntheticRehearsalTests(unittest.TestCase):
+    def rehearsal_tree(self):
+        root = Path(tempfile.mkdtemp())
+        for rel in ("config/catalog.json", "config/components.json", "config/gpu-variants.json",
+                    "data/verified-recipes.json", "data/community-records.json"):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes((ROOT / rel).read_bytes())
+        (root / "data" / "community-records.json").write_text(
+            json.dumps({"schema": "bitworks.fastllm-community-recipes/v1", "records": [SYNTHETIC["record"]]}))
+        return root
+
+    def test_the_synthetic_record_builds_as_an_experimental_community_recipe(self):
+        document, skipped = br.build(self.rehearsal_tree())
+        self.assertEqual(skipped, [])
+        found = [r for r in document["recipes"] if r["id"] == SYNTHETIC["record"]["id"]]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["origin"], "community-experimental")
+        self.assertFalse(found[0]["recommended"])
+        self.assertTrue(found[0]["compelling"]["isCompelling"])
+        self.assertEqual(found[0], SYNTHETIC["recipe"])
+
+    def test_the_synthetic_record_is_clearly_synthetic(self):
+        source = SYNTHETIC["record"]["source"]
+        self.assertEqual(source["author"], "Synthetic Example")
+        self.assertTrue(source["url"].startswith("https://example.invalid/"))
+
+    def test_the_shipped_community_records_file_stays_empty(self):
+        data = json.loads((ROOT / "data" / "community-records.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["records"], [])
+        br.build(self.rehearsal_tree())
+        data = json.loads((ROOT / "data" / "community-records.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["records"], [])
 
 
 if __name__ == "__main__":
