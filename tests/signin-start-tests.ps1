@@ -85,6 +85,15 @@ Assert-True (-not $script:FastLlmSignInRegistry.Store.approved.ContainsKey('Fast
 Remove-FastLlmSignInStart   # removing what is not there is fine
 Assert-Equal (Get-FastLlmSignInStartState -AppRoot $app).reason 'value-missing' 'off after Remove'
 
+# A registry with no Run key at all: reads are empty, Remove is a no-op, Set creates the key and value.
+$missing = New-FakeRegistry
+$script:FastLlmSignInRegistry = $missing
+Assert-Equal (Get-FastLlmSignInStartState -AppRoot $app).reason 'value-missing' 'Run key missing gives value-missing'
+Remove-FastLlmSignInStart
+Assert-Equal $missing.Store.run.Count 0 'Remove on a missing key leaves nothing behind'
+Set-FastLlmSignInStart -AppRoot $app
+Assert-Equal (Get-FastLlmSignInStartState -AppRoot $app).reason 'on' 'Set creates the value when the key was missing'
+
 # --- the launcher ------------------------------------------------------------------------------------------------------
 $script:Calls = New-Object System.Collections.ArrayList
 $script:Captured = @{}
@@ -256,8 +265,13 @@ if ($env:OS -eq 'Windows_NT') {
     try {
         $real = New-FastLlmSignInRegistry -RunKeyPath ($sub + '\Run') -ApprovedKeyPath ($sub + '\Approved')
         $script:FastLlmSignInRegistry = $real
-        Assert-True ($null -eq (& $real.GetRunValue 'FastLLM')) 'a fresh key has no value'
+        Assert-True ($null -eq (& $real.GetRunValue 'FastLLM')) 'a missing Run key reads as no value'
+        Assert-True ($null -eq (& $real.GetApprovedValue 'FastLLM')) 'a missing StartupApproved key reads as no value'
+        Assert-Equal (Get-FastLlmSignInStartState -AppRoot $app).reason 'value-missing' 'a missing Run key is value-missing'
+        Remove-FastLlmSignInStart   # nothing to remove from missing keys; must not throw
+        Assert-True ($null -eq [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($sub + '\Run')) 'removing from a missing Run key does not create it'
         Set-FastLlmSignInStart -AppRoot $app
+        Assert-True ($null -ne [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($sub + '\Run')) 'Set creates a missing Run key'
         Assert-Equal (& $real.GetRunValue 'FastLLM') $expected 'the real registry round-trips the command'
         Assert-Equal (Get-FastLlmSignInStartState -AppRoot $app).reason 'on' 'on against the real registry'
         $approved = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($sub + '\Approved')

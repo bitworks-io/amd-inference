@@ -128,6 +128,8 @@ $diff = Compare-Object (Get-TreeList $tree2) (Get-TreeList $app @('_uninstall\')
 Assert-True (-not $diff) "upgraded tree differs from the package: $($diff | Out-String)"
 
 # 4. Silent uninstall keeps user data and removes the sign-in registration
+# A fresh profile may have neither key: create them only here, where the test seeds its own values.
+$null = New-Item -Path $runKey -Force
 $null = New-Item -Path $approvedKey -Force
 Set-ItemProperty -LiteralPath $runKey -Name 'FastLLM' -Value ('"' + $app + '\FastLLM.cmd" /signin')
 Set-ItemProperty -LiteralPath $approvedKey -Name 'FastLLM' -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) -Type Binary
