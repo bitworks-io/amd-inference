@@ -5,6 +5,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 $repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $repo 'src/FastLlm.ServingSettings.ps1')
 . (Join-Path $repo 'src/FastLlm.SignInStart.ps1')
 $script:checks = 0
 function Assert-True($Value, [string]$Message) { if (-not $Value) { throw "ASSERT: $Message" }; $script:checks++ }
@@ -118,7 +119,7 @@ function New-Install([bool]$WithRequest = $true, $RequestOverride = $null) {
     $root = Join-Path $work ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $root 'state') -Force | Out-Null
     if ($WithRequest) {
-        $request = [ordered]@{ profile = 'balanced'; modelId = 'example-model'; contextSize = 8192; serverPort = 8081; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 30 }
+        $request = [ordered]@{ profile = 'balanced'; modelId = 'example-model'; contextSize = 8192 }
         if ($null -ne $RequestOverride) { $request = $RequestOverride }
         [IO.File]::WriteAllText((Join-Path $root 'state/signin-start-request.json'), (($request | ConvertTo-Json -Compress)), (New-Object Text.UTF8Encoding($false)))
     }
@@ -154,12 +155,49 @@ $a = $script:Captured['arguments']
 Assert-Equal $a.ModelId 'example-model' 'the saved model is passed through'
 Assert-Equal $a.Profile 'balanced' 'the saved profile is passed through'
 Assert-Equal ([int]$a.ContextSize) 8192 'the saved context is passed through'
-Assert-Equal ([int]$a.ServerPort) 8081 'the saved port is passed through'
-Assert-Equal ([int]$a.IdleStopMinutes) 30 'the saved idle stop is passed through'
+# no settings.json in this install: the serving settings are the defaults
+Assert-Equal ([int]$a.ServerPort) 0 'no settings: the catalog port (0)'
+Assert-Equal $a.Thinking 'auto' 'no settings: thinking auto'
+Assert-Equal $a.ChatPage 'off' 'no settings: chat page off'
+Assert-Equal ([int]$a['Idle' + 'StopMinutes']) 0 'no settings: idle stop never'
 Assert-True ($a.NoWait -eq $true) 'the start is NoWait'
 Assert-Equal $a.InstallRoot $root 'the data root is passed through as InstallRoot'
 Assert-Equal $a.SourceRoot $repo 'the app root is passed through as SourceRoot'
 Assert-True ($a.SourceRoot -cne $a.InstallRoot) 'SourceRoot and InstallRoot are two distinct values'
+
+# serving settings come from the user's saved settings at launch, not from the saved request
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{"serverPort":18181,"thinking":"off","chatPage":"on","idleStopMinutes":30,"other":1}', (New-Object Text.UTF8Encoding($false)))
+$null = Invoke-Case (New-FakeHost) $root
+$a = $script:Captured['arguments']
+Assert-Equal ([int]$a.ServerPort) 18181 'saved port reaches the host'
+Assert-Equal $a.Thinking 'off' 'saved thinking reaches the host'
+Assert-Equal $a.ChatPage 'on' 'saved chat page reaches the host'
+Assert-Equal ([int]$a['Idle' + 'StopMinutes']) 30 'saved idle stop reaches the host'
+Assert-Equal $a.ModelId 'example-model' 'the request still supplies the model'
+# the settings are read at launch: a later change applies without touching the request
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{"idleStopMinutes":60}', (New-Object Text.UTF8Encoding($false)))
+$null = Invoke-Case (New-FakeHost) $root
+$a = $script:Captured['arguments']
+Assert-Equal ([int]$a['Idle' + 'StopMinutes']) 60 'a changed setting applies at the next launch'
+Assert-Equal ([int]$a.ServerPort) 0 'a setting removed from the file falls back to the default'
+# malformed settings give the defaults
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ not json', (New-Object Text.UTF8Encoding($false)))
+$r = Invoke-Case (New-FakeHost) $root
+Assert-Equal $r.result 'started' 'malformed settings still start'
+$a = $script:Captured['arguments']
+Assert-Equal ([int]$a.ServerPort) 0 'malformed settings: the catalog port'
+Assert-Equal $a.Thinking 'auto' 'malformed settings: thinking auto'
+Assert-Equal $a.ChatPage 'off' 'malformed settings: chat page off'
+Assert-Equal ([int]$a['Idle' + 'StopMinutes']) 0 'malformed settings: idle stop never'
+# the request file neither accepts nor forwards serving keys
+$root = New-Install -RequestOverride ([ordered]@{ profile = 'fast'; modelId = 'example-model'; contextSize = 0; serverPort = 9999; thinking = 'off'; chatPage = 'on'; idleStopMinutes = 60 })
+$null = Invoke-Case (New-FakeHost) $root
+$a = $script:Captured['arguments']
+Assert-Equal ([int]$a.ServerPort) 0 'a port in the request file is ignored'
+Assert-Equal $a.Thinking 'auto' 'thinking in the request file is ignored'
+Assert-Equal $a.ChatPage 'off' 'chat page in the request file is ignored'
+Assert-Equal ([int]$a['Idle' + 'StopMinutes']) 0 'idle stop in the request file is ignored'
 
 # skipped-occupied (lock held before the start)
 $root = New-Install
@@ -194,10 +232,10 @@ $root = New-Install -WithRequest $false
 $r = Invoke-Case (New-FakeHost) $root
 Assert-Equal $r.result 'needs-setup' 'a malformed request needs setup'
 Assert-Equal (Count-Calls 'start') 0 'a malformed request never calls the host'
-$root = New-Install -RequestOverride ([ordered]@{ profile = 'balanced'; modelId = ''; contextSize = 0; serverPort = 0; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0 })
+$root = New-Install -RequestOverride ([ordered]@{ profile = 'balanced'; modelId = ''; contextSize = 0 })
 $r = Invoke-Case (New-FakeHost) $root
 Assert-Equal $r.result 'needs-setup' 'a request without a model needs setup'
-$root = New-Install -RequestOverride ([ordered]@{ profile = 'turbo'; modelId = 'example-model'; contextSize = 0; serverPort = 0; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0 })
+$root = New-Install -RequestOverride ([ordered]@{ profile = 'turbo'; modelId = 'example-model'; contextSize = 0 })
 $r = Invoke-Case (New-FakeHost) $root
 Assert-Equal $r.result 'needs-setup' 'an unknown profile needs setup'
 Assert-Equal (Count-Calls 'start') 0 'an invalid request never calls the host'
@@ -257,6 +295,8 @@ Assert-True ($cmdText -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Restricted" se
 Assert-True ($cmdText -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"\s*$') 'the sign-in cmd lifts an Undefined policy like FastLLM.cmd'
 Assert-True (Test-Path -LiteralPath (Join-Path $repo 'tools/signin-start.ps1')) 'the launcher tool exists'
 $module = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.SignInStart.ps1') -Raw
+Assert-True (-not $module.Contains('Idle' + 'StopMinutes')) 'the sign-in helper never names the idle stop parameter (the bench invariant exempts only the settings module)'
+Assert-True ($module -notmatch '(?i)idle' + 'stop') 'the sign-in helper never names the idle stop in any case'
 Assert-True ($module -notmatch '\?\?|-AsHashtable|ForEach-Object\s+-Parallel') 'no PowerShell 7 only syntax in the helper'
 
 # --- Windows only: the default registry against a throwaway key ---------------------------------------------------------
