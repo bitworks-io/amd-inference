@@ -135,6 +135,24 @@ function Get-FastLlmPreloadSet {
     }
 
     if ($null -ne $approvedList) {
+        # Every approved catalog model (same id and revision) that no recipe or tier picked follows the tier entries, smallest first.
+        $extra = New-Object 'System.Collections.Generic.List[object]'
+        $seenApproved = @{}
+        foreach ($item in $approvedList) {
+            if ($index.ContainsKey($item.modelId) -or $seenApproved.ContainsKey($item.modelId)) { continue }
+            $hit = @($catalog.models | Where-Object { [string] $_.id -ceq $item.modelId -and [string] $_.revision -ceq $item.revision } | Select-Object -First 1)
+            if ($hit.Count -eq 0) { continue }
+            $seenApproved[$item.modelId] = $true
+            $extra.Add([pscustomobject]@{ modelId = [string] $hit[0].id; sizeBytes = [int64] $hit[0].sizeBytes })
+        }
+        $extra.Sort([Comparison[object]] {
+                param($left, $right)
+                $bySize = ([int64] $left.sizeBytes).CompareTo([int64] $right.sizeBytes)
+                if ($bySize -ne 0) { return $bySize }
+                return [string]::CompareOrdinal([string] $left.modelId, [string] $right.modelId)
+            })
+        foreach ($item in $extra) { & $add $item.modelId '' 'approved' }
+
         foreach ($entry in $entries) {
             $entry.approved = [bool] (@($approvedList | Where-Object { $_.modelId -ceq $entry.modelId -and $_.revision -ceq $entry.revision }).Count -gt 0)
         }

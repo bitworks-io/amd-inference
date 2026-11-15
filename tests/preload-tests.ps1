@@ -92,6 +92,45 @@ try {
     $caseHit=@($caseSet.models | Where-Object { $_.modelId -ceq 'qwen3.5-4b-iq4-xs' })
     Check ($caseHit.Count -eq 1 -and $caseHit[0].approved -eq $false) 'approved match is case-sensitive: an approved modelId differing only in case leaves the model unapproved'
 
+    # ---- approved-only models: with a list, every approved catalog model that no recipe or tier picks follows the tier entries, smallest first
+    function Get-SetIds($Set) { @($Set.models | ForEach-Object { $_.modelId }) }
+    function Get-ApprovedSet([string]$ListPath) {
+        & $module { param($c,$r,$g,$t,$a) Get-FastLlmPreloadSet -CatalogPath $c -RecipesPath $r -GpuVariantsPath $g -TiersPath $t -ApprovedModelsPath $a } $catalog $recipes $variants $tiersPath $ListPath
+    }
+    Check (((Get-SetIds $set) -join ',') -eq $expected) 'approved-only: without a list the set is exactly the golden order'
+    $checkedIds=@(Get-SetIds $checked)
+    Check (($checkedIds -join ',') -eq ($expected+',qwen3.5-9b-q4-k-m')) "approved-only: the fixture list appends qwen3.5-9b-q4-k-m after every recipe/tier entry, earlier entries keep their position (observed: $($checkedIds -join ','))"
+    $q4=@($checked.models | Where-Object { $_.modelId -eq 'qwen3.5-9b-q4-k-m' })[0]
+    Check ((@($q4.reasons) -join ',') -eq 'approved' -and @($q4.tiers).Count -eq 0 -and $q4.approved -eq $true) 'approved-only: the added entry has reason approved, no tiers, approved true'
+    Check ((@($checked.models[0].reasons) -join ',') -eq 'recipe,tier' -and (@($q4.PSObject.Properties.Name | Sort-Object) -join ',') -eq (@($iq4.PSObject.Properties.Name | Sort-Object) -join ',')) 'approved-only: recipe/tier reasons unchanged and the entry shape matches'
+
+    $bigListPath=Join-Path $work 'approved-extra.json'
+    $bigList=Get-Content -LiteralPath $approved -Raw | ConvertFrom-Json
+    $catDocFull=Get-Content -LiteralPath $catalog -Raw | ConvertFrom-Json
+    $bigRows=@()
+    foreach($id in @('qwen3.8-27b-q8-0','qwen3.8-27b-ud-q5-k-m','qwen3.8-27b-ud-iq3-xxs')){
+        $bigRows += [pscustomobject]@{modelId=$id;revision=[string]@($catDocFull.models | Where-Object { $_.id -eq $id })[0].revision}
+    }
+    $bigList.models=@($bigList.models)+$bigRows
+    Write-Utf8 $bigListPath ($bigList | ConvertTo-Json -Depth 6)
+    $bigSet=Get-ApprovedSet $bigListPath
+    $tail=@(Get-SetIds $bigSet | Select-Object -Skip 7)
+    Check (($tail -join ',') -eq 'qwen3.5-9b-q4-k-m,qwen3.8-27b-ud-iq3-xxs,qwen3.8-27b-ud-q5-k-m,qwen3.8-27b-q8-0') "approved-only: extra approved models come out smallest first, listing order ignored (observed: $($tail -join ','))"
+
+    $revList=Join-Path $work 'approved-extra-wrongrev.json'
+    $revDoc=Get-Content -LiteralPath $bigListPath -Raw | ConvertFrom-Json
+    @($revDoc.models | Where-Object { $_.modelId -eq 'qwen3.5-9b-q4-k-m' })[0].revision='0000000000000000000000000000000000000000'
+    Write-Utf8 $revList ($revDoc | ConvertTo-Json -Depth 6)
+    $revIds=@(Get-SetIds (Get-ApprovedSet $revList))
+    Check ($revIds -notcontains 'qwen3.5-9b-q4-k-m' -and $revIds -contains 'qwen3.8-27b-q8-0') 'approved-only: an approved entry with a wrong revision is not added'
+
+    $ghostList=Join-Path $work 'approved-extra-ghost.json'
+    $ghostDoc=Get-Content -LiteralPath $approved -Raw | ConvertFrom-Json
+    $ghostDoc.models=@($ghostDoc.models)+[pscustomobject]@{modelId='no-such-model';revision='abc'}
+    Write-Utf8 $ghostList ($ghostDoc | ConvertTo-Json -Depth 6)
+    $ghostIds=@(Get-SetIds (Get-ApprovedSet $ghostList))
+    Check (($ghostIds -join ',') -eq ($expected+',qwen3.5-9b-q4-k-m')) 'approved-only: an approved entry that is not in the catalog is skipped without an error'
+
     # ---- planner: -PreferInstalledModels (bench-only)
     # Placeholder model files are tiny files, not sparse (NTFS has no sparse default), so the planner tests use a copy of the catalog whose model sizes are tiny (picks depend on requiredFreeVramMiB, not sizeBytes).
     $smallDir=Join-Path $work 'small-catalog'
@@ -241,7 +280,7 @@ try {
     $m=Rows $rows 'model'
     Check ((Row $rows 'qwen3.8-27b-ud-q6-k-m').action -eq 'awaiting-approval') 'preload installs only approved: unlisted model awaits approval'
     Check (-not ($c1 -contains 'qwen3.8-27b-ud-q6-k-m')) 'preload installs only approved: seam never called for it'
-    Check (@($m | Where-Object { $_.id -ne 'qwen3.8-27b-ud-q6-k-m' -and $_.action -ne 'installed' }).Count -eq 0 -and $c1.Count -eq 6) 'preload installs only approved: the others are installed'
+    Check (@($m | Where-Object { $_.id -ne 'qwen3.8-27b-ud-q6-k-m' -and $_.action -ne 'installed' }).Count -eq 0 -and $c1.Count -eq 7) 'preload installs only approved: the others are installed'
     Check ((@($rows[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq $rowProps) 'row property names match the contract'
     Remove-Item -LiteralPath $r1 -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -258,7 +297,7 @@ try {
     # present is skipped
     $r3=New-InstallRoot @('qwen3.5-4b-iq4-xs'); $c3=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r3 @{Installer=(New-InstallerSeam $r3 $c3);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
-    Check ((Row $rows 'qwen3.5-4b-iq4-xs').action -eq 'present' -and -not ($c3 -contains 'qwen3.5-4b-iq4-xs') -and $c3.Count -eq 6) "present is skipped (observed: $((Row $rows 'qwen3.5-4b-iq4-xs').action); calls: $($c3 -join ','))"
+    Check ((Row $rows 'qwen3.5-4b-iq4-xs').action -eq 'present' -and -not ($c3 -contains 'qwen3.5-4b-iq4-xs') -and $c3.Count -eq 7) "present is skipped (observed: $((Row $rows 'qwen3.5-4b-iq4-xs').action); calls: $($c3 -join ','))"
     Remove-Item -LiteralPath $r3 -Recurse -Force -ErrorAction SilentlyContinue
 
     # -Next installs exactly one
@@ -268,12 +307,27 @@ try {
     Check ($rows[-1].action -eq 'installed') 'next stops after the first install'
     Remove-Item -LiteralPath $r4 -Recurse -Force -ErrorAction SilentlyContinue
 
+    # -Next picks recipe/tier models first, then the approved-only model once every recipe/tier model is installed
+    $r4b=New-InstallRoot @(); $c4b=New-Object System.Collections.ArrayList
+    $rows=Invoke-PreloadSet $r4b @{Next=$true;Installer=(New-InstallerSeam $r4b $c4b);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
+    Check (($c4b -join ',') -eq 'qwen3.8-27b-ud-iq4-xs') "next with recipe/tier models missing picks the first of those (observed: $($c4b -join ','))"
+    Remove-Item -LiteralPath $r4b -Recurse -Force -ErrorAction SilentlyContinue
+    $r4c=New-InstallRoot @($ids); $c4c=New-Object System.Collections.ArrayList
+    $rows=Invoke-PreloadSet $r4c @{Next=$true;Installer=(New-InstallerSeam $r4c $c4c);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
+    Check (($c4c -join ',') -eq 'qwen3.5-9b-q4-k-m' -and (Row $rows 'qwen3.5-9b-q4-k-m').action -eq 'installed') "next with every recipe/tier model present installs the approved-only model (observed: $($c4c -join ','))"
+    Remove-Item -LiteralPath $r4c -Recurse -Force -ErrorAction SilentlyContinue
+    # a full run installs the approved-only model last
+    $r4d=New-InstallRoot @(); $c4d=New-Object System.Collections.ArrayList
+    $rows=Invoke-PreloadSet $r4d @{Installer=(New-InstallerSeam $r4d $c4d);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
+    Check ($c4d.Count -eq 8 -and $c4d[-1] -eq 'qwen3.5-9b-q4-k-m') 'a full run installs the approved-only model after every recipe/tier model'
+    Remove-Item -LiteralPath $r4d -Recurse -Force -ErrorAction SilentlyContinue
+
     # components need -AcceptLicense AND a listed id+version
     $r5=New-InstallRoot @(); $c5=New-Object System.Collections.ArrayList; $cc5=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r5 @{Installer=(New-InstallerSeam $r5 $c5);ComponentInstaller=(New-ComponentSeam $cc5)}
     $comp=Rows $rows 'component'
     Check ($comp.Count -eq 2 -and @($comp | Where-Object { $_.action -ne 'awaiting-component-licence' }).Count -eq 0 -and $cc5.Count -eq 0) 'components need AcceptLicense: awaiting-component-licence, seam not called'
-    Check (@(Rows $rows 'model' | Where-Object { $_.action -eq 'installed' }).Count -eq 7) 'components need AcceptLicense: the models still install'
+    Check (@(Rows $rows 'model' | Where-Object { $_.action -eq 'installed' }).Count -eq 8) 'components need AcceptLicense: the models still install'
     Remove-Item -LiteralPath $r5 -Recurse -Force -ErrorAction SilentlyContinue
     $r6=New-InstallRoot @(); $c6=New-Object System.Collections.ArrayList; $cc6=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r6 @{AcceptLicense=$true;Installer=(New-InstallerSeam $r6 $c6);ComponentInstaller=(New-ComponentSeam $cc6)}
@@ -379,6 +433,8 @@ try {
     Check ($s4.present -eq $true -and $s4.sizeOk -eq $true -and $s4.consent -eq $false -and $s4.reason -eq 'consent-missing') 'status: a receipt-less file is consent-missing'
     $s9=@($status.models | Where-Object { $_.modelId -eq 'qwen3.5-9b-q6-k' })[0]
     Check ($s9.present -eq $false -and $s9.reason -eq 'missing' -and $s9.approved -eq $true) 'status: an absent approved model is missing'
+    $sq4=@($status.models | Where-Object { $_.modelId -eq 'qwen3.5-9b-q4-k-m' })
+    Check ($sq4.Count -eq 1 -and $sq4[0].present -eq $false -and $sq4[0].sizeOk -eq $false -and $sq4[0].consent -eq $false -and $sq4[0].approved -eq $true -and $sq4[0].reason -eq 'missing' -and @($sq4[0].tiers).Count -eq 0 -and $status.models[-1].modelId -eq 'qwen3.5-9b-q4-k-m') 'status: an approved-only model is listed last and missing on an empty install'
     Check ((@($status.components | ForEach-Object { $_.id }) -join ',') -eq 'amd-rocm-gfx1100-10.0.0,llama.cpp-hip-b11658' -and @($status.components | Where-Object { $_.present -or $_.verified }).Count -eq 0) 'status: components cover the recommended engine chains, none present'
     Remove-Item -LiteralPath $sr -Recurse -Force -ErrorAction SilentlyContinue
     $sr2=New-InstallRoot @('qwen3.5-4b-iq4-xs','qwen3.5-9b-q6-k')
