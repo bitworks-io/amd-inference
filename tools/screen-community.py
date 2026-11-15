@@ -8,8 +8,11 @@ or a plain list / {"records": [...]} of records carrying the bitworks.amd-commun
 (exactModel, engine, settings, hostSummary) and a derived submissionComplete.
 
 Output is a JSON list with one entry per record: id, variant, gpuCount, compellingOnPaper
-(compelling, genGainPct, promptGainPct, baseline), candidate, reasons[], and for candidates
-the components to pin. Prints "candidates=N records=M". Exit 0 ok, 1 unreadable or invalid input,
+(compelling, genGainPct, promptGainPct, baseline), candidate, reasons[], blockers[], approvalsNeeded[], and for candidates
+the components to pin. blockers[] is every reason the record cannot ship as claimed: the reasons[] codes plus
+model-not-in-catalog, settings-not-expressible:<name> (batch-size, flash-attention, parallel, speculation) and
+variant-not-in-lab. approvalsNeeded[] lists the decisions a shipped recipe still needs, from model-licence-and-fit,
+engine-component, lab-reproduction and submitter-permission. Prints "candidates=N records=M". Exit 0 ok, 1 unreadable or invalid input,
 2 usage error.
 
 Compelling: >=15% generation over the best bitworks generation OR >=50% prompt tok/s over the best bitworks prompt rate for the
@@ -25,6 +28,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Settings a recipe cannot express (it carries only context, one slot, cache types and the fit target), by command-line flag.
+SETTING_FLAGS = {
+    "-b": "batch-size", "--batch-size": "batch-size", "-ub": "batch-size", "--ubatch-size": "batch-size",
+    "-fa": "flash-attention", "--flash-attn": "flash-attention", "--flash-attention": "flash-attention",
+    "-np": "parallel", "--parallel": "parallel",
+    "-md": "speculation", "--model-draft": "speculation", "--draft": "speculation", "--draft-max": "speculation",
+    "--draft-min": "speculation", "--draft-p-min": "speculation", "--spec-type": "speculation",
+}
 GEN_PCT, PROMPT_PCT = 15.0, 50.0
 # Fallback when config/gpu-variants.json has no matching key.
 VARIANT_MAP = {"rx-7900-xt-20gb": "rx-7900-xt", "rx-7900-xtx-24gb": "rx-7900-xtx"}
@@ -78,6 +89,58 @@ def hip_chain_exists(components, arch):
                 if (req.get("id") if isinstance(req, dict) else req) in runtimes:
                     return True
     return False
+
+
+def _flag_tokens(text):
+    """Split a flags string into (flag, value) pairs; --flag=value is split on the first '='."""
+    tokens = []
+    for tok in S(text).split():
+        if tok.startswith("-") and "=" in tok:
+            tokens.extend(tok.split("=", 1))
+        else:
+            tokens.append(tok)
+    pairs = []
+    for i, tok in enumerate(tokens):
+        if tok.startswith("-"):
+            nxt = tokens[i + 1] if i + 1 < len(tokens) and not tokens[i + 1].startswith("-") else ""
+            pairs.append((tok.lower(), nxt))
+    return pairs
+
+
+def inexpressible_settings(rec, n):
+    """Names (batch-size, flash-attention, parallel, speculation) of settings a recipe cannot carry, in a fixed order."""
+    st = D(rec.get("settings"))
+    found = set()
+    for flag, value in _flag_tokens(st.get("flags")):
+        name = SETTING_FLAGS.get(flag)
+        if name == "flash-attention":
+            if S(value).lower() != "auto":
+                found.add(name)  # on, off or a bare flag all force the setting
+        elif name == "parallel":
+            if _int(value) is None or _int(value) > 1:
+                found.add(name)
+        elif name:
+            found.add(name)
+    if any(_num(st.get(k)) is not None for k in ("batchSize", "ubatchSize")):
+        found.add("batch-size")
+    fa = st.get("flashAttention")
+    if fa is True or (isinstance(fa, str) and S(fa).lower() not in ("", "auto")):
+        found.add("flash-attention")
+    for key in ("parallel", "slots"):
+        slots = _int(st.get(key))
+        if slots is not None and slots > 1:
+            found.add("parallel")
+    if n["draft"]:
+        found.add("speculation")
+    return [name for name in ("batch-size", "flash-attention", "parallel", "speculation") if name in found]
+
+
+def model_in_catalog(n, catalog):
+    """The record's model is a catalog model, by hash or (with no hash) by exact file name."""
+    models = [m for m in D(catalog).get("models", []) if isinstance(m, dict)]
+    if n["sha256"]:
+        return any(S(m.get("sha256")).lower() == n["sha256"].lower() for m in models)
+    return bool(n["fileName"]) and any(S(m.get("file")) == n["fileName"] for m in models)
 
 
 def best_by_variant(recipes):
@@ -233,7 +296,10 @@ def submission_complete(rec, n):
     return rec.get("submissionComplete") is True
 
 
-def screen(doc, recipes, components, gpu_variants):
+def screen(doc, recipes, components, gpu_variants, catalog=None):
+    if catalog is None:
+        catalog = load(ROOT / "config" / "catalog.json")
+    lab_variants = {v["key"] for v in D(gpu_variants).get("variants", []) if isinstance(v, dict) and "key" in v}
     best = best_by_variant(recipes)
     peers_by_variant = entries_by_variant(recipes)
     engines = [c for c in components.get("components", []) if c.get("kind") == "engine"]
@@ -252,7 +318,8 @@ def screen(doc, recipes, components, gpu_variants):
                         "gpuCount": None, "generationTokS": None, "promptTokS": None,
                         "compellingOnPaper": {"compelling": False, "genGainPct": None, "promptGainPct": None,
                                               "baseline": None, "baselineGeneration": None, "baselinePrompt": None},
-                        "candidate": False, "reasons": ["unparseable-record"]})
+                        "candidate": False, "reasons": ["unparseable-record"],
+                        "blockers": ["unparseable-record"], "approvalsNeeded": []})
     # Fastest single-stream record per (variant, count) when no Bitworks entry exists.
     fastest = {}
     for rec, n, var, gen, prm, agg in rows:
@@ -308,12 +375,25 @@ def screen(doc, recipes, components, gpu_variants):
             if not comp["compelling"]:
                 reasons.append("not-compelling")
         candidate = comp["compelling"] and not reasons
+        # Everything that stops the record shipping as claimed, not only the first thing found.
+        blockers = list(reasons)
+        approvals = []
+        if not model_in_catalog(n, catalog):
+            blockers.append("model-not-in-catalog")
+            approvals.append("model-licence-and-fit")
+        blockers.extend("settings-not-expressible:" + name for name in inexpressible_settings(rec, n))
+        if var not in lab_variants:
+            blockers.append("variant-not-in-lab")
+        match = next((c for c in engines if c.get("version") == n["engineBuild"]
+                      and D(c.get("platform")).get("backend") == n["backend"]), None)
+        if n["isLlama"] and n["engineBuild"] and match is None:
+            approvals.append("engine-component")
+        approvals.extend(["lab-reproduction", "submitter-permission"])
         row = {"id": rec.get("id"), "variant": var, "gpuCount": n["gpuCount"],
                "generationTokS": gen, "promptTokS": prm,
-               "compellingOnPaper": comp, "candidate": candidate, "reasons": reasons}
+               "compellingOnPaper": comp, "candidate": candidate, "reasons": reasons,
+               "blockers": blockers, "approvalsNeeded": approvals}
         if candidate:
-            match = next((c for c in engines if c.get("version") == n["engineBuild"]
-                          and D(c.get("platform")).get("backend") == n["backend"]), None)
             row["pin"] = {
                 "engine": {"name": "llama.cpp", "build": n["engineBuild"], "backend": n["backend"],
                            "componentId": match["id"] if match else None,

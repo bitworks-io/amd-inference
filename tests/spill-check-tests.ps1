@@ -235,6 +235,71 @@ Check ($known -ceq '000000000000ab12') 'a LUID the device binding already produc
 $hip = InModule { Get-FastLlmSpillCheckLuid -Plan ([pscustomobject]@{ backend = 'hip' }) -InstallRoot 'x' -KnownLuid $null }
 Check ($null -eq $hip) 'a HIP run has no Vulkan LUID, so the state is unknown'
 
+# ---- HIP: the adapter is found by the server process's own memory (fake enumerator and reader) ----
+$hipPlan = [pscustomobject]@{ backend = 'hip' }
+$GiBytes = [uint64]1073741824
+$adapterA = '0000000000001234'
+$adapterB = '0000000000005678'
+function HipReader($map) { { param($l, $p, $b) $e = $map[$l]; [pscustomobject]@{ SharedBytes = [uint64]$e[1]; DedicatedBytes = [uint64]$e[0]; Error = $null } }.GetNewClosure() }
+function HipAtReady($luids, $reader) {
+    $enum = { $luids }.GetNewClosure()
+    InModule { param($pl, $p, $e, $rd) Invoke-FastLlmSpillCheckAtReady -Plan $pl -InstallRoot 'x' -KnownLuid $null -BarDecision $null -Process $p -Reader $rd -Enumerator $e } @($hipPlan, $self, $enum, $reader)
+}
+$step = HipAtReady @($adapterA, $adapterB) (HipReader @{ $adapterA = @((64 * $MiB), 0); $adapterB = @((9 * $GiBytes), (49 * $MiB)) })
+Check ($step.spillCheck.state -ceq 'ok' -and $step.luid -ceq $adapterB -and $step.spillCheck.sharedMiB -eq 49 -and $step.event -ceq 'spill-check') 'a HIP plan with one adapter over 1 GiB reads ok on that adapter'
+$step = HipAtReady @($adapterA, $adapterB) (HipReader @{ $adapterA = @((64 * $MiB), 0); $adapterB = @((9 * $GiBytes), (256 * $MiB)) })
+Check ($step.spillCheck.state -ceq 'ok') 'a HIP plan with exactly the floor shared is ok'
+$step = HipAtReady @($adapterA, $adapterB) (HipReader @{ $adapterA = @((64 * $MiB), 0); $adapterB = @((9 * $GiBytes), (257 * $MiB)) })
+Check ($step.spillCheck.state -ceq 'spilled' -and $step.luid -ceq $adapterB) 'a HIP plan reads spilled when shared is above the floor'
+$step = HipAtReady @($adapterA) (HipReader @{ $adapterA = @((512 * $MiB), (9 * $GiBytes)) })
+Check ($step.spillCheck.state -ceq 'spilled' -and $step.luid -ceq $adapterA -and $step.spillCheck.dedicatedMiB -eq 512) 'a heavily spilled HIP run (small dedicated, shared over 1 GiB) is still identified and reads spilled'
+$step = HipAtReady @($adapterA, $adapterB) (HipReader @{ $adapterA = @((2 * $GiBytes), 0); $adapterB = @((3 * $GiBytes), 0) })
+Check ($step.spillCheck.state -ceq 'unknown' -and $step.luid -ceq '' -and $step.spillCheck.error -ceq 'no-luid' -and (InModule { param($sc) Get-FastLlmSpillCheckText -SpillCheck $sc } @($step.spillCheck)) -ceq 'GPU memory check unavailable on this system.') 'two candidate adapters stay unknown with today''s text'
+$step = HipAtReady @($adapterA, $adapterB) (HipReader @{ $adapterA = @((64 * $MiB), 0); $adapterB = @((512 * $MiB), 0) })
+Check ($step.spillCheck.state -ceq 'unknown' -and $step.luid -ceq '') 'no adapter over 1 GiB stays unknown'
+$step = HipAtReady @() (HipReader @{})
+Check ($step.spillCheck.state -ceq 'unknown') 'no adapters stays unknown'
+Check (($step.spillCheck.PSObject.Properties.Name -join ',') -ceq 'state,sharedMiB,dedicatedMiB,floorMiB,checkedAtUtc,error') 'a HIP status block has exactly the same fields as before'
+$luidOnly = InModule { param($pl, $p, $e, $rd) Get-FastLlmSpillCheckLuid -Plan $pl -InstallRoot 'x' -KnownLuid $null -Process $p -Reader $rd -Enumerator $e } @($hipPlan, $self, { @('0000000000001234') }, (HipReader @{ '0000000000001234' = @((2 * $GiBytes), 0) }))
+Check ($luidOnly -ceq '0000000000001234') 'the LUID function returns the selected adapter for a non-Vulkan plan'
+$known2 = InModule { param($pl, $p, $e) Get-FastLlmSpillCheckLuid -Plan $pl -InstallRoot 'x' -KnownLuid '000000000000AB12' -Process $p -Enumerator $e } @($hipPlan, $self, { throw 'enumerator must not run for a known LUID' })
+Check ($known2 -ceq '000000000000ab12') 'a known LUID wins over the process-memory rule'
+
+# A Vulkan plan takes exactly the old join path and never the enumerator (spy).
+$spy = InModule {
+    param($p)
+    $savedOs = $env:OS
+    $env:OS = 'Windows_NT'
+    $original = (Get-Command Invoke-FastLlmDeviceBinding).ScriptBlock
+    $script:spyBindingCalls = 0
+    $script:spyEnumCalls = 0
+    function script:Invoke-FastLlmDeviceBinding { param($Plan, $InstallRoot, $BarDecision, $Mode) $script:spyBindingCalls++; [pscustomobject]@{ luid = '000000000000c780' } }
+    try {
+        $result = Get-FastLlmSpillCheckLuid -Plan ([pscustomobject]@{ backend = 'vulkan' }) -InstallRoot 'x' -KnownLuid $null -Process $p -Enumerator { $script:spyEnumCalls++; @('0000000000001234') } -Reader { param($l, $q, $b) [pscustomobject]@{ SharedBytes = [uint64]0; DedicatedBytes = [uint64](2 * 1GB); Error = $null } }
+        [pscustomobject]@{ luid = $result; binding = $script:spyBindingCalls; enumerator = $script:spyEnumCalls }
+    }
+    finally { Set-Item -Path Function:\script:Invoke-FastLlmDeviceBinding -Value $original; $env:OS = $savedOs }
+} @($self)
+Check ($spy.luid -ceq '000000000000c780' -and $spy.binding -eq 1 -and $spy.enumerator -eq 0) 'a Vulkan plan uses the join and never calls the adapter enumerator'
+
+# A failed read on the cached adapter re-identifies once per check, and does not loop.
+$tickPrev = (InModule { param($s, $n) ConvertTo-FastLlmSpillCheck -Sample $s -Now $n } @((Sample 10), $t0))
+$script:reidCalls = 0
+$goodReid = { $script:reidCalls++; [pscustomobject]@{ luid = '0000000000005678'; reason = 'selected'; sample = [pscustomobject]@{ SharedBytes = [uint64](20 * 1048576); DedicatedBytes = [uint64](9000 * 1048576); Error = $null } } }
+$failingReader = { param($l, $p, $b) [pscustomobject]@{ SharedBytes = $null; DedicatedBytes = $null; Error = 'query-adapter-ntstatus-c0000022' } }
+$tick = InModule { param($pv, $n, $l, $p, $rd, $re) Invoke-FastLlmSpillCheckTick -Previous $pv -Now $n -NextDueUtc $n -Luid $l -Process $p -Reader $rd -Reidentify $re } @($tickPrev, $t0, $luid, $self, $failingReader, $goodReid)
+Check ($script:reidCalls -eq 1 -and $tick.spillCheck.state -ceq 'ok' -and $tick.spillCheck.sharedMiB -eq 20 -and $tick.luid -ceq '0000000000005678') 'a failed cached read re-identifies once and carries the new adapter forward'
+$script:reidCalls = 0
+$badReid = { $script:reidCalls++; [pscustomobject]@{ luid = $null; reason = 'adapter-ambiguous'; sample = $null } }
+$tick = InModule { param($pv, $n, $l, $p, $rd, $re) Invoke-FastLlmSpillCheckTick -Previous $pv -Now $n -NextDueUtc $n -Luid $l -Process $p -Reader $rd -Reidentify $re } @($tickPrev, $t0, $luid, $self, $failingReader, $badReid)
+Check ($script:reidCalls -eq 1 -and $tick.spillCheck.state -ceq 'unknown' -and $tick.event -ceq 'spill-check-changed') 'when re-identifying fails too, the check is unknown, after exactly one attempt'
+$script:reidCalls = 0
+$tick = InModule { param($pv, $n, $l, $p, $rd, $re) Invoke-FastLlmSpillCheckTick -Previous $pv -Now $n -NextDueUtc $n -Luid $l -Process $p -Reader $rd -Reidentify $re } @($tickPrev, $t0, $luid, $self, $reader, $goodReid)
+Check ($script:reidCalls -eq 0 -and $tick.spillCheck.state -ceq 'ok' -and $null -eq $tick.PSObject.Properties['luid']) 'a successful cached read never re-identifies'
+$tick = InModule { param($pv, $n, $l, $p, $rd) Invoke-FastLlmSpillCheckTick -Previous $pv -Now $n -NextDueUtc $n -Luid $l -Process $p -Reader $rd } @($tickPrev, $t0, $luid, $self, $failingReader)
+Check ($tick.spillCheck.state -ceq 'unknown' -and $null -eq $tick.PSObject.Properties['luid']) 'without a re-identify step (the Vulkan path) a failed read is unknown, exactly as before'
+Check ($readyText -match 'Reidentify' -and $readyText.Contains('Find-FastLlmProcessAdapter')) 'the supervisor passes a re-identify step for a non-Vulkan plan'
+
 
 # ---- the window: status line text (foreground Ready and an attached background run) ----
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')

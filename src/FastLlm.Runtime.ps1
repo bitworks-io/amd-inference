@@ -1100,13 +1100,20 @@ function Invoke-FastLlmSupervisedServer {
             $idleNextPoll = $idleNow.AddSeconds($script:FastLlmIdlePollSeconds)
         }
         $spillNextCheck = (Get-Date).ToUniversalTime().AddSeconds([int] $script:FastLlmSpillCheckIntervalSeconds)
+        # A non-Vulkan plan found its adapter by the server process's memory; a failed read on it re-identifies once (inside the loop read budget).
+        $spillReidentify = $null
+        if (([string] (Get-FastLlmSpillValue $Plan 'backend')) -ine 'vulkan' -and -not $spillBindingLuid) {
+            $spillProcess = $hostProcess.Process
+            $spillReidentify = { Find-FastLlmProcessAdapter -Process $spillProcess -BudgetMs ([int] $script:FastLlmSpillLoopReadBudgetMs) }.GetNewClosure()
+        }
         while (-not $hostProcess.Process.WaitForExit(250)) {
             if (Test-Path -LiteralPath $stopPath) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
             # The GPU memory re-check, every 60 s. The read is time-boxed (200 ms), so the stop file above is still seen within one pass.
             # Only a change of state is logged and printed; the status always carries the latest numbers.
-            $spillTick = Invoke-FastLlmSpillCheckTick -Previous $state.spillCheck -Now (Get-Date).ToUniversalTime() -NextDueUtc $spillNextCheck -Luid $spillLuid -Process $hostProcess.Process
+            $spillTick = Invoke-FastLlmSpillCheckTick -Previous $state.spillCheck -Now (Get-Date).ToUniversalTime() -NextDueUtc $spillNextCheck -Luid $spillLuid -Process $hostProcess.Process -Reidentify $spillReidentify
             if ($null -ne $spillTick) {
                 $spillNextCheck = $spillTick.nextDueUtc
+                if ($null -ne $spillTick.PSObject.Properties['luid']) { $spillLuid = [string] $spillTick.luid }
                 $state.spillCheck = $spillTick.spillCheck
                 if ($spillTick.event -ceq 'spill-check-changed') {
                     Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'spill-check-changed' -Fields { Get-FastLlmSpillCheckEventFields -Step $spillTick }
