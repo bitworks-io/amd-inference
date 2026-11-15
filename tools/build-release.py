@@ -31,6 +31,10 @@ TREES = ("src", "tools", "config", "licenses")
 PRODUCT_TOOLS_FILE = "tools/product-tools.json"             # the explicit allowlist of tools/ files that ship
 PRODUCT_TOOLS_SCHEMA = "fastllm.product-tools.v1"
 SKIP = re.compile(r"(^|/)(__pycache__|bin|obj|\.[^/]*)(/|$)")
+POLICY_FILE = "config/release-policy.json"                   # signed with the tree; the installed copy names the oldest release a reinstall may go back to
+POLICY_SCHEMA = "bitworks.fastllm-release-policy/v1"
+POLICY_KEYS = frozenset({"schema", "dataFormat", "rollbackFloor", "rollbackFloorReason"})
+POLICY_REASONS = ("security", "data")
 VERSION_FILE = "FASTLLM-VERSION.json"
 RESERVED = frozenset({VERSION_FILE, "MANIFEST.json", "RELEASE.json", "FastLLM.cat"})
 
@@ -127,6 +131,31 @@ def load_product_tools(root):
     return sorted(names)
 
 
+def validate_release_policy(root, version):
+    """The release policy file must exist and be well formed; it ships in the signed tree like every other file."""
+    path = os.path.join(root, *POLICY_FILE.split("/"))
+    try:
+        with open(path, "rb") as handle:
+            doc = json.loads(handle.read().decode("utf-8"))
+    except (OSError, ValueError):
+        raise BuildError("the release policy file is missing or unreadable: " + POLICY_FILE)
+    if not isinstance(doc, dict) or set(doc) != POLICY_KEYS or doc["schema"] != POLICY_SCHEMA:
+        raise BuildError("the release policy file must carry exactly schema %s, dataFormat, rollbackFloor and rollbackFloorReason" % POLICY_SCHEMA)
+    data_format = doc["dataFormat"]
+    if isinstance(data_format, bool) or not isinstance(data_format, int) or data_format < 1:
+        raise BuildError("the release policy dataFormat must be a whole number of 1 or more")
+    floor, reason = doc["rollbackFloor"], doc["rollbackFloorReason"]
+    if (floor is None) != (reason is None):
+        raise BuildError("the release policy rollbackFloor and rollbackFloorReason must be set together or both null")
+    if floor is not None:
+        if not is_canonical_version(floor):
+            raise BuildError("the release policy rollbackFloor must be a canonical YYYY.MM.DD.N version or null")
+        if reason not in POLICY_REASONS:
+            raise BuildError("the release policy rollbackFloorReason must be security, data or null")
+        if tuple(int(n) for n in floor.split(".")) > tuple(int(n) for n in version.split(".")):
+            raise BuildError("the release policy rollbackFloor must not be newer than the release being built")
+
+
 def manifest_bytes(entries):
     return json.dumps({"schema": MANIFEST_SCHEMA, "fileCount": len(entries), "files": entries}, indent=1, sort_keys=True).encode()
 
@@ -139,6 +168,7 @@ def build(root, version, channel, min_agent_version, out_dir, built_at=None, rol
         raise BuildError("refusing to build a public package inside the private workspace (ops/ exists)")
     if os.path.exists(out_dir):
         raise BuildError("the output folder already exists")
+    validate_release_policy(root, version)
     files = collect(root)
     entries = [{"path": p, "bytes": len(b), "sha256": sha256_hex(b)} for p, b in sorted(files.items())]
     version_doc = canonical_json({"version": version, "builtAtUtc": built_at, "channel": channel,

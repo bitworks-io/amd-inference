@@ -74,6 +74,52 @@ function Read-FastLlmInstalledRelease {
     catch { return $null }
 }
 
+# Decide whether "reinstall the previous version" may be offered. Pure: it reads only its arguments, installs nothing, and is not
+# called by the update path (the refusal of non-newer releases in Invoke-FastLlmVerifiedUpdate is unchanged).
+#   -InstalledPolicy  the installed release's policy (dataFormat, rollbackFloor), or $null when it has none
+#   -InstalledVersion the installed release version
+#   -PreviousRecord   { version; policy } written by the installer for the release it replaced, or $null; policy is $null when
+#                     that release had no policy file
+#   -FreshLatest      the newest published version from a fresh check, or $null when offline or unreadable; it can only block, never pick the target
+#   -StoreRelease     { version; draft } for the target's own release tag in the project's release store, or $null when absent
+# Returns { decision = 'eligible'|'refused'; reason = <code>; target = <version or $null> }.
+function Get-FastLlmReinstallDecision {
+    param($InstalledPolicy, [string]$InstalledVersion, $PreviousRecord, [string]$FreshLatest, $StoreRelease)
+    $result = {
+        param([string]$Decision, [string]$Reason, $Target)
+        [pscustomobject]@{ decision = $Decision; reason = $Reason; target = $Target }
+    }
+    if ($null -eq $PreviousRecord) { return (& $result 'refused' 'no-previous-record' $null) }
+    $target = [string](Get-FastLlmUpdateProp $PreviousRecord 'version')
+    if ($null -eq (ConvertTo-FastLlmVersionNumbers $target) -or $null -eq (ConvertTo-FastLlmVersionNumbers $InstalledVersion)) { return (& $result 'refused' 'not-immediate-previous' $null) }
+    if ((Compare-FastLlmVersion $target $InstalledVersion) -ne -1) { return (& $result 'refused' 'not-immediate-previous' $null) }
+
+    # The floor comes from the INSTALLED policy only. A floor that cannot be read fails closed.
+    $floor = Get-FastLlmUpdateProp $InstalledPolicy 'rollbackFloor'
+    if ($null -ne $floor) {
+        if ($floor -isnot [string] -or $null -eq (ConvertTo-FastLlmVersionNumbers $floor)) { return (& $result 'refused' 'below-security-floor' $target) }
+        if ((Compare-FastLlmVersion $target $floor) -eq -1) { return (& $result 'refused' 'below-security-floor' $target) }
+    }
+
+    $installedFormat = Get-FastLlmUpdateProp $InstalledPolicy 'dataFormat'
+    $previousFormat = Get-FastLlmUpdateProp (Get-FastLlmUpdateProp $PreviousRecord 'policy') 'dataFormat'
+    foreach ($format in @($installedFormat, $previousFormat)) {
+        if (($format -isnot [int] -and $format -isnot [long]) -or $format -lt 1) { return (& $result 'refused' 'data-format-missing' $target) }
+    }
+    if ([long]$installedFormat -ne [long]$previousFormat) { return (& $result 'refused' 'data-format-differs' $target) }
+
+    # A fresh answer that is not a readable version is ignored: it never picks the target, and ignoring it only allows what the local rules allow.
+    if (-not [string]::IsNullOrEmpty($FreshLatest) -and $null -ne (ConvertTo-FastLlmVersionNumbers $FreshLatest)) {
+        if ((Compare-FastLlmVersion $FreshLatest $InstalledVersion) -eq 1) { return (& $result 'refused' 'newer-release-available' $target) }
+    }
+
+    if ($null -eq $StoreRelease) { return (& $result 'refused' 'not-in-release-store' $target) }
+    $storeDraft = Get-FastLlmUpdateProp $StoreRelease 'draft'
+    if ([string](Get-FastLlmUpdateProp $StoreRelease 'version') -cne $target -or $storeDraft -isnot [bool]) { return (& $result 'refused' 'not-in-release-store' $target) }
+    if ($storeDraft) { return (& $result 'refused' 'draft-release' $target) }
+    return (& $result 'eligible' 'eligible' $target)
+}
+
 function Read-FastLlmSettingsObject {
     param([string]$InstallRoot)
     $result = [ordered]@{}

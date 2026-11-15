@@ -1,0 +1,6 @@
+{
+  "schema": "bitworks.fastllm-release-policy/v1",
+  "dataFormat": 1,
+  "rollbackFloor": null,
+  "rollbackFloorReason": null
+}

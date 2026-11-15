@@ -82,6 +82,40 @@ begin
             FileExists(AddBackslash(Dir) + '_uninstall\unins000.dat');
 end;
 
+// Keep a copy of the release being replaced (its RELEASE.json and release policy) in the user's data folder, so a later,
+// explicit reinstall of exactly that version can be decided from facts the installer wrote. This also covers installs run by
+// hand. Best effort: it never fails or delays the install. With no installed release nothing is copied, and re-running the
+// same version leaves the existing record alone. It runs from PrepareToInstall, before Setup's install step and [InstallDelete].
+procedure RecordPreviousRelease;
+var
+  AppDir, RecordDir, OldRelease, OldPolicy, Text: String;
+  Raw: AnsiString;
+  SameVersion: Boolean;
+begin
+  AppDir := RemoveBackslash(ExpandConstant('{app}'));
+  OldRelease := AppDir + '\RELEASE.json';
+  OldPolicy := AppDir + '\config\release-policy.json';
+  if not FileExists(OldRelease) then Exit;
+  RecordDir := ExpandConstant('{localappdata}\Bitworks\FastLLM\state\previous-release');
+  try
+    SameVersion := False;
+    if LoadStringFromFile(OldRelease, Raw) then
+    begin
+      Text := String(Raw);
+      SameVersion := Pos('"{#AppVersion}"', Text) > 0;
+    end;
+    if SameVersion then Exit;
+    if DirExists(RecordDir) then DelTree(RecordDir, True, True, True);
+    if not ForceDirectories(RecordDir) then Exit;
+    if not FileCopy(OldRelease, RecordDir + '\RELEASE.json', False) then
+      DelTree(RecordDir, True, True, True)
+    else if FileExists(OldPolicy) then
+      FileCopy(OldPolicy, RecordDir + '\release-policy.json', False);
+  except
+    // A record that cannot be written means no reinstall is offered later; the install goes on.
+  end;
+end;
+
 // [InstallDelete] clears the top level of the app folder, so /DIR= must never point Setup at a folder that holds someone
 // else's files. An empty or missing folder and an existing FastLLM install (an upgrade) are fine. This runs before any
 // file is deleted.
@@ -93,7 +127,9 @@ begin
   Dir := RemoveBackslash(ExpandConstant('{app}'));
   if DirExists(Dir) and DirHasEntries(Dir) and not IsFastLlmInstall(Dir) then
     Result := 'FastLLM was not installed. The folder ' + Dir + ' already contains files that are not part of a FastLLM installation, ' +
-              'and installing there would delete them. Choose an empty or new folder, or leave the default.';
+              'and installing there would delete them. Choose an empty or new folder, or leave the default.'
+  else
+    RecordPreviousRelease;
 end;
 
 function DirSizeBytes(const Dir: String): Int64;
