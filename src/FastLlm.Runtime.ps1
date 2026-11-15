@@ -301,9 +301,11 @@ function ConvertFrom-FastLlmStartupDiagnostics {
 }
 
 function Invoke-FastLlmHttp {
-    param([string] $BaseUrl, [string] $Path, $Body, [int] $TimeoutMs=5000)
+    param([string] $BaseUrl, [string] $Path, $Body, [int] $TimeoutMs=5000, [string] $ApiKey)
     Initialize-FastLlmProcessHost
     $json = if ($null -ne $Body) { ConvertTo-Json -InputObject $Body -Depth 12 -Compress } else { $null }
+    # The key, when given, travels only as an Authorization header on this one loopback-only client; no other host is ever sent it.
+    if (-not [string]::IsNullOrEmpty($ApiKey)) { return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576, $ApiKey) }
     return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576)
 }
 
@@ -550,7 +552,7 @@ function Test-FastLlmHipEnvironmentName {
 
 function Get-FastLlmEngineEnvironment {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [string[]] $InheritedNames = @(), [switch] $VulkanBarMitigation, [string] $SystemRoot)
+    param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [string[]] $InheritedNames = @(), [switch] $VulkanBarMitigation, [string] $SystemRoot, [string] $ApiKey)
     $enginePath = [string] $Plan.enginePath
     # Split-Path as both call sites always used it. Off Windows (a pre-filter run on a Windows-style path) it would rewrite the separators, so cut by hand.
     if ($env:OS -eq 'Windows_NT') { $engineDirectory = Split-Path -Parent $enginePath }
@@ -587,13 +589,16 @@ function Get-FastLlmEngineEnvironment {
     }
     # The BAR variable is a Vulkan-lane switch: a HIP plan never receives it, whatever the caller asked for.
     if ($VulkanBarMitigation -and -not $isHip) { $set[$script:FastLlmVulkanBarMitigationVariable] = '1' }
+    # The optional run key reaches the server child through its environment only (never its arguments), after an inherited LLAMA_API_KEY was
+    # scrubbed above. The device probe never passes -ApiKey, so it never receives one.
+    if (-not [string]::IsNullOrEmpty($ApiKey)) { $set['LLAMA_API_KEY'] = $ApiKey }
     return [pscustomobject] [ordered] @{ remove = $remove.ToArray(); set = $set }
 }
 
 function Initialize-FastLlmEngineStartInfo {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo] $StartInfo, [Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [switch] $VulkanBarMitigation)
-    $environment = Get-FastLlmEngineEnvironment -Plan $Plan -Sandbox $Sandbox -InheritedNames @($StartInfo.EnvironmentVariables.Keys | ForEach-Object { [string] $_ }) -VulkanBarMitigation:$VulkanBarMitigation
+    param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo] $StartInfo, [Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [switch] $VulkanBarMitigation, [string] $ApiKey)
+    $environment = Get-FastLlmEngineEnvironment -Plan $Plan -Sandbox $Sandbox -InheritedNames @($StartInfo.EnvironmentVariables.Keys | ForEach-Object { [string] $_ }) -VulkanBarMitigation:$VulkanBarMitigation -ApiKey $ApiKey
     foreach ($name in $environment.remove) { $StartInfo.EnvironmentVariables.Remove($name) }
     foreach ($name in $environment.set.Keys) { $StartInfo.EnvironmentVariables[[string] $name] = [string] $environment.set[$name] }
 }
