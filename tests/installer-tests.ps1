@@ -127,6 +127,19 @@ Assert-True ($installed -eq $v2) "installed version is $installed"
 $diff = Compare-Object (Get-TreeList $tree2) (Get-TreeList $app @('_uninstall\'))
 Assert-True (-not $diff) "upgraded tree differs from the package: $($diff | Out-String)"
 
+# The installer recorded the release it replaced, bound to the release that replaced it
+$recordDir = Join-Path $data 'state\previous-release'
+function Get-RecordSnapshot { @(Get-ChildItem -LiteralPath $recordDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join ';' }
+Assert-True (Test-Path -LiteralPath $recordDir -PathType Container) 'no previous-release record after the v1 to v2 upgrade'
+Assert-True ((@(Get-ChildItem -LiteralPath $recordDir -File | Sort-Object Name | ForEach-Object { $_.Name }) -join ',') -ceq 'RELEASE.json,record.json,release-policy.json') 'the record must hold RELEASE.json, release-policy.json and record.json'
+Assert-True ((Get-Content -LiteralPath (Join-Path $recordDir 'RELEASE.json') -Raw | ConvertFrom-Json).version -ceq $v1) 'the record must hold v1 RELEASE.json'
+Assert-True ((Get-FileHash -LiteralPath (Join-Path $recordDir 'release-policy.json') -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath (Join-Path $tree1 'config\release-policy.json') -Algorithm SHA256).Hash) 'the record must hold the v1 release-policy.json'
+Assert-True ((Get-Content -LiteralPath (Join-Path $recordDir 'record.json') -Raw | ConvertFrom-Json).replacedBy -ceq $v2) 'the record must say it was replaced by v2'
+# Re-running the same version leaves the record unchanged
+$recordBefore = Get-RecordSnapshot
+Invoke-Silent (Build-Installer $v2 $tree2) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v2b.log")
+Assert-True ((Get-RecordSnapshot) -ceq $recordBefore) 're-running the same version changed the record'
+
 # 4. Silent uninstall keeps user data and removes the sign-in registration
 # A fresh profile may have neither key: create them only here, where the test seeds its own values.
 $null = New-Item -Path $runKey -Force
@@ -140,6 +153,13 @@ Assert-True (Test-Path -LiteralPath $marker) 'uninstall removed user data'
 Assert-True (-not (Test-SignInValue $runKey)) 'uninstall must remove the sign-in Run value'
 Assert-True (-not (Test-SignInValue $approvedKey)) 'uninstall must remove the StartupApproved value'
 Remove-Item -LiteralPath $marker -Force
+# A fresh install (no installed release) clears a stale record
+Assert-True (Test-Path -LiteralPath $recordDir) 'uninstall removed the record folder (it is user data)'
+Set-Content -LiteralPath (Join-Path $recordDir 'stale.txt') -Value 'stale' -Encoding ascii
+Invoke-Silent $setup1 @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v1-fresh.log")
+Assert-True (-not (Test-Path -LiteralPath $recordDir)) 'a fresh install must clear the stale record'
+Invoke-Silent (Join-Path $app '_uninstall\unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+Assert-True (Wait-Gone (Join-Path $app 'fast-llm.ps1')) 'app files remain 60 s after the second uninstall'
 # 5. /DIR= at a non-empty folder that is not a FastLLM install: Setup refuses and nothing in the folder is deleted
 $foreign = Join-Path $work 'foreign-folder'
 foreach ($sub in 'src', 'tools', 'config', 'licenses', 'other') { New-Item -ItemType Directory -Force -Path (Join-Path $foreign $sub) | Out-Null }

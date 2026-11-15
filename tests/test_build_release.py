@@ -90,7 +90,10 @@ class PublicBuilderTests(unittest.TestCase):
                dict(good, rollbackFloor="2026.10.19.1", rollbackFloorReason=None),
                dict(good, rollbackFloor=None, rollbackFloorReason="security"),
                dict(good, rollbackFloor="2026.10.19.1", rollbackFloorReason="other"),
-               dict(good, extra=1)]
+               dict(good, extra=1), dict(good, dataFormat=1000001),
+               dict(good, rollbackFloor="2026.10.19.1\n", rollbackFloorReason="security"),
+               dict(good, rollbackFloor="\u0662026.10.19.1", rollbackFloorReason="security"),
+               '{"schema": "bitworks.fastllm-release-policy/v1", "dataFormat": 1, "dataFormat": 2, "rollbackFloor": null, "rollbackFloorReason": null}']
         missing = dict(good)
         del missing["rollbackFloorReason"]
         bad.append(missing)
@@ -100,6 +103,22 @@ class PublicBuilderTests(unittest.TestCase):
                 self.write_policy(doc)
                 with self.assertRaisesRegex(br.BuildError, "release policy"):
                     self.build()
+
+    def test_accepts_the_largest_data_format(self):
+        self.write_policy(dict(POLICY, dataFormat=1000000))
+        self.build()
+
+    def test_refuses_a_symlinked_release_policy_that_the_package_would_skip(self):
+        target = self.root / "elsewhere.json"
+        target.write_text(json.dumps(POLICY))
+        link = self.root / "config" / "release-policy.json"
+        link.unlink()
+        try:
+            os.symlink(str(target), str(link))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available here")
+        with self.assertRaisesRegex(br.BuildError, "release policy"):
+            self.build()
 
     def test_accepts_a_floor_at_or_below_this_version(self):
         for floor, reason in (("2026.10.20.1", "security"), ("2026.10.19.3", "data")):
