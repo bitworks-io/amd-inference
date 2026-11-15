@@ -107,7 +107,10 @@ namespace FastLlmTests {
                             Console.Error.WriteLine("llama_prepare_model_devices: using device Vulkan1 (canary-time text) (0000:04:00.0) - 20000 MiB free");
                             body="{\"data\":[{\"id\":\"" + model + "\"}]}";
                         }
-                        if (path == "/props") body="{\"default_generation_settings\":{\"n_ctx\":"+(mode=="context"?context/2:context)+"},\"total_slots\":1}";
+                        // Slot modes: "slots2" serves two slots with the per-slot context (total / 2); "slots2-total" serves two slots but reports the total.
+                        int propsSlots = (mode == "slots2" || mode == "slots2-total") ? 2 : 1;
+                        int propsContext = (mode == "context" || mode == "slots2") ? context/2 : context;
+                        if (path == "/props") body="{\"default_generation_settings\":{\"n_ctx\":"+propsContext+"},\"total_slots\":"+propsSlots+"}";
                         if (path == "/tokenize") {
                             var ids = new StringBuilder("{\"tokens\":[");
                             for (int i = 0; i < 600; i++) { if (i > 0) ids.Append(','); ids.Append(i + 1); }

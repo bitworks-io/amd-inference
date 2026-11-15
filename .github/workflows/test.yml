@@ -195,6 +195,7 @@ jobs:
           .\tests\driver-guidance-view-tests.ps1
           .\tests\prerequisite-diagnostics-tests.ps1
           .\tests\default-arguments-tests.ps1
+          .\tests\optin-arguments-tests.ps1
           .\tests\serving-settings-tests.ps1
           .\tests\run-log-tests.ps1
           .\tests\connect-info-tests.ps1
@@ -225,6 +226,7 @@ jobs:
           .\tests\driver-guidance-view-tests.ps1
           .\tests\prerequisite-diagnostics-tests.ps1
           .\tests\default-arguments-tests.ps1
+          .\tests\optin-arguments-tests.ps1
           .\tests\serving-settings-tests.ps1
           .\tests\run-log-tests.ps1
           .\tests\connect-info-tests.ps1

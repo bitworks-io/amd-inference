@@ -144,6 +144,23 @@ try {
     $after=@(Get-ChildItem -LiteralPath $logs2 -Filter 'run-*.jsonl')
     Check ($after.Count -eq 20 -and @($after | Where-Object { $_.Name -like "*$id*" }).Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $logs2 ('run-20261101T000001Z-{0:x32}.jsonl' -f 1)))) 'rotation-keeps-20: a new run keeps itself and drops the oldest'
 
+    # ---- serving-profile start fields: profile and slots are allowlisted on the start event only, as closed values ----------------
+    $sp=New-Dir 'allow-serving-profile'
+    $spWritten=$false
+    try { $spWritten=[bool](Write-FastLlmRunLogEvent -InstallRoot $sp -RunId $id -Event 'start' -Fields @{ modelId='m'; profile='long'; slots=2 }) } catch { $spWritten=$false }
+    Check $spWritten 'serving-profile-fields: the start event accepts profile and slots'
+    $spLine=@(Read-LogLines (@(Get-ChildItem -LiteralPath (Get-LogDir $sp) -Filter 'run-*.jsonl')[0].FullName))[0]
+    Check ([string]$spLine.profile -ceq 'long' -and [int]$spLine.slots -eq 2 -and (@($spLine.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'event,modelId,profile,runId,slots,ts') 'serving-profile-fields: the line carries profile and slots and nothing else new'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $sp -RunId $id -Event 'phase' -Fields @{ phase='ready'; profile='long' } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $sp -RunId $id -Event 'end' -Fields @{ phase='stopped'; slots=2 } } 'run-log-field-not-allowed'
+    $startFieldsFor={ param($PlanObject) & $module { param($P) Get-FastLlmRunLogStartFields -Plan $P -State ([pscustomobject]@{ thinking='auto'; chatPage='off' }) -SelfTest $false } $PlanObject }
+    $plainFields=& $startFieldsFor ([pscustomobject]@{ model=[pscustomobject]@{ id='m'; contextSize=8192 }; backend='Vulkan'; engineVersion='b1'; endpoint='http://127.0.0.1:8080/v1' })
+    Check (-not $plainFields.Contains('profile') -and -not $plainFields.Contains('slots') -and (@($plainFields.Keys | Sort-Object) -join ',') -ceq 'backend,chatPage,contextSize,engineVersion,modelId,port,selfTest,thinking') 'serving-profile-fields: a plan without a serving profile has exactly the existing start fields'
+    $profileFields=& $startFieldsFor ([pscustomobject]@{ model=[pscustomobject]@{ id='m'; contextSize=65536 }; backend='Vulkan'; engineVersion='b1'; endpoint='http://127.0.0.1:8080/v1'; servingProfile=[pscustomobject]@{ id='long'; slots=2; contextPerSlot=32768 } })
+    Check ([string]$profileFields.profile -ceq 'long' -and $profileFields.slots -is [int] -and [int]$profileFields.slots -eq 2 -and [int]$profileFields.contextSize -eq 65536) 'serving-profile-fields: a plan with a serving profile adds profile and slots (contextSize stays the total)'
+    $oddFields=& $startFieldsFor ([pscustomobject]@{ model=[pscustomobject]@{ id='m'; contextSize=65536 }; backend='Vulkan'; engineVersion='b1'; endpoint='http://127.0.0.1:8080/v1'; servingProfile=[pscustomobject]@{ id='long FLLM-MARKER-PROMPT-7f3a'; slots='two' } })
+    Check (-not $oddFields.Contains('profile') -and -not $oddFields.Contains('slots')) 'serving-profile-fields: a profile id or slot count outside the closed values is not logged'
+
     # ---- file-cap-256k ---------------------------------------------------------------------------------------------------------
     $r=New-Dir 'cap'
     $capId='fedcba9876543210fedcba9876543210'
@@ -396,6 +413,12 @@ try {
     Check (($settingsNames -join ',') -ceq 'chatPage,componentLicenses,experimentalComponents,serverPort,thinking,updateChannel,updateCheck,vulkanBarMitigation') 'bundle settings: only the allowlisted keys are kept'
     Check ((@($settingsOut.componentLicenses.PSObject.Properties.Name) -join ',') -ceq 'mode' -and $settingsOut.componentLicenses.mode -ceq 'accept-automatically' -and $settingsOut.serverPort -eq 18181) 'bundle settings: componentLicenses keeps only the mode; accepted titles and hosts are dropped'
     Check ((Get-Content -LiteralPath (Join-Path $unz 'settings.json') -Raw) -notmatch 'secretKey|Some licence title|example.invalid') 'bundle settings: unknown keys and licence titles are absent'
+    $profileSettingsInstall=New-Dir 'bundle-serving-profile'
+    [IO.File]::WriteAllText((Join-Path $profileSettingsInstall 'settings.json'),'{"contextProfile":"long","slots":2,"serverPort":18181,"secretKey":"nope"}')
+    $profileSettings=Get-FastLlmSupportBundleSettings -InstallRoot $profileSettingsInstall
+    Check ((@($profileSettings.Keys | Sort-Object) -join ',') -ceq 'contextProfile,serverPort,slots' -and [string]$profileSettings['contextProfile'] -ceq 'long' -and [int]$profileSettings['slots'] -eq 2) 'bundle settings: contextProfile and slots are allowlisted; unknown keys are still dropped'
+    [IO.File]::WriteAllText((Join-Path $profileSettingsInstall 'settings.json'),'{"contextProfile":"long C:\\\\ProgramData\\\\Example\\\\secret","slots":"two words"}')
+    Check (@((Get-FastLlmSupportBundleSettings -InstallRoot $profileSettingsInstall).Keys).Count -eq 0) 'bundle settings: a contextProfile or slots value that is not a short plain token is dropped'
     $versionOut=[IO.File]::ReadAllText((Join-Path $unz 'version.json')) | ConvertFrom-Json
     Check ([string]$versionOut.release.version -ceq '2026.11.08.1' -and [string]$versionOut.release.channel -ceq 'stable') 'bundle version.json: the installed release'
     $componentsOut=[IO.File]::ReadAllText((Join-Path $unz 'components.json')) | ConvertFrom-Json

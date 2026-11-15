@@ -38,7 +38,7 @@ try {
         function script:Test-FastLlmModelConsentReceipt { return $script:startTestState.consent }
         function script:Get-FastLlmHardware { $script:startTestState.events.Add('reprobe');if($script:startTestState.ContainsKey('probeFailAt') -and @($script:startTestState.events | Where-Object { $_ -ceq 'reprobe' }).Count -eq $script:startTestState.probeFailAt){throw 'simulated probe failure'};return $script:startTestState.hardware }
         function script:Get-FastLlmPlan {
-            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0,[string]$Thinking='auto',[string]$ChatPage='off')
+            param($Hardware,$CatalogPath,$Profile,$InstallRoot,$ModelId,$ContextSize,[switch]$AllowExperimentalModel,$RecipesPath,$GpuVariantsPath,$RecipeId,[switch]$Recovered,[switch]$ResolveFallback,$FallbackFromRecipe,$FallbackReason,[int]$ServerPort=0,[string]$Thinking='auto',[string]$ChatPage='off',[string]$ContextProfile='default',[int]$Slots=1,$ServingProfilesPath)
             $script:startTestState.replanPort=$ServerPort;$script:startTestState.replanParams=@{};foreach($k in $PSBoundParameters.Keys){$script:startTestState.replanParams[$k]=$PSBoundParameters[$k]};$script:startTestState.requestedModel=$ModelId;$script:startTestState.requestedContext=$ContextSize
             $script:startTestState.planBound.Add((@($PSBoundParameters.Keys | Sort-Object) -join ','))
             if($FallbackFromRecipe){$script:startTestState.fallbackArgs=@($FallbackFromRecipe,$FallbackReason);if($script:startTestState.ContainsKey('planFailsOnFallback') -and $script:startTestState.planFailsOnFallback){throw 'simulated stand-in planning failure'};if($script:startTestState.fallbackPlan){return $script:startTestState.fallbackPlan}}
@@ -126,6 +126,32 @@ try {
     $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
     Start-FastLlmServer -Plan $offChatPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
     Check (-not $state.replanParams.ContainsKey('ChatPage')) 'replan-keeps-chatpage: an off plan re-plans without a ChatPage parameter'
+
+    # replan-keeps-serving-profile: a forced re-plan keeps the context profile and the slots; a default (or old) plan re-plans without them.
+    Check (-not $state.replanParams.ContainsKey('ContextProfile') -and -not $state.replanParams.ContainsKey('Slots') -and -not $state.replanParams.ContainsKey('ServingProfilesPath')) 'replan-keeps-serving-profile: a plan without a serving profile re-plans without ContextProfile, Slots or ServingProfilesPath'
+    $profilePlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $profilePlan | Add-Member -NotePropertyName servingProfile -NotePropertyValue ([pscustomobject]@{id='long';slots=2;contextTotal=65536;contextPerSlot=32768;requiredFreeVramMiB=21500;engineId='llama.cpp-b10698-vulkan';resultId='test-serving-profile-0001'}) -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $profilePlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanParams.ContainsKey('ContextProfile') -and [string]$state.replanParams['ContextProfile'] -ceq 'long' -and $state.replanParams.ContainsKey('Slots') -and [int]$state.replanParams['Slots'] -eq 2) 'replan-keeps-serving-profile: the forced re-plan is asked for long and 2 slots'
+    Check ($state.replanParams.ContainsKey('ServingProfilesPath') -and [string]$state.replanParams['ServingProfilesPath'] -ceq (Join-Path (Split-Path -Parent $catalogPath) 'serving-profiles.json')) 'replan-keeps-serving-profile: the re-plan reads the profile file that sits next to the catalog'
+    $slotsPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $slotsPlan | Add-Member -NotePropertyName servingProfile -NotePropertyValue ([pscustomobject]@{id='default';slots=2;contextTotal=32768;contextPerSlot=16384;requiredFreeVramMiB=20500;engineId='llama.cpp-b10698-vulkan';resultId='test-serving-profile-0002'}) -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $slotsPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check (-not $state.replanParams.ContainsKey('ContextProfile') -and $state.replanParams.ContainsKey('Slots') -and [int]$state.replanParams['Slots'] -eq 2 -and $state.replanParams.ContainsKey('ServingProfilesPath')) 'replan-keeps-serving-profile: 2 slots on the default profile re-plans with Slots only'
+    $longOnePlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $longOnePlan | Add-Member -NotePropertyName servingProfile -NotePropertyValue ([pscustomobject]@{id='long';slots=1;contextTotal=65536;contextPerSlot=65536;requiredFreeVramMiB=21500;engineId='llama.cpp-b10698-vulkan';resultId='test-serving-profile-0001'}) -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
+    Start-FastLlmServer -Plan $longOnePlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null
+    Check ($state.replanParams.ContainsKey('ContextProfile') -and [string]$state.replanParams['ContextProfile'] -ceq 'long' -and -not $state.replanParams.ContainsKey('Slots')) 'replan-keeps-serving-profile: long with one slot re-plans with ContextProfile only'
+    # A serving profile block that is not one of the closed values is never forwarded as an option: the start is refused before any launch.
+    $oddPlan=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $oddPlan | Add-Member -NotePropertyName servingProfile -NotePropertyValue ([pscustomobject]@{id='longer';slots=8}) -Force
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{};$oddFailure=$null
+    try{Start-FastLlmServer -Plan $oddPlan -CatalogPath $catalogPath -InstallRoot $temp | Out-Null}catch{$oddFailure=$_.Exception}
+    Check ($null -ne $oddFailure -and [string]$oddFailure.Message -like 'serving-profile-invalid:*' -and ($state.events -notcontains 'supervisor')) 'replan-keeps-serving-profile: a plan whose serving profile is not default|long with 1|2 slots is refused, and nothing is launched'
+    $state.events.Clear();$state.planBound.Clear();$state.replanParams=@{}
 
     # replan-from-4gb-plan-json (R1): the BASE plan JSON has no requested* fields; it re-plans with no exception and keeps today's arguments.
     $basePlanJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
@@ -262,6 +288,53 @@ try {
         Check ($wrongAction.exit -ne 0 -and $wrongAction.text -like '*-IdleStopMinutes is supported only by plan, install, start and settings*') 'idle-cli: -IdleStopMinutes on another action is refused'
         $null=Invoke-StartTestCli @('settings','-IdleStopMinutes','0','-InstallRoot',$cliRoot)
         Check (-not ((Get-Content -LiteralPath (Join-Path $cliRoot 'settings.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name -contains 'idleStopMinutes')) 'idle-cli: settings -IdleStopMinutes 0 removes the key'
+    }
+    # Context profile and slots on the CLI: saved by settings, a per-run override that is never saved, closed sets, refused without a measured row
+    # (this release ships none) and ignored with -IgnoreUserSettings (the bench path).
+    if(-not $cliChildrenElevated){
+        $profileRoot=Join-Path $temp 'cli-serving-profile'
+        New-Item -ItemType Directory -Path $profileRoot -Force | Out-Null
+        $planPlain=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$profileRoot)
+        $planDefaults=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-ContextProfile','default','-Slots','1','-InstallRoot',$profileRoot)
+        Check ($planPlain.exit -eq 0 -and $planDefaults.exit -eq 0 -and $planDefaults.text -ceq $planPlain.text) 'serving-profile-cli: plan -ContextProfile default -Slots 1 is byte-identical to a plan without them'
+        Check (-not (($planPlain.text | ConvertFrom-Json).PSObject.Properties.Name -contains 'servingProfile')) 'serving-profile-cli: a default plan has no servingProfile field'
+        $planLong=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-ContextProfile','long','-InstallRoot',$profileRoot)
+        Check ($planLong.exit -ne 0 -and $planLong.text -like '*Not measured for this model and engine.*') 'serving-profile-cli: plan -ContextProfile long is refused with the plain reason (no measured row ships)'
+        $planTwo=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Slots','2','-InstallRoot',$profileRoot)
+        Check ($planTwo.exit -ne 0 -and $planTwo.text -like '*Not measured for this model and engine.*') 'serving-profile-cli: plan -Slots 2 is refused with the plain reason'
+        $setProfile=Invoke-StartTestCli @('settings','-ContextProfile','long','-Slots','2','-InstallRoot',$profileRoot)
+        $setLines=(($setProfile.text -replace '\r','') -split "`n")
+        Check ($setProfile.exit -eq 0 -and ($setLines -contains 'contextProfile: long') -and ($setLines -contains 'slots: 2')) 'serving-profile-cli: settings -ContextProfile long -Slots 2 writes both and prints them'
+        $profileJson=(Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$profileRoot)).text | ConvertFrom-Json
+        $profileStored=Get-Content -LiteralPath (Join-Path $profileRoot 'settings.json') -Raw | ConvertFrom-Json
+        Check ($profileJson.contextProfile -ceq 'long' -and $profileJson.slots -eq 2 -and $profileStored.contextProfile -ceq 'long' -and $profileStored.slots -eq 2) 'serving-profile-cli: settings -AsJson and settings.json carry contextProfile long and slots 2'
+        $planSavedProfile=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$profileRoot)
+        Check ($planSavedProfile.exit -ne 0 -and $planSavedProfile.text -like '*Not measured for this model and engine.*') 'serving-profile-cli: the saved options apply to plan (and are refused without a row)'
+        $planBench=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-IgnoreUserSettings','-InstallRoot',$profileRoot)
+        Check ($planBench.exit -eq 0 -and $planBench.text -ceq $planPlain.text) 'serving-profile-cli: with -IgnoreUserSettings both saved options are ignored and the plan is byte-identical to the default plan'
+        $planOverride=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-ContextProfile','default','-Slots','1','-InstallRoot',$profileRoot)
+        Check ($planOverride.exit -eq 0 -and $planOverride.text -ceq $planPlain.text) 'serving-profile-cli: explicit default values win over the saved options for this run'
+        $stillLong=(Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$profileRoot)).text | ConvertFrom-Json
+        Check ($stillLong.contextProfile -ceq 'long' -and $stillLong.slots -eq 2) 'serving-profile-cli: a per-run value on plan is not written to settings.json'
+        $badSlots=Invoke-StartTestCli @('settings','-Slots','3','-InstallRoot',$profileRoot)
+        Check ($badSlots.exit -ne 0 -and $badSlots.text -like '*serving-settings-invalid-slots*') 'serving-profile-cli: settings -Slots 3 is refused with serving-settings-invalid-slots'
+        $badSlotsPlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Slots','1.5','-IgnoreUserSettings','-InstallRoot',$profileRoot)
+        Check ($badSlotsPlan.exit -ne 0 -and $badSlotsPlan.text -like '*serving-settings-invalid-slots*') 'serving-profile-cli: plan -Slots 1.5 is refused, not rounded'
+        $badProfile=Invoke-StartTestCli @('settings','-ContextProfile','short','-InstallRoot',$profileRoot)
+        Check ($badProfile.exit -ne 0 -and ((Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$profileRoot)).text | ConvertFrom-Json).contextProfile -ceq 'long') 'serving-profile-cli: settings -ContextProfile short is refused and leaves the saved value unchanged'
+        $wrongProfileAction=Invoke-StartTestCli @('status','-ContextProfile','long','-InstallRoot',$profileRoot)
+        Check ($wrongProfileAction.exit -ne 0 -and $wrongProfileAction.text -like '*-ContextProfile is supported only by plan, install, start and settings*') 'serving-profile-cli: -ContextProfile on another action is refused'
+        $wrongSlotsAction=Invoke-StartTestCli @('status','-Slots','2','-InstallRoot',$profileRoot)
+        Check ($wrongSlotsAction.exit -ne 0 -and $wrongSlotsAction.text -like '*-Slots is supported only by plan, install, start and settings*') 'serving-profile-cli: -Slots on another action is refused'
+        $null=Invoke-StartTestCli @('settings','-ContextProfile','default','-Slots','1','-InstallRoot',$profileRoot)
+        $upperProfile=Invoke-StartTestCli @('settings','-ContextProfile','LONG','-InstallRoot',$profileRoot)
+        Check ($upperProfile.exit -eq 0 -and (Get-Content -LiteralPath (Join-Path $profileRoot 'settings.json') -Raw | ConvertFrom-Json).contextProfile -ceq 'long') 'serving-profile-cli: settings -ContextProfile LONG stores long'
+        $null=Invoke-StartTestCli @('settings','-ContextProfile','default','-InstallRoot',$profileRoot)
+        # The file may now be an empty object, so the names are enumerated one by one (no member access on an empty list).
+        $clearedNames=@((Get-Content -LiteralPath (Join-Path $profileRoot 'settings.json') -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $_.Name })
+        Check (-not ($clearedNames -contains 'contextProfile') -and -not ($clearedNames -contains 'slots')) 'serving-profile-cli: the default values remove both keys'
+        $settingsDefault=(Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$profileRoot)).text | ConvertFrom-Json
+        Check ($settingsDefault.contextProfile -ceq 'default' -and $settingsDefault.slots -eq 1) 'serving-profile-cli: settings -AsJson shows default and 1 when nothing is saved'
     }
     # M11: a malformed settings.json is said out loud by a live start, and only there. The decision is a pure function, tested in-process;
     # a real 'start' child is never run by a mock suite (it would take the lock, write status and probe hardware).
