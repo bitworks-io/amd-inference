@@ -129,7 +129,7 @@ class PublicBuilderTests(unittest.TestCase):
     def test_the_repo_policy_file_is_the_neutral_default(self):
         path = ROOT / "config" / "release-policy.json"
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), POLICY)
-        br.validate_release_policy(str(ROOT), "2026.10.20.1")
+        br.validate_release_policy(path.read_bytes(), "2026.10.20.1")
 
     def test_rollback_recorded(self):
         self.build(rollback_of="2026.10.19.1")
