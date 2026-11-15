@@ -692,7 +692,6 @@ function Get-FastLlmNativeErrorCode {
     return $null
 }
 
-# True when the plan runs on an engine component (HIP, or any listed engine component). Such a plan is never recovered onto another setup.
 # The serving profile of a plan (opt-in context profile or slots) as checked values, or $null for a plan without one. A block outside the
 # closed values, or whose per-slot context is not the plan context divided by its slots, is a typed failure: such a plan is never started.
 function Get-FastLlmPlanServingProfile {
@@ -718,6 +717,7 @@ function Get-FastLlmPlanServingProfile {
     return [pscustomobject] [ordered] @{ id = [string] $values['id']; slots = [int] $values['slots']; contextPerSlot = [int] $values['contextPerSlot'] }
 }
 
+# True when the plan runs on an engine component (HIP, or any listed engine component). Such a plan is never recovered onto another setup.
 function Test-FastLlmPlanOnEngineComponent {
     param($Plan)
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { return $true }
