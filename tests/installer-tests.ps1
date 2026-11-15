@@ -139,7 +139,7 @@ function Get-RecordSnapshot { @(Get-ChildItem -LiteralPath $recordDir -File | So
 try {
 Assert-True (Test-Path -LiteralPath $recordDir -PathType Container) 'no previous-release record after the v1 to v2 upgrade'
 $recordNames = @(Get-ChildItem -LiteralPath $recordDir -File | ForEach-Object { $_.Name })
-# Compare as a set: Sort-Object orders names by the culture, which puts record.json before RELEASE.json.
+# Compare as a set: a culture-aware name order puts record.json before RELEASE.json.
 Assert-True ($recordNames.Count -eq 3 -and -not (Compare-Object $recordNames @('RELEASE.json', 'record.json', 'release-policy.json') -CaseSensitive)) ('the record must hold RELEASE.json, release-policy.json and record.json; it holds: ' + ($recordNames -join ', '))
 Assert-True ((Get-Content -LiteralPath (Join-Path $recordDir 'RELEASE.json') -Raw | ConvertFrom-Json).version -ceq $v1) 'the record must hold v1 RELEASE.json'
 Assert-True ((Get-FileHash -LiteralPath (Join-Path $recordDir 'release-policy.json') -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath (Join-Path $tree1 'config\release-policy.json') -Algorithm SHA256).Hash) 'the record must hold the v1 release-policy.json'

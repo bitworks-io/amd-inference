@@ -103,6 +103,7 @@ begin
     if not FileExists(OldRelease) then
     begin
       if DirExists(RecordDir) then DelTree(RecordDir, True, True, True);
+      Log('Previous-release record: no installed release, record cleared.');
       Exit;
     end;
     SameVersion := False;
@@ -111,15 +112,26 @@ begin
       Text := String(Raw);
       SameVersion := Pos('"version": "{#AppVersion}"', Text) > 0;
     end;
-    if SameVersion then Exit;
+    if SameVersion then
+    begin
+      Log('Previous-release record: same version, record kept.');
+      Exit;
+    end;
     if DirExists(RecordDir) then DelTree(RecordDir, True, True, True);
     Ok := ForceDirectories(RecordDir) and CopyFile(OldRelease, RecordDir + '\RELEASE.json', False);
     if Ok and FileExists(OldPolicy) then
       Ok := CopyFile(OldPolicy, RecordDir + '\release-policy.json', False);
     if Ok then
       Ok := SaveStringToFile(RecordDir + '\record.json', '{"replacedBy":"{#AppVersion}"}', False);
-    if not Ok then DelTree(RecordDir, True, True, True);
+    if not Ok then
+    begin
+      DelTree(RecordDir, True, True, True);
+      Log('Previous-release record: copy failed, record removed.');
+    end
+    else
+      Log('Previous-release record: written.');
   except
+    Log('Previous-release record: not written (' + GetExceptionMessage + ').');
     // A record that cannot be written means no reinstall is offered later; the install goes on.
   end;
 end;
