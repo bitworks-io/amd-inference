@@ -674,6 +674,11 @@ try {
     $vulkanEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inherited
     Check (($vulkanEnv.set.Keys -join ',') -ceq 'APPDATA,PROGRAMDATA,PATH' -and $vulkanEnv.set['PATH'] -ceq 'C:\fl\engines\b10698\vulkan;C:\Windows\System32;C:\Windows' -and $vulkanEnv.set['APPDATA'] -ceq 'C:\sandbox\appdata' -and $vulkanEnv.set['PROGRAMDATA'] -ceq 'C:\sandbox\programdata') 'Vulkan environment is unchanged: APPDATA, PROGRAMDATA and PATH = engine dir;System32;SystemRoot, and no BAR variable by default'
     Check (($vulkanEnv.remove -join ',') -ceq 'HIP_VISIBLE_DEVICES,HSA_OVERRIDE_GFX_VERSION,ROCM_PATH,ROCBLAS_LAYER,GGML_VK_VISIBLE_DEVICES,LLAMA_ARG_PORT,VK_ICD_FILENAMES,HF_TOKEN,CUDA_VISIBLE_DEVICES,GPU_DEVICE_ORDINAL,Hip_Path_Lower') 'Vulkan scrub removes the same names as before plus the device-ordinal variables (ROCR_ names are not in the shared scrub list)'
+    $inheritedWithKey=@($inherited)+@('LLAMA_API_KEY')
+    $vulkanKeyEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' -ApiKey 'fl-test-key' } $vulkanEnvPlan $envSandbox $inheritedWithKey
+    Check ($vulkanKeyEnv.set['LLAMA_API_KEY'] -ceq 'fl-test-key' -and @($vulkanKeyEnv.remove) -ccontains 'LLAMA_API_KEY') 'the environment builder adds the run key to the server child only after scrubbing an inherited LLAMA_API_KEY'
+    $vulkanNoKeyEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inheritedWithKey
+    Check (-not $vulkanNoKeyEnv.set.Contains('LLAMA_API_KEY') -and @($vulkanNoKeyEnv.remove) -ccontains 'LLAMA_API_KEY') 'without a key (the device probe and every default start) LLAMA_API_KEY is scrubbed and never set'
     $vulkanBarEnv=& $module { param($P,$S,$I) Get-FastLlmEngineEnvironment -Plan $P -Sandbox $S -InheritedNames $I -VulkanBarMitigation -SystemRoot 'C:\Windows' } $vulkanEnvPlan $envSandbox $inherited
     $barName=& $module { $script:FastLlmVulkanBarMitigationVariable }
     Check (($vulkanBarEnv.set.Keys -join ',') -ceq "APPDATA,PROGRAMDATA,PATH,$barName" -and $vulkanBarEnv.set[$barName] -ceq '1') 'Vulkan environment gets the BAR variable only when the mitigation is requested'
