@@ -45,6 +45,26 @@ class InstallerScriptTests(unittest.TestCase):
         # The values go away before the early exit that skips the data-folder prompt.
         self.assertLess(body.index("RegDeleteValue(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run'"), body.index("if UninstallSilent"))
 
+    def test_previous_release_is_recorded_before_install_delete_runs(self):
+        # Setup runs PrepareToInstall before it starts the install step, which is where [InstallDelete] runs.
+        self.assertIn("procedure RecordPreviousRelease;", ISS)
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        for needle in ("'\\RELEASE.json'", "'\\config\\release-policy.json'", "state\\previous-release", "FileCopy(", "DelTree(RecordDir"):
+            self.assertIn(needle, record)
+        self.assertRegex(record, r"if not FileExists\(\w+\) then")  # no installed release: nothing is copied
+        prepare = ISS[ISS.index("function PrepareToInstall"):]
+        prepare = prepare[:prepare.index("\nend;")]
+        self.assertIn("RecordPreviousRelease;", prepare)
+        self.assertGreater(prepare.index("RecordPreviousRelease;"), prepare.index("Result := 'FastLLM was not installed."))
+        self.assertNotIn("ssInstall", ISS)
+        self.assertLess(ISS.index("procedure RecordPreviousRelease;"), ISS.index("function PrepareToInstall"))
+
+    def test_recording_the_previous_release_never_fails_the_install(self):
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        self.assertIn("try", record)
+        self.assertIn("except", record)
+        self.assertNotIn("Result :=", record)
+
 
 if __name__ == "__main__":
     unittest.main()
