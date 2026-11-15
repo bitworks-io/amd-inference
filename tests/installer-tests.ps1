@@ -91,6 +91,13 @@ Assert-True ($uninstallPrompt -match 'ComponentsDir' -and $iss -match "Component
 Assert-True ($iss -match "DelTree\(ModelsDir, " -and $iss -match "DelTree\(EnginesDir, " -and $iss -notmatch "DelTree\(DataDir") 'Yes deletes only the models and engines folders, never the whole data root'
 Assert-True ($iss -notmatch '(?i)ExecutionPolicy') 'the installer script must not set an execution policy'
 
+# Start at sign-in is opt-in per user: Setup never creates the Run value, and uninstall removes it with its StartupApproved value.
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$approvedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+function Test-SignInValue([string]$Key) { $null -ne (Get-ItemProperty -LiteralPath $Key -Name 'FastLLM' -ErrorAction SilentlyContinue) }
+Assert-True ($iss -notmatch '(?im)^\[Registry\]') 'the installer must not declare registry entries'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $repo 'FastLLM-SignIn.cmd'))) 'FastLLM.cmd must stay the only launcher that sets a policy'
+
 # 2. Fresh install
 $v1 = '2026.01.01.1'; $tree1 = Build-Tree $v1 @('only-in-v1.txt')
 $setup1 = Build-Installer $v1 $tree1
@@ -100,6 +107,8 @@ $productVersion = Get-FastLlmInstallerProductVersion -Path $setup1
 Assert-True ($productVersion -ceq $v1) "installer ProductVersion is '$productVersion', expected '$v1'"
 Invoke-Silent $setup1 @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v1.log")
 Assert-True (Test-Path -LiteralPath (Join-Path $app 'fast-llm.ps1')) 'app not installed'
+Assert-True (-not (Test-SignInValue $runKey)) 'install must not create the sign-in Run value'
+Assert-True (-not (Test-SignInValue $approvedKey)) 'install must not create the StartupApproved value'
 Assert-True (Test-Path -LiteralPath (Join-Path $app '_uninstall\unins000.exe')) 'uninstaller not in _uninstall'
 Assert-True (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) 'FastLLM.lnk')) 'Start Menu shortcut missing'
 $diff = Compare-Object (Get-TreeList $tree1) (Get-TreeList $app @('_uninstall\'))
@@ -118,10 +127,18 @@ Assert-True ($installed -eq $v2) "installed version is $installed"
 $diff = Compare-Object (Get-TreeList $tree2) (Get-TreeList $app @('_uninstall\'))
 Assert-True (-not $diff) "upgraded tree differs from the package: $($diff | Out-String)"
 
-# 4. Silent uninstall keeps user data
+# 4. Silent uninstall keeps user data and removes the sign-in registration
+# A fresh profile may have neither key: create them only here, where the test seeds its own values.
+$null = New-Item -Path $runKey -Force
+$null = New-Item -Path $approvedKey -Force
+Set-ItemProperty -LiteralPath $runKey -Name 'FastLLM' -Value ('"' + $app + '\FastLLM.cmd" /signin')
+Set-ItemProperty -LiteralPath $approvedKey -Name 'FastLLM' -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) -Type Binary
+Assert-True (Test-Path -LiteralPath (Join-Path $app 'tools\signin-start.ps1')) 'the sign-in launcher tool ships in the install'
 Invoke-Silent (Join-Path $app '_uninstall\unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
 Assert-True (Wait-Gone (Join-Path $app 'fast-llm.ps1')) 'app files remain 60 s after uninstall'
 Assert-True (Test-Path -LiteralPath $marker) 'uninstall removed user data'
+Assert-True (-not (Test-SignInValue $runKey)) 'uninstall must remove the sign-in Run value'
+Assert-True (-not (Test-SignInValue $approvedKey)) 'uninstall must remove the StartupApproved value'
 Remove-Item -LiteralPath $marker -Force
 # 5. /DIR= at a non-empty folder that is not a FastLLM install: Setup refuses and nothing in the folder is deleted
 $foreign = Join-Path $work 'foreign-folder'

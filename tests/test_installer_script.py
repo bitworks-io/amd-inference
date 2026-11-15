@@ -35,6 +35,16 @@ class InstallerScriptTests(unittest.TestCase):
         for line in ('Type: files; Name: "{app}\\*"', 'Type: filesandordirs; Name: "{app}\\src"', 'Type: filesandordirs; Name: "{app}\\tools"'):
             self.assertIn(line, ISS)
 
+    def test_install_never_registers_start_at_sign_in_and_uninstall_removes_it(self):
+        self.assertNotRegex(ISS, r"(?im)^\[Registry\]")
+        before = ISS[:ISS.index("procedure CurUninstallStepChanged")]
+        self.assertNotRegex(before, r"(?i)CurrentVersion\\Run")
+        body = ISS[ISS.index("procedure CurUninstallStepChanged"):]
+        self.assertIn("RegDeleteValue(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'FastLLM')", body)
+        self.assertIn("RegDeleteValue(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', 'FastLLM')", body)
+        # The values go away before the early exit that skips the data-folder prompt.
+        self.assertLess(body.index("RegDeleteValue(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run'"), body.index("if UninstallSilent"))
+
 
 if __name__ == "__main__":
     unittest.main()

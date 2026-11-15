@@ -11,6 +11,7 @@
     "context-ladder.ps1",
     "hip-candidate-native-worker.ps1",
     "prepare-vc-runtime.ps1",
+    "signin-start.ps1",
     "vulkan-coopmat-screen.ps1"
   ]
 }

@@ -132,6 +132,10 @@ var
   Bytes: Int64;
 begin
   if CurUninstallStep <> usPostUninstall then Exit;
+  // The optional start-at-sign-in registration is per user and never created by Setup; remove it with the app. This runs before
+  // the early exits below so a silent uninstall removes it too.
+  RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'FastLLM');
+  RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', 'FastLLM');
   DataDir := ExpandConstant('{localappdata}\Bitworks\FastLLM');
   ModelsDir := DataDir + '\models';
   EnginesDir := DataDir + '\engines';

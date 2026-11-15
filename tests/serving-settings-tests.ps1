@@ -195,4 +195,23 @@ try {
     }
 }
 finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+# host arguments for a start at sign-in: one code path with Resolve-FastLlmServingOptions
+foreach($case in 1){
+    $r=New-Root
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ($h.ServerPort -eq 0 -and $h.Thinking -ceq 'auto' -and $h.ChatPage -ceq 'off' -and $h['Idle'+'StopMinutes'] -eq 0) 'host-arguments: no settings file gives the defaults (catalog port 0)'
+    Write-Utf8 (Join-Path $r 'settings.json') '{"serverPort":18181,"thinking":"off","chatPage":"on","idleStopMinutes":30}'
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ($h.ServerPort -eq 18181 -and $h.Thinking -ceq 'off' -and $h.ChatPage -ceq 'on' -and $h['Idle'+'StopMinutes'] -eq 30) 'host-arguments: saved settings are returned'
+    Write-Utf8 (Join-Path $r 'settings.json') '{"serverPort":8080}'
+    Check ((Get-FastLlmServingHostArguments -InstallRoot $r).ServerPort -eq 0) 'host-arguments: the default port 8080 maps to the catalog port 0, as the CLI does'
+    Write-Utf8 (Join-Path $r 'settings.json') '{"serverPort":80,"thinking":"loud","chatPage":"maybe","idleStopMinutes":7}'
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ($h.ServerPort -eq 0 -and $h.Thinking -ceq 'auto' -and $h.ChatPage -ceq 'off' -and $h['Idle'+'StopMinutes'] -eq 0) 'host-arguments: invalid stored values give the defaults'
+    Write-Utf8 (Join-Path $r 'settings.json') '{ broken'
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ($h.ServerPort -eq 0 -and $h.Thinking -ceq 'auto') 'host-arguments: malformed settings give the defaults'
+    $o=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($h.ChatPage -ceq $o.chatPage) 'host-arguments: agrees with Resolve-FastLlmServingOptions'
+}
 Write-Host "serving-settings-tests: $script:count checks passed"
