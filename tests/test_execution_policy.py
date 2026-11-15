@@ -29,10 +29,12 @@ class ExecutionPolicyTests(unittest.TestCase):
             self.assertTrue(why)
             self.assertIn("executionpolicy", (ROOT / rel).read_text(encoding="utf-8").lower(), rel)
 
-    def test_fastllm_cmd_is_the_only_product_launcher_setting_a_policy(self):
-        self.assertIn("executionpolicy", (ROOT / "FastLLM.cmd").read_text(encoding="utf-8").lower())
+    def test_only_the_two_fastllm_cmd_launchers_set_a_policy(self):
+        launchers = {"FastLLM.cmd", "FastLLM-SignIn.cmd"}
+        for name in launchers:
+            self.assertIn("executionpolicy", (ROOT / name).read_text(encoding="utf-8").lower())
         for p in ROOT.iterdir():
-            if p.is_file() and p.name != "FastLLM.cmd" and p.suffix.lower() in {".cmd", ".bat", ".ps1"}:
+            if p.is_file() and p.name not in launchers and p.suffix.lower() in {".cmd", ".bat", ".ps1"}:
                 self.assertNotIn("executionpolicy", p.read_text(encoding="utf-8", errors="replace").lower(), p.name)
         self.assertNotIn("executionpolicy", (ROOT / "installer" / "FastLLM.iss").read_text(encoding="utf-8").lower())
 

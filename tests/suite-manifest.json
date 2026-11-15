@@ -332,6 +332,11 @@
       "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
     },
     {
+      "suite": "signin-start-tests",
+      "class": "ci",
+      "reason": "Registry and host seams over temp folders; no real Run value, process, GPU or elevation (the real-registry round trip is Windows-only and uses a throwaway key); wired in test.yml."
+    },
+    {
       "suite": "state-write-tests",
       "class": "ci",
       "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."

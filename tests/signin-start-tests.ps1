@@ -87,8 +87,10 @@ Assert-Equal (Get-FastLlmSignInStartState -AppRoot $app).reason 'value-missing' 
 
 # --- the launcher ------------------------------------------------------------------------------------------------------
 $script:Calls = New-Object System.Collections.ArrayList
+$script:Captured = @{}
 function New-FakeHost([bool]$Elevated = $false, [bool]$Occupied = $false, $StartBehavior = 'ok') {
     $calls = $script:Calls
+    $captured = $script:Captured
     return @{
         IsElevated = { [void]$calls.Add('elevated'); $Elevated }.GetNewClosure()
         IsOccupied = { param($InstallRoot) [void]$calls.Add('occupied'); $Occupied }.GetNewClosure()
@@ -96,7 +98,7 @@ function New-FakeHost([bool]$Elevated = $false, [bool]$Occupied = $false, $Start
         Start = {
             param($Arguments)
             [void]$calls.Add('start')
-            $script:LastStartArguments = $Arguments
+            $captured['arguments'] = $Arguments
             if ($StartBehavior -eq 'throw') { throw 'secret-looking message must never be recorded' }
             if ($StartBehavior -eq 'busy') { throw 'This installation already has an active serving operation.' }
             if ($StartBehavior -eq 'job') { throw 'The current process is contained in a Windows job; a persistent host cannot be launched from it.' }
@@ -132,11 +134,11 @@ Assert-Equal $r.result 'started' 'started result returned'
 $file = Read-Result $root
 Assert-Equal $file.result 'started' 'started result written'
 Assert-True ($null -eq $file.failureCode) 'started has no failure code'
-Assert-True ($file.time -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$') 'time is UTC ISO 8601'
+Assert-True ((Get-Content -LiteralPath (Join-Path $root 'state/signin-start.json') -Raw) -match '"time":"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"') 'time is UTC ISO 8601 (checked on the raw text, since ConvertFrom-Json may turn it into a date)'
 Assert-Equal (@($file.PSObject.Properties.Name | Sort-Object) -join ',') 'failureCode,result,time' 'the result file holds only time, result and failureCode'
 Assert-Equal (Count-Calls 'start') 1 'the host is started once'
 Assert-True ($script:Calls -contains 'sleep:7') 'the launcher waits the given fixed time first'
-$a = $script:LastStartArguments
+$a = $script:Captured['arguments']
 Assert-Equal $a.ModelId 'example-model' 'the saved model is passed through'
 Assert-Equal $a.Profile 'balanced' 'the saved profile is passed through'
 Assert-Equal ([int]$a.ContextSize) 8192 'the saved context is passed through'
