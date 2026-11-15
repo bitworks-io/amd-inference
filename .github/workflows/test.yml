@@ -87,6 +87,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\tests\gpu-process-memory-tests.ps1
+      - name: gpu-adapter-select-tests in Windows PowerShell 5.1 (mock only)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: .\tests\gpu-adapter-select-tests.ps1
+      - name: gpu-adapter-select-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\gpu-adapter-select-tests.ps1
       - name: spill-check-tests in Windows PowerShell 5.1 (mock only)
         if: ${{ !cancelled() }}
         shell: powershell
