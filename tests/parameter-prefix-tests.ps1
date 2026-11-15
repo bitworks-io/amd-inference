@@ -56,6 +56,7 @@ Check ($script.ResolveParameter('Se').Name -ceq 'ServerPort') 'fast-llm.ps1 -Se 
 $plan=Get-Command Get-FastLlmPlan
 Check ($plan.ResolveParameter('Context').Name -ceq 'ContextSize') 'Get-FastLlmPlan -Context 8192 binds ContextSize'
 Check ($plan.ResolveParameter('S').Name -ceq 'ServerPort') 'Get-FastLlmPlan -S binds ServerPort'
+Check ($plan.ResolveParameter('Serv').Name -ceq 'ServerPort') 'Get-FastLlmPlan -Serv binds ServerPort'
 $settings=Get-Command Set-FastLlmServingSettings
 Check ($settings.ResolveParameter('S').Name -ceq 'ServerPort') 'Set-FastLlmServingSettings -S binds ServerPort'
 Write-Host "parameter-prefix-tests: $script:count checks passed"

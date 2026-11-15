@@ -1131,14 +1131,14 @@ function Get-FastLlmPlan {
 
         # default leaves today's arguments unchanged; long uses the measured long-context row for the model and engine. Refused when no row matches.
         [ValidateSet('default', 'long')]
-        [string] $ContextProfile = 'default',
+        [string] $KvContextProfile = 'default',
 
         # 1 leaves today's arguments unchanged; 2 serves two requests at once (each gets the context divided by 2) and needs a measured row that allows it.
         [ValidateSet(1, 2)]
-        [int] $Slots = 1,
+        [int] $KvSlots = 1,
 
-        # The measured serving profile rows (config/serving-profiles.json). Read only when -ContextProfile or -Slots is not its default.
-        [string] $ServingProfilesPath,
+        # The measured serving profile rows (config/serving-profiles.json). Read only when -KvContextProfile or -KvSlots is not its default.
+        [string] $KvProfilesPath,
 
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
@@ -1166,10 +1166,10 @@ function Get-FastLlmPlan {
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
     if ($RecipeId -and $FallbackFromRecipe) { throw '-Recipe and -FallbackFromRecipe cannot be combined: an explicit recipe never falls back.' }
     # ValidateSet ignores case; the comparisons below are exact. An option is on only when it is not its default, and only then is anything new done.
-    $ContextProfile = $ContextProfile.ToLowerInvariant()
-    $servingOptionOn = [bool] ($ContextProfile -cne 'default' -or $Slots -ne 1)
-    if ($servingOptionOn -and $ContextSize -gt 0) { throw '-ContextSize cannot be combined with -ContextProfile or -Slots: the measured profile row sets the context.' }
-    if ($servingOptionOn -and $RecipeId) { throw '-Recipe cannot be combined with -ContextProfile or -Slots: a recipe is measured for the default context profile and one slot.' }
+    $KvContextProfile = $KvContextProfile.ToLowerInvariant()
+    $servingOptionOn = [bool] ($KvContextProfile -cne 'default' -or $KvSlots -ne 1)
+    if ($servingOptionOn -and $ContextSize -gt 0) { throw '-ContextSize cannot be combined with -KvContextProfile or -KvSlots: the measured profile row sets the context.' }
+    if ($servingOptionOn -and $RecipeId) { throw '-Recipe cannot be combined with -KvContextProfile or -KvSlots: a recipe is measured for the default context profile and one slot.' }
     $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
@@ -1306,7 +1306,7 @@ function Get-FastLlmPlan {
     $servingEngineId = $null
     $servingBackend = $null
     if ($servingOptionOn) {
-        $servingRows = @(Read-FastLlmServingProfiles -Path $ServingProfilesPath)
+        $servingRows = @(Read-FastLlmServingProfiles -Path $KvProfilesPath)
         $servingEngineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
         $servingBackend = ([string] $Hardware.backend).ToLowerInvariant()
     }
@@ -1332,7 +1332,7 @@ function Get-FastLlmPlan {
                 if ($servingOptionOn) {
                     $servingModelKey = [string] $model.id
                     if (-not $servingRowByModel.ContainsKey($servingModelKey)) {
-                        $servingRowByModel[$servingModelKey] = Find-FastLlmServingProfileRow -Rows $servingRows -Model $model -EngineId $servingEngineId -Backend $servingBackend -ProfileId $ContextProfile -Slots $Slots
+                        $servingRowByModel[$servingModelKey] = Find-FastLlmServingProfileRow -Rows $servingRows -Model $model -EngineId $servingEngineId -Backend $servingBackend -ProfileId $KvContextProfile -Slots $KvSlots
                     }
                     $servingRow = $servingRowByModel[$servingModelKey]
                     if ($null -eq $servingRow) { continue }
@@ -1387,16 +1387,16 @@ function Get-FastLlmPlan {
     if ($servingOptionOn) {
         $servingRow = $selected.servingRow
         $model.contextSize = [int] $servingRow.contextTotal
-        $model.parallel = [int] $Slots
+        $model.parallel = [int] $KvSlots
         $model.cacheTypeK = [string] $servingRow.cacheTypeK
         $model.cacheTypeV = [string] $servingRow.cacheTypeV
         $model.fitTargetMiB = [int] $servingRow.fitTargetMiB
         $model.requiredFreeVramMiB = [int64] $servingRow.requiredFreeVramMiB
         $servingProfileBlock = [pscustomobject] [ordered] @{
-            id                  = $ContextProfile
-            slots               = [int] $Slots
+            id                  = $KvContextProfile
+            slots               = [int] $KvSlots
             contextTotal        = [int] $servingRow.contextTotal
-            contextPerSlot      = [int] ([int] $servingRow.contextTotal / [int] $Slots)
+            contextPerSlot      = [int] ([int] $servingRow.contextTotal / [int] $KvSlots)
             requiredFreeVramMiB = [int64] $servingRow.requiredFreeVramMiB
             engineId            = $servingEngineId
             resultId            = [string] $servingRow.resultId
@@ -3964,9 +3964,9 @@ function Start-FastLlmServer {
             -not ($planProfileSlots -is [int] -or $planProfileSlots -is [long]) -or $script:FastLlmServingProfileSlots -notcontains [int] $planProfileSlots) {
             throw (New-FastLlmTypedFailure -Code 'serving-profile-invalid' -Message 'The plan carries a serving profile that is not default or long with 1 or 2 slots. Nothing was started; plan again.')
         }
-        if ($planProfileId -cne 'default') { $freshRecipeOptions.ContextProfile = [string] $planProfileId }
-        if ([int] $planProfileSlots -ne 1) { $freshRecipeOptions.Slots = [int] $planProfileSlots }
-        if ($freshRecipeOptions.ContainsKey('ContextProfile') -or $freshRecipeOptions.ContainsKey('Slots')) { $freshRecipeOptions.ServingProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+        if ($planProfileId -cne 'default') { $freshRecipeOptions.KvContextProfile = [string] $planProfileId }
+        if ([int] $planProfileSlots -ne 1) { $freshRecipeOptions.KvSlots = [int] $planProfileSlots }
+        if ($freshRecipeOptions.ContainsKey('KvContextProfile') -or $freshRecipeOptions.ContainsKey('KvSlots')) { $freshRecipeOptions.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or

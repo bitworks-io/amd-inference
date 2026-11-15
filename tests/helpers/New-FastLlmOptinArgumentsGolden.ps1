@@ -9,16 +9,16 @@ function Get-FastLlmOptinArgumentsMatrix {
     param(
         [Parameter(Mandatory = $true)][string] $Root,
         [Parameter(Mandatory = $true)][string] $InstallRoot,
-        [string] $ServingProfilesPath
+        [string] $KvProfilesPath
     )
     $module = Import-Module (Join-Path $Root 'src/FastLlm.psm1') -Force -PassThru -ErrorAction Stop
-    if (-not $ServingProfilesPath) { $ServingProfilesPath = Join-Path $Root 'tests/fixtures/serving-profiles-test.json' }
+    if (-not $KvProfilesPath) { $KvProfilesPath = Join-Path $Root 'tests/fixtures/serving-profiles-test.json' }
     $common = @{
         CatalogPath         = Join-Path $Root 'config/catalog.json'
         Profile             = 'balanced'
         NoEngineExecution   = $true
         InstallRoot         = $InstallRoot
-        ServingProfilesPath = $ServingProfilesPath
+        KvProfilesPath = $KvProfilesPath
     }
     $normalise = {
         param([string] $Text)
@@ -71,8 +71,8 @@ function Get-FastLlmOptinArgumentsMatrix {
         foreach ($key in @($common.Keys)) { $parameters[$key] = $common[$key] }
         $parameters['Hardware'] = & $hardwareFor ([string] $case[1])
         if ([string] $case[2] -cne 'auto') { $parameters['ModelId'] = [string] $case[2] }
-        $parameters['ContextProfile'] = [string] $case[3]
-        $parameters['Slots'] = [int] $case[4]
+        $parameters['KvContextProfile'] = [string] $case[3]
+        $parameters['KvSlots'] = [int] $case[4]
         $parameters['Thinking'] = [string] $case[5]
         $parameters['ChatPage'] = [string] $case[6]
         $outcome = 'plan'; $refusal = ''; $arguments = @(); $modelId = ''; $contextPerSlot = 0

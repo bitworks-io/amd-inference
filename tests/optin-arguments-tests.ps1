@@ -113,11 +113,11 @@ try {
     $malformedProfiles=Join-Path $work 'malformed-profiles.json'
     Write-Utf8 $malformedProfiles '{ not json'
     $defaultCases=@(
-        @{Label='-ContextProfile default -Slots 1';Parameters=@{ContextProfile='default';Slots=1}},
-        @{Label='the test profile rows present and no option';Parameters=@{ServingProfilesPath=$testProfiles}},
-        @{Label='the shipped profile file and explicit defaults';Parameters=@{ServingProfilesPath=$shippedProfiles;ContextProfile='default';Slots=1}},
-        @{Label='a profile file that is not JSON and no option (the file is never read)';Parameters=@{ServingProfilesPath=$malformedProfiles}},
-        @{Label='a profile path that does not exist and no option';Parameters=@{ServingProfilesPath=(Join-Path $work 'absent.json')}}
+        @{Label='-KvContextProfile default -KvSlots 1';Parameters=@{KvContextProfile='default';KvSlots=1}},
+        @{Label='the test profile rows present and no option';Parameters=@{KvProfilesPath=$testProfiles}},
+        @{Label='the shipped profile file and explicit defaults';Parameters=@{KvProfilesPath=$shippedProfiles;KvContextProfile='default';KvSlots=1}},
+        @{Label='a profile file that is not JSON and no option (the file is never read)';Parameters=@{KvProfilesPath=$malformedProfiles}},
+        @{Label='a profile path that does not exist and no option';Parameters=@{KvProfilesPath=(Join-Path $work 'absent.json')}}
     )
     foreach($defaultCase in $defaultCases){
         $caseLive=@(Get-FastLlmDefaultArgumentsMatrix -Root $root -InstallRoot $installRoot -PlanParameters $defaultCase.Parameters)
@@ -135,7 +135,7 @@ try {
     $fixtureHardware=Read-FastLlmJson (Join-Path $root 'tests/fixtures/rx-7900-xtx-24gb.json')
     $recipeCommon=@{Hardware=$fixtureHardware;CatalogPath=$catalogPath;RecipesPath=(Join-Path $root 'config/recipes.json');GpuVariantsPath=(Join-Path $root 'config/gpu-variants.json');Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot}
     $plainPlan=Get-FastLlmPlan @recipeCommon
-    $explicitDefaultPlan=Get-FastLlmPlan @recipeCommon -ContextProfile 'default' -Slots 1 -ServingProfilesPath $testProfiles
+    $explicitDefaultPlan=Get-FastLlmPlan @recipeCommon -KvContextProfile 'default' -KvSlots 1 -KvProfilesPath $testProfiles
     Check (($plainPlan | ConvertTo-Json -Depth 12) -ceq ($explicitDefaultPlan | ConvertTo-Json -Depth 12)) 'no-option plan: the whole plan document is identical with the default option values spelled out'
     Check (-not $plainPlan.PSObject.Properties['servingProfile'] -and -not $explicitDefaultPlan.PSObject.Properties['servingProfile']) 'no-option plan: no servingProfile field'
     $baseJson=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/plan-json-base.json') -Raw | ConvertFrom-Json
@@ -146,16 +146,16 @@ try {
     $identifiedHardware.backend='Vulkan';$identifiedHardware.adapters[0].device='Vulkan0';$identifiedHardware.adapters[0].backend='Vulkan'
     $identifiedCommon=@{Hardware=$identifiedHardware;CatalogPath=$catalogPath;RecipesPath=(Join-Path $root 'config/recipes.json');GpuVariantsPath=(Join-Path $root 'config/gpu-variants.json');Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot}
     $measuredPlan=Get-FastLlmPlan @identifiedCommon
-    $measuredDefaults=Get-FastLlmPlan @identifiedCommon -ContextProfile 'default' -Slots 1 -ServingProfilesPath $testProfiles
+    $measuredDefaults=Get-FastLlmPlan @identifiedCommon -KvContextProfile 'default' -KvSlots 1 -KvProfilesPath $testProfiles
     Check ([string]$measuredPlan.selectionMode -ceq 'recipe' -and -not [string]::IsNullOrEmpty([string]$measuredPlan.recipe.id) -and [string]$measuredPlan.recipe.origin -ceq 'bitworks') 'no-option plan: the identified card plans a measured recipe'
     Check (($measuredPlan | ConvertTo-Json -Depth 12) -ceq ($measuredDefaults | ConvertTo-Json -Depth 12)) 'no-option plan: the recipe plan document is identical with the default option values spelled out'
-    Check ([string](Get-FastLlmPlan @identifiedCommon -ContextProfile 'DEFAULT').recipe.id -ceq [string]$measuredPlan.recipe.id) 'no-option plan: DEFAULT is normalised to default and changes nothing'
+    Check ([string](Get-FastLlmPlan @identifiedCommon -KvContextProfile 'DEFAULT').recipe.id -ceq [string]$measuredPlan.recipe.id) 'no-option plan: DEFAULT is normalised to default and changes nothing'
 
     # ---- the plan document with an option ------------------------------------------------------------------------------------------
     $card=New-OptinHardware 'test-24gb'
-    $optCommon=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;ServingProfilesPath=$testProfiles}
+    $optCommon=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$testProfiles}
     $defaultCardPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot
-    $longTwo=Get-FastLlmPlan @optCommon -ContextProfile 'long' -Slots 2
+    $longTwo=Get-FastLlmPlan @optCommon -KvContextProfile 'long' -KvSlots 2
     $block=$longTwo.servingProfile
     Check ($null -ne $block -and [string]$block.id -ceq 'long' -and [int]$block.slots -eq 2 -and [int]$block.contextTotal -eq 65536 -and [int]$block.contextPerSlot -eq 32768) 'opt-in plan: servingProfile carries the profile id, the slots, the total and the per-slot context'
     Check ([int]$block.requiredFreeVramMiB -eq 21500 -and [string]$block.engineId -ceq 'llama.cpp-b10698-vulkan' -and [string]$block.resultId -ceq 'test-serving-profile-0001') 'opt-in plan: servingProfile names the row memory, the engine id and the evidence result id'
@@ -163,19 +163,19 @@ try {
     Check ([int]$longTwo.catalogContextSize -eq 32768 -and [string]$longTwo.model.sha256 -ceq [string]$defaultCardPlan.model.sha256) 'opt-in plan: the catalog context and the model identity are unchanged'
     $extraNames=@($longTwo.PSObject.Properties.Name | Where-Object { -not $defaultCardPlan.PSObject.Properties[$_] })
     Check ($extraNames.Count -eq 1 -and $extraNames[0] -ceq 'servingProfile') 'opt-in plan: servingProfile is the only field added'
-    Check ([string](Get-FastLlmPlan @optCommon -ContextProfile 'LONG').servingProfile.id -ceq 'long') 'opt-in plan: LONG is normalised to long'
-    $slotsOnly=Get-FastLlmPlan @optCommon -Slots 2
+    Check ([string](Get-FastLlmPlan @optCommon -KvContextProfile 'LONG').servingProfile.id -ceq 'long') 'opt-in plan: LONG is normalised to long'
+    $slotsOnly=Get-FastLlmPlan @optCommon -KvSlots 2
     Check ([string]$slotsOnly.servingProfile.id -ceq 'default' -and [int]$slotsOnly.servingProfile.contextPerSlot -eq 16384 -and [int]$slotsOnly.model.contextSize -eq 32768) 'opt-in plan: slots alone uses the default profile row and reports the per-slot context'
     $again=Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot
     Check (Test-SameArguments $defaultCardPlan.serverArguments $again.serverArguments) 'opt-in plan: a default plan after an opt-in plan is the default again (no state is kept)'
 
     # ---- no row: refused with the exact reason -------------------------------------------------------------------------------------
-    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ContextProfile 'long' -ServingProfilesPath $shippedProfiles } $notMeasured 'no-row: long with the shipped (empty) profile file is refused with the exact reason'
-    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -Slots 2 -ServingProfilesPath $shippedProfiles } $notMeasured 'no-row: 2 slots with the shipped (empty) profile file is refused with the exact reason'
-    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ContextProfile 'long' } $notMeasured 'no-row: long with no profile file given is refused with the exact reason'
-    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ContextProfile 'long' -ServingProfilesPath (Join-Path $work 'absent.json') } $notMeasured 'no-row: long with a profile file that does not exist is refused with the exact reason'
-    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m' -ContextProfile 'long' -ServingProfilesPath $shippedProfiles } $notMeasured 'no-row: an explicit model with the shipped profile file is refused with the exact reason'
-    RefusedExactly { Get-FastLlmPlan @identifiedCommon -ContextProfile 'long' -ServingProfilesPath $shippedProfiles } $notMeasured 'no-row: a card with a measured recipe is refused too; the recipe is not run under the option'
+    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: long with the shipped (empty) profile file is refused with the exact reason'
+    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvSlots 2 -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: 2 slots with the shipped (empty) profile file is refused with the exact reason'
+    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' } $notMeasured 'no-row: long with no profile file given is refused with the exact reason'
+    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath (Join-Path $work 'absent.json') } $notMeasured 'no-row: long with a profile file that does not exist is refused with the exact reason'
+    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: an explicit model with the shipped profile file is refused with the exact reason'
+    RefusedExactly { Get-FastLlmPlan @identifiedCommon -KvContextProfile 'long' -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: a card with a measured recipe is refused too; the recipe is not run under the option'
     $shipped=Get-Content -LiteralPath $shippedProfiles -Raw | ConvertFrom-Json
     Check ($shipped.schema -ceq 'bitworks.fastllm-serving-profiles/v1' -and @($shipped.profiles).Count -eq 0 -and @($shipped.addOns).Count -eq 0 -and @($shipped.sidecars).Count -eq 0) 'the shipped profile file has the schema and no rows'
 
@@ -188,40 +188,40 @@ try {
         return $path
     }
     $longFor={param($Document) @($Document.profiles | Where-Object { $_.modelId -ceq 'qwen3.8-27b-ud-q4-k-m' -and $_.id -ceq 'long' })[0]}
-    $explicitLong=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;ModelId='qwen3.8-27b-ud-q4-k-m';ContextProfile='long'}
-    Check ([string](Get-FastLlmPlan @explicitLong -ServingProfilesPath $testProfiles).servingProfile.id -ceq 'long') 'engine-binding: the unchanged test row applies'
+    $explicitLong=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+    Check ([string](Get-FastLlmPlan @explicitLong -KvProfilesPath $testProfiles).servingProfile.id -ceq 'long') 'engine-binding: the unchanged test row applies'
     $oneRow=New-MutatedProfiles 'one-row' { param($d) $d.profiles=@((& $longFor $d)) }
-    Check ([string](Get-FastLlmPlan @explicitLong -ServingProfilesPath $oneRow).servingProfile.id -ceq 'long' -and [int](Get-FastLlmPlan @explicitLong -Slots 2 -ServingProfilesPath $oneRow).servingProfile.contextPerSlot -eq 32768) 'engine-binding: a file with exactly one row applies (a one-element list is still a list)'
+    Check ([string](Get-FastLlmPlan @explicitLong -KvProfilesPath $oneRow).servingProfile.id -ceq 'long' -and [int](Get-FastLlmPlan @explicitLong -KvSlots 2 -KvProfilesPath $oneRow).servingProfile.contextPerSlot -eq 32768) 'engine-binding: a file with exactly one row applies (a one-element list is still a list)'
     $oneSlot=New-MutatedProfiles 'one-slot' { param($d) $d.profiles=@((& $longFor $d)); $d.profiles[0].slotsAllowed=@(2) }
-    Check ([int](Get-FastLlmPlan @explicitLong -Slots 2 -ServingProfilesPath $oneSlot).servingProfile.slots -eq 2) 'engine-binding: a row that allows exactly one slot count applies for that count'
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $oneSlot } $notMeasured 'engine-binding: a row that allows only 2 slots does not apply to a 1-slot request'
+    Check ([int](Get-FastLlmPlan @explicitLong -KvSlots 2 -KvProfilesPath $oneSlot).servingProfile.slots -eq 2) 'engine-binding: a row that allows exactly one slot count applies for that count'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $oneSlot } $notMeasured 'engine-binding: a row that allows only 2 slots does not apply to a 1-slot request'
     $noRows=New-MutatedProfiles 'no-rows' { param($d) $d.profiles=@() }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $noRows } $notMeasured 'engine-binding: a file with an empty row list is not measured'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $noRows } $notMeasured 'engine-binding: a file with an empty row list is not measured'
     $profilesObject=Join-Path $work 'profiles-object.json'
     Write-Utf8 $profilesObject '{"schema":"bitworks.fastllm-serving-profiles/v1","profiles":{},"addOns":[],"sidecars":[]}'
-    RefusedLike { Get-FastLlmPlan @explicitLong -ServingProfilesPath $profilesObject } 'serving-profiles-invalid' 'engine-binding: a row list that is not a list fails typed'
+    RefusedLike { Get-FastLlmPlan @explicitLong -KvProfilesPath $profilesObject } 'serving-profiles-invalid' 'engine-binding: a row list that is not a list fails typed'
     $otherEngine=New-MutatedProfiles 'other-engine' { param($d) $r=& $longFor $d; $r.engineId='llama.cpp-hip-b11658'; $r.backend='hip' }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $otherEngine } $notMeasured 'engine-binding: a row for another engine (HIP) does not apply to the Vulkan plan'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherEngine } $notMeasured 'engine-binding: a row for another engine (HIP) does not apply to the Vulkan plan'
     $newerEngine=New-MutatedProfiles 'newer-engine' { param($d) (& $longFor $d).engineId='llama.cpp-b99999-vulkan' }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $newerEngine } $notMeasured 'engine-binding: a row for another engine build does not apply (an engine change un-offers the option)'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $newerEngine } $notMeasured 'engine-binding: a row for another engine build does not apply (an engine change un-offers the option)'
     $otherBackend=New-MutatedProfiles 'other-backend' { param($d) (& $longFor $d).backend='hip' }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $otherBackend } $notMeasured 'engine-binding: a row for another backend does not apply'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherBackend } $notMeasured 'engine-binding: a row for another backend does not apply'
     $otherSha=New-MutatedProfiles 'other-sha' { param($d) (& $longFor $d).modelSha256=('0'*64) }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $otherSha } $notMeasured 'engine-binding: a row for another model sha256 does not apply'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherSha } $notMeasured 'engine-binding: a row for another model sha256 does not apply'
     $otherModelId=New-MutatedProfiles 'other-model-id' { param($d) (& $longFor $d).modelId='qwen3.8-27b-ud-q5-k-m' }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $otherModelId } $notMeasured 'engine-binding: a row whose model id is not the plan''s does not apply'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherModelId } $notMeasured 'engine-binding: a row whose model id is not the plan''s does not apply'
     $otherProfile=New-MutatedProfiles 'other-profile' { param($d) $d.profiles=@($d.profiles | Where-Object { -not ($_.modelId -ceq 'qwen3.8-27b-ud-q4-k-m' -and $_.id -ceq 'long') }) }
-    RefusedExactly { Get-FastLlmPlan @explicitLong -ServingProfilesPath $otherProfile } $notMeasured 'engine-binding: the default profile row of the same model does not stand in for a missing long row'
+    RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherProfile } $notMeasured 'engine-binding: the default profile row of the same model does not stand in for a missing long row'
     $rocmHardware=Read-FastLlmJson (Join-Path $root 'tests/fixtures/dual-rx-7900-xtx-24gb.json')
-    RefusedExactly { Get-FastLlmPlan -Hardware $rocmHardware -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ContextProfile 'long' -ServingProfilesPath $testProfiles } $notMeasured 'engine-binding: a plan on another backend finds no row'
+    RefusedExactly { Get-FastLlmPlan -Hardware $rocmHardware -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath $testProfiles } $notMeasured 'engine-binding: a plan on another backend finds no row'
 
     # ---- a profile file that cannot be trusted is a failure, never a silent default --------------------------------------------
-    $optLong=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;ContextProfile='long'}
-    RefusedLike { Get-FastLlmPlan @optLong -ServingProfilesPath $malformedProfiles } 'serving-profiles-invalid' 'invalid-file: a profile file that is not JSON fails typed when an option is on'
+    $optLong=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvContextProfile='long'}
+    RefusedLike { Get-FastLlmPlan @optLong -KvProfilesPath $malformedProfiles } 'serving-profiles-invalid' 'invalid-file: a profile file that is not JSON fails typed when an option is on'
     $wrongSchema=New-MutatedProfiles 'wrong-schema' { param($d) $d.schema='bitworks.fastllm-serving-profiles/v2' }
-    RefusedLike { Get-FastLlmPlan @optLong -ServingProfilesPath $wrongSchema } 'serving-profiles-invalid' 'invalid-file: an unexpected schema fails typed'
+    RefusedLike { Get-FastLlmPlan @optLong -KvProfilesPath $wrongSchema } 'serving-profiles-invalid' 'invalid-file: an unexpected schema fails typed'
     $duplicateRow=New-MutatedProfiles 'duplicate-row' { param($d) $d.profiles=@($d.profiles)+@((& $longFor $d)) }
-    RefusedLike { Get-FastLlmPlan @explicitLong -ServingProfilesPath $duplicateRow } 'serving-profiles-invalid' 'invalid-file: two rows for the same model, engine and profile fail typed (nothing is picked)'
+    RefusedLike { Get-FastLlmPlan @explicitLong -KvProfilesPath $duplicateRow } 'serving-profiles-invalid' 'invalid-file: two rows for the same model, engine and profile fail typed (nothing is picked)'
     foreach($badRow in @(
             @{Name='bad-kv';Label='an unknown KV type';Mutate={ param($d) (& $longFor $d).cacheTypeK='q8_0 --host 0.0.0.0' }},
             @{Name='bad-context';Label='a context that is not a positive whole number';Mutate={ param($d) (& $longFor $d).contextTotal=-1 }},
@@ -230,21 +230,21 @@ try {
             @{Name='bad-memory';Label='a required memory that is not positive';Mutate={ param($d) (& $longFor $d).requiredFreeVramMiB=0 }},
             @{Name='bad-fit-target';Label='a fit target that is not a number';Mutate={ param($d) (& $longFor $d).fitTargetMiB='768 --no-fit' }})){
         $badPath=New-MutatedProfiles $badRow.Name $badRow.Mutate
-        RefusedLike { Get-FastLlmPlan @explicitLong -Slots 2 -ServingProfilesPath $badPath } 'serving-profiles-invalid' "invalid-row: a matching row with $($badRow.Label) fails typed"
+        RefusedLike { Get-FastLlmPlan @explicitLong -KvSlots 2 -KvProfilesPath $badPath } 'serving-profiles-invalid' "invalid-row: a matching row with $($badRow.Label) fails typed"
     }
 
     # ---- options that do not combine, and the closed parameter sets -------------------------------------------------------------
-    RefusedLike { Get-FastLlmPlan @optCommon -ContextProfile 'long' -ContextSize 8192 } 'cannot be combined' 'combination: -ContextSize with a context profile is refused (the measured row sets the context)'
-    RefusedLike { Get-FastLlmPlan @optCommon -Slots 2 -ContextSize 8192 } 'cannot be combined' 'combination: -ContextSize with 2 slots is refused'
-    RefusedLike { Get-FastLlmPlan @identifiedCommon -RecipeId ([string]$measuredPlan.recipe.id) -ContextProfile 'long' -ServingProfilesPath $testProfiles } 'cannot be combined' 'combination: -Recipe with a context profile is refused'
-    RefusedLike { Get-FastLlmPlan @identifiedCommon -RecipeId ([string]$measuredPlan.recipe.id) -Slots 2 -ServingProfilesPath $testProfiles } 'cannot be combined' 'combination: -Recipe with 2 slots is refused'
+    RefusedLike { Get-FastLlmPlan @optCommon -KvContextProfile 'long' -ContextSize 8192 } 'cannot be combined' 'combination: -ContextSize with a context profile is refused (the measured row sets the context)'
+    RefusedLike { Get-FastLlmPlan @optCommon -KvSlots 2 -ContextSize 8192 } 'cannot be combined' 'combination: -ContextSize with 2 slots is refused'
+    RefusedLike { Get-FastLlmPlan @identifiedCommon -RecipeId ([string]$measuredPlan.recipe.id) -KvContextProfile 'long' -KvProfilesPath $testProfiles } 'cannot be combined' 'combination: -Recipe with a context profile is refused'
+    RefusedLike { Get-FastLlmPlan @identifiedCommon -RecipeId ([string]$measuredPlan.recipe.id) -KvSlots 2 -KvProfilesPath $testProfiles } 'cannot be combined' 'combination: -Recipe with 2 slots is refused'
     $closed=0
-    foreach($badProfile in @('short','x','banana','')){try{Get-FastLlmPlan @optCommon -ContextProfile $badProfile | Out-Null}catch{$closed++}}
-    foreach($badSlots in @(0,3,4,-1)){try{Get-FastLlmPlan @optCommon -Slots $badSlots | Out-Null}catch{$closed++}}
+    foreach($badProfile in @('short','x','banana','')){try{Get-FastLlmPlan @optCommon -KvContextProfile $badProfile | Out-Null}catch{$closed++}}
+    foreach($badSlots in @(0,3,4,-1)){try{Get-FastLlmPlan @optCommon -KvSlots $badSlots | Out-Null}catch{$closed++}}
     Check ($closed -eq 8) 'the planner parameters are closed sets: default|long and 1|2'
 
     # ---- recipes are measured for the default profile: an option uses profile rows on the estimated planner --------------------
-    $recipeLong=Get-FastLlmPlan @identifiedCommon -ContextProfile 'long' -ServingProfilesPath $testProfiles
+    $recipeLong=Get-FastLlmPlan @identifiedCommon -KvContextProfile 'long' -KvProfilesPath $testProfiles
     Check ([string]$recipeLong.selectionMode -ceq 'auto' -and $null -eq $recipeLong.recipe.id -and [string]$recipeLong.recipe.origin -ceq 'estimated' -and $null -eq $recipeLong.recipe.expected) 'recipes: with an option the plan is not a recipe plan and carries no recipe speed expectation'
     Check (-not $recipeLong.PSObject.Properties['fallback'] -and [string]$recipeLong.model.id -ceq 'qwen3.5-9b-q6-k') 'recipes: the opt-in plan is no fallback plan; its model is the best one with a measured long row that fits this card'
     Check (@($recipeLong.recipe.skipped | Where-Object { $_ -like 'recipes not applied:*' }).Count -eq 1) 'recipes: the plan says why recipes were not applied'

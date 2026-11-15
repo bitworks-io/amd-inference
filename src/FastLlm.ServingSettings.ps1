@@ -161,15 +161,15 @@ function Set-FastLlmServingSettings {
         $Thinking,
         $ChatPage,
         $IdleStopMinutes,
-        $ContextProfile,
-        $Slots
+        $KvContextProfile,
+        $KvSlots
     )
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort = ConvertTo-FastLlmServerPort -Value $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = ConvertTo-FastLlmThinking -Value $Thinking }
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = ConvertTo-FastLlmChatPage -Value $ChatPage }
     if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $IdleStopMinutes = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
-    if ($PSBoundParameters.ContainsKey('ContextProfile')) { $ContextProfile = ConvertTo-FastLlmContextProfile -Value $ContextProfile }
-    if ($PSBoundParameters.ContainsKey('Slots')) { $Slots = ConvertTo-FastLlmSlots -Value $Slots }
+    if ($PSBoundParameters.ContainsKey('KvContextProfile')) { $KvContextProfile = ConvertTo-FastLlmContextProfile -Value $KvContextProfile }
+    if ($PSBoundParameters.ContainsKey('KvSlots')) { $KvSlots = ConvertTo-FastLlmSlots -Value $KvSlots }
     $read = Read-FastLlmServingSettingsObject -InstallRoot $InstallRoot
     if ($read.malformed) { throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.' }
     $merged = $read.object
@@ -189,13 +189,13 @@ function Set-FastLlmServingSettings {
         if ($IdleStopMinutes -eq $script:FastLlmServingDefaultIdleStopMinutes) { $merged.Remove('idleStopMinutes') }
         else { $merged['idleStopMinutes'] = $IdleStopMinutes }
     }
-    if ($PSBoundParameters.ContainsKey('ContextProfile')) {
-        if ($ContextProfile -ceq $script:FastLlmServingDefaultContextProfile) { $merged.Remove('contextProfile') }
-        else { $merged['contextProfile'] = $ContextProfile }
+    if ($PSBoundParameters.ContainsKey('KvContextProfile')) {
+        if ($KvContextProfile -ceq $script:FastLlmServingDefaultContextProfile) { $merged.Remove('contextProfile') }
+        else { $merged['contextProfile'] = $KvContextProfile }
     }
-    if ($PSBoundParameters.ContainsKey('Slots')) {
-        if ($Slots -eq $script:FastLlmServingDefaultSlots) { $merged.Remove('slots') }
-        else { $merged['slots'] = $Slots }
+    if ($PSBoundParameters.ContainsKey('KvSlots')) {
+        if ($KvSlots -eq $script:FastLlmServingDefaultSlots) { $merged.Remove('slots') }
+        else { $merged['slots'] = $KvSlots }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
@@ -276,12 +276,12 @@ function Resolve-FastLlmServingOptions {
         $idleStop = ConvertTo-FastLlmIdleStopMinutes -Value $Bound['IdleStopMinutes']
         $source = 'parameter'
     }
-    if ($Bound.ContainsKey('ContextProfile')) {
-        $contextProfile = ConvertTo-FastLlmContextProfile -Value $Bound['ContextProfile']
+    if ($Bound.ContainsKey('KvContextProfile')) {
+        $contextProfile = ConvertTo-FastLlmContextProfile -Value $Bound['KvContextProfile']
         $source = 'parameter'
     }
-    if ($Bound.ContainsKey('Slots')) {
-        $slots = ConvertTo-FastLlmSlots -Value $Bound['Slots']
+    if ($Bound.ContainsKey('KvSlots')) {
+        $slots = ConvertTo-FastLlmSlots -Value $Bound['KvSlots']
         $source = 'parameter'
     }
     return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; contextProfile = $contextProfile; slots = $slots; source = $source; settingsMalformed = $settingsMalformed }
