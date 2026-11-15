@@ -214,3 +214,22 @@ Check ($pick -and $pick.recipe.id -eq 'bx1') 'control: the same recipe from Bitw
 $pick = Select-FastLlmRecipeForPlacements -Recipes @($bwExp) -Variants $variants -Placements @((Placement 23000)) -DxgiAdapters $xtxDxgi -Catalog $catalog -Profile 'balanced' -RecipeId 'bx1'
 Check ($pick -and $pick.recipe.origin -eq 'bitworks-experimental') 'a bitworks-experimental recipe named with -Recipe is selected'
 Write-Host 'recipes-selection-tests (bitworks-experimental): PASS'
+# The synthetic rehearsal record (clearly synthetic test data): its built recipe is never auto-selected, and is chosen only when named.
+$syntheticFixture = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures/community-synthetic-record.json') | ConvertFrom-Json
+$synthetic = $syntheticFixture.recipe
+$syntheticCatalog = [pscustomobject]@{ engine = [pscustomobject]@{ version = 'b10698' }; models = @(
+        [pscustomobject]@{ id = [string]$synthetic.components.model; requiredFreeVramMiB = 16000; scores = [pscustomobject]@{ balanced = 100 } }) }
+$syntheticPlacement = @((Placement 19000 1 20464))
+Check ($synthetic.origin -ceq 'community-experimental' -and $synthetic.compelling.isCompelling -eq $true -and $synthetic.recommended -eq $false) 'the synthetic record is a compelling experimental community recipe'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($synthetic) -Variants $variants -Placements $syntheticPlacement -DxgiAdapters $xtDxgi -Catalog $syntheticCatalog -Profile 'balanced'
+Check ($null -eq $pick) 'the synthetic record is not auto-selected'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($synthetic) -Variants $variants -Placements $syntheticPlacement -DxgiAdapters $xtDxgi -Catalog $syntheticCatalog -Profile 'balanced' -IncludeExperimental
+Check ($null -eq $pick) 'the synthetic record is not auto-selected with the experimental inclusion either'
+$syntheticControl = $synthetic | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+$syntheticControl.origin = 'bitworks'; $syntheticControl.recommended = $true; $syntheticControl.evidence = [pscustomobject]@{ url = 'https://bitworks.io/r' }
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($syntheticControl) -Variants $variants -Placements $syntheticPlacement -DxgiAdapters $xtDxgi -Catalog $syntheticCatalog -Profile 'balanced'
+Check ($pick -and $pick.recipe.id -ceq 'synthetic-rehearsal-1') 'control: the same recipe from Bitworks fits this card and is picked'
+$pick = Select-FastLlmRecipeForPlacements -Recipes @($synthetic) -Variants $variants -Placements $syntheticPlacement -DxgiAdapters $xtDxgi -Catalog $syntheticCatalog -Profile 'balanced' -RecipeId 'synthetic-rehearsal-1'
+Check ($pick -and $pick.recipe.origin -ceq 'community-experimental') 'the synthetic record is selected only when named with -Recipe'
+Check ((Get-FastLlmRecipeLabel $synthetic.origin) -ceq $synthetic.label) 'the window label for the synthetic record matches the built label'
+Write-Host 'recipes-selection-tests (synthetic rehearsal): PASS'

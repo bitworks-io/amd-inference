@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from decimal import Decimal
 
 EXPERIMENTAL_FILE = "data/bitworks-experimental-recipes.json"
@@ -39,6 +40,9 @@ CACHE_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,120}$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+# Community text ends up in a signed file and in the window: bound it and refuse anything that is not plain text.
+SOURCE_AUTHOR_MAX = 80
+SOURCE_URL_MAX = 300
 
 
 class RecipeError(Exception):
@@ -53,6 +57,19 @@ def load(root, rel):
 def sha256_file(root, rel):
     with open(os.path.join(root, rel), "rb") as handle:
         return hashlib.sha256(handle.read()).hexdigest()
+
+
+def plain_text(value):
+    """A string with no control, format (e.g. bidirectional override) or line/paragraph separator characters."""
+    return isinstance(value, str) and not any(unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in value)
+
+
+def check_source_text(rid, source):
+    author, url = source.get("author"), source.get("url")
+    if not plain_text(author) or len(author) > SOURCE_AUTHOR_MAX:
+        raise RecipeError(f"{rid}: source.author must be plain text of at most {SOURCE_AUTHOR_MAX} characters")
+    if not plain_text(url) or len(url) > SOURCE_URL_MAX or not re.match(r"^https://[^/\s?#]+", url) or re.search(r"\s", url):
+        raise RecipeError(f"{rid}: source.url must be an https:// link of at most {SOURCE_URL_MAX} characters with no control characters or spaces")
 
 
 def positive(value):
@@ -119,6 +136,7 @@ def validate(entry, origin, catalog, variants, components=None):
         source = entry.get("source") or {}
         if not all(source.get(k) for k in ("author", "url", "postedAt", "recordId")):
             raise RecipeError(f"{rid}: community entries need source author, url, postedAt and recordId")
+        check_source_text(rid, source)
     if origin == "community-reproduced":
         repro = entry.get("reproduction")
         if not isinstance(repro, dict):
