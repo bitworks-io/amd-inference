@@ -9,6 +9,8 @@ from pathlib import Path
 
 PROMPT_FORMAT = 'fastllm-prompt-tokens-v1'
 SHA256 = re.compile(r'[0-9a-f]{64}')
+GPU_MEMORY_CHECK_UNAVAILABLE = 'GPU memory check unavailable'
+GPU_MEMORY_CHECK_NOT_RECORDED = 'GPU memory check not recorded'
 
 
 def recorded_configuration(record):
@@ -217,6 +219,23 @@ def recorded_host(inventory):
             os['major'], os['minor'], os['build'], os['ubr'], os['architecture'], *board)
 
 
+def recorded_gpu_memory_check(record):
+    """Return the recorded GPU memory check; an absent block is never read as ok."""
+    block = record.get('gpuMemoryCheck')
+    if block is None:
+        return {'state': 'not-recorded', 'label': GPU_MEMORY_CHECK_NOT_RECORDED, 'checks': None}
+    if not isinstance(block, dict) or set(block) != {'state', 'label', 'checks'}:
+        raise ValueError('Malformed recorded gpuMemoryCheck')
+    state, label, checks = block['state'], block['label'], block['checks']
+    if state == 'spilled':
+        raise ValueError('Recorded GPU memory spill: the measurements are not comparable')
+    if type(checks) is not int or checks <= 0:
+        raise ValueError('Malformed recorded gpuMemoryCheck')
+    if (state, label) not in (('ok', None), ('unknown', GPU_MEMORY_CHECK_UNAVAILABLE)):
+        raise ValueError('Malformed recorded gpuMemoryCheck')
+    return {'state': state, 'label': label, 'checks': checks}
+
+
 def validate(record):
     if record.get('schemaVersion') != 1 or record.get('resultKind') != 'native-windows-api-benchmark-not-full-qualification':
         raise ValueError('Expected a versioned native-Windows API benchmark result')
@@ -248,8 +267,26 @@ def validate(record):
     return groups
 
 
+def memory_cautions(memory_checks):
+    cautions = []
+    for side in ('baseline', 'candidate'):
+        state = memory_checks[side]['state']
+        if state == 'not-recorded':
+            cautions.append(f'The {side} result has no GPU memory check record (an older build): '
+                            'a spill into system RAM was not checked, so do not read it as ok.')
+        elif state == 'unknown':
+            cautions.append(f'The {side} result is labelled "{GPU_MEMORY_CHECK_UNAVAILABLE}": '
+                            'its numbers cannot be confirmed as GPU-only.')
+    if any(check['state'] == 'ok' for check in memory_checks.values()):
+        cautions.append('A GPU memory check of ok means no spill into system RAM was seen at its readings; '
+                        'it is not memory residency proof.')
+    return cautions
+
+
 def compare(baseline, candidate):
     left, right = validate(baseline), validate(candidate)
+    memory_checks = {'baseline': recorded_gpu_memory_check(baseline),
+                     'candidate': recorded_gpu_memory_check(candidate)}
     left_configuration, right_configuration = recorded_configuration(baseline), recorded_configuration(candidate)
     for field, value in left_configuration.items():
         if value != right_configuration[field]:
@@ -299,12 +336,14 @@ def compare(baseline, candidate):
         'qualificationApproved': False,
         'hostInventoryProvenance': a_host[0],
         'promptIdentityVerified': left_identity is not None,
+        'gpuMemoryCheck': memory_checks,
         'cautions': [
             'This tool does not modify settings or the catalog.',
             'Quality, memory residency, soak, exclusive workload, and authoritative device identity still require review.',
             'Positive throughput change is faster; positive latency change is slower.',
             'Do not select winners from differences within measurement noise.',
             *(['Prompt token identity is unverified in legacy benchmark reports.'] if left_identity is None else []),
+            *memory_cautions(memory_checks),
         ],
         'comparisons': comparisons,
     }
