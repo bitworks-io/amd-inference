@@ -43,6 +43,14 @@ def identified(rate=32, digest='a' * 64):
     return result
 
 
+def checked(rate=32, state='ok', checks=9):
+    result = record(rate)
+    result['gpuMemoryCheck'] = {'state': state,
+                                'label': None if state == 'ok' else 'GPU memory check unavailable',
+                                'checks': checks}
+    return result
+
+
 def native_host():
     return {
         'schemaVersion': 1, 'kind': 'windows-native-host-inventory',
@@ -336,6 +344,103 @@ class BenchmarkComparisonTests(unittest.TestCase):
                 change(candidate)
                 with self.assertRaises(ValueError):
                     compare(record(), candidate)
+
+
+    NOT_RECORDED = {'state': 'not-recorded', 'label': 'GPU memory check not recorded', 'checks': None}
+
+    def cautions(self, result):
+        return ' '.join(result['cautions'])
+
+    def test_absent_or_null_gpu_memory_check_reads_as_not_recorded_never_ok(self):
+        explicit = record(), record(40)
+        for item in explicit:
+            item['gpuMemoryCheck'] = None
+        for baseline, candidate in ((record(), record(40)), explicit):
+            result = compare(baseline, candidate)
+            self.assertEqual({'baseline': self.NOT_RECORDED, 'candidate': self.NOT_RECORDED},
+                             result['gpuMemoryCheck'])
+            text = self.cautions(result)
+            self.assertIn('The baseline result has no GPU memory check record', text)
+            self.assertIn('The candidate result has no GPU memory check record', text)
+            self.assertNotIn('A GPU memory check of ok', text)
+            self.assertEqual(25, result['comparisons'][0]['generationTokensPerSecond']['changePercent'])
+
+    def test_ok_gpu_memory_check_is_shown_without_a_residency_claim(self):
+        result = compare(checked(), checked(40, checks=12))
+        self.assertEqual({'state': 'ok', 'label': None, 'checks': 9}, result['gpuMemoryCheck']['baseline'])
+        self.assertEqual({'state': 'ok', 'label': None, 'checks': 12}, result['gpuMemoryCheck']['candidate'])
+        text = self.cautions(result)
+        self.assertIn('memory residency', text)
+        self.assertIn('A GPU memory check of ok means no spill into system RAM was seen at its readings; '
+                      'it is not memory residency proof.', text)
+        self.assertNotIn('has no GPU memory check record', text)
+        self.assertNotIn('GPU memory check unavailable', text)
+        self.assertIs(False, result['qualificationApproved'])
+        self.assertEqual('descriptive-comparison-only', result['decision'])
+
+    def test_unavailable_gpu_memory_check_labels_without_refusing(self):
+        result = compare(checked(), checked(40, state='unknown'))
+        self.assertEqual(25, result['comparisons'][0]['generationTokensPerSecond']['changePercent'])
+        self.assertEqual({'state': 'unknown', 'label': 'GPU memory check unavailable', 'checks': 9},
+                         result['gpuMemoryCheck']['candidate'])
+        text = self.cautions(result)
+        self.assertIn('The candidate result is labelled "GPU memory check unavailable": '
+                      'its numbers cannot be confirmed as GPU-only.', text)
+        self.assertNotIn('The baseline result is labelled', text)
+        self.assertIn('A GPU memory check of ok', text)
+
+    def test_mixed_ok_and_absent_checks_are_shown_per_side(self):
+        result = compare(record(), checked(40))
+        self.assertEqual(self.NOT_RECORDED, result['gpuMemoryCheck']['baseline'])
+        self.assertEqual('ok', result['gpuMemoryCheck']['candidate']['state'])
+        text = self.cautions(result)
+        self.assertIn('The baseline result has no GPU memory check record', text)
+        self.assertNotIn('The candidate result has no GPU memory check record', text)
+        self.assertIn('A GPU memory check of ok', text)
+        result = compare(checked(), record(40))
+        self.assertEqual('ok', result['gpuMemoryCheck']['baseline']['state'])
+        self.assertEqual(self.NOT_RECORDED, result['gpuMemoryCheck']['candidate'])
+        text = self.cautions(result)
+        self.assertIn('The candidate result has no GPU memory check record', text)
+        self.assertNotIn('The baseline result has no GPU memory check record', text)
+        self.assertIn('A GPU memory check of ok', text)
+
+    def test_recorded_spill_is_refused(self):
+        spilled = {'state': 'spilled', 'label': None, 'checks': 3}
+        candidate = record(40)
+        candidate['gpuMemoryCheck'] = dict(spilled)
+        with self.assertRaisesRegex(ValueError, 'Recorded GPU memory spill'):
+            compare(record(), candidate)
+        baseline = record()
+        baseline['gpuMemoryCheck'] = dict(spilled)
+        with self.assertRaisesRegex(ValueError, 'Recorded GPU memory spill'):
+            compare(baseline, record(40))
+
+    def test_malformed_gpu_memory_check_rejected(self):
+        unavailable = 'GPU memory check unavailable'
+        blocks = [
+            [], 'ok', {'state': 'ok', 'label': None},
+            {'state': 'ok', 'label': None, 'checks': 9, 'extra': 1},
+            {'state': 'ok', 'label': unavailable, 'checks': 9},
+            {'state': 'unknown', 'label': None, 'checks': 9},
+            {'state': 'OK', 'label': None, 'checks': 9},
+            {'state': 'ok', 'label': None, 'checks': 0},
+            {'state': 'ok', 'label': None, 'checks': True},
+            {'state': 'ok', 'label': None, 'checks': '9'},
+            {'state': 'ok', 'label': None, 'checks': 9.0},
+        ]
+        for block in blocks:
+            with self.subTest(block=block):
+                candidate = record(40)
+                candidate['gpuMemoryCheck'] = block
+                with self.assertRaisesRegex(ValueError, 'Malformed recorded gpuMemoryCheck'):
+                    compare(record(), candidate)
+
+    def test_gpu_memory_check_is_not_part_of_the_configuration(self):
+        result = compare(checked(checks=3), checked(40, state='unknown', checks=20))
+        self.assertEqual(25, result['comparisons'][0]['generationTokensPerSecond']['changePercent'])
+        self.assertEqual(3, result['gpuMemoryCheck']['baseline']['checks'])
+        self.assertEqual(20, result['gpuMemoryCheck']['candidate']['checks'])
 
 
 if __name__ == '__main__':
