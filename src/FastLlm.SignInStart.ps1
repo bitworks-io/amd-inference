@@ -134,6 +134,11 @@ if (-not (Get-Variable -Scope Script -Name FastLlmSignInHost -ErrorAction Silent
     $script:FastLlmSignInHost = $null
 }
 
+# FastLLM's per-user data root (state, operation lock, models, engines), the same default the window uses.
+function Get-FastLlmSignInDefaultInstallRoot {
+    return (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM')
+}
+
 function Get-FastLlmSignInStateFolder {
     param([string]$InstallRoot)
     $root = [IO.Path]::GetFullPath($InstallRoot)

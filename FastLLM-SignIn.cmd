@@ -8,5 +8,5 @@ for /f "usebackq delims=" %%P in (`""%FASTLLM_PS%" -NoLogo -NoProfile -NonIntera
 set "FASTLLM_EP="
 if /i "%FASTLLM_POLICY%"=="Restricted" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
 if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
-"%FASTLLM_PS%" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden %FASTLLM_EP% -File "%~dp0tools\signin-start.ps1" -InstallRoot "%~dp0."
+"%FASTLLM_PS%" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden %FASTLLM_EP% -File "%~dp0tools\signin-start.ps1"
 endlocal & exit /b %errorlevel%
