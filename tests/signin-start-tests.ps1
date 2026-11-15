@@ -28,9 +28,9 @@ function New-FakeRegistry {
 }
 
 # --- the command text -------------------------------------------------------------------------------------------------
-Assert-Equal (Get-FastLlmSignInStartCommand -AppRoot 'C:\Program Files\Example App') '"C:\Program Files\Example App\FastLLM-SignIn.cmd"' 'command is quoted and exact for a path with spaces'
-Assert-Equal (Get-FastLlmSignInStartCommand -AppRoot 'C:\Example\App\') '"C:\Example\App\FastLLM-SignIn.cmd"' 'a trailing backslash is not doubled'
-Assert-Equal (Get-FastLlmSignInStartCommand -AppRoot 'D:\a b\c d') '"D:\a b\c d\FastLLM-SignIn.cmd"' 'spaces in several segments'
+Assert-Equal (Get-FastLlmSignInStartCommand -AppRoot 'C:\Program Files\Example App') '"C:\Program Files\Example App\FastLLM.cmd" /signin' 'command is quoted and exact for a path with spaces'
+Assert-Equal (Get-FastLlmSignInStartCommand -AppRoot 'C:\Example\App\') '"C:\Example\App\FastLLM.cmd" /signin' 'a trailing backslash is not doubled'
+Assert-Equal (Get-FastLlmSignInStartCommand -AppRoot 'D:\a b\c d') '"D:\a b\c d\FastLLM.cmd" /signin' 'spaces in several segments'
 $thrown = $false; try { Get-FastLlmSignInStartCommand -AppRoot 'C:\Bad"Path' | Out-Null } catch { $thrown = $true }
 Assert-True $thrown 'a quote in the app path is refused'
 $thrown = $false; try { Get-FastLlmSignInStartCommand -AppRoot '' | Out-Null } catch { $thrown = $true }
@@ -50,7 +50,7 @@ $state = Get-FastLlmSignInStartState -AppRoot $app
 Assert-True ($state.on -eq $true) 'Run value present, matching, not disabled is on'
 Assert-Equal $state.reason 'on' 'on reason'
 
-$script:FastLlmSignInRegistry.Store.run['FastLLM'] = '"C:\Other\FastLLM-SignIn.cmd"'
+$script:FastLlmSignInRegistry.Store.run['FastLLM'] = '"C:\Other\FastLLM.cmd" /signin'
 $state = Get-FastLlmSignInStartState -AppRoot $app
 Assert-True ($state.on -eq $false) 'a different command is off'
 Assert-Equal $state.reason 'command-differs' 'a different command gives command-differs'
@@ -235,10 +235,12 @@ Assert-True ($iss -notmatch '(?im)^\[Registry\]') 'the installer has no [Registr
 $uninstall = $iss.Substring($iss.IndexOf('procedure CurUninstallStepChanged'))
 Assert-True ($uninstall -match "RegDeleteValue\(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'FastLLM'\)") 'uninstall removes the Run value'
 Assert-True ($uninstall -match "RegDeleteValue\(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', 'FastLLM'\)") 'uninstall removes the StartupApproved value'
-$cmdText = Get-Content -LiteralPath (Join-Path $repo 'FastLLM-SignIn.cmd') -Raw
-Assert-True ($cmdText -match 'signin-start\.ps1') 'the sign-in cmd runs the launcher tool'
-Assert-True ($cmdText -notmatch '(?i)bypass') 'the sign-in cmd never uses Bypass'
-Assert-True ($cmdText -notmatch '(?i)-InstallRoot') 'the sign-in cmd never passes the app folder as the data root'
+$cmdText = Get-Content -LiteralPath (Join-Path $repo 'FastLLM.cmd') -Raw
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $repo 'FastLLM-SignIn.cmd'))) 'there is no second launcher: FastLLM.cmd is the only one that sets a policy'
+Assert-True ($cmdText -match '(?m)^if /i "%~1"=="/signin" goto signin\s*$') 'FastLLM.cmd branches on the /signin argument'
+Assert-True ($cmdText -match 'signin-start\.ps1') 'the sign-in branch runs the launcher tool'
+Assert-True ($cmdText -notmatch '(?i)bypass') 'FastLLM.cmd never uses Bypass'
+Assert-True ($cmdText -notmatch '(?i)-InstallRoot') 'FastLLM.cmd never passes the app folder as the data root'
 $toolText = Get-Content -LiteralPath (Join-Path $repo 'tools/signin-start.ps1') -Raw
 Assert-True ($toolText -match 'Get-FastLlmSignInDefaultInstallRoot') 'the launcher tool defaults the data root through the helper'
 Assert-True ($toolText -notmatch '\$InstallRoot\s*=\s*\$source') 'the launcher tool never defaults the data root to the app folder'

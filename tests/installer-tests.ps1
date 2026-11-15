@@ -96,7 +96,7 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $approvedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 function Test-SignInValue([string]$Key) { $null -ne (Get-ItemProperty -LiteralPath $Key -Name 'FastLLM' -ErrorAction SilentlyContinue) }
 Assert-True ($iss -notmatch '(?im)^\[Registry\]') 'the installer must not declare registry entries'
-Assert-True ((Test-Path -LiteralPath (Join-Path $repo 'FastLLM-SignIn.cmd'))) 'FastLLM-SignIn.cmd must exist'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $repo 'FastLLM-SignIn.cmd'))) 'FastLLM.cmd must stay the only launcher that sets a policy'
 
 # 2. Fresh install
 $v1 = '2026.01.01.1'; $tree1 = Build-Tree $v1 @('only-in-v1.txt')
@@ -129,9 +129,9 @@ Assert-True (-not $diff) "upgraded tree differs from the package: $($diff | Out-
 
 # 4. Silent uninstall keeps user data and removes the sign-in registration
 $null = New-Item -Path $approvedKey -Force
-Set-ItemProperty -LiteralPath $runKey -Name 'FastLLM' -Value ('"' + $app + '\FastLLM-SignIn.cmd"')
+Set-ItemProperty -LiteralPath $runKey -Name 'FastLLM' -Value ('"' + $app + '\FastLLM.cmd" /signin')
 Set-ItemProperty -LiteralPath $approvedKey -Name 'FastLLM' -Value ([byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) -Type Binary
-Assert-True (Test-Path -LiteralPath (Join-Path $app 'FastLLM-SignIn.cmd')) 'the sign-in launcher ships in the install'
+Assert-True (Test-Path -LiteralPath (Join-Path $app 'tools\signin-start.ps1')) 'the sign-in launcher tool ships in the install'
 Invoke-Silent (Join-Path $app '_uninstall\unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
 Assert-True (Wait-Gone (Join-Path $app 'fast-llm.ps1')) 'app files remain 60 s after uninstall'
 Assert-True (Test-Path -LiteralPath $marker) 'uninstall removed user data'
