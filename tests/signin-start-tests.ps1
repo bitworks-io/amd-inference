@@ -127,6 +127,9 @@ function Invoke-Case($HostSeam, [string]$Root) {
     return (Invoke-FastLlmSignInLaunch -SourceRoot $repo -InstallRoot $Root -DelaySeconds 7)
 }
 
+# the default data root is the per-user data folder, never the app folder
+Assert-Equal (Get-FastLlmSignInDefaultInstallRoot) (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM') 'default data root is LocalApplicationData\\Bitworks\\FastLLM'
+
 # started
 $root = New-Install
 $r = Invoke-Case (New-FakeHost) $root
@@ -145,7 +148,9 @@ Assert-Equal ([int]$a.ContextSize) 8192 'the saved context is passed through'
 Assert-Equal ([int]$a.ServerPort) 8081 'the saved port is passed through'
 Assert-Equal ([int]$a.IdleStopMinutes) 30 'the saved idle stop is passed through'
 Assert-True ($a.NoWait -eq $true) 'the start is NoWait'
-Assert-Equal $a.InstallRoot $root 'the install root is passed through'
+Assert-Equal $a.InstallRoot $root 'the data root is passed through as InstallRoot'
+Assert-Equal $a.SourceRoot $repo 'the app root is passed through as SourceRoot'
+Assert-True ($a.SourceRoot -cne $a.InstallRoot) 'SourceRoot and InstallRoot are two distinct values'
 
 # skipped-occupied (lock held before the start)
 $root = New-Install
@@ -233,6 +238,10 @@ Assert-True ($uninstall -match "RegDeleteValue\(HKCU, 'Software\\Microsoft\\Wind
 $cmdText = Get-Content -LiteralPath (Join-Path $repo 'FastLLM-SignIn.cmd') -Raw
 Assert-True ($cmdText -match 'signin-start\.ps1') 'the sign-in cmd runs the launcher tool'
 Assert-True ($cmdText -notmatch '(?i)bypass') 'the sign-in cmd never uses Bypass'
+Assert-True ($cmdText -notmatch '(?i)-InstallRoot') 'the sign-in cmd never passes the app folder as the data root'
+$toolText = Get-Content -LiteralPath (Join-Path $repo 'tools/signin-start.ps1') -Raw
+Assert-True ($toolText -match 'Get-FastLlmSignInDefaultInstallRoot') 'the launcher tool defaults the data root through the helper'
+Assert-True ($toolText -notmatch '\$InstallRoot\s*=\s*\$source') 'the launcher tool never defaults the data root to the app folder'
 Assert-True ($cmdText -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Restricted" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"\s*$') 'the sign-in cmd lifts a Restricted policy like FastLLM.cmd'
 Assert-True ($cmdText -match '(?im)^\s*if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"\s*$') 'the sign-in cmd lifts an Undefined policy like FastLLM.cmd'
 Assert-True (Test-Path -LiteralPath (Join-Path $repo 'tools/signin-start.ps1')) 'the launcher tool exists'
