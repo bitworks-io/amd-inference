@@ -20,7 +20,6 @@ ROOT_FILES = (
     ".gitignore",
     ".github/workflows/test.yml",
     "FastLLM.cmd",
-    "FastLLM-SignIn.cmd",
     "README.md",
     "Install-FastLLM-Lab.cmd",
     "fast-llm.ps1",

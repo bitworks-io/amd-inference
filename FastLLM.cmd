@@ -9,6 +9,7 @@ for /f "usebackq delims=" %%P in (`""%FASTLLM_PS%" -NoLogo -NoProfile -NonIntera
 set "FASTLLM_EP="
 if /i "%FASTLLM_POLICY%"=="Restricted" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
 if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
+if /i "%~1"=="/signin" goto signin
 "%FASTLLM_PS%" -NoLogo -NoProfile %FASTLLM_EP% -STA -File "%~dp0fast-llm-ui.ps1"
 if errorlevel 1 (
   echo FastLLM could not open. If PowerShell says running scripts is disabled, a script policy is blocking it.
@@ -18,3 +19,8 @@ if errorlevel 1 (
   pause
 )
 endlocal
+goto :eof
+
+:signin
+"%FASTLLM_PS%" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden %FASTLLM_EP% -File "%~dp0tools\signin-start.ps1"
+endlocal & exit /b %errorlevel%

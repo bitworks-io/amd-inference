@@ -2,13 +2,14 @@
 # Nothing here runs at install time. The registry is the truth for whether it is on; settings.json is never consulted.
 # Registry and host access go through the seams $script:FastLlmSignInRegistry and $script:FastLlmSignInHost so tests need
 # neither a real registry nor a real host. Windows PowerShell 5.1 compatible.
-# The launcher entry point is tools/signin-start.ps1, started through FastLLM-SignIn.cmd.
+# The launcher entry point is tools/signin-start.ps1, started through FastLLM.cmd /signin.
 Set-StrictMode -Version 2.0
 
 $script:FastLlmSignInValueName = 'FastLLM'
 $script:FastLlmSignInRunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $script:FastLlmSignInApprovedKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
-$script:FastLlmSignInLauncherName = 'FastLLM-SignIn.cmd'
+$script:FastLlmSignInLauncherName = 'FastLLM.cmd'
+$script:FastLlmSignInLauncherArgument = '/signin'
 $script:FastLlmSignInResultFile = 'signin-start.json'
 $script:FastLlmSignInRequestFile = 'signin-start-request.json'
 
@@ -65,13 +66,14 @@ function Get-FastLlmSignInRegistry {
     return $script:FastLlmSignInRegistry
 }
 
-# The exact Run value text: the sign-in launcher next to the app, quoted so a path with spaces stays one token.
+# The exact Run value text: FastLLM.cmd next to the app (the only launcher that sets a script policy) with the /signin
+# argument, quoted so a path with spaces stays one token.
 function Get-FastLlmSignInStartCommand {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string]$AppRoot)
     if ([string]::IsNullOrWhiteSpace($AppRoot)) { throw 'AppRoot is required.' }
     if ($AppRoot.Contains('"')) { throw 'AppRoot must not contain a double quote.' }
-    return '"' + $AppRoot.TrimEnd('\') + '\' + $script:FastLlmSignInLauncherName + '"'
+    return '"' + $AppRoot.TrimEnd('\') + '\' + $script:FastLlmSignInLauncherName + '" ' + $script:FastLlmSignInLauncherArgument
 }
 
 # on = the Run value exists, matches the expected command exactly, and is not disabled in Windows' Startup apps list.
