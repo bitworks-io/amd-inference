@@ -396,15 +396,17 @@ function Invoke-FastLlmIdleStopPoll {
     return (Step-FastLlmIdleDetector -State $State -MetricsText ([string] $text) -Now $Now -IdleMinutes $IdleMinutes)
 }
 
+# -ContextSize is the context ONE request gets and -Slots the slot count the server must report. A default plan passes the plan context and
+# one slot (the check it always was); a plan with a serving profile passes total / slots and its slot count.
 function Test-FastLlmApiCanary {
     [CmdletBinding()]
-    param([string] $BaseUrl, [string] $ModelId, [int] $ContextSize)
+    param([string] $BaseUrl, [string] $ModelId, [int] $ContextSize, [ValidateSet(1, 2)][int] $Slots = 1)
     $models = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/v1/models'
     if ($models.Status -ne 200 -or @((ConvertFrom-Json $models.Body).data | Where-Object { $_.id -eq $ModelId }).Count -ne 1) { throw 'Served model identity does not match the plan.' }
     $props = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/props'
     if ($props.Status -ne 200) { throw 'Server properties are unavailable.' }
     $properties = ConvertFrom-Json $props.Body
-    if ([int]$properties.default_generation_settings.n_ctx -ne $ContextSize -or [int]$properties.total_slots -ne 1) { throw 'Effective context/slots differ from the requested configuration.' }
+    if ([int]$properties.default_generation_settings.n_ctx -ne $ContextSize -or [int]$properties.total_slots -ne $Slots) { throw 'Effective context/slots differ from the requested configuration.' }
     $firstToken = $null
     for ($i=0; $i -lt 2; $i++) {
         $answer = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/completion' -TimeoutMs 30000 -Body @{
@@ -691,6 +693,31 @@ function Get-FastLlmNativeErrorCode {
 }
 
 # True when the plan runs on an engine component (HIP, or any listed engine component). Such a plan is never recovered onto another setup.
+# The serving profile of a plan (opt-in context profile or slots) as checked values, or $null for a plan without one. A block outside the
+# closed values, or whose per-slot context is not the plan context divided by its slots, is a typed failure: such a plan is never started.
+function Get-FastLlmPlanServingProfile {
+    param($Plan)
+    if ($null -eq $Plan -or -not $Plan.PSObject.Properties['servingProfile'] -or $null -eq $Plan.servingProfile) { return $null }
+    $block = $Plan.servingProfile
+    $values = @{}
+    foreach ($name in @('id', 'slots', 'contextPerSlot')) {
+        $values[$name] = $null
+        if ($block -is [pscustomobject] -and $block.PSObject.Properties[$name]) { $values[$name] = $block.PSObject.Properties[$name].Value }
+    }
+    $total = $null
+    if ($Plan.PSObject.Properties['model'] -and $Plan.model -and $Plan.model.PSObject.Properties['contextSize']) { $total = $Plan.model.contextSize }
+    $whole = { param($Value) return [bool] ($Value -is [int] -or $Value -is [long]) }
+    $valid = ($values['id'] -is [string]) -and (@('default', 'long') -ccontains $values['id']) -and (& $whole $values['slots']) -and (@(1, 2) -contains [int] $values['slots']) -and
+        (& $whole $values['contextPerSlot']) -and ([long] $values['contextPerSlot'] -gt 0) -and (& $whole $total) -and
+        ([long] $values['contextPerSlot'] * [int] $values['slots'] -eq [long] $total)
+    if (-not $valid) {
+        $failure = New-Object -TypeName System.InvalidOperationException -ArgumentList 'serving-profile-invalid: The plan carries a serving profile that does not match its context and slots. Nothing was started; plan again.'
+        $failure.Data['FastLlmFailureCode'] = 'serving-profile-invalid'
+        throw $failure
+    }
+    return [pscustomobject] [ordered] @{ id = [string] $values['id']; slots = [int] $values['slots']; contextPerSlot = [int] $values['contextPerSlot'] }
+}
+
 function Test-FastLlmPlanOnEngineComponent {
     param($Plan)
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { return $true }
@@ -721,6 +748,8 @@ function Invoke-FastLlmSupervisedServer {
           [ValidateSet(0,15,30,60)][int] $IdleStopMinutes=0)
     # ValidateSet ignores case and keeps the typed value, but the enforce checks below are case-sensitive: normalise once, first.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
+    # $null for every plan without a serving profile (all of today's plans): nothing below then differs from before. Checked before anything is written or launched.
+    $servingProfile = Get-FastLlmPlanServingProfile -Plan $Plan
     Initialize-FastLlmProcessHost
     $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; thinking=$(if ($Plan.PSObject.Properties['requestedThinking'] -and [string]$Plan.requestedThinking -ceq 'off') { 'off' } else { 'auto' }); chatPage=$(if ($Plan.PSObject.Properties['requestedChatPage'] -and [string]$Plan.requestedChatPage -ceq 'on') { 'on' } else { 'off' }); processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
     # Recorded from the start (only when on) so the Ready status already says so; the status of a default run is unchanged.
@@ -860,6 +889,12 @@ function Invoke-FastLlmSupervisedServer {
         # Recorded only when the mitigation is in effect, so the default recipe stays byte-identical.
         if ($state.vulkanMemoryPolicy.effective -eq 'on') {
             $state.recipe.environmentOverride = [ordered]@{ $script:FastLlmVulkanBarMitigationVariable = '1' }
+        }
+        # Recorded only for a plan with a serving profile, so the default recipe stays byte-identical. contextSize above stays the TOTAL context;
+        # contextPerSlot is what one request gets.
+        if ($servingProfile) {
+            $state.recipe.profile = [string] $servingProfile.id
+            $state.recipe.contextPerSlot = [int] $servingProfile.contextPerSlot
         }
     }
     $stateRoot = Get-FastLlmStateRoot -InstallRoot $InstallRoot -Create
@@ -1005,7 +1040,9 @@ function Invoke-FastLlmSupervisedServer {
         # From here the API is in use: a failure's own text is never logged (it could echo request text), only its code.
         $runPhase = 'checking'
         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'checking' }
-        $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $Plan.model.contextSize
+        # The slot count and the per-slot context come from the plan's serving profile; without one the call is exactly the one it always was.
+        if ($servingProfile) { $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $servingProfile.contextPerSlot -Slots $servingProfile.slots }
+        else { $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $Plan.model.contextSize }
         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'api-check' -Fields { Get-FastLlmRunLogApiCheckFields -Canary $state.canary }
         if ($hostProcess.Process.HasExited) { throw 'Server exited during canary.' }
         $hostProcess.DiscardOutput()
@@ -1017,6 +1054,8 @@ function Invoke-FastLlmSupervisedServer {
             if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.expected) { $expected = $Plan.recipe.expected }
             $contextForTest = 0
             if ($Plan.model.PSObject.Properties['contextSize']) { $contextForTest = [int] $Plan.model.contextSize }
+            # One request has the per-slot context, so that is what the self-test workload must fit.
+            if ($servingProfile) { $contextForTest = [int] $servingProfile.contextPerSlot }
             $mitigation = 'off'
             if ($state.vulkanMemoryPolicy -and $state.vulkanMemoryPolicy.effective -eq 'on') { $mitigation = 'on' }
             $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation
@@ -1077,6 +1116,7 @@ function Invoke-FastLlmSupervisedServer {
             try {
                 $canaryNames = @(@($Plan.selectedAdapters) | ForEach-Object { if ($_.PSObject.Properties['name']) { [string]$_.name } })
                 $contextForCanary = if ($Plan.model.PSObject.Properties['contextSize']) { [int]$Plan.model.contextSize } else { 0 }
+                if ($servingProfile) { $contextForCanary = [int] $servingProfile.contextPerSlot }
                 $state.throughputCanary = Invoke-FastLlmThroughputCanary -BaseUrl $baseUrl -ContextSize $contextForCanary -AdapterNames $canaryNames -ModelId ([string]$Plan.model.id)
             } catch { $state.throughputCanary = [pscustomobject][ordered]@{ ppTokPerS=$null; floor=$null; floorSource=$null; warmupPpTokPerS=$null; status='failed'; promptTokens=$null; promptArtifactSha256=$null; reason='canary-error' } }
             try {

@@ -27,6 +27,7 @@ jobs:
           python-version: '3.13'
       - run: python -m unittest discover -s tests -p 'test_*.py' -v
       - run: python3 tools/check-components.py
+      - run: python3 tools/check-serving-profiles.py
       - run: python3 tools/build-recipes.py --check
 
   powershell:

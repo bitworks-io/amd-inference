@@ -1,0 +1,6 @@
+{
+  "schema": "bitworks.fastllm-serving-profiles/v1",
+  "profiles": [],
+  "addOns": [],
+  "sidecars": []
+}

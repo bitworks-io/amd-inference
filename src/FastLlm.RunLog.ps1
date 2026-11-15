@@ -14,7 +14,8 @@ $script:FastLlmRunLogRuns = @{}
 
 # The fixed allowlist: the only field names an event may carry. Anything else is refused with run-log-field-not-allowed.
 $script:FastLlmRunLogAllowedFields = @{
-    'start'               = @('modelId', 'recipeId', 'backend', 'engineVersion', 'contextSize', 'port', 'thinking', 'chatPage', 'selfTest')
+    # profile and slots are present only on a start with a serving profile (opt-in context profile or slots): closed values, never free text.
+    'start'               = @('modelId', 'recipeId', 'backend', 'engineVersion', 'contextSize', 'port', 'thinking', 'chatPage', 'selfTest', 'profile', 'slots')
     'phase'               = @('phase', 'failureCode')
     'startup-diagnostics' = @('status', 'kvBufferCount', 'computeBufferCount', 'kvTotalMiB', 'computeTotalMiB', 'flashMode', 'flashResolved')
     'placement'           = @('reportedLayers', 'totalLayers', 'reportedAllLayers', 'deviceCount', 'devices', 'modelBufferTotalMiB')
@@ -185,6 +186,16 @@ function Get-FastLlmRunLogStartFields {
     $fields.thinking = [string] $State.thinking
     $fields.chatPage = [string] $State.chatPage
     $fields.selfTest = [bool] $SelfTest
+    # Only for a plan with a serving profile, and only the closed values (default|long, 1|2): a default start line is unchanged.
+    $servingProfile = Get-FastLlmRunLogProperty $Plan 'servingProfile'
+    if ($null -ne $servingProfile) {
+        $profileId = Get-FastLlmRunLogProperty $servingProfile 'id'
+        $profileSlots = Get-FastLlmRunLogProperty $servingProfile 'slots'
+        if ($profileId -is [string] -and $profileId -cmatch '^(default|long)\z' -and ($profileSlots -is [int] -or $profileSlots -is [long]) -and @(1, 2) -contains [int] $profileSlots) {
+            $fields.profile = [string] $profileId
+            $fields.slots = [int] $profileSlots
+        }
+    }
     return $fields
 }
 
