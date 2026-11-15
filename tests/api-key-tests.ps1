@@ -307,7 +307,7 @@ try {
     Check ((@($leakPlan.serverArguments) -join ' ') -cnotmatch 'LEAKMARKER') 'no leak: the plan argument list carries no key after a real start'
     $statusText = [IO.File]::ReadAllText((Join-Path (Join-Path $leakRoot 'state') 'status.json'))
     Check ($statusText -cnotmatch 'LEAKMARKER' -and $statusText -cnotmatch 'apiKey|LLAMA_API_KEY') 'no leak: the real status document has no key and no key field when the key is not wired'
-    $logFiles = @(Get-ChildItem -LiteralPath $leakRoot -Recurse -File -Force)
+    $logFiles = @(Get-ChildItem -LiteralPath $leakRoot -Recurse -File -Force | Where-Object { $_.Name -cne 'operation.lock' })
     Check (@($logFiles | Where-Object { $_.FullName -match 'run-.*\.jsonl$' }).Count -ge 1) 'the real run wrote a run log to scan'
     $allText = ''
     foreach ($f in $logFiles) { $allText += [IO.File]::ReadAllText($f.FullName) }
@@ -330,6 +330,7 @@ finally { Remove-Item -LiteralPath $leakRoot -Recurse -Force -ErrorAction Silent
 
 # ---- S4: a failed replace is reported truthfully and keeps its temporary file ----
 $s4 = New-TempRoot
+Set-Protector $fakeProtector
 try {
     InModule { param($R, $K) Write-FastLlmApiKeyStore -InstallRoot $R -ApiKeyHolder $K } @($s4, $markerHolder)
     $origMove = InModule { (Get-Command Move-FastLlmFileReplacing).ScriptBlock }
@@ -355,7 +356,7 @@ try {
     }
     finally { Remove-Item -LiteralPath $s4b -Recurse -Force -ErrorAction SilentlyContinue }
 }
-finally { Remove-Item -LiteralPath $s4 -Recurse -Force -ErrorAction SilentlyContinue }
+finally { Set-Protector $null; Remove-Item -LiteralPath $s4 -Recurse -Force -ErrorAction SilentlyContinue }
 $source = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.ApiKey.ps1'))
 Check ($source -cnotmatch '(?m)^\s*[^#\r\n]*\b(Write-Host|Write-Output|Write-Verbose|Write-Debug|Write-Warning|Write-Information|Out-Host|Out-File|Add-Content|Set-Content|Write-FastLlmRunLogEvent|Write-FastLlmState)\b') 'no leak: the key module has no console, log, status or text-file output call (only the store write)'
 Check ($source -cnotmatch 'InnerException|\$_\.Exception\.Message|\$_\.Exception\.ToString|\$_\s*\)|\$Error\b') 'no leak: the key module never forwards an inner exception or error text'

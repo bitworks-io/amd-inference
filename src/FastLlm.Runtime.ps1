@@ -301,11 +301,12 @@ function ConvertFrom-FastLlmStartupDiagnostics {
 }
 
 function Invoke-FastLlmHttp {
-    param([string] $BaseUrl, [string] $Path, $Body, [int] $TimeoutMs=5000, [string] $ApiKey)
+    param([string] $BaseUrl, [string] $Path, $Body, [int] $TimeoutMs=5000, $ApiKeyHolder)
     Initialize-FastLlmProcessHost
     $json = if ($null -ne $Body) { ConvertTo-Json -InputObject $Body -Depth 12 -Compress } else { $null }
-    # The key, when given, travels only as an Authorization header on this one loopback-only client; no other host is ever sent it.
-    if (-not [string]::IsNullOrEmpty($ApiKey)) { return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576, $ApiKey) }
+    # The key, when given in a holder, travels only as an Authorization header on this one loopback-only client; no other host is ever sent it.
+    # It becomes text here, at the last hop. A plain string or a malformed key is refused (typed, no key text in the error).
+    if ($null -ne $ApiKeyHolder) { return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576, (Get-FastLlmApiKeyText -ApiKeyHolder $ApiKeyHolder)) }
     return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576)
 }
 
@@ -552,7 +553,7 @@ function Test-FastLlmHipEnvironmentName {
 
 function Get-FastLlmEngineEnvironment {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [string[]] $InheritedNames = @(), [switch] $VulkanBarMitigation, [string] $SystemRoot, [string] $ApiKey)
+    param([Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [string[]] $InheritedNames = @(), [switch] $VulkanBarMitigation, [string] $SystemRoot, $ApiKeyHolder)
     $enginePath = [string] $Plan.enginePath
     # Split-Path as both call sites always used it. Off Windows (a pre-filter run on a Windows-style path) it would rewrite the separators, so cut by hand.
     if ($env:OS -eq 'Windows_NT') { $engineDirectory = Split-Path -Parent $enginePath }
@@ -590,15 +591,16 @@ function Get-FastLlmEngineEnvironment {
     # The BAR variable is a Vulkan-lane switch: a HIP plan never receives it, whatever the caller asked for.
     if ($VulkanBarMitigation -and -not $isHip) { $set[$script:FastLlmVulkanBarMitigationVariable] = '1' }
     # The optional run key reaches the server child through its environment only (never its arguments), after an inherited LLAMA_API_KEY was
-    # scrubbed above. The device probe never passes -ApiKey, so it never receives one.
-    if (-not [string]::IsNullOrEmpty($ApiKey)) { $set['LLAMA_API_KEY'] = $ApiKey }
+    # scrubbed above. The device probe never passes -ApiKeyHolder, so it never receives one.
+    # The text is taken from the holder here (the use point) and is validated: a value llama-server would split or mangle is refused.
+    if ($null -ne $ApiKeyHolder) { $set['LLAMA_API_KEY'] = Get-FastLlmApiKeyText -ApiKeyHolder $ApiKeyHolder }
     return [pscustomobject] [ordered] @{ remove = $remove.ToArray(); set = $set }
 }
 
 function Initialize-FastLlmEngineStartInfo {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo] $StartInfo, [Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [switch] $VulkanBarMitigation, [string] $ApiKey)
-    $environment = Get-FastLlmEngineEnvironment -Plan $Plan -Sandbox $Sandbox -InheritedNames @($StartInfo.EnvironmentVariables.Keys | ForEach-Object { [string] $_ }) -VulkanBarMitigation:$VulkanBarMitigation -ApiKey $ApiKey
+    param([Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo] $StartInfo, [Parameter(Mandatory = $true)] $Plan, [Parameter(Mandatory = $true)] $Sandbox, [switch] $VulkanBarMitigation, $ApiKeyHolder)
+    $environment = Get-FastLlmEngineEnvironment -Plan $Plan -Sandbox $Sandbox -InheritedNames @($StartInfo.EnvironmentVariables.Keys | ForEach-Object { [string] $_ }) -VulkanBarMitigation:$VulkanBarMitigation -ApiKeyHolder $ApiKeyHolder
     foreach ($name in $environment.remove) { $StartInfo.EnvironmentVariables.Remove($name) }
     foreach ($name in $environment.set.Keys) { $StartInfo.EnvironmentVariables[[string] $name] = [string] $environment.set[$name] }
 }
