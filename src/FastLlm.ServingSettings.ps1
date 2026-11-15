@@ -1,5 +1,5 @@
 # Serving preferences (loopback port today) stored in <InstallRoot>\settings.json.
-# Dot-sourced ONLY by fast-llm.ps1 and fast-llm-ui.ps1, never by src/FastLlm.psm1 or the background host: the bench path
+# Dot-sourced ONLY by fast-llm.ps1, fast-llm-ui.ps1 and the start-at-sign-in launcher tool, never by src/FastLlm.psm1 or the background host: the bench path
 # (Get-FastLlmPlan) reads no user settings. Windows PowerShell 5.1-safe; ASCII only.
 Set-StrictMode -Version 2
 
@@ -219,4 +219,20 @@ function Resolve-FastLlmServingOptions {
         $source = 'parameter'
     }
     return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; source = $source; settingsMalformed = $settingsMalformed }
+}
+
+# The serving parameters a user's own background-host start takes from the saved settings, as a hashtable to splat into
+# Start-FastLlmBackgroundHost. Built from Resolve-FastLlmServingOptions (one precedence and validation path); malformed or
+# invalid settings give the defaults. As the CLI does, the default port maps to 0, the catalog port.
+function Get-FastLlmServingHostArguments {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $resolved = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound @{}
+    $port = 0
+    if ([int] $resolved.serverPort -ne $script:FastLlmServingDefaultPort) { $port = [int] $resolved.serverPort }
+    return @{
+        ServerPort = $port
+        Thinking = [string] $resolved.thinking
+        ChatPage = [string] $resolved.chatPage
+        IdleStopMinutes = [int] $resolved.idleStopMinutes
+    }
 }

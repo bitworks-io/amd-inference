@@ -8,6 +8,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $source = Split-Path -Parent $PSScriptRoot
 . (Join-Path $source 'src\FastLlm.BackgroundHost.ps1')
+. (Join-Path $source 'src\FastLlm.ServingSettings.ps1')
 . (Join-Path $source 'src\FastLlm.SignInStart.ps1')
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-FastLlmSignInDefaultInstallRoot }
 $outcome = Invoke-FastLlmSignInLaunch -SourceRoot $source -InstallRoot $InstallRoot -DelaySeconds $DelaySeconds

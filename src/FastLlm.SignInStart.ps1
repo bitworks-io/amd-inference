@@ -185,7 +185,7 @@ function Write-FastLlmSignInResult {
     return [pscustomobject]@{ result = $Result; failureCode = $FailureCode }
 }
 
-# The request saved when the user turns the option on. Returns the host arguments, or a needs-setup failure code.
+# The request saved when the user turns the option on: profile, model and context only. Returns the host arguments, or a needs-setup failure code.
 function Read-FastLlmSignInRequest {
     param([string]$InstallRoot)
     $state = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'state'
@@ -204,16 +204,9 @@ function Read-FastLlmSignInRequest {
         $modelId = [string](Get-Field 'modelId' '')
         if ([string]::IsNullOrWhiteSpace($modelId)) { return [pscustomobject]@{ ok = $false; code = 'needs-setup-model' } }
         $context = [int](Get-Field 'contextSize' 0)
-        $port = [int](Get-Field 'serverPort' 0)
-        $thinking = [string](Get-Field 'thinking' 'auto')
-        $chat = [string](Get-Field 'chatPage' 'off')
-        $idle = [int](Get-Field 'idleStopMinutes' 0)
-        $valid = ($context -ge 0 -and $context -le 1048576) -and ($port -eq 0 -or ($port -ge 1024 -and $port -le 65535)) -and
-                 (@('auto', 'off') -ccontains $thinking) -and (@('off', 'on') -ccontains $chat) -and (@(0, 15, 30, 60) -contains $idle)
-        if (-not $valid) { return [pscustomobject]@{ ok = $false; code = 'needs-setup-request' } }
-        return [pscustomobject]@{ ok = $true; code = $null; arguments = @{
-            Profile = $profile; ModelId = $modelId; ContextSize = $context; ServerPort = $port
-            Thinking = $thinking; ChatPage = $chat; IdleStopMinutes = $idle } }
+        if ($context -lt 0 -or $context -gt 1048576) { return [pscustomobject]@{ ok = $false; code = 'needs-setup-request' } }
+        # Serving settings (port, thinking, chat page, idle stop) are not saved here: the launch takes them from the user's saved settings.
+        return [pscustomobject]@{ ok = $true; code = $null; arguments = @{ Profile = $profile; ModelId = $modelId; ContextSize = $context } }
     } catch {
         return [pscustomobject]@{ ok = $false; code = 'needs-setup-request' }
     }
@@ -238,6 +231,9 @@ function Invoke-FastLlmSignInLaunch {
         $isOccupied = $hostSeam.IsOccupied
         if (& $isOccupied $InstallRoot) { return (Write-FastLlmSignInResult -InstallRoot $InstallRoot -Result 'skipped-occupied' -FailureCode $null) }
         $arguments = $request.arguments
+        # The user's current saved serving settings, resolved by the settings module exactly as the command line does.
+        $serving = Get-FastLlmServingHostArguments -InstallRoot $InstallRoot
+        foreach ($key in @($serving.Keys)) { $arguments[$key] = $serving[$key] }
         $arguments.SourceRoot = $SourceRoot
         $arguments.InstallRoot = $InstallRoot
         $arguments.NoWait = $true
