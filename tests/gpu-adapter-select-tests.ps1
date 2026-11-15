@@ -98,9 +98,9 @@ function Find-Adapter($luids,$reader,$clock=$null,$budget=2000){
     $enum={ $luids }.GetNewClosure()
     & $module {param($p,$e,$r,$c,$b) Find-FastLlmProcessAdapter -Process $p -Enumerator $e -Reader $r -Clock $c -BudgetMs $b} $self $enum $reader $clock $budget
 }
-$found=Find-Adapter @($A,$B) (New-Reader @{$A=@(64*$MiB,0);$B=@(15*$GiB,10*$MiB)})
+$found=Find-Adapter @($A,$B) (New-Reader @{$A=@((64*$MiB),0);$B=@((15*$GiB),(10*$MiB))})
 Check ($found.luid -eq $B -and $found.reason -ceq 'selected' -and $found.sample.DedicatedBytes -eq (15*$GiB)) 'The finder did not select the adapter holding the process and return its sample.'
-$found=Find-Adapter @($A,$B) (New-Reader @{$A=@(2*$GiB,0);$B=@(3*$GiB,0)})
+$found=Find-Adapter @($A,$B) (New-Reader @{$A=@((2*$GiB),0);$B=@((3*$GiB),0)})
 Check ($null -eq $found.luid -and $found.reason -ceq 'adapter-ambiguous' -and $null -eq $found.sample) 'The finder guessed between two candidate adapters.'
 $found=Find-Adapter @() (New-Reader @{})
 Check ($null -eq $found.luid -and $found.reason -ceq 'no-readings') 'No adapters did not give no-readings.'
