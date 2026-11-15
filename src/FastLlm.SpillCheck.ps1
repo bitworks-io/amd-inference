@@ -5,13 +5,16 @@
 # FastLLM itself started, on the adapter the plan selected (the kernel graphics statistics, as the standard user; no elevation,
 # no permission change, no performance counters). Above a fixed floor of shared bytes the state is 'spilled'.
 #
-# States: ok | spilled | unknown. 'unknown' (a failed read, a layout mismatch, not Windows, no adapter LUID) is never treated as ok.
+# States: ok | spilled | unknown. 'unknown' (a failed read, a layout mismatch, not Windows, no adapter found) is never treated as ok.
 # The check is advisory: serving continues whatever it says. It is never derived from layer counts.
 $script:FastLlmSpillFloorMiB = 256
 $script:FastLlmSpillCheckIntervalSeconds = 60
 # Time boxes for one read. The kernel query takes milliseconds; the box keeps a stuck call from delaying the 250 ms stop-file check.
 $script:FastLlmSpillFirstReadBudgetMs = 2000
 $script:FastLlmSpillLoopReadBudgetMs = 200
+# The HIP engine has no Vulkan adapter id, so the adapter is the one holding at least this much of the server process's memory
+# (dedicated + shared, so a heavily spilled process is still found).
+$script:FastLlmHipAdapterMinBytes = [uint64] 1073741824
 $script:FastLlmSpillOkText = 'GPU memory check: no spill to system memory detected.'
 $script:FastLlmSpillUnknownText = 'GPU memory check unavailable on this system.'
 
@@ -60,6 +63,84 @@ function Read-FastLlmSpillSample {
         return [pscustomobject]@{ SharedBytes = [uint64] $shared; DedicatedBytes = [uint64] $dedicated; Error = $null }
     }
     catch { return (& $failed 'read-failed') }
+}
+
+# Pure rule: which adapter holds the server process's memory? Readings are { luid; dedicatedBytes; sharedBytes } from a successful read of
+# the process on each adapter. Exactly one adapter with dedicated + shared at or above the minimum is the adapter; none or several is
+# never a guess. Returns { luid; reason } with reason selected | adapter-not-identified | adapter-ambiguous | no-readings.
+function Select-FastLlmProcessAdapter {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyCollection()][object[]] $Readings,
+        [uint64] $MinTotalBytes = $script:FastLlmHipAdapterMinBytes
+    )
+    try {
+        $counted = 0
+        $candidates = @()
+        foreach ($reading in @($Readings)) {
+            if ($null -eq $reading) { continue }
+            $luidValue = Get-FastLlmSpillValue $reading 'luid'
+            $dedicatedValue = Get-FastLlmSpillValue $reading 'dedicatedBytes'
+            $sharedValue = Get-FastLlmSpillValue $reading 'sharedBytes'
+            if ($null -eq $dedicatedValue -or $null -eq $sharedValue -or [string]::IsNullOrEmpty([string] $luidValue)) { continue }
+            [uint64] $dedicated = 0
+            [uint64] $shared = 0
+            try { $dedicated = [uint64] $dedicatedValue; $shared = [uint64] $sharedValue } catch { continue }
+            $counted++
+            # Saturating sum: it never wraps.
+            [uint64] $total = [uint64]::MaxValue
+            if ($dedicated -le ([uint64]::MaxValue - $shared)) { $total = $dedicated + $shared }
+            if ($total -ge $MinTotalBytes) { $candidates += ([string] $luidValue).ToLowerInvariant() }
+        }
+        if ($counted -eq 0) { return [pscustomobject]@{ luid = $null; reason = 'no-readings' } }
+        if ($candidates.Count -eq 1) { return [pscustomobject]@{ luid = $candidates[0]; reason = 'selected' } }
+        if ($candidates.Count -eq 0) { return [pscustomobject]@{ luid = $null; reason = 'adapter-not-identified' } }
+        return [pscustomobject]@{ luid = $null; reason = 'adapter-ambiguous' }
+    }
+    catch { return [pscustomobject]@{ luid = $null; reason = 'no-readings' } }
+}
+
+# Every adapter LUID the system knows (16 lowercase hex digits). Never throws; an empty list on any failure.
+function Get-FastLlmGpuAdapterLuids {
+    try {
+        if ($env:OS -ne 'Windows_NT') { return @() }
+        Initialize-FastLlmGpuProcessMemory
+        $enumeration = [Bitworks.FastLlm.WindowsGpuProcessMemory]::EnumerateAdapterLuids()
+        if ($null -eq $enumeration -or $null -eq $enumeration.Luids) { return @() }
+        return @($enumeration.Luids)
+    }
+    catch { return @() }
+}
+
+# Find the adapter by the server process's own memory: read the process on every adapter inside ONE time budget (each read gets only
+# what is left of it, and no read starts once it is spent), then apply the rule. Never throws.
+# Seams (tests): $Enumerator returns the LUID list; $Reader is the Read-FastLlmSpillSample reader; $Clock returns elapsed milliseconds.
+# Returns { luid; reason; sample }; sample is the read on the selected adapter, $null otherwise.
+function Find-FastLlmProcessAdapter {
+    param($Process, [int] $BudgetMs = 2000, [scriptblock] $Enumerator, [scriptblock] $Reader, [scriptblock] $Clock)
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $elapsed = { if ($Clock) { [double] (& $Clock) } else { [double] $stopwatch.Elapsed.TotalMilliseconds } }
+    $none = { param($reason) [pscustomobject]@{ luid = $null; reason = $reason; sample = $null } }
+    try {
+        $startedAt = & $elapsed
+        $luids = @()
+        try { if ($Enumerator) { $luids = @(& $Enumerator) } else { $luids = @(Get-FastLlmGpuAdapterLuids) } } catch { $luids = @() }
+        $readings = @()
+        $samples = @{}
+        foreach ($candidate in $luids) {
+            $remaining = $BudgetMs - ((& $elapsed) - $startedAt)
+            if ($remaining -lt 1) { break }
+            $sample = Read-FastLlmSpillSample -Luid ([string] $candidate) -Process $Process -BudgetMs ([int] [math]::Floor($remaining)) -Reader $Reader
+            if ($null -ne $sample.Error) { continue }
+            $key = ([string] $candidate).ToLowerInvariant()
+            $readings += [pscustomobject]@{ luid = $key; dedicatedBytes = $sample.DedicatedBytes; sharedBytes = $sample.SharedBytes }
+            $samples[$key] = $sample
+        }
+        $selection = Select-FastLlmProcessAdapter -Readings $readings
+        if ([string] $selection.reason -ceq 'selected') { return [pscustomobject]@{ luid = [string] $selection.luid; reason = 'selected'; sample = $samples[[string] $selection.luid] } }
+        return (& $none ([string] $selection.reason))
+    }
+    catch { return (& $none 'no-readings') }
 }
 
 # The sample to the status block { state, sharedMiB, dedicatedMiB, floorMiB, checkedAtUtc, error }. Pure.
@@ -113,11 +194,24 @@ function Get-FastLlmSpillCheckEventFields {
 # The one scheduled tick of the post-Ready loop: $null when the check is not due, otherwise the detector step plus the next due time.
 # Never throws. The read is time-boxed (FastLlmSpillLoopReadBudgetMs), so the loop's 250 ms stop-file cadence is kept.
 function Invoke-FastLlmSpillCheckTick {
-    param($Previous, [datetime] $Now, [datetime] $NextDueUtc, [string] $Luid, $Process, [scriptblock] $Reader)
+    param($Previous, [datetime] $Now, [datetime] $NextDueUtc, [string] $Luid, $Process, [scriptblock] $Reader, [scriptblock] $Reidentify)
     if ($Now -lt $NextDueUtc) { return $null }
     $sample = Read-FastLlmSpillSample -Luid $Luid -Process $Process -BudgetMs ([int] $script:FastLlmSpillLoopReadBudgetMs) -Reader $Reader
+    $newLuid = $null
+    # A non-Vulkan plan found its adapter by the process's memory. A failed read on it re-identifies once; if that fails too the check is unknown.
+    if ($null -ne $sample.Error -and $Reidentify) {
+        try {
+            $found = & $Reidentify
+            if ($null -ne $found -and [string] (Get-FastLlmSpillValue $found 'reason') -ceq 'selected' -and $null -ne (Get-FastLlmSpillValue $found 'sample')) {
+                $sample = Get-FastLlmSpillValue $found 'sample'
+                $newLuid = [string] (Get-FastLlmSpillValue $found 'luid')
+            }
+        }
+        catch { $null = $_ }
+    }
     $step = Step-FastLlmSpillCheck -Previous $Previous -Sample $sample -Now $Now
     $step | Add-Member -NotePropertyName nextDueUtc -NotePropertyValue $Now.AddSeconds([int] $script:FastLlmSpillCheckIntervalSeconds)
+    if ($null -ne $newLuid) { $step | Add-Member -NotePropertyName luid -NotePropertyValue $newLuid }
     return $step
 }
 
@@ -130,9 +224,14 @@ function Invoke-FastLlmSpillCheckInitial {
 
 # The first check for a start: resolves the LUID, then reads once. Returns the step with the LUID kept as 'luid' for the loop's re-checks.
 function Invoke-FastLlmSpillCheckAtReady {
-    param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision, $Process, [scriptblock] $Reader)
-    $luid = Get-FastLlmSpillCheckLuid -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $KnownLuid -BarDecision $BarDecision
-    $step = Invoke-FastLlmSpillCheckInitial -Luid ([string] $luid) -Process $Process -Reader $Reader
+    param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision, $Process, [scriptblock] $Reader, [scriptblock] $Enumerator, [scriptblock] $Clock)
+    $found = @{}
+    $luid = Get-FastLlmSpillCheckLuid -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $KnownLuid -BarDecision $BarDecision -Process $Process -Reader $Reader -Enumerator $Enumerator -Clock $Clock -Found $found
+    if ($null -ne $found['sample']) {
+        # The identifying read is the first read: the process was already read on the selected adapter inside the first-read budget.
+        $step = Step-FastLlmSpillCheck -Previous $null -Sample $found['sample'] -Now (Get-Date).ToUniversalTime()
+    }
+    else { $step = Invoke-FastLlmSpillCheckInitial -Luid ([string] $luid) -Process $Process -Reader $Reader }
     $step | Add-Member -NotePropertyName luid -NotePropertyValue ([string] $luid)
     return $step
 }
@@ -187,8 +286,8 @@ function Get-FastLlmSpillCheckBenchOutcome {
     return 'note'
 }
 
-# Benchmark tracker. A spill refuses the run at the start and fails it during the run. An unavailable check (for example the HIP
-# engine, which has no adapter LUID) never refuses: the track records the worst state seen and the result is labelled.
+# Benchmark tracker. A spill refuses the run at the start and fails it during the run. An unavailable check (for example an engine whose
+# adapter could not be identified) never refuses: the track records the worst state seen and the result is labelled.
 # Returns the updated track { state = ok|unknown; label = $null|'GPU memory check unavailable'; checks = count }. A $null Track starts one.
 function Step-FastLlmBenchmarkSpillTrack {
     param($Track, $Status, [ValidateSet('start', 'run')][string] $Phase = 'start')
@@ -227,17 +326,26 @@ function Get-FastLlmDeviceBindingLuid {
     return $null
 }
 
-# The LUID for this run: the one the device binding already produced, else the same Vulkan to DXGI join once (the bounded collector
-# child the Resizable BAR check uses). Never throws; $null means the check reports unknown.
+# The LUID for this run: the one the device binding already produced, else for Vulkan the same Vulkan to DXGI join once (the bounded
+# collector child the Resizable BAR check uses), else (any other engine, such as HIP) the adapter that holds the server process's own
+# memory (Find-FastLlmProcessAdapter, inside the first-read budget). Never throws; $null means the check reports unknown. $Found, when given,
+# receives { reason; sample } from the process-memory rule so the caller can reuse the identifying read.
 function Get-FastLlmSpillCheckLuid {
-    param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision)
+    param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision, $Process, [scriptblock] $Reader, [scriptblock] $Enumerator, [scriptblock] $Clock, [hashtable] $Found)
     try {
         if ($KnownLuid -and ([string] $KnownLuid) -cmatch '^[0-9a-fA-F]{16}$') { return ([string] $KnownLuid).ToLowerInvariant() }
-        if ($env:OS -ne 'Windows_NT') { return $null }
-        if (([string] (Get-FastLlmSpillValue $Plan 'backend')) -ine 'vulkan') { return $null }
-        $outcome = Invoke-FastLlmDeviceBinding -Plan $Plan -InstallRoot $InstallRoot -BarDecision $BarDecision -Mode record
-        $luid = Get-FastLlmSpillValue $outcome 'luid'
-        if ($luid -and ([string] $luid) -cmatch '^[0-9a-f]{16}$') { return [string] $luid }
+        if (([string] (Get-FastLlmSpillValue $Plan 'backend')) -ieq 'vulkan') {
+            if ($env:OS -ne 'Windows_NT') { return $null }
+            $outcome = Invoke-FastLlmDeviceBinding -Plan $Plan -InstallRoot $InstallRoot -BarDecision $BarDecision -Mode record
+            $luid = Get-FastLlmSpillValue $outcome 'luid'
+            if ($luid -and ([string] $luid) -cmatch '^[0-9a-f]{16}$') { return [string] $luid }
+            return $null
+        }
+        if ($null -eq $Process) { return $null }
+        if ($env:OS -ne 'Windows_NT' -and -not $Enumerator) { return $null }
+        $selection = Find-FastLlmProcessAdapter -Process $Process -BudgetMs ([int] $script:FastLlmSpillFirstReadBudgetMs) -Enumerator $Enumerator -Reader $Reader -Clock $Clock
+        if ($null -ne $Found) { $Found['reason'] = [string] $selection.reason; $Found['sample'] = $selection.sample }
+        if ([string] $selection.reason -ceq 'selected') { return [string] $selection.luid }
     }
     catch { $null = $_ }
     return $null
