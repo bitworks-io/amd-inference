@@ -129,9 +129,18 @@ Assert-True (-not $diff) "upgraded tree differs from the package: $($diff | Out-
 
 # The installer recorded the release it replaced, bound to the release that replaced it
 $recordDir = Join-Path $data 'state\previous-release'
+function Show-SetupLog([string]$Path) {
+    Write-Host "---- Setup log: $Path ----"
+    if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path | Select-Object -Last 80 | ForEach-Object { Write-Host $_ } } else { Write-Host '(no log file)' }
+    Write-Host '---- record folder ----'
+    if (Test-Path -LiteralPath $recordDir) { Get-ChildItem -LiteralPath $recordDir -Force | ForEach-Object { Write-Host ('  ' + $_.Name + ' ' + $_.Length) } } else { Write-Host '(missing)' }
+}
 function Get-RecordSnapshot { @(Get-ChildItem -LiteralPath $recordDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join ';' }
+try {
 Assert-True (Test-Path -LiteralPath $recordDir -PathType Container) 'no previous-release record after the v1 to v2 upgrade'
-Assert-True ((@(Get-ChildItem -LiteralPath $recordDir -File | Sort-Object Name | ForEach-Object { $_.Name }) -join ',') -ceq 'RELEASE.json,record.json,release-policy.json') 'the record must hold RELEASE.json, release-policy.json and record.json'
+$recordNames = @(Get-ChildItem -LiteralPath $recordDir -File | ForEach-Object { $_.Name })
+# Compare as a set: Sort-Object orders names by the culture, which puts record.json before RELEASE.json.
+Assert-True ($recordNames.Count -eq 3 -and -not (Compare-Object $recordNames @('RELEASE.json', 'record.json', 'release-policy.json') -CaseSensitive)) ('the record must hold RELEASE.json, release-policy.json and record.json; it holds: ' + ($recordNames -join ', '))
 Assert-True ((Get-Content -LiteralPath (Join-Path $recordDir 'RELEASE.json') -Raw | ConvertFrom-Json).version -ceq $v1) 'the record must hold v1 RELEASE.json'
 Assert-True ((Get-FileHash -LiteralPath (Join-Path $recordDir 'release-policy.json') -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath (Join-Path $tree1 'config\release-policy.json') -Algorithm SHA256).Hash) 'the record must hold the v1 release-policy.json'
 Assert-True ((Get-Content -LiteralPath (Join-Path $recordDir 'record.json') -Raw | ConvertFrom-Json).replacedBy -ceq $v2) 'the record must say it was replaced by v2'
@@ -139,6 +148,8 @@ Assert-True ((Get-Content -LiteralPath (Join-Path $recordDir 'record.json') -Raw
 $recordBefore = Get-RecordSnapshot
 Invoke-Silent (Build-Installer $v2 $tree2) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v2b.log")
 Assert-True ((Get-RecordSnapshot) -ceq $recordBefore) 're-running the same version changed the record'
+}
+catch { Show-SetupLog "$work\install-v2.log"; Show-SetupLog "$work\install-v2b.log"; throw }
 
 # 4. Silent uninstall keeps user data and removes the sign-in registration
 # A fresh profile may have neither key: create them only here, where the test seeds its own values.
@@ -157,6 +168,7 @@ Remove-Item -LiteralPath $marker -Force
 Assert-True (Test-Path -LiteralPath $recordDir) 'uninstall removed the record folder (it is user data)'
 Set-Content -LiteralPath (Join-Path $recordDir 'stale.txt') -Value 'stale' -Encoding ascii
 Invoke-Silent $setup1 @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/LOG=$work\install-v1-fresh.log")
+if (Test-Path -LiteralPath $recordDir) { Show-SetupLog "$work\install-v1-fresh.log" }
 Assert-True (-not (Test-Path -LiteralPath $recordDir)) 'a fresh install must clear the stale record'
 Invoke-Silent (Join-Path $app '_uninstall\unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
 Assert-True (Wait-Gone (Join-Path $app 'fast-llm.ps1')) 'app files remain 60 s after the second uninstall'

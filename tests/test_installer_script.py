@@ -75,6 +75,18 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn("Pos('\"version\": \"{#AppVersion}\"', Text)", record)
         self.assertNotIn("Pos('\"{#AppVersion}\"'", record)
 
+    def test_setup_logs_what_the_record_step_did(self):
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        self.assertGreaterEqual(record.count("Log("), 3)
+        self.assertIn("GetExceptionMessage", record)
+
+    def test_ci_install_test_shows_the_setup_log_and_does_not_depend_on_culture_sort(self):
+        text = (Path(__file__).resolve().parent / "installer-tests.ps1").read_text(encoding="utf-8")
+        self.assertIn("Show-SetupLog", text)
+        self.assertIn("-CaseSensitive", text)
+        names = text[text.index("$recordNames"):text.index("$recordNames") + 400]
+        self.assertNotIn("Sort-Object", names)
+
     def test_recording_the_previous_release_never_fails_the_install(self):
         record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
         self.assertIn("try", record)
