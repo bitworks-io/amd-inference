@@ -45,6 +45,54 @@ class InstallerScriptTests(unittest.TestCase):
         # The values go away before the early exit that skips the data-folder prompt.
         self.assertLess(body.index("RegDeleteValue(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run'"), body.index("if UninstallSilent"))
 
+    def test_previous_release_is_recorded_before_install_delete_runs(self):
+        # Setup runs PrepareToInstall before it starts the install step, which is where [InstallDelete] runs.
+        self.assertIn("procedure RecordPreviousRelease;", ISS)
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        for needle in ("'\\RELEASE.json'", "'\\config\\release-policy.json'", "state\\previous-release", "CopyFile(", "DelTree(RecordDir", "record.json", "replacedBy", "{#AppVersion}"):
+            self.assertIn(needle, record)
+        self.assertRegex(record, r"if not FileExists\(\w+\) then")  # no installed release: nothing is copied
+        prepare = ISS[ISS.index("function PrepareToInstall"):]
+        prepare = prepare[:prepare.index("\nend;")]
+        self.assertIn("RecordPreviousRelease;", prepare)
+        self.assertGreater(prepare.index("RecordPreviousRelease;"), prepare.index("Result := 'FastLLM was not installed."))
+        self.assertNotIn("ssInstall", ISS)
+        self.assertLess(ISS.index("procedure RecordPreviousRelease;"), ISS.index("function PrepareToInstall"))
+
+    def test_record_is_bound_to_the_install_and_written_last(self):
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        self.assertNotIn("FileCopy(", record)
+        self.assertLess(record.index("RecordDir + '\\release-policy.json'"), record.index("record.json"))
+        self.assertLess(record.index("CopyFile(OldRelease"), record.index("record.json"))
+        self.assertIn('{"replacedBy":"{#AppVersion}"}', record)
+        self.assertIn("SaveStringToFile(", record)
+        # a fresh install (no installed release) clears any existing record
+        before_exit = record[record.index("if not FileExists(OldRelease)"):]
+        self.assertRegex(before_exit, r"(?s)if not FileExists\(OldRelease\) then\s*begin.*?DelTree\(RecordDir.*?Exit;\s*end;")
+
+    def test_same_version_check_matches_the_version_key_exactly(self):
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        self.assertIn("Pos('\"version\": \"{#AppVersion}\"', Text)", record)
+        self.assertNotIn("Pos('\"{#AppVersion}\"'", record)
+
+    def test_setup_logs_what_the_record_step_did(self):
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        self.assertGreaterEqual(record.count("Log("), 3)
+        self.assertIn("GetExceptionMessage", record)
+
+    def test_ci_install_test_shows_the_setup_log_and_does_not_depend_on_culture_sort(self):
+        text = (Path(__file__).resolve().parent / "installer-tests.ps1").read_text(encoding="utf-8")
+        self.assertIn("Show-SetupLog", text)
+        self.assertIn("-CaseSensitive", text)
+        names = text[text.index("$recordNames"):text.index("$recordNames") + 400]
+        self.assertNotIn("Sort-Object", names)
+
+    def test_recording_the_previous_release_never_fails_the_install(self):
+        record = ISS[ISS.index("procedure RecordPreviousRelease;"):ISS.index("function PrepareToInstall")]
+        self.assertIn("try", record)
+        self.assertIn("except", record)
+        self.assertNotIn("Result :=", record)
+
 
 if __name__ == "__main__":
     unittest.main()

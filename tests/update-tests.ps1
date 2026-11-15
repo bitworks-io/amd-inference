@@ -355,4 +355,132 @@ $tlsAt = $httpSource.IndexOf('[Net.SecurityProtocolType]::Tls12', [StringCompari
 $webAt = $httpSource.IndexOf('Invoke-WebRequest', [StringComparison]::Ordinal)
 Check ($tlsAt -ge 0 -and $webAt -gt $tlsAt -and $httpSource.Contains('[Net.ServicePointManager]::SecurityProtocol = ') -and $httpSource.Contains("IsDefined([Net.SecurityProtocolType], 'Tls13')")) 'the default request seam enables TLS 1.2 (and 1.3 when defined) before Invoke-WebRequest'
 
+# --- reinstall-previous decision (pure: no network, no files) ---
+function New-Policy($DataFormat = 1, $Floor = $null) {
+    [pscustomobject]@{ schema = 'bitworks.fastllm-release-policy/v1'; dataFormat = $DataFormat; rollbackFloor = $Floor; rollbackFloorReason = $null }
+}
+function New-PrevRecord([string]$Version = '2026.10.15.1', $Policy = $null, [bool]$WithPolicy = $true, $ReplacedBy = '2026.10.16.1') {
+    if ($WithPolicy -and $null -eq $Policy) { $Policy = New-Policy }
+    [pscustomobject]@{ version = $Version; policy = $Policy; replacedBy = $ReplacedBy }
+}
+function New-StoreRelease([string]$Version = '2026.10.15.1', [bool]$Draft = $false) { [pscustomobject]@{ version = $Version; draft = $Draft } }
+function Decide($InstalledPolicy, [string]$InstalledVersion, $PreviousRecord, $FreshLatest, $StoreRelease) {
+    Get-FastLlmReinstallDecision -InstalledPolicy $InstalledPolicy -InstalledVersion $InstalledVersion -PreviousRecord $PreviousRecord -FreshLatest $FreshLatest -StoreRelease $StoreRelease
+}
+$inst = '2026.10.16.1'
+
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'eligible' -and $d.reason -ceq 'eligible' -and $d.target -ceq '2026.10.15.1') 'reinstall: the immediate previous release in the store, same data format, no floor: eligible'
+
+$d = Decide (New-Policy) $inst $null $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'no-previous-record' -and $null -eq $d.target) 'reinstall: no previous record is refused'
+
+foreach ($case in @(@('the same version as installed', '2026.10.16.1'), @('a newer version than installed', '2026.10.17.1'), @('a malformed version', 'previous'))) {
+    $d = Decide (New-Policy) $inst (New-PrevRecord $case[1]) $null (New-StoreRelease $case[1])
+    Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') ("reinstall: a record holding " + $case[0] + ' is not the immediate previous')
+}
+$d = Decide (New-Policy) 'not-a-version' (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') 'reinstall: an unreadable installed version is refused'
+
+$d = Decide (New-Policy 1 '2026.10.16.1') $inst (New-PrevRecord '2026.10.15.1') $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'below-security-floor' -and $d.target -ceq '2026.10.15.1') 'reinstall: a target below the installed floor is refused'
+$d = Decide (New-Policy 1 '2026.10.15.1') $inst (New-PrevRecord '2026.10.15.1') $null (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall: a target equal to the floor is allowed'
+$d = Decide (New-Policy 1 'garbage') $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'below-security-floor') 'reinstall: an unreadable floor fails closed'
+# The floor comes from the INSTALLED policy; the previous release's own floor is not consulted.
+$d = Decide (New-Policy 1) $inst (New-PrevRecord '2026.10.15.1' (New-Policy 1 '2026.10.16.1')) $null (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall: only the installed policy supplies the floor'
+
+$d = Decide (New-Policy 2) $inst (New-PrevRecord '2026.10.15.1' (New-Policy 1)) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-differs') 'reinstall: a different data format is refused'
+$d = Decide (New-Policy 1) $inst (New-PrevRecord '2026.10.15.1' $null $false) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: a previous release with no policy file is refused'
+$d = Decide (New-Policy 1) $inst (New-PrevRecord '2026.10.15.1' ([pscustomobject]@{ schema = 'x' })) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: a previous policy with no data format is refused'
+$d = Decide (New-Policy 1) $inst (New-PrevRecord '2026.10.15.1' (New-Policy '1')) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: a data format that is not a whole number is refused'
+$d = Decide $null $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: an installed release with no policy file is refused'
+$d = Decide (New-Policy $true) $inst (New-PrevRecord '2026.10.15.1' (New-Policy $true)) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: a boolean is not a data format'
+
+$d = Decide (New-Policy) $inst (New-PrevRecord) '2026.10.17.1' (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'newer-release-available') 'reinstall: a newer fresh release is refused in favour of updating'
+$d = Decide (New-Policy) $inst (New-PrevRecord) $inst (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall: a fresh check equal to the installed version does not block'
+$d = Decide (New-Policy) $inst (New-PrevRecord) '2026.10.01.1' (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall: an older fresh answer does not block'
+foreach ($bad in @('not-a-version', "2026.10.17.1`n", '2026.10.17', '2026.10.17.1 ')) {
+    $d = Decide (New-Policy) $inst (New-PrevRecord) $bad (New-StoreRelease)
+    Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'fresh-check-unreadable') 'reinstall: a fresh answer that is not a strict version is refused, not ignored'
+}
+$d = Decide (New-Policy) $inst (New-PrevRecord) '' (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall: an empty fresh answer means offline and allows the local rules'
+
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null $null
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-in-release-store') 'reinstall: a release missing from the store is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null (New-StoreRelease '2026.10.14.1')
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-in-release-store') 'reinstall: a store entry for a different version is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null ([pscustomobject]@{ version = '2026.10.15.1' })
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-in-release-store') 'reinstall: a store entry with no draft flag is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null (New-StoreRelease '2026.10.15.1' $true)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'draft-release') 'reinstall: a draft release is refused'
+
+# Order: a floor refusal wins over a missing store entry; a data refusal wins over a newer release.
+$d = Decide (New-Policy 1 '2026.10.16.1') $inst (New-PrevRecord) '2026.10.17.1' $null
+Check ($d.reason -ceq 'below-security-floor') 'reinstall: the security floor is checked before the store'
+$d = Decide (New-Policy 2) $inst (New-PrevRecord) '2026.10.17.1' (New-StoreRelease)
+Check ($d.reason -ceq 'data-format-differs') 'reinstall: the data format is checked before newer-release'
+
+# --- strict reads: the record is bound to the install, policy fields are read as scalars ---
+$d = Decide (New-Policy) $inst (New-PrevRecord '2026.10.15.1' $null $true '2026.10.14.1') $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') 'reinstall: a record written for another install (replacedBy differs) is refused'
+$d = Decide (New-Policy) $inst ([pscustomobject]@{ version = '2026.10.15.1'; policy = (New-Policy) }) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') 'reinstall: a record with no replacedBy is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord '2026.10.15.1' $null $true @('2026.10.16.1')) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') 'reinstall: a replacedBy that is not a string is refused'
+
+$noFloor = [pscustomobject]@{ schema = 'bitworks.fastllm-release-policy/v1'; dataFormat = 1; rollbackFloorReason = $null }
+$d = Decide $noFloor $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'below-security-floor') 'reinstall: an installed policy with no rollbackFloor property is refused'
+foreach ($badFloor in @(@(), @('2026.10.01.1'), 5, $true, "2026.10.01.1`n", '2026.10.01.0', '')) {
+    $d = Decide (New-Policy 1 $badFloor) $inst (New-PrevRecord) $null (New-StoreRelease)
+    Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'below-security-floor') 'reinstall: a floor that is not null or a strict version string is refused'
+}
+$d = Decide ([pscustomobject]@{ schema = 'other'; dataFormat = 1; rollbackFloor = $null }) $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: an installed policy with a foreign schema is refused'
+$d = Decide ([pscustomobject]@{ dataFormat = 1; rollbackFloor = $null }) $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: an installed policy with no schema is refused'
+$d = Decide (New-Policy @(1)) $inst (New-PrevRecord) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: an installed dataFormat array is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord '2026.10.15.1' (New-Policy @(1))) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'data-format-missing') 'reinstall: a previous dataFormat array is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null ([pscustomobject]@{ version = '2026.10.15.1'; draft = @($false) })
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-in-release-store') 'reinstall: a draft flag that is an array is refused'
+
+foreach ($lax in @("2026.10.15.1`n", '2026.10.15.1 ', '٢٠٢٦.10.15.1')) {
+    $d = Decide (New-Policy) $inst (New-PrevRecord $lax) $null (New-StoreRelease $lax)
+    Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') 'reinstall: a target that is not a strict version is refused'
+}
+$d = Decide (New-Policy) "2026.10.16.1`n" (New-PrevRecord '2026.10.15.1' $null $true "2026.10.16.1`n") $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-immediate-previous') 'reinstall: an installed version that is not a strict version is refused'
+$d = Decide (New-Policy) $inst (New-PrevRecord) $null (New-StoreRelease "2026.10.15.1`n")
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'not-in-release-store') 'reinstall: a store version that is not strict is refused'
+
+# Real JSON, as the future reader will produce it.
+$jsonOk = '{"schema":"bitworks.fastllm-release-policy/v1","dataFormat":1,"rollbackFloor":null,"rollbackFloorReason":null}' | ConvertFrom-Json
+$d = Decide $jsonOk $inst (New-PrevRecord '2026.10.15.1' $jsonOk) $null (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall: policies parsed from JSON are eligible'
+$jsonArr = '{"schema":"bitworks.fastllm-release-policy/v1","dataFormat":1,"rollbackFloor":[],"rollbackFloorReason":null}' | ConvertFrom-Json
+$d = Decide $jsonArr $inst (New-PrevRecord '2026.10.15.1' $jsonOk) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'below-security-floor') 'reinstall: an empty-array floor parsed from JSON is refused, not read as no floor'
+$jsonMissing = '{"schema":"bitworks.fastllm-release-policy/v1","dataFormat":1}' | ConvertFrom-Json
+$d = Decide $jsonMissing $inst (New-PrevRecord '2026.10.15.1' $jsonOk) $null (New-StoreRelease)
+Check ($d.decision -ceq 'refused' -and $d.reason -ceq 'below-security-floor') 'reinstall: a missing floor parsed from JSON is refused'
+
+$decisionSource = (Get-Command Get-FastLlmReinstallDecision).ScriptBlock.ToString()
+Check (-not ($decisionSource -match 'Invoke-|Get-Content|Test-Path|Set-Content|\[IO\.|Start-Process|Invoke-WebRequest')) 'reinstall: the decision function does no I/O'
+Check ($null -ne (Get-Command Invoke-FastLlmVerifiedUpdate) -and -not ((Get-Command Invoke-FastLlmVerifiedUpdate).ScriptBlock.ToString().Contains('Get-FastLlmReinstallDecision'))) 'reinstall: the update path does not call the decision (no install path yet)'
+
 Write-Host 'update-tests: PASS'

@@ -82,6 +82,60 @@ begin
             FileExists(AddBackslash(Dir) + '_uninstall\unins000.dat');
 end;
 
+// Keep a copy of the release being replaced (its RELEASE.json and release policy) in the user's data folder, plus a record.json
+// naming the release that replaces it, so a later, explicit reinstall of exactly that version can be decided from facts the
+// installer wrote and can tell a record that belongs to the installed release from a stale one. This also covers installs run
+// by hand. record.json is written last, so a partial record never carries it. Best effort: it never fails or delays the install.
+// With no installed release (a fresh install) any existing record is removed. Re-running the same version leaves the record
+// alone. It runs from PrepareToInstall, before Setup's install step and [InstallDelete]. The version test matches the
+// "version" key as RELEASE.json is written (two-space indent, one space after the colon), so "rollbackOf" never matches.
+procedure RecordPreviousRelease;
+var
+  AppDir, RecordDir, OldRelease, OldPolicy, Text: String;
+  Raw: AnsiString;
+  SameVersion, Ok: Boolean;
+begin
+  AppDir := RemoveBackslash(ExpandConstant('{app}'));
+  OldRelease := AppDir + '\RELEASE.json';
+  OldPolicy := AppDir + '\config\release-policy.json';
+  RecordDir := ExpandConstant('{localappdata}\Bitworks\FastLLM\state\previous-release');
+  try
+    if not FileExists(OldRelease) then
+    begin
+      if DirExists(RecordDir) then DelTree(RecordDir, True, True, True);
+      Log('Previous-release record: no installed release, record cleared.');
+      Exit;
+    end;
+    SameVersion := False;
+    if LoadStringFromFile(OldRelease, Raw) then
+    begin
+      Text := String(Raw);
+      SameVersion := Pos('"version": "{#AppVersion}"', Text) > 0;
+    end;
+    if SameVersion then
+    begin
+      Log('Previous-release record: same version, record kept.');
+      Exit;
+    end;
+    if DirExists(RecordDir) then DelTree(RecordDir, True, True, True);
+    Ok := ForceDirectories(RecordDir) and CopyFile(OldRelease, RecordDir + '\RELEASE.json', False);
+    if Ok and FileExists(OldPolicy) then
+      Ok := CopyFile(OldPolicy, RecordDir + '\release-policy.json', False);
+    if Ok then
+      Ok := SaveStringToFile(RecordDir + '\record.json', '{"replacedBy":"{#AppVersion}"}', False);
+    if not Ok then
+    begin
+      DelTree(RecordDir, True, True, True);
+      Log('Previous-release record: copy failed, record removed.');
+    end
+    else
+      Log('Previous-release record: written.');
+  except
+    Log('Previous-release record: not written (' + GetExceptionMessage + ').');
+    // A record that cannot be written means no reinstall is offered later; the install goes on.
+  end;
+end;
+
 // [InstallDelete] clears the top level of the app folder, so /DIR= must never point Setup at a folder that holds someone
 // else's files. An empty or missing folder and an existing FastLLM install (an upgrade) are fine. This runs before any
 // file is deleted.
@@ -93,7 +147,9 @@ begin
   Dir := RemoveBackslash(ExpandConstant('{app}'));
   if DirExists(Dir) and DirHasEntries(Dir) and not IsFastLlmInstall(Dir) then
     Result := 'FastLLM was not installed. The folder ' + Dir + ' already contains files that are not part of a FastLLM installation, ' +
-              'and installing there would delete them. Choose an empty or new folder, or leave the default.';
+              'and installing there would delete them. Choose an empty or new folder, or leave the default.'
+  else
+    RecordPreviousRelease;
 end;
 
 function DirSizeBytes(const Dir: String): Int64;

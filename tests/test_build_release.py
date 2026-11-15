@@ -7,6 +7,7 @@ br = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(br)
 
 T = "2026-10-20T12:00:01Z"
+POLICY = {"schema": "bitworks.fastllm-release-policy/v1", "dataFormat": 1, "rollbackFloor": None, "rollbackFloorReason": None}
 
 
 class PublicBuilderTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class PublicBuilderTests(unittest.TestCase):
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(rel + "\n")
+        (self.root / "config" / "release-policy.json").write_text(json.dumps(POLICY))
         (self.root / "tools" / "product-tools.json").write_text(json.dumps({"schema": "fastllm.product-tools.v1", "tools": ["x.py"]}))
         self.out = Path(tempfile.mkdtemp()) / "out"
 
@@ -61,6 +63,73 @@ class PublicBuilderTests(unittest.TestCase):
         self.assertEqual(result["manifestSha256"], release["manifestSha256"])
         sha = (self.out / "package-unsigned.sha256").read_text().strip()
         self.assertEqual(sha, hashlib.sha256((self.out / "package-unsigned.zip").read_bytes()).hexdigest())
+
+    def write_policy(self, doc):
+        text = doc if isinstance(doc, str) else json.dumps(doc)
+        (self.root / "config" / "release-policy.json").write_text(text)
+
+    def test_release_policy_ships_in_the_manifest(self):
+        self.build()
+        self.assertIn("config/release-policy.json", self.names())
+        manifest = json.loads(self.member("MANIFEST.json"))
+        entry = [f for f in manifest["files"] if f["path"] == "config/release-policy.json"]
+        self.assertEqual(len(entry), 1)
+        self.assertEqual(entry[0]["sha256"], hashlib.sha256(self.member("config/release-policy.json")).hexdigest())
+
+    def test_refuses_a_missing_release_policy(self):
+        (self.root / "config" / "release-policy.json").unlink()
+        with self.assertRaisesRegex(br.BuildError, "release policy"):
+            self.build()
+
+    def test_refuses_a_malformed_release_policy(self):
+        good = dict(POLICY)
+        bad = ["not json", "[]", "null",
+               dict(good, schema="other"), dict(good, dataFormat=0), dict(good, dataFormat="1"), dict(good, dataFormat=True), dict(good, dataFormat=1.5),
+               dict(good, rollbackFloor="2026.10.20.01", rollbackFloorReason="security"),
+               dict(good, rollbackFloor="2026.10.21.1", rollbackFloorReason="security"),
+               dict(good, rollbackFloor="2026.10.19.1", rollbackFloorReason=None),
+               dict(good, rollbackFloor=None, rollbackFloorReason="security"),
+               dict(good, rollbackFloor="2026.10.19.1", rollbackFloorReason="other"),
+               dict(good, extra=1), dict(good, dataFormat=1000001),
+               dict(good, rollbackFloor="2026.10.19.1\n", rollbackFloorReason="security"),
+               dict(good, rollbackFloor="\u0662026.10.19.1", rollbackFloorReason="security"),
+               '{"schema": "bitworks.fastllm-release-policy/v1", "dataFormat": 1, "dataFormat": 2, "rollbackFloor": null, "rollbackFloorReason": null}']
+        missing = dict(good)
+        del missing["rollbackFloorReason"]
+        bad.append(missing)
+        for doc in bad:
+            with self.subTest(doc=doc):
+                self.out = Path(tempfile.mkdtemp()) / "out"
+                self.write_policy(doc)
+                with self.assertRaisesRegex(br.BuildError, "release policy"):
+                    self.build()
+
+    def test_accepts_the_largest_data_format(self):
+        self.write_policy(dict(POLICY, dataFormat=1000000))
+        self.build()
+
+    def test_refuses_a_symlinked_release_policy_that_the_package_would_skip(self):
+        target = self.root / "elsewhere.json"
+        target.write_text(json.dumps(POLICY))
+        link = self.root / "config" / "release-policy.json"
+        link.unlink()
+        try:
+            os.symlink(str(target), str(link))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available here")
+        with self.assertRaisesRegex(br.BuildError, "release policy"):
+            self.build()
+
+    def test_accepts_a_floor_at_or_below_this_version(self):
+        for floor, reason in (("2026.10.20.1", "security"), ("2026.10.19.3", "data")):
+            self.out = Path(tempfile.mkdtemp()) / "out"
+            self.write_policy(dict(POLICY, dataFormat=2, rollbackFloor=floor, rollbackFloorReason=reason))
+            self.build()
+
+    def test_the_repo_policy_file_is_the_neutral_default(self):
+        path = ROOT / "config" / "release-policy.json"
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), POLICY)
+        br.validate_release_policy(path.read_bytes(), "2026.10.20.1")
 
     def test_rollback_recorded(self):
         self.build(rollback_of="2026.10.19.1")
