@@ -1,0 +1,112 @@
+{
+  "note": "Clearly synthetic rehearsal data. Nothing here is a real submission and nothing here ships.",
+  "screen": {
+    "id": "synthetic-rehearsal-1",
+    "variant": "rx-7900-xt",
+    "exactModel": {
+      "sha256": "40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199",
+      "fileName": "Qwen3.8-27B-UD-IQ4_XS.gguf"
+    },
+    "engine": {
+      "name": "llama.cpp",
+      "version": "b10698",
+      "backend": "vulkan"
+    },
+    "settings": {
+      "contextSize": 16384,
+      "flags": "",
+      "draftModel": null,
+      "gpuCount": 1,
+      "topology": "single"
+    },
+    "submissionComplete": true,
+    "generationTps": [
+      {
+        "value": 100.0
+      }
+    ],
+    "promptTps": [
+      {
+        "value": 1500.0
+      }
+    ]
+  },
+  "record": {
+    "id": "synthetic-rehearsal-1",
+    "origin": "community-experimental",
+    "variant": "rx-7900-xt",
+    "gpuCount": 1,
+    "model": "qwen3.8-27b-ud-iq4-xs",
+    "runtime": {
+      "contextSize": 16384,
+      "parallel": 1,
+      "cacheTypeK": "f16",
+      "cacheTypeV": "f16",
+      "fitTargetMiB": 512,
+      "vulkanBarMitigation": "auto"
+    },
+    "engineBuild": "b10698",
+    "recommended": false,
+    "expected": {
+      "generationTokS": 100.0,
+      "promptTokS": 1500.0,
+      "contextTokens": 16384,
+      "engineBuild": "b10698",
+      "mitigation": "on",
+      "measuredAt": "2026-01-01"
+    },
+    "evidence": null,
+    "source": {
+      "author": "Synthetic Example",
+      "url": "https://example.invalid/record",
+      "postedAt": "2026-01-01",
+      "recordId": "synthetic-rehearsal-1"
+    }
+  },
+  "recipe": {
+    "id": "synthetic-rehearsal-1",
+    "origin": "community-experimental",
+    "label": "Experimental community recipe, not reproduced by Bitworks",
+    "gpu": {
+      "variant": "rx-7900-xt",
+      "count": 1
+    },
+    "components": {
+      "engine": "llama.cpp-b10698-vulkan",
+      "model": "qwen3.8-27b-ud-iq4-xs"
+    },
+    "runtime": {
+      "contextSize": 16384,
+      "parallel": 1,
+      "cacheTypeK": "f16",
+      "cacheTypeV": "f16",
+      "fitTargetMiB": 512,
+      "vulkanBarMitigation": "auto"
+    },
+    "engineBuild": "b10698",
+    "recommended": false,
+    "expected": {
+      "generationTokS": 100.0,
+      "promptTokS": 1500.0,
+      "contextTokens": 16384,
+      "engineBuild": "b10698",
+      "mitigation": "on",
+      "measuredAt": "2026-01-01"
+    },
+    "evidence": null,
+    "source": {
+      "author": "Synthetic Example",
+      "url": "https://example.invalid/record",
+      "postedAt": "2026-01-01",
+      "recordId": "synthetic-rehearsal-1"
+    },
+    "compelling": {
+      "baselineRecipe": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
+      "baselineGeneration": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
+      "baselinePrompt": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
+      "generationGainPct": 205.3,
+      "promptGainPct": 87.7,
+      "isCompelling": true
+    }
+  }
+}

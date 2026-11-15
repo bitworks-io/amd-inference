@@ -68,6 +68,94 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual((best[("rx-7900-xtx", 1)]["generationTokS"], best[("rx-7900-xtx", 1)]["promptTokS"]), (33.72, 876.3))
 
 
+SYNTHETIC = json.loads((ROOT / "tests" / "fixtures" / "community-synthetic-record.json").read_text(encoding="utf-8"))
+
+
+def screen_one(record, variant="rx-7900-xt"):
+    base = json.loads(json.dumps(SYNTHETIC["screen"]))
+    base.update(record)
+    base["variant"] = variant
+    rows = sc.screen([base], RECIPES, COMPONENTS, VARIANTS)
+    assert len(rows) == 1
+    return rows[0]
+
+
+class BlockerReportTests(unittest.TestCase):
+    def test_synthetic_record_has_no_blockers_and_only_the_standing_approvals(self):
+        row = screen_one({})
+        self.assertTrue(row["candidate"])
+        self.assertEqual(row["blockers"], [])
+        self.assertEqual(row["approvalsNeeded"], ["lab-reproduction", "submitter-permission"])
+
+    def test_model_not_in_catalog_needs_the_licence_and_fit_approval(self):
+        row = screen_one({"exactModel": {"sha256": "b" * 64, "fileName": "Other-Model.gguf"}})
+        self.assertIn("model-not-in-catalog", row["blockers"])
+        self.assertIn("model-licence-and-fit", row["approvalsNeeded"])
+
+    def test_catalog_model_matches_by_file_name_when_no_hash_is_given(self):
+        row = screen_one({"exactModel": {"fileName": "Qwen3.8-27B-UD-IQ4_XS.gguf", "provider": "unsloth"}})
+        self.assertNotIn("model-not-in-catalog", row["blockers"])
+
+    def test_settings_a_recipe_cannot_express_are_each_named(self):
+        cases = {
+            "batch-size": {"flags": "-b 4096"},
+            "flash-attention": {"flags": "--flash-attn on"},
+            "parallel": {"flags": "-np 4"},
+            "speculation": {"draftModel": "some-draft.gguf"},
+        }
+        for name, extra in cases.items():
+            with self.subTest(name):
+                settings = dict(SYNTHETIC["screen"]["settings"], **extra)
+                row = screen_one({"settings": settings})
+                self.assertIn("settings-not-expressible:" + name, row["blockers"])
+                self.assertFalse(any(b.startswith("settings-not-expressible:") and b != "settings-not-expressible:" + name
+                                     for b in row["blockers"]) and name != "speculation")
+
+    def test_structured_settings_fields_are_also_read(self):
+        settings = dict(SYNTHETIC["screen"]["settings"], batchSize=2048, flashAttention=True, parallel=2)
+        row = screen_one({"settings": settings})
+        for name in ("batch-size", "flash-attention", "parallel"):
+            self.assertIn("settings-not-expressible:" + name, row["blockers"])
+
+    def test_plain_flash_attention_auto_and_one_slot_are_expressible(self):
+        settings = dict(SYNTHETIC["screen"]["settings"], flags="--flash-attn auto -np 1")
+        row = screen_one({"settings": settings})
+        self.assertEqual(row["blockers"], [])
+
+    def test_unknown_card_variant_is_not_in_the_lab(self):
+        row = screen_one({}, variant="rx-9999-xyz")
+        self.assertIn("variant-not-in-lab", row["blockers"])
+        self.assertIn("lab-reproduction", row["approvalsNeeded"])
+
+    def test_engine_build_outside_the_components_file_needs_the_engine_approval(self):
+        row = screen_one({"engine": {"name": "llama.cpp", "version": "b10829", "backend": "vulkan"}})
+        self.assertIn("engine-component", row["approvalsNeeded"])
+        row = screen_one({})
+        self.assertNotIn("engine-component", row["approvalsNeeded"])
+
+    def test_blockers_include_the_existing_reasons_and_all_of_them_at_once(self):
+        settings = dict(SYNTHETIC["screen"]["settings"], flags="-b 4096 -np 2")
+        row = screen_one({"settings": settings, "exactModel": {"sha256": "c" * 64, "fileName": "x.gguf"},
+                          "engine": {"name": "llama.cpp", "version": "b10698", "backend": "hip"}}, variant="rx-9999-xyz")
+        for code in ("model-not-in-catalog", "settings-not-expressible:batch-size", "settings-not-expressible:parallel",
+                     "variant-not-in-lab", "lane-not-shipped:hip"):
+            self.assertIn(code, row["blockers"])
+        self.assertEqual(len(row["blockers"]), len(set(row["blockers"])))
+        for code in row["reasons"]:
+            self.assertIn(code, row["blockers"])
+
+    def test_every_row_has_both_lists(self):
+        rows = sc.screen(sc.load(FIX / "real-shapes.json"), RECIPES, COMPONENTS, VARIANTS)
+        for row in rows:
+            self.assertIsInstance(row["blockers"], list)
+            self.assertIsInstance(row["approvalsNeeded"], list)
+            self.assertTrue(set(row["approvalsNeeded"]) <= {"model-licence-and-fit", "engine-component", "lab-reproduction", "submitter-permission"})
+
+    def test_existing_reasons_field_is_unchanged(self):
+        self.assertEqual(run("cand")["reasons"], [])
+        self.assertIn("topology-unavailable", run("topology")["reasons"])
+
+
 class GpuVariantsTests(unittest.TestCase):
     def test_gpuvariants_list_is_read(self):
         row = run("hip")
