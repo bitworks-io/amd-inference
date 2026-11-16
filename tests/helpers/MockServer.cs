@@ -18,7 +18,7 @@ namespace FastLlmTests {
         }
         public static void Run(int port, string mode, string model, int context, string diagnosticPath) {
             if (Environment.GetEnvironmentVariable("FASTLLM_TEST_EXPECT_ISOLATION") == "1") {
-                foreach (string name in new string[] {"LLAMA_ARG_MODEL", "GGML_TEST_OVERRIDE", "VK_TEST_OVERRIDE", "HIP_TEST_OVERRIDE", "SMITHY_TEST_OVERRIDE", "AIP_TEST_OVERRIDE"})
+                foreach (string name in new string[] {"LLAMA_ARG_MODEL", "LLAMA_API_KEY", "GGML_TEST_OVERRIDE", "VK_TEST_OVERRIDE", "HIP_TEST_OVERRIDE", "SMITHY_TEST_OVERRIDE", "AIP_TEST_OVERRIDE"})
                     if (!String.IsNullOrEmpty(Environment.GetEnvironmentVariable(name))) { Mark(diagnosticPath, "isolation-variable-present: " + name); Environment.Exit(71); }
                 foreach (string name in new string[] {"APPDATA", "PROGRAMDATA"}) {
                     string folder=Environment.GetEnvironmentVariable(name);
@@ -40,6 +40,13 @@ namespace FastLlmTests {
             // (as a verbose llama-server would) and returns a completion marker, so a leak into any FastLLM file is detectable.
             bool echoMarkers = mode.StartsWith("marker-");
             if (echoMarkers) mode = mode.Substring(7);
+            // Model switch tests: /metrics reports the four counters the supervisor reads. "busy-<mode>" behaves as <mode> with one request in
+            // progress for the whole run, "busy2-<mode>" reports it for the first two reads only, and "nometrics-<mode>" answers /metrics with 404.
+            int busyReads = 0;
+            bool noMetrics = false;
+            if (mode.StartsWith("busy-")) { busyReads = Int32.MaxValue; mode = mode.Substring(5); }
+            else if (mode.StartsWith("busy2-")) { busyReads = 2; mode = mode.Substring(6); }
+            else if (mode.StartsWith("nometrics-")) { noMetrics = true; mode = mode.Substring(10); }
             if (mode == "exit") Environment.Exit(7);
             Mark(diagnosticPath, "mock-entered");
             Console.Error.WriteLine("load_tensors: offloaded " + (mode == "partial" ? "39" : "41") + "/41 layers to GPU");
@@ -100,6 +107,15 @@ namespace FastLlmTests {
                         int status=200;
                         string body="{}";
                         if (path == "/health") { status=method!="GET" ? 405 : mode=="timeout" ? 503 : 200; body="{\"status\":\"ok\"}"; }
+                        if (path == "/metrics") {
+                            if (noMetrics) { status = 404; }
+                            else {
+                                int processing = 0;
+                                if (busyReads > 0) { processing = 1; if (busyReads != Int32.MaxValue) busyReads--; }
+                                body = "# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.\n# TYPE llamacpp:prompt_tokens_total counter\nllamacpp:prompt_tokens_total 0\n" +
+                                    "llamacpp:tokens_predicted_total 0\nllamacpp:requests_processing " + processing + "\nllamacpp:requests_deferred 0\n";
+                            }
+                        }
                         if (path == "/v1/models") {
                             // This resembles an allowed startup log but occurs during
                             // a canary; the supervisor must already have frozen capture.

@@ -15,6 +15,8 @@ $old=[ordered]@{
     'Get-FastLlmPlan'='Hardware,CatalogPath,Profile,InstallRoot,ModelId,ContextSize,AllowExperimentalModel,RecipesPath,GpuVariantsPath,RecipeId,ServerPort,Thinking,ChatPage,Recovered,NoEngineExecution,ResolveFallback,FallbackFromRecipe,FallbackReason,PreferInstalledModels'
     'Test-FastLlmApiCanary'='BaseUrl,ModelId,ContextSize'
     'Set-FastLlmServingSettings'='InstallRoot,ServerPort,Thinking,ChatPage,IdleStopMinutes'
+    # The parameter names of the background start before the model switch option was added.
+    'Start-FastLlmBackgroundHost'='SourceRoot,InstallRoot,Profile,ModelId,ContextSize,AllowExperimentalModel,LoadTimeoutSeconds,ReadyTimeoutSeconds,VulkanBarMitigation,ServerPort,Thinking,ChatPage,IdleStopMinutes,NoWait'
 }
 function Get-ParameterNames([string]$Command) {
     if ($Command -ceq 'fast-llm.ps1') {
@@ -53,6 +55,12 @@ $script=Get-Command (Join-Path $root 'fast-llm.ps1')
 Check ($script.ResolveParameter('Context').Name -ceq 'ContextSize') 'fast-llm.ps1 plan -Context 8192 binds ContextSize'
 Check ($script.ResolveParameter('ContextS').Name -ceq 'ContextSize') 'fast-llm.ps1 -ContextS binds ContextSize'
 Check ($script.ResolveParameter('Se').Name -ceq 'ServerPort') 'fast-llm.ps1 -Se binds ServerPort'
+# The model switch options: -Allow still means -AllowExperimentalModel and -F still means -FallbackReason, so the new switches are named
+# -SwitchAllowed and -SwitchForce (not -AllowSwitch and -Force) on the command line and on the background start.
+Check ($script.ResolveParameter('Allow').Name -ceq 'AllowExperimentalModel') 'fast-llm.ps1 -Allow binds AllowExperimentalModel'
+Check ($script.ResolveParameter('F').Name -ceq 'FallbackReason') 'fast-llm.ps1 -F binds FallbackReason'
+Check ($script.ResolveParameter('SwitchA').Name -ceq 'SwitchAllowed' -and $script.ResolveParameter('SwitchF').Name -ceq 'SwitchForce') 'fast-llm.ps1 has -SwitchAllowed and -SwitchForce'
+Check ((Get-ParameterNames 'Start-FastLlmBackgroundHost') -ccontains 'SwitchAllowed' -and (Get-ParameterNames 'Start-FastLlmBackgroundHost') -cnotcontains 'AllowSwitch') 'Start-FastLlmBackgroundHost takes -SwitchAllowed, so -Allow stays -AllowExperimentalModel there too'
 $plan=Get-Command Get-FastLlmPlan
 Check ($plan.ResolveParameter('Context').Name -ceq 'ContextSize') 'Get-FastLlmPlan -Context 8192 binds ContextSize'
 Check ($plan.ResolveParameter('S').Name -ceq 'ServerPort') 'Get-FastLlmPlan -S binds ServerPort'

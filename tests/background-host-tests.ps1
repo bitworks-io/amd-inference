@@ -198,8 +198,12 @@ try {
     function Get-FastLlmStatus { param($InstallRoot) $last = $script:mockStateWrites[$script:mockStateWrites.Count - 1]; $copy = [pscustomobject]@{}; foreach ($key in $last.Keys) { $copy | Add-Member -NotePropertyName $key -NotePropertyValue $last[$key] }; $copy }
     function Enter-FastLlmOperation { param($InstallRoot) $script:mockOrder.Add('lock'); $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
-        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest,$IdleStopMinutes)
+        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch,$SwitchObserver)
         $script:mockIdleStop = $(if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $IdleStopMinutes } else { 'unset' })
+        $script:mockAllowSwitch = $(if ($PSBoundParameters.ContainsKey('AllowSwitch')) { [bool]$AllowSwitch } else { 'unset' })
+        $script:mockObserverGiven = [bool]$PSBoundParameters.ContainsKey('SwitchObserver')
+        # A model switch inside the server: the supervisor tells the observer the model it is about to serve.
+        if ($script:serverSwitchesTo -and $SwitchObserver) { & $SwitchObserver $script:serverSwitchesTo }
         if ($script:serverIdleStop) { $script:mockStateWrites.Add([ordered]@{ schemaVersion = 1; runId = 'supervisor'; phase = 'stopped'; stopReason = 'idle'; idleStopMinutes = $IdleStopMinutes }) }
         Assert-BackgroundTest ([bool]$SelfTest) 'Background worker did not request the post-load self-test.'
         Assert-BackgroundTest ($Plan.backgroundRequestId -ceq $script:workerRequestId) 'Worker lost exact request correlation.'
@@ -225,6 +229,9 @@ try {
     $script:throwPlan = $false
     $script:serverMovesStatus = $false
     $script:serverIdleStop = $false
+    $script:serverSwitchesTo = ''
+    $script:mockAllowSwitch = 'seen-nothing'
+    $script:mockObserverGiven = $false
     $workerRequestPath = Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')
     Write-FastLlmBackgroundDocument -Path $workerRequestPath -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
@@ -349,6 +356,35 @@ try {
     Assert-BackgroundTest ($statusSource.Contains("[string]`$owner.stopReason -ceq 'idle'") -and $statusSource.Contains('idleStopMinutes = if (-not $alive')) 'idle-stop-status: the host status carries stopReason and idleStopMinutes only for a finished run with the exact reason idle.'
     Assert-BackgroundTest ($statusSource.Contains("-ceq 'idle') { 'idle' } else { `$null }")) 'idle-stop-status: an unknown or missing stop reason in the owner record gives no stop reason in the host status (the generic stopped text), never an error.'
     Assert-BackgroundTest ($statusSource.Contains('[ValidateSet(0,15,30,60)][int]$IdleStopMinutes=0') -and $statusSource.Contains('idleStopMinutes=$IdleStopMinutes;sourcePins')) 'idle-stop-start: Start-FastLlmBackgroundHost takes IdleStopMinutes (closed set, default 0) and writes it into the request.'
+    # allow-switch-rides-the-request: only a JSON true hands -AllowSwitch (and the record observer) to the server; absent or anything else does not.
+    foreach($switchCase in @(@{Id='6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f';Fields=@{allowSwitch=$true};Expect='True'},@{Id='6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e';Fields=@{};Expect='unset'},@{Id='6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d';Fields=@{allowSwitch=$false};Expect='unset'},@{Id='6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c';Fields=@{allowSwitch='true'};Expect='unset'},@{Id='6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b';Fields=@{allowSwitch=1};Expect='unset'})){
+        $script:workerRequestId = $switchCase.Id
+        $script:mockAllowSwitch = 'seen-nothing'
+        $script:mockObserverGiven = $false
+        $switchRequest = [ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$switchCase.Id;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30}
+        foreach($key in $switchCase.Fields.Keys){ $switchRequest[$key] = $switchCase.Fields[$key] }
+        $switchRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $switchCase.Id + '.json')) -CreateNew -Value $switchRequest
+        Invoke-FastLlmBackgroundServe -RequestId $switchCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+        Assert-BackgroundTest ([string]$script:mockAllowSwitch -ceq [string]$switchCase.Expect -and $script:mockObserverGiven -eq ([string]$switchCase.Expect -ceq 'True')) ('allow-switch-rides-the-request: request ' + ($switchCase.Fields.Keys -join ',') + '=' + ($switchCase.Fields.Values -join ',') + ' hands ' + $switchCase.Expect + ' to the server (saw ' + $script:mockAllowSwitch + ').')
+    }
+    # allow-switch-record: when the server switches its model, the host record names the model that is served.
+    $script:workerRequestId = '6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a'
+    $script:serverSwitchesTo = 'switched-model'
+    $switchedRequest = [ordered]@{
+        schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+        sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+        modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;allowSwitch=$true}
+    $switchedRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+    Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value $switchedRequest
+    $switchedExit = Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source
+    $script:serverSwitchesTo = ''
+    $switchedRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+    Assert-BackgroundTest ($switchedExit -eq 0 -and [string]$switchedRecord.modelId -ceq 'switched-model' -and [string]$switchedRecord.phase -ceq 'stopped' -and [string]$switchedRecord.requestId -ceq $script:workerRequestId) 'allow-switch-record: after a model switch the host record names the model that is served.'
+    Assert-BackgroundTest ($statusSource.Contains('[switch]$SwitchAllowed') -and $statusSource.Contains('if ($SwitchAllowed) { $request.allowSwitch = $true }') -and -not $statusSource.Contains('allowSwitch=$')) 'allow-switch-start: Start-FastLlmBackgroundHost takes -SwitchAllowed (off by default) and writes allowSwitch into the request only when it is set.'
     # Start writes the request in lower case for both choices (ValidateSet ignores case, the reader is exact).
     $startSource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
     Assert-BackgroundTest ($startSource.Contains('thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant()')) 'Start-FastLlmBackgroundHost lower-cases Thinking and ChatPage before writing the request.'

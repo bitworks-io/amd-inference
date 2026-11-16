@@ -1271,4 +1271,39 @@ $dialogHeight=[int][regex]::Match($uiText,"\`$dialog\.Text='FastLLM settings';\`
 Check ($dialogHeight -ge ((SettingsTop 'saveButton')+(SettingsHeight 'saveButton')+40)) 'idle-dialog: the dialog is tall enough for the buttons below the new row'
 Check ($uiText.Contains('[int]$script:settingsSavedIdle') -and $uiText.Contains('idleStopMinutes=[int]$script:settingsSavedIdle')) 'idle-dialog: the saved note is given the idle stop as well'
 
+# ---- model switch: status text only (the picker is a later change). Plain words, ids only when they are ids, codes only when they are codes ----
+function SwitchStatus([string]$Phase,$Block,[string]$StopReason=''){ $document=[pscustomobject]@{phase=$Phase;'switch'=$Block}; if($StopReason){ $document | Add-Member -NotePropertyName stopReason -NotePropertyValue $StopReason }; return $document }
+function SwitchBlock([string]$Result,$Code,[bool]$Pending=$false,$To='model-b'){ $block=[ordered]@{from='model-a';to=$To}; if($Pending){$block.pending=$true}; $block.result=$(if($Result){$Result}else{$null}); $block.failureCode=$Code; return [pscustomobject]$block }
+Check ((Get-FastLlmUiSwitchStatusText -Status $null) -ceq '' -and (Get-FastLlmUiSwitchStatusText -Status ([pscustomobject]@{phase='ready'})) -ceq '' -and (Get-FastLlmUiSwitchStatusText -Status ([pscustomobject]@{phase='ready';'switch'=$null})) -ceq '' -and (Get-FastLlmUiSwitchStatusText -Status ([pscustomobject]@{phase='ready';'switch'='text'})) -ceq '') 'switch-text: no status, a status without a switch block and a block that is not a block give no text'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'stopped' (SwitchBlock '' $null $true) 'switch')) -ceq 'Switching to model-b.') 'switch-text: the old run stopped for a switch reads "Switching to model-b."'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'loading' (SwitchBlock '' $null $true))) -ceq 'Switching to model-b.') 'switch-text: the target while it loads reads the same'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock '' $null $true))) -ceq 'Switching to model-b when the requests in progress have finished.') 'switch-text: a switch that waits for requests in progress says so'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'failed' (SwitchBlock '' 'self-test-failed' $true))) -ceq 'Could not start model-b (self-test-failed). Starting model-a again.') 'switch-text: a failed target with the restore under way names both models and the code'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'ok' $null))) -ceq 'Switched to model-b.') 'switch-text: ok'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'refused-busy' $null))) -ceq 'Did not switch to model-b: FastLLM was still answering requests. model-a keeps running.') 'switch-text: refused-busy'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'failed-restored' 'self-test-failed'))) -ceq 'Could not start model-b (self-test-failed). model-a was started again and is running.') 'switch-text: failed-restored'
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'failed' (SwitchBlock 'failed-stopped' 'port-in-use'))) -ceq 'Could not start model-b (port-in-use), and model-a could not be started again. FastLLM is stopped.') 'switch-text: failed-stopped says plainly that FastLLM is stopped'
+$switchRefusals=[ordered]@{
+    'switch-target-not-installed'='Did not switch: model-b is not downloaded. model-a keeps running.'
+    'switch-target-size-mismatch'='Did not switch: the file of model-b is incomplete or damaged. model-a keeps running.'
+    'switch-target-no-consent'='Did not switch: the license of model-b has not been accepted on this PC. model-a keeps running.'
+    'switch-target-already-serving'='model-b is already running.'
+    'switch-recipe-experimental'='Did not switch: an experimental setup is started from the command line, not by a switch. model-a keeps running.'
+    'switch-recipe-needs-default-options'='Did not switch: a measured setup needs the default context profile and one request at a time. model-a keeps running.'
+    'switch-cancelled-by-stop'='The switch to model-b was cancelled by Stop.'
+    'some-new-code'='Did not switch to model-b (some-new-code). model-a keeps running.'
+}
+foreach($switchCode in $switchRefusals.Keys){
+    Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'refused' $switchCode))) -ceq $switchRefusals[$switchCode]) "switch-text: refused with $switchCode"
+}
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'refused' 'switch-target-unknown' $false $null))) -ceq 'Did not switch: the requested model is not in FastLLM''s list. model-a keeps running.') 'switch-text: an unknown target has no name to show'
+foreach($switchCode in @('switch-request-invalid','switch-request-unsafe','switch-request-too-large')){
+    Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'refused' $switchCode $false $null))) -ceq 'Did not switch: the request could not be read. model-a keeps running.') "switch-text: $switchCode is one plain sentence"
+}
+Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock 'something-new' $null))) -ceq '') 'switch-text: a result this version does not know gives no text, without an error'
+$hostileText=Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' ([pscustomobject]@{from="model a`nINJECTED";to='<b>model</b>';result='failed-restored';failureCode='Free text, not a code!'}))
+Check ($hostileText -ceq 'Could not start the other model (an unnamed reason). The previous model was started again and is running.') 'switch-text: a value that is not an id or a code is never shown'
+$flowText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFlow.ps1'))
+Check ($flowText -notmatch "Request-FastLlmSwitch|AllowSwitch|SwitchAllowed|'switch-'") 'switch-text: the window helpers only describe a switch; nothing here asks for one (no picker yet)'
+
 Write-Output "UI flow tests passed: $checks"
