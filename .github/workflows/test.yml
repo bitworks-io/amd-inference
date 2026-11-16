@@ -27,6 +27,7 @@ jobs:
           python-version: '3.13'
       - run: python -m unittest discover -s tests -p 'test_*.py' -v
       - run: python3 tools/check-components.py
+      - run: python3 tools/check-serving-profiles.py
       - run: python3 tools/build-recipes.py --check
 
   powershell:
@@ -195,6 +196,8 @@ jobs:
           .\tests\driver-guidance-view-tests.ps1
           .\tests\prerequisite-diagnostics-tests.ps1
           .\tests\default-arguments-tests.ps1
+          .\tests\optin-arguments-tests.ps1
+          .\tests\parameter-prefix-tests.ps1
           .\tests\serving-settings-tests.ps1
           .\tests\run-log-tests.ps1
           .\tests\connect-info-tests.ps1
@@ -225,6 +228,8 @@ jobs:
           .\tests\driver-guidance-view-tests.ps1
           .\tests\prerequisite-diagnostics-tests.ps1
           .\tests\default-arguments-tests.ps1
+          .\tests\optin-arguments-tests.ps1
+          .\tests\parameter-prefix-tests.ps1
           .\tests\serving-settings-tests.ps1
           .\tests\run-log-tests.ps1
           .\tests\connect-info-tests.ps1

@@ -47,6 +47,17 @@ class PublicBuilderTests(unittest.TestCase):
         self.assertIn("tools/x.py", names)
         self.assertFalse([n for n in names if n.startswith("tests/") or "__pycache__" in n or "/." in n])
 
+    def test_real_tree_ships_the_serving_profiles_file_and_its_digest(self):
+        # The whole config/ tree ships: the serving profiles file and its digest are collected like every other config file,
+        # and the checker (a build-time tool, not a product tool) is not.
+        files = br.collect(str(ROOT))
+        for rel in ("config/catalog.json", "config/catalog.sha256", "config/recipes.json", "config/serving-profiles.json", "config/serving-profiles.sha256"):
+            self.assertTrue(rel in files, rel + " is not in the package file list")
+        self.assertEqual(hashlib.sha256(files["config/serving-profiles.json"]).hexdigest() + "  serving-profiles.json\n",
+                         files["config/serving-profiles.sha256"].decode("utf-8"))
+        for rel in ("tools/check-serving-profiles.py", "tools/check-components.py"):
+            self.assertFalse(rel in files, rel + " must not ship")
+
     def test_manifest_and_release(self):
         result = self.build()
         manifest_bytes = self.member("MANIFEST.json")

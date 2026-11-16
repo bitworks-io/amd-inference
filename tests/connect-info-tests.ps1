@@ -25,6 +25,29 @@ try {
     Check ($null -ne (Get-FastLlmConnectionInfo -Status (New-Status 8080 32767)).agentWarning) 'agent-warning-below-32k: 32767 warns'
     foreach($client in $small.clients){ Check ($client.snippet.Contains('Requests longer than 16,384 tokens are refused.')) "limit line in the $($client.id) snippet" }
 
+    # per-slot-context: with a serving profile the limit line, the agent warning and the client context use the per-slot value, never the total.
+    function New-SlotStatus([int]$Total,$PerSlot,[int]$Slots=2,[string]$ProfileId='long'){
+        [pscustomobject]@{ phase='ready'; active=$true; runId='aabbccdd11223344aabbccdd11223344'; modelId='fastllm-test-model'; endpoint='http://127.0.0.1:8080/v1'
+            recipe=[pscustomobject]@{ catalogVersion='1'; contextSize=$Total; slots=$Slots; profile=$ProfileId; contextPerSlot=$PerSlot; id=$null } }
+    }
+    $split=Get-FastLlmConnectionInfo -Status (New-SlotStatus 32768 16384 2 'default')
+    Check ($split.contextTokens -eq 16384) 'per-slot-context: two slots sharing 32768 report 16384, read from recipe.contextPerSlot'
+    Check ($split.agentWarning -ceq "This setup's context is 16,384 tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error.") 'per-slot-context: the agent warning uses the per-slot value (the total alone would not warn)'
+    foreach($client in $split.clients){
+        Check ($client.snippet.Contains('Requests longer than 16,384 tokens are refused.') -and -not $client.snippet.Contains('32,768') -and -not $client.snippet.Contains('32768')) "per-slot-context: the $($client.id) snippet states the per-slot limit and never the total"
+    }
+    $longTwo=Get-FastLlmConnectionInfo -Status (New-SlotStatus 65536 32768 2 'long')
+    Check ($longTwo.contextTokens -eq 32768 -and $null -eq $longTwo.agentWarning) 'per-slot-context: a long profile with two slots reports 32768 per request and no warning'
+    foreach($client in $longTwo.clients){ Check ($client.snippet.Contains('Requests longer than 32,768 tokens are refused.') -and -not $client.snippet.Contains('65,536') -and -not $client.snippet.Contains('65536')) "per-slot-context: the $($client.id) snippet for long with two slots never states the total" }
+    $longOne=Get-FastLlmConnectionInfo -Status (New-SlotStatus 65536 65536 1 'long')
+    Check ($longOne.contextTokens -eq 65536 -and $longOne.clients[0].snippet.Contains('Requests longer than 65,536 tokens are refused.')) 'per-slot-context: a long profile with one slot reports the whole context'
+    # A per-slot value that is not a positive whole number, or is larger than the total, is ignored: the total is used as before.
+    foreach($badPerSlot in @('many',0,-512,$null,1.5,65537,$true)){
+        $tolerant=Get-FastLlmConnectionInfo -Status (New-SlotStatus 32768 $badPerSlot)
+        Check ($tolerant.contextTokens -eq 32768 -and $null -eq $tolerant.agentWarning) "per-slot-context: an unusable contextPerSlot ($badPerSlot) falls back to recipe.contextSize"
+    }
+    Check ((Get-FastLlmConnectionInfo -Status (New-Status 8080 32768)).contextTokens -eq 32768) 'per-slot-context: a status without contextPerSlot reads recipe.contextSize as before'
+
     # no-claim-of-agent-support
     $agents='Claude Code|Codex|Cline|Roo Code|Continue|Open WebUI'
     foreach($client in $small.clients){

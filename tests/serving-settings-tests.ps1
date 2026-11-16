@@ -185,6 +185,87 @@ try {
     Write-Utf8 (Join-Path $r 'settings.json') '{ not json'
     Check ((Get-FastLlmServingSettings -InstallRoot $r).idleStopMinutes -eq 0) 'idle-stop-settings: a malformed file reads 0'
 
+    # context-profile-settings: long is stored, default removes the key, an invalid value throws, unknown keys survive.
+    $r=Join-Path $work 'context-profile'; New-Item -ItemType Directory -Path $r | Out-Null
+    $s=Get-FastLlmServingSettings -InstallRoot $r
+    Check ($s.contextProfile -ceq 'default' -and $s.slots -eq 1) 'context-profile-settings: an absent file reads default and 1 slot'
+    Write-Utf8 (Join-Path $r 'settings.json') '{"x":1,"serverPort":18181,"thinking":"off"}'
+    Set-FastLlmServingSettings -InstallRoot $r -KvContextProfile 'long'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check ($o.contextProfile -ceq 'long' -and $o.x -eq 1 -and $o.serverPort -eq 18181 -and $o.thinking -ceq 'off') 'context-profile-settings: long is stored beside the other keys'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).contextProfile -ceq 'long') 'context-profile-settings: Get reads long'
+    Set-FastLlmServingSettings -InstallRoot $r -ServerPort 18182
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).contextProfile -ceq 'long') 'context-profile-settings: saving another setting keeps the context profile'
+    Set-FastLlmServingSettings -InstallRoot $r -KvContextProfile 'default'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'contextProfile') -and $o.x -eq 1 -and $o.thinking -ceq 'off') 'context-profile-settings: default removes the key and keeps the others'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).contextProfile -ceq 'default') 'context-profile-settings: Get reads default'
+    foreach($bad in 'LONG','Default','short','on','','banana',$null,1,$true){ Throws { Set-FastLlmServingSettings -InstallRoot $r -KvContextProfile $bad } 'serving-settings-invalid-context-profile' }
+    Check (-not ((Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name -contains 'contextProfile')) 'context-profile-settings: a refused value writes nothing'
+    foreach($bogus in '{"contextProfile":"LONG"}','{"contextProfile":"short"}','{"contextProfile":1}','{"contextProfile":true}','{"contextProfile":null}','{"contextProfile":["long"]}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).contextProfile -ceq 'default') "context-profile-settings: stored $bogus reads as default"
+    }
+    Write-Utf8 (Join-Path $r 'settings.json') '{"contextProfile":"long"}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.contextProfile -ceq 'long' -and $x.source -ceq 'settings') 'context-profile-resolve: settings give long'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvContextProfile='default'}
+    Check ($x.contextProfile -ceq 'default' -and $x.source -ceq 'parameter') 'context-profile-resolve: an explicit parameter wins over settings'
+    Check ((Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json).contextProfile -ceq 'long') 'context-profile-resolve: a per-run value is never written to settings.json'
+    Write-Utf8 (Join-Path $r 'settings.json') '{}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvContextProfile='long'}
+    Check ($x.contextProfile -ceq 'long' -and $x.slots -eq 1) 'context-profile-resolve: an explicit long applies with no settings'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.contextProfile -ceq 'default' -and $x.slots -eq 1 -and $x.source -ceq 'default') 'context-profile-resolve: no parameter and no setting give the defaults'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvContextProfile='maybe'} } 'serving-settings-invalid-context-profile'
+
+    # slots-settings: 2 is stored as a number, 1 removes the key, only 1 and 2 are accepted.
+    $r=Join-Path $work 'slots'; New-Item -ItemType Directory -Path $r | Out-Null
+    Write-Utf8 (Join-Path $r 'settings.json') '{"x":1,"contextProfile":"long"}'
+    Set-FastLlmServingSettings -InstallRoot $r -KvSlots 2
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check ($o.slots -eq 2 -and ($o.slots -is [int] -or $o.slots -is [long]) -and $o.x -eq 1 -and $o.contextProfile -ceq 'long') 'slots-settings: 2 is stored as a number beside the other keys'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).slots -eq 2) 'slots-settings: Get reads 2'
+    Set-FastLlmServingSettings -InstallRoot $r -KvSlots '2'
+    Check ((Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json).slots -eq 2) 'slots-settings: the text 2 is accepted and stored as a number'
+    Set-FastLlmServingSettings -InstallRoot $r -KvSlots 1
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'slots') -and $o.x -eq 1 -and $o.contextProfile -ceq 'long') 'slots-settings: 1 removes the key and keeps the others'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).slots -eq 1) 'slots-settings: Get reads 1'
+    foreach($bad in 0,3,4,-1,-2,'two','2.0','1.5','',' ',' 2','0x2',$null,$true,2.5,([double]2)){ Throws { Set-FastLlmServingSettings -InstallRoot $r -KvSlots $bad } 'serving-settings-invalid-slots' }
+    Check (-not ((Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name -contains 'slots')) 'slots-settings: a refused value writes nothing'
+    foreach($bogus in '{"slots":"2"}','{"slots":3}','{"slots":0}','{"slots":true}','{"slots":-2}','{"slots":2.5}','{"slots":null}','{"slots":[2]}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).slots -eq 1) "slots-settings: stored $bogus reads as 1"
+    }
+    Write-Utf8 (Join-Path $r 'settings.json') '{"slots":2}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.slots -eq 2 -and $x.source -ceq 'settings') 'slots-resolve: settings give 2'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvSlots=1}
+    Check ($x.slots -eq 1 -and $x.source -ceq 'parameter') 'slots-resolve: an explicit 1 wins over settings for this run'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvSlots='2'}
+    Check ($x.slots -eq 2 -and $x.slots -is [int]) 'slots-resolve: the text 2 resolves to the number 2'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvSlots=3} } 'serving-settings-invalid-slots'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvSlots='many'} } 'serving-settings-invalid-slots'
+
+    # serving-options-bench: the bench path reads no user settings, so both options are their defaults whatever is saved.
+    Write-Utf8 (Join-Path $r 'settings.json') '{"contextProfile":"long","slots":2,"serverPort":18181}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.contextProfile -ceq 'long' -and $x.slots -eq 2) 'serving-options-bench: without the switch both saved options apply'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{} -IgnoreUserSettings
+    Check ($x.contextProfile -ceq 'default' -and $x.slots -eq 1 -and $x.serverPort -eq 8080 -and $x.source -ceq 'default') 'serving-options-bench: with user settings ignored both options are their defaults'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{KvContextProfile='long'} -IgnoreUserSettings
+    Check ($x.contextProfile -ceq 'long' -and $x.slots -eq 1) 'serving-options-bench: an explicit parameter still applies with user settings ignored'
+    # A malformed file gives the defaults and is never overwritten.
+    Write-Utf8 (Join-Path $r 'settings.json') '{ "contextProfile":"long", not json'
+    $s=Get-FastLlmServingSettings -InstallRoot $r
+    Check ($s.malformed -eq $true -and $s.contextProfile -ceq 'default' -and $s.slots -eq 1) 'serving-options-malformed: a malformed file reads default and 1 slot'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.settingsMalformed -and $x.contextProfile -ceq 'default' -and $x.slots -eq 1) 'serving-options-malformed: resolve reports malformed and uses the defaults'
+    Throws { Set-FastLlmServingSettings -InstallRoot $r -KvContextProfile 'long' } 'serving-settings-malformed'
+    Throws { Set-FastLlmServingSettings -InstallRoot $r -KvSlots 2 } 'serving-settings-malformed'
+    Check ((Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw) -ceq '{ "contextProfile":"long", not json') 'serving-options-malformed: the file is untouched'
+
     # tripwire-plan-reads-no-settings
     $watched='FastLlm.psm1','FastLlm.Runtime.ps1','FastLlm.Preload.ps1','FastLlm.Recipes.ps1','FastLlm.RunLog.ps1','FastLlm.ModelStore.ps1'
     foreach($name in $watched){

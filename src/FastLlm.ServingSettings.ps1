@@ -1,4 +1,4 @@
-# Serving preferences (loopback port today) stored in <InstallRoot>\settings.json.
+# Serving preferences (loopback port, thinking, chat page, idle stop, context profile, slots) stored in <InstallRoot>\settings.json.
 # Dot-sourced ONLY by fast-llm.ps1, fast-llm-ui.ps1 and the start-at-sign-in launcher tool, never by src/FastLlm.psm1 or the background host: the bench path
 # (Get-FastLlmPlan) reads no user settings. Windows PowerShell 5.1-safe; ASCII only.
 Set-StrictMode -Version 2
@@ -12,6 +12,9 @@ $script:FastLlmServingDefaultThinking = 'auto'
 $script:FastLlmServingDefaultChatPage = 'off'
 $script:FastLlmServingDefaultIdleStopMinutes = 0
 $script:FastLlmServingIdleStopChoices = @(0, 15, 30, 60)
+$script:FastLlmServingDefaultContextProfile = 'default'
+$script:FastLlmServingDefaultSlots = 1
+$script:FastLlmServingSlotsChoices = @(1, 2)
 $script:FastLlmServingSettingsMaxBytes = 16384
 
 function Test-FastLlmServerPort {
@@ -64,6 +67,27 @@ function ConvertTo-FastLlmIdleStopMinutes {
     return $given
 }
 
+# Context profile is a closed set: default (today's arguments) or long (the measured long-context setup, refused when nothing is measured
+# for the model and engine). The match is case-sensitive.
+function ConvertTo-FastLlmContextProfile {
+    param($Value)
+    if ($Value -is [string] -and ($Value -ceq 'default' -or $Value -ceq 'long')) { return [string] $Value }
+    throw 'serving-settings-invalid-context-profile: ContextProfile must be default or long.'
+}
+
+# Slots is a closed set: 1 (the default) or 2 requests at once. An integer or its plain digit as text; nothing else.
+function ConvertTo-FastLlmSlots {
+    param($Value)
+    $invalid = 'serving-settings-invalid-slots: Slots must be 1 or 2.'
+    if ($null -eq $Value -or $Value -is [bool]) { throw $invalid }
+    $given = 0
+    if ($Value -is [int] -or $Value -is [long]) { if ($Value -lt 1 -or $Value -gt 2) { throw $invalid }; $given = [int] $Value }
+    elseif ($Value -is [string] -and $Value -cmatch '^(1|2)\z') { $given = [int] $Value }
+    else { throw $invalid }
+    if ($script:FastLlmServingSlotsChoices -notcontains $given) { throw $invalid }
+    return $given
+}
+
 # Returns @{ malformed = [bool]; object = [ordered] }. An absent file is empty and not malformed. A file over 16 KiB, a reparse
 # point, text that is not a JSON object, or text that does not parse is malformed.
 function Read-FastLlmServingSettingsObject {
@@ -108,11 +132,23 @@ function Get-FastLlmServingSettings {
         $storedIdle = $read.object['idleStopMinutes']
         if (($storedIdle -is [int] -or $storedIdle -is [long]) -and $script:FastLlmServingIdleStopChoices -contains [int] ([Math]::Min([long] $storedIdle, 2147483647L))) { $idleStop = [int] $storedIdle }
     }
+    $contextProfile = $script:FastLlmServingDefaultContextProfile
+    if (-not $read.malformed -and $read.object.Contains('contextProfile')) {
+        $storedProfile = $read.object['contextProfile']
+        if ($storedProfile -is [string] -and $storedProfile -ceq 'long') { $contextProfile = 'long' }
+    }
+    $slots = $script:FastLlmServingDefaultSlots
+    if (-not $read.malformed -and $read.object.Contains('slots')) {
+        $storedSlots = $read.object['slots']
+        if (($storedSlots -is [int] -or $storedSlots -is [long]) -and [long] $storedSlots -eq 2) { $slots = 2 }
+    }
     return [pscustomobject]@{
         serverPort       = $port
         thinking         = $thinking
         chatPage         = $chatPage
         idleStopMinutes  = $idleStop
+        contextProfile   = $contextProfile
+        slots            = $slots
         malformed        = [bool] $read.malformed
     }
 }
@@ -124,12 +160,16 @@ function Set-FastLlmServingSettings {
         $ServerPort,
         $Thinking,
         $ChatPage,
-        $IdleStopMinutes
+        $IdleStopMinutes,
+        $KvContextProfile,
+        $KvSlots
     )
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort = ConvertTo-FastLlmServerPort -Value $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = ConvertTo-FastLlmThinking -Value $Thinking }
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = ConvertTo-FastLlmChatPage -Value $ChatPage }
     if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $IdleStopMinutes = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
+    if ($PSBoundParameters.ContainsKey('KvContextProfile')) { $KvContextProfile = ConvertTo-FastLlmContextProfile -Value $KvContextProfile }
+    if ($PSBoundParameters.ContainsKey('KvSlots')) { $KvSlots = ConvertTo-FastLlmSlots -Value $KvSlots }
     $read = Read-FastLlmServingSettingsObject -InstallRoot $InstallRoot
     if ($read.malformed) { throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.' }
     $merged = $read.object
@@ -148,6 +188,14 @@ function Set-FastLlmServingSettings {
     if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) {
         if ($IdleStopMinutes -eq $script:FastLlmServingDefaultIdleStopMinutes) { $merged.Remove('idleStopMinutes') }
         else { $merged['idleStopMinutes'] = $IdleStopMinutes }
+    }
+    if ($PSBoundParameters.ContainsKey('KvContextProfile')) {
+        if ($KvContextProfile -ceq $script:FastLlmServingDefaultContextProfile) { $merged.Remove('contextProfile') }
+        else { $merged['contextProfile'] = $KvContextProfile }
+    }
+    if ($PSBoundParameters.ContainsKey('KvSlots')) {
+        if ($KvSlots -eq $script:FastLlmServingDefaultSlots) { $merged.Remove('slots') }
+        else { $merged['slots'] = $KvSlots }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
@@ -179,6 +227,8 @@ function Resolve-FastLlmServingOptions {
     $thinking = $script:FastLlmServingDefaultThinking
     $chatPage = $script:FastLlmServingDefaultChatPage
     $idleStop = $script:FastLlmServingDefaultIdleStopMinutes
+    $contextProfile = $script:FastLlmServingDefaultContextProfile
+    $slots = $script:FastLlmServingDefaultSlots
     $source = 'default'
     $settingsMalformed = $false
     if (-not $IgnoreUserSettings) {
@@ -200,6 +250,14 @@ function Resolve-FastLlmServingOptions {
             $idleStop = $stored.idleStopMinutes
             $source = 'settings'
         }
+        if (-not $stored.malformed -and $stored.contextProfile -cne $script:FastLlmServingDefaultContextProfile) {
+            $contextProfile = $stored.contextProfile
+            $source = 'settings'
+        }
+        if (-not $stored.malformed -and $stored.slots -ne $script:FastLlmServingDefaultSlots) {
+            $slots = $stored.slots
+            $source = 'settings'
+        }
     }
     if ($Bound.ContainsKey('ServerPort')) {
         $given = ConvertTo-FastLlmServerPort -Value $Bound['ServerPort']
@@ -218,7 +276,15 @@ function Resolve-FastLlmServingOptions {
         $idleStop = ConvertTo-FastLlmIdleStopMinutes -Value $Bound['IdleStopMinutes']
         $source = 'parameter'
     }
-    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; source = $source; settingsMalformed = $settingsMalformed }
+    if ($Bound.ContainsKey('KvContextProfile')) {
+        $contextProfile = ConvertTo-FastLlmContextProfile -Value $Bound['KvContextProfile']
+        $source = 'parameter'
+    }
+    if ($Bound.ContainsKey('KvSlots')) {
+        $slots = ConvertTo-FastLlmSlots -Value $Bound['KvSlots']
+        $source = 'parameter'
+    }
+    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; contextProfile = $contextProfile; slots = $slots; source = $source; settingsMalformed = $settingsMalformed }
 }
 
 # The serving parameters a user's own background-host start takes from the saved settings, as a hashtable to splat into
