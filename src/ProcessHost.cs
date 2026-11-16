@@ -294,11 +294,16 @@ namespace Bitworks.FastLlm {
     public static class LoopbackHttp {
         public static HttpResult Request(string url, string body, int timeoutMs, int maxBytes) {
             string worker; double queueMs;
-            return RequestCore(url, body, timeoutMs, maxBytes, false, out worker, out queueMs);
+            return RequestCore(url, body, timeoutMs, maxBytes, false, null, out worker, out queueMs);
+        }
+        // The bearer value is sent only as an Authorization header, only after the loopback check, and is never echoed in an error.
+        public static HttpResult Request(string url, string body, int timeoutMs, int maxBytes, string bearer) {
+            string worker; double queueMs;
+            return RequestCore(url, body, timeoutMs, maxBytes, false, bearer, out worker, out queueMs);
         }
         public static GatewayHttpResult RequestWithGatewayMetadata(string url, string body, int timeoutMs, int maxBytes) {
             string worker; double queueMs;
-            HttpResult response = RequestCore(url, body, timeoutMs, maxBytes, true, out worker, out queueMs);
+            HttpResult response = RequestCore(url, body, timeoutMs, maxBytes, true, null, out worker, out queueMs);
             return new GatewayHttpResult { Response=response, Worker=worker,
                 QueueMs=Double.IsNaN(queueMs) ? (double?)null : queueMs };
         }
@@ -317,11 +322,15 @@ namespace Bitworks.FastLlm {
             worker = workers[0];
         }
         private static HttpResult RequestCore(string url, string body, int timeoutMs, int maxBytes,
-            bool captureGatewayMetadata, out string gatewayWorker, out double gatewayQueueMs) {
+            bool captureGatewayMetadata, string bearer, out string gatewayWorker, out double gatewayQueueMs) {
             gatewayWorker = null; gatewayQueueMs = Double.NaN;
             Uri uri = new Uri(url);
             if (uri.Scheme != "http" || uri.Host != "127.0.0.1" || !String.IsNullOrEmpty(uri.UserInfo))
                 throw new ArgumentException("Only literal IPv4 loopback HTTP is permitted.");
+            if (!String.IsNullOrEmpty(bearer)) {
+                if (bearer.Length > 256) throw new ArgumentException("The bearer value is not valid.");
+                foreach (char c in bearer) if (c < '\u0021' || c > '\u007e') throw new ArgumentException("The bearer value is not valid.");
+            }
             var timer = Stopwatch.StartNew();
             // A scoped unnumbered pragma also works with the .NET Framework C# compiler.
 #pragma warning disable
@@ -332,6 +341,7 @@ namespace Bitworks.FastLlm {
             request.Timeout = timeoutMs;
             request.ReadWriteTimeout = timeoutMs;
             request.KeepAlive = false;
+            if (!String.IsNullOrEmpty(bearer)) request.Headers[HttpRequestHeader.Authorization] = "Bearer " + bearer;
             using (var deadline = new System.Threading.Timer(delegate { request.Abort(); }, null, timeoutMs, System.Threading.Timeout.Infinite)) {
             // Windows PowerShell 5.1 can marshal a PowerShell $null argument
             // to an empty C# string. Treat both as a bodyless GET.

@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.SelfTest.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DeviceBinding.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.SpillCheck.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.ApiKey.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DriverGuidance.ps1')

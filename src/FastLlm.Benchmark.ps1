@@ -133,7 +133,7 @@ $script:FastLlmBenchmarkInputRelativePaths = @('src/WindowsCpuTopology.cs','src/
     'src/FastLlm.CardIdentity.ps1','src/FastLlm.Recipes.ps1','src/FastLlm.Preload.ps1','src/FastLlm.SelfTest.ps1'
     'src/FastLlm.ModelStore.ps1','src/FastLlm.RunLog.ps1',
     'src/FastLlm.OffloadBenchmark.ps1','src/FastLlm.Soak.ps1','src/FastLlm.DriverGuidance.ps1','src/FastLlm.DriverGuidanceView.ps1','src/FastLlm.PrerequisiteDiagnostics.ps1',
-    'src/WindowsBootTime.cs','src/WindowsGpuTelemetry.cs','src/FastLlm.SpillCheck.ps1','src/WindowsGpuProcessMemory.cs')
+    'src/WindowsBootTime.cs','src/WindowsGpuTelemetry.cs','src/FastLlm.SpillCheck.ps1','src/FastLlm.ApiKey.ps1','src/WindowsGpuProcessMemory.cs')
 # Every file the module loads at import (the dot-sourced .ps1 files, transitively, and the C# sources they Add-Type) is listed above, except this
 # producer itself, which the report pins as producer.sourceSha256. tests/benchmark-vnext-tests.ps1 parses the dot-source and Add-Type lines and fails when
 # a loaded file is missing from the list. Classification (producer.inputClassification): 'identity' = the collectors (tools/* except tools/benchmark.ps1)
