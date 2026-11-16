@@ -1613,8 +1613,10 @@ $integrity=$null;$update=$null
 if($RunIntegrity){try{$integrity=Test-FastLlmInstallIntegrity -AppRoot $App}catch{$integrity=$null}}
 try{$update=Invoke-FastLlmUpdateCheck -InstallRoot $Install -AppRoot $App}catch{$update=$null}
 $reinstall=$null
-try{$reinstall=Resolve-FastLlmReinstall -InstallRoot $Install -AppRoot $App -OfferOnly}catch{$reinstall=$null}
-[pscustomobject]@{integrity=$integrity;update=$update;reinstall=$reinstall}
+try{$reinstall=Resolve-FastLlmReinstall -InstallRoot $Install -AppRoot $App -OfferOnly -Check $update}catch{$reinstall=$null}
+$updateMuted=$false
+try{if($update -and $update.latest){$updateMuted=[bool](Test-FastLlmUpdateMuted -InstallRoot $Install -LatestVersion ([string]$update.latest.version))}}catch{$updateMuted=$false}
+[pscustomobject]@{integrity=$integrity;update=$update;reinstall=$reinstall;updateMuted=$updateMuted}
 '@
     $pipeline=[Management.Automation.PowerShell]::Create()
     try{
@@ -1630,7 +1632,7 @@ function CompleteUiStartupChecks {
         if($values.Count -eq 1){
             if($run.integrityRan){[void](Set-FastLlmUiIntegrityChecked -InstallRoot $script:settingsRoot -InstalledVersion $run.version -Result $values[0].integrity)}
             $failedIntegrity=Format-FastLlmUiIntegrityBanner -Result $values[0].integrity
-            $offer=Format-FastLlmUiUpdateBanner -Check $values[0].update
+            $offer=$null;if(-not $values[0].updateMuted){$offer=Format-FastLlmUiUpdateBanner -Check $values[0].update}
             if($failedIntegrity){SetUiBanner $failedIntegrity.text $failedIntegrity.url $true $false}
             elseif($offer){
                 $script:updateOffer=[pscustomobject]@{version=[string]$values[0].update.latest.version;latest=$values[0].update.latest}
@@ -1700,15 +1702,15 @@ function InvokeUiReinstall {
     if($choice -ne 'Yes'){return}
     # The run decides again from scratch and refuses when the previous version is no longer the one confirmed here.
     $source=@'
-param($Project,$Install,$App,$Expected)
+param($Project,$Install,$App,$Expected,$ExpectedFrom)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $Project 'src/FastLlm.psm1') -Force
 . (Join-Path $Project 'src/FastLlm.Update.ps1')
-Invoke-FastLlmReinstallPrevious -InstallRoot $Install -AppRoot $App -ExpectedTarget $Expected -Approve { param($From,$To) $true }
+Invoke-FastLlmReinstallPrevious -InstallRoot $Install -AppRoot $App -ExpectedTarget $Expected -ExpectedFrom $ExpectedFrom -Approve { param($From,$To) $true }
 '@
     $pipeline=[Management.Automation.PowerShell]::Create()
     try{
-        $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument([string]$offer.to)
+        $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument([string]$offer.to).AddArgument([string]$offer.from)
         $script:updateOutcome=$false
         $script:updateRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke();version=[string]$offer.to;kind='reinstall'}
     }catch{$pipeline.Dispose();$statusLabel.Text=Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{status='failed';step='start';reason=$_.Exception.Message}) -To ([string]$offer.to);return}

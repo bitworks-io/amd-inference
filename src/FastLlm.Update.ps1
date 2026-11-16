@@ -454,6 +454,7 @@ function Get-FastLlmCachedUpdateNotice {
         $cached = Read-FastLlmUpdateState -Path (Join-Path (Join-Path $InstallRoot 'state') 'update-check.json')
         if ($null -eq $cached -or $null -eq $cached.latest) { return $null }
         if ((Compare-FastLlmVersion ([string]$cached.latest.version) $installedRelease.version) -le 0) { return $null }
+        if ((Get-Command Test-FastLlmUpdateMuted -ErrorAction SilentlyContinue) -and (Test-FastLlmUpdateMuted -InstallRoot $InstallRoot -LatestVersion ([string]$cached.latest.version))) { return $null }
         return ('Update available: FastLLM {0} ({1}).' -f $cached.latest.version, $cached.latest.htmlUrl)
     }
     catch { return $null }
@@ -591,7 +592,9 @@ function Invoke-FastLlmVerifiedUpdate {
         [switch]$Silent,
         # Reinstall-previous only (Invoke-FastLlmReinstallPrevious): the exact older version the reinstall decision allowed. Empty (every
         # update caller) keeps step 5 exactly as it is: the release must be newer. When set, the release must BE this version and be older.
-        [string]$PreviousTarget
+        [string]$PreviousTarget,
+        # With -PreviousTarget: the installed version the reinstall decision was made for. A different installed version is refused.
+        [string]$PreviousFrom
     )
     $freshDir = $null
     $workNames = @()
@@ -663,6 +666,7 @@ function Invoke-FastLlmVerifiedUpdate {
     }
     else {
         if ($newVersion -cne $PreviousTarget) { return (& $finish 'refused' 'version' 'not-the-previous-target') }
+        if ([string]::IsNullOrEmpty($PreviousFrom) -or $installedRelease.version -cne $PreviousFrom) { return (& $finish 'refused' 'version' 'installed-changed') }
         if ((Compare-FastLlmVersion $newVersion $installedRelease.version) -ne -1) { return (& $finish 'refused' 'version' 'not-older') }
     }
 
@@ -699,11 +703,81 @@ $script:FastLlmReinstallReasonText = @{
     'target-changed'            = 'The previous version changed since you were asked. Nothing was changed.'
     'not-a-release'             = 'This is not an installed FastLLM release (no RELEASE.json), so there is nothing to go back from.'
     'approval-required'         = 'The reinstall was not confirmed. Nothing was changed.'
+    'installed-changed'         = 'The installed version changed since you were asked. Nothing was changed.'
 }
 function Get-FastLlmReinstallReasonText {
     param([string]$Reason)
     if (-not [string]::IsNullOrEmpty($Reason) -and $script:FastLlmReinstallReasonText.ContainsKey($Reason)) { return [string]$script:FastLlmReinstallReasonText[$Reason] }
     return 'Going back to the previous version is not possible right now. Nothing was changed.'
+}
+
+# History of reinstalls (state\reinstall-history.json, newest 20) and the mute for the version just left (state\update-muted.json).
+# Both hold only versions and a UTC time. They are written only after a successful reinstall.
+$script:FastLlmReinstallHistoryMax = 20
+function Read-FastLlmReinstallHistory {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot)
+    $kept = New-Object 'System.Collections.Generic.List[object]'
+    try {
+        $document = Read-FastLlmReinstallJsonFile -Path (Join-Path (Join-Path $InstallRoot 'state') 'reinstall-history.json')
+        if ($null -eq $document) { return @() }
+        foreach ($entry in @((Get-FastLlmStrictField $document 'entries').value)) {
+            $from = (Get-FastLlmStrictField $entry 'from').value
+            $to = (Get-FastLlmStrictField $entry 'to').value
+            $at = (Get-FastLlmStrictField $entry 'atUtc').value
+            if (-not (Test-FastLlmStrictVersion $from) -or -not (Test-FastLlmStrictVersion $to)) { continue }
+            # PowerShell 7 reads an ISO time as a DateTime; Windows PowerShell 5.1 leaves it a string. Both end up as the same UTC text.
+            if ($at -is [datetime]) { $at = $at.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture) }
+            if ($at -isnot [string] -or $at -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { continue }
+            $kept.Add([pscustomobject]@{ from = [string]$from; to = [string]$to; atUtc = [string]$at })
+        }
+    }
+    catch { return @() }
+    $all = @($kept.ToArray())
+    if ($all.Count -gt $script:FastLlmReinstallHistoryMax) { $all = @($all[($all.Count - $script:FastLlmReinstallHistoryMax)..($all.Count - 1)]) }
+    return $all
+}
+
+function Write-FastLlmStateDocument {
+    param([string]$Path, $Document)
+    $folder = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $folder -PathType Container)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    $temporary = "$Path.tmp-$([guid]::NewGuid().ToString('N'))"
+    [IO.File]::WriteAllText($temporary, (ConvertTo-Json -InputObject $Document -Depth 5), (New-Object Text.UTF8Encoding($false)))
+    Move-FastLlmFileReplacing -Source $temporary -Destination $Path
+}
+
+function Add-FastLlmReinstallHistory {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$From, [Parameter(Mandatory = $true)][string]$To, [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $entries = @(Read-FastLlmReinstallHistory -InstallRoot $InstallRoot)
+        $entries += [pscustomobject]@{ from = $From; to = $To; atUtc = $NowUtc.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture) }
+        if ($entries.Count -gt $script:FastLlmReinstallHistoryMax) { $entries = @($entries[($entries.Count - $script:FastLlmReinstallHistoryMax)..($entries.Count - 1)]) }
+        Write-FastLlmStateDocument -Path (Join-Path (Join-Path $InstallRoot 'state') 'reinstall-history.json') -Document ([ordered]@{ entries = @($entries) })
+    }
+    catch { $null = $_ }
+}
+
+# Mutes the passive "update available" notices for the version just left and anything older. A NEWER release is announced as usual.
+function Set-FastLlmUpdateMute {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$Version)
+    try {
+        if (-not (Test-FastLlmStrictVersion $Version)) { return }
+        Write-FastLlmStateDocument -Path (Join-Path (Join-Path $InstallRoot 'state') 'update-muted.json') -Document ([ordered]@{ version = $Version })
+    }
+    catch { $null = $_ }
+}
+
+function Test-FastLlmUpdateMuted {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, [string]$LatestVersion)
+    try {
+        if (-not (Test-FastLlmStrictVersion $LatestVersion)) { return $false }
+        $document = Read-FastLlmReinstallJsonFile -Path (Join-Path (Join-Path $InstallRoot 'state') 'update-muted.json')
+        if ($null -eq $document) { return $false }
+        $muted = (Get-FastLlmStrictField $document 'version').value
+        if (-not (Test-FastLlmStrictVersion $muted)) { return $false }
+        return ((Compare-FastLlmVersion $LatestVersion ([string]$muted)) -le 0)
+    }
+    catch { return $false }
 }
 
 # One small JSON file from the previous-release record folder; $null when it is absent, too large, unreadable or not an object.
@@ -779,11 +853,13 @@ function Get-FastLlmStoreRelease {
 #   - the explicit action (default) asks the project for a fresh update check, stops there if a newer release exists, and only then asks
 #     for the store entry of the exact target. Update checks turned off refuse it: with no way to tell whether a newer release exists, the
 #     "update first" rule cannot be applied.
-#   - -OfferOnly (the window's button, every launch) makes no request beyond the normal, once-a-day update check. It decides on what that
-#     check knows and leaves the store entry out; the click decides again with the full path above before anything is installed.
+#   - -OfferOnly (the window's button, every launch) makes no request beyond the normal, once-a-day update check, and none at all when the
+#     caller passes that check's result in with -Check. It decides on what that check knows and leaves the store entry out; the click decides
+#     again with the full path above before anything is installed.
+#   Both refuse with fresh-check-unreadable when the check gave no readable latest version.
 # Returns { decision; reason; target; installed; latest } ; latest is the store release to install when eligible, else $null.
 function Resolve-FastLlmReinstall {
-    param([Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$AppRoot, [scriptblock]$Request, [switch]$OfferOnly)
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$AppRoot, [scriptblock]$Request, [switch]$OfferOnly, $Check)
     $make = {
         param($Decision, $Installed, $Latest)
         [pscustomobject]@{ decision = $Decision.decision; reason = $Decision.reason; target = $Decision.target; installed = $Installed; latest = $Latest }
@@ -794,15 +870,31 @@ function Resolve-FastLlmReinstall {
     $local = Get-FastLlmReinstallDecision -InstalledPolicy $facts.installedPolicy -InstalledVersion $facts.installedVersion -PreviousRecord $facts.record -FreshLatest $null -StoreRelease $null
     if ([string]$local.reason -cne 'not-in-release-store') { return (& $make $local $facts.installedVersion $null) }
 
-    $checkArguments = @{ InstallRoot = $InstallRoot; AppRoot = $AppRoot }
-    if ($null -ne $Request) { $checkArguments['Request'] = $Request }
-    if (-not $OfferOnly) { $checkArguments['Force'] = $true }
-    $check = Invoke-FastLlmUpdateCheck @checkArguments
-    if ([string]$check.status -ceq 'disabled') {
+    if ($OfferOnly -and $PSBoundParameters.ContainsKey('Check')) {
+        # The window passes the check it already made, so a launch makes no second request. No result at all counts as a failed check.
+        $check = $Check
+        if ($null -eq $check) { $check = [pscustomobject]@{ status = 'failed'; latest = $null } }
+    }
+    else {
+        $checkArguments = @{ InstallRoot = $InstallRoot; AppRoot = $AppRoot }
+        if ($null -ne $Request) { $checkArguments['Request'] = $Request }
+        if (-not $OfferOnly) { $checkArguments['Force'] = $true }
+        $check = Invoke-FastLlmUpdateCheck @checkArguments
+    }
+    $checkStatus = [string](Get-FastLlmUpdateProp $check 'status')
+    if ($checkStatus -ceq 'disabled') {
         return (& $make ([pscustomobject]@{ decision = 'refused'; reason = 'update-checks-off'; target = $local.target }) $facts.installedVersion $null)
     }
+    # The "newer release first" rule fails closed: without a readable latest version (a failed or blocked check, an unparseable tag) nothing is offered.
     $fresh = $null
-    if (@('available', 'up-to-date', 'skipped-recent') -ccontains [string]$check.status -and $null -ne $check.latest) { $fresh = [string]$check.latest.version }
+    $checkLatest = Get-FastLlmUpdateProp $check 'latest'
+    if (@('available', 'up-to-date', 'skipped-recent') -ccontains $checkStatus -and $null -ne $checkLatest) {
+        $latestVersion = Get-FastLlmUpdateProp $checkLatest 'version'
+        if (Test-FastLlmStrictVersion $latestVersion) { $fresh = [string]$latestVersion }
+    }
+    if ($null -eq $fresh) {
+        return (& $make ([pscustomobject]@{ decision = 'refused'; reason = 'fresh-check-unreadable'; target = $local.target }) $facts.installedVersion $null)
+    }
     $storeRelease = $null
     $store = $null
     if ($OfferOnly) {
@@ -841,8 +933,10 @@ function Invoke-FastLlmReinstallPrevious {
         [Parameter(Mandatory = $true)][string]$AppRoot,
         [Parameter(Mandatory = $true)][scriptblock]$Approve,
         [string]$ExpectedTarget,
+        [string]$ExpectedFrom,
         [scriptblock]$Request,
-        [hashtable]$UpdateSeams = @{}
+        [hashtable]$UpdateSeams = @{},
+        [datetime]$NowUtc = [datetime]::UtcNow
     )
     $make = {
         param([string]$Status, [string]$Step, [string]$Reason, [string]$Message, $From, $To)
@@ -856,26 +950,33 @@ function Invoke-FastLlmReinstallPrevious {
     if ([string]$resolved.decision -cne 'eligible' -or $null -eq $resolved.latest) {
         return (& $make 'refused' 'decision' ([string]$resolved.reason) (Get-FastLlmReinstallReasonText ([string]$resolved.reason)) $from $to)
     }
-    if (-not [string]::IsNullOrEmpty($ExpectedTarget) -and [string]$resolved.target -cne $ExpectedTarget) {
+    if ((-not [string]::IsNullOrEmpty($ExpectedTarget) -and [string]$resolved.target -cne $ExpectedTarget) -or (-not [string]::IsNullOrEmpty($ExpectedFrom) -and [string]$from -cne $ExpectedFrom)) {
         return (& $make 'refused' 'decision' 'target-changed' (Get-FastLlmReinstallReasonText 'target-changed') $from $to)
     }
     $approved = $false
     try { $answer = & $Approve $from $to; $approved = (@($answer).Count -eq 1) -and ($answer -is [bool]) -and ($answer -eq $true) } catch { $approved = $false }
     if (-not $approved) { return (& $make 'declined' 'confirm' 'not-confirmed' (Get-FastLlmReinstallReasonText 'approval-required') $from $to) }
-    $outcome = Invoke-FastLlmVerifiedUpdate -InstallRoot $InstallRoot -AppRoot $AppRoot -Latest $resolved.latest -PreviousTarget ([string]$resolved.target) @UpdateSeams
-    if ([string]$outcome.status -ceq 'installed') { Clear-FastLlmPreviousReleaseRecord -InstallRoot $InstallRoot }
+    # The prompt may have waited: the replaced version must still be the installed one before anything is stopped.
+    $installedNow = Read-FastLlmInstalledRelease -AppRoot $AppRoot
+    if ($null -eq $installedNow -or [string]$installedNow.version -cne [string]$from) {
+        return (& $make 'refused' 'decision' 'installed-changed' (Get-FastLlmReinstallReasonText 'installed-changed') $from $to)
+    }
+    $outcome = Invoke-FastLlmVerifiedUpdate -InstallRoot $InstallRoot -AppRoot $AppRoot -Latest $resolved.latest -PreviousTarget ([string]$resolved.target) -PreviousFrom ([string]$from) @UpdateSeams
+    if ([string]$outcome.status -ceq 'installed') {
+        Add-FastLlmReinstallHistory -InstallRoot $InstallRoot -From ([string]$from) -To ([string]$to) -NowUtc $NowUtc
+        Set-FastLlmUpdateMute -InstallRoot $InstallRoot -Version ([string]$from)
+        Clear-FastLlmPreviousReleaseRecord -InstallRoot $InstallRoot
+    }
     return (& $make ([string]$outcome.status) ([string]$outcome.step) ([string]$outcome.reason) '' $from $to)
 }
 
-# The confirmation for the CLI: -Yes confirms without asking; otherwise the prompt names both versions and only y or yes confirms.
+# The confirmation for the CLI: always the prompt naming both versions (there is no way to skip it); only y or yes confirms.
 #   -Prompt { param($Text) } -> the answer (defaults to Read-Host)
 function New-FastLlmReinstallApprover {
-    param([switch]$Yes, [scriptblock]$Prompt = { param($Text) Read-Host $Text })
-    $confirmed = [bool]$Yes
+    param([scriptblock]$Prompt = { param($Text) Read-Host $Text })
     $ask = $Prompt
     return {
         param($From, $To)
-        if ($confirmed) { return $true }
         $answer = & $ask ('Reinstall FastLLM {0} (replaces {1})? [y/N]' -f $To, $From)
         return ([string]$answer -cmatch '^\s*[yY]([eE][sS])?\s*$')
     }.GetNewClosure()
