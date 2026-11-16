@@ -307,6 +307,11 @@
       "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
     },
     {
+      "suite": "rdna4-plan-vulkan-tests",
+      "class": "ci",
+      "reason": "Planner over RDNA4 hardware fixtures and the shipped config; no engine, Radeon adapter or network; wired in test.yml."
+    },
+    {
       "suite": "run-tests",
       "class": "ci",
       "reason": "Planner/parser tests; mock-only, already wired in test.yml."
