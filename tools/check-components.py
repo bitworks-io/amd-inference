@@ -295,6 +295,25 @@ def check_base_engine(components, catalog, errors):
         errors.append(f"base engine {BASE_ENGINE_ID!r}: entryPoint differs from the catalog")
 
 
+def check_equal_sources(components, errors):
+    """Components that share a source (same url and sha256) must pin it identically: size, format, extractPrefix and manifest.
+    One download verified one way for one component and another way for its sibling would be two different claims about the same file."""
+    first = {}
+    for comp in components:
+        if not isinstance(comp, dict):
+            continue
+        parts = [comp["source"]] if isinstance(comp.get("source"), dict) else [p for p in comp.get("sources") or [] if isinstance(p, dict)]
+        for part in parts:
+            key = (part.get("url"), part.get("sha256"))
+            if not isinstance(key[0], str) or not isinstance(key[1], str):
+                continue
+            pin = {name: part.get(name) for name in ("sizeBytes", "format", "extractPrefix", "fileManifest")}
+            owner = first.setdefault(key, (comp.get("id"), pin))
+            if owner[1] != pin:
+                differing = ", ".join(name for name in pin if owner[1][name] != pin[name])
+                errors.append(f"component {comp.get('id')!r}: source {key[0]} has the same sha256 as in {owner[0]!r} but a different {differing}")
+
+
 def chain_problem(by_id, cid, stack):
     """Walks requires depth-first. Returns a problem string for a cycle or a chain deeper than MAX_CHAIN_DEPTH, else None."""
     if cid in stack:
@@ -340,6 +359,7 @@ def validate(document, catalog):
             problem = chain_problem(by_id, comp["id"].lower(), [])
             if problem:
                 errors.append(f"component {comp['id']!r}: {problem}")
+    check_equal_sources(components, errors)
     if catalog is not None:
         check_base_engine(components, catalog, errors)
     return errors

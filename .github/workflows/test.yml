@@ -315,6 +315,7 @@ jobs:
           .\tests\card-identity-tests.ps1
           .\tests\recipes-selection-tests.ps1
           .\tests\components-tests.ps1
+          .\tests\rdna4-plan-vulkan-tests.ps1
           .\tests\adlx-probe-component-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
@@ -336,6 +337,7 @@ jobs:
           .\tests\card-identity-tests.ps1
           .\tests\recipes-selection-tests.ps1
           .\tests\components-tests.ps1
+          .\tests\rdna4-plan-vulkan-tests.ps1
           .\tests\adlx-probe-component-tests.ps1
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1

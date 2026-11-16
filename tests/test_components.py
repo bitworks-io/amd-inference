@@ -1,4 +1,4 @@
-import copy, importlib.util, json, tempfile, unittest
+import copy, hashlib, importlib.util, json, tempfile, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,7 +128,9 @@ ZERO = "0" * 64
 
 
 def part(paths, fmt="zip-tree", prefix="pre/", host="example.com"):
-    out = {"url": f"https://{host}/x.zip", "allowedRedirectHosts": [host], "sha256": ZERO, "sizeBytes": 10, "format": fmt,
+    # Equal sources must pin equal manifests, so a fixture part's sha256 follows its manifest.
+    sha = hashlib.sha256("\n".join(paths).encode()).hexdigest()
+    out = {"url": f"https://{host}/x.zip", "allowedRedirectHosts": [host], "sha256": sha, "sizeBytes": 10, "format": fmt,
            "fileManifest": [{"path": p, "sizeBytes": 3, "sha256": ZERO} for p in paths]}
     if prefix is not None:
         out["extractPrefix"] = prefix
@@ -167,6 +169,44 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(engine["requires"], ["amd-rocm-gfx1100-10.0.0"])
         self.assertEqual(cc.validate(GOOD, CATALOG), [])
         self.assertEqual(cc.main([]), 0)
+
+    def test_shipped_rdna4_hip_components_mirror_gfx1100(self):
+        by_id = {c["id"]: c for c in GOOD["components"]}
+        base_engine, base_runtime = by_id["llama.cpp-hip-b11658"], by_id["amd-rocm-gfx1100-10.0.0"]
+        for target in ("gfx1201", "gfx1200"):
+            engine, runtime = by_id[f"llama.cpp-hip-b11658-{target}"], by_id[f"amd-rocm-{target}-10.0.0"]
+            self.assertEqual(engine["requires"], [f"amd-rocm-{target}-10.0.0"])
+            self.assertEqual(runtime["requires"], [])
+            self.assertEqual(engine["source"], base_engine["source"])
+            self.assertEqual(runtime["sources"][0], base_runtime["sources"][0])
+            device = runtime["sources"][1]
+            self.assertEqual(device["url"], f"https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-{target}/rocm_sdk_device_{target}-10.0.0-py3-none-win_amd64.whl")
+            self.assertEqual(device["allowedRedirectHosts"], ["stable.repo.amd.com"])
+            self.assertEqual((device["format"], device["extractPrefix"]), ("zip-tree", "_rocm_sdk_libraries/"))
+            self.assertTrue(all(target in m["path"] for m in device["fileManifest"]))
+            self.assertEqual(runtime["license"], base_runtime["license"])
+            self.assertEqual(engine["license"], base_engine["license"])
+            self.assertEqual(runtime["platform"], base_runtime["platform"])
+            self.assertEqual(runtime["runtimePathDirs"], ["bin"])
+        self.assertEqual(by_id["amd-rocm-gfx1201-10.0.0"]["sources"][1]["sizeBytes"], 312303802)
+        self.assertEqual(by_id["amd-rocm-gfx1200-10.0.0"]["sources"][1]["sizeBytes"], 377648520)
+        self.assertEqual(base_engine["requires"], ["amd-rocm-gfx1100-10.0.0"])
+        self.assertEqual(cc.validate(GOOD, CATALOG), [])
+
+    def test_equal_source_must_pin_an_equal_manifest(self):
+        def engine_manifest(doc):
+            next(c for c in doc["components"] if c["id"] == "llama.cpp-hip-b11658-gfx1201")["source"]["fileManifest"][0]["sha256"] = "1" * 64
+        def runtime_manifest(doc):
+            next(c for c in doc["components"] if c["id"] == "amd-rocm-gfx1200-10.0.0")["sources"][0]["fileManifest"].pop()
+        def runtime_size(doc):
+            next(c for c in doc["components"] if c["id"] == "amd-rocm-gfx1201-10.0.0")["sources"][0]["sizeBytes"] += 1
+        def engine_prefix(doc):
+            next(c for c in doc["components"] if c["id"] == "amd-rocm-gfx1201-10.0.0")["sources"][0]["extractPrefix"] = "other/"
+        for mutate, what in ((engine_manifest, "fileManifest"), (runtime_manifest, "fileManifest"), (runtime_size, "sizeBytes"), (engine_prefix, "extractPrefix")):
+            doc = copy.deepcopy(GOOD)
+            mutate(doc)
+            errors = cc.validate(doc, CATALOG)
+            self.assertTrue(any("same sha256" in e and what in e for e in errors), (what, errors))
 
     def test_shipped_adlx_probe_tool(self):
         probe = {c["id"]: c for c in GOOD["components"]}["bitworks-adlx-probe"]

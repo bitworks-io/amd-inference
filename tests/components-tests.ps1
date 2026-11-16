@@ -356,6 +356,25 @@ try {
     Check (@($runtimeAsset.manifest).Count -eq 268 -and @($runtimeAsset.manifest).Count -eq (@($hipRuntimeSources[0].fileManifest).Count + @($hipRuntimeSources[1].fileManifest).Count) -and $runtimeAsset.expandedSizeBytes -eq $runtimePartSum) 'Get-FastLlmComponentManifestAsset unions the manifests of all parts (268 files, summed size)'
     Check ($hipEngine.entryPoint -ceq 'llama-server.exe' -and @($hipEngineSources[0].fileManifest | Where-Object { $_.path -ceq 'llama-server.exe' }).Count -eq 1 -and [string] $hipEngine.platform.backend -ceq 'hip' -and @($hipEngine.requires) -ccontains 'amd-rocm-gfx1100-10.0.0') 'the shipped HIP engine names llama-server.exe in its manifest, backend hip and requires the runtime'
 
+    # RDNA4 (experimental): one engine id and one runtime per target. Each engine resolves to exactly its own runtime; gfx1100 is unchanged.
+    foreach ($rdna4Target in @('gfx1201', 'gfx1200')) {
+        $rdna4EngineId = "llama.cpp-hip-b11658-$rdna4Target"
+        $rdna4RuntimeId = "amd-rocm-$rdna4Target-10.0.0"
+        $rdna4Engine = $shippedById[$rdna4EngineId]
+        $rdna4Runtime = $shippedById[$rdna4RuntimeId]
+        Check ($null -ne $rdna4Engine -and $null -ne $rdna4Runtime) "the shipped file lists the $rdna4Target engine id and runtime"
+        $rdna4Chain = @(Get-FastLlmComponentChain -Components $shipped -Id $rdna4EngineId)
+        Check ((($rdna4Chain | ForEach-Object { $_.id }) -join ',') -ceq "$rdna4RuntimeId,$rdna4EngineId") "the $rdna4Target engine chain is exactly its own runtime then the engine (no gfx1100 member)"
+        Check (@($rdna4Engine.requires).Count -eq 1 -and @($rdna4Engine.requires)[0] -ceq $rdna4RuntimeId) "the $rdna4Target engine requires only its own runtime"
+        $rdna4EngineSources = @(Get-FastLlmComponentSources -Component $rdna4Engine)
+        $rdna4RuntimeSources = @(Get-FastLlmComponentSources -Component $rdna4Runtime)
+        Check ($rdna4EngineSources[0].url -ceq $hipEngineSources[0].url -and $rdna4EngineSources[0].sha256 -ceq $hipEngineSources[0].sha256 -and $rdna4EngineSources[0].sizeBytes -eq $hipEngineSources[0].sizeBytes -and (ConvertTo-Json $rdna4EngineSources[0].fileManifest -Compress) -ceq (ConvertTo-Json $hipEngineSources[0].fileManifest -Compress)) "the $rdna4Target engine id uses the same source zip, pin and manifest as the gfx1100 HIP engine"
+        Check ($rdna4RuntimeSources.Count -eq 2 -and $rdna4RuntimeSources[0].url -ceq $hipRuntimeSources[0].url -and $rdna4RuntimeSources[0].sha256 -ceq $hipRuntimeSources[0].sha256 -and $rdna4RuntimeSources[0].sizeBytes -eq $hipRuntimeSources[0].sizeBytes -and @($rdna4RuntimeSources[0].fileManifest).Count -eq 16) "the $rdna4Target runtime shares the gfx1100 libraries wheel pin"
+        Check ($rdna4RuntimeSources[1].url -ceq "https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-$rdna4Target/rocm_sdk_device_$rdna4Target-10.0.0-py3-none-win_amd64.whl" -and $rdna4RuntimeSources[1].sha256 -cmatch '^[0-9a-f]{64}$' -and $rdna4RuntimeSources[1].sha256 -cne $hipRuntimeSources[1].sha256 -and @($rdna4RuntimeSources[1].fileManifest).Count -gt 0) "the $rdna4Target runtime has its own device wheel from the AMD index, with its own pin"
+        Check ((@($rdna4Runtime.runtimePathDirs) -join ',') -ceq 'bin' -and [string] $rdna4Runtime.kind -ceq 'runtime' -and [string] $rdna4Engine.kind -ceq 'engine' -and [string] $rdna4Engine.platform.backend -ceq 'hip') "the $rdna4Target components have the gfx1100 kinds, platform and runtime path"
+    }
+    Check ((($hipChain | ForEach-Object { $_.id }) -join ',') -ceq 'amd-rocm-gfx1100-10.0.0,llama.cpp-hip-b11658' -and @($hipEngine.requires).Count -eq 1) 'the gfx1100 engine chain is unchanged by the RDNA4 components'
+
     # ---- Happy install (consent: show) ----
     $fx = New-Fixture -Dir (Join-Path $work 'fx-happy')
     $installRoot = New-TestRoot
@@ -1949,6 +1968,61 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-b10698-vulkan') -ceq '') 'with the setting on, the shipped Vulkan engine (show license not in the set) gets no standing acceptance'
     Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'llama.cpp-hip-b11658') -ceq '2026-10-16T10:00:00.0000000Z') 'with the setting on, the shipped HIP chain gets the standing acceptance'
     Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId 'bitworks-adlx-probe') -ceq '2026-10-16T10:00:00.0000000Z') 'with the setting on and both probe licenses in the stored set, the shipped ADLX probe gets the standing acceptance'
+    # RDNA4 runtimes and engines (experimental): same AMD EULA title and host as the gfx1100 chain, so the existing accepted identities cover them; a new title or host never is.
+    $amdEula = @($licIdentities | Where-Object { $_.title -ceq 'AMD Software End User License Agreement' -and $_.host -ceq 'github.com' })
+    Check ($amdEula.Count -eq 1) 'the existing accepted identities hold the AMD end-user license (title and host)'
+    $rdna4Chains = @{}
+    foreach ($rdna4Target in @('gfx1201', 'gfx1200')) {
+        $rdna4EngineId = "llama.cpp-hip-b11658-$rdna4Target"
+        $rdna4Members = @($licShipped | Where-Object { @($rdna4EngineId, "amd-rocm-$rdna4Target-10.0.0") -ccontains [string] $_.id })
+        Check ($rdna4Members.Count -eq 2) "the $rdna4Target chain has two members"
+        $rdna4Links = @(Get-FastLlmAcceptableLicenseLinks -Components $rdna4Members)
+        $baseLinks = @(Get-FastLlmAcceptableLicenseLinks -Components @($licShipped | Where-Object { @('llama.cpp-hip-b11658', 'amd-rocm-gfx1100-10.0.0') -ccontains [string] $_.id }))
+        Check (($rdna4Links | ForEach-Object { $_.title + '|' + $_.host } | Sort-Object) -join ';' -ceq (($baseLinks | ForEach-Object { $_.title + '|' + $_.host } | Sort-Object) -join ';')) "the $rdna4Target chain carries exactly the gfx1100 chain's license titles and hosts"
+        Check (@($rdna4Links | Where-Object { $_.title -ceq $amdEula[0].title -and $_.host -ceq $amdEula[0].host }).Count -eq 1) "the $rdna4Target chain carries the AMD end-user license title and host of the stored entry"
+        Check (@($rdna4Members | Where-Object { [string] $_.license.consent -cne 'accept' }).Count -eq 0) "the $rdna4Target components need the same accept consent as gfx1100"
+        Check ((Get-FastLlmStandingAcceptance -InstallRoot $licShippedRoot -ComponentsPath $licShippedPath -ComponentId $rdna4EngineId) -ceq '2026-10-16T10:00:00.0000000Z') "under accept-automatically the existing stored identities cover the $rdna4Target chain (no new acceptance)"
+        Check ((Get-FastLlmStandingAcceptance -InstallRoot (New-TestRoot) -ComponentsPath $licShippedPath -ComponentId $rdna4EngineId) -ceq '') "under ask the $rdna4Target chain gets no standing acceptance"
+    }
+    Check ($licIdentities.Count -eq 5) 'the RDNA4 components add no new acceptable license identity'
+    # The shipped RDNA4 trees have long file paths, and the path-length check runs before consent, so these installs use a short root.
+    $rdna4ShortBase = if ($env:OS -ne 'Windows_NT' -and (Test-Path -LiteralPath '/tmp')) { '/tmp' } else { [System.IO.Path]::GetTempPath() }
+    $rdna4Roots = New-Object 'System.Collections.Generic.List[string]'
+    function New-Rdna4ShortRoot { $shortRoot = Join-Path $rdna4ShortBase ('fl' + [Guid]::NewGuid().ToString('N').Substring(0, 6)); $rdna4Roots.Add($shortRoot); return $shortRoot }
+    $rdna4Reached = New-Object 'System.Collections.Generic.List[string]'
+    $rdna4Seam = { param($Url, $Destination, $Sha256, $SizeBytes, $AllowedRedirectHosts) $rdna4Reached.Add([string] $Url); throw 'rdna4-seam-stop' }.GetNewClosure()
+    foreach ($rdna4Target in @('gfx1201', 'gfx1200')) {
+        $rdna4EngineId = "llama.cpp-hip-b11658-$rdna4Target"
+        $rdna4Reached.Clear()
+        $askRefusal = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $licShippedPath -ComponentId $rdna4EngineId -InstallRoot (New-Rdna4ShortRoot) -Unattended -Download $rdna4Seam 6>$null }
+        Check ($null -ne $askRefusal -and $askRefusal.code -ceq 'component-consent-required' -and $askRefusal.message -like '*-AcceptLicense*' -and $rdna4Reached.Count -eq 0) "under ask, installing the $rdna4Target engine is refused without -AcceptLicense, before any download"
+        $standing = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $licShippedPath -ComponentId $rdna4EngineId -InstallRoot (New-Rdna4ShortRoot) -SettingAcceptedAt '2026-10-16T10:00:00.0000000Z' -SettingAcceptedLicenses $licIdentities -Unattended -Download $rdna4Seam 6>$null }
+        Check ($null -ne $standing -and $standing.code -cne 'component-consent-required' -and $rdna4Reached.Count -ge 1) "under accept-automatically the $rdna4Target engine passes consent with the existing identities and reaches the download"
+    }
+    # A new title or host is never silently accepted: fixture copies of the gfx1201 chain with a changed licence.
+    function New-LicenseVariantDoc([string] $Name, [scriptblock] $Mutate) {
+        $variantDoc = Get-Content -LiteralPath $licShippedPath -Raw | ConvertFrom-Json
+        $variantDoc.components = @($variantDoc.components | Where-Object { @('llama.cpp-hip-b11658-gfx1201', 'amd-rocm-gfx1201-10.0.0') -ccontains [string] $_.id })
+        $variantRuntime = @($variantDoc.components | Where-Object { $_.id -ceq 'amd-rocm-gfx1201-10.0.0' })[0]
+        & $Mutate $variantRuntime
+        $variantPath = Join-Path $work ($Name + '.json')
+        [System.IO.File]::WriteAllText($variantPath, ($variantDoc | ConvertTo-Json -Depth 30), (New-Object System.Text.UTF8Encoding($false)))
+        return $variantPath
+    }
+    $variantCases = [ordered] @{
+        'a different title' = { param($r) $r.license.links[0].title = 'A different AMD agreement' }
+        'a different host'  = { param($r) $r.license.links[0].url = 'https://other.example.com/LICENSE' }
+    }
+    foreach ($variantName in $variantCases.Keys) {
+        $variantPath = New-LicenseVariantDoc -Name ('lic-variant-' + ($variantName -replace ' ', '-')) -Mutate $variantCases[$variantName]
+        $variantRoot = New-TestRoot
+        Set-FastLlmComponentLicenseSettings -InstallRoot $variantRoot -Mode 'accept-automatically' -Accepted $licIdentities -AcceptedAt '2026-10-16T10:00:00.0000000Z'
+        Check ((Get-FastLlmStandingAcceptance -InstallRoot $variantRoot -ComponentsPath $variantPath -ComponentId 'llama.cpp-hip-b11658-gfx1201') -ceq '') "under accept-automatically a component with $variantName gets no standing acceptance"
+        $rdna4Reached.Clear()
+        $variantRefusal = Get-ThrownFailure { Install-FastLlmComponent -ComponentsPath $variantPath -ComponentId 'llama.cpp-hip-b11658-gfx1201' -InstallRoot (New-Rdna4ShortRoot) -SettingAcceptedAt '2026-10-16T10:00:00.0000000Z' -SettingAcceptedLicenses $licIdentities -Unattended -Download $rdna4Seam 6>$null }
+        Check ($null -ne $variantRefusal -and $variantRefusal.code -ceq 'component-consent-required' -and $variantRefusal.message -like "*'amd-rocm-gfx1201-10.0.0'*" -and $rdna4Reached.Count -eq 0) "a component with $variantName is refused even under accept-automatically, before any download"
+    }
+    foreach ($rdna4Root in $rdna4Roots) { Remove-Item -LiteralPath $rdna4Root -Recurse -Force -ErrorAction SilentlyContinue }
 
     # Standing-setting receipts through the install seam (fixture chain with accept-type licenses).
     $stFx = New-ChainFixture -Name 'fx-standing'
