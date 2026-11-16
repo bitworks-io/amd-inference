@@ -39,6 +39,13 @@ try {
         $empty = [Bitworks.FastLlm.LoopbackHttp]::Request($url, '', 1000, 1048576)
         if ($empty.Status -ne 200) { throw 'Empty-body health call did not use GET.' }
         Write-Host 'LoopbackHttp: null and empty body both used GET /health.'
+        $withBearer = [Bitworks.FastLlm.LoopbackHttp]::Request($url, $null, 1000, 1048576, 'fl-test-bearer')
+        if ($withBearer.Status -ne 200) { throw 'The bearer overload did not complete a loopback request.' }
+        $bearerRefused = $false
+        try { [Bitworks.FastLlm.LoopbackHttp]::Request('http://localhost:1/health', $null, 500, 1048576, 'fl-test-bearer') | Out-Null }
+        catch [ArgumentException] { $bearerRefused = -not $_.Exception.ToString().Contains('fl-test-bearer') }
+        if (-not $bearerRefused) { throw 'The bearer overload did not refuse a non-loopback host before sending.' }
+        Write-Host 'LoopbackHttp: bearer overload works on loopback and refuses other hosts without echoing the value.'
         $post = [Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/completion", '{}', 1000, 1048576)
         if ($post.Status -ne 200) { throw 'Nonempty JSON body did not use POST.' }
         Write-Host 'LoopbackHttp: nonempty JSON body used POST /completion.'
