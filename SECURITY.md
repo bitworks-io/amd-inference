@@ -48,6 +48,10 @@ FastLLM checks for updates once a day, with one unauthenticated request to the G
 
 Download URLs must come from the project's GitHub release assets. `fast-llm.ps1 doctor` reports `installIntegrity` at any time.
 
+### Reinstall the previous version (explicit, one step)
+
+A normal update never installs an older release. `fast-llm.ps1 update -Previous` (and the window's **Reinstall previous version** button, shown only when it is allowed) goes back exactly one version, only after a confirmation that names both versions, and never automatically (`-Unattended` is refused). The target is the release the installer recorded as installed just before this one; no remote answer picks it. It is refused when a newer release exists, when the target is below the installed release's `rollbackFloor` (a known security problem), when the two releases declare different data formats, or when the record is missing or does not match this install. The target is fetched by exact tag from the project's published release assets and passes the same six steps as an update (stop, `SHA256SUMS`, size and SHA-256, pinned signature, exact ProductVersion, integrity), with the one difference that the release must be the recorded one and older. The window decides whether to show the button from the daily update check only, with no extra request; the release page is checked for the exact target when you click, and the action is refused if update checks are turned off, because a newer release could not be ruled out. Deleting a release's assets from the release page turns this off for that version. The record is cleared after a reinstall, so going back never chains.
+
 ## Reporting
 
 Do not open a public issue for a vulnerability that could expose local files, execute code, bypass artifact verification, or expose the inference API. Until Bitworks publishes a dedicated security address/process, contact the repository owner privately. A public GA release is blocked on publishing a complete coordinated-disclosure contact and response policy.

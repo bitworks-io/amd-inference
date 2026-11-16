@@ -1306,4 +1306,39 @@ Check ($hostileText -ceq 'Could not start the other model (an unnamed reason). T
 $flowText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFlow.ps1'))
 Check ($flowText -notmatch "Request-FastLlmSwitch|AllowSwitch|SwitchAllowed|'switch-'") 'switch-text: the window helpers only describe a switch; nothing here asks for one (no picker yet)'
 
+# Reinstall previous version: the button exists only while the decision allows it, and the confirmation names both versions.
+$eligibleDecision = [pscustomobject]@{ decision = 'eligible'; reason = 'eligible'; target = '2026.10.15.1'; installed = '2026.10.16.1'; latest = @{ version = '2026.10.15.1' } }
+$reinstallOffer = Get-FastLlmUiReinstallOffer -Resolved $eligibleDecision
+Check ($reinstallOffer.text -ceq 'Reinstall previous version' -and $reinstallOffer.from -ceq '2026.10.16.1' -and $reinstallOffer.to -ceq '2026.10.15.1') 'reinstall: an eligible decision gives the button, with both versions'
+foreach ($refusedReason in @('no-previous-record', 'not-immediate-previous', 'below-security-floor', 'data-format-differs', 'data-format-missing', 'fresh-check-unreadable', 'newer-release-available', 'not-in-release-store', 'draft-release', 'update-checks-off', 'not-a-release')) {
+    Check ($null -eq (Get-FastLlmUiReinstallOffer -Resolved ([pscustomobject]@{ decision = 'refused'; reason = $refusedReason; target = '2026.10.15.1'; installed = '2026.10.16.1' }))) "reinstall: no button for $refusedReason"
+}
+Check ($null -eq (Get-FastLlmUiReinstallOffer -Resolved $null)) 'reinstall: no button without an answer'
+Check ($null -eq (Get-FastLlmUiReinstallOffer -Resolved ([pscustomobject]@{ decision = 'eligible'; target = 'evil; calc'; installed = '2026.10.16.1' }))) 'reinstall: an eligible answer with an invalid version gives no button'
+Check ($null -eq (Get-FastLlmUiReinstallOffer -Resolved ([pscustomobject]@{ decision = 'eligible'; target = '2026.10.16.1'; installed = '2026.10.16.1' }))) 'reinstall: the same version on both sides gives no button'
+Check ($null -eq (Get-FastLlmUiReinstallOffer -Resolved ([pscustomobject]@{ decision = 'eligible' }))) 'reinstall: an eligible answer with no versions gives no button'
+Check ((Format-FastLlmUiReinstallConfirm -From '2026.10.16.1' -To '2026.10.15.1') -ceq 'Reinstall 2026.10.15.1 (replaces 2026.10.16.1)? FastLLM will stop the server, download 2026.10.15.1 from the signed release page, check its Bitworks signature, and run the installer. Continue?') 'reinstall: the confirmation names both versions'
+Check ((Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{ status = 'installed'; step = 'integrity'; reason = '' }) -To '2026.10.15.1') -ceq 'FastLLM 2026.10.15.1 was reinstalled. Close and reopen FastLLM.') 'reinstall: the installed result text is exact'
+$refusedText = Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{ status = 'refused'; step = 'decision'; reason = 'below-security-floor' }) -To '2026.10.15.1'
+Check ($refusedText -ceq 'Reinstall not done: The previous version has a known security problem that this version fixes.') 'reinstall: a refusal shows its reason in plain words'
+foreach ($refusedReason in @('no-previous-record', 'newer-release-available', 'data-format-differs', 'not-in-release-store', 'target-changed', 'some-future-code')) {
+    $plain = Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{ status = 'refused'; step = 'decision'; reason = $refusedReason }) -To '2026.10.15.1'
+    Check ($plain.Length -gt 30 -and -not $plain.Contains($refusedReason)) "reinstall: the $refusedReason refusal is plain words, not a code"
+}
+Check ((Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{ status = 'failed'; step = 'install'; reason = 'installer-exit-1' }) -To '2026.10.15.1') -ceq 'Reinstall not done: installer-exit-1. Nothing was changed.') 'reinstall: another failure keeps the nothing-changed text'
+Check ((Format-FastLlmUiReinstallResult -Result $integrityOutcome -To '2026.10.15.1') -ceq "FastLLM 2026.10.15.1 was installed, but its files don't match the signed catalog. Reinstall FastLLM from the release page.") 'reinstall: an integrity failure after the installer says it was installed'
+
+$shiftAt = $ui.IndexOf('foreach($shifted in @($form.Controls))')
+$reinstallButtonAt = $ui.IndexOf('$reinstallButton=New-Object Windows.Forms.Button')
+Check ($shiftAt -gt 0 -and $reinstallButtonAt -gt $shiftAt) 'reinstall: the button is added after the banner shift, like the other banner controls'
+Check ($ui.Contains("`$reinstallButton.Text='Reinstall previous version'") -and $ui.Contains('$reinstallButton.Visible=$false;$form.Controls.Add($reinstallButton)')) 'reinstall: the button starts hidden'
+$visibleSets = [regex]::Matches($ui, '\$reinstallButton\.Visible=\$true')
+Check ($visibleSets.Count -eq 1 -and $ui.IndexOf('$reinstallChoice=Get-FastLlmUiReinstallOffer') -gt 0 -and $ui.IndexOf('$reinstallChoice=Get-FastLlmUiReinstallOffer') -lt $visibleSets[0].Index -and $visibleSets[0].Index - $ui.IndexOf('$reinstallChoice=Get-FastLlmUiReinstallOffer') -lt 300) 'reinstall: the button is shown in one place, only for an offer from the decision'
+Check ($ui.Contains('Resolve-FastLlmReinstall -InstallRoot $Install -AppRoot $App -OfferOnly')) 'reinstall: the startup check asks the decision in offer-only mode (no store request when update checks are off)'
+$reinstallBody = $ui.Substring($ui.IndexOf('function InvokeUiReinstall {'), $ui.IndexOf('$reinstallButton.Add_Click(') - $ui.IndexOf('function InvokeUiReinstall {'))
+Check ($reinstallBody.IndexOf('Format-FastLlmUiReinstallConfirm') -gt 0 -and $reinstallBody.IndexOf('Format-FastLlmUiReinstallConfirm') -lt $reinstallBody.IndexOf('BeginInvoke')) 'reinstall: the confirmation is shown before anything runs'
+Check ($reinstallBody.Contains('-ExpectedTarget $Expected') -and $reinstallBody.Contains('Invoke-FastLlmReinstallPrevious') -and $reinstallBody.Contains('Finish or stop the current action before reinstalling.')) 'reinstall: the run re-decides, refuses a changed target and waits for a side step'
+Check (-not $ui.Contains('PreviousTarget') -and -not $ui.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot $Install -AppRoot $App -Latest $Latest -') -and -not [regex]::IsMatch($ui, '(?i)-Silent(?!ly)')) 'reinstall: the window never passes the previous-target switch itself and never runs the installer silently'
+Check ([regex]::Matches($ui, 'Invoke-FastLlmReinstallPrevious').Count -eq 1) 'reinstall: the window has one caller of the reinstall action'
+
 Write-Output "UI flow tests passed: $checks"

@@ -483,4 +483,383 @@ $decisionSource = (Get-Command Get-FastLlmReinstallDecision).ScriptBlock.ToStrin
 Check (-not ($decisionSource -match 'Invoke-|Get-Content|Test-Path|Set-Content|\[IO\.|Start-Process|Invoke-WebRequest')) 'reinstall: the decision function does no I/O'
 Check ($null -ne (Get-Command Invoke-FastLlmVerifiedUpdate) -and -not ((Get-Command Invoke-FastLlmVerifiedUpdate).ScriptBlock.ToString().Contains('Get-FastLlmReinstallDecision'))) 'reinstall: the update path does not call the decision (no install path yet)'
 
+# --- reinstall previous: the explicit action (record reader, store lookup, install through the verified path) ---
+$old = '2026.10.15.1'
+$cur = '2026.10.16.1'
+function New-ReinstallEnv([string]$Installed = $cur, $InstalledPolicy = $null, [bool]$WithRecord = $true, [string]$Previous = $old, $PreviousPolicy = $null,
+                          [string]$ReplacedBy = $cur, [string]$PreviousChannel = 'stable', [bool]$WithPreviousPolicyFile = $true) {
+    $e = New-Env -Version $Installed
+    New-Item -ItemType Directory -Path (Join-Path $e.App 'config') -Force | Out-Null
+    if ($null -eq $InstalledPolicy) { $InstalledPolicy = New-Policy }
+    Set-Content -LiteralPath (Join-Path (Join-Path $e.App 'config') 'release-policy.json') -Value (ConvertTo-Json -InputObject $InstalledPolicy -Compress)
+    if ($WithRecord) {
+        $folder = Join-Path (Join-Path $e.Install 'state') 'previous-release'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $folder 'RELEASE.json') -Value (@{ version = $Previous; channel = $PreviousChannel } | ConvertTo-Json)
+        Set-Content -LiteralPath (Join-Path $folder 'record.json') -Value ('{"replacedBy":"' + $ReplacedBy + '"}')
+        if ($WithPreviousPolicyFile) {
+            if ($null -eq $PreviousPolicy) { $PreviousPolicy = New-Policy }
+            Set-Content -LiteralPath (Join-Path $folder 'release-policy.json') -Value (ConvertTo-Json -InputObject $PreviousPolicy -Compress)
+        }
+    }
+    $e
+}
+function RecordFolder($e) { Join-Path (Join-Path $e.Install 'state') 'previous-release' }
+function Store-Body([string]$Version = $old, [string]$Channel = 'stable', [bool]$Draft = $false, [bool]$Prerelease = $false) {
+    $tag = 'v' + $Version
+    if ($Channel -ceq 'canary') { $tag += '-canary' }
+    Json @{ tag_name = $tag; draft = $Draft; prerelease = $Prerelease; html_url = "https://github.com/bitworks-io/amd-inference/releases/tag/$tag"
+            assets = @(@{ name = 'SHA256SUMS'; browser_download_url = ($good + "$tag/SHA256SUMS"); size = 200 }, @{ name = "FastLLM-Setup-$Version.exe"; browser_download_url = ($good + "$tag/FastLLM-Setup-$Version.exe"); size = $setupBytes.Length }) }
+}
+# Answers releases/latest (the fresh check) and releases/tags/<tag> (the store); every URL asked is recorded.
+function New-ReinstallRequest([string]$LatestTag = 'v2026.10.16.1', $StoreStatus = 200, $StoreBody = $null) {
+    $urls = New-Object 'System.Collections.Generic.List[string]'
+    if ($null -eq $StoreBody) { $StoreBody = Store-Body }
+    $latestBody = Json (Rel $LatestTag)
+    $storeCode = $StoreStatus
+    $request = {
+        param($Url, $Etag)
+        $urls.Add([string]$Url)
+        if ($Url.Contains('/releases/tags/')) { return @{ Status = $storeCode; Body = $StoreBody; Etag = 'W/"s"' } }
+        @{ Status = 200; Body = $latestBody; Etag = 'W/"l"' }
+    }.GetNewClosure()
+    [pscustomobject]@{ Request = $request; Urls = $urls }
+}
+function Install-Seams($Seams) {
+    @{ StopServer = $Seams.StopServer; Download = $Seams.Download; Verify = $Seams.Verify; GetProductVersion = $Seams.GetProductVersion; RunInstaller = $Seams.RunInstaller; Integrity = $Seams.Integrity }
+}
+$prompts = New-Object 'System.Collections.Generic.List[string]'
+function New-Prompt($Answer) { $log = $prompts; $reply = $Answer; { param($Text) $log.Add($Text); $reply }.GetNewClosure() }
+$approveNever = { param($From, $To) throw 'the approval must not be asked' }
+$approveYes = { param($From, $To) $true }
+function Seams-For-Old([hashtable]$More = @{}) {
+    $opts = @{ Sums = ($setupSha + '  FastLLM-Setup-' + $old + '.exe' + "`n"); ProductVersion = $old }
+    foreach ($k in $More.Keys) { $opts[$k] = $More[$k] }
+    New-Seams $opts
+}
+
+# Facts read from the PC.
+$e = New-ReinstallEnv
+$f = Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App
+Check ($f.installedVersion -ceq $cur -and $f.record.version -ceq $old -and $f.record.replacedBy -ceq $cur -and $f.record.policy.dataFormat -eq 1 -and $f.installedPolicy.dataFormat -eq 1 -and $f.channel -ceq 'stable') 'reinstall facts: the installed version, both policies and the record are read'
+$d = Get-FastLlmReinstallDecision -InstalledPolicy $f.installedPolicy -InstalledVersion $f.installedVersion -PreviousRecord $f.record -FreshLatest $null -StoreRelease (New-StoreRelease)
+Check ($d.decision -ceq 'eligible') 'reinstall facts: what the reader returns is accepted by the decision'
+$e = New-ReinstallEnv -WithRecord $false
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App).record) 'reinstall facts: no record folder gives no record'
+$e = New-ReinstallEnv
+Set-Content -LiteralPath (Join-Path (RecordFolder $e) 'record.json') -Value '{ not json'
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App).record) 'reinstall facts: a record.json that is not JSON gives no record'
+$e = New-ReinstallEnv
+Set-Content -LiteralPath (Join-Path (RecordFolder $e) 'RELEASE.json') -Value '[1,2]'
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App).record) 'reinstall facts: a RELEASE.json that is not an object gives no record'
+$e = New-ReinstallEnv
+Set-Content -LiteralPath (Join-Path (RecordFolder $e) 'record.json') -Value (' ' * 70000)
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App).record) 'reinstall facts: an oversized record file gives no record'
+$e = New-ReinstallEnv -PreviousChannel 'beta'
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App).record) 'reinstall facts: a record whose channel is not stable or canary gives no record'
+$e = New-ReinstallEnv -WithPreviousPolicyFile $false
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App).record.policy) 'reinstall facts: a previous release without a policy file has no policy'
+$e = New-Env -WithRelease $false
+Check ($null -eq (Read-FastLlmReinstallFacts -InstallRoot $e.Install -AppRoot $e.App)) 'reinstall facts: no installed release gives nothing'
+
+# The store lookup is by exact tag.
+$req = New-ReinstallRequest
+$store = Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $req.Request
+Check ($req.Urls.Count -eq 1 -and $req.Urls[0] -ceq 'https://api.github.com/repos/bitworks-io/amd-inference/releases/tags/v2026.10.15.1') 'store: asks releases/tags/<exact tag>, never latest or a list'
+Check ($store.version -ceq $old -and $store.draft -eq $false -and $store.latest.version -ceq $old -and $store.latest.assets.ContainsKey('SHA256SUMS') -and $store.latest.assets.ContainsKey("FastLLM-Setup-$old.exe")) 'store: the release comes back with its assets'
+$req = New-ReinstallRequest -StoreBody (Store-Body $old 'canary')
+$store = Get-FastLlmStoreRelease -Version $old -Channel 'canary' -Request $req.Request
+Check ($req.Urls[0] -ceq 'https://api.github.com/repos/bitworks-io/amd-inference/releases/tags/v2026.10.15.1-canary' -and $store.version -ceq $old) 'store: a canary previous release is fetched by its canary tag'
+$req = New-ReinstallRequest -StoreBody (Store-Body '2026.10.14.1')
+Check ($null -eq (Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $req.Request)) 'store: an answer for another tag is no store release'
+$req = New-ReinstallRequest -StoreBody (Store-Body $old 'stable' $false $true)
+Check ($null -eq (Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $req.Request)) 'store: a stable tag that is a pre-release is no store release'
+$offsite = Store-Body | ConvertFrom-Json
+$offsite.html_url = 'https://evil.example/bitworks-io/amd-inference/releases/tag/v2026.10.15.1'
+$req = New-ReinstallRequest -StoreBody (Json $offsite)
+Check ($null -eq (Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $req.Request)) 'store: an off-site release page is no store release'
+$req = New-ReinstallRequest -StoreStatus 404 -StoreBody '{"message":"Not Found"}'
+Check ($null -eq (Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $req.Request)) 'store: a 404 is no store release'
+$req = New-ReinstallRequest -StoreBody 'not json'
+Check ($null -eq (Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $req.Request)) 'store: an unreadable answer is no store release'
+Check ($null -eq (Get-FastLlmStoreRelease -Version "$old`n" -Channel 'stable' -Request $req.Request) -and $req.Urls.Count -eq 1) 'store: a version that is not strict is never looked up'
+$drafted = New-ReinstallRequest -StoreBody (Store-Body $old 'stable' $true)
+Check ((Get-FastLlmStoreRelease -Version $old -Channel 'stable' -Request $drafted.Request).draft -eq $true) 'store: a draft is reported as a draft'
+
+# The resolved decision. Local refusals never touch the network.
+$localCases = @(
+    @{ Name = 'no previous record'; Env = (New-ReinstallEnv -WithRecord $false); Reason = 'no-previous-record' },
+    @{ Name = 'a record written for another install'; Env = (New-ReinstallEnv -ReplacedBy '2026.10.17.1'); Reason = 'not-immediate-previous' },
+    @{ Name = 'a record naming a newer release'; Env = (New-ReinstallEnv -Previous '2026.10.17.1'); Reason = 'not-immediate-previous' },
+    @{ Name = 'a target below the installed floor'; Env = (New-ReinstallEnv -InstalledPolicy (New-Policy 1 '2026.10.16.1')); Reason = 'below-security-floor' },
+    @{ Name = 'a different data format'; Env = (New-ReinstallEnv -PreviousPolicy (New-Policy 2)); Reason = 'data-format-differs' },
+    @{ Name = 'a previous release without a policy file'; Env = (New-ReinstallEnv -WithPreviousPolicyFile $false); Reason = 'data-format-missing' })
+foreach ($case in $localCases) {
+    $req = New-ReinstallRequest
+    $r = Resolve-FastLlmReinstall -InstallRoot $case.Env.Install -AppRoot $case.Env.App -Request $req.Request
+    Check ($r.decision -ceq 'refused' -and $r.reason -ceq $case.Reason -and $null -eq $r.latest -and $req.Urls.Count -eq 0) ('resolve: ' + $case.Name + ' is refused with no network request')
+}
+$e = New-Env -WithRelease $false
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request (New-ReinstallRequest).Request
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'not-a-release') 'resolve: no installed release is refused'
+$e = New-ReinstallEnv
+$req = New-ReinstallRequest
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request
+Check ($r.decision -ceq 'eligible' -and $r.target -ceq $old -and $r.installed -ceq $cur -and $r.latest.version -ceq $old -and $req.Urls.Count -eq 2) 'resolve: eligible after a fresh check and the store entry, with the release to install'
+$req = New-ReinstallRequest -LatestTag 'v2026.10.17.1'
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'newer-release-available' -and $null -eq $r.latest -and $req.Urls.Count -eq 1 -and -not $req.Urls[0].Contains('/releases/tags/')) 'resolve: a newer release found by the fresh check refuses in favour of updating, without asking the store'
+$req = New-ReinstallRequest -StoreStatus 404 -StoreBody '{}'
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'not-in-release-store' -and $null -eq $r.latest) 'resolve: a target missing from the store is refused'
+$req = New-ReinstallRequest -StoreBody (Store-Body $old 'stable' $true)
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'draft-release' -and $null -eq $r.latest) 'resolve: a draft release is refused'
+$offline = { param($Url, $Etag) throw 'offline' }
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $offline
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'not-in-release-store') 'resolve: offline, the store cannot be reached, so nothing is offered'
+# The window's offer: no request beyond the normal update check, and never the store.
+$e = New-ReinstallEnv
+$req = New-ReinstallRequest
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
+Check ($r.decision -ceq 'eligible' -and $r.target -ceq $old -and $null -eq $r.latest -and $req.Urls.Count -eq 1 -and -not $req.Urls[0].Contains('/releases/tags/')) 'offer: eligible on the update check alone, with no store request and nothing to install from'
+$req = New-ReinstallRequest
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
+Check ($r.decision -ceq 'eligible' -and $req.Urls.Count -eq 0) 'offer: a launch inside the 24 h window makes no request at all'
+$e = New-ReinstallEnv
+$req = New-ReinstallRequest -LatestTag 'v2026.10.17.1'
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'newer-release-available' -and -not (@($req.Urls) -like '*/releases/tags/*')) 'offer: a newer release known from the check offers nothing and asks no store'
+$e = New-ReinstallEnv -WithRecord $false
+$req = New-ReinstallRequest
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
+Check ($r.decision -ceq 'refused' -and $req.Urls.Count -eq 0) 'offer: no record means no request at all'
+
+# Update checks turned off: no store request, and the explicit action is refused (a newer release cannot be ruled out).
+$e = New-ReinstallEnv
+Set-FastLlmUpdateSettings -InstallRoot $e.Install -UpdateCheck 'off'
+$req = New-ReinstallRequest
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'update-checks-off' -and $req.Urls.Count -eq 0) 'resolve: offer-only with update checks off makes no request and offers nothing'
+$r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request
+Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'update-checks-off' -and $null -eq $r.latest -and $req.Urls.Count -eq 0) 'resolve: the explicit action with update checks off is refused (the newer-release rule cannot be applied), with no request'
+$s = Seams-For-Old
+$r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveNever -Request $req.Request -UpdateSeams (Install-Seams $s)
+Check ($r.status -ceq 'refused' -and $r.reason -ceq 'update-checks-off' -and $s.Order.Count -eq 0) 'reinstall: with update checks off nothing is stopped, downloaded or run'
+
+# Every reason code has plain words, and an unknown one still has some.
+foreach ($code in @('no-previous-record', 'not-immediate-previous', 'below-security-floor', 'data-format-differs', 'data-format-missing', 'fresh-check-unreadable', 'newer-release-available', 'not-in-release-store', 'draft-release', 'update-checks-off', 'target-changed', 'not-a-release', 'approval-required', 'a-code-from-the-future', '')) {
+    $words = Get-FastLlmReinstallReasonText $code
+    Check ($words.Length -gt 20 -and $words -cnotmatch '^[a-z]+(-[a-z]+)+$' -and $words.EndsWith('.')) "reason text: '$code' reads as a sentence"
+}
+Check ((Get-FastLlmReinstallReasonText 'below-security-floor') -ceq 'The previous version has a known security problem that this version fixes.') 'reason text: the security floor sentence is the design text'
+
+# Invoke-FastLlmReinstallPrevious: refusals reach the user as text and nothing is stopped, downloaded or run.
+$refusalCases = @(
+    @{ Name = 'no record'; Env = (New-ReinstallEnv -WithRecord $false); Req = (New-ReinstallRequest); Reason = 'no-previous-record' },
+    @{ Name = 'a tampered record'; Env = (New-ReinstallEnv -ReplacedBy '2026.10.17.1'); Req = (New-ReinstallRequest); Reason = 'not-immediate-previous' },
+    @{ Name = 'below the floor'; Env = (New-ReinstallEnv -InstalledPolicy (New-Policy 1 '2026.10.16.1')); Req = (New-ReinstallRequest); Reason = 'below-security-floor' },
+    @{ Name = 'a data format mismatch'; Env = (New-ReinstallEnv -PreviousPolicy (New-Policy 2)); Req = (New-ReinstallRequest); Reason = 'data-format-differs' },
+    @{ Name = 'a newer release'; Env = (New-ReinstallEnv); Req = (New-ReinstallRequest -LatestTag 'v2026.10.17.1'); Reason = 'newer-release-available' },
+    @{ Name = 'a release missing from the store'; Env = (New-ReinstallEnv); Req = (New-ReinstallRequest -StoreStatus 404 -StoreBody '{}'); Reason = 'not-in-release-store' },
+    @{ Name = 'a draft'; Env = (New-ReinstallEnv); Req = (New-ReinstallRequest -StoreBody (Store-Body $old 'stable' $true)); Reason = 'draft-release' })
+foreach ($case in $refusalCases) {
+    $s = Seams-For-Old
+    $r = Invoke-FastLlmReinstallPrevious -InstallRoot $case.Env.Install -AppRoot $case.Env.App -Approve $approveNever -Request $case.Req.Request -UpdateSeams (Install-Seams $s)
+    $report = Get-FastLlmReinstallCliReport -Result $r
+    Check ($r.status -ceq 'refused' -and $r.step -ceq 'decision' -and $r.reason -ceq $case.Reason -and $r.message -ceq (Get-FastLlmReinstallReasonText $case.Reason) -and $s.Order.Count -eq 0 -and @(UpdateDirs $case.Env).Count -eq 0) ('reinstall: ' + $case.Name + ' is refused with its reason, and nothing is stopped or downloaded')
+    Check ($report.exitCode -eq 3 -and $report.text -ceq ('Reinstall refused: ' + (Get-FastLlmReinstallReasonText $case.Reason))) ('reinstall: ' + $case.Name + ' prints the reason in plain words and exits 3')
+}
+
+# Allowed: the approval names both versions, then the SAME verified path installs the PREVIOUS release's artifact.
+$e = New-ReinstallEnv
+$req = New-ReinstallRequest
+$s = Seams-For-Old
+$downloadedUrls = New-Object 'System.Collections.Generic.List[string]'
+$innerDownload = $s.Download
+$recordingDownload = { param($Url, $Destination, $Sha256, $SizeBytes) $downloadedUrls.Add([string]$Url); & $innerDownload $Url $Destination $Sha256 $SizeBytes }.GetNewClosure()
+$us = Install-Seams $s
+$us['Download'] = $recordingDownload
+$asked = New-Object 'System.Collections.Generic.List[string]'
+$approveRecording = { param($From, $To) $asked.Add("$From>$To"); $true }.GetNewClosure()
+$r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveRecording -Request $req.Request -UpdateSeams $us
+Check ($r.status -ceq 'installed' -and $r.from -ceq $cur -and $r.to -ceq $old) 'reinstall: an allowed, approved reinstall installs'
+Check ((($s.Order -join ',') -ceq 'stop,sums,download,verify,version,install,integrity')) 'reinstall: it runs the same verified steps as an update, in the same order'
+Check ($asked.Count -eq 1 -and $asked[0] -ceq "$cur>$old") 'reinstall: the approval is asked once, with the installed version and the target'
+Check ($downloadedUrls.Count -eq 2 -and $downloadedUrls[0] -ceq ($good + 'v2026.10.15.1/SHA256SUMS') -and $downloadedUrls[1] -ceq ($good + 'v2026.10.15.1/FastLLM-Setup-2026.10.15.1.exe')) 'reinstall: it downloads the PREVIOUS release SHA256SUMS and installer from the release store'
+Check (-not (Test-Path -LiteralPath (RecordFolder $e))) 'reinstall: the previous-release record is cleared after an install, so going back never chains'
+
+# The CLI's -Yes approver, all the way through: it confirms without a prompt and the previous release is installed.
+$e = New-ReinstallEnv
+$s = Seams-For-Old
+$neverPrompt = { param($Text) throw 'no prompt expected with -Yes' }
+$r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve (New-FastLlmReinstallApprover -Yes -Prompt $neverPrompt) -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+Check ($r.status -ceq 'installed' -and $r.to -ceq $old -and (($s.Order -join ',') -ceq 'stop,sums,download,verify,version,install,integrity')) 'reinstall: -Yes installs the previous release through the verified path with no prompt'
+$e = New-ReinstallEnv
+$s = Seams-For-Old
+$r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve (New-FastLlmReinstallApprover -Prompt (New-Prompt 'n')) -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+Check ($r.status -ceq 'declined' -and $s.Order.Count -eq 0) 'reinstall: without -Yes an answer of n installs nothing'
+
+# Not approved: nothing happens.
+foreach ($notYes in @({ param($From, $To) $false }, { param($From, $To) 'yes' }, { param($From, $To) $null }, { param($From, $To) @($true, $true) }, { param($From, $To) throw 'boom' })) {
+    $e = New-ReinstallEnv
+    $s = Seams-For-Old
+    $r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $notYes -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+    Check ($r.status -ceq 'declined' -and $s.Order.Count -eq 0 -and (Test-Path -LiteralPath (RecordFolder $e)) -and (Get-FastLlmReinstallCliReport -Result $r).exitCode -eq 0) 'reinstall: anything but exactly true declines, stops nothing and keeps the record'
+}
+# The window's guard: the target it showed must still be the one decided.
+$e = New-ReinstallEnv
+$s = Seams-For-Old
+$r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveNever -ExpectedTarget '2026.10.14.1' -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+Check ($r.status -ceq 'refused' -and $r.reason -ceq 'target-changed' -and $s.Order.Count -eq 0) 'reinstall: a target that differs from the confirmed one is refused before anything runs'
+$s = Seams-For-Old
+$r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveYes -ExpectedTarget $old -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+Check ($r.status -ceq 'installed') 'reinstall: the confirmed target installs'
+
+# A failure on the verified path keeps the record and reports the step.
+foreach ($failure in @(@{ O = @{ SigOk = $false; SigReason = 'wrong-publisher' }; Step = 'signature'; Status = 'refused' }, @{ O = @{ ProductVersion = '2026.10.14.1' }; Step = 'version'; Status = 'refused' }, @{ O = @{ Exit = 1 }; Step = 'install'; Status = 'failed' }, @{ O = @{ DownloadFail = $true }; Step = 'download'; Status = 'failed' })) {
+    $e = New-ReinstallEnv
+    $s = Seams-For-Old $failure.O
+    $r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveYes -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+    Check ($r.status -ceq $failure.Status -and $r.step -ceq $failure.Step -and (Test-Path -LiteralPath (RecordFolder $e))) ('reinstall: a ' + $failure.Step + ' failure is reported and the record is kept')
+}
+
+# The verified update path itself: -PreviousTarget is opt-in, exact and older; without it nothing changed.
+$e = New-Env -Version $cur
+$s = Seams-For-Old
+$us = Install-Seams $s
+$r = Invoke-FastLlmVerifiedUpdate -InstallRoot $e.Install -AppRoot $e.App -Latest (New-Latest $old) @us
+Check ($r.status -ceq 'refused' -and $r.step -ceq 'version' -and $r.reason -ceq 'not-newer' -and -not ($s.Order -contains 'install')) 'previous target: without it an older release is still refused as not-newer'
+$e = New-Env -Version $cur
+$s = Seams-For-Old
+$us = Install-Seams $s
+$r = Invoke-FastLlmVerifiedUpdate -InstallRoot $e.Install -AppRoot $e.App -Latest (New-Latest $old) -PreviousTarget '2026.10.14.1' @us
+Check ($r.status -ceq 'refused' -and $r.reason -ceq 'not-the-previous-target' -and -not ($s.Order -contains 'install')) 'previous target: a release that is not the target is refused'
+$e = New-Env -Version $old
+$s = New-Seams
+$us = Install-Seams $s
+$r = Invoke-FastLlmVerifiedUpdate -InstallRoot $e.Install -AppRoot $e.App -Latest (New-Latest $cur) -PreviousTarget $cur @us
+Check ($r.status -ceq 'refused' -and $r.reason -ceq 'not-older' -and -not ($s.Order -contains 'install')) 'previous target: a newer release is refused even when named as the target'
+$e = New-Env -Version $cur
+$s = New-Seams
+$us = Install-Seams $s
+$r = Invoke-FastLlmVerifiedUpdate -InstallRoot $e.Install -AppRoot $e.App -Latest (New-Latest $cur) -PreviousTarget $cur @us
+Check ($r.status -ceq 'refused' -and $r.reason -ceq 'not-older' -and -not ($s.Order -contains 'install')) 'previous target: the installed version itself is refused'
+
+# The confirmation and the CLI report.
+$prompts.Clear()
+$approver = New-FastLlmReinstallApprover -Yes -Prompt (New-Prompt 'n')
+Check ((& $approver $cur $old) -eq $true -and $prompts.Count -eq 0) 'confirm: -Yes confirms without asking'
+foreach ($yes in @('y', 'Y', 'yes', ' YES ')) {
+    $prompts.Clear()
+    $approver = New-FastLlmReinstallApprover -Prompt (New-Prompt $yes)
+    Check ((& $approver $cur $old) -eq $true -and $prompts.Count -eq 1 -and $prompts[0] -ceq "Reinstall FastLLM $old (replaces $cur)? [y/N]") "confirm: without -Yes it asks naming both versions, and '$yes' confirms"
+}
+foreach ($no in @('', 'n', 'no', 'yellow', 'yes please', '1', $null)) {
+    $approver = New-FastLlmReinstallApprover -Prompt (New-Prompt $no)
+    Check ((& $approver $cur $old) -eq $false) "confirm: '$no' does not confirm"
+}
+$report = Get-FastLlmReinstallCliReport -Result ([pscustomobject]@{ status = 'installed'; step = 'integrity'; reason = ''; to = $old })
+Check ($report.exitCode -eq 0 -and $report.text -like "*$old*") 'report: installed exits 0'
+$report = Get-FastLlmReinstallCliReport -Result ([pscustomobject]@{ status = 'declined'; step = 'confirm'; reason = 'not-confirmed' })
+Check ($report.exitCode -eq 0 -and $report.text -ceq 'Not reinstalled. Nothing was changed.') 'report: declined exits 0 and says nothing changed'
+$report = Get-FastLlmReinstallCliReport -Result ([pscustomobject]@{ status = 'failed'; step = 'install'; reason = 'installer-exit-1'; to = $old })
+Check ($report.exitCode -eq 1 -and $report.text -ceq 'Reinstall failed at install: installer-exit-1') 'report: a failed install exits 1'
+$report = Get-FastLlmReinstallCliReport -Result ([pscustomobject]@{ status = 'refused'; step = 'signature'; reason = 'wrong-publisher'; to = $old })
+Check ($report.exitCode -eq 3) 'report: a refusal on the verified path exits 3'
+$report = Get-FastLlmReinstallCliReport -Result ([pscustomobject]@{ status = 'failed'; step = 'integrity'; reason = 'tree'; to = $old })
+Check ($report.exitCode -eq 1 -and $report.text -like "*don't match the signed catalog*") 'report: an integrity failure after the installer says so and exits 1'
+
+# Where the reinstall is wired: only the explicit CLI action and the window click may call it, and only the update script passes -PreviousTarget.
+$callers = @()
+$previousTargetUsers = @()
+$decisionCallers = @()
+$sourceFiles = @(Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Extension -in @('.ps1', '.psm1', '.cmd', '.iss') -and $_.FullName -notmatch '[\\/](tests|\.git)[\\/]' })
+foreach ($sourceFile in $sourceFiles) {
+    $text = [IO.File]::ReadAllText($sourceFile.FullName)
+    if ($text.Contains('Invoke-FastLlmReinstallPrevious')) { $callers += $sourceFile.Name }
+    if ($text.Contains('-PreviousTarget')) { $previousTargetUsers += $sourceFile.Name }
+    if ($text.Contains('Get-FastLlmReinstallDecision')) { $decisionCallers += $sourceFile.Name }
+}
+Check (@($callers).Count -eq 3 -and ($callers -ccontains 'FastLlm.Update.ps1') -and ($callers -ccontains 'fast-llm-ui.ps1') -and ($callers -ccontains 'fast-llm.ps1')) ('wiring: only the update script, the CLI update action and the window mention the reinstall action (found: ' + ($callers -join ',') + ')')
+Check ((@($previousTargetUsers) -join ',') -ceq 'FastLlm.Update.ps1') 'wiring: only the update script passes or reads -PreviousTarget'
+Check ((@($decisionCallers) -join ',') -ceq 'FastLlm.Update.ps1') 'wiring: the decision is named only in the update script'
+$updateSource = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.Update.ps1'))
+Check ([regex]::Matches($updateSource, '-PreviousTarget \(\[string\]\$resolved\.target\)').Count -eq 1) 'wiring: the one call that passes -PreviousTarget uses the decision target'
+$verifiedStart = $updateSource.IndexOf('function Invoke-FastLlmVerifiedUpdate')
+$reinstallStart = $updateSource.IndexOf('# --- Reinstall the previous version')
+Check ($verifiedStart -gt 0 -and $reinstallStart -gt $verifiedStart -and -not $updateSource.Substring($verifiedStart, $reinstallStart - $verifiedStart).Contains('Get-FastLlmReinstallDecision')) 'wiring: the verified update path never calls the decision'
+$cliSource = [IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
+$updateActionStart = $cliSource.IndexOf("        'update' {")
+$updateAction = $cliSource.Substring($updateActionStart, $cliSource.IndexOf("        'stop' {") - $updateActionStart)
+$reinstallBranch = $updateAction.Substring(0, $updateAction.IndexOf('Invoke-FastLlmUpdateCheck'))
+Check ($reinstallBranch.Contains('if ($Previous) {') -and $reinstallBranch.Contains('Invoke-FastLlmReinstallPrevious') -and $reinstallBranch.Contains('New-FastLlmReinstallApprover -Yes:$Yes')) 'wiring: update -Previous branches off before the normal update check'
+Check ($updateAction.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Latest $updateLatest -Silent:$Unattended') -and -not $updateAction.Contains('PreviousTarget')) 'wiring: the normal update call is unchanged and never passes -PreviousTarget'
+
+# The CLI: parameter, abbreviations, guards, and a real run that refuses without any network.
+$cliAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm.ps1'), [ref]$null, [ref]$null)
+$cliParameters = @($cliAst.ParamBlock.Parameters)
+$previousParameter = @($cliParameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'Previous' })
+Check ($previousParameter.Count -eq 1 -and $previousParameter[0].StaticType -eq [System.Management.Automation.SwitchParameter]) 'cli: fast-llm.ps1 declares -Previous as a switch'
+$names = @($cliParameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+$common = @('Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable')
+function Resolve-Prefix([string]$Prefix, [string[]]$Pool) {
+    $exact = @($Pool | Where-Object { $_ -ieq $Prefix })
+    if ($exact.Count -eq 1) { return $exact[0] }
+    $hits = @($Pool | Where-Object { $_.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase) })
+    if ($hits.Count -eq 1) { return $hits[0] }
+    return $null
+}
+$withoutPrevious = @(@($names) + $common | Where-Object { $_ -cne 'Previous' })
+$withPrevious = @(@($names) + $common)
+$changed = @()
+foreach ($name in $withoutPrevious) {
+    for ($length = 1; $length -le $name.Length; $length++) {
+        $prefix = $name.Substring(0, $length)
+        $before = Resolve-Prefix $prefix $withoutPrevious
+        if ($null -ne $before -and (Resolve-Prefix $prefix $withPrevious) -cne $before) { $changed += $prefix }
+    }
+}
+Check ($changed.Count -eq 0) ('cli: adding -Previous leaves every parameter abbreviation that resolved uniquely resolving to the same parameter (changed: ' + ($changed -join ',') + ')')
+foreach ($name in @('Preload', 'PreloadStatus', 'Profile', 'Port', 'PlannedRecipe', 'ProbeVulkanMemory')) {
+    Check ((Resolve-Prefix $name $withPrevious) -ceq $name) "cli: -$name still resolves to itself"
+}
+Check ((Resolve-Prefix 'Prev' $withPrevious) -ceq 'Previous' -and $null -eq (Resolve-Prefix 'Pre' $withPrevious)) 'cli: -Prev is -Previous, and -Pre stays ambiguous as before'
+$shell = (Get-Process -Id $PID).Path
+function Invoke-Cli([string[]]$Arguments) {
+    # Windows PowerShell 5.1 turns a native command's stderr into a terminating error under 'Stop'; the refusals under test write to stderr.
+    # Thrown text can be wrapped or prefixed by the host, so whitespace is collapsed before it is matched.
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $lines = @(& $shell -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') @Arguments 2>&1 | ForEach-Object { [string]$_ })
+        $code = $LASTEXITCODE
+        [pscustomobject]@{ code = $code; text = ((($lines -join ' ') -replace '\s+', ' ').Trim()) }
+    }
+    finally { $ErrorActionPreference = $savedPreference }
+}
+$cliRoot = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-cli-root-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $cliRoot -Force | Out-Null
+$run = Invoke-Cli @('update', '-Previous', '-InstallRoot', $cliRoot)
+Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*not an installed FastLLM release*') ('cli: update -Previous in an unreleased tree is refused in plain words with a non-zero exit (code ' + $run.code + ')')
+$run = Invoke-Cli @('update', '-Prev', '-InstallRoot', $cliRoot)
+Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*') 'cli: the abbreviation -Prev reaches the same refusal'
+$run = Invoke-Cli @('update', '-Previous', '-Yes', '-InstallRoot', $cliRoot)
+Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*') 'cli: -Yes does not skip a refusal'
+$run = Invoke-Cli @('update', '-Previous', '-AsJson', '-InstallRoot', $cliRoot)
+Check ($run.code -eq 3 -and $run.text -match '"reason":\s*"not-a-release"' -and $run.text -match '"status":\s*"refused"') 'cli: -AsJson prints the typed refusal'
+$run = Invoke-Cli @('update', '-Previous', '-Unattended', '-Yes', '-InstallRoot', $cliRoot)
+Check ($run.code -ne 0 -and $run.text -like '*cannot run with -Unattended*') 'cli: update -Previous is refused with -Unattended, even with -Yes'
+$run = Invoke-Cli @('update', '-Previous', '-Channel', 'stable', '-InstallRoot', $cliRoot)
+Check ($run.code -ne 0 -and $run.text -like '*cannot be combined with -Channel*') 'cli: update -Previous is refused with -Channel'
+foreach ($otherAction in @('start', 'status', 'update-check', 'models')) {
+    $run = Invoke-Cli @($otherAction, '-Previous', '-InstallRoot', $cliRoot)
+    Check ($run.code -ne 0 -and $run.text -like '*-Previous is supported only by update*') "cli: -Previous is refused with $otherAction"
+}
+Remove-Item -LiteralPath $cliRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+# The reinstall code writes no log of its own, so nothing it prints or logs can carry prompts or completions.
+$reinstallSource = $updateSource.Substring($reinstallStart)
+Check (-not ($reinstallSource -match 'Write-Host|Write-Output|Add-Content|Out-File|Write-Verbose')) 'reinstall: the reinstall code writes no log or console text of its own'
+
 Write-Host 'update-tests: PASS'

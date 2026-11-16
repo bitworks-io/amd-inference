@@ -88,6 +88,10 @@ param(
     [ValidateSet('stable', 'canary')]
     [string] $Channel,
 
+    # update only: reinstall the version that was installed just before this one. One step back, from the signed release store only, with a
+    # confirmation naming both versions (-Yes confirms); refused with -Unattended or -Channel. It is never done automatically.
+    [switch] $Previous,
+
     # components only: -List (the default) shows every listed component; -Install <id> installs one through its license rule; -Remove <id> removes one.
     [switch] $List,
 
@@ -252,6 +256,9 @@ if ($SwitchForce -and $Action -ne 'switch') { throw '-SwitchForce is supported o
 if ($Action -eq 'switch' -and ([bool] $ModelId -eq [bool] $Recipe)) { throw 'switch needs exactly one of -ModelId <id> or -Recipe <id>.' }
 if ($Yes -and $Action -notin @('update', 'models')) { throw '-Yes is supported only by update and models.' }
 if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-check', 'update')) { throw '-Channel is supported only by update-check and update.' }
+if ($Previous -and $Action -ne 'update') { throw '-Previous is supported only by update.' }
+if ($Previous -and $Unattended) { throw 'update -Previous cannot run with -Unattended: going back to the previous version is always an explicit action; nothing was changed.' }
+if ($Previous -and $PSBoundParameters.ContainsKey('Channel')) { throw 'update -Previous cannot be combined with -Channel; nothing was changed.' }
 if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Install') -and $Action -ne 'components') { throw '-Install is supported only by components.' }
 if ($PSBoundParameters.ContainsKey('Remove') -and $Action -notin @('components', 'models')) { throw '-Remove is supported only by components and models.' }
@@ -796,6 +803,14 @@ try {
             }
         }
         'update' {
+            if ($Previous) {
+                # The explicit reinstall of the previous version: the same verified install as an update, after the reinstall decision and a confirmation naming both versions.
+                $reinstallResult = Invoke-FastLlmReinstallPrevious -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Approve (New-FastLlmReinstallApprover -Yes:$Yes)
+                $reinstallReport = Get-FastLlmReinstallCliReport -Result $reinstallResult
+                if ($AsJson) { $reinstallResult | ConvertTo-Json -Depth 4 } else { Write-Host $reinstallReport.text }
+                if ([int]$reinstallReport.exitCode -ne 0) { exit ([int]$reinstallReport.exitCode) }
+                break
+            }
             if ($PSBoundParameters.ContainsKey('Channel')) { Set-FastLlmUpdateSettings -InstallRoot $InstallRoot -UpdateChannel $Channel }
             $checkResult = Invoke-FastLlmUpdateCheck -InstallRoot $InstallRoot -AppRoot $PSScriptRoot -Force
             if ([string]$checkResult.status -cne 'available') {

@@ -844,6 +844,37 @@ function Format-FastLlmUiUpdateResult {
     return "Update not installed: $reason. Nothing was changed."
 }
 
+# The "Reinstall previous version" button: offered only when the reinstall decision (Resolve-FastLlmReinstall) is eligible and names two
+# real versions. Anything else, including no answer, gives no button.
+function Get-FastLlmUiReinstallOffer {
+    param($Resolved)
+    if ([string] (Get-FastLlmUiValue $Resolved 'decision') -cne 'eligible') { return $null }
+    $from = [string] (Get-FastLlmUiValue $Resolved 'installed')
+    $target = [string] (Get-FastLlmUiValue $Resolved 'target')
+    $versionPattern = '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]{0,3}\z'
+    if ($from -cnotmatch $versionPattern -or $target -cnotmatch $versionPattern -or $from -ceq $target) { return $null }
+    return @{ text = 'Reinstall previous version'; from = $from; to = $target }
+}
+
+function Format-FastLlmUiReinstallConfirm {
+    param([Parameter(Mandatory = $true)][string] $From, [Parameter(Mandatory = $true)][string] $To)
+    return "Reinstall $To (replaces $From)? FastLLM will stop the server, download $To from the signed release page, check its Bitworks signature, and run the installer. Continue?"
+}
+
+# The outcome of the explicit reinstall in plain words; a refusal by the decision says why.
+function Format-FastLlmUiReinstallResult {
+    param($Result, [string] $To)
+    if (-not (Get-Command Get-FastLlmReinstallReasonText -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'FastLlm.Update.ps1') }
+    $status = [string] (Get-FastLlmUiValue $Result 'status')
+    $step = [string] (Get-FastLlmUiValue $Result 'step')
+    $reason = [string] (Get-FastLlmUiValue $Result 'reason')
+    if ($status -ceq 'installed') { return "FastLLM $To was reinstalled. Close and reopen FastLLM." }
+    if ((Test-FastLlmUiUpdateIntegrityFailure -Result $Result)) { return "FastLLM $To was installed, but its files don't match the signed catalog. Reinstall FastLLM from the release page." }
+    if ($status -ceq 'refused' -and $step -ceq 'decision') { return ('Reinstall not done: ' + (Get-FastLlmReinstallReasonText $reason)) }
+    if ([string]::IsNullOrEmpty($reason)) { $reason = 'the reinstall did not complete' }
+    return "Reinstall not done: $reason. Nothing was changed."
+}
+
 function Read-FastLlmUiIntegrityRecord {
     param([Parameter(Mandatory = $true)][string] $InstallRoot)
     $recorded = [ordered]@{}

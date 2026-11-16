@@ -41,7 +41,7 @@ $script:bgState=New-FastLlmUiBackgroundState; $script:bgNextPollUtc=[DateTime]::
 $script:bgStopRequested=$false
 $script:bgEndedByUserStop=$false
 $script:bgPoll=$null
-$script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
+$script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:reinstallOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
 $form=New-Object Windows.Forms.Form
 $form.Text='Bitworks FastLLM (Preview)'
 $form.Size=New-Object Drawing.Size(880,941)
@@ -164,6 +164,9 @@ $bannerNotes=New-Object Windows.Forms.LinkLabel
 $bannerNotes.Text='Release notes';$bannerNotes.Location=New-Object Drawing.Point(340,11);$bannerNotes.AutoSize=$true;$bannerNotes.Visible=$false;$form.Controls.Add($bannerNotes)
 $bannerButton=New-Object Windows.Forms.Button
 $bannerButton.Text='Update';$bannerButton.Location=New-Object Drawing.Point(480,4);$bannerButton.Size=New-Object Drawing.Size(110,28);$bannerButton.Visible=$false;$form.Controls.Add($bannerButton)
+# Offered only while the reinstall decision allows it (Get-FastLlmUiReinstallOffer); a click asks for confirmation and re-decides before anything is changed.
+$reinstallButton=New-Object Windows.Forms.Button
+$reinstallButton.Text='Reinstall previous version';$reinstallButton.Location=New-Object Drawing.Point(640,4);$reinstallButton.Size=New-Object Drawing.Size(180,28);$reinstallButton.Visible=$false;$form.Controls.Add($reinstallButton)
 function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate) {
     $script:bannerUrl=$Url
     if([string]::IsNullOrEmpty($Text)){$bannerLabel.Visible=$false;$bannerNotes.Visible=$false;$bannerButton.Visible=$false;return}
@@ -1609,7 +1612,9 @@ $ErrorActionPreference='Stop'
 $integrity=$null;$update=$null
 if($RunIntegrity){try{$integrity=Test-FastLlmInstallIntegrity -AppRoot $App}catch{$integrity=$null}}
 try{$update=Invoke-FastLlmUpdateCheck -InstallRoot $Install -AppRoot $App}catch{$update=$null}
-[pscustomobject]@{integrity=$integrity;update=$update}
+$reinstall=$null
+try{$reinstall=Resolve-FastLlmReinstall -InstallRoot $Install -AppRoot $App -OfferOnly}catch{$reinstall=$null}
+[pscustomobject]@{integrity=$integrity;update=$update;reinstall=$reinstall}
 '@
     $pipeline=[Management.Automation.PowerShell]::Create()
     try{
@@ -1631,6 +1636,8 @@ function CompleteUiStartupChecks {
                 $script:updateOffer=[pscustomobject]@{version=[string]$values[0].update.latest.version;latest=$values[0].update.latest}
                 SetUiBanner $offer.text $offer.url $false $true
             }
+            $reinstallChoice=Get-FastLlmUiReinstallOffer -Resolved $values[0].reinstall
+            if($reinstallChoice -and -not $failedIntegrity){$script:reinstallOffer=$reinstallChoice;$reinstallButton.Visible=$true}
         }
     }catch{}
     finally{try{$run.pipeline.Dispose()}catch{}}
@@ -1652,7 +1659,7 @@ Invoke-FastLlmVerifiedUpdate -InstallRoot $Install -AppRoot $App -Latest $Latest
     try{
         $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument($script:updateOffer.latest)
         $script:updateOutcome=$false
-        $script:updateRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke();version=$version}
+        $script:updateRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke();version=$version;kind='update'}
     }catch{$pipeline.Dispose();$statusLabel.Text=Format-FastLlmUiUpdateResult -Result ([pscustomobject]@{status='failed';reason=$_.Exception.Message}) -Version $version;return}
     $bannerButton.Enabled=$false
     $statusLabel.Text='Updating...'
@@ -1671,12 +1678,45 @@ function CompleteUiUpdate {
     try{RefreshUiBackgroundStatus}catch{}
     SetBusy ([bool]($script:child -or $script:vcBroker))
     $script:updateOutcome=$true
+    if([string]$run.kind -ceq 'reinstall'){
+        $statusLabel.Text=Format-FastLlmUiReinstallResult -Result $result -To $run.version
+        if([string]$result.status -ceq 'installed'){$script:reinstallOffer=$null;$script:updateOffer=$null;$reinstallButton.Visible=$false;SetUiBanner '' '' $false $false}
+        elseif([string]$result.status -ceq 'refused' -and [string]$result.step -ceq 'decision'){$script:reinstallOffer=$null;$reinstallButton.Visible=$false;$bannerButton.Enabled=$true}
+        elseif(Test-FastLlmUiUpdateIntegrityFailure -Result $result){$script:reinstallOffer=$null;$script:updateOffer=$null;$reinstallButton.Visible=$false;SetUiBanner $statusLabel.Text $script:FastLlmUiReleasesUrlPrefix $true $false}
+        else{$reinstallButton.Enabled=$true;$bannerButton.Enabled=$true}
+        return
+    }
     $statusLabel.Text=Format-FastLlmUiUpdateResult -Result $result -Version $run.version
     if([string]$result.status -ceq 'installed'){$script:updateOffer=$null;SetUiBanner '' '' $false $false}
     elseif(Test-FastLlmUiUpdateIntegrityFailure -Result $result){$script:updateOffer=$null;SetUiBanner $statusLabel.Text $script:FastLlmUiReleasesUrlPrefix $true $false}
     else{$bannerButton.Enabled=$true}
 }
 $bannerButton.Add_Click({try{InvokeUiUpdate}catch{$statusLabel.Text='Update not installed: '+$_.Exception.Message+'. Nothing was changed.'}})
+function InvokeUiReinstall {
+    if(-not $script:reinstallOffer -or $script:updateRun){return}
+    if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before reinstalling.';return}
+    $offer=$script:reinstallOffer
+    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)),'Reinstall previous version','YesNo','Question','Button2')
+    if($choice -ne 'Yes'){return}
+    # The run decides again from scratch and refuses when the previous version is no longer the one confirmed here.
+    $source=@'
+param($Project,$Install,$App,$Expected)
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $Project 'src/FastLlm.psm1') -Force
+. (Join-Path $Project 'src/FastLlm.Update.ps1')
+Invoke-FastLlmReinstallPrevious -InstallRoot $Install -AppRoot $App -ExpectedTarget $Expected -Approve { param($From,$To) $true }
+'@
+    $pipeline=[Management.Automation.PowerShell]::Create()
+    try{
+        $null=$pipeline.AddScript($source).AddArgument($PSScriptRoot).AddArgument($script:settingsRoot).AddArgument($PSScriptRoot).AddArgument([string]$offer.to)
+        $script:updateOutcome=$false
+        $script:updateRun=[pscustomobject]@{pipeline=$pipeline;handle=$pipeline.BeginInvoke();version=[string]$offer.to;kind='reinstall'}
+    }catch{$pipeline.Dispose();$statusLabel.Text=Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{status='failed';step='start';reason=$_.Exception.Message}) -To ([string]$offer.to);return}
+    $reinstallButton.Enabled=$false;$bannerButton.Enabled=$false
+    $statusLabel.Text='Reinstalling...'
+    SetBusy $false
+}
+$reinstallButton.Add_Click({try{InvokeUiReinstall}catch{$statusLabel.Text='Reinstall not done: '+$_.Exception.Message+'. Nothing was changed.'}})
 $form.Add_Shown({try{StartUiStartupChecks}catch{}})
 $copyButton.Add_Click({
     try{[Windows.Forms.Clipboard]::SetText((Get-FastLlmUiApiUrl -Status (GetUiBackgroundRunStatus) -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)))}
