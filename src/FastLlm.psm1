@@ -3843,11 +3843,27 @@ function Start-FastLlmServer {
         [string] $DeviceBinding = 'off',
 
         # Opt-in: stop the server after this many minutes without requests (0 = never). Only the CLI and the background host pass it.
-        [ValidateSet(0, 15, 30, 60)] [int] $IdleStopMinutes = 0
+        [ValidateSet(0, 15, 30, 60)] [int] $IdleStopMinutes = 0,
+
+        # Opt-in model switch (off by default; the bench path and every direct caller never pass it). With it, the supervisor also looks for a
+        # switch request (state\switch-<runId>.json), and when one is accepted this function stops that server and runs a full normal start of the
+        # other model in this same process, with the caller's operation lock held throughout. See Invoke-FastLlmSwitchLoop.
+        [switch] $AllowSwitch,
+
+        # Internal: the table of the switch sequence, passed only by the switch loop and the stand-in start below. A call that receives it is ONE
+        # start inside a sequence; the call that does not (the caller's own) owns the sequence.
+        [System.Collections.IDictionary] $SwitchContext,
+
+        # Optional: called with a model id each time a switch is about to start that model (the target, then the previous model on a restore),
+        # so a host that records what it serves can follow. A failure in it never changes a switch.
+        [scriptblock] $SwitchObserver
     )
 
     # ValidateSet ignores case and keeps the typed value; normalise once, before any comparison or forwarding.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
+    # The caller's own start owns the switch sequence; a start inside the sequence is given the table and runs once.
+    $ownsSwitchSequence = [bool] ($AllowSwitch -and -not $PSBoundParameters.ContainsKey('SwitchContext'))
+    if ($ownsSwitchSequence) { $SwitchContext = @{ origin = $null; priorStopPaths = @(); accepted = $null; readyPlan = $null; runId = $null; runs = 0 } }
 
     Assert-FastLlmWindowsPrerequisites
 
@@ -4030,9 +4046,17 @@ function Start-FastLlmServer {
     if ($SelfTest) { $supervisorOptions.SelfTest = $true }
     if ($DeviceBinding -ne 'off') { $supervisorOptions.DeviceBinding = $DeviceBinding }
     if ($IdleStopMinutes -gt 0) { $supervisorOptions.IdleStopMinutes = $IdleStopMinutes }
+    if ($AllowSwitch) { $supervisorOptions.AllowSwitch = $true; $supervisorOptions.SwitchContext = $SwitchContext }
+    # What a start inside a switch sequence is given: the same options as this one, so the other model is served the same way.
+    $switchStartOptions = @{ CatalogPath = $CatalogPath; InstallRoot = $InstallRoot; LoadTimeoutSeconds = $LoadTimeoutSeconds; DeviceBinding = $DeviceBinding }
+    if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $switchStartOptions.VulkanBarMitigation = $VulkanBarMitigation }
+    if ($ThroughputCanary) { $switchStartOptions.ThroughputCanary = $true }
+    if ($SelfTest) { $switchStartOptions.SelfTest = $true }
+    if ($IdleStopMinutes -gt 0) { $switchStartOptions.IdleStopMinutes = $IdleStopMinutes }
     $mayFallBack = (-not $startedExplicit) -and (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan)
+    $serverExitCode = $null
     try {
-        return Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
+        $serverExitCode = Invoke-FastLlmSupervisedServer -Plan $Plan -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds -CatalogPath $CatalogPath @supervisorOptions
     }
     catch {
         $firstFailure = $_.Exception
@@ -4083,8 +4107,10 @@ function Start-FastLlmServer {
         if ($ThroughputCanary) { $startAgain.ThroughputCanary = $true }
         if ($SelfTest) { $startAgain.SelfTest = $true }
         if ($IdleStopMinutes -gt 0) { $startAgain.IdleStopMinutes = $IdleStopMinutes }
+        # The stand-in is one start inside the same switch sequence: it looks for switch requests too, and the sequence stays with this call.
+        if ($AllowSwitch) { $startAgain.AllowSwitch = $true; $startAgain.SwitchContext = $SwitchContext }
         try {
-            return Start-FastLlmServer @startAgain
+            $serverExitCode = Start-FastLlmServer @startAgain
         }
         catch {
             $standInFailure = $_.Exception
@@ -4093,6 +4119,123 @@ function Start-FastLlmServer {
             throw
         }
     }
+    # A default start, and a start inside a switch sequence, end here exactly as before.
+    if (-not $ownsSwitchSequence) { return $serverExitCode }
+    return (Invoke-FastLlmSwitchLoop -ExitCode $serverExitCode -Context $SwitchContext -StartOptions $switchStartOptions -CatalogPath $CatalogPath -InstallRoot $InstallRoot -Observer $SwitchObserver)
+}
+
+# The plan of a switch target: a fresh hardware inventory (the stopped server's GPU memory is free again) and the planner asked for the target
+# with the SAME serving options as the plan that served (port, thinking, chat page, context profile, slots), the same profile and the same
+# experimental-model switch. An explicit context size, a fallback and a recovery label belong to the previous model and are not carried over.
+function New-FastLlmSwitchTargetPlan {
+    param([Parameter(Mandatory = $true)] $PreviousPlan, [Parameter(Mandatory = $true)] $Request, [Parameter(Mandatory = $true)][string] $CatalogPath, [Parameter(Mandatory = $true)][string] $InstallRoot)
+    $configRoot = Split-Path -Parent $CatalogPath
+    $options = @{ CatalogPath = $CatalogPath; InstallRoot = $InstallRoot; Profile = ([string] $PreviousPlan.profile)
+        RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
+    if ($Request.recipeId) { $options.RecipeId = [string] $Request.recipeId }
+    else {
+        $options.ModelId = [string] $Request.modelId
+        if ($PreviousPlan.PSObject.Properties['allowExperimentalModel'] -and $PreviousPlan.allowExperimentalModel) { $options.AllowExperimentalModel = $true }
+    }
+    if ($PreviousPlan.PSObject.Properties['requestedServerPort'] -and $null -ne $PreviousPlan.requestedServerPort -and [int] $PreviousPlan.requestedServerPort -gt 0) { $options.ServerPort = [int] $PreviousPlan.requestedServerPort }
+    if ($PreviousPlan.PSObject.Properties['requestedThinking'] -and [string] $PreviousPlan.requestedThinking -ceq 'off') { $options.Thinking = 'off' }
+    if ($PreviousPlan.PSObject.Properties['requestedChatPage'] -and [string] $PreviousPlan.requestedChatPage -ceq 'on') { $options.ChatPage = 'on' }
+    # The checked serving profile of the plan that served ($null for a default plan): the planner applies the same options to the target, or refuses.
+    $servedProfile = Get-FastLlmPlanServingProfile -Plan $PreviousPlan
+    if ($null -ne $servedProfile) {
+        if ([string] $servedProfile.id -cne 'default') { $options.KvContextProfile = [string] $servedProfile.id }
+        if ([int] $servedProfile.slots -ne 1) { $options.KvSlots = [int] $servedProfile.slots }
+        if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+    }
+    $options.Hardware = Get-FastLlmHardware -CatalogPath $CatalogPath -InstallRoot $InstallRoot
+    $targetPlan = Get-FastLlmPlan @options
+    if ($PreviousPlan.PSObject.Properties['backgroundRequestId']) { $targetPlan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue ([string] $PreviousPlan.backgroundRequestId) -Force }
+    return $targetPlan
+}
+
+# The switch sequence of one start (owned by the caller's Start-FastLlmServer; the caller holds the one operation lock from before the first
+# model until this returns, and nothing here takes or releases it). While the run that just ended left an accepted request:
+#   1. the target gets a fresh inventory, a plan with the same serving options and a full normal start (engine, hash, consent, re-plan,
+#      supervised run with every gate and the self-test);
+#   2. if that start fails, the previous model gets ONE full normal start again (the rule: restore the previous model once, then stop);
+#   3. if that fails too the sequence ends with the typed failure switch-failed-stopped. There is never a third attempt.
+# A stop asked for between two runs names the run whose document was current; it is honoured here and by the next run (stop always wins).
+function Invoke-FastLlmSwitchLoop {
+    param($ExitCode, [Parameter(Mandatory = $true)][System.Collections.IDictionary] $Context, [Parameter(Mandatory = $true)][hashtable] $StartOptions,
+        [Parameter(Mandatory = $true)][string] $CatalogPath, [Parameter(Mandatory = $true)][string] $InstallRoot, [scriptblock] $Observer)
+    $stateRoot = Get-FastLlmStateRoot -InstallRoot $InstallRoot
+    while ($null -ne $Context['accepted']) {
+        $request = $Context['accepted']
+        $Context['accepted'] = $null
+        $previousPlan = $Context['readyPlan']
+        $fromModelId = [string] $previousPlan.model.id
+        $toModelId = [string] $request.modelId
+        $lastRunId = [string] $Context['runId']
+        $priorStops = New-Object 'System.Collections.Generic.List[string]'
+        $priorStops.Add((Join-Path $stateRoot ('stop-' + $lastRunId)))
+        $cancelled = {
+            param([string] $Result, [string] $Code)
+            # A stop won: the document ends as a user stop with the switch answered, the outcome is logged with the last run, and nothing starts.
+            Set-FastLlmSwitchOutcome -InstallRoot $InstallRoot -Block (New-FastLlmSwitchBlock -From $fromModelId -To $toModelId -Result $Result -FailureCode $Code) -StopReason 'user'
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State @{ runId = [string] $Context['runId'] } -Event 'switch-result' -Fields { Get-FastLlmRunLogSwitchResultFields -Result $Result -FailureCode $Code }
+            Remove-FastLlmSwitchPriorStop -Paths @($priorStops)
+        }
+
+        # 1. The target.
+        $Context['origin'] = @{ from = $fromModelId; to = $toModelId; role = 'target'; failureCode = $null }
+        $Context['priorStopPaths'] = @($priorStops)
+        $runsBefore = [int] $Context['runs']
+        $targetFailure = $null
+        try {
+            if (Test-FastLlmSwitchPriorStop -Paths @($priorStops)) { & $cancelled 'refused' 'switch-cancelled-by-stop'; return 0 }
+            $targetPlan = New-FastLlmSwitchTargetPlan -PreviousPlan $previousPlan -Request $request -CatalogPath $CatalogPath -InstallRoot $InstallRoot
+            if (Test-FastLlmSwitchPriorStop -Paths @($priorStops)) { & $cancelled 'refused' 'switch-cancelled-by-stop'; return 0 }
+            if ($Observer) { try { & $Observer $toModelId | Out-Null } catch { $null = $_ } }
+            $ExitCode = Start-FastLlmServer -Plan $targetPlan @StartOptions -AllowSwitch -SwitchContext $Context
+            continue
+        }
+        catch {
+            # A target that served and failed later is not a failed switch: nothing is restored, and no caller retries or recovers it.
+            if ($_.Exception.Data['FastLlmAfterReady'] -eq $true) { $_.Exception.Data['FastLlmSwitchAttempted'] = $true; throw }
+            $targetFailure = $_.Exception
+        }
+        $failureCode = Get-FastLlmSwitchFailureCode -Exception $targetFailure
+        if ([int] $Context['runs'] -gt $runsBefore) { $priorStops.Add((Join-Path $stateRoot ('stop-' + [string] $Context['runId']))) }
+        else {
+            # No target run wrote a document: the previous run's document says why the restore follows.
+            Set-FastLlmSwitchOutcome -InstallRoot $InstallRoot -Block (New-FastLlmSwitchBlock -From $fromModelId -To $toModelId -Pending -FailureCode $failureCode)
+        }
+        Write-Host "Could not start '$toModelId' ($failureCode). Starting '$fromModelId' again."
+
+        # 2. ONE restore of the previous model, through the same full start. Never a third attempt.
+        $Context['origin'] = @{ from = $fromModelId; to = $toModelId; role = 'restore'; failureCode = $failureCode }
+        $Context['priorStopPaths'] = @($priorStops)
+        $runsBefore = [int] $Context['runs']
+        $restoreFailure = $null
+        try {
+            if (Test-FastLlmSwitchPriorStop -Paths @($priorStops)) { & $cancelled 'failed-stopped' $failureCode; return 0 }
+            if ($Observer) { try { & $Observer $fromModelId | Out-Null } catch { $null = $_ } }
+            $ExitCode = Start-FastLlmServer -Plan $previousPlan @StartOptions -AllowSwitch -SwitchContext $Context
+            continue
+        }
+        catch {
+            if ($_.Exception.Data['FastLlmAfterReady'] -eq $true) { $_.Exception.Data['FastLlmSwitchAttempted'] = $true; throw }
+            $restoreFailure = $_.Exception
+        }
+        # 3. Stopped. A restore that reached a supervised run recorded the outcome itself; otherwise it is recorded here.
+        if ([int] $Context['runs'] -eq $runsBefore) {
+            Set-FastLlmSwitchOutcome -InstallRoot $InstallRoot -Block (New-FastLlmSwitchBlock -From $fromModelId -To $toModelId -Result 'failed-stopped' -FailureCode $failureCode)
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State @{ runId = [string] $Context['runId'] } -Event 'switch-result' -Fields { Get-FastLlmRunLogSwitchResultFields -Result 'failed-stopped' -FailureCode $failureCode }
+        }
+        Remove-FastLlmSwitchPriorStop -Paths @($priorStops)
+        $restoreCode = Get-FastLlmSwitchFailureCode -Exception $restoreFailure
+        $stoppedFailure = New-FastLlmTypedFailure -Code 'switch-failed-stopped' -Message "Could not start '$toModelId' ($failureCode), and '$fromModelId' could not be started again ($restoreCode). FastLLM is stopped. Start it again with the start action."
+        # Not a reason any caller retries, re-plans or repairs on: a failed switch is final.
+        $stoppedFailure.Data['FastLlmReason'] = 'SwitchFailed'
+        $stoppedFailure.Data['FastLlmSwitchAttempted'] = $true
+        throw $stoppedFailure
+    }
+    return $ExitCode
 }
 
 Export-ModuleMember -Function @(
@@ -4134,6 +4277,7 @@ Export-ModuleMember -Function @(
     'Request-FastLlmOffloadLabStop',
     'Invoke-FastLlmSoak',
     'Request-FastLlmStop',
+    'Request-FastLlmSwitch',
     'Enter-FastLlmOperation',
     'Write-FastLlmState',
     'ConvertFrom-FastLlmPlacementLog',

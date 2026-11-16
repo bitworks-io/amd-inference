@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'stop', 'update-check', 'update', 'components', 'settings')]
+    [ValidateSet('install', 'plan', 'start', 'doctor', 'models', 'recipes', 'status', 'switch', 'stop', 'update-check', 'update', 'components', 'settings')]
     [string] $Action = 'start',
 
     [ValidateSet('fast', 'balanced', 'quality')]
@@ -181,7 +181,15 @@ param(
     [int] $MinFreeGB = 50,
 
     # models -Preload and -PreloadStatus: also write the JSON (UTF-8, no BOM) to this file, atomically.
-    [string] $OutputPath
+    [string] $OutputPath,
+
+    # Live start only: let this server change its model on request (the switch action). Off by default: a start without it never looks for
+    # a switch request, and the server arguments are the same either way.
+    [switch] $SwitchAllowed,
+
+    # switch only: do not wait for requests in progress to finish (they are cut off). Without it a server that is still answering after
+    # 60 seconds is not switched.
+    [switch] $SwitchForce
 )
 
 Set-StrictMode -Version 2.0
@@ -213,6 +221,9 @@ if ($PSBoundParameters.ContainsKey('DeviceBinding') -and ($Action -ne 'start' -o
     throw '-DeviceBinding is supported only by a live start.'
 }
 if ($NoDownload -and ($Action -ne 'start' -or $DryRun)) { throw '-NoDownload is supported only by a live start.' }
+if ($SwitchAllowed -and ($Action -ne 'start' -or $DryRun)) { throw '-SwitchAllowed is supported only by a live start.' }
+if ($SwitchForce -and $Action -ne 'switch') { throw '-SwitchForce is supported only by switch.' }
+if ($Action -eq 'switch' -and ([bool] $ModelId -eq [bool] $Recipe)) { throw 'switch needs exactly one of -ModelId <id> or -Recipe <id>.' }
 if ($Yes -and $Action -notin @('update', 'models')) { throw '-Yes is supported only by update and models.' }
 if ($PSBoundParameters.ContainsKey('Channel') -and $Action -notin @('update-check', 'update')) { throw '-Channel is supported only by update-check and update.' }
 if ($List -and $Action -ne 'components') { throw '-List is supported only by components.' }
@@ -305,6 +316,20 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SupportBundle.ps1')
 # Connection info and the API-format check are dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ConnectInfo.ps1')
+# switch asks the RUNNING supervisor to change its model. With no supervised server running (it stopped when idle, was stopped, failed or was
+# never started) there is nothing to switch from: the request is then a normal start of the target, with model switching allowed.
+function Get-FastLlmSwitchCliAction {
+    param($Status)
+    if ($null -ne $Status -and $Status.PSObject.Properties['active'] -and [bool] $Status.active) { return 'switch' }
+    return 'start'
+}
+if ($Action -eq 'switch') {
+    if ((Get-FastLlmSwitchCliAction -Status (Get-FastLlmStatus -InstallRoot $InstallRoot)) -ceq 'start') {
+        Write-Host 'No FastLLM server is running, so this is a normal start of the requested model, with model switching allowed.'
+        $Action = 'start'
+        $SwitchAllowed = $true
+    }
+}
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
 $componentsFilePath = Join-Path (Join-Path $PSScriptRoot 'config') 'components.json'
 $selectionOptions = @{
@@ -651,6 +676,8 @@ try {
             $statusDocument | ConvertTo-Json -Depth 12
             # Cached notice only (no network). Not in -AsJson mode: status already prints one JSON document.
             if (-not $AsJson) {
+                # A model switch is in the document as its switch block; here it is also said in one plain line.
+                try { $switchLine = Get-FastLlmUiSwitchStatusText -Status $statusDocument; if ($switchLine) { Write-Host $switchLine } } catch { $null = $_ }
                 try {
                     if (Get-Command -Name Get-FastLlmCachedUpdateNotice -ErrorAction SilentlyContinue) {
                         $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
@@ -714,6 +741,14 @@ try {
             if ($updateExit -ne 0) { exit $updateExit }
         }
         'stop' { Request-FastLlmStop -InstallRoot $InstallRoot }
+        'switch' {
+            # Reached only with a supervised server running (see Get-FastLlmSwitchCliAction): the request is written for the run that is ready,
+            # and that supervisor stops its server and starts the other model. Nothing is planned, locked or started by this process.
+            $switchRequest = @{ InstallRoot = $InstallRoot; CatalogPath = $catalogPath }
+            if ($ModelId) { $switchRequest.ModelId = $ModelId } else { $switchRequest.RecipeId = $Recipe }
+            if ($SwitchForce) { $switchRequest.Force = $true }
+            Request-FastLlmSwitch @switchRequest
+        }
         'install' {
             if ($env:OS -ne 'Windows_NT') {
                 throw 'Installation is supported only on Windows. Use the plan action with -HardwareFile for fixture testing.'
@@ -886,10 +921,15 @@ try {
                 if (-not $SkipSelfTest) { $startPolicyOptions.SelfTest = $true }
                 if ($DeviceBinding -ne 'off') { $startPolicyOptions.DeviceBinding = $DeviceBinding }
                 if ($effectiveIdleStopMinutes -gt 0) { $startPolicyOptions.IdleStopMinutes = $effectiveIdleStopMinutes }
+                # Only when asked: the supervisor then also looks for a switch request, and a switch is a full start of the other model.
+                if ($SwitchAllowed) { $startPolicyOptions.AllowSwitch = $true }
                 try {
                     $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions
                 }
                 catch {
+                    # A failure that follows a model switch is final (the switch already restored the previous model once, or a switched model
+                    # failed while serving): no re-plan, no model repair and no recovery start here.
+                    if ($_.Exception.Data['FastLlmSwitchAttempted']) { throw }
                     # W03 enforce: a device-binding failure is never retried, re-planned or recovered with another model.
                     if ($NoDownload -and $_.Exception.Data['FastLlmReason'] -eq 'ModelNeedsProvisioning') {
                         $invalidModelFailure = New-FastLlmTypedFailure -Code 'needs-setup-model-invalid' -Message 'The selected model failed verification and -NoDownload forbids repairing or re-downloading it.'

@@ -28,6 +28,10 @@ $script:FastLlmRunLogAllowedFields = @{
     # GPU memory check: the state names and numbers only (MiB); no text.
     'spill-check'         = @('state', 'sharedMiB', 'dedicatedMiB', 'floorMiB')
     'spill-check-changed' = @('from', 'to', 'sharedMiB', 'dedicatedMiB')
+    # Opt-in model switch: the two model ids (the target only when it is a catalog id), a result from a closed list and a failure code.
+    # Never anything else a request carried.
+    'switch-request'      = @('fromModelId', 'toModelId')
+    'switch-result'       = @('result', 'failureCode')
     'end'                 = @('phase', 'failureCode', 'failedAtPhase', 'failureMessage', 'exitCode', 'serverExitCode', 'droppedEvents')
 }
 
@@ -240,6 +244,24 @@ function Get-FastLlmRunLogApiCheckFields {
     }
     $context = Get-FastLlmRunLogProperty $Canary 'effectiveContext'
     if ($null -ne $context) { $fields.effectiveContext = [int] $context }
+    return $fields
+}
+
+# Model switch lines. An id is logged only when it has the shape of a catalog id, a result only from the closed list and a failure code only
+# when it has the shape of a code; anything else is dropped, so free text can never reach the log through these events.
+function Get-FastLlmRunLogSwitchRequestFields {
+    param([string] $FromModelId, [string] $ToModelId)
+    $fields = [ordered] @{}
+    if ($FromModelId -and $FromModelId -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z') { $fields.fromModelId = $FromModelId }
+    if ($ToModelId -and $ToModelId -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z') { $fields.toModelId = $ToModelId }
+    return $fields
+}
+
+function Get-FastLlmRunLogSwitchResultFields {
+    param([string] $Result, [string] $FailureCode)
+    $fields = [ordered] @{}
+    if (@('ok', 'refused', 'refused-busy', 'failed-restored', 'failed-stopped') -ccontains $Result) { $fields.result = $Result }
+    if ($FailureCode -and $FailureCode -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,63}\z') { $fields.failureCode = $FailureCode }
     return $fields
 }
 

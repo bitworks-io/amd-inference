@@ -203,7 +203,11 @@ function Request-FastLlmStop {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string] $InstallRoot)
     $state = Get-FastLlmStatus -InstallRoot $InstallRoot
-    if (-not $state.active -or $state.phase -notin @('loading','checking','ready') -or -not $state.PSObject.Properties['runId'] -or $state.runId -notmatch '^[0-9a-f]{32}$') { throw 'There is no supervised server to stop. Cancel an in-progress installation in its owning window.' }
+    # A model switch in progress: the previous run has ended and its final document says the switch is pending. The supervisor is alive between
+    # the two runs, so a stop is accepted; it names that run, and the switch (or the run that follows it) honours it.
+    $switchInProgress = [bool] ($state.active -and $state.phase -in @('stopped','failed') -and $state.PSObject.Properties['switch'] -and $null -ne $state.switch -and
+        $state.switch -is [System.Management.Automation.PSCustomObject] -and $state.switch.PSObject.Properties['pending'] -and $state.switch.pending -eq $true)
+    if (-not $state.active -or ($state.phase -notin @('loading','checking','ready') -and -not $switchInProgress) -or -not $state.PSObject.Properties['runId'] -or $state.runId -notmatch '^[0-9a-f]{32}$') { throw 'There is no supervised server to stop. Cancel an in-progress installation in its owning window.' }
     $root = Get-FastLlmStateRoot -InstallRoot $InstallRoot
     $path = Join-Path $root ('stop-' + $state.runId)
     # Existence and reparse checks sit in a bounded retry so a concurrent create/delete of the request file is not an error.
@@ -228,6 +232,321 @@ function Request-FastLlmStop {
         }
     }
     Write-Host 'Stop requested. The owning supervisor will terminate its own server.'
+}
+
+# ---- supervised model switch (opt-in) ----
+# A switch is asked for with a small request file, state\switch-<runId>.json (at most 4 KiB): schemaVersion 1, exactly one of modelId or recipeId,
+# and force. Only a supervisor started with -AllowSwitch looks for it; every other start, the bench path included, never reads it. The supervisor
+# that serves stops its own server and then runs a full normal start of the other model in the same process, with the one operation lock held
+# throughout (Start-FastLlmServer owns that sequence). Stop always wins over a switch.
+$script:FastLlmSwitchRequestMaxBytes = 4096
+# How long a switch waits for requests in progress (requests_processing and requests_deferred both 0) before it is refused, and how often it looks.
+$script:FastLlmSwitchBusyWaitSeconds = 60
+$script:FastLlmSwitchBusyPollMilliseconds = 1000
+$script:FastLlmSwitchIdPattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z'
+$script:FastLlmSwitchCodePattern = '^[A-Za-z0-9][A-Za-z0-9-]{0,63}\z'
+
+# The switch block of a status document: { from, to, result, failureCode }, plus pending = true while the outcome is not known yet.
+function New-FastLlmSwitchBlock {
+    param([string] $From, [string] $To, [switch] $Pending, [string] $Result, [string] $FailureCode)
+    $block = [ordered] @{ from = $null; to = $null }
+    if ($From) { $block.from = $From }
+    if ($To) { $block.to = $To }
+    if ($Pending) { $block.pending = $true }
+    $block.result = $null
+    $block.failureCode = $null
+    if ($Result) { $block.result = $Result }
+    if ($FailureCode) { $block.failureCode = $FailureCode }
+    return $block
+}
+
+# Reads a switch request under the same safe-path rules as the stop file: the name is the supervisor's own (run id), a reparse point or a
+# directory is never opened, and at most 4 KiB are read (checked on the opened handle). Returns { state, code, modelId, recipeId, force }:
+# state ok, transient (the name is missing or mid-replace: look again on the next pass) or refused (with a code; no id is passed on).
+function Read-FastLlmSwitchRequest {
+    param([Parameter(Mandatory = $true)][string] $Path)
+    $result = [ordered] @{ state = 'refused'; code = 'switch-request-invalid'; modelId = $null; recipeId = $null; force = $false }
+    $attributes = Get-FastLlmStateFileAttributes -Path $Path
+    if ($null -eq $attributes -or [int] $attributes -eq -1) { $result.state = 'transient'; $result.code = $null; return [pscustomobject] $result }
+    if (([int] $attributes -band [int] [IO.FileAttributes]::ReparsePoint) -ne 0 -or ([int] $attributes -band [int] [IO.FileAttributes]::Directory) -ne 0) {
+        $result.code = 'switch-request-unsafe'
+        return [pscustomobject] $result
+    }
+    # At most 4 KiB are ever read, and the limit is checked on the OPENED handle (a name swapped after the look above cannot defeat it). The
+    # handle shares Delete, so the writer's atomic replace is never blocked by this read.
+    $limit = [int] $script:FastLlmSwitchRequestMaxBytes
+    $text = $null
+    $tooLarge = $false
+    $stream = $null
+    try {
+        $stream = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        if ($stream.Length -gt $limit) { $tooLarge = $true }
+        else {
+            $buffer = New-Object byte[] ($limit + 1)
+            $total = 0
+            while ($total -le $limit) {
+                $count = $stream.Read($buffer, $total, ($limit + 1 - $total))
+                if ($count -le 0) { break }
+                $total += $count
+            }
+            if ($total -gt $limit) { $tooLarge = $true }
+            else { $text = (New-Object Text.UTF8Encoding($false)).GetString($buffer, 0, $total) }
+        }
+    }
+    catch {
+        # The name went away or is held for a moment by its writer: not a refusal.
+        $result.state = 'transient'; $result.code = $null
+        return [pscustomobject] $result
+    }
+    finally { if ($stream) { $stream.Dispose() } }
+    if ($tooLarge) { $result.code = 'switch-request-too-large'; return [pscustomobject] $result }
+    # One JSON object, nothing else (Windows PowerShell 5.1 writes a byte order mark; an array is not a request in any PowerShell version).
+    $text = $text.TrimStart([char] 0xFEFF)
+    if (-not $text.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { return [pscustomobject] $result }
+    $document = $null
+    try { $document = ConvertFrom-Json -InputObject $text -ErrorAction Stop } catch { return [pscustomobject] $result }
+    if ($null -eq $document -or $document -isnot [System.Management.Automation.PSCustomObject]) { return [pscustomobject] $result }
+    $values = @{}
+    foreach ($property in @($document.PSObject.Properties)) {
+        if (@('schemaVersion', 'modelId', 'recipeId', 'force') -cnotcontains [string] $property.Name) { return [pscustomobject] $result }
+        $values[[string] $property.Name] = $property.Value
+    }
+    if (-not ($values['schemaVersion'] -is [int] -or $values['schemaVersion'] -is [long]) -or [long] $values['schemaVersion'] -ne 1) { return [pscustomobject] $result }
+    $ids = @{}
+    foreach ($name in @('modelId', 'recipeId')) {
+        if (-not $values.ContainsKey($name)) { continue }
+        if ($values[$name] -isnot [string] -or $values[$name] -cnotmatch $script:FastLlmSwitchIdPattern) { return [pscustomobject] $result }
+        $ids[$name] = [string] $values[$name]
+    }
+    if ($ids.Count -ne 1) { return [pscustomobject] $result }
+    if ($values.ContainsKey('force') -and $values['force'] -isnot [bool]) { return [pscustomobject] $result }
+    $result.state = 'ok'
+    $result.code = $null
+    if ($ids.ContainsKey('modelId')) { $result.modelId = $ids['modelId'] } else { $result.recipeId = $ids['recipeId'] }
+    if ($values.ContainsKey('force')) { $result.force = [bool] $values['force'] }
+    return [pscustomobject] $result
+}
+
+# Before anything is stopped: the target must be a model of the catalog that is installed, of the catalog size and consented (no hashing here; the
+# full start hashes it). A recipe request names a non-experimental recipe and is checked through its model. Returns { ok, code, modelId, recipeId };
+# modelId and recipeId are the catalog's and the recipe list's own spelling, never the request's text.
+function Resolve-FastLlmSwitchTarget {
+    param([Parameter(Mandatory = $true)][string] $CatalogPath, [Parameter(Mandatory = $true)][string] $InstallRoot, [string] $ModelId, [string] $RecipeId,
+        [string] $CurrentModelId, [string] $CurrentRecipeId, [switch] $ServingProfileActive)
+    $result = [ordered] @{ ok = $false; code = 'switch-target-unknown'; modelId = $null; recipeId = $null }
+    try {
+        $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
+        $targetModelId = $ModelId
+        if ($RecipeId) {
+            $recipe = @(Read-FastLlmRecipes -Path (Join-Path (Split-Path -Parent $CatalogPath) 'recipes.json') | Where-Object { [string] $_.id -eq $RecipeId } | Select-Object -First 1)
+            if ($recipe.Count -ne 1) { return [pscustomobject] $result }
+            $result.recipeId = [string] $recipe[0].id
+            # The experimental gate (the switch plus -AcceptExperimental) lives in the command line, which a request file does not pass through.
+            if (Test-FastLlmExperimentalOrigin -Origin ([string] $recipe[0].origin)) { $result.code = 'switch-recipe-experimental'; return [pscustomobject] $result }
+            # A recipe is measured for the default context profile and one slot; the planner refuses the combination, so it is refused before the stop.
+            if ($ServingProfileActive) { $result.code = 'switch-recipe-needs-default-options'; return [pscustomobject] $result }
+            $targetModelId = ''
+            if ($recipe[0].PSObject.Properties['components'] -and $recipe[0].components -and $recipe[0].components.PSObject.Properties['model']) { $targetModelId = [string] $recipe[0].components.model }
+        }
+        if (-not $targetModelId) { return [pscustomobject] $result }
+        $model = @($catalog.models | Where-Object { [string] $_.id -eq $targetModelId } | Select-Object -First 1)
+        if ($model.Count -ne 1) { return [pscustomobject] $result }
+        $result.modelId = [string] $model[0].id
+        if (($RecipeId -and $CurrentRecipeId -and [string] $result.recipeId -ceq $CurrentRecipeId) -or (-not $RecipeId -and $CurrentModelId -and [string] $result.modelId -ceq $CurrentModelId)) {
+            $result.code = 'switch-target-already-serving'
+            return [pscustomobject] $result
+        }
+        $modelsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'models' -Label 'Models root'
+        $modelPath = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $model[0].file) -Label 'Model file'
+        if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) { $result.code = 'switch-target-not-installed'; return [pscustomobject] $result }
+        if ([int64] (Get-Item -LiteralPath $modelPath -Force).Length -ne [int64] $model[0].sizeBytes) { $result.code = 'switch-target-size-mismatch'; return [pscustomobject] $result }
+        if (-not (Test-FastLlmModelConsentReceipt -Model $model[0] -InstallRoot $InstallRoot)) { $result.code = 'switch-target-no-consent'; return [pscustomobject] $result }
+        $result.ok = $true
+        $result.code = $null
+    }
+    catch { $result.ok = $false; $result.code = 'switch-target-check-failed' }
+    return [pscustomobject] $result
+}
+
+# The plain sentence behind a refusal code, for the request writer (the supervisor never prints a request's own text).
+function Get-FastLlmSwitchRefusalText {
+    param([string] $Code, [string] $ModelId)
+    $name = 'the requested model'
+    if ($ModelId -and $ModelId -cmatch $script:FastLlmSwitchIdPattern) { $name = "'$ModelId'" }
+    switch -CaseSensitive ($Code) {
+        'switch-target-unknown' { return 'The requested model or recipe is not in FastLLM''s list. See the exact ids with: .\fast-llm.ps1 models -Installed' }
+        'switch-target-not-installed' { return "The model $name is not downloaded. Install it first; a switch never downloads." }
+        'switch-target-size-mismatch' { return "The file of the model $name is incomplete or damaged. Install it again first; a switch never downloads." }
+        'switch-target-no-consent' { return "The license of the model $name has not been accepted on this PC. Install it first." }
+        'switch-target-already-serving' { return "The model $name is already running." }
+        'switch-recipe-experimental' { return 'An experimental recipe is started from the command line (start -Recipe ... -AcceptExperimental), not by a switch.' }
+        'switch-recipe-needs-default-options' { return 'A recipe is measured for the default context profile and one request at a time; this server runs with another setting.' }
+        default { return 'The switch target could not be checked. Nothing was changed.' }
+    }
+}
+
+# Asks the running supervisor for a model switch: writes state\switch-<runId>.json for the run that is ready. Refused at once, in plain words,
+# when there is no ready server, when it was not started with model switching allowed, or when the target is not installed, consented and of the
+# right size (the supervisor checks all of it again and never trusts this side).
+function Request-FastLlmSwitch {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $CatalogPath, [string] $ModelId, [string] $RecipeId, [switch] $Force)
+    if ([bool] $ModelId -eq [bool] $RecipeId) { throw 'A switch request names exactly one of a model id or a recipe id.' }
+    $state = Get-FastLlmStatus -InstallRoot $InstallRoot
+    if (-not $state.active -or [string] $state.phase -cne 'ready' -or -not $state.PSObject.Properties['runId'] -or $state.runId -notmatch '^[0-9a-f]{32}$') {
+        throw 'There is no ready FastLLM server to switch. Wait until it is ready, or start the model with the start action.'
+    }
+    if (-not ($state.PSObject.Properties['switchAllowed'] -and $state.switchAllowed -eq $true)) {
+        throw 'This FastLLM server was not started with model switching allowed, so it takes no switch request. Stop it, then start it with -SwitchAllowed.'
+    }
+    $currentModelId = ''
+    if ($state.PSObject.Properties['modelId']) { $currentModelId = [string] $state.modelId }
+    $currentRecipeId = ''
+    if ($state.PSObject.Properties['planRecipe'] -and $state.planRecipe -and $state.planRecipe.PSObject.Properties['id'] -and $state.planRecipe.id) { $currentRecipeId = [string] $state.planRecipe.id }
+    $profileActive = [bool] ($state.PSObject.Properties['recipe'] -and $state.recipe -and $state.recipe.PSObject.Properties['profile'])
+    $target = Resolve-FastLlmSwitchTarget -CatalogPath $CatalogPath -InstallRoot $InstallRoot -ModelId $ModelId -RecipeId $RecipeId -CurrentModelId $currentModelId -CurrentRecipeId $currentRecipeId -ServingProfileActive:$profileActive
+    if (-not $target.ok) { throw (New-FastLlmTypedFailure -Code ([string] $target.code) -Message ((Get-FastLlmSwitchRefusalText -Code ([string] $target.code) -ModelId ([string] $target.modelId)) + ' FastLLM did not switch.')) }
+    $request = [ordered] @{ schemaVersion = 1 }
+    if ($target.recipeId) { $request.recipeId = [string] $target.recipeId } else { $request.modelId = [string] $target.modelId }
+    $request.force = [bool] $Force
+    $leaf = 'switch-' + [string] $state.runId + '.json'
+    $path = Join-Path (Get-FastLlmStateRoot -InstallRoot $InstallRoot) $leaf
+    # Same rule as the stop request: a real reparse point (or a directory) at the request path is refused at once. A transient name is left to
+    # the atomic replace below, which waits within its own budget.
+    $attributes = Get-FastLlmStateFileAttributes -Path $path
+    if ($null -ne $attributes -and [int] $attributes -ne -1 -and
+        ((([int] $attributes -band [int] [IO.FileAttributes]::ReparsePoint) -ne 0) -or (([int] $attributes -band [int] [IO.FileAttributes]::Directory) -ne 0))) { throw 'Unsafe switch request path.' }
+    Write-FastLlmState -InstallRoot $InstallRoot -State $request -FileName $leaf
+    $shown = [string] $target.modelId
+    if ($target.recipeId) { $shown = [string] $target.recipeId }
+    Write-Host "Switch to '$shown' requested. The owning supervisor finishes the requests in progress, stops its server and starts the other model; this takes about one model load. See: .\fast-llm.ps1 status"
+}
+
+# Removes a consumed request file: a plain file only, never a reparse point or a directory, and never recursively. $true when the name is gone.
+function Remove-FastLlmSwitchRequestFile {
+    param([Parameter(Mandatory = $true)][string] $Path)
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $attributes = Get-FastLlmStateFileAttributes -Path $Path
+        if ($null -eq $attributes) { return (-not (Test-Path -LiteralPath $Path)) }
+        if ([int] $attributes -ne -1) {
+            if (([int] $attributes -band [int] [IO.FileAttributes]::ReparsePoint) -ne 0 -or ([int] $attributes -band [int] [IO.FileAttributes]::Directory) -ne 0) { return $false }
+            try { [IO.File]::Delete($Path); return $true } catch { $null = $_ }
+        }
+        Start-Sleep -Milliseconds 15
+    }
+    return $false
+}
+
+# True when a stop was asked for against a previous run of this start (a stop during a model switch names the run whose document was current).
+function Test-FastLlmSwitchPriorStop {
+    param([string[]] $Paths)
+    foreach ($path in @($Paths)) { if ($path -and (Test-Path -LiteralPath $path)) { return $true } }
+    return $false
+}
+
+function Remove-FastLlmSwitchPriorStop {
+    param([string[]] $Paths)
+    foreach ($path in @($Paths)) {
+        if (-not $path) { continue }
+        for ($attempt = 0; (Test-Path -LiteralPath $path) -and $attempt -lt 10; $attempt++) {
+            try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop } catch { Start-Sleep -Milliseconds 15 }
+        }
+    }
+}
+
+# One pass of the switch poll, called from the supervisor's post-Ready loop after the stop check. $Poll is the supervisor's own table
+# ({ wait; unsafeReported; stuckStamp }). Returns $null (nothing to do) or { action; code; toModelId; recipeId; first }:
+#   refused  the request is answered without touching the server (code: why; toModelId only when it is a catalog id)
+#   waiting  a valid request waits for the requests in progress (first = $true on the pass that read it)
+#   accept   the server is idle (or the request says force): the caller stops the server for the switch
+# A request is consumed (removed) as soon as it is read: one request, one answer. An unsafe object is answered once and never opened.
+function Step-FastLlmSwitchPoll {
+    param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Poll, [Parameter(Mandatory = $true)][string] $RequestPath, [Parameter(Mandatory = $true)][string] $CatalogPath,
+        [Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $BaseUrl, [string] $CurrentModelId, [string] $CurrentRecipeId, [bool] $ServingProfileActive)
+    $first = $false
+    if ($null -eq $Poll['wait']) {
+        if (-not (Test-Path -LiteralPath $RequestPath)) { $Poll['unsafeReported'] = $false; $Poll['stuckStamp'] = $null; return $null }
+        $request = Read-FastLlmSwitchRequest -Path $RequestPath
+        if ($request.state -ceq 'transient') { return $null }
+        if ($request.code -ceq 'switch-request-unsafe') {
+            if ($Poll['unsafeReported']) { return $null }
+            $Poll['unsafeReported'] = $true
+            return @{ action = 'refused'; code = 'switch-request-unsafe'; toModelId = $null; recipeId = $null; first = $true }
+        }
+        $Poll['unsafeReported'] = $false
+        # A request that could not be removed after it was answered is not answered again while it is the same file.
+        $stamp = $null
+        try { $requestItem = Get-Item -LiteralPath $RequestPath -Force -ErrorAction Stop; $stamp = [string] $requestItem.LastWriteTimeUtc.Ticks + '|' + [string] $requestItem.Length } catch { $stamp = $null }
+        if ($null -ne $Poll['stuckStamp'] -and $stamp -ceq [string] $Poll['stuckStamp']) { return $null }
+        $Poll['stuckStamp'] = $null
+        if (-not (Remove-FastLlmSwitchRequestFile -Path $RequestPath)) { $Poll['stuckStamp'] = $stamp }
+        if ($request.state -cne 'ok') { return @{ action = 'refused'; code = [string] $request.code; toModelId = $null; recipeId = $null; first = $true } }
+        $target = Resolve-FastLlmSwitchTarget -CatalogPath $CatalogPath -InstallRoot $InstallRoot -ModelId ([string] $request.modelId) -RecipeId ([string] $request.recipeId) `
+            -CurrentModelId $CurrentModelId -CurrentRecipeId $CurrentRecipeId -ServingProfileActive:$ServingProfileActive
+        if (-not $target.ok) { return @{ action = 'refused'; code = [string] $target.code; toModelId = $target.modelId; recipeId = $target.recipeId; first = $true } }
+        $Poll['wait'] = @{ modelId = [string] $target.modelId; recipeId = $target.recipeId; force = [bool] $request.force; clock = [Diagnostics.Stopwatch]::StartNew(); nextPollMs = 0 }
+        $first = $true
+    }
+    $wait = $Poll['wait']
+    $step = @{ action = 'waiting'; code = $null; toModelId = [string] $wait.modelId; recipeId = $wait.recipeId; first = $first }
+    if ($wait.force) { $Poll['wait'] = $null; $step.action = 'accept'; return $step }
+    if ($wait.clock.ElapsedMilliseconds -ge [long] $wait.nextPollMs) {
+        $wait.nextPollMs = [long] $wait.clock.ElapsedMilliseconds + [long] $script:FastLlmSwitchBusyPollMilliseconds
+        # The idle detector's counters: a request that is processing or deferred is never cut off. A read that fails proves nothing, so it waits.
+        $counters = $null
+        try { $counters = ConvertFrom-FastLlmIdleMetrics -Text (Get-FastLlmIdleMetricsText -BaseUrl $BaseUrl) } catch { $counters = $null }
+        if ($null -ne $counters -and $counters.processing -eq 0 -and $counters.deferred -eq 0) { $Poll['wait'] = $null; $step.action = 'accept'; return $step }
+        if ($wait.clock.Elapsed.TotalSeconds -ge [double] $script:FastLlmSwitchBusyWaitSeconds) { $Poll['wait'] = $null; $step.action = 'refused'; $step.code = 'refused-busy'; return $step }
+    }
+    if (-not $first) { return $null }
+    return $step
+}
+
+# Sets the outcome of the switch block in a supervisor's state and writes the switch-result line of its run log.
+function Set-FastLlmSwitchResult {
+    param([Parameter(Mandatory = $true)] $State, [string] $InstallRoot, [Parameter(Mandatory = $true)][string] $Result, [string] $FailureCode)
+    $block = $State['switch']
+    $State['switch'] = New-FastLlmSwitchBlock -From ([string] $block.from) -To ([string] $block.to) -Result $Result -FailureCode $FailureCode
+    Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'switch-result' -Fields { Get-FastLlmRunLogSwitchResultFields -Result $Result -FailureCode $FailureCode }
+}
+
+# The failure code a failed switch start is recorded with: the code the failed run itself recorded (so both documents agree), else the typed code
+# of the failure, else that run's status code, else a fixed code by reason. Never the failure's text.
+function Get-FastLlmSwitchFailureCode {
+    param($Exception, [string] $StatusCode)
+    $reason = ''
+    if ($null -ne $Exception -and $null -ne $Exception.Data) {
+        foreach ($key in @('FastLlmSwitchFailureCode', 'FastLlmFailureCode')) {
+            $value = $Exception.Data[$key]
+            if ($value -is [string] -and $value -cmatch $script:FastLlmSwitchCodePattern) { return $value }
+        }
+        $reason = [string] $Exception.Data['FastLlmReason']
+    }
+    if ($StatusCode -and $StatusCode -cmatch $script:FastLlmSwitchCodePattern) { return $StatusCode }
+    switch -CaseSensitive ($reason) {
+        'PlanChanged' { return 'switch-plan-changed' }
+        'ModelNeedsProvisioning' { return 'switch-model-invalid' }
+        'RuntimeCheckFailed' { return 'startup-or-runtime-check-failed' }
+        'StateWriteFailed' { return 'state-write-failed' }
+        'PortInUse' { return 'port-in-use' }
+    }
+    return 'switch-start-failed'
+}
+
+# Between two runs of a switch no supervised run is alive to write the status document: this rewrites the switch block (and, for a stop, the stop
+# reason) of the CURRENT document. Best-effort; the caller holds the operation lock.
+function Set-FastLlmSwitchOutcome {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Block, [string] $StopReason)
+    try {
+        $document = Get-FastLlmStatus -InstallRoot $InstallRoot
+        if (-not $document.PSObject.Properties['runId']) { return }
+        if ($document.PSObject.Properties['active']) { $document.PSObject.Properties.Remove('active') }
+        $document | Add-Member -NotePropertyName 'switch' -NotePropertyValue $Block -Force
+        if ($StopReason) { $document | Add-Member -NotePropertyName stopReason -NotePropertyValue $StopReason -Force }
+        $document | Add-Member -NotePropertyName updatedAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+        Write-FastLlmState -InstallRoot $InstallRoot -State $document
+    }
+    catch { $null = $_ }
 }
 
 function ConvertFrom-FastLlmPlacementLog {
@@ -752,7 +1071,11 @@ function Invoke-FastLlmSupervisedServer {
           # both failures are typed (FastLlmReason DeviceBindingFailed) and never trigger model recovery.
           [ValidateSet('off','record','enforce')][string] $DeviceBinding='off',
           # Opt-in: stop the server after this many minutes without requests (0 = never). Only the CLI and the background host pass it; every other caller, the bench path included, gets 0.
-          [ValidateSet(0,15,30,60)][int] $IdleStopMinutes=0)
+          [ValidateSet(0,15,30,60)][int] $IdleStopMinutes=0,
+          # Opt-in model switch: only with this switch does the post-Ready loop look for state\switch-<runId>.json. Absent (every default start, direct
+          # callers and the bench path): no request file is ever read and no field is added. -SwitchContext is Start-FastLlmServer's table for the
+          # sequence (what this run is the outcome of, the accepted request, the plan that became ready); Start-FastLlmServer starts the other model.
+          [switch] $AllowSwitch, [System.Collections.IDictionary] $SwitchContext)
     # ValidateSet ignores case and keeps the typed value, but the enforce checks below are case-sensitive: normalise once, first.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     # $null for every plan without a serving profile (all of today's plans): nothing below then differs from before. Checked before anything is written or launched.
@@ -761,6 +1084,26 @@ function Invoke-FastLlmSupervisedServer {
     $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; thinking=$(if ($Plan.PSObject.Properties['requestedThinking'] -and [string]$Plan.requestedThinking -ceq 'off') { 'off' } else { 'auto' }); chatPage=$(if ($Plan.PSObject.Properties['requestedChatPage'] -and [string]$Plan.requestedChatPage -ceq 'on') { 'on' } else { 'off' }); processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
     # Recorded from the start (only when on) so the Ready status already says so; the status of a default run is unchanged.
     if ($IdleStopMinutes -gt 0) { $state.idleStopMinutes = $IdleStopMinutes }
+    # Opt-in model switch. Without -AllowSwitch nothing here or below runs: no field is added and no request file is ever looked for.
+    $switchOrigin = $null
+    $switchPriorStopPaths = @()
+    $switchAccepted = $false
+    $switchRunFailureCode = $null
+    if ($AllowSwitch) {
+        if ($null -eq $SwitchContext) { throw 'A start that allows a model switch goes through Start-FastLlmServer: the supervisor cannot start the other model by itself.' }
+        if (-not $CatalogPath) { throw 'A start that allows a model switch requires the verified catalog path.' }
+        $state.switchAllowed = $true
+        $SwitchContext['accepted'] = $null
+        $SwitchContext['readyPlan'] = $null
+        $SwitchContext['runId'] = [string] $state.runId
+        $SwitchContext['runs'] = [int] $SwitchContext['runs'] + 1
+        # This run is the outcome of a switch (the target, or the one restore of the previous model): its document says so from its first write.
+        if ($null -ne $SwitchContext['origin']) {
+            $switchOrigin = $SwitchContext['origin']
+            $state['switch'] = New-FastLlmSwitchBlock -From ([string] $switchOrigin.from) -To ([string] $switchOrigin.to) -Pending -FailureCode ([string] $switchOrigin.failureCode)
+        }
+        if ($null -ne $SwitchContext['priorStopPaths']) { $switchPriorStopPaths = @($SwitchContext['priorStopPaths']) }
+    }
     # A HIP plan (the engine component's lane) has no Vulkan memory policy, BAR mitigation, device binding or Vulkan identity capture.
     $isHipPlan = [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
     $hipAutoSelected = Test-FastLlmPlanFallsBackOnFailure -Plan $Plan
@@ -911,12 +1254,15 @@ function Invoke-FastLlmSupervisedServer {
     Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'start' -Fields { Get-FastLlmRunLogStartFields -Plan $Plan -State $state -SelfTest ([bool] $SelfTest) }
     Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'preparing' }
     $stopPath = Join-Path $stateRoot ('stop-' + $state.runId)
+    $switchRequestPath = Join-Path $stateRoot ('switch-' + $state.runId + '.json')
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
     $hostProcess = New-Object Bitworks.FastLlm.ProcessHost
     $spawned = $false
     $reachedReady = $false
     $baseUrl = $Plan.endpoint -replace '/v1$', ''
     try {
+        # A stop asked for while the previous run was being replaced by this one names that run. Stop always wins: nothing is launched.
+        if ($AllowSwitch -and (Test-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths)) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
         if ($null -ne $deviceBindingGate) { throw $deviceBindingGate }
         # Refuse an already occupied port with a plain message. A same-user bind race after this check remains possible.
         $uri = [Uri]$baseUrl
@@ -952,6 +1298,7 @@ function Invoke-FastLlmSupervisedServer {
         $healthy = $false
         while ($deadline.Elapsed.TotalSeconds -lt $LoadTimeoutSeconds) {
             if (Test-Path -LiteralPath $stopPath) { $state.phase='stopped'; return 0 }
+            if ($AllowSwitch -and (Test-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths)) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
             if ($hostProcess.Process.HasExited) {
                 # llama-server's own bind error is the same plain refusal as the pre-start check (a bind race after the check).
                 # The snapshot is the pre-Ready startup output only, so no prompt text can be in it.
@@ -1093,11 +1440,25 @@ function Invoke-FastLlmSupervisedServer {
         $state.spillCheck = $spillStep.spillCheck
         $spillLuid = [string] $spillStep.luid
         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'spill-check' -Fields { Get-FastLlmSpillCheckEventFields -Step $spillStep }
+        # A run that is the outcome of a switch says so in the same write that says ready: ok for the target, failed-restored for the one restore.
+        # Every gate above was passed first, exactly as for any other start.
+        $switchReadyResult = $null
+        if ($null -ne $switchOrigin) {
+            $switchReadyResult = 'ok'
+            $switchReadyCode = ''
+            if ([string] $switchOrigin.role -ceq 'restore') { $switchReadyResult = 'failed-restored'; $switchReadyCode = [string] $switchOrigin.failureCode }
+            $state['switch'] = New-FastLlmSwitchBlock -From ([string] $switchOrigin.from) -To ([string] $switchOrigin.to) -Result $switchReadyResult -FailureCode $switchReadyCode
+        }
         $state.phase='ready'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         $reachedReady = $true
         $runPhase = 'ready'
         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'ready' }
+        if ($AllowSwitch) {
+            # The plan that serves now: what a later switch is planned from, and what one restore would start again.
+            $SwitchContext['readyPlan'] = $Plan
+            if ($null -ne $switchReadyResult) { Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'switch-result' -Fields { Get-FastLlmRunLogSwitchResultFields -Result $switchReadyResult -FailureCode $switchReadyCode } }
+        }
         if ($state.recipe) {
             Write-FastLlmState -InstallRoot $InstallRoot -FileName ($Plan.hardwareFingerprint+'.last-ready.json') -State ([ordered]@{
                 kind='api-smoke-only';hardwareFingerprint=$Plan.hardwareFingerprint;modelId=$Plan.model.id;modelSha256=$Plan.model.sha256;catalogSha256=$state.recipe.catalogSha256
@@ -1153,8 +1514,41 @@ function Invoke-FastLlmSupervisedServer {
             $spillProcess = $hostProcess.Process
             $spillReidentify = { Find-FastLlmProcessAdapter -Process $spillProcess -BudgetMs ([int] $script:FastLlmSpillLoopReadBudgetMs) }.GetNewClosure()
         }
+        # Opt-in model switch: the request that waits for requests in progress, if any, and what was already answered.
+        $switchPoll = @{ wait = $null; unsafeReported = $false; stuckStamp = $null }
+        $switchCurrentRecipeId = ''
+        if ($AllowSwitch -and $Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id'] -and $Plan.recipe.id) { $switchCurrentRecipeId = [string] $Plan.recipe.id }
         while (-not $hostProcess.Process.WaitForExit(250)) {
             if (Test-Path -LiteralPath $stopPath) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
+            # Only a start with -AllowSwitch looks for a switch request, and only after the stop check above: stop always wins.
+            if ($AllowSwitch) {
+                if (Test-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
+                $switchStep = Step-FastLlmSwitchPoll -Poll $switchPoll -RequestPath $switchRequestPath -CatalogPath $CatalogPath -InstallRoot $InstallRoot -BaseUrl $baseUrl `
+                    -CurrentModelId ([string] $Plan.model.id) -CurrentRecipeId $switchCurrentRecipeId -ServingProfileActive ([bool] ($null -ne $servingProfile))
+                if ($null -ne $switchStep) {
+                    $switchFrom = [string] $Plan.model.id
+                    $switchTo = [string] $switchStep.toModelId
+                    # Ids only, and the target only when it is a catalog id: nothing a request carried is logged.
+                    if ($switchStep.first) { Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'switch-request' -Fields { Get-FastLlmRunLogSwitchRequestFields -FromModelId $switchFrom -ToModelId $switchTo } }
+                    $state['switch'] = New-FastLlmSwitchBlock -From $switchFrom -To $switchTo -Pending
+                    if ([string] $switchStep.action -ceq 'accept') {
+                        # A stop that arrived while the request was read or waited on is honoured instead of the switch.
+                        if (Test-Path -LiteralPath $stopPath) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
+                        # The server is idle (or the request says force): this run ends stopped, and Start-FastLlmServer starts the other model.
+                        $switchAccepted = $true
+                        $SwitchContext['accepted'] = @{ modelId = $switchTo; recipeId = $switchStep.recipeId; fromModelId = $switchFrom }
+                        $state.stopReason='switch'
+                        $state.phase='stopped'
+                        return 0
+                    }
+                    if ([string] $switchStep.action -ceq 'refused') {
+                        # The server keeps running. Busy for the whole wait is its own result; every other refusal carries its code.
+                        if ([string] $switchStep.code -ceq 'refused-busy') { Set-FastLlmSwitchResult -State $state -InstallRoot $InstallRoot -Result 'refused-busy' }
+                        else { Set-FastLlmSwitchResult -State $state -InstallRoot $InstallRoot -Result 'refused' -FailureCode ([string] $switchStep.code) }
+                    }
+                    try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { $null = $_ }
+                }
+            }
             # The GPU memory re-check, every 60 s. The read is time-boxed (200 ms), so the stop file above is still seen within one pass.
             # Only a change of state is logged and printed; the status always carries the latest numbers.
             $spillTick = Invoke-FastLlmSpillCheckTick -Previous $state.spillCheck -Now (Get-Date).ToUniversalTime() -NextDueUtc $spillNextCheck -Luid $spillLuid -Process $hostProcess.Process -Reidentify $spillReidentify
@@ -1227,8 +1621,32 @@ function Invoke-FastLlmSupervisedServer {
             $state.failureCode='startup-or-runtime-check-failed'
             if($spawned){$_.Exception.Data['FastLlmReason']='RuntimeCheckFailed'}
         }
+        # A start that did not become ready during a switch: the code its switch block is recorded with travels with the failure, so the
+        # document of the restore names the same code as this one.
+        if ($AllowSwitch -and -not $reachedReady) {
+            $switchRunFailureCode = Get-FastLlmSwitchFailureCode -Exception $_.Exception -StatusCode ([string] $state.failureCode)
+            $_.Exception.Data['FastLlmSwitchFailureCode'] = $switchRunFailureCode
+        }
         throw
     } finally {
+        # The switch block is settled before the final document and the end event are written. A run that was the outcome of a switch and did
+        # not become ready: the one restore that did not serve is failed-stopped (there is no third attempt); a failed target stays pending, with
+        # its code, because the restore follows; a stop is a cancelled switch. A request that was still waiting when the run ended is answered.
+        if ($AllowSwitch) {
+            try {
+                if ($null -ne $switchOrigin -and -not $reachedReady) {
+                    $state['switch'] = New-FastLlmSwitchBlock -From ([string] $switchOrigin.from) -To ([string] $switchOrigin.to) -Pending -FailureCode ([string] $switchOrigin.failureCode)
+                    if ([string] $switchOrigin.role -ceq 'restore') { Set-FastLlmSwitchResult -State $state -InstallRoot $InstallRoot -Result 'failed-stopped' -FailureCode ([string] $switchOrigin.failureCode) }
+                    elseif ([string] $state.phase -ceq 'failed') { $state['switch'] = New-FastLlmSwitchBlock -From ([string] $switchOrigin.from) -To ([string] $switchOrigin.to) -Pending -FailureCode ([string] $switchRunFailureCode) }
+                    else { Set-FastLlmSwitchResult -State $state -InstallRoot $InstallRoot -Result 'refused' -FailureCode 'switch-cancelled-by-stop' }
+                }
+                elseif ($state.Contains('switch') -and $state['switch'].Contains('pending') -and -not $switchAccepted) {
+                    $switchEndCode = 'switch-cancelled-by-stop'
+                    if ([string] $state.phase -ceq 'failed') { $switchEndCode = 'switch-server-exited' }
+                    Set-FastLlmSwitchResult -State $state -InstallRoot $InstallRoot -Result 'refused' -FailureCode $switchEndCode
+                }
+            } catch { $null = $_ }
+        }
         # Run log: the final phase and the end event (before the child is disposed, so its exit code is read if it already exited).
         $serverExitCode = $null
         try { if ($spawned -and $hostProcess.Process.HasExited) { $serverExitCode = [int] $hostProcess.Process.ExitCode } } catch { $null = $_ }
@@ -1254,12 +1672,20 @@ function Invoke-FastLlmSupervisedServer {
                 finally {
                     # The request file is run-scoped, so a leftover is harmless; a sharing violation here is transient (the
                     # requesting client or a scanner still holds it) and must not turn a clean stop into exit 1.
-                    for ($attempt = 0; (Test-Path -LiteralPath $stopPath); $attempt++) {
+                    # A run that ended for a model switch leaves a stop request in place: a stop that arrived while this server was shutting down
+                    # names this run, and the switch that follows must still see it (stop always wins). The switch removes it.
+                    for ($attempt = 0; (-not $switchAccepted) -and (Test-Path -LiteralPath $stopPath); $attempt++) {
                         try { Remove-Item -LiteralPath $stopPath -Force -ErrorAction Stop; break }
                         catch {
                             if ($attempt -ge 9) { Write-Warning "The stop request file could not be removed after retries: $stopPath"; break }
                             Start-Sleep -Milliseconds 15
                         }
+                    }
+                    if ($AllowSwitch) {
+                        # The switch request is run-scoped too: a plain leftover is removed, an unsafe object is never touched. A stop that named a
+                        # previous run was honoured by now.
+                        try { [void] (Remove-FastLlmSwitchRequestFile -Path $switchRequestPath) } catch { $null = $_ }
+                        try { Remove-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths } catch { $null = $_ }
                     }
                 }
             }
