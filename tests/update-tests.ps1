@@ -753,7 +753,7 @@ Remove-Item -LiteralPath $bundleDir -Recurse -Force -ErrorAction SilentlyContinu
 # Muting: the version just left is not offered again by the passive notices; a NEWER release is.
 Check ((Test-FastLlmUpdateMuted -InstallRoot $e2.Install -LatestVersion $cur) -eq $true) 'mute: the version just left is muted after a reinstall'
 Check ((Test-FastLlmUpdateMuted -InstallRoot $e2.Install -LatestVersion '2026.10.17.1') -eq $false) 'mute: a newer release than the one left is not muted'
-Check ((Test-FastLlmUpdateMuted -InstallRoot $e2.Install -LatestVersion $old) -eq $true) 'mute: an older version stays muted'
+Check ((Test-FastLlmUpdateMuted -InstallRoot $e2.Install -LatestVersion $old) -eq $false) 'mute: an older version is not muted, only the exact version left'
 Check ((Test-FastLlmUpdateMuted -InstallRoot (New-Env).Install -LatestVersion $cur) -eq $false) 'mute: nothing is muted without a mute record'
 $mutePath = Join-Path (Join-Path $e2.Install 'state') 'update-muted.json'
 Set-Content -LiteralPath $mutePath -Value '{"version":"evil"}'

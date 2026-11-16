@@ -1346,6 +1346,6 @@ Check ($ui.Contains('Resolve-FastLlmReinstall -InstallRoot $Install -AppRoot $Ap
 Check ($reinstallBody.Contains('-ExpectedFrom $ExpectedFrom') -and $reinstallBody.Contains('AddArgument([string]$offer.from)') -and $reinstallBody.Contains('param($Project,$Install,$App,$Expected,$ExpectedFrom)')) 'reinstall: the run is told which installed version the dialog named, and refuses when it changed'
 $startupBody = $ui.Substring($ui.IndexOf('function StartUiStartupChecks {'), $ui.IndexOf('function InvokeUiUpdate {') - $ui.IndexOf('function StartUiStartupChecks {'))
 Check ($startupBody.Contains('Test-FastLlmUpdateMuted') -and $startupBody.Contains('updateMuted') -and $startupBody.IndexOf('$offer=Format-FastLlmUiUpdateBanner') -gt $startupBody.IndexOf('updateMuted')) 'reinstall: the update banner is not shown for the version just left'
-Check ($startupBody.Contains('if(-not $values[0].updateMuted){$offer=Format-FastLlmUiUpdateBanner') -or $startupBody.Contains('$offer=$null;if(-not $values[0].updateMuted)')) 'reinstall: the mute only hides the banner, the explicit Update click is unchanged'
+Check ($startupBody.Contains('if(-not $values[0].updateMuted){$offer=Format-FastLlmUiUpdateBanner') -or $startupBody.Contains('$offer=$null;if(-not $values[0].updateMuted)')) 'reinstall: the mute only hides the banner and its Update button for the muted version; the CLI update is unchanged'
 
 Write-Output "UI flow tests passed: $checks"

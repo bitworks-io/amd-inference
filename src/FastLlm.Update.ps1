@@ -757,7 +757,7 @@ function Add-FastLlmReinstallHistory {
     catch { $null = $_ }
 }
 
-# Mutes the passive "update available" notices for the version just left and anything older. A NEWER release is announced as usual.
+# Mutes the passive "update available" notices for exactly the version just left. Any other version, a newer one included, is announced as usual.
 function Set-FastLlmUpdateMute {
     param([Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$Version)
     try {
@@ -775,7 +775,7 @@ function Test-FastLlmUpdateMuted {
         if ($null -eq $document) { return $false }
         $muted = (Get-FastLlmStrictField $document 'version').value
         if (-not (Test-FastLlmStrictVersion $muted)) { return $false }
-        return ((Compare-FastLlmVersion $LatestVersion ([string]$muted)) -le 0)
+        return ((Compare-FastLlmVersion $LatestVersion ([string]$muted)) -eq 0)
     }
     catch { return $false }
 }
