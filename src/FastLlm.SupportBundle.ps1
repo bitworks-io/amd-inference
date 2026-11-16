@@ -10,7 +10,7 @@ $script:FastLlmSupportBundleLogCount = 5
 $script:FastLlmRedactionOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [Text.RegularExpressions.RegexOptions]::CultureInvariant
 # Test seam: a scriptblock param($Target) run just before the final move (to prove the move never overwrites). Default $null.
 $script:FastLlmSupportBundleBeforeMove = $null
-$script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage')
+$script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage', 'contextProfile', 'slots')
 
 # Replaces what identifies the PC or the user: the profile path (as \, JSON-escaped \\ and /, any case), the computer name, the user name,
 # Windows SIDs, MAC addresses and PnP instance suffixes (the last three use the patterns of the repository's leak scanner). Returns the redacted text;

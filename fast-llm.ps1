@@ -128,6 +128,17 @@ param(
     # on settings it saves the value (0 removes it). Text, checked by ConvertTo-FastLlmIdleStopMinutes, so any other value is refused.
     [string] $IdleStopMinutes,
 
+    # start, install, plan and settings: default (the default) leaves the server arguments unchanged; long asks for the measured long-context
+    # setup of the model and engine, and is refused when nothing is measured for them (config/serving-profiles.json). An explicit value wins
+    # over the saved setting (and is not saved); on settings it saves the value (default removes it).
+    [ValidateSet('default', 'long')]
+    [string] $KvContextProfile,
+
+    # start, install, plan and settings: how many requests the server works on at once: 1 (the default) or 2. 2 needs a measured row that
+    # allows it, and each request then gets the context divided by 2. An explicit value wins over the saved setting (and is not saved); on
+    # settings it saves the value (1 removes it). Text, checked by ConvertTo-FastLlmSlots, so any other value is refused.
+    [string] $KvSlots,
+
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
 
@@ -309,9 +320,15 @@ if ($PSBoundParameters.ContainsKey('Thinking') -and $Action -notin @('plan', 'in
 if ($PSBoundParameters.ContainsKey('ChatPage') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('IdleStopMinutes') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-IdleStopMinutes is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $null = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
+if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-KvContextProfile is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('KvSlots') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('KvSlots')) { $null = ConvertTo-FastLlmSlots -Value $KvSlots }
 # ValidateSet ignores case; the settings converter is exact, so the typed value is lower-cased once after binding.
 if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = $Thinking.ToLowerInvariant() }
 if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = $ChatPage.ToLowerInvariant() }
+# -KvContextProfile is lower-cased into its own variable (the parameter itself is never assigned to).
+$requestedContextProfile = $null
+if ($PSBoundParameters.ContainsKey('KvContextProfile')) { $requestedContextProfile = $KvContextProfile.ToLowerInvariant() }
 if ($IgnoreUserSettings -and $Action -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('ServerPort')) { $null = ConvertTo-FastLlmServerPort -Value $ServerPort }
 if ($PSBoundParameters.ContainsKey('Port')) { $null = ConvertTo-FastLlmServerPort -Value $Port }
@@ -321,6 +338,8 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
     if ($PSBoundParameters.ContainsKey('ChatPage')) { $servingBound.ChatPage = $ChatPage }
     if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $servingBound.IdleStopMinutes = $IdleStopMinutes }
+    if ($PSBoundParameters.ContainsKey('KvContextProfile')) { $servingBound.KvContextProfile = $requestedContextProfile }
+    if ($PSBoundParameters.ContainsKey('KvSlots')) { $servingBound.KvSlots = $KvSlots }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
     if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
@@ -330,6 +349,13 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($servingOptions.serverPort -ne 8080) { $selectionOptions.ServerPort = [int] $servingOptions.serverPort }
     if ($servingOptions.thinking -ceq 'off') { $selectionOptions.Thinking = 'off' }
     if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
+    # Context profile and slots reach the planner only when one is not its default, so the default plan call keeps the exact parameter set it
+    # always had and never opens the serving profiles file. With no measured row for the model and engine the planner refuses the option.
+    if ($servingOptions.contextProfile -cne 'default') { $selectionOptions.KvContextProfile = [string] $servingOptions.contextProfile }
+    if ([int] $servingOptions.slots -ne 1) { $selectionOptions.KvSlots = [int] $servingOptions.slots }
+    if ($selectionOptions.ContainsKey('KvContextProfile') -or $selectionOptions.ContainsKey('KvSlots')) {
+        $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json'
+    }
     # The idle stop never reaches the planner: it changes no server argument. It is handed to the start only.
     $effectiveIdleStopMinutes = [int] $servingOptions.idleStopMinutes
 }
@@ -355,7 +381,11 @@ function Write-FastLlmPlan {
     if ($Plan.recipe.evidenceUrl) { Write-Host "Results:   $($Plan.recipe.evidenceUrl)" }
     Write-Host "Model:     $($Plan.model.id) ($($Plan.model.quantization))"
     Write-Host "Serving:   $($Plan.model.servingMode)"
-    Write-Host "Context:   $($Plan.model.contextSize) tokens"
+    if ($Plan.PSObject.Properties['servingProfile'] -and $Plan.servingProfile) {
+        # One request gets the per-slot context; the total is shown as the total, never as each request's context.
+        Write-Host "Context:   $($Plan.servingProfile.contextPerSlot) tokens per request ($($Plan.servingProfile.slots) at once, $($Plan.model.contextSize) in total; context profile $($Plan.servingProfile.id))"
+    }
+    else { Write-Host "Context:   $($Plan.model.contextSize) tokens" }
     Write-Host "GPU plan:  $(@($Plan.selectedAdapters).Count) device(s); split mode $($Plan.splitMode)"
     Write-Host 'Placement: requested all GPU layers; startup must pass API and reported-layer checks (physical residency remains unqualified)'
     Write-Host "Endpoint:  $($Plan.endpoint)"
@@ -594,10 +624,12 @@ try {
             if ($PSBoundParameters.ContainsKey('Thinking')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -Thinking $Thinking }
             if ($PSBoundParameters.ContainsKey('ChatPage')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ChatPage $ChatPage }
             if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -IdleStopMinutes $IdleStopMinutes }
+            if ($PSBoundParameters.ContainsKey('KvContextProfile')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -KvContextProfile $requestedContextProfile }
+            if ($PSBoundParameters.ContainsKey('KvSlots')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -KvSlots $KvSlots }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
             $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
             if ($AsJson) {
-                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage; idleStopMinutes = $servingState.idleStopMinutes } | ConvertTo-Json -Depth 6
+                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage; idleStopMinutes = $servingState.idleStopMinutes; contextProfile = $servingState.contextProfile; slots = $servingState.slots } | ConvertTo-Json -Depth 6
             }
             else {
                 if ([string] $licenseState.mode -ceq 'accept-automatically') {
@@ -608,6 +640,8 @@ try {
                 Write-Host "thinking: $($servingState.thinking)"
                 Write-Host "chatPage: $($servingState.chatPage)"
                 Write-Host "idleStopMinutes: $($servingState.idleStopMinutes)"
+                Write-Host "contextProfile: $($servingState.contextProfile)"
+                Write-Host "slots: $($servingState.slots)"
             }
         }
         'status' {

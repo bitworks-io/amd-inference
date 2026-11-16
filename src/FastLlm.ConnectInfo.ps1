@@ -173,6 +173,10 @@ function Get-FastLlmConnectionInfo {
         $size = Get-FastLlmConnectProp (Get-FastLlmConnectProp $Status 'recipe') 'contextSize'
         $sizeParsed = 0L
         if ($null -ne $size -and [long]::TryParse([string] $size, [ref] $sizeParsed) -and $sizeParsed -gt 0) { $contextTokens = $sizeParsed }
+        # With a serving profile (two slots, or a long context) one request gets the per-slot context, never the total: the limit line, the agent
+        # warning and the client context all use it. A value that is not a positive whole number no larger than the total is ignored.
+        $perSlot = Get-FastLlmConnectProp (Get-FastLlmConnectProp $Status 'recipe') 'contextPerSlot'
+        if ($null -ne $contextTokens -and ($perSlot -is [int] -or $perSlot -is [long]) -and [long] $perSlot -gt 0 -and [long] $perSlot -le $contextTokens) { $contextTokens = [long] $perSlot }
     }
     $baseUrl = 'http://127.0.0.1:' + $port + '/v1'
     $anthropicBaseUrl = 'http://127.0.0.1:' + $port

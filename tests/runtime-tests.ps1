@@ -276,6 +276,82 @@ try {
         $lock.Dispose();$lock=$null
     }
 
+    # Per-slot runtime check: the API check takes the expected slot count and the per-slot context from the plan's serving profile. A plan without
+    # a serving profile is checked exactly as before (one slot, the plan context), and its status and run log carry no new field.
+    function Invoke-SlotCheckRun([string]$Label,[string]$MockMode,[int]$Total,$ServingProfile,[bool]$ExpectReady) {
+        $slotListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
+        $slotListener.Start();$slotPort=$slotListener.LocalEndpoint.Port;$slotListener.Stop()
+        $slotRoot=Join-Path $temp ('slot-check-'+$Label)
+        $slotLock=Enter-FastLlmOperation $slotRoot
+        $slotPlan=[pscustomobject]@{
+            enginePath=(Get-Process -Id $PID).Path
+            serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$slotPort",'-Mode',$MockMode,'-Model','test-model','-Context',"$Total")
+            endpoint="http://127.0.0.1:$slotPort/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
+            hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=$Total;sha256=('0'*64);parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
+            catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
+        }
+        if($null -ne $ServingProfile){
+            $slotPlan | Add-Member -NotePropertyName servingProfile -NotePropertyValue $ServingProfile
+            $slotPlan.model.parallel=[int]$ServingProfile.slots
+        }
+        $slotStopper=$null
+        if($ExpectReady){
+            $slotStopper=New-Object Diagnostics.Process
+            $slotStopper.StartInfo.FileName=(Get-Process -Id $PID).Path
+            $slotStopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($slotRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($slotRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+            $slotStopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($slotStopCode))
+            $slotStopper.StartInfo.UseShellExecute=$false
+            $slotStopper.Start()|Out-Null
+        }
+        $slotExit=$null;$slotFailure=$null
+        try {
+            try { $slotExit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } $slotPlan $slotRoot $catalog }
+            catch { $slotFailure=$_.Exception }
+        } finally {
+            if($slotStopper){ if(-not $slotStopper.HasExited){ $slotStopper.Kill() }; $slotStopper.Dispose() }
+            $slotLock.Dispose()
+        }
+        $slotStart=$null
+        $slotLogs=@(Get-ChildItem -LiteralPath (Join-Path $slotRoot 'state/logs') -Filter 'run-*.jsonl' -ErrorAction SilentlyContinue)
+        if($slotLogs.Count -eq 1){ $slotStart=@([IO.File]::ReadAllLines($slotLogs[0].FullName) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { [string]$_.event -ceq 'start' })[0] }
+        return [pscustomobject]@{exit=$slotExit;failure=$slotFailure;status=(Get-FastLlmStatus $slotRoot);start=$slotStart}
+    }
+    function New-SlotProfile([string]$Id,[int]$Slots,[int]$Total){ return [pscustomobject]@{id=$Id;slots=$Slots;contextTotal=$Total;contextPerSlot=[int]($Total/$Slots);requiredFreeVramMiB=1000;engineId='llama.cpp-test-vulkan';resultId='test-serving-profile-0001'} }
+    $slotMismatch='Effective context/slots differ from the requested configuration.'
+    $defaultRecipeFields='adapters,backend,cacheTypeK,cacheTypeV,catalogSha256,catalogVersion,configurationIsolation,contextSize,engineSha256,flashAttention,requestedArguments,slots,speculation,splitMode,tensorSplit'
+    $defaultStartFields='backend,chatPage,contextSize,engineVersion,event,modelId,port,runId,selfTest,thinking,ts'
+
+    $slotRun=Invoke-SlotCheckRun 'default' 'ok' 1024 $null $true
+    Check ($null -eq $slotRun.failure -and $slotRun.exit -eq 0 -and [int]$slotRun.status.canary.effectiveContext -eq 1024) 'slot check default: a plan without a serving profile reaches ready against one slot at the plan context'
+    Check ((@($slotRun.status.recipe.PSObject.Properties.Name | Sort-Object) -join ',') -ceq $defaultRecipeFields) 'slot check default: the status recipe has exactly its existing fields (no profile, no contextPerSlot)'
+    Check (-not $slotRun.status.PSObject.Properties['servingProfile'] -and [int]$slotRun.status.recipe.contextSize -eq 1024 -and [int]$slotRun.status.recipe.slots -eq 1) 'slot check default: the status carries no serving profile and records one slot'
+    Check ($null -ne $slotRun.start -and (@($slotRun.start.PSObject.Properties.Name | Sort-Object) -join ',') -ceq $defaultStartFields) 'slot check default: the run log start event has exactly its existing fields (no profile, no slots)'
+
+    $slotRun=Invoke-SlotCheckRun 'default-server-has-two' 'slots2' 1024 $null $false
+    Check ($null -ne $slotRun.failure -and [string]$slotRun.failure.Message -ceq $slotMismatch -and [string]$slotRun.failure.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed') 'slot check default: a server with two slots fails a default plan with the existing error and reason'
+    Check ([string]$slotRun.status.phase -ceq 'failed' -and [string]$slotRun.status.failureCode -ceq 'startup-or-runtime-check-failed') 'slot check default: the failure is recorded with the existing failure code'
+
+    $slotRun=Invoke-SlotCheckRun 'two-slots' 'slots2' 2048 (New-SlotProfile 'long' 2 2048) $true
+    Check ($null -eq $slotRun.failure -and $slotRun.exit -eq 0) "slot check: a 2-slot plan reaches ready when the server reports 2 slots and the per-slot context$(if($slotRun.failure){': '+$slotRun.failure.Message})"
+    Check ([int]$slotRun.status.canary.effectiveContext -eq 1024) 'slot check: the API check records the per-slot context it verified'
+    Check ([string]$slotRun.status.recipe.profile -ceq 'long' -and [int]$slotRun.status.recipe.contextPerSlot -eq 1024 -and [int]$slotRun.status.recipe.contextSize -eq 2048 -and [int]$slotRun.status.recipe.slots -eq 2) 'slot check: the status recipe adds profile and contextPerSlot; contextSize stays the total'
+    Check ((@($slotRun.status.recipe.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'adapters,backend,cacheTypeK,cacheTypeV,catalogSha256,catalogVersion,configurationIsolation,contextPerSlot,contextSize,engineSha256,flashAttention,profile,requestedArguments,slots,speculation,splitMode,tensorSplit') 'slot check: profile and contextPerSlot are the only fields added to the status recipe'
+    Check ($null -ne $slotRun.start -and [string]$slotRun.start.profile -ceq 'long' -and [int]$slotRun.start.slots -eq 2 -and [int]$slotRun.start.contextSize -eq 2048) 'slot check: the run log start event carries profile and slots'
+    Check ((@($slotRun.start.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'backend,chatPage,contextSize,engineVersion,event,modelId,port,profile,runId,selfTest,slots,thinking,ts') 'slot check: profile and slots are the only fields added to the start event'
+
+    $slotRun=Invoke-SlotCheckRun 'two-slots-server-has-one' 'ok' 2048 (New-SlotProfile 'long' 2 2048) $false
+    Check ($null -ne $slotRun.failure -and [string]$slotRun.failure.Message -ceq $slotMismatch -and [string]$slotRun.failure.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed') 'slot check: a 2-slot plan fails with the existing error when the server reports one slot'
+    Check ([string]$slotRun.status.phase -ceq 'failed' -and [string]$slotRun.status.failureCode -ceq 'startup-or-runtime-check-failed') 'slot check: the one-slot failure is recorded with the existing failure code'
+
+    $slotRun=Invoke-SlotCheckRun 'two-slots-total-per-slot' 'slots2-total' 2048 (New-SlotProfile 'long' 2 2048) $false
+    Check ($null -ne $slotRun.failure -and [string]$slotRun.failure.Message -ceq $slotMismatch) 'slot check: a 2-slot plan fails with the existing error when a slot reports the total instead of total / slots'
+
+    $slotRun=Invoke-SlotCheckRun 'default-profile-two-slots' 'slots2' 1024 (New-SlotProfile 'default' 2 1024) $true
+    Check ($null -eq $slotRun.failure -and $slotRun.exit -eq 0 -and [string]$slotRun.status.recipe.profile -ceq 'default' -and [int]$slotRun.status.recipe.contextPerSlot -eq 512 -and [int]$slotRun.status.canary.effectiveContext -eq 512) 'slot check: the default profile with 2 slots is checked at total / 2 and recorded as profile default'
+
+    $slotRun=Invoke-SlotCheckRun 'long-one-slot' 'ok' 2048 (New-SlotProfile 'long' 1 2048) $true
+    Check ($null -eq $slotRun.failure -and $slotRun.exit -eq 0 -and [string]$slotRun.status.recipe.profile -ceq 'long' -and [int]$slotRun.status.recipe.contextPerSlot -eq 2048 -and [int]$slotRun.status.recipe.slots -eq 1) 'slot check: a long profile with one slot is checked at the total and recorded as profile long'
+
     # Post-load self-test inside a mock supervised start (a failed self-test must not announce ready): the verdict is in before ANY ready announcement
     # (status phase, Ready console line) and before the last-ready recovery record is rewritten. A hard fail keeps the previous record.
     $savedWriteState=& $module {(Get-Command Write-FastLlmState).ScriptBlock}

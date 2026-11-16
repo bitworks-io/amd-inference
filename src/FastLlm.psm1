@@ -990,6 +990,105 @@ function Test-FastLlmRecipeEngineRunnableNow {
     catch { return $false }
 }
 
+# Serving profiles (config/serving-profiles.json): measured rows for the opt-in context profile and slots options. The file is read only when an
+# option is on, so a default plan never opens it. A row applies only when its model id, model sha256, engine id and backend all equal the plan's;
+# with no row the option is refused. Nothing is derived from a formula or a file size.
+$script:FastLlmServingProfilesSchema = 'bitworks.fastllm-serving-profiles/v1'
+$script:FastLlmServingProfileNotMeasured = 'Not measured for this model and engine.'
+$script:FastLlmServingProfileIds = @('default', 'long')
+$script:FastLlmServingProfileSlots = @(1, 2)
+$script:FastLlmServingProfileCacheTypes = @('f16', 'q8_0')
+$script:FastLlmServingProfilesMaxBytes = 1048576
+
+function New-FastLlmServingProfilesFailure {
+    param([Parameter(Mandatory = $true)][string] $Detail)
+    return (New-FastLlmTypedFailure -Code 'serving-profiles-invalid' -Message $Detail)
+}
+
+function Get-FastLlmServingProfileValue {
+    param($Row, [Parameter(Mandatory = $true)][string] $Name)
+    if ($null -eq $Row -or $Row -isnot [pscustomobject]) { return $null }
+    $property = $Row.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+# The rows of the serving profiles file. No path, or a path with no file, is no rows (every option is then refused as not measured).
+# A file that is not this schema is a typed failure: an option is never honoured, and never silently dropped, from a file that cannot be read.
+function Read-FastLlmServingProfiles {
+    param([string] $Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    $document = $null
+    try { $document = Read-FastLlmJson -Path $Path -MaxBytes $script:FastLlmServingProfilesMaxBytes }
+    catch { throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file could not be read as JSON, so no context profile or slots option can be used.') }
+    $schema = Get-FastLlmServingProfileValue -Row $document -Name 'schema'
+    # The list is read from the property itself (a list returned by a function would be unrolled: one row would arrive as a single object).
+    $profilesProperty = $null
+    if ($document -is [pscustomobject]) { $profilesProperty = $document.PSObject.Properties['profiles'] }
+    if (-not ($schema -is [string]) -or $schema -cne $script:FastLlmServingProfilesSchema -or $null -eq $profilesProperty -or -not ($profilesProperty.Value -is [array])) {
+        throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file has an unexpected schema, so no context profile or slots option can be used.')
+    }
+    return @($profilesProperty.Value | Where-Object { $null -ne $_ })
+}
+
+# The one measured row for this model on this engine and backend with this profile id, as plain validated values; $null when there is none or
+# the row does not allow the requested slots. Two matching rows, or a matching row with a value outside its closed set, is a typed failure.
+function Find-FastLlmServingProfileRow {
+    param([object[]] $Rows, [Parameter(Mandatory = $true)] $Model, [string] $EngineId, [string] $Backend, [string] $ProfileId, [int] $Slots = 1)
+    $modelId = [string] $Model.id
+    $modelSha = ([string] $Model.sha256).ToLowerInvariant()
+    $found = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @($Rows)) {
+        $rowModel = Get-FastLlmServingProfileValue -Row $row -Name 'modelId'
+        $rowSha = Get-FastLlmServingProfileValue -Row $row -Name 'modelSha256'
+        $rowEngine = Get-FastLlmServingProfileValue -Row $row -Name 'engineId'
+        $rowBackend = Get-FastLlmServingProfileValue -Row $row -Name 'backend'
+        $rowProfile = Get-FastLlmServingProfileValue -Row $row -Name 'id'
+        if (-not ($rowModel -is [string]) -or $rowModel -cne $modelId) { continue }
+        if (-not ($rowSha -is [string]) -or $rowSha -cne $modelSha) { continue }
+        if (-not ($rowEngine -is [string]) -or $rowEngine -cne $EngineId) { continue }
+        if (-not ($rowBackend -is [string]) -or $rowBackend -cne $Backend) { continue }
+        if (-not ($rowProfile -is [string]) -or $rowProfile -cne $ProfileId) { continue }
+        $found.Add($row)
+    }
+    if ($found.Count -eq 0) { return $null }
+    if ($found.Count -gt 1) {
+        throw (New-FastLlmServingProfilesFailure -Detail "The serving profiles file has more than one '$ProfileId' row for model '$modelId' on this engine, so none is used.")
+    }
+    $row = $found[0]
+    $invalid = { param([string] $What) throw (New-FastLlmServingProfilesFailure -Detail "The '$ProfileId' serving profile row for model '$modelId' has $What, so it is not used.") }
+    $isWhole = { param($Value) return [bool] ($Value -is [int] -or $Value -is [long]) }
+    $contextTotal = Get-FastLlmServingProfileValue -Row $row -Name 'contextTotal'
+    if (-not (& $isWhole $contextTotal) -or [long] $contextTotal -le 0 -or [long] $contextTotal -gt 1048576) { & $invalid 'a context total that is not a whole number from 1 to 1048576' }
+    $allowed = @()
+    $slotsProperty = $row.PSObject.Properties['slotsAllowed']
+    if ($null -ne $slotsProperty) { $allowed = @($slotsProperty.Value) }
+    if ($allowed.Count -lt 1 -or $allowed.Count -gt $script:FastLlmServingProfileSlots.Count) { & $invalid 'a slot list that is not 1, 2 or both' }
+    $allowedSlots = @()
+    foreach ($entry in $allowed) {
+        if (-not (& $isWhole $entry) -or $script:FastLlmServingProfileSlots -notcontains [int] $entry -or $allowedSlots -contains [int] $entry) { & $invalid 'a slot list that is not 1, 2 or both' }
+        if (([long] $contextTotal % [int] $entry) -ne 0) { & $invalid 'a context total that does not divide evenly by its slot counts' }
+        $allowedSlots += [int] $entry
+    }
+    $cacheTypes = @{}
+    foreach ($cacheField in @('cacheTypeK', 'cacheTypeV')) {
+        $cacheValue = Get-FastLlmServingProfileValue -Row $row -Name $cacheField
+        if (-not ($cacheValue -is [string]) -or $script:FastLlmServingProfileCacheTypes -cnotcontains $cacheValue) { & $invalid 'a KV cache type that is not f16 or q8_0' }
+        $cacheTypes[$cacheField] = [string] $cacheValue
+    }
+    $requiredFree = Get-FastLlmServingProfileValue -Row $row -Name 'requiredFreeVramMiB'
+    if (-not (& $isWhole $requiredFree) -or [long] $requiredFree -le 0) { & $invalid 'a required memory that is not a positive whole number' }
+    $fitTarget = Get-FastLlmServingProfileValue -Row $row -Name 'fitTargetMiB'
+    if (-not (& $isWhole $fitTarget) -or [long] $fitTarget -lt 0 -or [long] $fitTarget -gt 1048576) { & $invalid 'a fit target that is not a whole number of MiB' }
+    $resultId = Get-FastLlmServingProfileValue -Row (Get-FastLlmServingProfileValue -Row $row -Name 'evidence') -Name 'resultId'
+    if (-not ($resultId -is [string]) -or $resultId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\z') { & $invalid 'no evidence result id' }
+    if ($allowedSlots -notcontains $Slots) { return $null }
+    return [pscustomobject] [ordered] @{
+        contextTotal = [int] $contextTotal; cacheTypeK = $cacheTypes['cacheTypeK']; cacheTypeV = $cacheTypes['cacheTypeV']
+        requiredFreeVramMiB = [int64] $requiredFree; fitTargetMiB = [int] $fitTarget; resultId = [string] $resultId
+    }
+}
+
 function Get-FastLlmPlan {
     [CmdletBinding()]
     param(
@@ -1030,6 +1129,17 @@ function Get-FastLlmPlan {
         [ValidateSet('off', 'on')]
         [string] $ChatPage = 'off',
 
+        # default leaves today's arguments unchanged; long uses the measured long-context row for the model and engine. Refused when no row matches.
+        [ValidateSet('default', 'long')]
+        [string] $KvContextProfile = 'default',
+
+        # 1 leaves today's arguments unchanged; 2 serves two requests at once (each gets the context divided by 2) and needs a measured row that allows it.
+        [ValidateSet(1, 2)]
+        [int] $KvSlots = 1,
+
+        # The measured serving profile rows (config/serving-profiles.json). Read only when -KvContextProfile or -KvSlots is not its default.
+        [string] $KvProfilesPath,
+
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
 
@@ -1055,6 +1165,11 @@ function Get-FastLlmPlan {
     if ($PreferInstalledModels -and -not $InstallRoot) { throw '-PreferInstalledModels requires -InstallRoot.' }
     if ($ModelId -and $RecipeId) { throw '-Recipe and -ModelId cannot be combined.' }
     if ($RecipeId -and $FallbackFromRecipe) { throw '-Recipe and -FallbackFromRecipe cannot be combined: an explicit recipe never falls back.' }
+    # ValidateSet ignores case; the comparisons below are exact. An option is on only when it is not its default, and only then is anything new done.
+    $KvContextProfile = $KvContextProfile.ToLowerInvariant()
+    $servingOptionOn = [bool] ($KvContextProfile -cne 'default' -or $KvSlots -ne 1)
+    if ($servingOptionOn -and $ContextSize -gt 0) { throw '-ContextSize cannot be combined with -KvContextProfile or -KvSlots: the measured profile row sets the context.' }
+    if ($servingOptionOn -and $RecipeId) { throw '-Recipe cannot be combined with -KvContextProfile or -KvSlots: a recipe is measured for the default context profile and one slot.' }
     $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
@@ -1134,7 +1249,12 @@ function Get-FastLlmPlan {
     if (-not $ModelId -and $Profile -ne 'balanced' -and -not $RecipeId -and $RecipesPath -and $GpuVariantsPath) {
         $recipeSkippedSink.Add("recipes not applied: the $Profile profile uses the estimated planner; the balanced profile or -Recipe uses measured recipes")
     }
-    if (-not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
+    # A recipe is measured for the default context profile and one slot (its context, KV types and expected speed), so an opt-in plan is never a
+    # recipe plan: it is planned from the measured serving profile rows on the built-in engine, and says so.
+    if ($servingOptionOn -and -not $ModelId -and $Profile -eq 'balanced' -and $RecipesPath -and $GpuVariantsPath) {
+        $recipeSkippedSink.Add('recipes not applied: recipes are measured for the default context profile and one slot; this plan uses a measured serving profile row')
+    }
+    if (-not $servingOptionOn -and -not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
         # Recipe data never fails an automatic plan; only an explicit -Recipe refuses.
         try {
             $dxgi = @()
@@ -1179,6 +1299,17 @@ function Get-FastLlmPlan {
 
     $preferInstalledActive = [bool] ($PreferInstalledModels -and -not $ModelId -and -not $RecipeId)
     $preferInstalled = $null
+    # With an option on, a model is a candidate only with a measured row for it on the engine and backend this plan runs (the built-in engine:
+    # recipes, and with them engine components, are not applied), and it must fit the row's memory, not the catalog's.
+    $servingRows = @()
+    $servingRowByModel = @{}
+    $servingEngineId = $null
+    $servingBackend = $null
+    if ($servingOptionOn) {
+        $servingRows = @(Read-FastLlmServingProfiles -Path $KvProfilesPath)
+        $servingEngineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
+        $servingBackend = ([string] $Hardware.backend).ToLowerInvariant()
+    }
     if ($recipePick) {
         $selected = [pscustomobject] @{ model = $recipePick.model; placement = $recipePick.placement; score = 0; gpuCount = @($recipePick.placement.adapters).Count }
     }
@@ -1196,18 +1327,31 @@ function Get-FastLlmPlan {
                 if ($score -lt 0) {
                     continue
                 }
-                if ([int64] $model.requiredFreeVramMiB -le [int64] $placement.selectionCapacity) {
+                $requiredFree = [int64] $model.requiredFreeVramMiB
+                $servingRow = $null
+                if ($servingOptionOn) {
+                    $servingModelKey = [string] $model.id
+                    if (-not $servingRowByModel.ContainsKey($servingModelKey)) {
+                        $servingRowByModel[$servingModelKey] = Find-FastLlmServingProfileRow -Rows $servingRows -Model $model -EngineId $servingEngineId -Backend $servingBackend -ProfileId $KvContextProfile -Slots $KvSlots
+                    }
+                    $servingRow = $servingRowByModel[$servingModelKey]
+                    if ($null -eq $servingRow) { continue }
+                    $requiredFree = [int64] $servingRow.requiredFreeVramMiB
+                }
+                if ($requiredFree -le [int64] $placement.selectionCapacity) {
                     $fitting += [pscustomobject] @{
-                        model     = $model
-                        score     = $score
-                        gpuCount  = @($placement.adapters).Count
-                        placement = $placement
+                        model        = $model
+                        score        = $score
+                        gpuCount     = @($placement.adapters).Count
+                        placement    = $placement
+                        requiredFree = $requiredFree
+                        servingRow   = $servingRow
                     }
                 }
             }
         }
         $sortedFitting = @($fitting |
-            Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [int64] $_.model.requiredFreeVramMiB }; Descending = $true }, gpuCount, @{ Expression = { [int64] $_.placement.selectionCapacity }; Descending = $true })
+            Sort-Object -Property @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [int64] $_.requiredFree }; Descending = $true }, gpuCount, @{ Expression = { [int64] $_.placement.selectionCapacity }; Descending = $true })
         if (-not $recipePick) { $selected = $sortedFitting | Select-Object -First 1 }
         if ($preferInstalledActive -and $selected -and -not (Test-FastLlmModelInstalled -Model $selected.model -InstallRoot $InstallRoot)) {
             $installedPick = $sortedFitting | Where-Object { Test-FastLlmModelInstalled -Model $_.model -InstallRoot $InstallRoot } | Select-Object -First 1
@@ -1220,6 +1364,8 @@ function Get-FastLlmPlan {
     }
 
     if (-not $selected) {
+        # No candidate had a measured row at all: the option is refused with the one plain reason. A row that exists but does not fit is a fit refusal below.
+        if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) { throw $script:FastLlmServingProfileNotMeasured }
         if ($ModelId) { throw "Requested model '$ModelId' does not fit the estimated current free-memory budget. No other model was substituted." }
         $maximumAvailableCapacity = [int64] (($placements | Measure-Object -Property selectionCapacity -Maximum).Maximum)
         throw "No catalog profile fits the currently free AMD VRAM ($maximumAvailableCapacity MiB across a supported placement). Close GPU-heavy applications or select different hardware."
@@ -1236,6 +1382,26 @@ function Get-FastLlmPlan {
         }
     }
     if ($ContextSize -gt 0) { $model.contextSize = $ContextSize }
+    # The measured row replaces the context (the TOTAL; each slot gets total / slots), the KV types, the slot count, the fit target and the fit number.
+    $servingProfileBlock = $null
+    if ($servingOptionOn) {
+        $servingRow = $selected.servingRow
+        $model.contextSize = [int] $servingRow.contextTotal
+        $model.parallel = [int] $KvSlots
+        $model.cacheTypeK = [string] $servingRow.cacheTypeK
+        $model.cacheTypeV = [string] $servingRow.cacheTypeV
+        $model.fitTargetMiB = [int] $servingRow.fitTargetMiB
+        $model.requiredFreeVramMiB = [int64] $servingRow.requiredFreeVramMiB
+        $servingProfileBlock = [pscustomobject] [ordered] @{
+            id                  = $KvContextProfile
+            slots               = [int] $KvSlots
+            contextTotal        = [int] $servingRow.contextTotal
+            contextPerSlot      = [int] ([int] $servingRow.contextTotal / [int] $KvSlots)
+            requiredFreeVramMiB = [int64] $servingRow.requiredFreeVramMiB
+            engineId            = $servingEngineId
+            resultId            = [string] $servingRow.resultId
+        }
+    }
     $selectedPlacement = $selected.placement
     $selectedAdapters = @($selectedPlacement.adapters)
     $homogeneous = $selectedAdapters.Count -gt 1
@@ -1479,6 +1645,10 @@ function Get-FastLlmPlan {
         serverArguments     = $arguments
         recipe              = (New-FastLlmPlanRecipeBlock -Pick $recipePick -ModelId $ModelId -Skipped $recipeSkipped -Recovered:([bool] ($Recovered -and $ModelId)) -HipBackend:($planBackend -ceq 'hip') -IdentifiedVariant $identifiedVariant)
         warnings            = $warnings
+    }
+    # Present only when a context profile or slots option is on, so a default plan keeps exactly its fields.
+    if ($servingProfileBlock) {
+        $planDocument | Add-Member -NotePropertyName servingProfile -NotePropertyValue $servingProfileBlock
     }
     # Present only when -PreferInstalledModels was passed (null when nothing was substituted), so a default plan keeps exactly its fields.
     if ($PreferInstalledModels) {
@@ -3783,6 +3953,21 @@ function Start-FastLlmServer {
     # Added only for Off, so the default call keeps the exact parameter set it always had. A plan written before the setting existed is auto.
     if ($Plan.PSObject.Properties['requestedThinking'] -and [string] $Plan.requestedThinking -ceq 'off') { $freshRecipeOptions.Thinking = 'off' }
     if ($Plan.PSObject.Properties['requestedChatPage'] -and [string] $Plan.requestedChatPage -ceq 'on') { $freshRecipeOptions.ChatPage = 'on' }
+    # Added only for a plan with a serving profile, so the default call keeps the exact parameter set it always had. The re-plan reads the measured
+    # rows again from the file next to the catalog; a block outside the closed values is never forwarded and never started as a default plan.
+    if ($Plan.PSObject.Properties['servingProfile'] -and $null -ne $Plan.servingProfile) {
+        $planProfileId = $null
+        $planProfileSlots = $null
+        if ($Plan.servingProfile.PSObject.Properties['id']) { $planProfileId = $Plan.servingProfile.id }
+        if ($Plan.servingProfile.PSObject.Properties['slots']) { $planProfileSlots = $Plan.servingProfile.slots }
+        if (-not ($planProfileId -is [string]) -or $script:FastLlmServingProfileIds -cnotcontains $planProfileId -or
+            -not ($planProfileSlots -is [int] -or $planProfileSlots -is [long]) -or $script:FastLlmServingProfileSlots -notcontains [int] $planProfileSlots) {
+            throw (New-FastLlmTypedFailure -Code 'serving-profile-invalid' -Message 'The plan carries a serving profile that is not default or long with 1 or 2 slots. Nothing was started; plan again.')
+        }
+        if ($planProfileId -cne 'default') { $freshRecipeOptions.KvContextProfile = [string] $planProfileId }
+        if ([int] $planProfileSlots -ne 1) { $freshRecipeOptions.KvSlots = [int] $planProfileSlots }
+        if ($freshRecipeOptions.ContainsKey('KvContextProfile') -or $freshRecipeOptions.ContainsKey('KvSlots')) { $freshRecipeOptions.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+    }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
