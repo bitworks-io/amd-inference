@@ -312,6 +312,115 @@ if ($env:OS -eq 'Windows_NT') {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $target 'signin-start.json'))) 'nothing is written through a junction'
 }
 
+# --- the Settings switch: state text, last result, toggling, command line --------------------------------------------------
+$switchApp = 'C:\Program Files\Example App'
+$switchCommand = Get-FastLlmSignInStartCommand -AppRoot $switchApp
+function New-SwitchInstall { $r = Join-Path $work ('switch-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path (Join-Path $r 'state') -Force | Out-Null; return $r }
+function Write-SwitchResult($Root, $Json) { [IO.File]::WriteAllText((Join-Path $Root 'state/signin-start.json'), $Json, (New-Object Text.UTF8Encoding($false))) }
+
+# checked only for state 'on'
+$root = New-SwitchInstall
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$view = Get-FastLlmSignInSettingsView -AppRoot $switchApp -InstallRoot $root
+Assert-True ($view.checked -eq $false) 'value missing: unchecked'
+Assert-Equal $view.stateText 'Off.' 'value missing: plain off text'
+$script:FastLlmSignInRegistry.Store.run['FastLLM'] = $switchCommand
+$view = Get-FastLlmSignInSettingsView -AppRoot $switchApp -InstallRoot $root
+Assert-True ($view.checked -eq $true) 'on: checked'
+Assert-Equal $view.stateText 'FastLLM starts when you sign in.' 'on: text'
+$script:FastLlmSignInRegistry.Store.run['FastLLM'] = '"C:\Other\FastLLM.cmd" /signin'
+$view = Get-FastLlmSignInSettingsView -AppRoot $switchApp -InstallRoot $root
+Assert-True ($view.checked -eq $false) 'mismatched command: unchecked'
+Assert-True ($view.stateText -like '*different FastLLM location*') 'mismatched command: says why'
+$script:FastLlmSignInRegistry.Store.run['FastLLM'] = $switchCommand
+$script:FastLlmSignInRegistry.Store.approved['FastLLM'] = [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+$view = Get-FastLlmSignInSettingsView -AppRoot $switchApp -InstallRoot $root
+Assert-True ($view.checked -eq $false) 'disabled in Startup apps: unchecked'
+Assert-True ($view.stateText -like '*Startup apps*' -and $view.stateText -like '*turn it back on*') 'disabled in Startup apps: tells the user to re-enable it in Windows'
+
+# toggling calls Set/Remove exactly once and re-reads the state
+$root = New-SwitchInstall
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
+Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'set-run:FastLLM' }).Count 1 'on calls Set exactly once'
+Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -like 'remove-run:*' }).Count 0 'on never calls Remove'
+Assert-True ($view.checked -eq $true) 'on is read back as checked'
+$view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $false
+Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'remove-run:FastLLM' }).Count 1 'off calls Remove exactly once'
+Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'set-run:FastLLM' }).Count 1 'off never calls Set again'
+Assert-True ($view.checked -eq $false) 'off is read back as unchecked'
+# disabled by Windows: asking for on writes nothing and says so
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$script:FastLlmSignInRegistry.Store.run['FastLLM'] = $switchCommand
+$script:FastLlmSignInRegistry.Store.approved['FastLLM'] = [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+$view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
+Assert-Equal $script:FastLlmSignInRegistry.Store.calls.Count 0 'a Startup apps disable is never rewritten'
+Assert-True ($view.checked -eq $false -and $view.reason -ceq 'disabled-in-startup-apps') 'it still reads as disabled by Windows'
+
+# the last attempt in plain words
+Assert-True ($null -eq (Read-FastLlmSignInResult -InstallRoot $root)) 'no result file: no last result'
+Assert-Equal (Get-FastLlmSignInResultText -Result $null) 'No start at sign-in has been recorded yet.' 'no result file: plain text'
+Write-SwitchResult $root '{"time":"2026-01-02T03:04:05Z","result":"started","failureCode":null}'
+Assert-Equal (Get-FastLlmSignInResultText -Result (Read-FastLlmSignInResult -InstallRoot $root)) 'Started at sign-in (2026-01-02T03:04:05Z).' 'started text'
+Write-SwitchResult $root '{"time":"2026-01-02T03:04:05Z","result":"host-failed","failureCode":"job-contained"}'
+Assert-Equal (Get-FastLlmSignInResultText -Result (Read-FastLlmSignInResult -InstallRoot $root)) 'Start at sign-in failed: job-contained (2026-01-02T03:04:05Z).' 'failed text carries the code'
+Write-SwitchResult $root '{"time":"2026-01-02T03:04:05Z","result":"skipped-occupied","failureCode":null}'
+Assert-True ((Get-FastLlmSignInResultText -Result (Read-FastLlmSignInResult -InstallRoot $root)) -like '*already running or busy*') 'skipped text'
+Write-SwitchResult $root '{"time":"2026-01-02T03:04:05Z","result":"refused-elevated","failureCode":"elevated-session"}'
+Assert-True ((Get-FastLlmSignInResultText -Result (Read-FastLlmSignInResult -InstallRoot $root)) -like '*administrator*') 'elevated text'
+Write-SwitchResult $root '{"time":"2026-01-02T03:04:05Z","result":"needs-setup","failureCode":"needs-setup-model"}'
+Assert-True ((Get-FastLlmSignInResultText -Result (Read-FastLlmSignInResult -InstallRoot $root)) -like '*no saved model*') 'needs-setup text'
+Write-SwitchResult $root '{ not json'
+Assert-True ($null -eq (Read-FastLlmSignInResult -InstallRoot $root)) 'a malformed result file reads as no result'
+Write-SwitchResult $root '{"time":"2026-01-02T03:04:05Z","result":"started","failureCode":null}'
+$script:FastLlmSignInRegistry = New-FakeRegistry
+Assert-True ((Get-FastLlmSignInSettingsView -AppRoot $switchApp -InstallRoot $root).lastResultText -like 'Started at sign-in*') 'the view carries the last result text'
+
+# command line: show, on, off
+$root = New-SwitchInstall
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$view = Invoke-FastLlmSignInSettingsAction -AppRoot $switchApp -InstallRoot $root -Enabled $null
+Assert-Equal $script:FastLlmSignInRegistry.Store.calls.Count 0 'show reads only'
+Assert-True (@(Format-FastLlmSignInCliLines -View $view) -ccontains 'startAtSignIn: off') 'show: off'
+$view = Invoke-FastLlmSignInSettingsAction -AppRoot $switchApp -InstallRoot $root -Enabled $true
+Assert-True (@(Format-FastLlmSignInCliLines -View $view) -ccontains 'startAtSignIn: on') 'on: shows on'
+Assert-Equal (Get-FastLlmSignInCliFields -View $view).startAtSignIn 'on' 'on: json field'
+Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'set-run:FastLLM' }).Count 1 'cli on calls Set once'
+$view = Invoke-FastLlmSignInSettingsAction -AppRoot $switchApp -InstallRoot $root -Enabled $false
+Assert-True (@(Format-FastLlmSignInCliLines -View $view) -ccontains 'startAtSignIn: off') 'off: shows off'
+Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'remove-run:FastLLM' }).Count 1 'cli off calls Remove once'
+Assert-Equal (@(Format-FastLlmSignInCliLines -View $null)[0]) 'startAtSignIn: unavailable' 'an unreadable registry shows unavailable'
+Assert-Equal (Get-FastLlmSignInCliFields -View $null).startAtSignIn 'unavailable' 'an unreadable registry gives an unavailable json field'
+
+# nothing in a start path registers it: only the settings action and the window checkbox name the writers
+$callers = @()
+foreach ($file in @(Get-ChildItem -LiteralPath $repo -Recurse -File -Include '*.ps1', '*.psm1', '*.cmd' | Where-Object { $_.FullName -notmatch '[\\/](tests|\.git)[\\/]' })) {
+    $text = Get-Content -LiteralPath $file.FullName -Raw
+    if ($text -match 'Set-FastLlmSignInStart(Enabled)?\b|Invoke-FastLlmSignInSettingsAction') { $callers += $file.Name }
+}
+Assert-True ($callers.Count -eq 3 -and $callers -ccontains 'FastLlm.SignInStart.ps1' -and $callers -ccontains 'fast-llm-ui.ps1' -and $callers -ccontains 'fast-llm.ps1') 'only the sign-in module, the window and the CLI settings action can register'
+$cliText = Get-Content -LiteralPath (Join-Path $repo 'fast-llm.ps1') -Raw
+$settingsCase = $cliText.Substring($cliText.IndexOf("        'settings' {"), $cliText.IndexOf("        'status' {") - $cliText.IndexOf("        'settings' {"))
+Assert-True ($settingsCase -match "ContainsKey\('StartAtSignIn'\)") 'the CLI registers only when -StartAtSignIn is bound'
+Assert-True ($cliText -match "ContainsKey\('StartAtSignIn'\) -and \`$Action -ne 'settings'") 'the CLI refuses -StartAtSignIn outside settings'
+$beforeSettings = $cliText.Substring(0, $cliText.IndexOf("        'settings' {"))
+Assert-True ($beforeSettings -notmatch 'Set-FastLlmSignInStart|Invoke-FastLlmSignInSettingsAction') 'no earlier action in the CLI registers'
+Assert-True ($cliText -match '(?s)\[ValidateSet\(''on'', ''off''\)\]\s*\[string\] \$StartAtSignIn') 'the CLI parameter is on or off'
+$uiText = Get-Content -LiteralPath (Join-Path $repo 'fast-llm-ui.ps1') -Raw
+$clickAt = $uiText.IndexOf('$startBox.Add_Click')
+Assert-True ($clickAt -gt 0 -and $uiText.IndexOf('Set-FastLlmSignInStartEnabled') -gt $clickAt -and $uiText.LastIndexOf('Set-FastLlmSignInStartEnabled') -eq $uiText.IndexOf('Set-FastLlmSignInStartEnabled')) 'the window registers only from the checkbox click handler'
+Assert-True ($uiText -match 'Get-FastLlmSignInSettingsView') 'the window reads the checked state from the Run value view'
+Assert-True ($uiText -notmatch '(?i)settings\.json[^\r\n]*signin|signin[^\r\n]*settings\.json') 'no settings.json key for start at sign-in'
+$servingModule = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.ServingSettings.ps1') -Raw
+Assert-True ($servingModule -notmatch '(?i)signin|StartAtSignIn') 'the serving settings file never stores the switch'
+# no existing parameter name is a prefix of the new one, and the new one is not a prefix of an existing one
+$paramNames = @([regex]::Matches((($cliText -split '(?m)^param\(')[1] -split '(?m)^\)')[0], '(?m)^\s*(?:\[[^\]]*\]\s*)+\$([A-Za-z]+)') | ForEach-Object { $_.Groups[1].Value })
+Assert-True ($paramNames -contains 'StartAtSignIn') 'the parameter is declared'
+foreach ($other in @($paramNames | Where-Object { $_ -cne 'StartAtSignIn' })) {
+    Assert-True (-not $other.StartsWith('StartAtSignIn', [StringComparison]::OrdinalIgnoreCase) -and -not 'StartAtSignIn'.StartsWith($other, [StringComparison]::OrdinalIgnoreCase)) "parameter $other does not collide with StartAtSignIn as a prefix"
+}
+Assert-True (@($paramNames | Where-Object { $_.StartsWith('Start', [StringComparison]::OrdinalIgnoreCase) }).Count -eq 1) 'the prefix -Start still resolves to one parameter'
+
 # --- static checks: install registers nothing; uninstall removes both values; the launcher files exist -------------------
 $iss = Get-Content -LiteralPath (Join-Path $repo 'installer/FastLLM.iss') -Raw
 $beforeUninstall = $iss.Substring(0, $iss.IndexOf('procedure CurUninstallStepChanged'))
