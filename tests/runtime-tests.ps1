@@ -214,6 +214,7 @@ try {
                 Check ($status.placement.modelBufferMiB[0].sizeMiB -eq 1200) 'lifecycle retains the selected GPU model-buffer MiB'
                 $history=Read-FastLlmJson (Join-Path $runRoot 'state/synthetic.last-ready.json')
                 Check ($history.kind -eq 'api-smoke-only' -and $history.modelSha256 -eq $plan.model.sha256) 'recovery history is recorded only as exact-artifact API smoke evidence'
+                if ($plan.PSObject.Properties['profile'] -and $plan.profile) { Check ($history.profile -ceq [string]$plan.profile) 'the Ready record also carries the profile (start at sign-in reads it)' }
             } catch {
                 $marker='not-written'
                 if (Test-Path -LiteralPath $diagnosticPath) {

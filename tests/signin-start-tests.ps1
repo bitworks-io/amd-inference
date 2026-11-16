@@ -316,6 +316,13 @@ if ($env:OS -eq 'Windows_NT') {
 $switchApp = 'C:\Program Files\Example App'
 $switchCommand = Get-FastLlmSignInStartCommand -AppRoot $switchApp
 function New-SwitchInstall { $r = Join-Path $work ('switch-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path (Join-Path $r 'state') -Force | Out-Null; return $r }
+$script:FastLlmSignInHardware = { param($SourceRoot, $InstallRoot) 'testprint0001' }
+function Write-ReadyRecord($Root, $Extra = @{}) {
+    $record = [ordered]@{ kind = 'api-smoke-only'; hardwareFingerprint = 'testprint0001'; modelId = 'example-model'; modelSha256 = 'abc'; catalogSha256 = 'def'; profile = 'balanced'; requestedContextSize = 8192; backend = 'vulkan' }
+    foreach ($key in @($Extra.Keys)) { if ($null -eq $Extra[$key]) { $record.Remove($key) } else { $record[$key] = $Extra[$key] } }
+    [IO.File]::WriteAllText((Join-Path $Root 'state/testprint0001.last-ready.json'), ($record | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+}
+function Read-SwitchRequestFile($Root) { $p = Join-Path $Root 'state/signin-start-request.json'; if (Test-Path -LiteralPath $p) { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json) }; return $null }
 function Write-SwitchResult($Root, $Json) { [IO.File]::WriteAllText((Join-Path $Root 'state/signin-start.json'), $Json, (New-Object Text.UTF8Encoding($false))) }
 
 # checked only for state 'on'
@@ -340,6 +347,7 @@ Assert-True ($view.stateText -like '*Startup apps*' -and $view.stateText -like '
 
 # toggling calls Set/Remove exactly once and re-reads the state
 $root = New-SwitchInstall
+Write-ReadyRecord $root
 $script:FastLlmSignInRegistry = New-FakeRegistry
 $view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
 Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'set-run:FastLLM' }).Count 1 'on calls Set exactly once'
@@ -378,6 +386,7 @@ Assert-True ((Get-FastLlmSignInSettingsView -AppRoot $switchApp -InstallRoot $ro
 
 # command line: show, on, off
 $root = New-SwitchInstall
+Write-ReadyRecord $root
 $script:FastLlmSignInRegistry = New-FakeRegistry
 $view = Invoke-FastLlmSignInSettingsAction -AppRoot $switchApp -InstallRoot $root -Enabled $null
 Assert-Equal $script:FastLlmSignInRegistry.Store.calls.Count 0 'show reads only'
@@ -391,6 +400,94 @@ Assert-True (@(Format-FastLlmSignInCliLines -View $view) -ccontains 'startAtSign
 Assert-Equal @($script:FastLlmSignInRegistry.Store.calls | Where-Object { $_ -ceq 'remove-run:FastLLM' }).Count 1 'cli off calls Remove once'
 Assert-Equal (@(Format-FastLlmSignInCliLines -View $null)[0]) 'startAtSignIn: unavailable' 'an unreadable registry shows unavailable'
 Assert-Equal (Get-FastLlmSignInCliFields -View $null).startAtSignIn 'unavailable' 'an unreadable registry gives an unavailable json field'
+
+# the saved request: built from the Ready record, written before the Run value, removed with it
+$root = New-SwitchInstall
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
+Assert-True ($view.refused -eq $true -and $view.checked -eq $false) 'on with no Ready record is refused'
+Assert-Equal $view.stateText 'Start FastLLM once with the setup you want; then turn this on.' 'the refusal is plain words'
+Assert-Equal $script:FastLlmSignInRegistry.Store.calls.Count 0 'a refusal writes nothing to the registry'
+Assert-True ($null -eq (Read-SwitchRequestFile $root)) 'a refusal writes no request'
+# records that do not qualify are refused too: another PC, no profile (older record), bad profile, bad context, wrong kind
+foreach ($case in @(
+    @{ name = 'another PC'; extra = @{ hardwareFingerprint = 'otherprint' } },
+    @{ name = 'no profile'; extra = @{ profile = $null } },
+    @{ name = 'unknown profile'; extra = @{ profile = 'turbo' } },
+    @{ name = 'no context'; extra = @{ requestedContextSize = $null } },
+    @{ name = 'negative context'; extra = @{ requestedContextSize = -1 } },
+    @{ name = 'no model'; extra = @{ modelId = '' } },
+    @{ name = 'wrong kind'; extra = @{ kind = 'other' } })) {
+    $root = New-SwitchInstall
+    Write-ReadyRecord $root $case.extra
+    $script:FastLlmSignInRegistry = New-FakeRegistry
+    $view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
+    Assert-True ($view.refused -eq $true -and $script:FastLlmSignInRegistry.Store.calls.Count -eq 0 -and $null -eq (Read-SwitchRequestFile $root)) "a Ready record that is $($case.name) is refused and nothing is written"
+}
+$root = New-SwitchInstall
+[IO.File]::WriteAllText((Join-Path $root 'state/testprint0001.last-ready.json'), '{ not json', (New-Object Text.UTF8Encoding($false)))
+$script:FastLlmSignInRegistry = New-FakeRegistry
+Assert-True ((Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true).refused -eq $true) 'a garbled Ready record is refused'
+$script:FastLlmSignInHardware = { param($SourceRoot, $InstallRoot) $null }
+$root = New-SwitchInstall
+Write-ReadyRecord $root
+Assert-True ((Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true).refused -eq $true) 'an unreadable hardware fingerprint is refused'
+$script:FastLlmSignInHardware = { param($SourceRoot, $InstallRoot) 'testprint0001' }
+
+# a Ready record: the request is written with the launcher's fields, then the Run value (order proven by a recording registry)
+$root = New-SwitchInstall
+Write-ReadyRecord $root
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$requestPath = Join-Path $root 'state/signin-start-request.json'
+$store = $script:FastLlmSignInRegistry.Store
+$script:FastLlmSignInRegistry.SetRunValue = { param($Name, $Value) $store['requestExisted'] = (Test-Path -LiteralPath $requestPath); [void]$store.calls.Add("set-run:$Name"); $store.run[$Name] = $Value }.GetNewClosure()
+$view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
+Assert-True ($view.checked -eq $true -and $view.refused -eq $false) 'on with a Ready record turns on'
+Assert-True ($store['requestExisted'] -eq $true) 'the request exists before the Run value is set'
+$requestFile = Read-SwitchRequestFile $root
+Assert-Equal (@($requestFile.PSObject.Properties.Name) -join ',') 'profile,modelId,contextSize' 'the request holds exactly the launcher fields'
+Assert-Equal $requestFile.profile 'balanced' 'request profile'
+Assert-Equal $requestFile.modelId 'example-model' 'request model'
+Assert-Equal ([int]$requestFile.contextSize) 8192 'request context'
+Assert-True ((Get-Content -LiteralPath $requestPath -Raw) -notmatch '(?i)[a-z]:\\|/|key|token|prompt') 'the request holds no path, key or prompt text'
+Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $root 'state') -Filter '*.tmp*').Count -eq 0) 'no temporary file is left behind'
+# the launcher reads exactly that request and starts the host with its values (end to end through the seams)
+$script:Calls = New-Object System.Collections.ArrayList
+$launch = Invoke-Case (New-FakeHost) $root
+Assert-Equal $launch.result 'started' 'a written request launches (no needs-setup)'
+$a = $script:Captured['arguments']
+Assert-Equal $a.ModelId 'example-model' 'the host gets the saved model'
+Assert-Equal $a.Profile 'balanced' 'the host gets the saved profile'
+Assert-Equal ([int]$a.ContextSize) 8192 'the host gets the saved context'
+# toggle-off removes the Run value and the request
+$view = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $false
+Assert-True (-not (Test-Path -LiteralPath $requestPath)) 'off removes the saved request'
+Assert-True ($view.checked -eq $false -and -not $script:FastLlmSignInRegistry.Store.run.ContainsKey('FastLLM')) 'off removes the Run value'
+$null = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $false   # off twice is harmless
+# a missing or garbled request still gives needs-setup
+$launch = Invoke-Case (New-FakeHost) $root
+Assert-Equal $launch.result 'needs-setup' 'with the request removed the launcher gives needs-setup'
+# a Run-value failure rolls the request back
+$root = New-SwitchInstall
+Write-ReadyRecord $root
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$script:FastLlmSignInRegistry.SetRunValue = { param($Name, $Value) throw 'registry write denied' }
+$thrown = $false
+try { $null = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true } catch { $thrown = $true }
+Assert-True $thrown 'a Run-value failure is reported'
+Assert-True ($null -eq (Read-SwitchRequestFile $root)) 'a Run-value failure removes the request again'
+# a Startup apps disable writes neither the request nor the value
+$root = New-SwitchInstall
+Write-ReadyRecord $root
+$script:FastLlmSignInRegistry = New-FakeRegistry
+$script:FastLlmSignInRegistry.Store.run['FastLLM'] = $switchCommand
+$script:FastLlmSignInRegistry.Store.approved['FastLLM'] = [byte[]](3, 0, 0, 0)
+$null = Set-FastLlmSignInStartEnabled -AppRoot $switchApp -InstallRoot $root -Enabled $true
+Assert-True ($null -eq (Read-SwitchRequestFile $root)) 'a Startup apps disable writes no request'
+# the runtime writes the profile and requested context into the Ready record, and only at Ready
+$runtimeText = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.Runtime.ps1') -Raw
+Assert-True ($runtimeText -match "lastReady\.profile = \[string\]\`$Plan\.profile" -and $runtimeText -match 'lastReady\.requestedContextSize') 'the Ready record carries the profile and the requested context'
+Assert-True ($runtimeText.IndexOf('$lastReady = [ordered]') -gt $runtimeText.IndexOf('$reachedReady = $true')) 'the Ready record is written only after Ready'
 
 # nothing in a start path registers it: only the settings action and the window checkbox name the writers
 $callers = @()

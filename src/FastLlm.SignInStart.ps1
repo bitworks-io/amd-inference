@@ -331,21 +331,107 @@ function Get-FastLlmSignInSettingsView {
         stateText = (Get-FastLlmSignInStateText -State $state)
         lastResult = $result
         lastResultText = (Get-FastLlmSignInResultText -Result $result)
+        refused = $false
+    }
+}
+
+# --- the saved request ---------------------------------------------------------------------------------------------------
+# The request the launcher reads (Read-FastLlmSignInRequest): profile, modelId, contextSize. Ids and numbers only: no paths, prompts or secrets.
+# Serving settings (port, thinking, chat page, idle stop) are read at launch from the user's saved settings, not copied here.
+# The API-key flag is not part of the request yet: B11 adds it when the key exists.
+
+# Seam: the fingerprint of this PC's hardware, as the planner computes it. $null when it cannot be read.
+if (-not (Get-Variable -Scope Script -Name FastLlmSignInHardware -ErrorAction SilentlyContinue)) { $script:FastLlmSignInHardware = $null }
+function Get-FastLlmSignInHardwareFingerprint {
+    param([string]$SourceRoot, [string]$InstallRoot)
+    if ($null -ne $script:FastLlmSignInHardware) { $seam = $script:FastLlmSignInHardware; return (& $seam $SourceRoot $InstallRoot) }
+    try {
+        $module = Get-Module FastLlm
+        if ($null -eq $module) { return $null }
+        $catalog = Join-Path (Join-Path $SourceRoot 'config') 'catalog.json'
+        return (& $module { param($Catalog, $Root) Get-FastLlmFingerprint -Hardware (Get-FastLlmHardware -CatalogPath $Catalog -InstallRoot $Root) } $catalog $InstallRoot)
+    } catch { return $null }
+}
+
+# The request built from the setup that reached Ready on this PC (state\<fingerprint>.last-ready.json, written by the runtime only at Ready),
+# or $null when there is no usable record. Records from before the profile was recorded are not used.
+function Get-FastLlmSignInReadyRequest {
+    param([string]$InstallRoot, [string]$Fingerprint)
+    if ([string]::IsNullOrWhiteSpace($Fingerprint) -or $Fingerprint -notmatch '^[0-9A-Za-z_-]{1,128}$') { return $null }
+    $path = Join-Path (Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'state') ($Fingerprint + '.last-ready.json')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try {
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 16384) { return $null }
+        $record = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path)) -ErrorAction Stop
+        $names = @($record.PSObject.Properties.Name)
+        foreach ($required in @('kind', 'hardwareFingerprint', 'modelId', 'profile', 'requestedContextSize')) { if ($names -cnotcontains $required) { return $null } }
+        if ([string]$record.kind -cne 'api-smoke-only' -or [string]$record.hardwareFingerprint -cne $Fingerprint) { return $null }
+        if ([string]::IsNullOrWhiteSpace([string]$record.modelId)) { return $null }
+        if (@('fast', 'balanced', 'quality') -cnotcontains [string]$record.profile) { return $null }
+        $context = [int]$record.requestedContextSize
+        if ($context -lt 0 -or $context -gt 1048576) { return $null }
+        return [ordered]@{ profile = [string]$record.profile; modelId = [string]$record.modelId; contextSize = $context }
+    } catch { return $null }
+}
+
+function Write-FastLlmSignInRequest {
+    param([string]$InstallRoot, $Request)
+    $state = Get-FastLlmSignInStateFolder -InstallRoot $InstallRoot
+    $target = Join-Path $state $script:FastLlmSignInRequestFile
+    if (Test-Path -LiteralPath $target) {
+        $existing = Get-Item -LiteralPath $target -Force
+        if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe sign-in request path.' }
+    }
+    $temporary = Join-Path $state ($script:FastLlmSignInRequestFile + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $backup = Join-Path $state ($script:FastLlmSignInRequestFile + '.' + [Guid]::NewGuid().ToString('N') + '.bak.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary, ($Request | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $target) { [IO.File]::Replace($temporary, $target, $backup) }
+        else { [IO.File]::Move($temporary, $target) }
+    } finally {
+        foreach ($leftover in @($temporary, $backup)) {
+            if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+function Remove-FastLlmSignInRequest {
+    param([string]$InstallRoot)
+    $path = Join-Path (Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'state') $script:FastLlmSignInRequestFile
+    if (Test-Path -LiteralPath $path) {
+        $item = Get-Item -LiteralPath $path -Force
+        if (-not $item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Remove-Item -LiteralPath $path -Force }
     }
 }
 
 # Apply the switch, then re-read the state so the caller shows the truth, not the request. Windows' own Startup apps switch is never rewritten:
-# when it is disabled there, asking for "on" changes nothing and the view says what the user must do.
+# when it is disabled there, asking for "on" changes nothing and the view says what the user must do. Turning on needs a setup that has reached
+# Ready on this PC; without one nothing is written. The request is saved before the Run value and removed again if the Run value cannot be set.
 function Set-FastLlmSignInStartEnabled {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string]$AppRoot, [Parameter(Mandatory=$true)][string]$InstallRoot, [Parameter(Mandatory=$true)][bool]$Enabled)
+    $refusal = $null
     if ($Enabled) {
         $before = Get-FastLlmSignInStartState -AppRoot $AppRoot
-        if ([string]$before.reason -cne 'disabled-in-startup-apps') { Set-FastLlmSignInStart -AppRoot $AppRoot }
+        if ([string]$before.reason -cne 'disabled-in-startup-apps') {
+            $fingerprint = Get-FastLlmSignInHardwareFingerprint -SourceRoot $AppRoot -InstallRoot $InstallRoot
+            $request = Get-FastLlmSignInReadyRequest -InstallRoot $InstallRoot -Fingerprint $fingerprint
+            if ($null -eq $request) {
+                $refusal = 'Start FastLLM once with the setup you want; then turn this on.'
+            } else {
+                Write-FastLlmSignInRequest -InstallRoot $InstallRoot -Request $request
+                try { Set-FastLlmSignInStart -AppRoot $AppRoot }
+                catch { try { Remove-FastLlmSignInRequest -InstallRoot $InstallRoot } catch { $null = $_ }; throw }
+            }
+        }
     } else {
         Remove-FastLlmSignInStart
+        Remove-FastLlmSignInRequest -InstallRoot $InstallRoot
     }
-    return (Get-FastLlmSignInSettingsView -AppRoot $AppRoot -InstallRoot $InstallRoot)
+    $view = Get-FastLlmSignInSettingsView -AppRoot $AppRoot -InstallRoot $InstallRoot
+    if ($null -ne $refusal) { $view.stateText = $refusal; $view.refused = $true }
+    return $view
 }
 
 # Command-line parity for the `settings` action. $View is a Get-FastLlmSignInSettingsView object, or $null when the registry cannot be read
@@ -368,7 +454,7 @@ function Format-FastLlmSignInCliLines {
     $word = 'off'
     if ($View.checked) { $word = 'on' }
     $lines = @('startAtSignIn: ' + $word)
-    if ($View.reason -cne 'on' -and $View.reason -cne 'value-missing') { $lines += ('startAtSignIn note: ' + $View.stateText) }
+    if ($View.refused -or ($View.reason -cne 'on' -and $View.reason -cne 'value-missing')) { $lines += ('startAtSignIn note: ' + $View.stateText) }
     if ($null -ne $View.lastResult) { $lines += ('lastSignInStart: ' + $View.lastResultText) }
     return $lines
 }
