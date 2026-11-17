@@ -240,11 +240,21 @@ public sealed class FlApiKeyHeaderRecorder : IDisposable {
 }
 '@
 InModule { Initialize-FastLlmProcessHost }
+# The key is sent only to the server process the run recorded (tests/api-key-wiring-tests.ps1 covers that check). Here the recorder lives in
+# this test process, so this process is the recorded server; off Windows lsof stands in for the listener table.
+$self = [Diagnostics.Process]::GetCurrentProcess()
+$selfIdentity = [pscustomobject]@{ pid = [int]$self.Id; startUtcTicks = [long]$self.StartTime.ToUniversalTime().Ticks }
+function Get-TestListenerOwners([int]$Port) {
+    $found = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($line in @(& lsof -nP "-iTCP@127.0.0.1:$Port" -sTCP:LISTEN -Fp 2>$null)) { if ([string]$line -match '^p(\d+)$') { $value = [int]$Matches[1]; if (-not $found.Contains($value)) { $found.Add($value) } } }
+    return $found.ToArray()
+}
+if (-not $isWindowsHost) { & $module { param($P) $script:FastLlmApiKeyListenerOwners = $P } ${function:Get-TestListenerOwners} }
 $recorder = New-Object FlApiKeyHeaderRecorder 3
 try {
     $base = "http://127.0.0.1:$($recorder.Port)"
     $r1 = InModule { param($B) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 3000 } @($base)
-    $r2 = InModule { param($B, $K) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 3000 -ApiKeyHolder $K } @($base, $markerHolder)
+    $r2 = InModule { param($B, $K, $I) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 3000 -ApiKeyHolder $K -ApiKeyServer $I } @($base, $markerHolder, $selfIdentity)
     $r3 = InModule { param($B) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 3000 -ApiKeyHolder $null } @($base)
     $seen = @($recorder.Snapshot())
     Check ($seen.Count -eq 3 -and $r1.Status -eq 200 -and $r2.Status -eq 200 -and $r3.Status -eq 200) 'the fake loopback server answered all three requests'
@@ -256,13 +266,13 @@ finally { $recorder.Dispose() }
 $never = New-Object FlApiKeyHeaderRecorder 1
 try {
     foreach ($url in @("http://localhost:$($never.Port)", "http://[::1]:$($never.Port)", "https://127.0.0.1:$($never.Port)", "http://user:pw@127.0.0.1:$($never.Port)", 'http://192.0.2.1:9')) {
-        $text = Get-FailureText { InModule { param($B, $K) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 500 -ApiKeyHolder $K } @($url, $markerHolder) }
+        $text = Get-FailureText { InModule { param($B, $K, $I) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 500 -ApiKeyHolder $K -ApiKeyServer $I } @($url, $markerHolder, $selfIdentity) }
         Check ($null -ne $text -and $text -cnotmatch 'LEAKMARKER') "a non-loopback URL is refused with no key in the error: $($url -replace 'pw@', '@')"
     }
     Start-Sleep -Milliseconds 200
     Check ($never.Connections -eq 0 -and @($never.Snapshot()).Count -eq 0) 'no connection reached the listener for any refused URL, so no header was sent'
     foreach ($bad in @(($marker + "`r`nX-Injected: 1"), ($marker + ' x'), ('fl-' + 'x' * 300), ($marker + "`n"))) {
-        $text = Get-FailureText { InModule { param($B, $K) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 500 -ApiKeyHolder $K } @("http://127.0.0.1:$($never.Port)", (New-Holder $bad)) }
+        $text = Get-FailureText { InModule { param($B, $K, $I) Invoke-FastLlmHttp -BaseUrl $B -Path '/props' -TimeoutMs 500 -ApiKeyHolder $K -ApiKeyServer $I } @("http://127.0.0.1:$($never.Port)", (New-Holder $bad), $selfIdentity) }
         Check ($null -ne $text -and $text -cnotmatch 'X-Injected' -and $text -cnotmatch 'LEAKMARKER') 'a malformed bearer value is refused without echoing it'
     }
     # The C# client is the last hop: it must refuse a bad bearer itself, before any socket is opened.
@@ -276,8 +286,9 @@ try {
 finally { $never.Dispose() }
 
 # ---- no leak through argv, status document, run log, exception messages or console ----
-# A real supervised start against the mock server. The module's real start path is not wired to the key yet, so the test wraps the one
-# environment-builder call the start makes and hands it the holder; everything else (status document, run log, child launch) is the real code.
+# A real supervised start against the mock server, with the key handed to the supervisor the way a start with the key setting on does.
+# The mock enforces the key as llama-server does, so reaching Ready also means the 401/200 check passed. The proof cases, the failure
+# paths and the full marker sweeps are in tests/api-key-wiring-tests.ps1.
 $leakRoot = New-TempRoot
 $leakListener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $leakListener.Start(); $leakPort = $leakListener.LocalEndpoint.Port; $leakListener.Stop()
 $leakPlan = [pscustomobject]@{
@@ -295,18 +306,16 @@ $stopper = New-Object Diagnostics.Process
 $stopper.StartInfo.FileName = (Get-Process -Id $PID).Path
 $stopper.StartInfo.Arguments = '-NoLogo -NoProfile -OutputFormat Text -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stopCode))
 $stopper.StartInfo.UseShellExecute = $false
-$originalInit = InModule { (Get-Command Initialize-FastLlmEngineStartInfo).ScriptBlock }
 $lock = $null
 try {
-    InModule { param($H) $script:FastLlmTestKeyHolder = $H; $script:FastLlmTestOriginalInit = (Get-Command Initialize-FastLlmEngineStartInfo).ScriptBlock
-        Set-Item -Path function:Initialize-FastLlmEngineStartInfo -Value { param($StartInfo, $Plan, $Sandbox, [switch]$VulkanBarMitigation) & $script:FastLlmTestOriginalInit -StartInfo $StartInfo -Plan $Plan -Sandbox $Sandbox -VulkanBarMitigation:$VulkanBarMitigation -ApiKeyHolder $script:FastLlmTestKeyHolder } } @($markerHolder)
     $lock = Enter-FastLlmOperation $leakRoot
     $stopper.Start() | Out-Null
-    $exitCode = InModule { param($P, $R, $C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 30 -CatalogPath $C } @($leakPlan, $leakRoot, (Join-Path $root 'config/catalog.json'))
-    Check ($exitCode -eq 0) 'a real supervised start (mock server) with a key delivered through the environment builder reaches Ready and stops cleanly'
+    $exitCode = @(InModule { param($P, $R, $C, $H) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 120 -CatalogPath $C -ApiKeyHolder $H } @($leakPlan, $leakRoot, (Join-Path $root 'config/catalog.json'), $markerHolder) 6>$null)[-1]
+    Check ($exitCode -eq 0) 'a real supervised start (mock server) with the key reaches Ready (the mock enforces the key, so the 401/200 check passed) and stops cleanly'
     Check ((@($leakPlan.serverArguments) -join ' ') -cnotmatch 'LEAKMARKER') 'no leak: the plan argument list carries no key after a real start'
     $statusText = [IO.File]::ReadAllText((Join-Path (Join-Path $leakRoot 'state') 'status.json'))
-    Check ($statusText -cnotmatch 'LEAKMARKER' -and $statusText -cnotmatch 'apiKey|LLAMA_API_KEY') 'no leak: the real status document has no key and no key field when the key is not wired'
+    $statusDocument = ConvertFrom-Json $statusText
+    Check ($statusText -cnotmatch 'LEAKMARKER' -and $statusText -cnotmatch 'LLAMA_API_KEY' -and [string]$statusDocument.apiKey -ceq 'on' -and [string]$statusDocument.apiKeyId -ceq [string](InModule { param($K) Get-FastLlmApiKeyId -ApiKeyHolder $K } @(, $markerHolder))) 'no leak: the real status document says apiKey on with the key id, and has no key'
     $logFiles = @(Get-ChildItem -LiteralPath $leakRoot -Recurse -File -Force | Where-Object { $_.Name -cne 'operation.lock' })
     Check (@($logFiles | Where-Object { $_.FullName -match 'run-.*\.jsonl$' }).Count -ge 1) 'the real run wrote a run log to scan'
     $allText = ''
@@ -314,7 +323,6 @@ try {
     Check ($allText -cnotmatch 'LEAKMARKER') 'no leak: no file under the install root (status, run log, state) holds the key'
 }
 finally {
-    InModule { param($O) Set-Item -Path function:Initialize-FastLlmEngineStartInfo -Value $O; $script:FastLlmTestKeyHolder = $null } @($originalInit)
     if ($stopper -and -not $stopper.HasExited) { try { $stopper.Kill() } catch { } }
     $stopper.Dispose()
     if ($lock) { $lock.Dispose() }
@@ -365,13 +373,16 @@ Check ($flat -cnotmatch 'Write-Fast[A-Za-z]*\([^)]*ApiKey|requestedArguments[^\n
 Check (-not ((InModule { $script:FastLlmRunLogAllowedFields.Values | ForEach-Object { $_ } }) -match '(?i)key')) 'no run-log event has a key-like field'
 
 # ---- the bench path and the default golden are untouched ----
-foreach ($fn in @('Get-FastLlmPlan', 'Start-FastLlmServer')) {
+foreach ($fn in @('Get-FastLlmPlan', 'Invoke-FastLlmDeviceProbe')) {
     $body = InModule { param($N) $c = Get-Command $N -ErrorAction SilentlyContinue; if ($c) { $c.ScriptBlock.ToString() } else { '' } } @($fn)
-    Check ($body.Length -gt 100 -and $body -cnotmatch 'ApiKey') "$fn does not reference the key, so -IgnoreUserSettings and direct module calls give today's behaviour"
+    Check ($body.Length -gt 100 -and $body -cnotmatch 'ApiKey') "$fn does not reference the key, so the planner, the device probe and the bench path are as before"
 }
+# The start takes only an on/off flag (default off) and reads the store itself; a direct module call without the flag is today's start.
+$startBody = InModule { (Get-Command Start-FastLlmServer).ScriptBlock.ToString() }
+Check ($startBody -cmatch "\[ValidateSet\('off', 'on'\)\]\s*\[string\] \`$ApiKey = 'off'" -and $startBody -cmatch "if \(\`$ApiKey -ceq 'on'\) \{ \`$apiKeyHolder = Read-FastLlmApiKeyStore -InstallRoot \`$InstallRoot \}" -and $startBody -cnotmatch '\$ApiKeyHolder\s*[,)]') 'Start-FastLlmServer takes the flag -ApiKey (default off), never a key, and reads the store only when the flag is on'
 $goldenBefore = (Get-FileHash -LiteralPath (Join-Path $root 'tests/fixtures/default-server-arguments.json') -Algorithm SHA256).Hash
 Check ($goldenBefore.Length -eq 64) 'the default arguments fixture is present (the golden suite asserts its content)'
 Check ((InModule { Get-Command Get-FastLlmApiKeyEnforcement, New-FastLlmApiKey -ErrorAction SilentlyContinue }).Count -eq 2) 'the key functions are module-internal and available'
-Check ($null -eq (Get-Command -Module FastLlm -Name 'Read-FastLlmApiKeyStore','Write-FastLlmApiKeyStore','New-FastLlmApiKey' -ErrorAction SilentlyContinue)) 'no key function is exported to callers (not wired to any surface)'
+Check ($null -eq (Get-Command -Module FastLlm -Name 'Read-FastLlmApiKeyStore','Write-FastLlmApiKeyStore','New-FastLlmApiKey' -ErrorAction SilentlyContinue)) 'the functions that read, write or create a key holder are not exported to callers'
 
 Write-Host "api-key-tests: $($script:count) checks passed"

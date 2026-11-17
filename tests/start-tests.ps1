@@ -24,7 +24,7 @@ try {
     $fresh.selectedAdapters[0].device='Vulkan1'
     $deviceArgument=[Array]::IndexOf($fresh.serverArguments,'--device')+1
     $fresh.serverArguments[$deviceArgument]='Vulkan1'
-    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');replanPort=-1;replanParams=$null;supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]')}
+    $state=@{events=(New-Object 'Collections.Generic.List[string]');fresh=$fresh;hardware=$hardware;hash=$true;consent=$true;observed=$null;requestedModel=$null;requestedContext=0;supervisorBound=$null;supervisorPolicy=$null;supervisorCanary=$false;supervisorBinding=$null;componentOk=$true;engineChecks=0;failComponent='';componentCalls=(New-Object 'Collections.Generic.List[string]');fallbackPlan=$null;fallbackArgs=$null;planBound=(New-Object 'Collections.Generic.List[string]');replanPort=-1;replanParams=$null;supervisorFailures=(New-Object 'Collections.Generic.Queue[object]');supervisorPlans=(New-Object 'Collections.Generic.List[object]');supervisorKeys=(New-Object 'Collections.Generic.List[string]')}
     $names=@('Assert-FastLlmWindowsPrerequisites','Test-FastLlmEngineInstallation','Test-FastLlmComponentInstallation','Install-FastLlmComponent','Test-FastLlmFileHash','Test-FastLlmModelConsentReceipt','Get-FastLlmHardware','Get-FastLlmPlan','Invoke-FastLlmSupervisedServer')
     foreach($name in $names){$saved[$name]=& $module {param($N) (Get-Command $N).ScriptBlock} $name}
     & $module {
@@ -45,8 +45,11 @@ try {
             return $script:startTestState.fresh
         }
         function script:Invoke-FastLlmSupervisedServer {
-            param($Plan,$InstallRoot,$LoadTimeoutSeconds,$CatalogPath,[string]$VulkanBarMitigation,[switch]$ThroughputCanary,[string]$DeviceBinding,[switch]$SelfTest)
+            param($Plan,$InstallRoot,$LoadTimeoutSeconds,$CatalogPath,[string]$VulkanBarMitigation,[switch]$ThroughputCanary,[string]$DeviceBinding,[switch]$SelfTest,$ApiKeyHolder)
             $script:startTestState.supervisorBound=@($PSBoundParameters.Keys | Sort-Object);$script:startTestState.supervisorBinding=$DeviceBinding
+            # The key each supervised run was given: 'none' when the parameter was not passed, else the key's public id (never the key).
+            $script:startTestState.supervisorKeys.Add($(if($PSBoundParameters.ContainsKey('ApiKeyHolder')){[string](Get-FastLlmApiKeyId -ApiKeyHolder $ApiKeyHolder)}else{'none'}))
+            if($script:startTestState.ContainsKey('beforeSupervisorFailure') -and $script:startTestState.beforeSupervisorFailure){& $script:startTestState.beforeSupervisorFailure}
             $script:startTestState.supervisorPolicy=$VulkanBarMitigation;$script:startTestState.supervisorCanary=[bool]$ThroughputCanary
             $script:startTestState.events.Add('supervisor');$script:startTestState.observed=$Plan;$script:startTestState.supervisorPlans.Add($Plan)
             if($script:startTestState.supervisorFailures.Count -gt 0){$queuedFailure=$script:startTestState.supervisorFailures.Dequeue();if($queuedFailure){throw $queuedFailure}}
@@ -571,6 +574,77 @@ try {
     $state.fallbackPlan=$null
     $state.fresh=$savedFresh;$state.supervisorFailures.Clear();$state.events.Clear()
 
+    # ================= the API key in Start-FastLlmServer: fail closed, and the same key for the stand-in start (W3) =================
+    # A fake protector and a generated marker key (never a real key). The mocked supervisor records which key each run was given.
+    $keyProtector=@{
+        Protect={ param([byte[]]$Bytes) $out=New-Object 'System.Collections.Generic.List[byte]';$out.AddRange([byte[]](0x46,0x4B,0x31));foreach($b in $Bytes){$out.Add([byte]($b -bxor 0x5A))};return ,($out.ToArray()) }
+        Unprotect={ param([byte[]]$Bytes) if($Bytes.Length -lt 4 -or $Bytes[0] -ne 0x46 -or $Bytes[1] -ne 0x4B -or $Bytes[2] -ne 0x31){throw 'fake protector: not protected data'};$out=New-Object 'System.Collections.Generic.List[byte]';for($i=3;$i -lt $Bytes.Length;$i++){$out.Add([byte]($Bytes[$i] -bxor 0x5A))};return ,($out.ToArray()) }
+    }
+    $keyMarker='fl-'+('LEAKMARKER'*3)+'startKEY'+'Zq7_x'
+    if($keyMarker.Length -ne 46){throw 'the start-tests marker is not a well-formed key'}
+    $keyHolder=New-Object Security.SecureString;foreach($c in $keyMarker.ToCharArray()){$keyHolder.AppendChar($c)};$keyHolder.MakeReadOnly()
+    $keyStorePath=Join-Path $temp 'api-key.dat'
+    & $module { param($P) $script:FastLlmApiKeyProtector=$P } $keyProtector
+    try {
+        & $module { param($R,$K) Write-FastLlmApiKeyStore -InstallRoot $R -ApiKeyHolder $K } $temp $keyHolder
+        $keyId=[string](& $module { param($K) Get-FastLlmApiKeyId -ApiKeyHolder $K } $keyHolder)
+        function Invoke-KeyStart($StartPlan,$Fresh,$Failures,[string]$ApiKey){
+            $state.fresh=$Fresh;$state.events.Clear();$state.supervisorPlans.Clear();$state.supervisorFailures.Clear();$state.supervisorKeys.Clear();$state.fallbackArgs=$null;$state.planBound.Clear();$state.componentOk=$true;$state.failComponent='';$fallbackHost.Clear()
+            foreach($queued in $Failures){$state.supervisorFailures.Enqueue($queued)}
+            $outcome=[pscustomobject]@{failure=$null;result=$null}
+            $keyOptions=@{};if($ApiKey){$keyOptions.ApiKey=$ApiKey}
+            try{$outcome.result=Start-FastLlmServer -Plan $StartPlan -CatalogPath $catalogPath -InstallRoot $temp @keyOptions 6>&1 | ForEach-Object { if($_ -is [Management.Automation.InformationRecord]){$fallbackHost.Add([string]$_.MessageData)}else{$_} }}catch{$outcome.failure=$_.Exception}
+            return $outcome
+        }
+        $state.fallbackPlan=$vulkanStandIn;$vulkanStandIn.fallback.reason='hip-dll-missing'
+        # Without the flag the supervisor is called as before: no key parameter at all.
+        $outcome=Invoke-KeyStart $plan $savedFresh @() ''
+        Check ($null -eq $outcome.failure -and ($state.supervisorKeys -join ',') -ceq 'none' -and ($state.supervisorBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan') 'api key off: a start without -ApiKey hands the supervisor no key parameter, although a key is stored'
+        $outcome=Invoke-KeyStart $plan $savedFresh @() 'off'
+        Check ($null -eq $outcome.failure -and ($state.supervisorKeys -join ',') -ceq 'none') 'api key off: -ApiKey off is the same start'
+        $outcome=Invoke-KeyStart $plan $savedFresh @() 'on'
+        Check ($null -eq $outcome.failure -and ($state.supervisorKeys -join ',') -ceq $keyId -and ($state.supervisorBound -join ',') -ceq 'ApiKeyHolder,CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan' -and ($state.events -join ',') -ceq 'hash,reprobe,supervisor') 'api key on: the start reads the store and hands the supervisor the stored key (and nothing else changes)'
+        Check (($state.planBound -join ';') -cnotmatch '(?i)key' -and ($state.observed | ConvertTo-Json -Depth 12) -cnotmatch 'LEAKMARKER|apiKey') 'api key on: the planner is called without anything about the key, and the plan carries none'
+        # W3: the HIP start fails; the one stand-in start gets the same key.
+        $outcome=Invoke-KeyStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed')) 'on'
+        Check ($null -eq $outcome.failure -and $state.supervisorPlans.Count -eq 2 -and $state.supervisorPlans[1].fallback.applied -and ($state.supervisorKeys -join ',') -ceq ($keyId+','+$keyId)) 'W3: the stand-in (fallback) start is given the same key as the failed HIP start'
+        $outcome=Invoke-KeyStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed')) ''
+        Check ($null -eq $outcome.failure -and ($state.supervisorKeys -join ',') -ceq 'none,none') 'W3: without the flag neither start gets a key'
+        # The first failure's text is printed on the stand-in line: a key in it is scrubbed.
+        $leakyFirst=New-Object InvalidOperationException("simulated start failure that quotes $keyMarker (api_keys: ****7_x)")
+        $leakyFirst.Data['FastLlmFailureCode']='hip-dll-missing';$leakyFirst.Data['FastLlmReason']='HipDllFailed'
+        $outcome=Invoke-KeyStart $autoHip $autoHip @($leakyFirst) 'on'
+        $standInLine=@($fallbackHost | Where-Object { $_ -like '*Started the Vulkan setup instead*' })
+        Check ($null -eq $outcome.failure -and $standInLine.Count -eq 1 -and $standInLine[0] -cnotmatch 'LEAKMARKER|7_x' -and $standInLine[0] -cmatch '<api-key>') 'W2: the console line of the stand-in start prints the first failure with the key scrubbed'
+        # An API key failure of the HIP start is never answered with the stand-in: another setup cannot fix the key.
+        foreach($keyCode in @('api-key-not-enforced','api-key-listener-not-verified','api-key-invalid')){
+            $keyFailure=New-FallbackTestFailure $keyCode 'ApiKeyFailed'
+            $outcome=Invoke-KeyStart $autoHip $autoHip @($keyFailure) 'on'
+            Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq $keyCode -and $state.supervisorPlans.Count -eq 1 -and $null -eq $state.fallbackArgs) "an $keyCode failure does not fall back to the stand-in"
+        }
+        # The store becomes unreadable between the failed HIP start and the stand-in: refused, never a keyless stand-in.
+        $state.beforeSupervisorFailure={ [IO.File]::WriteAllBytes($keyStorePath,[byte[]](1,2,3)) }.GetNewClosure()
+        $outcome=Invoke-KeyStart $autoHip $autoHip @((New-FallbackTestFailure 'hip-dll-missing' 'HipDllFailed')) 'on'
+        $state.beforeSupervisorFailure=$null
+        Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'api-key-unavailable' -and $state.supervisorPlans.Count -eq 1 -and ($state.supervisorKeys -join ',') -ceq $keyId -and $outcome.failure.Data['FastLlmFallbackAttempted'] -eq $true) 'W3: when the key cannot be read for the stand-in start, it is refused (api-key-unavailable); the stand-in never starts without the key'
+        # Fail closed: flag on and the store unreadable or missing: typed refusal before any check, probe or launch.
+        $outcome=Invoke-KeyStart $plan $savedFresh @() 'on'
+        Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'api-key-unavailable' -and $outcome.failure.Data['FastLlmReason'] -ceq 'ApiKeyFailed' -and $state.events.Count -eq 0 -and $state.supervisorPlans.Count -eq 0 -and $outcome.failure.Message -cnotmatch 'LEAKMARKER') 'fail closed: -ApiKey on with an unreadable store is api-key-unavailable before any hash, probe or launch'
+        Check ((@([IO.File]::ReadAllBytes($keyStorePath)) -join ',') -ceq '1,2,3') 'fail closed: the refused start created no key'
+        Remove-Item -LiteralPath $keyStorePath -Force
+        $outcome=Invoke-KeyStart $plan $savedFresh @() 'on'
+        Check ($null -ne $outcome.failure -and $outcome.failure.Data['FastLlmFailureCode'] -ceq 'api-key-unavailable' -and $state.events.Count -eq 0 -and -not (Test-Path -LiteralPath $keyStorePath)) 'fail closed: -ApiKey on with no store is api-key-unavailable, nothing is started and no key is created'
+        $outcome=Invoke-KeyStart $plan $savedFresh @() ''
+        Check ($null -eq $outcome.failure -and ($state.supervisorKeys -join ',') -ceq 'none') 'api key off: a start without the flag is not affected by a missing store'
+        $startText=& $module { (Get-Command Start-FastLlmServer).ScriptBlock.ToString() }
+        Check ($startText.IndexOf('Read-FastLlmApiKeyStore -InstallRoot $InstallRoot') -gt 0 -and $startText.IndexOf('Read-FastLlmApiKeyStore -InstallRoot $InstallRoot') -lt $startText.IndexOf('Assert-FastLlmWindowsPrerequisites') -and $startText.Contains("if (`$ApiKey -ceq 'on') { `$startAgain.ApiKey = 'on' }")) 'Start-FastLlmServer reads the key before its first check and passes the flag on to the stand-in start'
+    }
+    finally {
+        & $module { $script:FastLlmApiKeyProtector=$null }
+        if(Test-Path -LiteralPath $keyStorePath){Remove-Item -LiteralPath $keyStorePath -Force}
+        $state.fallbackPlan=$null;$state.fresh=$savedFresh;$state.supervisorFailures.Clear();$state.events.Clear();$state.beforeSupervisorFailure=$null
+    }
+
     # ================= fast-llm.ps1 start -NoDownload: every acquisition path is blocked with a typed failure code =================
     # The real 'start' branch of fast-llm.ps1 is extracted from its AST and run with every I/O boundary replaced by a recorder, so no
     # Install-*, download or network seam can be reached unnoticed (the same technique as ui-flow-tests for the install branch).
@@ -622,7 +696,11 @@ try {
     function Invoke-RestMethod { $script:nd.log.Add('NETWORK-REST') }
     function Get-FastLlmRecoveryPlan { param($Hardware,$CatalogPath,$InstallRoot,$Profile,$FailedModelId,$RequestedModelId,$ContextSize)
         $script:nd.log.Add('recovery-plan');if($script:nd.recovery){return [pscustomobject]@{model=[pscustomobject]@{id='other-model'}}};return $null }
-    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch)
+    # The API key seams of the start branch: the store check (recorded, and failing on request) and the refusal for a flag that cannot be known.
+    function Assert-FastLlmApiKeyStore { param($InstallRoot) $script:nd.log.Add('key-check');if($script:ndKeyUnreadable){$e=New-Object InvalidOperationException('api-key-unavailable: simulated');$e.Data['FastLlmFailureCode']='api-key-unavailable';$e.Data['FastLlmReason']='ApiKeyFailed';throw $e} }
+    function New-FastLlmApiKeySettingFailure { $e=New-Object InvalidOperationException('api-key-setting-unreadable: simulated');$e.Data['FastLlmFailureCode']='api-key-setting-unreadable';$e.Data['FastLlmReason']='ApiKeyFailed';return $e }
+    $script:ndApiKey='off';$script:ndKeyUnreadable=$false
+    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch,$ApiKey)
         $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object);$script:nd.startBar=$VulkanBarMitigation
         if($script:nd.startQueue.Count -gt 0){
             $next=$script:nd.startQueue.Dequeue()
@@ -637,7 +715,7 @@ try {
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$script:ndDryRun;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$effectiveIdleStopMinutes=[int]$script:ndIdleStop;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe;$effectiveSwitchAllowed=[bool]$script:ndSwitchAllowed
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$effectiveIdleStopMinutes=[int]$script:ndIdleStop;$effectiveApiKey=[string]$script:ndApiKey;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe;$effectiveSwitchAllowed=[bool]$script:ndSwitchAllowed
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         function Write-Host { $script:ndHost.Add(($args -join ' ')) }
@@ -747,6 +825,33 @@ try {
     $script:ndDryRun=$false;$script:ndPlanRecipeId='';$script:ndPlannedRecipe=''
     Check ($cliSource.Contains('-PlannedRecipe needs a recipe id.') -and $cliSource.Contains("`$_.Exception.Data['FastLlmFallbackAttempted']")) 'fast-llm.ps1 refuses an empty -PlannedRecipe and rethrows a failed fallback attempt'
 
+    # -- the API key (opt-in): the CLI checks the store before anything else, hands Start-FastLlmServer only the flag, and never retries a key failure
+    Reset-Nd
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and -not $script:nd.log.Contains('key-check')) 'api-key-start: with the key off the start is called as before and the key store is never read'
+    Reset-Nd; $script:ndApiKey='on'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'ApiKey,CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and $script:nd.log.IndexOf('key-check') -ge 0 -and $script:nd.log.IndexOf('key-check') -lt $script:nd.log.IndexOf('hardware')) 'api-key-start: with the key on the store is checked before the first hardware probe and Start-FastLlmServer receives only -ApiKey'
+    Reset-Nd; $script:ndApiKey='on'; $script:ndKeyUnreadable=$true
+    $f=Invoke-NdStart $false
+    Check ((Get-NdCode $f) -ceq 'api-key-unavailable' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('hardware') -and -not $script:nd.log.Contains('plan') -and -not $script:nd.log.Contains('start')) 'api-key-start: an unreadable key store is api-key-unavailable before any probe, plan or start (nothing is started)'
+    $script:ndKeyUnreadable=$false
+    Reset-Nd; $script:ndApiKey='undetermined'
+    $f=Invoke-NdStart $false
+    Check ((Get-NdCode $f) -ceq 'api-key-setting-unreadable' -and -not $script:nd.log.Contains('key-check') -and -not $script:nd.log.Contains('hardware') -and -not $script:nd.log.Contains('start')) 'api-key-start: a flag that cannot be known is api-key-setting-unreadable before anything runs'
+    foreach($keyStartCode in @('api-key-not-enforced','api-key-unavailable','api-key-listener-not-verified')){
+        Reset-Nd; $script:ndApiKey='on'; $script:nd.startQueue.Enqueue(@{reason='ApiKeyFailed';code=$keyStartCode})
+        $f=Invoke-NdStart $false
+        Check ((Get-NdCode $f) -ceq $keyStartCode -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and (Test-NdNoAcquisition)) "api-key-start: a start that fails with $keyStartCode is not retried, re-planned or recovered with another model"
+    }
+    # A key failure that lost its reason is still never retried: the code alone decides.
+    Reset-Nd; $script:ndApiKey='on'; $script:nd.startQueue.Enqueue(@{reason='RuntimeCheckFailed';code='api-key-not-enforced'})
+    $f=Invoke-NdStart $false
+    Check ((Get-NdCode $f) -ceq 'api-key-not-enforced' -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan')) 'api-key-start: an api-key code is never answered with model recovery, whatever reason it carries'
+    $script:ndApiKey='off'
+    $f=Invoke-NdStart $false
+    Check ($cliSource.Contains("if (`$effectiveApiKey -ceq 'on') { `$startPolicyOptions.ApiKey = 'on' }") -and $cliSource -cnotmatch 'startPolicyOptions\.ApiKeyHolder|Read-FastLlmApiKeyStore|Get-FastLlmApiKeyText') 'api-key-start: the command line passes the flag only; it never holds a key holder'
+
     # -- idle stop (opt-in): the CLI hands it to Start-FastLlmServer only when it is on, and says why when the run ended on it
     if(-not (Get-Command Get-FastLlmUiIdleStopText -ErrorAction SilentlyContinue)){ . (Join-Path $root 'src/FastLlm.UiFlow.ps1') }
     function Get-FastLlmStatus { param($InstallRoot) return $script:ndIdleStatus }
@@ -780,6 +885,14 @@ try {
     Reset-Nd; $script:ndSwitchAllowed=$true; $script:nd.startQueue.Enqueue(@{reason='ModelNeedsProvisioning';code='';switchAttempted=$true})
     $f=Invoke-NdStart $true
     Check ($null -ne $f -and $f.Data['FastLlmSwitchAttempted'] -eq $true -and (Get-NdCode $f) -cne 'needs-setup-model-invalid' -and (Test-NdNoAcquisition)) 'switch-start: with -NoDownload a failure after a model switch is passed on as it is'
+    # What 'switch' becomes when no server is running: a start with switching allowed. With the key setting on it is a keyed start like any other.
+    Reset-Nd; $script:ndSwitchAllowed=$true; $script:ndApiKey='on'
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'AllowSwitch,ApiKey,CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and $script:nd.log.IndexOf('key-check') -ge 0 -and $script:nd.log.IndexOf('key-check') -lt $script:nd.log.IndexOf('hardware')) 'switch-start: a start with switching allowed and the key setting on gets -AllowSwitch and -ApiKey, after the key store check'
+    Reset-Nd; $script:ndSwitchAllowed=$true; $script:ndApiKey='on'; $script:ndKeyUnreadable=$true
+    $f=Invoke-NdStart $false
+    Check ((Get-NdCode $f) -ceq 'api-key-unavailable' -and -not $script:nd.log.Contains('hardware') -and -not $script:nd.log.Contains('start')) 'switch-start: with switching allowed an unreadable key store is still api-key-unavailable before anything runs (never a keyless start)'
+    $script:ndKeyUnreadable=$false; $script:ndApiKey='off'
     $script:ndSwitchAllowed=$false
     # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
     Reset-Nd

@@ -108,6 +108,14 @@ foreach($idleMinutes in 15,30,60){
     $readyIdle=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';idleStopMinutes=$idleMinutes;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
     Check ((Get-ThinkingRefusal $readyIdle) -ceq $idleMessage) "benchmark-refuses-idle-stop: state.idleStopMinutes $idleMinutes throws the exact message"
 }
+# benchmark-refuses-api-key: a run started with the API key on is a user choice, and the benchmark sends no key, so it is never benchmarked.
+$keyMessage='Benchmarks measure the default setup. Turn the API key off, start again, then benchmark.'
+foreach($keyValue in @('on','ON','yes')){
+    $readyKey=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';apiKey=$keyValue;apiKeyId='0123abcd';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+    Check ((Get-ThinkingRefusal $readyKey) -ceq $keyMessage) "benchmark-refuses-api-key: state.apiKey $keyValue throws the exact message"
+}
+$readyKeyOff=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';apiKey='off';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+Check ($null -eq (Get-ThinkingRefusal $readyKeyOff)) 'benchmark-refuses-api-key: state.apiKey off is accepted (a status without the field is covered above)'
 $readyIdleNever=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';idleStopMinutes=0;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
 Check ($null -eq (Get-ThinkingRefusal $readyIdleNever)) 'benchmark-refuses-idle-stop: an idle stop of 0 is accepted'
 Check ($null -eq (Get-ThinkingRefusal $readyChatOff)) 'old-status-without-new-fields: a ready state with no idleStopMinutes field passes the idle check'

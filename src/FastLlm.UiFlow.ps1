@@ -737,16 +737,32 @@ function Write-FastLlmUiSettings {
     $value = [string] $Settings.vulkanBarMitigation
     if (@('auto', 'on', 'off') -notcontains $value) { throw 'vulkanBarMitigation must be auto, on or off.' }
     $path = Join-Path $InstallRoot 'settings.json'
+    # A settings.json that exists but is not a readable JSON object (it does not parse, it is not an object, it is a folder or a link, it
+    # is over 16 KiB, it cannot be read right now) is refused instead of being read as empty: written back, an empty read would erase
+    # every setting the file held, the API key flag among them, and the next start would run without the key that was asked for. The
+    # same verdict as Read-FastLlmServingSettingsObject (malformed). An absent file is empty.
     $merged = [ordered]@{}
+    $readable = $true
     try {
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            if ($null -ne $stored -and $stored -is [pscustomobject]) {
-                foreach ($property in $stored.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+        if (Test-Path -LiteralPath $path) {
+            $readable = $false
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le 16384) {
+                $storedText = [IO.File]::ReadAllText($path)
+                $stored = $null
+                # A JSON object and nothing else. The text must begin with "{" (PowerShell 7 would hand back the one element of a
+                # one-element array as the document), and the parsed value must be the class PSCustomObject - not [pscustomobject]
+                # (PSObject), which an array, a string or a number returned by a cmdlet would pass too.
+                if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { $stored = $storedText | ConvertFrom-Json -ErrorAction Stop }
+                if ($null -ne $stored -and $stored -is [System.Management.Automation.PSCustomObject]) {
+                    foreach ($property in $stored.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+                    $readable = $true
+                }
             }
         }
     }
-    catch { $merged = [ordered]@{} }
+    catch { $readable = $false }
+    if (-not $readable) { throw 'settings-malformed: settings.json is not valid JSON, so it was not changed. Fix or delete it, then try again.' }
     $merged['vulkanBarMitigation'] = $value
     $checkProperty = $Settings.PSObject.Properties['updateCheck']
     if ($checkProperty -and $null -ne $checkProperty.Value) {
@@ -974,14 +990,145 @@ function Test-FastLlmUiStepReadsLicenseSetting {
     return $false
 }
 
-# The status line once the server is ready, with the engine that runs in front.
+# The status line once the server is ready, with the engine that runs in front. -ApiKeyStore is what is known about the stored key
+# (Get-FastLlmApiKeyStoreState), or nothing; the key sentence appears only when the running server proved the key.
 function Format-FastLlmUiReadyStatus {
-    param($State)
+    param($State, $ApiKeyStore)
     $text = 'Ready - API smoke tests passed; GPU residency/performance unqualified.'
     $text = Add-FastLlmUiSpillCheckText -Text $text -State $State
+    $text = Add-FastLlmUiApiKeyText -Text $text -State $State -ApiKeyStore $ApiKeyStore
     $engine = Format-FastLlmUiRunEngineLine -State $State
     if ($engine) { return "$engine. $text" }
     return $text
+}
+
+# ---- the optional API key: the pure parts of the window ----
+
+# What the window says about the key next to Ready. Nothing unless the status of the running server says apiKey "on" (written only after
+# the 401/200 check). When the stored key is a different one than the server was started with (the ids differ), the user is told to restart.
+function Get-FastLlmUiApiKeyStatusText {
+    param($State, $ApiKeyStore)
+    if (-not $State -or -not $State.PSObject.Properties['apiKey'] -or [string] $State.apiKey -cne 'on') { return '' }
+    $runningId = ''
+    if ($State.PSObject.Properties['apiKeyId']) { $runningId = [string] $State.apiKeyId }
+    if ($ApiKeyStore -and $ApiKeyStore.PSObject.Properties['available']) {
+        if (-not [bool] $ApiKeyStore.available) { return 'API key on. The stored key cannot be read, so it cannot be shown or copied: create a new key in Settings, then restart.' }
+        if ($runningId -and $ApiKeyStore.PSObject.Properties['apiKeyId'] -and [string] $ApiKeyStore.apiKeyId -cne $runningId) { return 'API key on. A new key was created after this start: restart to use the new key.' }
+    }
+    return 'API key on.'
+}
+
+function Add-FastLlmUiApiKeyText {
+    param([string] $Text, $State, $ApiKeyStore)
+    $keyText = Get-FastLlmUiApiKeyStatusText -State $State -ApiKeyStore $ApiKeyStore
+    if ($keyText) { return "$Text $keyText" }
+    return $Text
+}
+
+# A typed API key failure of a start (the failure code in status.json). Like a typed HIP failure it is shown as its own message, and the
+# window does not retry the start.
+function Test-FastLlmUiApiKeyFailure {
+    param([string] $Code)
+    if ([string]::IsNullOrWhiteSpace($Code)) { return $false }
+    return [bool] ($Code -cmatch '^api-key-[a-z-]{1,40}$')
+}
+
+# The plain text for an API key failure, and whether the window offers the one action that helps: "Create a new key" (when the stored key
+# cannot be read, or may have been seen by another program). Nothing is created without that click.
+# What the window says when it cannot tell whether the API key is required (api-key-setting-unreadable). The way out is to choose in
+# Settings - but Settings cannot save while the settings file is not valid JSON, so the text names that file by its full path and says
+# to fix or delete it first. (Deleting it is safe: with a key stored, a missing setting is still "not chosen", never "off".)
+function Get-FastLlmUiApiKeySettingText {
+    param([string] $SettingsPath)
+    $file = 'settings.json in the FastLLM data folder'
+    if (-not [string]::IsNullOrWhiteSpace($SettingsPath)) { $file = $SettingsPath }
+    return 'FastLLM cannot tell whether the API key is required: a key is stored, and the settings file does not say whether to use it. Nothing was started. If the settings file is not valid JSON, fix or delete it first (' + $file + '). Then open Settings, tick or clear "Require an API key", and save.'
+}
+
+function Get-FastLlmUiApiKeyFailure {
+    param([string] $Code, [string] $SettingsPath)
+    $text = 'The API key could not be used, so FastLLM did not start.'
+    $offerNewKey = $false
+    switch -CaseSensitive ($Code) {
+        'api-key-unavailable' {
+            $text = 'The API key is on, but the stored key cannot be read by this Windows user (for example after a moved profile or a restored backup). FastLLM did not start, and it does not start without the key. Create a new key, give it to your apps, then start again.'
+            $offerNewKey = $true
+        }
+        'api-key-not-enforced' { $text = 'The API key is on, but the server did not enforce it, so FastLLM stopped the server. Nothing is running. To run without a key, turn the API key off in Settings.' }
+        'api-key-listener-not-verified' { $text = 'FastLLM could not confirm that its own server is the program listening on its port, so it did not send the API key and stopped the server. Close the other program that uses the port, or choose another port in Settings.' }
+        'api-key-setting-unreadable' { $text = Get-FastLlmUiApiKeySettingText -SettingsPath $SettingsPath }
+        'api-key-listener-changed' {
+            $text = 'Right after FastLLM sent a request with the API key, it could no longer confirm that its own server was the program listening on its port. Another program may have received the key, so FastLLM stopped. Create a new key, give it to your apps, then start again.'
+            $offerNewKey = $true
+        }
+        'api-key-invalid' { $text = 'The stored API key is not a valid key. FastLLM did not start. Create a new key, give it to your apps, then start again.'; $offerNewKey = $true }
+    }
+    return [pscustomobject] [ordered] @{ code = [string] $Code; text = $text; offerNewKey = [bool] $offerNewKey }
+}
+
+# The "Require an API key" box in Settings, from the saved setting. When the setting cannot be known (see Get-FastLlmServingSettings) the
+# box is neither ticked nor clear: showing it clear would be a claim, and saving it clear would write "off" in place of a lost "on".
+function Get-FastLlmUiApiKeyBoxState {
+    param($Settings)
+    if ($Settings -and $Settings.PSObject.Properties['apiKeyUndetermined'] -and [bool] $Settings.apiKeyUndetermined) { return 'indeterminate' }
+    if ($Settings -and $Settings.PSObject.Properties['apiKey'] -and [string] $Settings.apiKey -ceq 'on') { return 'checked' }
+    return 'unchecked'
+}
+
+# What Save does about the API key, from the saved setting, the box (checked, unchecked, indeterminate) and whether the user touched it:
+#   none  nothing is written (the setting is known and the box agrees with it)
+#   on    turn the key on        off   turn the key off
+#   ask   Save is refused: the setting is not known and the user has not chosen. Nothing is written until they tick or clear the box.
+function Get-FastLlmUiApiKeySaveAction {
+    param([string] $Current, [bool] $Undetermined, [string] $BoxState, [bool] $Touched)
+    if ($BoxState -cne 'checked' -and $BoxState -cne 'unchecked') { return 'ask' }
+    if ($Undetermined -and -not $Touched) { return 'ask' }
+    if ($BoxState -ceq 'checked') {
+        if (-not $Undetermined -and $Current -ceq 'on') { return 'none' }
+        return 'on'
+    }
+    if (-not $Undetermined -and $Current -cne 'on') { return 'none' }
+    return 'off'
+}
+
+function Get-FastLlmUiApiKeyChoiceText {
+    return 'FastLLM cannot tell whether the API key is required: a key is stored, but the saved settings do not say whether to use it. Tick "Require an API key" to use the key, or clear it to run without one, then save. Nothing was saved. (If saving then fails because the settings file is not valid JSON, fix or delete that file first.)'
+}
+
+# The question asked before a new key replaces the stored one (the Settings button, and the offer after a failed start).
+function Get-FastLlmUiNewKeyConfirmText {
+    param([bool] $HasReadableKey)
+    if ($HasReadableKey) { return 'Create a new API key? The new key applies at the next start. From then on the current key stops working, and every app that uses it needs the new key.' }
+    return 'Create a new API key? The stored key cannot be read, so a new one is the only way to use the key again. Every app needs the new key.'
+}
+
+# The API key row of Connect an app, from the connection info, the saved setting and what is known about the stored key. The value shown is
+# always the mask: the key itself appears only after Show, and is read from the store at that moment.
+function Get-FastLlmUiApiKeyRow {
+    param($Info, $Settings, $ApiKeyStore)
+    $state = 'off'
+    if ($Info -and $Info.PSObject.Properties['apiKey']) { $state = [string] $Info.apiKey }
+    $settingOn = [bool] ($Settings -and $Settings.PSObject.Properties['apiKey'] -and [string] $Settings.apiKey -ceq 'on')
+    $storeReadable = [bool] ($ApiKeyStore -and $ApiKeyStore.PSObject.Properties['available'] -and [bool] $ApiKeyStore.available)
+    $row = [ordered] @{ visible = $false; mask = '********'; canShow = $false; note = '' }
+    if ($state -ceq 'on') {
+        $row.visible = $true; $row.canShow = $storeReadable
+        $row.note = 'This server requires the API key.'
+        $runningId = ''
+        if ($Info.PSObject.Properties['apiKeyId'] -and $null -ne $Info.apiKeyId) { $runningId = [string] $Info.apiKeyId }
+        if (-not $storeReadable) { $row.note = 'This server requires the API key, but the stored key cannot be read, so it cannot be shown or copied. Create a new key in Settings, then restart.' }
+        elseif ($runningId -and [string] $ApiKeyStore.apiKeyId -cne $runningId) { $row.note = 'A new key was created after this server started. The key shown and copied here is the new one: restart to use the new key.' }
+    }
+    elseif ($state -ceq 'on-at-next-start' -or $state -ceq 'starting') {
+        $row.visible = $true; $row.canShow = $storeReadable
+        $row.note = 'The API key is required from the next start.'
+        if ($state -ceq 'starting') { $row.note = 'FastLLM is starting with the API key; it is in use once FastLLM is ready.' }
+        if (-not $storeReadable) { $row.note = 'The API key is on, but the stored key cannot be read. FastLLM does not start until you create a new key in Settings.' }
+    }
+    elseif ($settingOn) {
+        $row.note = 'The API key setting is on, but this server was started without it. Restart to use the key.'
+    }
+    return [pscustomobject] $row
 }
 
 # The GPU memory check sentence (from the status block) after the given text. Same plain info text for every state: no colour or style.
@@ -997,8 +1144,9 @@ function Add-FastLlmUiSpillCheckText {
 
 # The status line for an attached background run: the engine that runs (from status.json) in front of the given text.
 function Format-FastLlmUiBackgroundReadyStatus {
-    param([string] $Text, $State)
+    param([string] $Text, $State, $ApiKeyStore)
     $Text = Add-FastLlmUiSpillCheckText -Text $Text -State $State
+    $Text = Add-FastLlmUiApiKeyText -Text $Text -State $State -ApiKeyStore $ApiKeyStore
     $engine = Format-FastLlmUiRunEngineLine -State $State
     if ($engine) { return "$engine. $Text" }
     return $Text
@@ -1188,6 +1336,10 @@ function Get-FastLlmUiSettingsSavedNote {
         $beforeIdle = if ($Before.PSObject.Properties['idleStopMinutes']) { [string]$Before.idleStopMinutes } else { '0' }
         $afterIdle = if ($After.PSObject.Properties['idleStopMinutes']) { [string]$After.idleStopMinutes } else { '0' }
         if ($afterIdle -cne $beforeIdle) { return 'The new idle stop setting applies at the next start.' }
+        # The API key is read tolerantly too: a caller that has no such value means no change.
+        $beforeKey = if ($Before.PSObject.Properties['apiKey']) { [string]$Before.apiKey } else { 'off' }
+        $afterKey = if ($After.PSObject.Properties['apiKey']) { [string]$After.apiKey } else { $beforeKey }
+        if ($afterKey -cne $beforeKey) { return 'The new API key setting applies at the next start.' }
     }
     return 'Settings saved.'
 }
@@ -1215,8 +1367,17 @@ function New-FastLlmUiBackgroundRequest {
     # The idle stop is read tolerantly too: only 15, 30 or 60 (a whole number) is carried; anything else is 0 (never).
     $idleStop = 0
     if ($Settings -and $Settings.PSObject.Properties['idleStopMinutes'] -and ($Settings.idleStopMinutes -is [int] -or $Settings.idleStopMinutes -is [long]) -and @(15,30,60) -contains [int]$Settings.idleStopMinutes) { $idleStop = [int]$Settings.idleStopMinutes }
+    # The API key is NOT read tolerantly: when the flag cannot be known the request is refused (nothing is started), and only the exact
+    # saved "on" asks for the key. The request carries the flag only, never a key.
+    if ($Settings -and $Settings.PSObject.Properties['apiKeyUndetermined'] -and [bool]$Settings.apiKeyUndetermined) {
+        $undetermined = New-Object -TypeName System.InvalidOperationException -ArgumentList ('api-key-setting-unreadable: ' + (Get-FastLlmUiApiKeySettingText -SettingsPath (Join-Path $InstallRoot 'settings.json')))
+        $undetermined.Data['FastLlmFailureCode'] = 'api-key-setting-unreadable'
+        throw $undetermined
+    }
+    $apiKey = 'off'
+    if ($Settings -and $Settings.PSObject.Properties['apiKey'] -and [string]$Settings.apiKey -ceq 'on') { $apiKey = 'on' }
     return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
-        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage;idleStopMinutes=$idleStop}
+        modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage;idleStopMinutes=$idleStop;apiKey=$apiKey}
 }
 
 function Get-FastLlmUiMalformedSettingsNotice {

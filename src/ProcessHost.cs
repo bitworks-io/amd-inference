@@ -60,7 +60,13 @@ namespace Bitworks.FastLlm {
         private bool outputTruncated;
         private bool stdoutCompleted, stderrCompleted;
         private bool discard;
+        // The run's API key, when the caller says the child was given one. Kept only to drop any output line that holds it.
+        private string secret;
+        private int secretLinesDropped;
         private IntPtr job;
+        // Called before Start by the one caller that gives its child a key (the supervised server start). Start itself never looks at
+        // the start information's environment: reading it would replace a child's inherited environment with a copy, for every caller.
+        public void DropLinesContaining(string value) { lock (sync) { secret = String.IsNullOrEmpty(value) ? null : value; } }
         public void Start(ProcessStartInfo info) {
             info.UseShellExecute = false;
             info.RedirectStandardOutput = true;
@@ -92,8 +98,18 @@ namespace Bitworks.FastLlm {
             if (args.Data == null) { lock (sync) { stderrCompleted = true; } return; }
             Capture(sender, args);
         }
+        // llama-server prints "api_keys: ****" and the last characters of the key when one is set. Any line with an api_key label, and any
+        // line that holds the key itself, is dropped here, before every capture below: it never reaches the output snapshot, the startup,
+        // placement or device captures, or anything printed from them. Only the count of dropped lines is kept.
+        public static bool IsSecretLine(string line, string secret) {
+            if (line == null) return false;
+            if (line.IndexOf("api_key", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return !String.IsNullOrEmpty(secret) && line.IndexOf(secret, StringComparison.Ordinal) >= 0;
+        }
+        public int SecretLinesDropped { get { lock (sync) { return secretLinesDropped; } } }
         private void Capture(object sender, DataReceivedEventArgs args) {
             lock (sync) {
+                if (IsSecretLine(args.Data, secret)) { secretLinesDropped++; return; }
                 if (discard) return;
                 string line = args.Data.Length > 8192 ? args.Data.Substring(0, 8192) : args.Data;
                 if (args.Data.IndexOf("load_tensors:", StringComparison.Ordinal) >= 0) {

@@ -61,6 +61,24 @@ Check ($script.ResolveParameter('Allow').Name -ceq 'AllowExperimentalModel') 'fa
 Check ($script.ResolveParameter('F').Name -ceq 'FallbackReason') 'fast-llm.ps1 -F binds FallbackReason'
 Check ($script.ResolveParameter('SwitchA').Name -ceq 'SwitchAllowed' -and $script.ResolveParameter('SwitchF').Name -ceq 'SwitchForce') 'fast-llm.ps1 has -SwitchAllowed and -SwitchForce'
 Check ((Get-ParameterNames 'Start-FastLlmBackgroundHost') -ccontains 'SwitchAllowed' -and (Get-ParameterNames 'Start-FastLlmBackgroundHost') -cnotcontains 'AllowSwitch') 'Start-FastLlmBackgroundHost takes -SwitchAllowed, so -Allow stays -AllowExperimentalModel there too'
+# The API key setting is written -ApiKey. A parameter of that name would make -Api (until now unique for -ApiCheck) ambiguous, so the
+# parameter is named KeyAction with the alias ApiKey, and ApiCheck has the alias Api: an exact alias wins over a prefix. The binder is asked
+# directly, for every prefix that was unique before the key existed.
+$oldCli=@($old['fast-llm.ps1'] -split ',')
+$rebound=@()
+foreach ($name in $oldCli) {
+    for ($length=1; $length -le $name.Length; $length++) {
+        $prefix=$name.Substring(0,$length)
+        if (@($oldCli | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) { continue }
+        $resolved=$null
+        try { $resolved=$script.ResolveParameter($prefix).Name } catch { $resolved='<'+$_.Exception.GetType().Name+'>' }
+        if ($resolved -cne $name) { $rebound+="-$prefix ($name -> $resolved)" }
+    }
+}
+Check ($rebound.Count -eq 0) "fast-llm.ps1: the binder still binds every prefix that was unique to the same parameter (changed: $($rebound -join ' '))"
+Check ($script.ResolveParameter('Api').Name -ceq 'ApiCheck') 'fast-llm.ps1 doctor -Api still binds ApiCheck'
+Check ($script.ResolveParameter('ApiKey').Name -ceq 'KeyAction') 'fast-llm.ps1 settings -ApiKey binds the key action'
+Check ($script.ResolveParameter('ApiK').Name -ceq 'KeyAction') 'fast-llm.ps1 -ApiK binds the key action'
 $plan=Get-Command Get-FastLlmPlan
 Check ($plan.ResolveParameter('Context').Name -ceq 'ContextSize') 'Get-FastLlmPlan -Context 8192 binds ContextSize'
 Check ($plan.ResolveParameter('S').Name -ceq 'ServerPort') 'Get-FastLlmPlan -S binds ServerPort'

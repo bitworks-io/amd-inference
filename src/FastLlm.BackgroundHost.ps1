@@ -237,6 +237,9 @@ function Write-FastLlmBackgroundDocument {
         }
     }
     $json = ConvertTo-Json -InputObject $Value -Depth 12 -Compress
+    # Like every state document, a background document passes the API key scrub on its way to disk (the scrub is the FastLlm module's;
+    # without the module loaded nothing in this process has read a key).
+    if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $json = ConvertTo-FastLlmKeyFreeText -Text ([ref] $json) -Structured }
     if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 16384) { throw 'Background state document exceeds its size limit.' }
     $temp = Join-Path $parent ([Guid]::NewGuid().ToString('N') + '.background.tmp')
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json)
@@ -455,12 +458,19 @@ function Start-FastLlmBackgroundHost {
           [ValidateSet(0,15,30,60)][int]$IdleStopMinutes=0,
           # Opt-in: let the background server change its model on request. Off by default; the request then has no allowSwitch field.
           [switch]$SwitchAllowed,
+          # on = the server requires the user's API key. Only this flag is passed and written to the request; the host reads the key store itself.
+          # (Named -UseApiKey so that -A stays the abbreviation of -AllowExperimentalModel on this command.)
+          [ValidateSet('off','on')][string]$UseApiKey='off',
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     if ($ServerPort -ne 0 -and ($ServerPort -lt 1024 -or $ServerPort -gt 65535)) { throw 'ServerPort must be 0 (catalog port) or 1024-65535.' }
     $source = [IO.Path]::GetFullPath($SourceRoot)
     $install = [IO.Path]::GetFullPath($InstallRoot)
     Assert-FastLlmBackgroundPrivateState -InstallRoot $install
+    # Fail closed before anything is requested or started: with the key on, a store that is missing or unreadable is api-key-unavailable.
+    # (The host checks again when it reads the key for real.)
+    $UseApiKey = $UseApiKey.ToLowerInvariant()
+    if ($UseApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot $install }
     $existing = Get-FastLlmBackgroundHostStatus -InstallRoot $install -SourceRoot $source
     if ($existing.occupied) { throw 'This installation already has an active serving operation.' }
     $lock = Enter-FastLlmOperation -InstallRoot $install
@@ -474,6 +484,8 @@ function Start-FastLlmBackgroundHost {
     }
     # Present only when asked for, so a default request is the document it always was.
     if ($SwitchAllowed) { $request.allowSwitch = $true }
+    # Present only when the key is on, and only ever the flag: a request without a key is the document it always was.
+    if ($UseApiKey -ceq 'on') { $request.apiKey = 'on' }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -519,6 +531,17 @@ function Start-FastLlmBackgroundHost {
     } finally { $process.Dispose() }
 }
 
+# The API key flag of a background request: on or off. Unlike the other request fields it is NOT read tolerantly: no field or the exact
+# text off means no key, the exact text on means the key is required, and any other value is refused. A request that asked for a key in
+# a form this host does not understand must never become a start without one. The request never holds a key, only this flag.
+function Get-FastLlmBackgroundRequestApiKey {
+    param($Request)
+    if ($null -eq $Request -or -not $Request.PSObject.Properties['apiKey']) { return 'off' }
+    if ($Request.apiKey -is [string] -and $Request.apiKey -ceq 'on') { return 'on' }
+    if ($Request.apiKey -is [string] -and $Request.apiKey -ceq 'off') { return 'off' }
+    throw 'Background request apiKey is invalid.'
+}
+
 function Invoke-FastLlmBackgroundServe {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{32}$')][string]$RequestId,
@@ -557,6 +580,8 @@ function Invoke-FastLlmBackgroundServe {
     if ($request.PSObject.Properties['idleStopMinutes'] -and ($request.idleStopMinutes -is [int] -or $request.idleStopMinutes -is [long]) -and @(15,30,60) -contains [int]$request.idleStopMinutes) { $requestedIdleStop = [int]$request.idleStopMinutes }
     # allowSwitch is read the same way: only a JSON true turns it on; absent or anything else is off.
     $requestedAllowSwitch = [bool]($request.PSObject.Properties['allowSwitch'] -and $request.allowSwitch -is [bool] -and $request.allowSwitch)
+    # apiKey is NOT read tolerantly (see the function): any value but the exact on or off is refused here, before anything is started.
+    $requestedApiKey = Get-FastLlmBackgroundRequestApiKey -Request $request
     Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
     $lease = $null
     $operation = $null
@@ -607,6 +632,9 @@ function Invoke-FastLlmBackgroundServe {
             $serverOptions.AllowSwitch = $true
             $serverOptions.SwitchObserver = { param($ServedModelId) $record.modelId = [string]$ServedModelId; Write-FastLlmBackgroundDocument -Path $recordPath -Value $record }
         }
+        # The request carries only the flag. Start-FastLlmServer reads and unprotects the key store itself, in this process, and refuses
+        # (api-key-unavailable) when it cannot.
+        if ($requestedApiKey -ceq 'on') { $serverOptions.ApiKey = 'on' }
         $exit = Start-FastLlmServer -Plan $plan -CatalogPath $catalog -InstallRoot $install `
             -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -VulkanBarMitigation $barMitigation -SelfTest @serverOptions
         $record.phase = 'stopped'
@@ -636,7 +664,10 @@ function Invoke-FastLlmBackgroundServe {
             $record.phase='failed'
             $record.failureCode = if ($_.Exception.Data['FastLlmFailureCode']) { [string]$_.Exception.Data['FastLlmFailureCode'] } elseif ($_.Exception.Data['FastLlmReason']) { [string]$_.Exception.Data['FastLlmReason'] } else { 'background-start-or-runtime-failed' }
             # A plan change or a recipe refusal carries its reason (our own fixed wording, bounded, single line); other failures keep the code only.
+            # The text is recorded, so it passes the key scrub first. The scrub is the module's; a failure before the module was loaded
+            # cannot hold a key (only the module ever reads one).
             $failureText = [string]$_.Exception.Message
+            if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $failureText = ConvertTo-FastLlmKeyFreeText -Text ([ref] $failureText) }
             if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal) -or $_.Exception.Data['FastLlmFailureCode']) {
                 $record.failureReason = [regex]::Replace($failureText, '[\x00-\x1f\x7f]', ' ')
                 if ($record.failureReason.Length -gt 400) { $record.failureReason = $record.failureReason.Substring(0, 400) }

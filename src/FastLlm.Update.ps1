@@ -154,9 +154,39 @@ function Get-FastLlmReinstallDecision {
     return (& $result 'eligible' 'eligible' $target)
 }
 
+# A plain read is lenient: a file that cannot be read gives no stored values, and the defaults apply.
+# -ForWrite is the read of a read-modify-write. A settings.json that exists but is not a readable JSON object (it does not parse, it is not
+# an object, it is a folder or a link, it is over 16 KiB, it cannot be read right now) is then refused instead of being read as empty:
+# written back, an empty read would erase every setting the file held, the API key flag among them, and the next start would run
+# without the key that was asked for. The same verdict as Read-FastLlmServingSettingsObject (malformed). An absent file is empty.
 function Read-FastLlmSettingsObject {
-    param([string]$InstallRoot)
+    param([string]$InstallRoot, [switch]$ForWrite)
     $result = [ordered]@{}
+    if ($ForWrite) {
+        $readable = $true
+        try {
+            $path = Join-Path $InstallRoot 'settings.json'
+            if (Test-Path -LiteralPath $path) {
+                $readable = $false
+                $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le 16384) {
+                    $storedText = [IO.File]::ReadAllText($path)
+                    $stored = $null
+                    # A JSON object and nothing else. The text must begin with "{" (PowerShell 7 would hand back the one element of a
+                    # one-element array as the document), and the parsed value must be the class PSCustomObject - not [pscustomobject]
+                    # (PSObject), which an array, a string or a number returned by a cmdlet would pass too.
+                    if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { $stored = $storedText | ConvertFrom-Json -ErrorAction Stop }
+                    if ($null -ne $stored -and $stored -is [System.Management.Automation.PSCustomObject]) {
+                        foreach ($property in $stored.PSObject.Properties) { $result[$property.Name] = $property.Value }
+                        $readable = $true
+                    }
+                }
+            }
+        }
+        catch { $readable = $false }
+        if (-not $readable) { throw 'settings-malformed: settings.json is not valid JSON, so it was not changed. Fix or delete it, then try again.' }
+        return $result
+    }
     try {
         $path = Join-Path $InstallRoot 'settings.json'
         if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -191,7 +221,7 @@ function Set-FastLlmUpdateSettings {
         [ValidateSet('on', 'off')][string]$UpdateCheck,
         [ValidateSet('stable', 'canary')][string]$UpdateChannel
     )
-    $merged = Read-FastLlmSettingsObject -InstallRoot $InstallRoot
+    $merged = Read-FastLlmSettingsObject -InstallRoot $InstallRoot -ForWrite
     if ($PSBoundParameters.ContainsKey('UpdateCheck')) { $merged['updateCheck'] = $UpdateCheck }
     if ($PSBoundParameters.ContainsKey('UpdateChannel')) { $merged['updateChannel'] = $UpdateChannel }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }

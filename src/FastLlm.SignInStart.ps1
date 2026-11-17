@@ -243,7 +243,12 @@ function Invoke-FastLlmSignInLaunch {
         $message = [string]$_.Exception.Message
         if ($message -match 'active serving operation') { return (Write-FastLlmSignInResult -InstallRoot $InstallRoot -Result 'skipped-occupied' -FailureCode $null) }
         $code = 'host-start-failed'
-        if ($message -match 'Windows job') { $code = 'job-contained' }
+        # A typed API key refusal (the key is on and cannot be read, or whether it is required cannot be known) is recorded by its own
+        # code, so the result says why nothing was started. Only a code of the fixed api-key form is taken; never any message text.
+        $typedCode = $null
+        if ($null -ne $_.Exception.Data) { $typedCode = $_.Exception.Data['FastLlmFailureCode'] }
+        if ($typedCode -is [string] -and $typedCode -cmatch '^api-key-[a-z-]{1,40}$') { $code = $typedCode }
+        elseif ($message -match 'Windows job') { $code = 'job-contained' }
         elseif ($message -match 'standard-user') { $code = 'elevated-session' }
         return (Write-FastLlmSignInResult -InstallRoot $InstallRoot -Result 'host-failed' -FailureCode $code)
     }
