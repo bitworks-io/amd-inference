@@ -451,6 +451,11 @@ try {
     Check ((@($profileSettings.Keys | Sort-Object) -join ',') -ceq 'contextProfile,serverPort,slots' -and [string]$profileSettings['contextProfile'] -ceq 'long' -and [int]$profileSettings['slots'] -eq 2) 'bundle settings: contextProfile and slots are allowlisted; unknown keys are still dropped'
     [IO.File]::WriteAllText((Join-Path $profileSettingsInstall 'settings.json'),'{"contextProfile":"long C:\\\\ProgramData\\\\Example\\\\secret","slots":"two words"}')
     Check (@((Get-FastLlmSupportBundleSettings -InstallRoot $profileSettingsInstall).Keys).Count -eq 0) 'bundle settings: a contextProfile or slots value that is not a short plain token is dropped'
+    [IO.File]::WriteAllText((Join-Path $profileSettingsInstall 'settings.json'),'{"embeddings":"on","embeddingPort":18282,"embeddingModel":"nope"}')
+    $embeddingSettings=Get-FastLlmSupportBundleSettings -InstallRoot $profileSettingsInstall
+    Check ((@($embeddingSettings.Keys | Sort-Object) -join ',') -ceq 'embeddingPort,embeddings' -and [string]$embeddingSettings['embeddings'] -ceq 'on' -and [int]$embeddingSettings['embeddingPort'] -eq 18282) 'bundle settings: embeddings and embeddingPort are allowlisted; unknown keys are still dropped'
+    [IO.File]::WriteAllText((Join-Path $profileSettingsInstall 'settings.json'),'{"embeddings":"on for C:\\\\Users\\\\someone\\\\documents","embeddingPort":"a private note"}')
+    Check (@((Get-FastLlmSupportBundleSettings -InstallRoot $profileSettingsInstall).Keys).Count -eq 0) 'bundle settings: an embeddings or embeddingPort value that is not a short plain token is dropped'
     $versionOut=[IO.File]::ReadAllText((Join-Path $unz 'version.json')) | ConvertFrom-Json
     Check ([string]$versionOut.release.version -ceq '2026.11.08.1' -and [string]$versionOut.release.channel -ceq 'stable') 'bundle version.json: the installed release'
     $componentsOut=[IO.File]::ReadAllText((Join-Path $unz 'components.json')) | ConvertFrom-Json
@@ -600,6 +605,34 @@ try {
     Check (@($parseErrors).Count -eq 0) 'window: fast-llm-ui.ps1 parses'
     $psmSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw
     Check ($psmSource.Contains("'FastLlm.RunLog.ps1'") -and -not $psmSource.Contains('FastLlm.SupportBundle.ps1') -and (Get-Command Write-FastLlmRunLogEvent).Source -ceq 'FastLlm' -and (Get-Command Invoke-FastLlmRunLogRotation).Source -ceq 'FastLlm') 'the run log is in the module and exported; the support bundle is entry-layer only'
+
+    # sidecar-events: the embedding sidecar's lines. Ids, numbers, codes and closed words only; nothing a request, a document or a vector held.
+    $sidecarAllowed=& $module { $script:FastLlmRunLogAllowedFields }
+    Check (($sidecarAllowed['sidecar-start'] -join ',') -ceq 'role,componentId,port,placement' -and ($sidecarAllowed['sidecar-placement'] -join ',') -ceq 'role,offloadLines,offloadedLayers,totalLayers,gpuBufferLines,cpuBufferLines' -and ($sidecarAllowed['sidecar-canary'] -join ',') -ceq 'role,ok,dimension' -and ($sidecarAllowed['sidecar-phase'] -join ',') -ceq 'role,phase,failureCode' -and ($sidecarAllowed['sidecar-idle-check-failed'] -join ',') -ceq 'role') 'sidecar-events: the allowlist has exactly the five sidecar events and their fields'
+    $sc=Join-Path $temp 'sidecar-events'; New-Item -ItemType Directory -Path (Join-Path $sc 'state') -Force | Out-Null
+    $scId='5c'*16
+    foreach($bad in @(
+        @{ e='sidecar-start'; f=@{ role='embedding'; modelPath='C:\models\x.gguf' } },
+        @{ e='sidecar-canary'; f=@{ role='embedding'; ok=$true; dimension=1024; vector='0.1,0.2' } },
+        @{ e='sidecar-canary'; f=@{ role='embedding'; input='some text' } },
+        @{ e='sidecar-phase'; f=@{ role='embedding'; phase='failed'; failureMessage='free text' } },
+        @{ e='sidecar-placement'; f=@{ role='embedding'; line='load_tensors: offloaded 0/13 layers to GPU' } },
+        @{ e='sidecar-idle-check-failed'; f=@{ role='embedding'; body='x' } })){
+        Throws { Write-FastLlmRunLogEvent -InstallRoot $sc -RunId $scId -Event $bad.e -Fields $bad.f } 'run-log-field-not-allowed'
+    }
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $sc -RunId $scId -Event 'sidecar-request' -Fields @{ role='embedding' } } 'run-log-event-not-allowed'
+    # The field builders drop anything that is not an id, a closed word, a code or a whole number.
+    $built=& $module { Get-FastLlmSidecarRunLogFields -Event 'sidecar-start' -Values @{ role='embedding'; componentId='test-embedding-model-q8'; port=8081; placement='cpu' } }
+    Check ((@($built.Keys) -join ',') -ceq 'role,componentId,port,placement' -and $built.port -eq 8081) 'sidecar-events: sidecar-start is built from the role, the component id, the port and the placement'
+    $dropped=& $module { Get-FastLlmSidecarRunLogFields -Event 'sidecar-start' -Values @{ role='a document'; componentId='two words'; port='8081; drop'; placement='gpu please' } }
+    Check (@($dropped.Keys).Count -eq 0) 'sidecar-events: a role, an id, a port or a placement that is not of its closed shape is dropped, never written'
+    $builtPhase=& $module { Get-FastLlmSidecarRunLogFields -Event 'sidecar-phase' -Values @{ role='embedding'; phase='failed'; failureCode='embeddings-canary-failed' } }
+    $droppedPhase=& $module { Get-FastLlmSidecarRunLogFields -Event 'sidecar-phase' -Values @{ role='embedding'; phase='almost ready'; failureCode='The request said: hello' } }
+    Check ($builtPhase.phase -ceq 'failed' -and $builtPhase.failureCode -ceq 'embeddings-canary-failed' -and (@($droppedPhase.Keys) -join ',') -ceq 'role') 'sidecar-events: a phase outside the closed list and a failure code that is not a code are dropped'
+    $builtCanary=& $module { Get-FastLlmSidecarRunLogFields -Event 'sidecar-canary' -Values @{ role='embedding'; ok=$false; dimension=1025 } }
+    $droppedCanary=& $module { Get-FastLlmSidecarRunLogFields -Event 'sidecar-canary' -Values @{ role='embedding'; ok='yes'; dimension='0.123457' } }
+    Check ($builtCanary.ok -eq $false -and $builtCanary.dimension -eq 1025 -and (@($droppedCanary.Keys) -join ',') -ceq 'role') 'sidecar-events: the canary line holds a boolean and a whole number, nothing else'
+    Check ((Write-FastLlmRunLogEvent -InstallRoot $sc -RunId $scId -Event 'sidecar-start' -Fields $built) -and (Write-FastLlmRunLogEvent -InstallRoot $sc -RunId $scId -Event 'sidecar-phase' -Fields $builtPhase) -and (Write-FastLlmRunLogEvent -InstallRoot $sc -RunId $scId -Event 'sidecar-canary' -Fields $builtCanary)) 'sidecar-events: the built lines are written'
 
     Write-Host "Run log tests passed: $script:count checks."
 }

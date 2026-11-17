@@ -346,5 +346,55 @@ class ToolKindTests(unittest.TestCase):
         self.assertTrue(any("kind must be one of" in e for e in self.errors(tool(kind="plugin"))))
 
 
+# ---- kind "embedding-model": the model file of the embedding sidecar ----
+def embedding_model(**over):
+    out = comp("test-embedding-model", [part(["test-embedding.gguf", "LICENSE.txt"], fmt="zip", prefix=None)], kind="embedding-model")
+    out["entryPoint"] = "test-embedding.gguf"
+    out["requires"] = []
+    out.update(over)
+    return out
+
+
+class EmbeddingModelKindTests(unittest.TestCase):
+    def errors(self, *components):
+        return cc.validate(with_base(*components), CATALOG)
+
+    def test_kind_is_listed(self):
+        self.assertIn("embedding-model", cc.KINDS)
+        self.assertEqual(cc.KINDS, ("engine", "runtime", "model", "draft", "tool", "embedding-model"))
+
+    def test_valid_embedding_model(self):
+        self.assertEqual(self.errors(embedding_model()), [])
+
+    def test_the_shipped_list_has_none(self):
+        self.assertEqual([c["id"] for c in GOOD["components"] if c["kind"] == "embedding-model"], [])
+
+    def test_the_fixture_component_passes(self):
+        fixture = json.loads((ROOT / "tests" / "fixtures" / "embedding-components-test.json").read_text(encoding="utf-8"))
+        self.assertEqual(cc.validate(fixture, None), [])
+        self.assertEqual([c["kind"] for c in fixture["components"]], ["embedding-model"])
+
+    def test_needs_an_entry_point_that_is_a_gguf_file_of_the_manifest(self):
+        bad = embedding_model(); del bad["entryPoint"]
+        self.assertTrue(any("embedding-model needs an entryPoint" in e for e in self.errors(bad)))
+        self.assertTrue(any("not in the fileManifest" in e for e in self.errors(embedding_model(entryPoint="other.gguf"))))
+        self.assertTrue(any("must be a .gguf file" in e for e in self.errors(embedding_model(entryPoint="LICENSE.txt"))))
+        nested = comp("test-embedding-model", [part(["models/test-embedding.gguf"])], kind="embedding-model")
+        nested["entryPoint"] = "models/test-embedding.gguf"
+        self.assertTrue(any("must be a .gguf file at the top of the component" in e for e in self.errors(nested)))
+
+    def test_has_no_adapter_runtime_path_dirs_or_requires(self):
+        self.assertTrue(any("embedding-model has no adapter" in e for e in self.errors(embedding_model(adapter="llama.cpp"))))
+        self.assertTrue(any("only for runtime" in e for e in self.errors(embedding_model(runtimePathDirs=["bin"]))))
+        runtime = comp("some-runtime", [part(["bin/a.dll"])], path_dirs=["bin"])
+        self.assertTrue(any("embedding-model requires no other component" in e for e in self.errors(runtime, embedding_model(requires=["some-runtime"]))))
+
+    def test_consent_and_hash_rules_apply_like_any_component(self):
+        self.assertTrue(any("license.consent" in e for e in self.errors(embedding_model(license={"spdx": "Apache-2.0", "url": "https://example.com/l", "consent": "none"}))))
+        bad = embedding_model()
+        bad["sources"][0]["fileManifest"][0]["sha256"] = "xyz"
+        self.assertTrue(any("sha256 must be 64 lowercase hex" in e for e in self.errors(bad)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -262,6 +262,11 @@
       "reason": "Serving settings (port) read/write, validation, precedence and the bench-path tripwire; temp folders only, no engine, GPU or network. Wired in test.yml."
     },
     {
+      "suite": "sidecar-tests",
+      "class": "ci",
+      "reason": "The opt-in embedding sidecar: supervised starts against the native mock text server and a mock embedding engine that takes the sidecar's real arguments, with a fixture embedding component and fixture sidecar rows (start after Ready, failure isolation, switch and restore, idle stop over both servers, the API key on the sidecar, the refusals, the argument golden); a fake key protector and generated marker keys; no network, model, GPU or admin; wired in test.yml."
+    },
+    {
       "suite": "connect-info-tests",
       "class": "ci",
       "reason": "Connection info, client setting cards and the user-run API-format check against a mock request; temp folders only, no engine, GPU or network. Wired in test.yml."
