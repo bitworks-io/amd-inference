@@ -129,6 +129,8 @@ function Invoke-Step($Step, $Status, $Outcome) {
             if ($null -ne $sidecar) {
                 $sidecarBase = ([string] (Get-Value $sidecar 'endpoint')) -replace '/v1$', ''
                 $Outcome.sidecarHealth = Send-Request ($sidecarBase + '/health') $null
+                # Like the engine, the sidecar answers the model list without a key.
+                $Outcome.sidecarModelsOpen = Send-Request ($sidecarBase + '/v1/models') $null
                 # Every address something listens on at the sidecar's port, from the system's own listener table.
                 $sidecarPort = ([Uri] $sidecarBase).Port
                 $Outcome.sidecarListeners = (@(Get-ListenerAddresses ([int] $sidecarPort) | Sort-Object -Unique) -join ',')

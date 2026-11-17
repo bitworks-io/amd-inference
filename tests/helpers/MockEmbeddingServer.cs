@@ -18,8 +18,15 @@ namespace FastLlmTests {
     //   starts.log  one line per start (the mode)                        argv.txt   the arguments of the latest start, one per line
     //   env.txt     what the child environment held (names only)         auth.log   one line per request: METHOD PATH none|ok|wrong
     //   pid         the process id of the latest start
-    // Modes: ok, exit, nohealth, models-wrong, dimension-wrong, unstable, embed-500, zero-vector, gpu-layers. "marker-<mode>" behaves as
-    // <mode> and also prints every request header and body and every response body to stderr, as a verbose server would.
+    // Like upstream llama-server, /health, /v1/health, /v1/models and /models are answered WITHOUT the API key; every other path needs it.
+    // /props is a path that needs the key (the supervisor's 401/200 proof uses it, as the text server's does).
+    // Modes: ok, exit, nohealth, models-wrong, dimension-wrong, unstable, embed-500, zero-vector, gpu-layers,
+    //   silent    loads without printing any load_tensors line at all,
+    //   gpu-odd   prints a CPU placement the supervisor can parse, plus GPU lines in shapes it does not parse (they still count as like-lines),
+    //   slow      answers every request but /health only after a delay of 3 s (see "delaying" below),
+    //   hang      reads every request but /health and never answers it.
+    // For slow and hang the file "delaying" is written when the first delayed request arrives (and its time is kept as a line in delaying.log).
+    // "marker-<mode>" behaves as <mode> and also prints every request header and body and every response body to stderr, as a verbose server would.
     public static class MockEmbeddingServer {
         private static string control;
         private static string ReadControl(string name, string fallback) {
@@ -120,9 +127,16 @@ namespace FastLlmTests {
             if (mode == "gpu-layers") {
                 Console.Error.WriteLine("load_tensors: offloaded 13/13 layers to GPU");
                 Console.Error.WriteLine("load_tensors: Vulkan0 model buffer size = 600.00 MiB");
+            } else if (mode == "silent") {
+                // No placement line at all: nothing proves where the model went.
             } else {
                 Console.Error.WriteLine("load_tensors: offloaded 0/13 layers to GPU");
                 Console.Error.WriteLine("load_tensors: CPU_Mapped model buffer size = 600.00 MiB");
+                if (mode == "gpu-odd") {
+                    // GPU placement in shapes the strict parse does not accept: the supervisor's like-line counters see them.
+                    Console.Error.WriteLine("load_tensors: offloaded 13/13 layers to Vulkan0");
+                    Console.Error.WriteLine("load_tensors: Vulkan0 model buffer size: 600.00 MiB");
+                }
             }
             if (hasKey && keyMode != "ignore") Console.Error.WriteLine("0.00.402.100 I srv          main: api_keys: ****" + apiKey.Substring(Math.Max(apiKey.Length - 4, 0)));
             TcpListener listener;
@@ -157,10 +171,16 @@ namespace FastLlmTests {
                             if (echo && authorization != null) Console.Error.WriteLine("request header " + path + ": Authorization: " + authorization);
                             var requestBody = new StringBuilder();
                             for (int i = 0; i < length; i++) requestBody.Append((char)reader.Read()); // test requests are ASCII
+                            if ((mode == "slow" || mode == "hang") && path != "/health") {
+                                if (!String.IsNullOrEmpty(control) && !File.Exists(Path.Combine(control, "delaying"))) Record("delaying", "1", false);
+                                Record("delaying.log", path + "\n", true);
+                                if (mode == "hang") System.Threading.Thread.Sleep(120000); else System.Threading.Thread.Sleep(3000);
+                            }
                             int status = 200;
                             string body = "{}";
                             if (path == "/health") { status = mode == "nohealth" ? 503 : 200; body = mode == "nohealth" ? "{\"error\":{\"message\":\"Loading model\"}}" : "{\"status\":\"ok\"}"; }
-                            else if (path == "/v1/models") { body = "{\"object\":\"list\",\"data\":[{\"id\":\"" + (mode == "models-wrong" ? "another-model" : alias) + "\",\"object\":\"model\"}]}"; }
+                            else if (path == "/props") { body = "{\"model_alias\":\"" + alias + "\"}"; }
+                            else if (path == "/v1/models" || path == "/models") { body = "{\"object\":\"list\",\"data\":[{\"id\":\"" + (mode == "models-wrong" ? "another-model" : alias) + "\",\"object\":\"model\"}]}"; }
                             else if (path == "/v1/embeddings") {
                                 if (method != "POST") status = 405;
                                 else if (mode == "embed-500") { status = 500; body = "{\"error\":{\"message\":\"embedding failed\"}}"; }
@@ -190,7 +210,7 @@ namespace FastLlmTests {
                                 Console.Error.WriteLine("request " + path + ": " + requestBody.ToString());
                                 Console.Error.WriteLine("response " + path + ": " + body.Replace("\n", " "));
                             }
-                            if (hasKey && path != "/health" && keyMode != "ignore" && (keyMode == "reject" || authState != "ok")) {
+                            if (hasKey && path != "/health" && path != "/v1/health" && path != "/v1/models" && path != "/models" && keyMode != "ignore" && (keyMode == "reject" || authState != "ok")) {
                                 status = 401;
                                 body = "{\"error\":{\"message\":\"Invalid API Key\",\"type\":\"authentication_error\",\"code\":401}}";
                             }

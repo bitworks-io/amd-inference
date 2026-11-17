@@ -254,6 +254,12 @@ try {
     $cardText=(@($withRow.clients | ForEach-Object { $_.title + ' ' + $_.snippet }) -join "`n")
     Check ($cardText -cnotmatch '(?i)embedding' -and @($withRow.clients).Count -eq @((Get-FastLlmConnectionInfo -Status (New-Status 8080 32768)).clients).Count) 'embeddings-row: no client card mentions embeddings, and no card was added'
     Check ($withRow.embeddings.label -cnotmatch '(?i)connected|works with|supported' -and (Get-FastLlmEmbeddingsStatusText -Status (New-SidecarStatus (New-Block))) -ceq "Embeddings: ready at http://127.0.0.1:8081/v1 (model 'test-embedding-model-q8', 1024 dimensions).") 'embeddings-row: the status line states the checked facts and makes no connection claim'
+    # F8: .NET's \d matches digits of other scripts, and the cast of those to a number throws. Only ASCII digits make a port.
+    $arabicPort=([string][char]0x0668)+([string][char]0x0660)+([string][char]0x0668)+([string][char]0x0661)
+    $arabicRow=$null; $arabicThrew=$false
+    try { $arabicRow=Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true ("http://127.0.0.1:$arabicPort/v1"))) } catch { $arabicThrew=$true }
+    Check (-not $arabicThrew -and $null -ne $arabicRow -and -not $arabicRow.PSObject.Properties['embeddings']) 'embeddings-row: a status endpoint with non-ASCII digits in the port does not throw and gives no row'
+    Check ((Get-FastLlmConnectEmbeddings -Status (New-SidecarStatus (New-Block 'ready' $true 'http://127.0.0.1:8081/v1'))).baseUrl -ceq 'http://127.0.0.1:8081/v1') 'embeddings-row: ASCII digits still give the row'
     Check ((Get-FastLlmEmbeddingsStatusText -Status (New-SidecarStatus (New-Block 'failed'))) -ceq 'Embeddings: not available (embeddings-server-exited). The model is not affected.' -and (Get-FastLlmEmbeddingsStatusText -Status (New-SidecarStatus (New-Block 'starting' $null))) -ceq 'Embeddings: starting.' -and $null -eq (Get-FastLlmEmbeddingsStatusText -Status (New-Status 8080 32768))) 'embeddings-row: the status line says failed with the code, or starting; a status without the block has no line'
 
     # table for the window

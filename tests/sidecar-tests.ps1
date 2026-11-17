@@ -84,6 +84,12 @@ function New-Step([hashtable] $Wait, [string] $Action, [hashtable] $More = @{}) 
 # answers the same question, so the check is real on every test host. Every port that is asked about is recorded.
 $listenerAsks = New-Object 'System.Collections.Generic.List[int]'
 $listenerLies = @{}
+# A port -> a rule: once the mock engine's auth.log (in the world's control folder) holds a line like the pattern, another program owns the
+# port. Every check before the send then sees the sidecar, and the first check after a keyed send sees something else.
+$listenerLieWhenKeyed = @{}
+# A port -> a rule: once the mock engine's auth.log (its control folder) holds a line like the pattern, another program owns the port. The checks
+# before the send then see the sidecar, and the first check after a send sees something else.
+$listenerLieWhenKeyed = @{}
 function Get-TestListenerOwners([int] $Port) {
     $found = New-Object 'System.Collections.Generic.List[int]'
     if ($isWindowsHost) {
@@ -99,6 +105,10 @@ function Set-RecordingListenerOwners {
         $listenerAsks.Add($Port)
         # A test may say that another program owns a port: the answer for that port is then the process id it names.
         if ($listenerLies.ContainsKey($Port)) { return @([int] $listenerLies[$Port]) }
+        if ($listenerLieWhenKeyed.ContainsKey($Port)) {
+            $rule = $listenerLieWhenKeyed[$Port]
+            if (@(Read-Control $rule.world 'auth.log' | Where-Object { $_ -clike $rule.pattern }).Count -gt 0) { return @([int] $PID) }
+        }
         return @(Get-TestListenerOwners $Port)
     }
     & $module { param($P) $script:FastLlmApiKeyListenerOwners = $P } $provider
@@ -231,6 +241,7 @@ try {
     Check (@($golden.rows).Count -eq 2 -and $goldenDifferences -eq 0) 'golden: the planned sidecar arguments equal tests/fixtures/embedding-server-arguments.json, -ceq on every argument'
     $firstArguments = @($livePlans[0].serverArguments | ForEach-Object { [string] $_ })
     $valueOf = { param([string[]] $Arguments, [string] $Name) for ($i = 0; $i -lt $Arguments.Count - 1; $i++) { if ($Arguments[$i] -ceq $Name) { return $Arguments[$i + 1] } }; return $null }
+    Check ((& $valueOf $firstArguments '--n-gpu-layers') -ceq '0' -and [Array]::IndexOf($firstArguments, '--n-gpu-layers') -eq ([Array]::IndexOf($firstArguments, '--device') + 2)) 'arguments: no layer is offloaded (--n-gpu-layers 0, next to --device none)'
     Check ((& $valueOf $firstArguments '--device') -ceq 'none' -and $firstArguments -ccontains '--embedding' -and (& $valueOf $firstArguments '--pooling') -ceq 'last' -and (& $valueOf $firstArguments '-c') -ceq '8192') 'arguments: CPU placement (--device none), --embedding, the row''s pooling and the row''s context'
     Check ((& $valueOf $firstArguments '--host') -ceq '127.0.0.1' -and (& $valueOf $firstArguments '--port') -ceq '8081' -and (& $valueOf $firstArguments '--alias') -ceq 'test-embedding-model-q8' -and $firstArguments -ccontains '--no-ui' -and $firstArguments -ccontains '--offline') 'arguments: loopback host, the embedding port, the component id as the served name, no chat page and no download'
     Check ((& $valueOf $firstArguments '--model') -ceq (Join-Path $goldenComponentRoot ([string] $goldenEntry.entryPoint))) 'arguments: the model is the component''s model file'
@@ -341,6 +352,41 @@ try {
     InModule { param($Session, $InstallRoot) Stop-FastLlmSidecarSession -Session $Session -InstallRoot $InstallRoot } @($session, $goldenInstall)
     Check ([string] $session.block['phase'] -ceq 'failed') 'session: ending the session keeps a failed block failed'
 
+    # ================= removal: a live sidecar keeps its embedding component in use =================
+    # The in-use check lets a component be removed only when no running FastLLM can reach into it. A live sidecar block (waiting, starting,
+    # checking or ready) names the embedding component it serves; the status records no path for it, so the component's own folder decides.
+    $inUseInstall = Join-Path $temp 'in-use-install'
+    $inUseState = Join-Path $inUseInstall 'state'
+    New-Item -ItemType Directory -Path $inUseState -Force | Out-Null
+    $inUseRoot = Join-Path $inUseInstall 'components/embedding-model/emb-q8/t1'
+    $inUseOther = Join-Path $inUseInstall 'components/embedding-model/emb-other/t1'
+    New-Item -ItemType Directory -Path $inUseRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $inUseOther -Force | Out-Null
+    $inUseEngineRoot = Join-Path $inUseInstall 'engines/llama.cpp/test/vulkan'
+    $writeInUseStatus = {
+        param([string] $Phase)
+        $block = [ordered] @{ role = 'embedding'; componentId = 'emb-q8'; endpoint = 'http://127.0.0.1:8081/v1'; phase = $Phase; processIdentity = $null; placement = 'cpu'; canary = $null }
+        $document = [ordered] @{ schemaVersion = 1; runId = 'r'; phase = 'ready'; engineExecutable = (Join-Path $inUseEngineRoot 'llama-server.exe'); sidecars = @($block) }
+        [IO.File]::WriteAllText((Join-Path $inUseState 'status.json'), (ConvertTo-Json -InputObject $document -Depth 8))
+    }
+    $inUseLock = [IO.File]::Open((Join-Path $inUseState 'operation.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    try {
+        $inUseAnswers = [ordered] @{}
+        foreach ($inUsePhase in @('waiting', 'starting', 'checking', 'ready', 'failed', 'stopped')) {
+            & $writeInUseStatus $inUsePhase
+            $inUseAnswers[$inUsePhase] = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, $inUseRoot))
+        }
+        & $writeInUseStatus 'ready'
+        $inUseOtherAnswer = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, $inUseOther))
+        $inUseEngineAnswer = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, $inUseEngineRoot))
+        $inUseParentAnswer = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, (Join-Path $inUseInstall 'components/embedding-model/emb-q8')))
+    }
+    finally { $inUseLock.Dispose() }
+    Check ((@('waiting', 'starting', 'checking', 'ready') | Where-Object { -not $inUseAnswers[$_] }).Count -eq 0 -and -not $inUseAnswers['failed'] -and -not $inUseAnswers['stopped']) 'in use: while a sidecar block is waiting, starting, checking or ready, its embedding component is in use; once failed or stopped it is not'
+    Check ($inUseEngineAnswer -and -not $inUseOtherAnswer -and $inUseParentAnswer) 'in use: the engine root is still in use as before, another embedding component is not, and the folder of the component itself is'
+    $inUseNotActive = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, $inUseRoot))
+    Check (-not $inUseNotActive) 'in use: when FastLLM is not running (no operation lock), the component is not in use whatever the last status says'
+
     # ================= the measured row and the component: the refusals, each typed =================
     $planCode = { param($World, [int] $Port = 0) try { $null = InModule { param($Catalog, $InstallRoot, $Port) Get-FastLlmSidecarPlan -CatalogPath $Catalog -InstallRoot $InstallRoot -Port $Port } @($World.catalog, $World.root, $Port); return 'none' } catch { return ((Get-FailureCode $_.Exception) + '|' + [string] $_.Exception.Data['FastLlmReason'] + '|' + [string] $_.Exception.Message) } }
     # The plan resolver reads the catalog through the module: from here on the catalog is the test world's (engine version "test").
@@ -373,7 +419,7 @@ try {
     foreach ($badPort in @(80, 1023, 65536, -1)) { Check ((& $planCode $goodWorld $badPort).StartsWith('embeddings-port-invalid|')) "plan: port $badPort is refused as embeddings-port-invalid" }
     $defaultPlan = InModule { param($Catalog, $InstallRoot) Get-FastLlmSidecarPlan -CatalogPath $Catalog -InstallRoot $InstallRoot } @($goodWorld.catalog, $goodWorld.root)
     Check ([int] $defaultPlan.port -eq 8081 -and [string] $defaultPlan.endpoint -ceq 'http://127.0.0.1:8081/v1' -and [string] $defaultPlan.engineId -ceq 'llama.cpp-test-vulkan' -and [string] $defaultPlan.backend -ceq 'vulkan' -and [string] $defaultPlan.placement -ceq 'cpu') 'plan: the default port is 8081, and the engine is the built-in Vulkan engine with CPU placement'
-    Check (@($st.events | Where-Object { $_ -clike 'hash:*' }).Count -eq 0) 'plan: nothing is hashed while the option is checked (the model file is hashed when the sidecar starts)'
+    Check (@($st.events | Where-Object { $_ -clike 'hash:*' }).Count -eq 0) 'plan: nothing is hashed while the option is checked (the model file is hashed when the sidecar starts, once for each process)'
     # Nothing is derived from a file size: a model file of another size is simply not the installed component.
     [IO.File]::WriteAllBytes($goodWorld.modelFile, (New-Object byte[] 4096))
     Check ((& $planCode $goodWorld).StartsWith('embeddings-no-model|')) 'plan: a model file of another size is not the installed component (embeddings-no-model); no fit is derived from a size'
@@ -482,6 +528,8 @@ try {
         'exit' = @{ Code = 'embeddings-server-exited'; What = 'a sidecar that exits at once (a start failure)' }
         'nohealth' = @{ Code = 'embeddings-load-timeout'; What = 'a sidecar that never becomes healthy' }
         'gpu-layers' = @{ Code = 'embeddings-placement-not-cpu'; What = 'a sidecar whose model went to a GPU' }
+        'silent' = @{ Code = 'embeddings-placement-not-cpu'; What = 'a sidecar that prints no placement line at all (nothing shows the CPU)' }
+        'gpu-odd' = @{ Code = 'embeddings-placement-not-cpu'; What = 'a CPU placement together with GPU lines in a shape the parse does not know' }
         'dimension-wrong' = @{ Code = 'embeddings-canary-failed'; What = 'a vector of another dimension than the row''s' }
         'unstable' = @{ Code = 'embeddings-canary-failed'; What = 'the same text giving two different vectors' }
         'models-wrong' = @{ Code = 'embeddings-canary-failed'; What = 'a served model name that is not the component' }
@@ -494,6 +542,8 @@ try {
         Use-SidecarWorld -Module $module -State $st -World $world
         $failedRun = Invoke-SidecarScenario -Label "fail-$mode" -World $world -Steps @((New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'sleep' @{ milliseconds = 1500 }), (New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'request'), (New-Step @{ phase = 'ready' } 'stop'))
         $failedDocument = @($failedRun.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'failed' })[0]
+        # A sidecar that never failed leaves nothing to examine: that is the failure of this case, not a reason to end the suite.
+        if ($null -eq $failedDocument) { Check $false "failure ($mode): the sidecar block turned failed with $($case.Code) (no status document ever said failed)"; continue }
         $failedBlock = Get-Sidecar $failedDocument
         Check ($failedRun.completed -and $null -eq $failedRun.failure -and $failedRun.exit -eq 0 -and $failedBlock.failureCode -ceq $case.Code) "failure ($mode): $($case.What) is recorded in the sidecar block as $($case.Code), and the start itself ends cleanly at the stop"
         $failedRequest = Get-StepOutcome $failedRun 'request'
@@ -678,11 +728,13 @@ try {
     Check (@($keyWords | Where-Object { $keyArguments.IndexOf($_, [StringComparison]::Ordinal) -ge 0 }).Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $keyWorld.control 'fault')) -and $keyArguments -cnotmatch '(?i)api[-_]?key') 'key: no argument of the sidecar holds the key or names one'
     $keyAuth = @(Read-Control $keyWorld 'auth.log')
     $keyApi = @($keyAuth | Where-Object { $_ -cnotlike '* /health *' })
-    Check ($keyApi.Count -ge 5 -and $keyApi[0] -ceq 'GET /v1/models none' -and $keyApi[1] -ceq 'GET /v1/models ok') "key: the sidecar's own proof comes first: one request without the key, then one with it ($($keyApi[0]) | $($keyApi[1]))"
+    $keyArgsProofPaths = (@($keyApi | Select-Object -First 2) -join '|')
+    Check ($keyApi.Count -ge 5 -and $keyApi[0] -ceq 'GET /props none' -and $keyApi[1] -ceq 'GET /props ok') "key: the sidecar's own proof comes first, on /props as the text server's does: one request without the key, then one with it ($($keyApi[0]) | $($keyApi[1]))"
     Check ((@($keyApi | Select-Object -Skip 2 -First 3) -join ' | ') -ceq 'GET /v1/models ok | POST /v1/embeddings ok | POST /v1/embeddings ok') 'key: the canary follows, every request with the key'
     Check (@($keyAuth | Where-Object { $_ -clike '* wrong' }).Count -eq 0 -and @($keyAuth | Where-Object { $_ -clike '* /health *' -and $_ -cnotlike '* none' }).Count -eq 0 -and @($keyAuth | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -ge 2 -and @($keyAuth | Where-Object { $_ -ceq 'GET /metrics none' }).Count -eq 0) 'key: the health polls never carry the key, and the idle read of the sidecar''s /metrics always does'
     $keyRequest = Get-StepOutcome $key 'request'
     Check ([int] $keyRequest.sidecarEmbed -eq 401 -and [int] $keyRequest.textModels -eq 401 -and [int] $keyRequest.sidecarHealth -eq 200) 'key: an app without the key is refused by the sidecar (401), as by the text server; /health stays open'
+    Check ([int] $keyRequest.sidecarModelsOpen -eq 200 -and $keyArgsProofPaths -ceq 'GET /props none|GET /props ok') 'key: the engine answers /v1/models without the key (as upstream llama-server does), so it is no proof; the sidecar still reached ready, because its proof is /props'
     $keyedSidecarRequests = @($keyAuth | Where-Object { $_ -clike '* ok' }).Count
     $sidecarAsks = @($keyAsks | Where-Object { $_ -eq [int] $keyWorld.embeddingPort }).Count
     Check ($keyedSidecarRequests -ge 6 -and $sidecarAsks -ge (2 * $keyedSidecarRequests) -and @($keyAsks | Where-Object { $_ -eq [int] $keyWorld.port }).Count -ge 2) "key: every request that carried the key to the sidecar was preceded and followed by the listener check on the SIDECAR's port ($keyedSidecarRequests keyed requests, $sidecarAsks checks)"
@@ -690,6 +742,12 @@ try {
     $keyConsole = ($key.console -join "`n")
     Check ($keyLeaks.Count -eq 0 -and @($keyWords | Where-Object { $keyConsole.IndexOf($_, [StringComparison]::Ordinal) -ge 0 }).Count -eq 0) "key: no key text is in any file (status, run logs, the mock's own argument and request records) or on the console, although the engine printed its key line and every Authorization header ($($keyLeaks -join '; '))"
     Check ((Get-Sidecar $key.final).phase -ceq 'stopped' -and (Wait-PortFree $keyWorld.embeddingPort)) 'key: the stop ends the keyed sidecar too'
+    # The mock printed the key on lines with no api_key label (each request's Authorization header): only the process host's drop of any line
+    # that holds the key can remove them. Besides the one labelled startup line, at least one line per keyed request of the proof and the
+    # start check was dropped (the count only is read, just before the sidecar's process host is closed).
+    $keyedChecks = @($keyApi | Where-Object { $_ -clike '* ok' -and $_ -cnotlike 'GET /metrics*' }).Count
+    $droppedCounts = @($st.dropped.ToArray())
+    Check ($keyedChecks -ge 4 -and $droppedCounts.Count -ge 1 -and [int] $droppedCounts[0] -ge (1 + $keyedChecks)) "key: the sidecar's output capture drops every line that holds the key, not only the labelled one ($($droppedCounts -join ',') lines dropped; $keyedChecks keyed requests echoed the key, and one labelled line)"
 
     # ---- module logging: nothing on the sidecar's key path is handed to PowerShell as a loggable value ----
     # PowerShell module logging records every bound parameter value of a module's functions and of cmdlets. With it on for FastLLM and for
@@ -737,6 +795,10 @@ try {
     $loggedModules = @($module)
     foreach ($builtIn in @('Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management')) { $loggedModules += @(Import-Module $builtIn -PassThru) }
     $logSawOne = $false; $logSawTwo = $false; $logRun = $null; $logText = ''
+    # A document an app sends to the engine while it is still loading, and the sidecar then ends (its output is read for a bind error): made
+    # here at run time, so a marker written in this file cannot be found through logged script text.
+    $logDocMarker = 'B9DOC' + [Guid]::NewGuid().ToString('N')
+    $logDocRun = $null
     try {
         if ($logKind -cne 'none') {
             foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $true }
@@ -746,6 +808,12 @@ try {
             InModule { $script:FastLlmIdlePollSeconds = 1 }
             $logRun = Invoke-SidecarScenario -Label 'key-logged' -World $logWorld -StartOptions @{ ApiKey = 'on'; IdleStopMinutes = 15 } -Steps @((New-Step @{ phase = 'ready'; sidecarPhase = 'ready' } 'sleep' @{ milliseconds = 2500 }), (New-Step @{ phase = 'ready' } 'stop'))
             InModule { $script:FastLlmIdlePollSeconds = 30 }
+            $logDocWorld = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label 'doc-logged' -SidecarMode 'marker-nohealth'
+            Use-SidecarWorld -Module $module -State $st -World $logDocWorld
+            $logDocRun = Invoke-SidecarScenario -Label 'doc-logged' -World $logDocWorld -Steps @(
+                (New-Step @{ phase = 'ready'; sidecarPhase = 'starting'; fileExists = (Join-Path $logDocWorld.control 'listening') } 'request' @{ embedBody = ('{"input":"' + $logDocMarker + ' a private document"}') }),
+                (New-Step @{ phase = 'ready'; sidecarPhase = 'starting' } 'kill-sidecar'),
+                (New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'stop'))
             $logSawTwo = Wait-ModuleLogCanary $logCanaryTwo 60
         }
     }
@@ -782,6 +850,12 @@ try {
         Check ($logFindings.Count -eq 0) "module logging: what PowerShell logged ($($logText.Length) characters, source '$logKind') holds no key, no part of it, and no comma-joined characters or bytes of it ($($logFindings -join '; '))"
         $logFileHits = @(Find-WordsInFiles $logWorld.root @($logMarker, $logMarker.Substring(3, 12), $logMarker.Substring(34, 12)))
         Check ($logFileHits.Count -eq 0) "module logging: and no file of that start holds the key ($($logFileHits -join '; '))"
+        # What the engine printed is never handed to a PowerShell parameter either: the document an app sent while the sidecar loaded was echoed
+        # by the mock engine (as a verbose server would), and the sidecar's start check read that output when the sidecar ended.
+        $logDocAuth = @(Read-Control $logDocWorld 'auth.log')
+        Check ($null -ne $logDocRun -and $logDocRun.completed -and (Get-Field (Get-Sidecar $logDocRun.final) 'failureCode') -ceq 'embeddings-server-exited' -and @($logDocAuth | Where-Object { $_ -ceq 'POST /v1/embeddings none' }).Count -eq 1) 'module logging: the scenario ran: an app''s document reached the engine while it loaded, the sidecar ended, and its block says embeddings-server-exited'
+        Check ($logText.IndexOf($logDocMarker, [StringComparison]::Ordinal) -lt 0 -and $logText.IndexOf('a private document', [StringComparison]::Ordinal) -lt 0) 'module logging: no text an app sent to the engine, echoed in the engine''s output, is in what PowerShell logged'
+        Check (@(Find-WordsInFiles $logDocWorld.root @($logDocMarker) | Where-Object { $_ -notmatch 'steps\.json|client-result' }).Count -eq 0) 'module logging: and the document is in no file FastLLM wrote for that start'
     }
 
     # The listener on the sidecar's port is not the sidecar this run started: nothing with the key is sent to it, and only the sidecar fails.
@@ -793,7 +867,7 @@ try {
     finally { $listenerLies.Clear() }
     $lieAuth = @(Read-Control $lieWorld 'auth.log')
     Check ($lie.completed -and $null -eq $lie.failure -and $lie.exit -eq 0 -and (Get-Sidecar $lie.final).failureCode -ceq 'api-key-listener-not-verified') 'key listener: when the listener on the sidecar''s port cannot be confirmed to be the sidecar, the sidecar fails with api-key-listener-not-verified'
-    Check (@($lieAuth | Where-Object { $_ -cnotlike '* none' }).Count -eq 0 -and @($lieAuth | Where-Object { $_ -ceq 'GET /v1/models none' }).Count -eq 1) "key listener: no request with the key was sent to it (only the keyless half of the proof) ($(@($lieAuth | Where-Object { $_ -cnotlike '* /health *' }) -join ' | '))"
+    Check (@($lieAuth | Where-Object { $_ -cnotlike '* none' }).Count -eq 0 -and @($lieAuth | Where-Object { $_ -ceq 'GET /props none' }).Count -eq 1) "key listener: no request with the key was sent to it (only the keyless half of the proof) ($(@($lieAuth | Where-Object { $_ -cnotlike '* /health *' }) -join ' | '))"
     $lieReady = @($lie.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'failed' })[0]
     Check ($lieReady.phase -ceq 'ready' -and $lieReady.apiKey -ceq 'on' -and $null -eq $lieReady.failureCode -and [int] (Get-StepOutcome $lie 'request').textModels -eq 401 -and [int] (Get-StepOutcome $lie 'request').textHealth -eq 200) 'key listener: the key failure on the sidecar fails only the sidecar; the text model keeps serving with its key'
 
@@ -805,6 +879,59 @@ try {
     $ignore = Invoke-SidecarScenario -Label 'key-not-enforced' -World $ignoreWorld -StartOptions @{ ApiKey = 'on' } -Steps @((New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'request'), (New-Step @{ phase = 'ready' } 'stop'))
     Check ($ignore.completed -and $ignore.exit -eq 0 -and (Get-Sidecar $ignore.final).failureCode -ceq 'api-key-not-enforced' -and @($ignore.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' }).Count -eq 0) 'key proof: a sidecar that answers without the key (200 where 401 is required) never says ready: api-key-not-enforced'
     Check ([int] (Get-StepOutcome $ignore 'request').textModels -eq 401 -and @(Read-Control $ignoreWorld 'auth.log' | Where-Object { $_ -clike 'POST /v1/embeddings*' }).Count -eq 0) 'key proof: the text model keeps serving with its key, and no canary request followed the failed proof'
+
+    # The key may have been sent to another program: after a request WITH the key, the listener on the sidecar's port is no longer the sidecar.
+    # The key is one secret and the text server still accepts it, so this is not a failure of the sidecar alone: the whole run ends as the text
+    # server's own listener change does (api-key-listener-changed, both processes stopped, no restore, no retry, "create a new key").
+    # The check before each send sees the sidecar; the first check after a keyed request sees another program. Once while the sidecar is
+    # checked (the proof's keyed request), once on the keyed /metrics idle read of a ready sidecar.
+    foreach ($exposure in @(
+            @{ Label = 'key-exposed-checking'; Pattern = '* ok'; Options = @{ ApiKey = 'on' }; ReadyFirst = $false },
+            @{ Label = 'key-exposed-idle'; Pattern = 'GET /metrics ok'; Options = @{ ApiKey = 'on'; IdleStopMinutes = 15 }; ReadyFirst = $true })) {
+        $exposedWorld = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label $exposure.Label
+        Use-SidecarWorld -Module $module -State $st -World $exposedWorld
+        InModule { param($InstallRoot, $Holder) Write-FastLlmApiKeyStore -InstallRoot $InstallRoot -ApiKeyHolder $Holder } @($exposedWorld.root, (New-Holder $keyMarker))
+        $listenerLieWhenKeyed[[int] $exposedWorld.embeddingPort] = @{ world = $exposedWorld; pattern = $exposure.Pattern }
+        InModule { $script:FastLlmIdlePollSeconds = 1 }
+        try { $exposed = Invoke-SidecarScenario -Label $exposure.Label -World $exposedWorld -StartOptions $exposure.Options -Steps @((New-Step @{ phase = 'failed' } 'none')) }
+        finally { $listenerLieWhenKeyed.Clear(); InModule { $script:FastLlmIdlePollSeconds = 30 } }
+        $exposedAuth = @(Read-Control $exposedWorld 'auth.log')
+        $exposedCode = Get-FailureCode $exposed.failure
+        $exposedWhere = if ($exposure.ReadyFirst) { 'on the keyed /metrics read of a ready sidecar' } else { 'right after the sidecar''s first request with the key' }
+        Check ($exposed.completed -and $exposedCode -ceq 'api-key-listener-changed' -and [string] $exposed.failure.Data['FastLlmReason'] -ceq 'ApiKeyFailed' -and [string] $exposed.failure.Message -cmatch 'Create a new key') "key exposed ($($exposure.Label)): a listener that changed $exposedWhere ends the whole start with api-key-listener-changed, reason ApiKeyFailed, and the create-a-new-key text (saw: $exposedCode)"
+        Check ($null -ne $exposed.failure -and $null -eq $exposed.exit -and [string] $exposed.final.phase -ceq 'failed' -and [string] $exposed.final.failureCode -ceq 'api-key-listener-changed') "key exposed ($($exposure.Label)): the start raised (a non-zero exit), and the final document says failed with the same code, on the text model's own fields"
+        $exposedSidecarPid = 0; $exposedTextPid = 0
+        $exposedWithSidecar = @($exposed.observations | Where-Object { [int] $_.sidecarPid -gt 0 }); if ($exposedWithSidecar.Count -gt 0) { $exposedSidecarPid = [int] $exposedWithSidecar[0].sidecarPid }
+        $exposedWithText = @($exposed.observations | Where-Object { [int] $_.pid -gt 0 }); if ($exposedWithText.Count -gt 0) { $exposedTextPid = [int] $exposedWithText[0].pid }
+        Check ($exposedSidecarPid -gt 0 -and $exposedTextPid -gt 0 -and (Wait-ProcessGone $exposedSidecarPid) -and (Wait-ProcessGone $exposedTextPid) -and (Wait-PortFree $exposedWorld.port) -and (Wait-PortFree $exposedWorld.embeddingPort)) "key exposed ($($exposure.Label)): both processes are stopped and both ports are free"
+        $exposedEnd = @(Get-LogEvents (Get-RunLog $exposedWorld ([string] $exposed.final.runId)) 'end')
+        Check ($exposedEnd.Count -eq 1 -and $exposedEnd[0].phase -ceq 'failed' -and [int] $exposedEnd[0].exitCode -eq 1 -and $exposedEnd[0].failureCode -ceq 'api-key-listener-changed') "key exposed ($($exposure.Label)): the run log ends with a failed run (exit code 1) and the code, not a clean stop"
+        Check ($exposed.runs.Count -eq 1 -and @($exposed.events | Where-Object { $_ -clike 'supervisor:*' }).Count -eq 1 -and @($exposed.events | Where-Object { $_ -clike 'plan:*' }).Count -eq 1 -and @(Read-Control $exposedWorld 'starts.log').Count -eq 1) "key exposed ($($exposure.Label)): no restore and no retry: one supervised run, one plan, one sidecar start"
+        $exposedKeyed = @($exposedAuth | Where-Object { $_ -clike '* ok' })
+        if ($exposure.ReadyFirst) { Check ($exposedKeyed.Count -ge 5 -and $exposedKeyed[$exposedKeyed.Count - 1] -ceq 'GET /metrics ok' -and @($exposedKeyed | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -eq 1 -and @($exposed.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' }).Count -ge 1) "key exposed ($($exposure.Label)): the sidecar had been ready, and no request with the key followed the one that raised the alarm" }
+        else { Check ($exposedKeyed.Count -eq 1 -and @($exposed.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' }).Count -eq 0) "key exposed ($($exposure.Label)): exactly one request carried the key, no later check followed it, and no document ever said ready" }
+        $exposedBlock = Get-Sidecar $exposed.final
+        Check ($exposedBlock.phase -ceq 'failed' -and (Get-Field $exposedBlock 'failureCode') -ceq 'api-key-listener-changed' -and @($exposed.console | Where-Object { $_ -clike 'Embeddings: not available (api-key-listener-changed).*' -and $_.Contains('create a new key') }).Count -ge 1 -and @($exposed.console | Where-Object { $_.Contains('The model keeps running') }).Count -eq 0) "key exposed ($($exposure.Label)): the sidecar block records the code, and the console says to create a new key, never that the model keeps running"
+        Check (@(Find-WordsInFiles $exposedWorld.root $keyWords).Count -eq 0) "key exposed ($($exposure.Label)): no key text is in any file"
+    }
+    $exposedText = InModule { Get-FastLlmSidecarFailureText -Code 'api-key-listener-changed' -Plan $null }
+    $exposedStatusText = Get-FastLlmEmbeddingsStatusText -Status (([ordered] @{ sidecars = @([ordered] @{ role = 'embedding'; phase = 'failed'; failureCode = 'api-key-listener-changed' }) } | ConvertTo-Json -Depth 5) | ConvertFrom-Json)
+    Check ($exposedText -cmatch 'create a new key' -and $exposedText -cnotmatch 'model keeps running|not affected' -and $exposedStatusText -cmatch '(?i)create a new key' -and $exposedStatusText -cnotmatch 'not affected') 'key exposed: neither the console line nor the status line of the exposure code says the model is not affected'
+    $sidecarOnlyText = InModule { Get-FastLlmSidecarFailureText -Code 'api-key-listener-not-verified' -Plan $null }
+    Check ($sidecarOnlyText.Contains('The model keeps running') -and (Get-FastLlmEmbeddingsStatusText -Status (([ordered] @{ sidecars = @([ordered] @{ role = 'embedding'; phase = 'failed'; failureCode = 'api-key-listener-not-verified' }) } | ConvertTo-Json -Depth 5) | ConvertFrom-Json)).Contains('The model is not affected')) 'key exposed: the not-verified and not-enforced codes (nothing was sent) stay sidecar-only, with their texts as they were'
+
+    # A supervisor pass never waits on more than ONE request to the sidecar. The engine reads every request but /health and never answers it
+    # (the key is on, so the old chain of requests was: the proof without the key, the proof with it, the model list, the two start-check
+    # requests). The stop is written when the first delayed request has arrived, while the sidecar is being checked; the run must be stopped
+    # within one request's timeout (5 s for the proof) plus a pass and a margin, not after the whole chain of timeouts.
+    $hangWorld = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label 'pass-bound' -SidecarMode 'hang'
+    Use-SidecarWorld -Module $module -State $st -World $hangWorld
+    InModule { param($InstallRoot, $Holder) Write-FastLlmApiKeyStore -InstallRoot $InstallRoot -ApiKeyHolder $Holder } @($hangWorld.root, (New-Holder $keyMarker))
+    $hang = Invoke-SidecarScenario -Label 'pass-bound' -World $hangWorld -StartOptions @{ ApiKey = 'on' } -Steps @(
+        (New-Step @{ phase = 'ready'; sidecarPhase = 'checking'; fileExists = (Join-Path $hangWorld.control 'delaying') } 'stop'),
+        (New-Step @{ phase = 'stopped' } 'none' @{ timeoutSeconds = 8 }))
+    Check ($hang.completed -and $null -eq $hang.failure -and $hang.exit -eq 0 -and $hang.final.stopReason -ceq 'user') 'pass bound: a stop written while a sidecar request is unanswered ends the run within 8 seconds (one request timeout of 5 s, one pass, and a margin), not after every request of the checks has timed out'
+    Check (@(Read-Control $hangWorld 'delaying.log').Count -le 1 -and (Wait-PortFree $hangWorld.embeddingPort) -and (Wait-PortFree $hangWorld.port)) 'pass bound: after the stop no further request was sent to the sidecar, and both ports are free'
 
     # The key is changed while the session runs, then the model is switched: the new run serves with the new key, and the sidecar still has
     # the earlier one. It is stopped and its block says why; it is never sent the new key and never started again.

@@ -96,7 +96,7 @@ function New-SidecarTextPlan {
 function New-SidecarTestState {
     param([Parameter(Mandatory = $true)][string] $EnginePath, [Parameter(Mandatory = $true)][string] $HelpersRoot)
     return @{ events = (New-Object 'Collections.Generic.List[string]'); world = $null; enginePath = $EnginePath; helpersRoot = $HelpersRoot
-        writes = (New-Object 'Collections.Generic.List[string]'); runs = (New-Object 'Collections.Generic.List[object]')
+        writes = (New-Object 'Collections.Generic.List[string]'); runs = (New-Object 'Collections.Generic.List[object]'); dropped = (New-Object 'Collections.Generic.List[int]')
         # engineFailFrom: 0 = the engine check always passes; N = the Nth check of a scenario, and every later one, fails.
         engineFailFrom = 0; engineChecks = 0
         # hashFail: text model id -> N: the Nth file check of that model in a scenario, and every later one, fails.
@@ -109,7 +109,8 @@ function Install-SidecarTestBoundaries {
     param([Parameter(Mandatory = $true)] $Module, [Parameter(Mandatory = $true)] $State)
     $saved = & $Module {
         @{ supervisor = (Get-Command Invoke-FastLlmSupervisedServer).ScriptBlock; writeState = (Get-Command Write-FastLlmState).ScriptBlock
-            hash = (Get-Command Test-FastLlmFileHash).ScriptBlock; idlePoll = (Get-Command Invoke-FastLlmIdleStopPoll).ScriptBlock }
+            hash = (Get-Command Test-FastLlmFileHash).ScriptBlock; idlePoll = (Get-Command Invoke-FastLlmIdleStopPoll).ScriptBlock
+            closeProcess = (Get-Command Close-FastLlmSidecarProcess).ScriptBlock }
     }
     & $Module {
         param($S, $Original)
@@ -127,6 +128,13 @@ function Install-SidecarTestBoundaries {
                 if ($State -is [System.Collections.IDictionary]) { $phase = [string] $State['phase'] } elseif ($State.PSObject.Properties['phase']) { $phase = [string] $State.phase }
                 $script:sidecarTest.events.Add('write:' + $phase + ':' + $sidecarPhase)
             }
+        }
+        # The count of output lines the process host dropped because they carried the key (or an api_key label), read just before the sidecar's
+        # process host is closed. A number only: nothing the engine printed is read.
+        function script:Close-FastLlmSidecarProcess {
+            param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Session)
+            try { $closing = $Session['process']; if ($null -ne $closing) { $script:sidecarTest.dropped.Add([int] $closing.SecretLinesDropped) } } catch { $null = $_ }
+            & $script:sidecarTestOriginal.closeProcess -Session $Session
         }
         function script:Assert-FastLlmWindowsPrerequisites { }
         function script:Test-FastLlmEngineInstallation {
@@ -196,7 +204,7 @@ function Install-SidecarTestBoundaries {
 function Use-SidecarWorld {
     param([Parameter(Mandatory = $true)] $Module, [Parameter(Mandatory = $true)] $State, [Parameter(Mandatory = $true)] $World)
     $State.world = $World
-    $State.events.Clear(); $State.writes.Clear(); $State.runs.Clear()
+    $State.events.Clear(); $State.writes.Clear(); $State.runs.Clear(); $State.dropped.Clear()
     $State.engineFailFrom = 0
     $State.engineChecks = 0
     $State.hashFail = @{}
