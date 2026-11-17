@@ -382,7 +382,7 @@ try {
         $inUseParentAnswer = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, (Join-Path $inUseInstall 'components/embedding-model/emb-q8')))
     }
     finally { $inUseLock.Dispose() }
-    Check ((@('waiting', 'starting', 'checking', 'ready') | Where-Object { -not $inUseAnswers[$_] }).Count -eq 0 -and -not $inUseAnswers['failed'] -and -not $inUseAnswers['stopped']) 'in use: while a sidecar block is waiting, starting, checking or ready, its embedding component is in use; once failed or stopped it is not'
+    Check (@(@('waiting', 'starting', 'checking', 'ready') | Where-Object { -not $inUseAnswers[$_] }).Count -eq 0 -and -not $inUseAnswers['failed'] -and -not $inUseAnswers['stopped']) 'in use: while a sidecar block is waiting, starting, checking or ready, its embedding component is in use; once failed or stopped it is not'
     Check ($inUseEngineAnswer -and -not $inUseOtherAnswer -and $inUseParentAnswer) 'in use: the engine root is still in use as before, another embedding component is not, and the folder of the component itself is'
     $inUseNotActive = [bool] (InModule { param($I, $C) Test-FastLlmComponentInUse -InstallRoot $I -ComponentRoot $C } @($inUseInstall, $inUseRoot))
     Check (-not $inUseNotActive) 'in use: when FastLLM is not running (no operation lock), the component is not in use whatever the last status says'
@@ -563,6 +563,12 @@ try {
     $dimensionDocument = @((Get-Content -LiteralPath (Join-Path (Join-Path $temp 'fail-dimension-wrong') 'state/status.json') -Raw | ConvertFrom-Json))[0]
     Check ([int] (Get-Sidecar $dimensionDocument).canary.dimension -eq 1025) 'failure (dimension-wrong): the dimension that was seen (1025) is recorded'
     InModule { $script:FastLlmSidecarLoadTimeoutSeconds = 300 }
+
+    # A CPU load that also prints the CPU backend's repack buffer line is still a CPU placement.
+    $repackWorld = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label 'cpu-repack' -SidecarMode 'cpu-repack'
+    Use-SidecarWorld -Module $module -State $st -World $repackWorld
+    $repack = Invoke-SidecarScenario -Label 'cpu-repack' -World $repackWorld -Steps @((New-Step @{ phase = 'ready'; sidecarPhase = 'ready' } 'request' @{ embedBody = '{"input":"x"}' }), (New-Step @{ phase = 'ready' } 'stop'))
+    Check ($repack.completed -and $repack.exit -eq 0 -and [int] (Get-StepOutcome $repack 'request').sidecarEmbed -eq 200 -and (Get-Sidecar $repack.final).phase -ceq 'stopped' -and @($repack.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' }).Count -ge 1) 'placement: a CPU load that also prints a CPU_REPACK buffer line reaches ready (it is the one buffer line of a CPU load that the placement capture does not keep)'
 
     # A model file that fails its hash, and an engine that fails its file check: found when the sidecar starts, after Ready; never started.
     foreach ($broken in @(@{ Label = 'corrupt-model'; Component = 'corrupt'; EngineFailFrom = 0; Code = 'embeddings-model-invalid' }, @{ Label = 'engine-check'; Component = 'installed'; EngineFailFrom = 2; Code = 'embeddings-engine-unavailable' })) {
@@ -911,7 +917,8 @@ try {
         if ($exposure.ReadyFirst) { Check ($exposedKeyed.Count -ge 5 -and $exposedKeyed[$exposedKeyed.Count - 1] -ceq 'GET /metrics ok' -and @($exposedKeyed | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -eq 1 -and @($exposed.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' }).Count -ge 1) "key exposed ($($exposure.Label)): the sidecar had been ready, and no request with the key followed the one that raised the alarm" }
         else { Check ($exposedKeyed.Count -eq 1 -and @($exposed.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' }).Count -eq 0) "key exposed ($($exposure.Label)): exactly one request carried the key, no later check followed it, and no document ever said ready" }
         $exposedBlock = Get-Sidecar $exposed.final
-        Check ($exposedBlock.phase -ceq 'failed' -and (Get-Field $exposedBlock 'failureCode') -ceq 'api-key-listener-changed' -and @($exposed.console | Where-Object { $_ -clike 'Embeddings: not available (api-key-listener-changed).*' -and $_.Contains('create a new key') }).Count -ge 1 -and @($exposed.console | Where-Object { $_.Contains('The model keeps running') }).Count -eq 0) "key exposed ($($exposure.Label)): the sidecar block records the code, and the console says to create a new key, never that the model keeps running"
+        # (A start that raises returns no console lines to this suite, so the sentence itself is checked below, from the function that makes it.)
+        Check ($exposedBlock.phase -ceq 'failed' -and (Get-Field $exposedBlock 'failureCode') -ceq 'api-key-listener-changed' -and @($exposed.console | Where-Object { $_.Contains('The model keeps running') }).Count -eq 0) "key exposed ($($exposure.Label)): the sidecar block in the final document records the code, and nothing printed says that the model keeps running"
         Check (@(Find-WordsInFiles $exposedWorld.root $keyWords).Count -eq 0) "key exposed ($($exposure.Label)): no key text is in any file"
     }
     $exposedText = InModule { Get-FastLlmSidecarFailureText -Code 'api-key-listener-changed' -Plan $null }

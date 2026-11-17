@@ -252,7 +252,7 @@ function Get-FastLlmConnectEmbeddings {
     if (-not ($dimension -is [int] -or $dimension -is [long]) -or [long] $dimension -lt 1 -or [long] $dimension -gt 65536) { return $null }
     $endpoint = Get-FastLlmConnectProp $block 'endpoint'
     if (-not ($endpoint -is [string])) { return $null }
-    $match = [regex]::Match($endpoint, '\Ahttp://127\.0\.0\.1:(\d{1,5})/v1\z')
+    $match = [regex]::Match($endpoint, '\Ahttp://127\.0\.0\.1:([0-9]{1,5})/v1\z')
     if (-not $match.Success) { return $null }
     $port = [int] $match.Groups[1].Value
     if ($port -lt 1024 -or $port -gt 65535) { return $null }
@@ -281,6 +281,8 @@ function Get-FastLlmEmbeddingsStatusText {
     }
     if ($phase -ceq 'failed') {
         $code = Get-FastLlmConnectProp $block 'failureCode'
+        # A key that may have been seen stops the whole run: that code never says the model is not affected.
+        if ($code -is [string] -and $code -ceq 'api-key-listener-changed') { return "Embeddings: not available ($code). The API key may have been seen by another program: create a new key (fast-llm.ps1 settings -ApiKey rotate), give it to your apps, then start again." }
         if ($code -is [string] -and $code -cmatch '\A[a-z][a-z0-9-]{0,63}\z') { return "Embeddings: not available ($code). The model is not affected." }
         return 'Embeddings: not available. The model is not affected.'
     }

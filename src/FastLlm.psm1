@@ -3503,7 +3503,7 @@ function Get-FastLlmComponentInventory {
 }
 
 # True when a running FastLLM can reach into the component root. A running server whose status records no engine path
-# cannot be proven to be elsewhere, so it also counts as in use.
+# cannot be proven to be elsewhere, so it also counts as in use. A live embedding sidecar keeps its embedding component in use.
 function Test-FastLlmComponentInUse {
     param(
         [Parameter(Mandatory = $true)]
@@ -3527,6 +3527,21 @@ function Test-FastLlmComponentInUse {
             if ($recordedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
                 return $true
             }
+        }
+    }
+    # A live embedding sidecar (waiting, starting, checking or ready) serves a model from an embedding-model component. Its block names the
+    # component and records no path, so the component's own folder decides: the root is in use when it lies inside that folder or holds it.
+    $sidecarBlocks = $status.PSObject.Properties['sidecars']
+    if ($sidecarBlocks) {
+        $embeddingFolders = Join-Path (Join-Path $InstallRoot 'components') 'embedding-model'
+        foreach ($sidecarBlock in @($sidecarBlocks.Value)) {
+            if ($null -eq $sidecarBlock -or -not $sidecarBlock.PSObject.Properties['phase'] -or @('waiting', 'starting', 'checking', 'ready') -cnotcontains [string] $sidecarBlock.phase) { continue }
+            $sidecarComponentId = $null
+            if ($sidecarBlock.PSObject.Properties['componentId']) { $sidecarComponentId = $sidecarBlock.componentId }
+            # A live block whose component cannot be named is in use for every root: it cannot be shown to be elsewhere.
+            if (-not ($sidecarComponentId -is [string]) -or $sidecarComponentId -cnotmatch '\A[a-z0-9][a-z0-9.\-]{1,120}\z') { return $true }
+            $componentPrefix = [System.IO.Path]::GetFullPath((Join-Path $embeddingFolders $sidecarComponentId)).TrimEnd([char[]] @('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+            if ($rootPrefix.StartsWith($componentPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or $componentPrefix.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
         }
     }
     return -not $recorded

@@ -22,6 +22,7 @@ namespace FastLlmTests {
     // /props is a path that needs the key (the supervisor's 401/200 proof uses it, as the text server's does).
     // Modes: ok, exit, nohealth, models-wrong, dimension-wrong, unstable, embed-500, zero-vector, gpu-layers,
     //   silent    loads without printing any load_tensors line at all,
+    //   cpu-repack  a normal CPU load that also prints the CPU backend's CPU_REPACK buffer line,
     //   gpu-odd   prints a CPU placement the supervisor can parse, plus GPU lines in shapes it does not parse (they still count as like-lines),
     //   slow      answers every request but /health only after a delay of 3 s (see "delaying" below),
     //   hang      reads every request but /health and never answers it.
@@ -132,6 +133,10 @@ namespace FastLlmTests {
             } else {
                 Console.Error.WriteLine("load_tensors: offloaded 0/13 layers to GPU");
                 Console.Error.WriteLine("load_tensors: CPU_Mapped model buffer size = 600.00 MiB");
+                if (mode == "cpu-repack") {
+                    // The CPU backend's repacked weights: a CPU load, with one more buffer line than the placement capture keeps.
+                    Console.Error.WriteLine("load_tensors:   CPU_REPACK model buffer size = 300.00 MiB");
+                }
                 if (mode == "gpu-odd") {
                     // GPU placement in shapes the strict parse does not accept: the supervisor's like-line counters see them.
                     Console.Error.WriteLine("load_tensors: offloaded 13/13 layers to Vulkan0");

@@ -1667,8 +1667,17 @@ function Invoke-FastLlmSupervisedServer {
                 }
             }
             # Opt-in embedding sidecar, only now that the text model is Ready and after the stop and switch checks above: one step per pass
-            # (start, wait for its model, its own checks, then watch it). Whatever happens to it changes only its own block.
-            if ($null -ne $SidecarSession -and (Step-FastLlmSidecar -Session $SidecarSession -InstallRoot $InstallRoot -State $state -TextPort ([int] $uri.Port))) {
+            # (start, wait for its model, its own checks, then watch it); a pass sends it at most one request. Whatever happens to it changes
+            # only its own block, with ONE exception: api-key-listener-changed (a listener that changed right after a request with the key was
+            # sent). The key is the text server's too, so that ends this run exactly as the text server's own listener change does, before any
+            # status document is written for it.
+            $sidecarChanged = $false
+            if ($null -ne $SidecarSession) { $sidecarChanged = [bool] (Step-FastLlmSidecar -Session $SidecarSession -InstallRoot $InstallRoot -State $state -TextPort ([int] $uri.Port)) }
+            if ($null -ne $SidecarSession -and $null -ne $SidecarSession['exposure']) {
+                if ($null -eq $apiKeyRunExposure.failure) { $apiKeyRunExposure.failure = $SidecarSession['exposure'] }
+                throw $apiKeyRunExposure.failure
+            }
+            if ($sidecarChanged) {
                 try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { $null = $_ }
             }
             # The GPU memory re-check, every 60 s. The read is time-boxed (200 ms), so the stop file above is still seen within one pass.
@@ -1697,7 +1706,14 @@ function Invoke-FastLlmSupervisedServer {
                     if ($null -ne $apiKeyRunExposure.failure) { throw $apiKeyRunExposure.failure }
                     # With an embedding sidecar the idle stop counts both servers: activity on the sidecar, or a read of its /metrics that
                     # proves nothing, resets the idle clock and withholds the stop.
-                    if ($null -ne $SidecarSession) { $idleStep = Join-FastLlmSidecarIdle -Session $SidecarSession -Step $idleStep -Now $idleNow -InstallRoot $InstallRoot -State $state; $idleDetector = $idleStep.state }
+                    if ($null -ne $SidecarSession) {
+                        $idleStep = Join-FastLlmSidecarIdle -Session $SidecarSession -Step $idleStep -Now $idleNow -InstallRoot $InstallRoot -State $state; $idleDetector = $idleStep.state
+                        # The sidecar's keyed read saw its listener change right after the send: not a failed read, the run ends (see above).
+                        if ($null -ne $SidecarSession['exposure']) {
+                            if ($null -eq $apiKeyRunExposure.failure) { $apiKeyRunExposure.failure = $SidecarSession['exposure'] }
+                            throw $apiKeyRunExposure.failure
+                        }
+                    }
                     # A read refused with 401 (the key the server enforces is not the one this run holds) is a failed read like any other:
                     # it never stops the server. It is logged once for each run of refused reads, so the mismatch is not silent.
                     if ($idleStep.readFailed -and [int] $idleRead.status -eq 401) {

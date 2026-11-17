@@ -3,7 +3,8 @@
 # option nothing in this file runs, no file is read and no field is added anywhere.
 #
 # What decides whether it may start (nothing is derived from a file size or a formula):
-#   - an embedding-model component that is listed, installed and consented (config/components.json; every file is hashed when the sidecar starts);
+#   - an embedding-model component that is listed, installed and consented (config/components.json; every file is hashed when the sidecar
+#     starts, once for each process: a verdict already reached for the same files is kept by the module for the rest of that process);
 #   - a measured sidecar row for exactly that model file on the built-in engine (config/serving-profiles.json, "sidecars");
 #   - CPU placement. A row with any other placement is refused.
 # Without these the option is refused at the start, typed, before anything is launched.
@@ -13,9 +14,11 @@
 # ends (stop, idle stop, a failed switch that stopped, a failure of the text server). Its process host has the same kill-on-close job as
 # the text server's, so both die with the supervisor.
 #
-# Failure isolation: whatever fails here (the port, the file check, the start, the load, the checks, a crash later, the API key on the
-# sidecar) is recorded in the sidecar's own status block with a typed code and never fails, stops or changes the text model. It is never
-# started a second time in a session.
+# Failure isolation: whatever fails here (the port, the file check, the start, the load, the checks, a crash later, a key that was not
+# enforced or could not be sent safely) is recorded in the sidecar's own status block with a typed code and never fails, stops or changes
+# the text model. It is never started a second time in a session. ONE failure is not isolated: api-key-listener-changed, a listener that
+# changed right AFTER a request with the API key was sent. The key is one secret and the text server still accepts it, so it must be taken
+# for held by another program: that ends the whole run, exactly as the text server's own listener change does (Runtime.ps1).
 #
 # PRIVACY: embedding inputs are the user's documents. Nothing from a request, a document or a vector is kept: the engine's output is
 # discarded after the start check, the check embeds a fixed built-in sentence and keeps only its verdict and the vector length, and the
@@ -107,8 +110,9 @@ function Get-FastLlmSidecarArguments {
         '--port', [string] $Port,
         '--cors-origins', 'localhost',
         '--no-cors-credentials',
-        # CPU placement: no device is given to the engine.
+        # CPU placement: no device is given to the engine, and no layer is to be offloaded.
         '--device', 'none',
+        '--n-gpu-layers', '0',
         '--embedding',
         '--pooling', $Pooling,
         '-c', [string] $ContextSize,
@@ -120,8 +124,8 @@ function Get-FastLlmSidecarArguments {
 }
 
 # The plan of the sidecar, or a typed refusal. Cheap on purpose (it runs before the text model starts): the component list, the presence
-# of the component's files (names and sizes, no hashing), its consent receipt and the measured row. The model file is hashed, and the
-# engine is checked, when the sidecar starts.
+# of the component's files (names and sizes, no hashing), its consent receipt and the measured row. The model file is hashed (once for each
+# process), and the engine is checked, when the sidecar starts.
 function Get-FastLlmSidecarPlan {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $CatalogPath, [Parameter(Mandatory = $true)][string] $InstallRoot, [int] $Port = 0, [string] $ComponentsPath, [string] $ProfilesPath)
@@ -243,7 +247,11 @@ function New-FastLlmSidecarSession {
     param([Parameter(Mandatory = $true)] $Plan)
     $block = [ordered] @{ role = 'embedding'; componentId = [string] $Plan.componentId; endpoint = [string] $Plan.endpoint; phase = 'waiting'; processIdentity = $null; placement = 'cpu'; canary = $null }
     return @{ plan = $Plan; block = $block; process = $null; sandbox = $null; attempted = $false; clock = $null; apiKeyHolder = $null; apiKeyId = $null
-        baseUrl = (([string] $Plan.endpoint) -replace '/v1$', ''); idle = @{ promptTokens = $null; predictedTokens = $null; failedLogged = $false }; changed = $false }
+        baseUrl = (([string] $Plan.endpoint) -replace '/v1$', ''); idle = @{ promptTokens = $null; predictedTokens = $null; failedLogged = $false }; changed = $false
+        # The checks send one request for each supervisor pass: where they are, and what they keep between two passes (never an answer's text).
+        checkStage = 'placement'; proofWithout = 0; canaryDimension = $null; canaryFirst = $null
+        # The api-key-listener-changed failure of a request with the key, kept for the run that supervises the sidecar, which ends with it.
+        exposure = $null }
 }
 
 # ---- run log: ids, whole numbers, codes and closed words only ----
@@ -283,7 +291,8 @@ function Add-FastLlmSidecarRunLogEvent {
     Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $State -Event $Event -Fields { Get-FastLlmSidecarRunLogFields -Event $Event -Values $Values }
 }
 
-# The one console line of a failure: the code and a fixed sentence for it. The text model is never affected, and the line says so.
+# The one console line of a failure: the code and a fixed sentence for it. The text model is not affected by any code but one, and the line
+# says so; api-key-listener-changed ends the whole run (the key may have been seen), and its line says to create a new key instead.
 function Get-FastLlmSidecarFailureText {
     param([Parameter(Mandatory = $true)][string] $Code, $Plan)
     $port = 0
@@ -301,9 +310,10 @@ function Get-FastLlmSidecarFailureText {
         'embeddings-api-key-changed' { 'The API key was changed, and the embeddings server still had the earlier key. Start FastLLM again to use embeddings.' }
         'api-key-not-enforced' { 'The API key is on, but the embeddings server did not enforce it.' }
         'api-key-listener-not-verified' { 'The program listening on the embeddings port could not be confirmed to be the embeddings server FastLLM started, so the API key was not sent to it.' }
-        'api-key-listener-changed' { 'Right after a request with the API key, the program listening on the embeddings port could no longer be confirmed to be the embeddings server. Another program may have received the key: create a new key (fast-llm.ps1 settings -ApiKey rotate), give it to your apps, then start again.' }
+        'api-key-listener-changed' { 'Right after a request with the API key, the program listening on the embeddings port could no longer be confirmed to be the embeddings server. Another program may have received the key, so FastLLM stopped: create a new key (fast-llm.ps1 settings -ApiKey rotate), give it to your apps, then start again.' }
         default { 'The embeddings server could not be used.' }
     }
+    if ($Code -ceq 'api-key-listener-changed') { return "Embeddings: not available ($Code). $why" }
     return "Embeddings: not available ($Code). $why The model keeps running; embeddings stay off until the next start."
 }
 
@@ -397,34 +407,42 @@ function ConvertFrom-FastLlmSidecarEmbedding {
     catch { return $null }
 }
 
-# The start check. The served name must be the component, and the fixed built-in sentence, embedded twice, must give the same vector of
-# the row's dimension (finite numbers, not all zero). Returns only the verdict and the vector length that was seen: the vectors and the
-# answers are dropped here. A failure of the API key path is not a failed check and is passed on.
+# One step of the start check (the stage names the request): the served name must be the component ('models'), and the fixed built-in
+# sentence, embedded twice ('embed-1', 'embed-2'), must give the same vector of the row's dimension (finite numbers, not all zero). One
+# request for each call. Returns only the verdict of this step and the vector length that was seen: the answers are dropped here, and the
+# first vector is kept in the session (in memory only) until the second one is compared. A failure of the API key path is not a failed
+# check and is passed on.
 function Test-FastLlmSidecarCanary {
-    param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Session)
-    $result = @{ ok = $false; dimension = $null }
+    param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Session, [Parameter(Mandatory = $true)][string] $Stage)
+    $result = @{ ok = $false; dimension = $Session['canaryDimension'] }
     $alias = [string] $Session.plan.componentId
     $expected = [int] $Session.plan.dimension
     try {
-        $models = Invoke-FastLlmSidecarRequest -Session $Session -Path '/v1/models' -TimeoutMs 5000
-        if ($null -eq $models -or $models.Status -ne 200) { return $result }
-        $listed = @((ConvertFrom-Json -InputObject ([string] $models.Body) -ErrorAction Stop).data)
-        if ($listed.Count -ne 1 -or [string] $listed[0].id -cne $alias) { return $result }
-        $first = $null
-        for ($attempt = 0; $attempt -lt 2; $attempt++) {
-            $answer = Invoke-FastLlmSidecarRequest -Session $Session -Path '/v1/embeddings' -Body @{ model = $alias; input = $script:FastLlmSidecarCanaryText } -TimeoutMs 30000
-            if ($null -eq $answer -or $answer.Status -ne 200) { return $result }
-            $vector = ConvertFrom-FastLlmSidecarEmbedding -Body ([string] $answer.Body)
-            if ($null -eq $vector) { return $result }
-            $result.dimension = [int] $vector.Length
-            if ($vector.Length -ne $expected) { return $result }
-            if ($attempt -eq 0) {
-                $nonZero = $false
-                foreach ($number in $vector) { if ($number -ne 0.0) { $nonZero = $true; break } }
-                if (-not $nonZero) { return $result }
-                $first = $vector
-            }
-            else { for ($index = 0; $index -lt $vector.Length; $index++) { if ($vector[$index] -ne $first[$index]) { return $result } } }
+        if ($Stage -ceq 'models') {
+            $models = Invoke-FastLlmSidecarRequest -Session $Session -Path '/v1/models' -TimeoutMs 5000
+            if ($null -eq $models -or $models.Status -ne 200) { return $result }
+            $listed = @((ConvertFrom-Json -InputObject ([string] $models.Body) -ErrorAction Stop).data)
+            if ($listed.Count -ne 1 -or [string] $listed[0].id -cne $alias) { return $result }
+            $result.ok = $true
+            return $result
+        }
+        $answer = Invoke-FastLlmSidecarRequest -Session $Session -Path '/v1/embeddings' -Body @{ model = $alias; input = $script:FastLlmSidecarCanaryText } -TimeoutMs 30000
+        if ($null -eq $answer -or $answer.Status -ne 200) { return $result }
+        $vector = ConvertFrom-FastLlmSidecarEmbedding -Body ([string] $answer.Body)
+        if ($null -eq $vector) { return $result }
+        $result.dimension = [int] $vector.Length
+        $Session['canaryDimension'] = [int] $vector.Length
+        if ($vector.Length -ne $expected) { return $result }
+        if ($Stage -ceq 'embed-1') {
+            $nonZero = $false
+            foreach ($number in $vector) { if ($number -ne 0.0) { $nonZero = $true; break } }
+            if (-not $nonZero) { return $result }
+            $Session['canaryFirst'] = $vector
+        }
+        else {
+            $first = $Session['canaryFirst']
+            if ($null -eq $first -or $first.Length -ne $vector.Length) { return $result }
+            for ($index = 0; $index -lt $vector.Length; $index++) { if ($vector[$index] -ne $first[$index]) { return $result } }
         }
         $result.ok = $true
     }
@@ -436,7 +454,7 @@ function Test-FastLlmSidecarCanary {
 }
 
 # waiting -> starting. Runs only after the text model is Ready. In order: the port, the built-in engine's file check, the model's full
-# file check (every file hashed) and its consent receipt, then the launch, in its own process host and its own empty configuration roots,
+# file check (every file hashed, once for each process) and its consent receipt, then the launch, in its own process host and its own empty configuration roots,
 # with the text server's environment builder (the same scrub of inherited LLAMA_*, GGML_* and the rest; the key, when on, in the
 # environment only).
 function Start-FastLlmSidecarProcess {
@@ -506,7 +524,9 @@ function Wait-FastLlmSidecarHealth {
             # The engine's last lines arrive just after the exit. They are startup output only (nothing was asked of this server yet).
             $outputWait = [Diagnostics.Stopwatch]::StartNew()
             while (-not $process.OutputCompleted -and $outputWait.ElapsedMilliseconds -lt 1000) { Start-Sleep -Milliseconds 50 }
-            if (Test-FastLlmServerBindFailure -Text ([string] $process.Snapshot()) -Port $port) { throw (New-FastLlmSidecarStop -Code 'embeddings-port-in-use') }
+            # The output is matched in place and handed to no command: what an engine prints can echo what an app sent it, and every
+            # parameter of a command can be recorded by PowerShell's module logging. (The same pattern as Test-FastLlmServerBindFailure.)
+            if ([regex]::IsMatch([string] $process.Snapshot(), ("couldn't bind HTTP server socket, hostname: 127\.0\.0\.1, port: $port(?![0-9])"))) { throw (New-FastLlmSidecarStop -Code 'embeddings-port-in-use') }
         }
         throw (New-FastLlmSidecarStop -Code 'embeddings-server-exited')
     }
@@ -517,43 +537,113 @@ function Wait-FastLlmSidecarHealth {
     if ($Session['clock'].Elapsed.TotalSeconds -ge [double] $script:FastLlmSidecarLoadTimeoutSeconds) { throw (New-FastLlmSidecarStop -Code 'embeddings-load-timeout') }
 }
 
-# checking -> ready. The gates, in order: CPU placement (what the engine printed, taken before any request), the sidecar's OWN 401/200
-# proof when the API key is on, then the start check. Only then may the block say ready. The engine's output is discarded from here on.
+# The engine's own counters for the lines it saw ("tensorLines=N, offloadLike=N, bufferLike=N, ..."), as numbers, or $null when they cannot
+# be read. They count every load_tensors line that mentions an offload or a model buffer, whatever its shape.
+function Get-FastLlmSidecarPlacementCounters {
+    param($Process)
+    try {
+        $match = [regex]::Match([string] $Process.PlacementDiagnostics(), '\AtensorLines=([0-9]{1,6}), offloadLike=([0-9]{1,6}), bufferLike=([0-9]{1,6}), captured=([0-9]{1,6}), dropped=([0-9]{1,6}), generalOutputTruncated=(True|False)\z')
+        if (-not $match.Success) { return $null }
+        # The one buffer line of a CPU load that the placement capture does not keep: the CPU backend's repacked weights. It is counted in the
+        # output (matched in place, handed to no command), so that a CPU load that prints it is not mistaken for a line of an unknown shape.
+        $repackLines = [regex]::Matches([string] $Process.Snapshot(), '(?m)^.*load_tensors:\s+CPU_REPACK\s+model buffer size\s*=\s*[0-9]{1,32}(?:\.[0-9]{1,32})?\s+MiB\s*$').Count
+        return @{ offloadLike = [int] $match.Groups[2].Value; bufferLike = [int] $match.Groups[3].Value; dropped = [int] $match.Groups[5].Value; cpuBufferLike = [int] $Process.CpuBufferLikeLines; repackLines = [int] $repackLines }
+    }
+    catch { return $null }
+}
+
+# CPU placement needs positive evidence: exactly one offload line that says 0 layers, at least one CPU buffer line, no GPU buffer line, and
+# every line the process host counted as an offload or buffer line is one that was parsed, or the CPU backend's repack line (a line in a
+# shape this parse does not know could be a GPU line). Anything else - no line at all included - is not CPU placement. The text server reads its placement the same way.
+function Test-FastLlmSidecarCpuPlacement {
+    param([Parameter(Mandatory = $true)] $Seen, $Counters, [bool] $Overflow)
+    if ($Overflow -or $null -eq $Counters) { return $false }
+    if ([int] $Seen.offloadLines -ne 1 -or [int] $Seen.offloadedLayers -ne 0 -or [int] $Seen.gpuBufferLines -ne 0 -or [int] $Seen.cpuBufferLines -lt 1) { return $false }
+    if ([int] $Counters.dropped -ne 0 -or [int] $Counters.offloadLike -ne [int] $Seen.offloadLines) { return $false }
+    if ([int] $Counters.bufferLike -ne ([int] $Seen.gpuBufferLines + [int] $Seen.cpuBufferLines + [int] $Counters.repackLines) -or [int] $Counters.cpuBufferLike -ne [int] $Seen.cpuBufferLines) { return $false }
+    return $true
+}
+
+# checking -> ready, ONE request for each call (a supervisor pass never waits on more than one sidecar request). The stages, in order:
+#   placement      (no request) the engine's own output must show CPU placement, taken before any request;
+#   proof-keyless  with the API key on: /props without the key must be refused (401), as the text server's own proof does it
+#                  (the model list is open without a key in the engine, so it proves nothing);
+#   proof-keyed    /props with the key must be answered (200); together they are the sidecar's OWN 401/200 proof;
+#   models, embed-1, embed-2   the start check (Test-FastLlmSidecarCanary);
+#   finish         (no request) the block says ready, and the engine's output is discarded from here on.
+# A stage that fails turns the sidecar to failed (the caller does it, from the code thrown here).
 function Complete-FastLlmSidecarChecks {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Session, [Parameter(Mandatory = $true)][string] $InstallRoot, $State)
     $process = $Session['process']
     if ($null -eq $process -or $process.Process.HasExited) { throw (New-FastLlmSidecarStop -Code 'embeddings-server-exited') }
-    $seen = ConvertFrom-FastLlmSidecarPlacement -Text ([string] $process.PlacementSnapshot())
-    Add-FastLlmSidecarRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'sidecar-placement' -Values $seen
-    if ([bool] $process.PlacementOverflow -or [int] $seen.gpuBufferLines -gt 0 -or [int] $seen.offloadedLayers -gt 0) { throw (New-FastLlmSidecarStop -Code 'embeddings-placement-not-cpu') }
-    if ($null -ne $Session['apiKeyHolder']) {
-        # One request without the key must be refused (401) and one with it must be answered (200); no answer counts as 0.
-        $proofWithout = 0
-        $proofWith = 0
-        try { $proofWithout = [int] (Invoke-FastLlmSidecarRequest -Session $Session -Path '/v1/models' -TimeoutMs 5000 -WithoutKey).Status } catch { $proofWithout = 0 }
-        try { $proofWith = [int] (Invoke-FastLlmSidecarRequest -Session $Session -Path '/v1/models' -TimeoutMs 5000).Status }
+    $stage = [string] $Session['checkStage']
+    if ($stage -ceq 'placement') {
+        $seen = ConvertFrom-FastLlmSidecarPlacement -Text ([string] $process.PlacementSnapshot())
+        Add-FastLlmSidecarRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'sidecar-placement' -Values $seen
+        if (-not (Test-FastLlmSidecarCpuPlacement -Seen $seen -Counters (Get-FastLlmSidecarPlacementCounters -Process $process) -Overflow ([bool] $process.PlacementOverflow))) { throw (New-FastLlmSidecarStop -Code 'embeddings-placement-not-cpu') }
+        $stage = 'models'
+        if ($null -ne $Session['apiKeyHolder']) { $stage = 'proof-keyless' }
+        $Session['checkStage'] = $stage
+    }
+    if ($stage -ceq 'proof-keyless') {
+        # No answer counts as 0.
+        $withoutKey = 0
+        try { $withoutKey = [int] (Invoke-FastLlmSidecarRequest -Session $Session -Path '/props' -TimeoutMs 5000 -WithoutKey).Status } catch { $withoutKey = 0 }
+        $Session['proofWithout'] = $withoutKey
+        $Session['checkStage'] = 'proof-keyed'
+        return
+    }
+    if ($stage -ceq 'proof-keyed') {
+        $withKey = 0
+        try { $withKey = [int] (Invoke-FastLlmSidecarRequest -Session $Session -Path '/props' -TimeoutMs 5000).Status }
         catch {
             if ([string] $_.Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed') { throw }
-            $proofWith = 0
+            $withKey = 0
         }
-        if ((Get-FastLlmApiKeyEnforcement -WithoutKeyStatus $proofWithout -WithKeyStatus $proofWith) -cne 'enforced') { throw (New-FastLlmSidecarStop -Code 'api-key-not-enforced') }
+        if ((Get-FastLlmApiKeyEnforcement -WithoutKeyStatus ([int] $Session['proofWithout']) -WithKeyStatus $withKey) -cne 'enforced') { throw (New-FastLlmSidecarStop -Code 'api-key-not-enforced') }
+        $Session['checkStage'] = 'models'
+        return
     }
-    $canary = Test-FastLlmSidecarCanary -Session $Session
-    $dimension = $null
-    if ($canary.dimension -is [int]) { $dimension = [int] $canary.dimension }
-    $Session.block['canary'] = [ordered] @{ ok = [bool] $canary.ok; dimension = $dimension }
-    Add-FastLlmSidecarRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'sidecar-canary' -Values @{ ok = [bool] $canary.ok; dimension = $dimension }
-    if (-not [bool] $canary.ok) { throw (New-FastLlmSidecarStop -Code 'embeddings-canary-failed') }
+    if (@('models', 'embed-1', 'embed-2') -ccontains $stage) {
+        $canary = Test-FastLlmSidecarCanary -Session $Session -Stage $stage
+        if (-not [bool] $canary.ok) {
+            $seenDimension = $null
+            if ($canary.dimension -is [int]) { $seenDimension = [int] $canary.dimension }
+            $Session.block['canary'] = [ordered] @{ ok = $false; dimension = $seenDimension }
+            Add-FastLlmSidecarRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'sidecar-canary' -Values @{ ok = $false; dimension = $seenDimension }
+            throw (New-FastLlmSidecarStop -Code 'embeddings-canary-failed')
+        }
+        $Session['checkStage'] = $(if ($stage -ceq 'models') { 'embed-1' } elseif ($stage -ceq 'embed-1') { 'embed-2' } else { 'finish' })
+        return
+    }
+    if ($stage -cne 'finish') { throw (New-FastLlmSidecarStop -Code 'embeddings-internal-error') }
+    $dimension = [int] $Session['canaryDimension']
+    $Session['canaryFirst'] = $null
+    $Session.block['canary'] = [ordered] @{ ok = $true; dimension = $dimension }
+    Add-FastLlmSidecarRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'sidecar-canary' -Values @{ ok = $true; dimension = $dimension }
     if ($process.Process.HasExited) { throw (New-FastLlmSidecarStop -Code 'embeddings-server-exited') }
     # From here on apps send their documents: nothing the engine prints is kept.
     $process.DiscardOutput()
     $Session.block['phase'] = 'ready'
     Add-FastLlmSidecarRunLogEvent -InstallRoot $InstallRoot -State $State -Event 'sidecar-phase' -Values @{ phase = 'ready' }
-    Write-Host "Embeddings: ready at $([string] $Session.plan.endpoint) (model '$([string] $Session.plan.componentId)', $([int] $canary.dimension) dimensions, on the CPU)."
+    Write-Host "Embeddings: ready at $([string] $Session.plan.endpoint) (model '$([string] $Session.plan.componentId)', $dimension dimensions, on the CPU)."
+}
+
+# True for the one key failure that is not the sidecar's alone: a listener that changed right AFTER a request with the key was sent (the
+# same typed failure the text server's own sender raises). Before the send, nothing was sent (api-key-listener-not-verified): that stays
+# the sidecar's.
+function Test-FastLlmSidecarKeyExposure {
+    param($Exception)
+    if ($null -eq $Exception -or $null -eq $Exception.Data) { return $false }
+    return [bool] ([string] $Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed' -and [string] $Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed')
 }
 
 # One step of the sidecar, called from the supervisor's post-Ready loop on every pass (so a stop or a switch is never kept waiting by a
-# model that is loading). Returns $true when the block changed, so the caller writes the status document. Never throws.
+# model that is loading). A pass sends at most ONE request to the sidecar (the health poll, or one request of the checks, with its own
+# timeout: 30 s at most, for a start-check request, once in a session), so a stop waits for that one request and no more.
+# Returns $true when the block changed, so the caller writes the status document. Never throws.
+# A key that may have been sent to another program (api-key-listener-changed) is kept in the session's 'exposure', and the caller ends the
+# whole run with it (Runtime.ps1): it is the text server's key too.
 function Step-FastLlmSidecar {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Session, [Parameter(Mandatory = $true)][string] $InstallRoot, $State, [int] $TextPort = 0)
     $before = [string] $Session.block['phase']
@@ -567,7 +657,10 @@ function Step-FastLlmSidecar {
             if ($null -eq $process -or $process.Process.HasExited) { throw (New-FastLlmSidecarStop -Code 'embeddings-server-exited') }
         }
     }
-    catch { Set-FastLlmSidecarFailed -Session $Session -Code (Get-FastLlmSidecarFailureCode -Exception $_.Exception) -InstallRoot $InstallRoot -State $State }
+    catch {
+        if (Test-FastLlmSidecarKeyExposure -Exception $_.Exception) { $Session['exposure'] = $_.Exception }
+        Set-FastLlmSidecarFailed -Session $Session -Code (Get-FastLlmSidecarFailureCode -Exception $_.Exception) -InstallRoot $InstallRoot -State $State
+    }
     $changed = [bool] ([string] $Session.block['phase'] -cne $before -or [bool] $Session['changed'])
     $Session['changed'] = $false
     return $changed
@@ -586,8 +679,10 @@ function Join-FastLlmSidecarIdle {
             if ($null -ne $response -and $response.Status -eq 200) { $text = [string] $response.Body }
         }
         catch {
-            # A failure of the key path on the sidecar fails the sidecar (and only it); any other failed read is just a failed read.
+            # A failure of the key path on the sidecar fails the sidecar; any other failed read is just a failed read. A listener that changed
+            # right after the send is also kept for the run, which ends with it.
             if ([string] $_.Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed') {
+                if (Test-FastLlmSidecarKeyExposure -Exception $_.Exception) { $Session['exposure'] = $_.Exception }
                 Set-FastLlmSidecarFailed -Session $Session -Code (Get-FastLlmSidecarFailureCode -Exception $_.Exception) -InstallRoot $InstallRoot -State $State
                 return $Step
             }

@@ -1729,7 +1729,8 @@ function New-FastLlmBenchmarkFailureReport {
 # A Thinking setting is a user choice, never the recipe configuration: a run started with it off (or with any --reasoning argument) is not benchmarked.
 # The local chat page is the same: a run started with it on (or without --no-ui) is not benchmarked.
 # The idle stop is the same: a run that may stop itself part-way through a measurement is not benchmarked.
-# state.thinking, state.chatPage, state.idleStopMinutes, state.apiKey and requestedArguments are read tolerantly; a status written before a field existed means the default.
+# Embeddings are the same: a run with the embedding sidecar on (its status has a sidecars field) has a second process on the PC.
+# state.thinking, state.chatPage, state.idleStopMinutes, state.apiKey, state.sidecars and requestedArguments are read tolerantly; a status written before a field existed means the default.
 function Assert-FastLlmBenchmarkDefaultSetup {
     param($State)
     $refusal = 'Benchmarks measure the default setup. Set Thinking to Auto, start again, then benchmark.'
@@ -1742,6 +1743,10 @@ function Assert-FastLlmBenchmarkDefaultSetup {
     # The API key is the same: a user choice, and the benchmark sends no key (the measured requests would be refused). Any value but an absent field or off is refused.
     $keyRefusal = 'Benchmarks measure the default setup. Turn the API key off, start again, then benchmark.'
     if ($State.PSObject.Properties['apiKey'] -and [string]$State.apiKey -cne 'off') { throw $keyRefusal }
+    # Embeddings are the same: the opt-in sidecar is a second server process, and a user choice. Any status with a sidecars field is refused,
+    # whatever its block says (it was on for this run).
+    $embeddingsRefusal = 'Benchmarks measure the default setup. Turn embeddings off, start again, then benchmark.'
+    if ($State.PSObject.Properties['sidecars']) { throw $embeddingsRefusal }
     if ($State.recipe -and $State.recipe.PSObject.Properties['requestedArguments']) {
         $hasNoUi = $false
         foreach ($argument in @($State.recipe.requestedArguments)) { if (([string]$argument) -ceq '--no-ui') { $hasNoUi = $true } }
