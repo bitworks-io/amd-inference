@@ -1258,7 +1258,7 @@ foreach($case in @(@{Value=30;Expect=30},@{Value=15;Expect=15},@{Value=60;Expect
     Check ($idleRequest.idleStopMinutes -eq $case.Expect) ("idle-request: a saved idleStopMinutes of $($case.Value) is carried as $($case.Expect)")
 }
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $idleRequestRoot -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).idleStopMinutes -eq 0) 'idle-request: a settings object without idleStopMinutes gives 0'
-Check ($uiText.Contains('-ChatPage $ChatPage -IdleStopMinutes $IdleStop -NoWait') -and $uiText.Contains('$Request.chatPage $Request.idleStopMinutes')) 'idle-request: Start in background hands the saved idle stop to the host'
+Check ($uiText.Contains('-ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -NoWait') -and $uiText.Contains('$Request.chatPage $Request.idleStopMinutes')) 'idle-request: Start in background hands the saved idle stop to the host'
 # The Settings dialog row: Never / after 15 / 30 / 60 minutes, saved through Set-FastLlmServingSettings, no label over its control, below the chat page rows and above the buttons.
 Check ($uiText.Contains("Text='Stop the model when idle'") -and $uiText.Contains("'Never (default)','After 15 minutes','After 30 minutes','After 60 minutes'")) 'idle-dialog: the row is Stop the model when idle with Never, After 15, 30 and 60 minutes'
 Check ($uiText.Contains('-IdleStopMinutes $savedIdle') -and $uiText.Contains('@(0,15,30,60)[')) 'idle-dialog: Save writes the chosen minutes through Set-FastLlmServingSettings'

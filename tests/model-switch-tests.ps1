@@ -57,7 +57,7 @@ function Get-ModeStarts($World,[string]$ModelId) {
 # ---- the replaced boundaries (module scope), driven by one state table ----
 $st=@{ events=(New-Object 'Collections.Generic.List[string]'); world=$null; enginePath=$enginePath; planCalls=(New-Object 'Collections.Generic.List[object]')
     planFailures=@{}; hashResults=@{}; hashHold=@{}; hashMarker=$null; inventoryHold=$false; stopAtSwitchWrite=$false; snapshots=(New-Object 'Collections.Generic.List[object]'); writes=(New-Object 'Collections.Generic.List[object]')
-    lockFree=(New-Object 'Collections.Generic.List[string]'); runs=(New-Object 'Collections.Generic.List[object]'); thinking='auto'; chatPage='off' }
+    lockFree=(New-Object 'Collections.Generic.List[string]'); runs=(New-Object 'Collections.Generic.List[object]'); thinking='auto'; chatPage='off'; serverExtra=@() }
 function Read-StatusText($World) {
     $path=Join-Path $World.state 'status.json'
     for ($attempt=0; $attempt -lt 20; $attempt++) { try { if (Test-Path -LiteralPath $path) { return [IO.File]::ReadAllText($path) } } catch { $null=$_ }; Start-Sleep -Milliseconds 15 }
@@ -84,7 +84,7 @@ $st.newPlan={
         backend='Vulkan'; engineVersion='test'; enginePath=$st.enginePath
         selectedAdapters=@([pscustomobject]@{device='Vulkan0'}); model=$model; modelPath=(Join-Path $world.models ([string]$model.file))
         splitMode='none'; tensorSplit=$null; endpoint="http://127.0.0.1:$($world.port)/v1"
-        serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$($world.port)",'-ModeFile',(Join-Path $world.root ([string]$model.id+'.modes')),'-Model',[string]$model.id,'-Context','1024')
+        serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$($world.port)",'-ModeFile',(Join-Path $world.root ([string]$model.id+'.modes')),'-Model',[string]$model.id,'-Context','1024')+@($st.serverExtra)
         recipe=$recipe; warnings=@()
     }
 }
@@ -156,7 +156,7 @@ $savedWriteState=& $module { (Get-Command Write-FastLlmState).ScriptBlock }
         return (& $script:switchTest.newPlan ([string]$ModelId) ([string]$RecipeId) $bound)
     }
     function script:Invoke-FastLlmSupervisedServer {
-        param($Plan,[string]$InstallRoot,[int]$LoadTimeoutSeconds=300,[string]$CatalogPath,[string]$VulkanBarMitigation='off',[switch]$ThroughputCanary,[switch]$SelfTest,[string]$DeviceBinding='off',[int]$IdleStopMinutes=0,[switch]$AllowSwitch,$SwitchContext)
+        param($Plan,[string]$InstallRoot,[int]$LoadTimeoutSeconds=300,[string]$CatalogPath,[string]$VulkanBarMitigation='off',[switch]$ThroughputCanary,[switch]$SelfTest,[string]$DeviceBinding='off',[int]$IdleStopMinutes=0,[switch]$AllowSwitch,$SwitchContext,$ApiKeyHolder)
         $script:switchTest.events.Add('supervisor:'+[string]$Plan.model.id)
         $run=@{ modelId=[string]$Plan.model.id; bound=(@($PSBoundParameters.Keys | Sort-Object) -join ','); idleStopMinutes=[int]$IdleStopMinutes; selfTest=[bool]$SelfTest; runId=$null; finalText=$null; failed=$false; thinking=[string]$Plan.requestedThinking }
         $script:switchTest.runs.Add($run)
@@ -172,7 +172,7 @@ $savedWriteState=& $module { (Get-Command Write-FastLlmState).ScriptBlock }
 function Use-World($World) {
     $st.world=$World
     $st.events.Clear();$st.planCalls.Clear();$st.snapshots.Clear();$st.lockFree.Clear();$st.runs.Clear();$st.writes.Clear()
-    $st.planFailures=@{};$st.hashResults=@{};$st.hashHold=@{};$st.hashMarker=$null;$st.inventoryHold=$false;$st.stopAtSwitchWrite=$false
+    $st.planFailures=@{};$st.hashResults=@{};$st.hashHold=@{};$st.hashMarker=$null;$st.inventoryHold=$false;$st.stopAtSwitchWrite=$false;$st.serverExtra=@()
     Install-SwitchTestWorld -Module $module -WorldPath $World.path
 }
 function Set-BusyWait([double]$Seconds,[int]$PollMilliseconds) { & $module { param($S,$P) $script:FastLlmSwitchBusyWaitSeconds=$S; $script:FastLlmSwitchBusyPollMilliseconds=$P } $Seconds $PollMilliseconds }
@@ -719,6 +719,162 @@ try {
     Check ((Test-Path -LiteralPath $followed) -and (Test-Path -LiteralPath (Join-Path $world.models 'model-a.gguf')) -and @(Get-ChildItem -LiteralPath $world.state -Force | Where-Object { $_.Name -like 'switch-*' }).Count -eq 0) 'refused requests: what the reparse point pointed at is untouched and no request file is left'
     $switchKeys=[string](@(Get-ReadyObservations $r $r.runs[0].runId)[0].keys)
     Check ($r.runs[0].bound -ceq $switchSupervisorBound -and ((@($switchKeys -split ',') | Where-Object { (@($defaultKeys -split ',')) -cnotcontains $_ }) -join ',') -ceq 'switchAllowed' -and (@(@($defaultKeys -split ',') | Where-Object { (@($switchKeys -split ',')) -cnotcontains $_ })).Count -eq 0) 'status: with -AllowSwitch and no switch, the only field added to the default document is switchAllowed'
+
+    # ================= the API key (opt-in) with a model switch =================
+    # With the key on, the server answers /metrics only with the key, so the busy read of a switch carries it (the run's keyed sender, as the
+    # idle read does), and every start of a sequence - the first, the target, the restore - reads the key store itself and gives its own
+    # server the key through the environment only. A fake protector and generated marker keys; the mock enforces the key as llama-server does
+    # and records what each request carried in <diagnostic>.auth (never the key).
+    $keyProtector=@{
+        Protect={ param([byte[]]$Bytes) $out=New-Object 'System.Collections.Generic.List[byte]';$out.AddRange([byte[]](0x46,0x4B,0x31));foreach($b in $Bytes){$out.Add([byte]($b -bxor 0x5A))};return ,($out.ToArray()) }
+        Unprotect={ param([byte[]]$Bytes) if($Bytes.Length -lt 4 -or $Bytes[0] -ne 0x46 -or $Bytes[1] -ne 0x4B -or $Bytes[2] -ne 0x31){throw 'fake protector: not protected data'};$out=New-Object 'System.Collections.Generic.List[byte]';for($i=3;$i -lt $Bytes.Length;$i++){$out.Add([byte]($Bytes[$i] -bxor 0x5A))};return ,($out.ToArray()) }
+    }
+    $keyMarker='fl-'+('LEAKMARKER'*3)+'switchKEY'+'Zq7_'
+    if ($keyMarker.Length -ne 46) { throw 'the switch-test marker is not a well-formed key' }
+    $keyWords=@('LEAKMARKER','Zq7_')
+    $keyHolder=New-Object Security.SecureString;foreach($c in $keyMarker.ToCharArray()){$keyHolder.AppendChar($c)};$keyHolder.MakeReadOnly()
+    function Get-KeyTestListenerOwners([int]$Port) {
+        $found=New-Object 'System.Collections.Generic.List[int]'
+        foreach ($line in @(& lsof -nP "-iTCP@127.0.0.1:$Port" -sTCP:LISTEN -Fp 2>$null)) { if ([string]$line -match '^p(\d+)$') { $value=[int]$Matches[1]; if (-not $found.Contains($value)) { $found.Add($value) } } }
+        return $found.ToArray()
+    }
+    function New-KeyWorld([string]$Label,[hashtable]$Modes,[string]$KeyMode) {
+        $keyWorld=New-SwitchWorld $Label $Modes
+        Use-World $keyWorld
+        & $module { param($R,$K) Write-FastLlmApiKeyStore -InstallRoot $R -ApiKeyHolder $K } $keyWorld.root $keyHolder
+        $st.serverExtra=@('-DiagnosticPath',(Join-Path $keyWorld.root 'mock-diagnostic.txt'),'-KeyMode',$KeyMode)
+        return $keyWorld
+    }
+    function Get-KeyAuth($World) { $path=Join-Path $World.root 'mock-diagnostic.txt.auth'; if (Test-Path -LiteralPath $path) { return @([IO.File]::ReadAllLines($path) | Where-Object { $_ }) }; return @() }
+    # Every file of the world (status, run logs, state) and whatever the start raised: a key or its tail anywhere is a leak.
+    function Find-KeyLeaks($Scenario) {
+        $hits=@()
+        foreach ($file in @(Get-ChildItem -LiteralPath $Scenario.world.root -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+            $text=[Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($file.FullName))
+            foreach ($word in $keyWords) { if ($text.IndexOf($word,[StringComparison]::Ordinal) -ge 0) { $hits+=($file.Name+' :: '+$word) } }
+        }
+        $spoken=''
+        if ($null -ne $Scenario.failure) { $spoken=$Scenario.failure.ToString()+'|'+[string]$Scenario.failure.Message }
+        $spoken+='|'+($st.writes -join '|')
+        foreach ($word in $keyWords) { if ($spoken.IndexOf($word,[StringComparison]::Ordinal) -ge 0) { $hits+=('failure text or a status document :: '+$word) } }
+        return @($hits)
+    }
+    $keyId=[string](& $module { param($K) Get-FastLlmApiKeyId -ApiKeyHolder $K } $keyHolder)
+    $keySupervisorBound='AllowSwitch,ApiKeyHolder,CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,SelfTest,SwitchContext'
+    & $module { param($P) $script:FastLlmApiKeyProtector=$P } $keyProtector
+    if ($env:OS -ne 'Windows_NT') { & $module { param($P) $script:FastLlmApiKeyListenerOwners=$P } ${function:Get-KeyTestListenerOwners} }
+    # A key variable inherited by this process must never reach a server: each one gets the stored key, set by the one environment builder.
+    $savedInheritedKey=[Environment]::GetEnvironmentVariable('LLAMA_API_KEY')
+    [Environment]::SetEnvironmentVariable('LLAMA_API_KEY','hostile-inherited-value')
+    try {
+        # ---- key on: a non-forced switch on an idle server is accepted ----
+        Set-BusyWait 60 200
+        $world=New-KeyWorld 'key-switch' @{ 'model-a'=@('selftest-ok'); 'model-b'=@('selftest-ok') } 'enforce'
+        $r=Invoke-SwitchScenario -Label 'key-switch' -World $world -StartOptions @{ SelfTest=$true; ApiKey='on' } -Steps @(
+            (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+            (New-Step @{ phase='ready'; modelId='model-b'; switchResult='ok' } 'stop'))
+        Check ($r.completed -and $null -eq $r.failure -and $r.exit -eq 0 -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a,model-b') 'api key + switch: with the key on, a non-forced switch on an idle server is accepted (the busy read of /metrics carried the key)'
+        $auth=@(Get-KeyAuth $world)
+        Check (@($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 2 -and @($auth | Where-Object { $_ -cmatch ' wrong$' }).Count -eq 0 -and @($auth | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -ge 1 -and @($auth | Where-Object { $_ -ceq 'GET /metrics none' }).Count -eq 0) "api key + switch: both servers got the stored key through their environment (not the inherited value), and every /metrics read carried it [$(@($auth | Where-Object { $_ -like '*metrics*' } | Select-Object -Unique) -join ',')]"
+        Check ($r.runs[0].bound -ceq $keySupervisorBound -and $r.runs[1].bound -ceq $keySupervisorBound) 'api key + switch: the target model''s start was given the key exactly like the first start'
+        $finalA=Get-RunFinal $r.runs[0];$finalB=Get-RunFinal $r.runs[1]
+        Check ([string]$finalA.apiKey -ceq 'on' -and [string]$finalA.apiKeyId -ceq $keyId -and [string]$finalB.apiKey -ceq 'on' -and [string]$finalB.apiKeyId -ceq $keyId -and (Test-Block (Get-Block $finalB) 'model-a' 'model-b' 'ok' $null $false)) 'api key + switch: each run proved the key (401 without, 200 with) before its status said apiKey on; the switch block says ok'
+        $unkeyed=@($auth | Where-Object { $_ -cmatch ' none$' -and $_ -cnotmatch '/health ' } | Select-Object -Unique)
+        Check (($unkeyed -join ',') -ceq 'GET /props none' -and @($auth | Where-Object { $_ -ceq 'GET /props none' }).Count -eq 2) "api key + switch: the only requests without the key were the two proofs' own (one per server) [$($unkeyed -join ',')]"
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0 -and (@($r.events) -join ',') -cnotmatch 'LEAKMARKER') "api key + switch: no key text in any status document, run log, state file or failure [$($leaks -join '; ')]"
+
+        # ---- key on: switch, the target fails, the previous model is restored ----
+        $world=New-KeyWorld 'key-restore' @{ 'model-a'=@('selftest-ok','selftest-ok'); 'model-b'=@('ok') } 'enforce'
+        $r=Invoke-SwitchScenario -Label 'key-restore' -World $world -StartOptions @{ SelfTest=$true; ApiKey='on' } -Steps @(
+            (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+            (New-Step @{ phase='ready'; modelId='model-a'; switchResult='failed-restored' } 'stop'))
+        Check ($r.completed -and $null -eq $r.failure -and $r.exit -eq 0 -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a,model-b,model-a' -and $r.runs[1].failed -and -not $r.runs[2].failed) 'api key + restore: with the key on, a failed target is followed by the one restore of the previous model'
+        $auth=@(Get-KeyAuth $world)
+        Check (@($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 3 -and @($auth | Where-Object { $_ -ceq 'env key-absent' }).Count -eq 0 -and @($auth | Where-Object { $_ -cmatch ' wrong$' }).Count -eq 0) 'api key + restore: all three servers (the first, the target, the restore) got the stored key through their environment'
+        Check ((@($r.runs | ForEach-Object { $_.bound } | Select-Object -Unique) -join ';') -ceq $keySupervisorBound -and @($auth | Where-Object { $_ -ceq 'GET /props none' }).Count -eq 3) 'api key + restore: every start of the sequence was given the key like the first, and each ran the 401/200 proof'
+        $restored=Get-RunFinal $r.runs[2]
+        Check ([string]$restored.apiKey -ceq 'on' -and [string]$restored.apiKeyId -ceq $keyId -and (Test-Block (Get-Block $restored) 'model-a' 'model-b' 'failed-restored' 'self-test-failed' $false) -and (Test-PortFree $world.port)) 'api key + restore: the restored model serves with the key on, and the switch block says failed-restored'
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0) "api key + restore: no key text in any status document, run log, state file or failure [$($leaks -join '; ')]"
+
+        # ---- key on, but the read is refused (a wrong key at the server): the switch stays refused-busy ----
+        Set-BusyWait 2 200
+        $world=New-KeyWorld 'key-refused' @{ 'model-a'=@('ok'); 'model-b'=@('ok') } 'metrics-401'
+        $r=Invoke-SwitchScenario -Label 'key-refused' -World $world -StartOptions @{ ApiKey='on' } -Steps @(
+            (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+            (New-Step @{ phase='ready'; modelId='model-a'; switchResult='refused-busy' } 'stop'))
+        Set-BusyWait 60 200
+        Check ($r.completed -and $null -eq $r.failure -and $r.exit -eq 0 -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a') 'api key, read refused: when the server refuses the /metrics read (401), the switch is not forced through: the same model keeps serving'
+        $auth=@(Get-KeyAuth $world)
+        Check (@($auth | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -ge 2 -and @($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 1 -and (@(Get-ModeStarts $world 'model-b')).Count -eq 0) 'api key, read refused: the reads carried the key and were refused; the target was never started'
+        $refusedReady=@(Get-ReadyObservations $r $r.runs[0].runId | Where-Object { $null -ne $_.switch -and (Get-Field $_.switch 'result') -ceq 'refused-busy' })
+        Check ($refusedReady.Count -ge 1 -and (Test-Block $refusedReady[0].switch 'model-a' 'model-b' 'refused-busy' $null $false)) 'api key, read refused: the status shows switch = { result refused-busy }'
+        $logA=@(Get-RunLog $world $r.runs[0].runId)
+        Check ((@(Get-LogEvents $logA 'switch-result') | ForEach-Object { [string]$_.result }) -join ',' -ceq 'refused-busy') 'api key, read refused: the run log has the one refusal'
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0) "api key, read refused: no key text in the status, the run log or the failure text [$($leaks -join '; ')]"
+
+        # ---- key on: 'switch' asked of an install whose server was stopped by the idle stop ----
+        # No server is running, so the CLI makes the request a normal start with switching allowed. That start is a keyed start like any
+        # other. The CLI's own statements run here, taken from fast-llm.ps1: the ones that decide the action, and the serving block that
+        # reads the saved key flag for the action that will run. What they give is then started for real against the mock.
+        . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+        $cliErrors=$null;$cliTokens=$null
+        $cliTree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm.ps1'),[ref]$cliTokens,[ref]$cliErrors)
+        $cliActionFunction=@($cliTree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-FastLlmSwitchCliAction' },$true))
+        $cliActionLines=@($cliTree.FindAll({ param($node) ($node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Extent.Text -cin @('$effectiveAction = [string] $Action','$effectiveSwitchAllowed = [bool] $SwitchAllowed')) -or ($node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq "`$Action -eq 'switch'") },$true) | Sort-Object { $_.Extent.StartOffset })
+        $cliServing=@($cliTree.FindAll({ param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq "`$effectiveAction -in @('plan', 'install', 'start', 'doctor')" },$true))
+        $cliSameBlock=($cliActionLines.Count -eq 3 -and $cliServing.Count -eq 1 -and @($cliActionLines | Where-Object { [object]::ReferenceEquals($_.Parent,$cliServing[0].Parent) }).Count -eq 3)
+        Check (@($cliErrors).Count -eq 0 -and $cliActionFunction.Count -eq 1 -and $cliSameBlock -and $cliActionLines[2] -is [Management.Automation.Language.IfStatementAst] -and $cliActionLines[2].Extent.StartOffset -lt $cliServing[0].Extent.StartOffset -and $cliServing[0].Extent.Text.Contains("if ([string] `$servingOptions.apiKey -ceq 'on') { `$effectiveApiKey = 'on' }")) 'api key + idle-stopped switch: fast-llm.ps1 decides the action first, and reads the saved key flag after it, for the action that will run'
+        $cliStartOptionLines="if (`$effectiveSwitchAllowed) { `$startPolicyOptions.AllowSwitch = `$true }","if (`$effectiveApiKey -ceq 'on') { `$startPolicyOptions.ApiKey = 'on' }"
+        $cliText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
+        Check (@($cliStartOptionLines | Where-Object { ([regex]::Matches($cliText,[regex]::Escape($_))).Count -eq 1 }).Count -eq 2 -and $cliText -cnotmatch 'startPolicyOptions\.ApiKeyHolder') 'api key + idle-stopped switch: the start is handed switching and the key flag from those two values, each on its own line (never the key)'
+        . ([scriptblock]::Create($cliActionFunction[0].Extent.Text))
+        $cliResolve=[scriptblock]::Create(((@($cliActionLines | ForEach-Object { $_.Extent.Text })+@($cliServing[0].Extent.Text)) -join "`n"))
+        function Resolve-KeyCliStart([string]$Action,[string]$InstallRoot) {
+            $SwitchAllowed=[switch]$false;$IgnoreUserSettings=[switch]$false;$DryRun=[switch]$false;$AsJson=[switch]$false;$selectionOptions=@{}
+            $effectiveAction=$null;$effectiveSwitchAllowed=$null;$effectiveApiKey=$null
+            $said=@(. $cliResolve 6>&1 | ForEach-Object { [string]$_ })
+            return @{ action=$effectiveAction; switchAllowed=$effectiveSwitchAllowed; apiKey=$effectiveApiKey; selection=$selectionOptions; said=$said }
+        }
+        $world=New-KeyWorld 'key-idle-start' @{ 'model-a'=@('selftest-ok'); 'model-b'=@('selftest-ok') } 'enforce'
+        $setting=Invoke-FastLlmApiKeySetting -InstallRoot $world.root -Action on
+        Write-FastLlmState -InstallRoot $world.root -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='stopped'; stopReason='idle'; idleStopMinutes=30; modelId='model-a' })
+        $idleStatus=Get-FastLlmStatus -InstallRoot $world.root
+        Check ([string]$setting.apiKey -ceq 'on' -and -not [bool]$setting.created -and [string]$setting.apiKeyId -ceq $keyId -and [string]$idleStatus.phase -ceq 'stopped' -and [string]$idleStatus.stopReason -ceq 'idle' -and -not [bool]$idleStatus.active) 'api key + idle-stopped switch: the install has the key setting on, a stored key, and a server that the idle stop stopped'
+        $cli=Resolve-KeyCliStart 'switch' $world.root
+        Check ($cli.action -ceq 'start' -and $cli.switchAllowed -eq $true -and $cli.apiKey -ceq 'on' -and $cli.selection.Count -eq 0 -and (@($cli.said) -join '|') -ceq 'No FastLLM server is running, so this is a normal start of the requested model, with model switching allowed.') "api key + idle-stopped switch: switch with no server running is the start action with switching allowed AND the key on (the planner is told nothing about the key) [$($cli.action)/$($cli.switchAllowed)/$($cli.apiKey)]"
+        $idleStart=@{ SelfTest=$true }
+        if ($cli.apiKey -ceq 'on') { $idleStart.ApiKey='on' }
+        $r=Invoke-SwitchScenario -Label 'key-idle-start' -World $world -StartOptions $idleStart -NoAllowSwitch:(-not $cli.switchAllowed) -Steps @(
+            (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+            (New-Step @{ phase='ready'; modelId='model-b'; switchResult='ok' } 'stop'))
+        Check ($r.completed -and $null -eq $r.failure -and $r.exit -eq 0 -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a,model-b' -and $r.runs[0].bound -ceq $keySupervisorBound) 'api key + idle-stopped switch: the start that follows is given the key and switching, exactly like a keyed start asked for directly (and a later switch works)'
+        $auth=@(Get-KeyAuth $world)
+        $proofWithout=[Array]::IndexOf([string[]]$auth,'GET /props none');$proofWith=[Array]::IndexOf([string[]]$auth,'GET /props ok')
+        $firstKeyed=-1;for($i=0;$i -lt $auth.Count;$i++){ if ($auth[$i] -cmatch ' ok$') { $firstKeyed=$i;break } }
+        Check ($auth[0] -ceq 'env key-present' -and $proofWithout -ge 0 -and $proofWith -eq ($proofWithout+1) -and $firstKeyed -eq $proofWith -and @($auth | Where-Object { $_ -cmatch ' wrong$' }).Count -eq 0) "api key + idle-stopped switch: the server got the stored key through its environment, and the 401/200 proof ran (without the key, then with it) before any other keyed request [$(@($auth | Select-Object -First 6) -join ',')]"
+        $idleFinal=Get-RunFinal $r.runs[0]
+        $unkeyed=@($auth | Where-Object { $_ -cmatch ' none$' -and $_ -cnotmatch '/health ' } | Select-Object -Unique)
+        Check ([string]$idleFinal.apiKey -ceq 'on' -and [string]$idleFinal.apiKeyId -ceq $keyId -and ($unkeyed -join ',') -ceq 'GET /props none' -and @($auth | Where-Object { $_ -ceq 'GET /props none' }).Count -eq 2) "api key + idle-stopped switch: the status says apiKey on with the key id, and the only requests without the key were the proofs' own [$($unkeyed -join ',')]"
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0) "api key + idle-stopped switch: no key text in any status document, run log, state file or failure [$($leaks -join '; ')]"
+        # With the key setting off, the same request is the same start without a key.
+        $world=New-KeyWorld 'key-idle-off' @{ 'model-a'=@('ok') } 'enforce'
+        Invoke-FastLlmApiKeySetting -InstallRoot $world.root -Action off | Out-Null
+        $cli=Resolve-KeyCliStart 'switch' $world.root
+        Check ($cli.action -ceq 'start' -and $cli.switchAllowed -eq $true -and $cli.apiKey -ceq 'off') 'api key + idle-stopped switch: with the key setting off the same request is a start with switching allowed and no key'
+
+    } finally {
+        [Environment]::SetEnvironmentVariable('LLAMA_API_KEY',$savedInheritedKey)
+        & $module { $script:FastLlmApiKeyProtector=$null; $script:FastLlmApiKeyListenerOwners=$null }
+        Set-BusyWait 60 200
+        $st.serverExtra=@()
+    }
+    $pollText=& $module { (Get-Command Step-FastLlmSwitchPoll).ScriptBlock.ToString() }
+    $startText=& $module { (Get-Command Start-FastLlmServer).ScriptBlock.ToString() }
+    Check ($pollText.Contains('Get-FastLlmIdleMetricsText -BaseUrl $BaseUrl -Request $MetricsRequest') -and $startText.Contains("if (`$ApiKey -ceq 'on') { `$switchStartOptions.ApiKey = 'on' }") -and $startText -cnotmatch 'switchStartOptions\.ApiKeyHolder') 'api key + switch: the busy read takes the run''s sender, and a start inside a sequence is handed only the flag (it reads the store itself)'
     $suitePassed=$true
 } finally {
     if ($suitePassed) { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue } }

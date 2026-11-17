@@ -198,10 +198,12 @@ try {
     function Get-FastLlmStatus { param($InstallRoot) $last = $script:mockStateWrites[$script:mockStateWrites.Count - 1]; $copy = [pscustomobject]@{}; foreach ($key in $last.Keys) { $copy | Add-Member -NotePropertyName $key -NotePropertyValue $last[$key] }; $copy }
     function Enter-FastLlmOperation { param($InstallRoot) $script:mockOrder.Add('lock'); $script:mockOperation = New-Object IO.MemoryStream; $script:mockOperation }
     function Start-FastLlmServer {
-        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch,$SwitchObserver)
+        param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,[string]$VulkanBarMitigation,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch,$SwitchObserver,$ApiKey)
         $script:mockIdleStop = $(if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $IdleStopMinutes } else { 'unset' })
         $script:mockAllowSwitch = $(if ($PSBoundParameters.ContainsKey('AllowSwitch')) { [bool]$AllowSwitch } else { 'unset' })
         $script:mockObserverGiven = [bool]$PSBoundParameters.ContainsKey('SwitchObserver')
+        $script:mockApiKey = $(if ($PSBoundParameters.ContainsKey('ApiKey')) { $ApiKey } else { 'unset' })
+        $script:mockStartBound = @($PSBoundParameters.Keys | Sort-Object)
         # A model switch inside the server: the supervisor tells the observer the model it is about to serve.
         if ($script:serverSwitchesTo -and $SwitchObserver) { & $SwitchObserver $script:serverSwitchesTo }
         if ($script:serverIdleStop) { $script:mockStateWrites.Add([ordered]@{ schemaVersion = 1; runId = 'supervisor'; phase = 'stopped'; stopReason = 'idle'; idleStopMinutes = $IdleStopMinutes }) }
@@ -338,6 +340,40 @@ try {
         $idleRecord = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
         Assert-BackgroundTest (-not $idleRecord.PSObject.Properties['stopReason']) 'idle-stop-record: a run that did not stop on the idle stop records no stop reason.'
     }
+    # api-key-rides-the-request: only the flag is in the request. on reaches Start-FastLlmServer as -ApiKey on (the start reads the key
+    # store itself); a request without the field, or with off, starts exactly as before (the parameter is not passed).
+    foreach($keyCase in @(@{Id=[Guid]::NewGuid().ToString('N');Fields=@{apiKey='on'};Expect='on'},@{Id=[Guid]::NewGuid().ToString('N');Fields=@{};Expect='unset'},@{Id=[Guid]::NewGuid().ToString('N');Fields=@{apiKey='off'};Expect='unset'})){
+        $script:workerRequestId = $keyCase.Id
+        $script:mockApiKey = 'seen-nothing'
+        $keyRequest = [ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$keyCase.Id;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30}
+        foreach($key in $keyCase.Fields.Keys){ $keyRequest[$key] = $keyCase.Fields[$key] }
+        $keyRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $keyCase.Id + '.json')) -CreateNew -Value $keyRequest
+        Invoke-FastLlmBackgroundServe -RequestId $keyCase.Id -InstallRoot $workerRoot -SourceRoot $source | Out-Null
+        Assert-BackgroundTest ([string]$script:mockApiKey -ceq [string]$keyCase.Expect) ('api-key-rides-the-request: request ' + ($keyCase.Fields.Keys -join ',') + '=' + ($keyCase.Fields.Values -join ',') + ' hands ' + $keyCase.Expect + ' to the server (saw ' + $script:mockApiKey + ').')
+        if ($keyCase.Expect -ceq 'unset') { Assert-BackgroundTest (($script:mockStartBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,SelfTest,VulkanBarMitigation') ('api-key-rides-the-request: without the key the start gets exactly the parameters it always got (saw ' + ($script:mockStartBound -join ',') + ').') }
+    }
+    # The key flag is not read tolerantly: any other value is refused before the lock, the status or the start (never a start without the key).
+    foreach($oddKey in @('ON','yes',$true,1,'fl-not-a-flag')){
+        $oddId = [Guid]::NewGuid().ToString('N')
+        $script:workerRequestId = $oddId
+        $startsBefore = $script:mockServerStarts
+        $oddRequest = [ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$oddId;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;apiKey=$oddKey}
+        $oddRequest['sourcePins'] = (Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $oddId + '.json')) -CreateNew -Value $oddRequest
+        $oddMessage = ''
+        try { Invoke-FastLlmBackgroundServe -RequestId $oddId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { $oddMessage = [string]$_.Exception.Message }
+        Assert-BackgroundTest ($oddMessage -ceq 'Background request apiKey is invalid.' -and $script:mockServerStarts -eq $startsBefore) ('api-key-rides-the-request: a request with apiKey=' + [string]$oddKey + ' is refused and nothing is started (saw: ' + $oddMessage + ').')
+    }
+    $keySource = Get-Content -LiteralPath (Join-Path $source 'src/FastLlm.BackgroundHost.ps1') -Raw
+    Assert-BackgroundTest ($keySource.Contains("[ValidateSet('off','on')][string]`$UseApiKey='off'") -and $keySource.Contains("if (`$UseApiKey -ceq 'on') { `$request.apiKey = 'on' }") -and $keySource -cnotmatch 'ApiKeyHolder|Read-FastLlmApiKeyStore|Get-FastLlmApiKeyForDisplay') 'api-key-request: Start-FastLlmBackgroundHost writes only the flag apiKey on (when on) to the request, and the host file never touches a key.'
+    Assert-BackgroundTest ($keySource.IndexOf("if (`$UseApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot `$install }") -gt 0 -and $keySource.IndexOf("if (`$UseApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot `$install }") -lt $keySource.IndexOf('Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew')) 'api-key-request: a key store that cannot be read is refused before the request is written or the host process is started.'
     # idle-stop-record: a run the supervisor ended on the idle stop records it in the host record, with the minutes.
     $script:serverIdleStop = $true
     $script:workerRequestId = '78787878787878787878787878787878'

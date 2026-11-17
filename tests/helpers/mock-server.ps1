@@ -1,4 +1,4 @@
-param([int]$Port, [string]$Mode='ok', [string]$Model='test-model', [int]$Context=1024, [string]$DiagnosticPath='', [string]$ModeFile='')
+param([int]$Port, [string]$Mode='ok', [string]$Model='test-model', [int]$Context=1024, [string]$DiagnosticPath='', [string]$ModeFile='', [string]$KeyMode='enforce')
 $ErrorActionPreference='Stop'
 # -ModeFile (model switch tests): the mode of THIS start is the first line of the file. With more than one line the first is consumed, so the next
 # start of the same plan (the same arguments) gets the next mode; each start is appended to <ModeFile>.starts.
@@ -12,7 +12,7 @@ if ($DiagnosticPath) { [IO.File]::WriteAllText($DiagnosticPath, 'script-started'
 try {
     Add-Type -Path (Join-Path $PSScriptRoot 'MockServer.cs')
     if ($DiagnosticPath) { [IO.File]::WriteAllText($DiagnosticPath, 'mock-compiled') }
-    [FastLlmTests.MockServer]::Run($Port, $Mode, $Model, $Context, $DiagnosticPath)
+    [FastLlmTests.MockServer]::Run($Port, $Mode, $Model, $Context, $DiagnosticPath, $KeyMode)
 } catch {
     if ($DiagnosticPath) {
         $kind=$_.Exception.GetType().Name

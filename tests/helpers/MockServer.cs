@@ -17,6 +17,34 @@ namespace FastLlmTests {
             if (!String.IsNullOrEmpty(path)) File.WriteAllText(path, stage);
         }
         public static void Run(int port, string mode, string model, int context, string diagnosticPath) {
+            Run(port, mode, model, context, diagnosticPath, "enforce");
+        }
+        // API key behaviour, as llama-server has it: with LLAMA_API_KEY in the environment every path except /health needs
+        // "Authorization: Bearer <key>" and is answered 401 without it. keyMode changes that for the proof tests:
+        //   enforce      the behaviour above (the default)
+        //   ignore       the variable is ignored: every request is answered as if no key were set
+        //   reject       every request except /health is answered 401, also with the right key
+        //   metrics-401  enforce, but /metrics is always answered 401
+        // What each request carried (none, ok or wrong; never the key) is appended to <diagnosticPath>.auth.
+        // A test may be reading the record while a request arrives (on Windows that is a sharing violation): the write is retried for
+        // about a second and then given up, so recording can never fail a request.
+        private static void Auth(string path, string line) {
+            if (String.IsNullOrEmpty(path)) return;
+            for (int attempt = 0; attempt < 100; attempt++) {
+                try { File.AppendAllText(path + ".auth", line + "\n"); return; }
+                catch (IOException) { System.Threading.Thread.Sleep(10); }
+                catch (UnauthorizedAccessException) { System.Threading.Thread.Sleep(10); }
+            }
+        }
+        public static void Run(int port, string mode, string model, int context, string diagnosticPath, string keyMode) {
+            string apiKey = Environment.GetEnvironmentVariable("LLAMA_API_KEY");
+            bool hasKey = !String.IsNullOrEmpty(apiKey);
+            Auth(diagnosticPath, "env " + (hasKey ? "key-present" : "key-absent"));
+            if (hasKey) {
+                // The key reaches a server through its environment only: an argument that holds it ends the mock.
+                foreach (string argument in Environment.GetCommandLineArgs())
+                    if (argument != null && argument.IndexOf(apiKey, StringComparison.Ordinal) >= 0) { Mark(diagnosticPath, "api-key-in-arguments"); Environment.Exit(75); }
+            }
             if (Environment.GetEnvironmentVariable("FASTLLM_TEST_EXPECT_ISOLATION") == "1") {
                 foreach (string name in new string[] {"LLAMA_ARG_MODEL", "LLAMA_API_KEY", "GGML_TEST_OVERRIDE", "VK_TEST_OVERRIDE", "HIP_TEST_OVERRIDE", "SMITHY_TEST_OVERRIDE", "AIP_TEST_OVERRIDE"})
                     if (!String.IsNullOrEmpty(Environment.GetEnvironmentVariable(name))) { Mark(diagnosticPath, "isolation-variable-present: " + name); Environment.Exit(71); }
@@ -66,6 +94,8 @@ namespace FastLlmTests {
             if (mode == "pl-total") gpuTotal = 24561;
             if (mode == "pl-using-name") usingName = "Vulkan1";
             if (mode == "pl-ok-unknown") usingId = "unknown id";
+            // llama-server prints the last four characters of a single key at startup.
+            if (hasKey && keyMode != "ignore") Console.Error.WriteLine("0.00.402.100 I srv          main: api_keys: ****" + apiKey.Substring(Math.Max(apiKey.Length - 4, 0)));
             if (mode != "pl-no-gpu") Console.Error.WriteLine("0.00.402.123 I cmn  common_param:   - " + gpuName + " : " + gpuDesc + " (" + gpuTotal + " MiB, 20304 MiB free)");
             else Console.Error.WriteLine("0.00.402.123 I cmn  common_param:   - CPU : Synthetic CPU (65536 MiB, 32000 MiB free)");
             if (mode == "pl-two-gpu") Console.Error.WriteLine("0.00.402.124 I cmn  common_param:   - Vulkan1 : " + gpuDesc + " (" + gpuTotal + " MiB, 20304 MiB free)");
@@ -99,9 +129,15 @@ namespace FastLlmTests {
                         string path = first.Split(' ')[1];
                         int length=0;
                         string line;
+                        string authorization=null;
                         while (!String.IsNullOrEmpty(line=reader.ReadLine())) {
                             if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) length=Int32.Parse(line.Substring(15).Trim());
+                            if (line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase)) authorization=line.Substring(14).Trim();
                         }
+                        string authState = authorization == null ? "none" : (hasKey && authorization == "Bearer " + apiKey ? "ok" : "wrong");
+                        Auth(diagnosticPath, method + " " + path + " " + authState);
+                        // A verbose server could print request headers: in the marker modes the mock does, so a leak of the key into any FastLLM file is detectable.
+                        if (echoMarkers && authorization != null) Console.Error.WriteLine("request header " + path + ": Authorization: " + authorization);
                         var requestBody = new StringBuilder();
                         for (int i=0;i<length;i++) requestBody.Append((char)reader.Read()); // test requests are ASCII
                         int status=200;
@@ -165,6 +201,11 @@ namespace FastLlmTests {
                             body = body.Replace("\"Paris\"", "\"Paris FLLM-MARKER-COMPLETION-7f3a\"").Replace("\"Hello\"", "\"Hello FLLM-MARKER-COMPLETION-7f3a\"").Replace("\"content\":\"x\"", "\"content\":\"FLLM-MARKER-COMPLETION-7f3a\"");
                             Console.Error.WriteLine("request " + path + ": " + requestBody.ToString());
                             Console.Error.WriteLine("response " + path + ": " + body.Replace("\n", " "));
+                        }
+                        if (hasKey && path != "/health" && keyMode != "ignore" &&
+                            (keyMode == "reject" || authState != "ok" || (keyMode == "metrics-401" && path == "/metrics"))) {
+                            status = 401;
+                            body = "{\"error\":{\"message\":\"Invalid API Key\",\"type\":\"authentication_error\",\"code\":401}}";
                         }
                         var bytes=Encoding.UTF8.GetBytes(body);
                         var header=Encoding.ASCII.GetBytes("HTTP/1.1 "+status+" OK\r\n"+(status==302?"Location: https://example.com/\r\n":"")+"Content-Length: "+bytes.Length+"\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
