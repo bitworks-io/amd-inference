@@ -112,6 +112,12 @@ function New-FakeHost([bool]$Elevated = $false, [bool]$Occupied = $false, $Start
             if ($StartBehavior -eq 'throw') { throw 'secret-looking message must never be recorded' }
             if ($StartBehavior -eq 'busy') { throw 'This installation already has an active serving operation.' }
             if ($StartBehavior -eq 'job') { throw 'The current process is contained in a Windows job; a persistent host cannot be launched from it.' }
+            if ($StartBehavior -eq 'key-unavailable' -or $StartBehavior -eq 'key-odd-code') {
+                # What the background start throws when the key is on and the store cannot be read: a typed failure whose data carries the code.
+                $typed = New-Object -TypeName System.InvalidOperationException -ArgumentList 'api-key-unavailable: secret-looking message must never be recorded'
+                $typed.Data['FastLlmFailureCode'] = $(if ($StartBehavior -eq 'key-odd-code') { 'api-key-secret-looking fl-TEXT' } else { 'api-key-unavailable' })
+                throw $typed
+            }
         }.GetNewClosure()
     }
 }
@@ -253,6 +259,38 @@ $root = New-Install
 $r = Invoke-Case (New-FakeHost -StartBehavior 'job') $root
 Assert-Equal $r.result 'host-failed' 'a job-contained start is host-failed'
 Assert-Equal (Count-Calls 'start') 1 'a job-contained start is not retried'
+
+# an API key refusal is recorded by its own code (never as the generic host-start-failed), and nothing is started without the key
+$root = New-Install
+$r = Invoke-Case (New-FakeHost -StartBehavior 'key-unavailable') $root
+$file = Read-Result $root
+Assert-Equal $r.result 'host-failed' 'a start refused for the API key is host-failed'
+Assert-Equal ([string]$file.failureCode) 'api-key-unavailable' 'the result carries the typed api-key code of the refusal'
+Assert-True ((Get-Content -LiteralPath (Join-Path $root 'state/signin-start.json') -Raw) -notmatch 'secret-looking') 'the message of a key refusal is never written'
+Assert-Equal (Count-Calls 'start') 1 'a start refused for the API key is not retried'
+# only a code of the fixed api-key form is taken from a failure; anything else stays the generic code
+$root = New-Install
+$r = Invoke-Case (New-FakeHost -StartBehavior 'key-odd-code') $root
+$file = Read-Result $root
+Assert-Equal ([string]$file.failureCode) 'host-start-failed' 'a code that is not of the api-key form is not recorded'
+Assert-True ((Get-Content -LiteralPath (Join-Path $root 'state/signin-start.json') -Raw) -notmatch 'secret-looking|fl-TEXT') 'nothing from such a failure reaches the result'
+# a key store with no saved setting: whether the key is required cannot be known, so nothing is started, and the result says why
+$root = New-Install
+[IO.File]::WriteAllBytes((Join-Path $root 'api-key.dat'), [byte[]](1, 2, 3, 4))
+$r = Invoke-Case (New-FakeHost) $root
+$file = Read-Result $root
+Assert-Equal $r.result 'host-failed' 'a key store without a saved setting does not start'
+Assert-Equal ([string]$file.failureCode) 'api-key-setting-unreadable' 'the result carries api-key-setting-unreadable'
+Assert-Equal (Count-Calls 'start') 0 'the host is never asked to start when the key setting cannot be known'
+# the same installation with the setting chosen starts, and the start is asked for the key exactly when it is on
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "on" }')
+$r = Invoke-Case (New-FakeHost) $root
+Assert-Equal $r.result 'started' 'with the key setting on the start is requested'
+Assert-Equal ([string]$script:Captured['arguments'].UseApiKey) 'on' 'the start is asked for the key'
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "off" }')
+$r = Invoke-Case (New-FakeHost) $root
+Assert-Equal $r.result 'started' 'with the key setting off the start is requested'
+Assert-True (-not $script:Captured['arguments'].ContainsKey('UseApiKey')) 'without the key the start arguments have no key flag'
 
 # a second run overwrites the first result
 $root = New-Install

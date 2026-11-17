@@ -56,6 +56,12 @@ function Get-TestListenerOwners([int]$Port) {
     return $found.ToArray()
 }
 function Reset-ListenerOwners { if ($isWindowsHost) { Set-ListenerOwners $null } else { Set-ListenerOwners ${function:Get-TestListenerOwners} } }
+function Get-SourceTree([string]$RelativePath) {
+    $parseErrors = $null; $parseTokens = $null
+    $tree = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root $RelativePath), [ref]$parseTokens, [ref]$parseErrors)
+    if (@($parseErrors).Count -ne 0) { throw "$RelativePath does not parse" }
+    return $tree
+}
 function Get-Identity([int]$ProcessId) { $p = [Diagnostics.Process]::GetProcessById($ProcessId); try { return [pscustomobject]@{ pid = [int]$p.Id; startUtcTicks = [long]$p.StartTime.ToUniversalTime().Ticks } } finally { $p.Dispose() } }
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('fl-apikey-wiring-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
@@ -280,13 +286,30 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         $changed = Get-Failure { Send-Keyed $own }
         Check ($null -ne $changed -and [string]$changed.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed' -and [string]$changed.Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed' -and $script:ownerCalls -eq 2 -and $recorder.Connections -eq ($connectionsBefore + 1)) 'L1: the right owner before the request and another one after it is the typed failure api-key-listener-changed (never retried)'
         Check ([string]$changed.Exception.Message -cmatch 'Another program may have received the key' -and [string]$changed.Exception.Message -cmatch 'Create a new key' -and [string]$changed.Exception.Message -cmatch 'settings -ApiKey rotate' -and (Test-NoLeak (Get-FailureText $changed))) 'L1: the failure says another program may have received the key and to create a new key, without any key text'
-        # Answered, and afterwards nothing listens, a second listener is there, or the table cannot be read: whoever answered cannot be confirmed.
-        foreach ($after in @(@{ label = 'nothing listens'; owners = { @() } }, @{ label = 'a second listener is there'; owners = { @($PID, 4242) } }, @{ label = 'the listener table cannot be read'; owners = { throw "table failed for $marker" } })) {
+        # Answered, and afterwards nothing listens or a second listener is there: whoever answered cannot be confirmed. Those answers are
+        # definite, so the table is read once after the request.
+        foreach ($after in @(@{ label = 'nothing listens'; owners = { @() } }, @{ label = 'a second listener is there'; owners = { @($PID, 4242) } })) {
             $script:ownerCalls = 0; $script:ownersAfter = $after.owners
             Set-ListenerOwners { param($Port) $script:ownerCalls++; if ($script:ownerCalls -eq 1) { return @($PID) }; return @(& $script:ownersAfter) }
             $afterFailure = Get-Failure { Send-Keyed $own }
-            Check ($null -ne $afterFailure -and [string]$afterFailure.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed' -and (Test-NoLeak (Get-FailureText $afterFailure))) "L1: an answered request after which $($after.label) is api-key-listener-changed"
+            Check ($null -ne $afterFailure -and [string]$afterFailure.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed' -and $script:ownerCalls -eq 2 -and (Test-NoLeak (Get-FailureText $afterFailure))) "L1: an answered request after which $($after.label) is api-key-listener-changed (one read after the request)"
         }
+        # A listener table that cannot be read is not a definite answer: it is read again, up to twice. One failed read (or two) followed by
+        # the right owner raises no alarm; a table that still cannot be read after that does.
+        foreach ($transient in @(1, 2)) {
+            $script:ownerCalls = 0; $script:ownerFailures = $transient
+            Set-ListenerOwners { param($Port) $script:ownerCalls++; if ($script:ownerCalls -ge 2 -and $script:ownerCalls -le (1 + $script:ownerFailures)) { throw "table failed for $marker" }; return @($PID) }
+            $recovered = Get-Failure { $script:recoveredReply = Send-Keyed $own }
+            Check ($null -eq $recovered -and $script:recoveredReply.Status -eq 200 -and $script:ownerCalls -eq (2 + $transient)) "L1: $transient failed read(s) of the listener table after an answered request, then the right owner: no alarm, the answer is returned ($($script:ownerCalls) reads)"
+        }
+        $script:ownerCalls = 0
+        Set-ListenerOwners { param($Port) $script:ownerCalls++; if ($script:ownerCalls -eq 1) { return @($PID) }; throw "table failed for $marker" }
+        $unreadableAfter = Get-Failure { Send-Keyed $own }
+        Check ($null -ne $unreadableAfter -and [string]$unreadableAfter.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed' -and $script:ownerCalls -eq 4 -and (Test-NoLeak (Get-FailureText $unreadableAfter))) "L1: an answered request after which the listener table cannot be read, three times in a row, is api-key-listener-changed ($($script:ownerCalls) reads)"
+        $script:ownerCalls = 0
+        Set-ListenerOwners { param($Port) $script:ownerCalls++; if ($script:ownerCalls -eq 1) { return @($PID) }; if ($script:ownerCalls -eq 2) { throw 'table failed' }; return @(4242) }
+        $otherAfterRetry = Get-Failure { Send-Keyed $own }
+        Check ($null -ne $otherAfterRetry -and [string]$otherAfterRetry.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed' -and $script:ownerCalls -eq 3) 'L1: a failed read followed by another owner is api-key-listener-changed (the retry does not hide a real change)'
         # A request that got no answer. With nothing listening afterwards the key went to nobody (the server itself ended): the request's own
         # failure stands. With another program on the port afterwards it is the same failure as above.
         $silentPort = Get-FreePort
@@ -730,7 +753,16 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     InModule { param($R, $K) Write-FastLlmApiKeyStore -InstallRoot $R -ApiKeyHolder $K } @($refusalRoot, $markerHolder)
     $refusalText = [string](Get-Failure { Get-FastLlmServingHostArguments -InstallRoot $refusalRoot }).Exception.Message
     Check ($refusalText -clike 'api-key-setting-unreadable:*' -and $refusalText.Contains('fast-llm.ps1 settings -ApiKey on') -and $refusalText.Contains('fast-llm.ps1 settings -ApiKey off') -and $refusalText.Contains('"Require an API key" in Settings') -and $refusalText -notmatch '(?i)delet|remov') 'refusal: api-key-setting-unreadable tells the user to choose (-ApiKey on, -ApiKey off, or the box in Settings) and does not suggest deleting settings.json'
-    Check ((Get-FastLlmUiApiKeyFailure -Code 'api-key-setting-unreadable').text -notmatch '(?i)delet|remov' -and (Get-FastLlmUiApiKeyFailure -Code 'api-key-setting-unreadable').text -cmatch 'tick or clear "Require an API key"' -and -not (Get-FastLlmUiApiKeyFailure -Code 'api-key-setting-unreadable').offerNewKey) 'refusal: the window says the same (choose in Settings), with no hint to delete the file'
+    # In the window the way out is Settings - but Settings cannot save while the file is not valid JSON. So the window's text names the
+    # file by its full path and says to fix or delete it first, then to choose. (Deleting is safe now: see "deleted settings" above.)
+    $windowSettingsPath = Join-Path $refusalRoot 'settings.json'
+    $windowRefusal = Get-FastLlmUiApiKeyFailure -Code 'api-key-setting-unreadable' -SettingsPath $windowSettingsPath
+    Check ([string]$windowRefusal.text -ceq (Get-FastLlmUiApiKeySettingText -SettingsPath $windowSettingsPath) -and $windowRefusal.text.Contains('(' + $windowSettingsPath + ')') -and $windowRefusal.text -cmatch 'If the settings file is not valid JSON, fix or delete it first' -and $windowRefusal.text -cmatch 'Then open Settings, tick or clear "Require an API key", and save\.' -and $windowRefusal.text.IndexOf('fix or delete it first') -lt $windowRefusal.text.IndexOf('Then open Settings') -and -not $windowRefusal.offerNewKey) 'refusal (window): the text names the settings file by its full path, says to fix or delete it first when it is not valid JSON, and then to choose in Settings'
+    Check ((Get-FastLlmUiApiKeyFailure -Code 'api-key-setting-unreadable').text.Contains('(settings.json in the FastLLM data folder)') -and (Get-FastLlmUiApiKeyFailure -Code 'api-key-setting-unreadable').text -cmatch 'fix or delete it first') 'refusal (window): without a path the text still says which file, and what to do with it'
+    $backgroundRefusal = Get-Failure { New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $refusalRoot -ModelId 'm' -ContextSize 1 -BarMitigation 'auto' -Settings (Get-FastLlmServingSettings -InstallRoot $refusalRoot) }
+    Check ($null -ne $backgroundRefusal -and [string]$backgroundRefusal.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-setting-unreadable' -and [string]$backgroundRefusal.Exception.Message -ceq ('api-key-setting-unreadable: ' + (Get-FastLlmUiApiKeySettingText -SettingsPath $windowSettingsPath))) 'refusal (window, Start in background): the same text, with the full path of this installation''s settings file'
+    $windowSource = [IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
+    Check ($windowSource.Contains("`$failure=Get-FastLlmUiApiKeyFailure -Code `$Code -SettingsPath (Join-Path `$script:installPath 'settings.json')") -and @([regex]::Matches($windowSource, 'Get-FastLlmUiApiKeyFailure -Code \$[A-Za-z]+\b(?! -SettingsPath)')).Count -eq 0 -and @([regex]::Matches($windowSource, 'Get-FastLlmUiApiKeyFailure -Code ')).Count -eq 2) 'refusal (window): every place the window asks for a key failure text passes the settings file path'
     # Creating a key is not a choice between on and off.
     $rotateFreshRoot = New-Dir 'rotate-fresh'
     $rotateFresh = Invoke-FastLlmApiKeySetting -InstallRoot $rotateFreshRoot -Action rotate
@@ -740,56 +772,101 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $rotateLost = Invoke-FastLlmApiKeySetting -InstallRoot $rotateLostRoot -Action rotate
     Check ($rotateLost.apiKeyUndetermined -eq $true -and (Read-SettingsText $rotateLostRoot) -cnotmatch 'apiKey' -and (Get-StartVerdict $rotateLostRoot) -ceq 'refused:api-key-setting-unreadable' -and (@($rotateLost.lines) -join ' ') -cmatch 'not set yet' -and (@($rotateLost.lines) -join ' ') -cnotmatch 'setting is off') 'create a new key, flag unknown: the flag stays unknown (no on or off is written for the user) and the answer says to choose'
 
-    # (3) A settings.json that cannot be read is never written over, by any writer. Each of the five is tried on each unreadable form, next
-    # to a key store: it throws, the file is byte-for-byte what it was, the flag is still unknown and the start is still refused.
+    # (3) A settings.json that cannot be read is never written over, by any writer. Each of the eight is tried on each unreadable form,
+    # next to a key store: the file is byte-for-byte what it was, the flag is still unknown and the start is still refused. A writer that
+    # has something to write throws; the two that only remove a remembered decline have nothing to do when they find none (quiet).
     $settingsWriters = [ordered]@{
-        'Write-FastLlmUiSettings (the Resizable BAR box, stopping a background run)' = { param($R) Write-FastLlmUiSettings -InstallRoot $R -Settings ([pscustomobject]@{ vulkanBarMitigation = 'auto'; lastUserStoppedBackgroundRequestId = ('a' * 32) }) }
-        'Set-FastLlmUpdateSettings (the update check box, settings -Channel)' = { param($R) Set-FastLlmUpdateSettings -InstallRoot $R -UpdateCheck off }
-        'Set-FastLlmComponentSettings (the experimental components switch)' = { param($R) Set-FastLlmComponentSettings -InstallRoot $R -ExperimentalComponents off }
-        'Set-FastLlmComponentLicenseSettings (settings -ComponentLicenses)' = { param($R) Set-FastLlmComponentLicenseSettings -InstallRoot $R -Mode ask }
-        'Set-FastLlmServingSettings (port, thinking, chat page, idle stop)' = { param($R) Set-FastLlmServingSettings -InstallRoot $R -ServerPort 18282 -Thinking off }
+        'Write-FastLlmUiSettings (the Resizable BAR box, stopping a background run)' = @{ run = { param($R) Write-FastLlmUiSettings -InstallRoot $R -Settings ([pscustomobject]@{ vulkanBarMitigation = 'auto'; lastUserStoppedBackgroundRequestId = ('a' * 32) }) } }
+        'Set-FastLlmUpdateSettings (the update check box, settings -Channel)' = @{ run = { param($R) Set-FastLlmUpdateSettings -InstallRoot $R -UpdateCheck off } }
+        'Set-FastLlmComponentSettings (the experimental components switch)' = @{ run = { param($R) Set-FastLlmComponentSettings -InstallRoot $R -ExperimentalComponents off } }
+        'Set-FastLlmComponentLicenseSettings (settings -ComponentLicenses)' = @{ run = { param($R) Set-FastLlmComponentLicenseSettings -InstallRoot $R -Mode ask } }
+        'Set-FastLlmServingSettings (port, thinking, chat page, idle stop)' = @{ run = { param($R) Set-FastLlmServingSettings -InstallRoot $R -ServerPort 18282 -Thinking off } }
+        'Add-FastLlmUiDeclinedSetup (a declined automatic setup is remembered)' = @{ run = { param($R) Add-FastLlmUiDeclinedSetup -InstallRoot $R -RecipeId 'declined.setup-two' } }
+        'Remove-FastLlmUiDeclinedSetup (a remembered decline is forgotten)' = @{ run = { param($R) Remove-FastLlmUiDeclinedSetup -InstallRoot $R -RecipeId 'declined.setup-one' }; quietUnless = 'over the size limit'; createsFile = $false }
+        'Clear-FastLlmUiDeclinedSetups (the automatic install is turned on)' = @{ run = { param($R) Clear-FastLlmUiDeclinedSetups -InstallRoot $R }; createsFile = $false }
     }
+    # "Not a JSON object" covers every other JSON value. An array matters most: Windows PowerShell 5.1 returns it in one piece, and like
+    # a string, a number or true it then looks like an object with properties (Length, Count) to a careless type test.
     $unreadableForms = [ordered]@{
         'a torn write' = '{ "apiKey": "on", "serverPort": 8081,'
-        'not an object' = '[ "apiKey", "on" ]'
+        'a JSON array' = '[ "apiKey", "on" ]'
+        'a JSON array of objects' = '[ { "apiKey": "on" } ]'
+        'a JSON string' = '"apiKey on"'
+        'a JSON number' = '5'
+        'the JSON value true' = 'true'
+        'the JSON value null' = 'null'
         'empty' = ''
-        'over the size limit' = ('{ "apiKey": "on", "note": "' + ('x' * 17000) + '" }')
+        'over the size limit' = ('{ "apiKey": "on", "declinedSetups": [ "declined.setup-one" ], "note": "' + ('x' * 17000) + '" }')
+    }
+    foreach ($formName in $unreadableForms.Keys) {
+        $formRoot = New-Dir ('form-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+        InModule { param($R, $K) Write-FastLlmApiKeyStore -InstallRoot $R -ApiKeyHolder $K } @($formRoot, $markerHolder)
+        Write-SettingsText $formRoot ([string]$unreadableForms[$formName])
+        $formRead = Get-FastLlmServingSettings -InstallRoot $formRoot
+        Check ($formRead.malformed -eq $true -and $formRead.apiKeyUndetermined -eq $true -and (Read-FastLlmServingSettingsObject -InstallRoot $formRoot).object.Count -eq 0) "unreadable settings ($formName): it is read as not a JSON object (no setting is taken from it), and with a key store the flag is unknown"
     }
     foreach ($writerName in $settingsWriters.Keys) {
+        $writer = $settingsWriters[$writerName]
         foreach ($formName in $unreadableForms.Keys) {
             $clobberRoot = New-Dir ('clobber-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
             $null = Invoke-FastLlmApiKeySetting -InstallRoot $clobberRoot -Action on
             Write-SettingsText $clobberRoot ([string]$unreadableForms[$formName])
             $bytesBefore = Get-SettingsBytes $clobberRoot
-            $writerFailure = Get-Failure { & $settingsWriters[$writerName] $clobberRoot }
+            $writerFailure = Get-Failure { & $writer.run $clobberRoot }
             $othersLeft = @(Get-ChildItem -LiteralPath $clobberRoot -Force | Where-Object { $_.Name -cnotin @('settings.json', 'api-key.dat') })
-            Check ($null -ne $writerFailure -and [string]$writerFailure.Exception.Message -cmatch 'settings-malformed: settings\.json is not valid JSON' -and (Get-SettingsBytes $clobberRoot) -ceq $bytesBefore -and $othersLeft.Count -eq 0 -and (Get-FastLlmServingSettings -InstallRoot $clobberRoot).apiKeyUndetermined -eq $true -and (Get-StartVerdict $clobberRoot) -ceq 'refused:api-key-setting-unreadable') "unreadable settings ($formName): $writerName refuses, the file bytes are unchanged, the flag stays unknown and the start stays refused"
+            $quiet = [bool]($writer.ContainsKey('quietUnless') -and [string]$writer.quietUnless -cne $formName)
+            $refusedAsExpected = if ($quiet) { $null -eq $writerFailure } else { $null -ne $writerFailure -and [string]$writerFailure.Exception.Message -cmatch 'settings-malformed: settings\.json is not valid JSON' }
+            Check ($refusedAsExpected -and (Get-SettingsBytes $clobberRoot) -ceq $bytesBefore -and $othersLeft.Count -eq 0 -and (Get-FastLlmServingSettings -InstallRoot $clobberRoot).apiKeyUndetermined -eq $true -and (Get-StartVerdict $clobberRoot) -ceq 'refused:api-key-setting-unreadable') "unreadable settings ($formName): $writerName $(if ($quiet) { 'finds nothing to do and writes nothing' } else { 'refuses' }), the file bytes are unchanged, the flag stays unknown and the start stays refused"
         }
     }
     # A folder in the place of the file is refused the same way.
     foreach ($writerName in $settingsWriters.Keys) {
+        $writer = $settingsWriters[$writerName]
         $folderRoot = New-Dir ('clobber-folder-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
         $null = Invoke-FastLlmApiKeySetting -InstallRoot $folderRoot -Action on
         Remove-Item -LiteralPath (Join-Path $folderRoot 'settings.json') -Force
         New-Item -ItemType Directory -Path (Join-Path $folderRoot 'settings.json') | Out-Null
-        $folderFailure = Get-Failure { & $settingsWriters[$writerName] $folderRoot }
-        Check ($null -ne $folderFailure -and (Test-Path -LiteralPath (Join-Path $folderRoot 'settings.json') -PathType Container) -and (Get-StartVerdict $folderRoot) -ceq 'refused:api-key-setting-unreadable') "unreadable settings (a folder named settings.json): $writerName refuses and leaves it"
+        $folderFailure = Get-Failure { & $writer.run $folderRoot }
+        Check (($null -ne $folderFailure -or $writer.ContainsKey('quietUnless')) -and (Test-Path -LiteralPath (Join-Path $folderRoot 'settings.json') -PathType Container) -and @(Get-ChildItem -LiteralPath (Join-Path $folderRoot 'settings.json') -Force).Count -eq 0 -and (Get-StartVerdict $folderRoot) -ceq 'refused:api-key-setting-unreadable') "unreadable settings (a folder named settings.json): $writerName leaves it, and the start stays refused"
     }
-    # A readable file is still merged: each writer keeps apiKey "on" and every other key.
+    # A readable file is still merged: each writer keeps apiKey "on" and every other key. (One decline is remembered first, so the two
+    # writers that remove declines have something to write.)
     foreach ($writerName in $settingsWriters.Keys) {
         $mergeRoot = New-Dir ('merge-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
         $null = Invoke-FastLlmApiKeySetting -InstallRoot $mergeRoot -Action on
         Set-FastLlmServingSettings -InstallRoot $mergeRoot -ChatPage on
-        & $settingsWriters[$writerName] $mergeRoot
+        Add-FastLlmUiDeclinedSetup -InstallRoot $mergeRoot -RecipeId 'declined.setup-one'
+        $mergeBytes = Get-SettingsBytes $mergeRoot
+        & $settingsWriters[$writerName].run $mergeRoot
         $merged = ConvertFrom-Json (Read-SettingsText $mergeRoot)
-        Check ([string]$merged.apiKey -ceq 'on' -and [string]$merged.chatPage -ceq 'on' -and (Get-StartVerdict $mergeRoot) -ceq 'key:on') "readable settings: $writerName keeps apiKey on and the other settings"
+        Check ((Get-SettingsBytes $mergeRoot) -cne $mergeBytes -and [string]$merged.apiKey -ceq 'on' -and [string]$merged.chatPage -ceq 'on' -and (Get-StartVerdict $mergeRoot) -ceq 'key:on') "readable settings: $writerName writes its change and keeps apiKey on and the other settings"
     }
-    # An absent file is not "unreadable": every writer still creates it (as before), and without a key store the result starts keyless.
+    # An absent file is not "unreadable": a writer with something to write still creates it (as before), and without a key store the
+    # result starts keyless.
     foreach ($writerName in $settingsWriters.Keys) {
+        $writer = $settingsWriters[$writerName]
         $freshRoot = New-Dir ('fresh-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-        & $settingsWriters[$writerName] $freshRoot
-        Check ((Test-Path -LiteralPath (Join-Path $freshRoot 'settings.json') -PathType Leaf) -and (Read-SettingsText $freshRoot) -cnotmatch 'apiKey' -and (Get-StartVerdict $freshRoot) -ceq 'keyless') "no settings.json: $writerName creates the file as before, with no apiKey value"
+        & $writer.run $freshRoot
+        $expectFile = -not ($writer.ContainsKey('createsFile') -and -not $writer.createsFile)
+        Check ((Test-Path -LiteralPath (Join-Path $freshRoot 'settings.json') -PathType Leaf) -eq $expectFile -and (Read-SettingsText $freshRoot) -cnotmatch 'apiKey' -and (Get-StartVerdict $freshRoot) -ceq 'keyless') "no settings.json: $writerName $(if ($expectFile) { 'creates the file as before, with no apiKey value' } else { 'has nothing to remove and creates nothing' })"
     }
+    # No function writes settings.json after a read that tolerates an unreadable file: every caller of the two shared writers reads
+    # with -ForWrite (or through the serving reader's malformed verdict) in the same function.
+    $writerScan = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($writerFile in @('src/FastLlm.Components.ps1', 'src/FastLlm.Update.ps1', 'src/FastLlm.UiFlow.ps1', 'src/FastLlm.ServingSettings.ps1')) {
+        $writerTree = Get-SourceTree $writerFile
+        foreach ($function in @($writerTree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true))) {
+            $functionText = [string]$function.Body.Extent.Text
+            $writesFile = ($functionText -cmatch 'Write-FastLlmComponentSettingsObject\s+-InstallRoot' -or ($functionText -cmatch "Join-Path \`$InstallRoot 'settings\.json'" -and $functionText -cmatch 'WriteAllText\('))
+            if (-not $writesFile -or $function.Name -ceq 'Write-FastLlmComponentSettingsObject') { continue }
+            $strictRead = ($functionText -cmatch 'Read-FastLlm(Component)?SettingsObject -InstallRoot \$InstallRoot -ForWrite' -or $functionText -cmatch "if \(\`$read\.malformed\) \{ throw 'serving-settings-malformed:" -or $functionText -cmatch "if \(-not \`$readable\) \{ throw 'settings-malformed:")
+            $lenientRead = ($functionText -cmatch 'Read-FastLlm(Component)?SettingsObject -InstallRoot \$InstallRoot(?! -ForWrite)')
+            if (-not $strictRead -or $lenientRead) { $writerScan.Add("$writerFile $($function.Name)") }
+            else { $writerScan.Add("ok $($function.Name)") }
+        }
+    }
+    $writersFound = @($writerScan | Where-Object { $_ -clike 'ok *' } | ForEach-Object { $_.Substring(3) } | Sort-Object)
+    Check (@($writerScan | Where-Object { $_ -cnotlike 'ok *' }).Count -eq 0 -and ($writersFound -join ',') -ceq 'Add-FastLlmUiDeclinedSetup,Clear-FastLlmUiDeclinedSetups,Remove-FastLlmUiDeclinedSetup,Set-FastLlmComponentLicenseSettings,Set-FastLlmComponentSettings,Set-FastLlmServingSettings,Set-FastLlmUpdateSettings,Write-FastLlmUiSettings') "settings writers: every function that writes settings.json reads it strictly first; these are all of them ($($writersFound -join ',')) $(@($writerScan | Where-Object { $_ -cnotlike 'ok *' }) -join '; ')"
     # The window's own triggers leave an unreadable file alone too: its lenient reads still give the defaults (no error), only the writes refuse.
     $lenientRoot = New-Dir 'lenient-read'
     Write-SettingsText $lenientRoot '{ broken'
@@ -928,6 +1005,33 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $clipboardFormats = Get-FastLlmUiKeyClipboardFormats
     Check ((@($clipboardFormats.Keys) -join ',') -ceq 'ExcludeClipboardContentFromMonitorProcessing,CanIncludeInClipboardHistory,CanUploadToCloudClipboard') 'clipboard: a copy that holds the key carries the three formats that keep it out of the clipboard history and the cloud clipboard'
     Check ((@($clipboardFormats['CanIncludeInClipboardHistory']) -join ',') -ceq '0,0,0,0' -and (@($clipboardFormats['CanUploadToCloudClipboard']) -join ',') -ceq '0,0,0,0' -and @($clipboardFormats['ExcludeClipboardContentFromMonitorProcessing']).Count -eq 4 -and @($clipboardFormats.Values | Where-Object { $_ -isnot [byte[]] }).Count -eq 0) 'clipboard: history and cloud upload are both set to 0 (a four-byte value each), and the exclusion format is present'
+    # How the payload gets onto the clipboard: Set-FastLlmUiClipboard fills a data object and publishes it. Here the data object is a
+    # recorder (the window passes a Windows.Forms.DataObject), so every call, its order and its arguments are checked.
+    function Invoke-ClipboardProbe($Payload) {
+        $script:clipboardProbe = @{ made = 0; published = (New-Object 'System.Collections.Generic.List[object]'); calls = (New-Object 'System.Collections.Generic.List[object]') }
+        Set-FastLlmUiClipboard -Payload $Payload -NewDataObject {
+            $script:clipboardProbe.made++
+            $recorder = New-Object psobject
+            $recorder | Add-Member -MemberType ScriptMethod -Name SetData -Value {
+                $recorded = @{ at = 'set'; count = $args.Count; format = $args[0]; convert = $args[1]; data = $args[2]; bytes = $null; publishedBefore = $script:clipboardProbe.published.Count }
+                if ($args[2] -is [IO.MemoryStream]) { $recorded.bytes = (@($args[2].ToArray()) -join ',') }
+                $script:clipboardProbe.calls.Add($recorded)
+            }
+            return $recorder
+        } -Publish { param($Data) $script:clipboardProbe.published.Add($Data) }
+        return $script:clipboardProbe
+    }
+    $keyPayload = @{ text = $marker; formats = (Get-FastLlmUiKeyClipboardFormats) }
+    $clipboardKey = Invoke-ClipboardProbe $keyPayload
+    $clipboardCalls = @($clipboardKey.calls.ToArray())
+    Check ($clipboardKey.made -eq 1 -and $clipboardKey.published.Count -eq 1 -and $clipboardCalls.Count -eq 4 -and @($clipboardCalls | Where-Object { $_.count -ne 3 -or $_.publishedBefore -ne 0 }).Count -eq 0) 'clipboard object: one data object is made, filled with four entries (the text and the three formats), and published once, after it was filled'
+    Check ($clipboardCalls[0].format -ceq 'UnicodeText' -and $clipboardCalls[0].convert -eq $true -and $clipboardCalls[0].data -is [string] -and [string]$clipboardCalls[0].data -ceq $marker) 'clipboard object: the text is set first, as UnicodeText with conversion to the other text formats'
+    $clipboardFormatCalls = @($clipboardCalls | Select-Object -Skip 1)
+    Check ((@($clipboardFormatCalls | ForEach-Object { [string]$_.format + '=' + [string]$_.bytes + '/' + [string]$_.convert }) -join ';') -ceq 'ExcludeClipboardContentFromMonitorProcessing=1,0,0,0/False;CanIncludeInClipboardHistory=0,0,0,0/False;CanUploadToCloudClipboard=0,0,0,0/False' -and @($clipboardFormatCalls | Where-Object { $_.data -isnot [IO.MemoryStream] }).Count -eq 0) 'clipboard object: each exclusion format is set under its exact name, without conversion, as a stream of its four raw bytes'
+    $clipboardPlain = Invoke-ClipboardProbe @{ text = 'curl http://127.0.0.1:8080/v1/models'; formats = ([ordered]@{}) }
+    Check ($clipboardPlain.published.Count -eq 1 -and $clipboardPlain.calls.Count -eq 1 -and [string]$clipboardPlain.calls[0].data -ceq 'curl http://127.0.0.1:8080/v1/models') 'clipboard object: a copy without the key is the text alone'
+    $clipboardFailed = Get-Failure { Set-FastLlmUiClipboard -Payload $keyPayload -NewDataObject { throw 'no data object' } -Publish { param($Data) $script:clipboardProbe.published.Add($Data) } }
+    Check ($null -ne $clipboardFailed) 'clipboard object: a failure is passed on to the copy routine (which reports it in fixed text); nothing is swallowed'
     # The window's two Copy handlers call this one routine with three script blocks. Here the blocks record what they are given.
     function Invoke-CopyProbe([hashtable]$Arguments, $KeyToRead, [switch]$ClipboardFails) {
         $script:copyProbe = @{ clipboard = (New-Object 'System.Collections.Generic.List[object]'); status = (New-Object 'System.Collections.Generic.List[string]'); reads = 0; key = $KeyToRead; fail = [bool]$ClipboardFails }
@@ -1032,7 +1136,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         $action = Get-FastLlmUiApiKeySaveAction -Current $saveCase.current -Undetermined $saveCase.undetermined -BoxState $saveCase.box -Touched $saveCase.touched
         Check ($action -ceq $saveCase.expect) "settings save ($($saveCase.why)): $($saveCase.expect) (saw: $action)"
     }
-    Check ((Get-FastLlmUiApiKeyChoiceText) -cmatch 'Tick "Require an API key"' -and (Get-FastLlmUiApiKeyChoiceText) -cmatch 'Nothing was saved' -and (Get-FastLlmUiApiKeyChoiceText) -notmatch '(?i)delet') 'settings save: the refusal tells the user to tick or clear the box, and that nothing was saved'
+    Check ((Get-FastLlmUiApiKeyChoiceText) -cmatch 'Tick "Require an API key"' -and (Get-FastLlmUiApiKeyChoiceText) -cmatch 'Nothing was saved' -and (Get-FastLlmUiApiKeyChoiceText) -cmatch 'fix or delete that file first') 'settings save: the refusal tells the user to tick or clear the box, that nothing was saved, and what to do if saving then fails on a settings file that is not valid JSON'
     Check ((Get-FastLlmUiApiKeyFailure -Code 'api-key-unavailable').text -cmatch 'does not start without the key' -and (Get-FastLlmUiNewKeyConfirmText -HasReadableKey $true) -cmatch 'current key stops working' -and (Get-FastLlmUiNewKeyConfirmText -HasReadableKey $false) -cmatch 'cannot be read') 'window: the refusal says FastLLM does not start without the key, and creating a key is asked first'
     $rowOn = Get-FastLlmUiApiKeyRow -Info $keyed -Settings $settingsOn -ApiKeyStore $sameStore
     Check ($rowOn.visible -and [string]$rowOn.mask -ceq '********' -and $rowOn.canShow -and [string]$rowOn.note -ceq 'This server requires the API key.') 'window: Connect an app shows API key: ******** with Show and Copy when the server requires the key'
@@ -1057,7 +1161,14 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     Check ($readerUses.Count -eq 4 -and @($readerUses | Where-Object { $_ -clike 'function ReadUiApiKey*' }).Count -eq 1 -and @($readerUses | Where-Object { $_ -clike '*Invoke-FastLlmUiKeyCopy*-ReadKey {ReadUiApiKey}*' }).Count -eq 2 -and @($readerUses | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "window: the key is read in exactly three places - Show, and the two hand-overs to the copy routine ($($readerUses.Count) uses)"
     $shownKeyUses = @([regex]::Matches($uiSource, '\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
     Check (($shownKeyUses -join ' | ') -ceq '$shownKey=ReadUiApiKey | $shownKey) | $shownKey | $shownKey=$null' -and $uiSource.Contains('if($shownKey){$keyBox.Text=$shownKey;$keyShow.Text=''Hide''}')) "window: Show puts the key into the key box and nowhere else, then drops it ($($shownKeyUses -join ' | '))"
-    Check ($uiSource -cnotmatch 'Clipboard\]::SetText\([^)]*(Key|ReadUiApiKey)' -and $uiSource.Contains('[Windows.Forms.Clipboard]::SetDataObject($clipboardData,$true)') -and $uiSource.Contains('foreach($formatName in @($Payload.formats.Keys)){$clipboardData.SetData([string]$formatName,$false,[IO.MemoryStream]::new([byte[]]$Payload.formats[$formatName]))}')) 'window (L3): the copy is placed through a data object that carries the payload''s formats; no handler copies the key as plain text'
+    # The window's part of the clipboard is one function of one statement: the tested routine, a real data object and the real clipboard
+    # (kept after the window closes). It is pinned whole, so nothing can be added to it or left out of it unnoticed.
+    $uiTree = Get-SourceTree 'fast-llm-ui.ps1'
+    $clipboardFunction = @($uiTree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'SetUiClipboardPayload' }, $true))
+    $clipboardStatements = @()
+    if ($clipboardFunction.Count -eq 1) { $clipboardStatements = @($clipboardFunction[0].Body.EndBlock.Statements | ForEach-Object { [string]$_.Extent.Text }) }
+    Check ($clipboardFunction.Count -eq 1 -and $clipboardStatements.Count -eq 1 -and $clipboardStatements[0] -ceq 'Set-FastLlmUiClipboard -Payload $Payload -NewDataObject {New-Object Windows.Forms.DataObject} -Publish {param($ClipboardData) [Windows.Forms.Clipboard]::SetDataObject($ClipboardData,$true)}' -and (@($clipboardFunction[0].Parameters | ForEach-Object { [string]$_.Extent.Text }) -join ',') -ceq '$Payload') "window (L3): SetUiClipboardPayload is exactly one statement - the tested routine with a Windows.Forms.DataObject and Clipboard.SetDataObject(data, keep after exit) ($($clipboardStatements -join ' | '))"
+    Check ($uiSource -cnotmatch 'Clipboard\]::SetText\([^)]*(Key|ReadUiApiKey)' -and @([regex]::Matches($uiSource, 'Clipboard\]::SetDataObject\(')).Count -eq 1 -and @([regex]::Matches($uiSource, '(?<![A-Za-z])SetUiClipboardPayload(?![A-Za-z])')).Count -eq 3) 'window (L3): no handler copies the key as plain text; the two copy sites hand their payload to that one function'
     Check ($uiSource.Contains('$keyBoxState=Get-FastLlmUiApiKeyBoxState -Settings $current') -and $uiSource.Contains("if(`$keyBoxState -ceq 'indeterminate'){`$keyBox.ThreeState=`$true;`$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate") -and $uiSource.Contains('$keyAction=Get-FastLlmUiApiKeySaveAction -Current ([string]$current.apiKey) -Undetermined ([bool]$current.apiKeyUndetermined) -BoxState ([string]$keyBox.CheckState).ToLowerInvariant() -Touched ([bool]$script:settingsKeyTouched)') -and $uiSource.Contains("if(`$keyAction -ceq 'ask'){throw (Get-FastLlmUiApiKeyChoiceText)}") -and $uiSource.IndexOf("if(`$keyAction -ceq 'ask'){throw") -lt $uiSource.IndexOf('Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort')) 'window (L4): Settings shows an unknown flag as neither ticked nor clear, and Save is refused (before anything is written) until the user picks'
     Check ($uiSource -cnotmatch '\.Tag\s*=[^;\r\n]*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)' -and $uiSource -cnotmatch '\$script:[A-Za-z]*\s*=\s*\(?\s*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)') 'window: the key is never kept in a control tag or a window-wide variable'
     $apiKeyFailureAt = $uiSource.IndexOf('if(Test-FastLlmUiApiKeyFailure -Code $failureCode){')
@@ -1124,12 +1235,6 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     # PowerShell module logging records every bound parameter value of a module's functions and of cmdlets, and writes an array element
     # by element. So no function may take key material as a [string], [char[]] or [byte[]] parameter, and no cmdlet may be given key text.
     # Static part: every function in FastLlm.ApiKey.ps1, and the call sites in the files that handle key material.
-    function Get-SourceTree([string]$RelativePath) {
-        $parseErrors = $null; $parseTokens = $null
-        $tree = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root $RelativePath), [ref]$parseTokens, [ref]$parseErrors)
-        if (@($parseErrors).Count -ne 0) { throw "$RelativePath does not parse" }
-        return $tree
-    }
     function Get-ParameterTypeName($Parameter) {
         $types = @($Parameter.Attributes | Where-Object { $_ -is [Management.Automation.Language.TypeConstraintAst] } | ForEach-Object { $_.TypeName.FullName })
         if ($types.Count -eq 0) { return '' }
@@ -1225,6 +1330,46 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         }
     }
     Check ($cmdletUses.Count -eq 0) "M2 static: the functions that hold the key as text or bytes call no cmdlet with it (only their own typed-failure, holder and store functions) $($cmdletUses -join '; ')"
+    # The text of a key failure is fixed text. New-FastLlmApiKeyFailure takes its code and message as plain strings (they are fixed, so
+    # they may be logged); what must never happen is a message built from a value - the key, part of it, or an error text that could
+    # echo it. So at every call, in every file, -Code is a literal api-key code and -Message is a string literal, or a literal with
+    # nothing inserted but the two HTTP status numbers of the proof.
+    $failureCalls = 0
+    $failureProblems = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($callSiteFile in $callSiteFiles) {
+        $failureTree = Get-SourceTree $callSiteFile
+        foreach ($command in @($failureTree.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -ceq 'New-FastLlmApiKeyFailure' }, $true))) {
+            $failureCalls++
+            $where = "${callSiteFile}:$($command.Extent.StartLineNumber)"
+            $elements = @($command.CommandElements)
+            $named = @{}
+            for ($index = 1; $index -lt $elements.Count; $index++) {
+                if ($elements[$index] -is [Management.Automation.Language.CommandParameterAst] -and $index + 1 -lt $elements.Count) { $named[[string]$elements[$index].ParameterName] = $elements[$index + 1]; $index++ }
+                else { $failureProblems.Add("$where has an argument that is not -Code or -Message with a value") }
+            }
+            if ((@($named.Keys | Sort-Object) -join ',') -cne 'Code,Message') { $failureProblems.Add("$where does not pass exactly -Code and -Message"); continue }
+            $codeArgument = $named['Code']
+            if (-not ($codeArgument -is [Management.Automation.Language.StringConstantExpressionAst] -and [string]$codeArgument.Value -cmatch '^api-key-[a-z-]{1,40}$')) { $failureProblems.Add("$where -Code is not a literal api-key code") }
+            $messageArgument = $named['Message']
+            if ($messageArgument -is [Management.Automation.Language.StringConstantExpressionAst]) { continue }
+            if ($messageArgument -is [Management.Automation.Language.ExpandableStringExpressionAst]) {
+                $inserted = @($messageArgument.NestedExpressions | ForEach-Object { [string]$_.Extent.Text })
+                if (@($inserted | Where-Object { $_ -cnotin @('$proofWithout', '$proofWith') }).Count -eq 0) { continue }
+            }
+            $failureProblems.Add("$where -Message is not fixed text: $([string]$messageArgument.Extent.Text)")
+        }
+    }
+    Check ($failureProblems.Count -eq 0 -and $failureCalls -ge 12) "M2 static: every key failure ($failureCalls calls) is built from a literal api-key code and fixed text; no message is assembled from a value that could hold the key $($failureProblems -join '; ')"
+    # The same for what FastLlm.ApiKey.ps1 throws directly, and for the "flag cannot be known" failure: a typed key failure or a literal.
+    $throwProblems = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($thrown in @($keyTree.FindAll({ param($node) $node -is [Management.Automation.Language.ThrowStatementAst] }, $true))) {
+        $thrownText = [string]$thrown.Extent.Text
+        if ($thrownText -cnotmatch "^throw \(New-FastLlmApiKeyFailure -Code '" -and $thrownText -cnotmatch "^throw '[^'`$]*'$") { $throwProblems.Add("line $($thrown.Extent.StartLineNumber): $thrownText") }
+    }
+    $proofNumbers = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.Runtime.ps1'))
+    Check ($throwProblems.Count -eq 0 -and $proofNumbers.Contains('$proofWithout = 0') -and $proofNumbers.Contains('$proofWith = 0') -and @([regex]::Matches($proofNumbers, '\$proofWith(out)? = (?!0\b|\[int\] \()')).Count -eq 0) "M2 static: FastLlm.ApiKey.ps1 throws only typed key failures and literals, and the two numbers the proof's message carries are HTTP status numbers $($throwProblems -join '; ')"
+    $settingFailureBody = [string]@((Get-SourceTree 'src/FastLlm.ServingSettings.ps1').FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-FastLlmApiKeySettingFailure' }, $true))[0].Body.Extent.Text
+    Check ($settingFailureBody -cmatch "-ArgumentList 'api-key-setting-unreadable: [^'`$]+'\s*\r?\n" -and @([regex]::Matches($settingFailureBody, '\$[A-Za-z]+') | ForEach-Object { $_.Value } | Where-Object { $_ -cne '$failure' }).Count -eq 0) 'M2 static: the "flag cannot be known" failure is one literal text (nothing is inserted into it)'
 
     # Behavioural part: with module logging on for FastLLM and for PowerShell's own utility and management cmdlets, run the store read,
     # the store state, Show / Copy, settings -ApiKey show, the scrub, a keyed request and a whole keyed start with a marker key, and read
@@ -1319,7 +1464,12 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         if ($logKind -cne 'none') { Start-Sleep -Milliseconds 500; $logText = Read-ModuleLog }
     }
     if (-not $logResults.ran -or -not $logResults.sawTwo) {
-        Write-Host "SKIP: the module-logging check (M2, behavioural) did not run to the end on this host: log source '$logKind', first canary seen: $($logResults.sawOne), second canary seen: $($logResults.sawTwo). The static checks above still hold."
+        $logSkipText = "the module-logging check (M2, behavioural) did not run to the end on this host: log source '$logKind', first canary seen: $($logResults.sawOne), second canary seen: $($logResults.sawTwo)."
+        # On Windows PowerShell 5.1 - the PowerShell the product runs in - this check is not optional: it is the only one that sees a key
+        # handed to a cmdlet or to a module function as a plain value wherever that happens. A host that cannot read its own PowerShell
+        # operational log fails the suite here; it does not pass with a skip.
+        Check (-not ($isWindowsHost -and $PSVersionTable.PSVersion.Major -lt 6)) "module logging: on Windows PowerShell 5.1 the check must run to the end, and $logSkipText (The log is $logEventLog, event 4103.)"
+        Write-Host "SKIP: $logSkipText The static checks above still hold."
     }
     else {
         Check ([string]$logResults.shown -ceq $logMarker -and [string]$logResults.printed -ceq ($logMarker + [Environment]::NewLine) -and [string]$logResults.storeId -ceq $logMarkerId -and [string]$logResults.scrubbed -ceq 'the server said <api-key>' -and $logResults.keyedStatus -eq 200 -and $null -eq $logResults.start.failure -and [string]$logResults.start.status.apiKey -ceq 'on' -and $logResults.copy[0] -eq $true -and $logResults.copy[1] -eq $true -and $logResults.copy[2] -eq 2) "module logging: with logging on, the store read, Show, settings -ApiKey show, both copies, the scrub, a keyed request and a keyed start all worked$(if ($logResults.start.failure) { ': ' + [string]$logResults.start.failure.Exception.Message })"
