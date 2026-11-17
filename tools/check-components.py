@@ -5,7 +5,7 @@ Shape (spec 2.1):
   { "schema": "bitworks.fastllm-components/v1", "components": [ Component, ... ] }
   Component = {
     "id": str                       # ^[a-z0-9][a-z0-9.\\-]{1,120}$, unique
-    "kind": "engine"|"runtime"|"model"|"draft"|"tool",
+    "kind": "engine"|"runtime"|"model"|"draft"|"tool"|"embedding-model",
     "displayName": str, "version": str,
     "source": { "url": https url, "allowedRedirectHosts": [host, ...], "sha256": 64 hex, "sizeBytes": int > 0,
                 "format": "zip"|"zip-tree"|"gguf"|"vendor-installer",
@@ -17,7 +17,8 @@ Shape (spec 2.1):
                  "links": [ { "title", "url": https url }, ... ] },     # every consent needs url or links
     "platform": { "os": "windows", "arch": "x64", "backend": str },
     "adapter": str,                 # engine only
-    "entryPoint": str,              # engine and tool; must be a fileManifest path (a tool: its executable)
+    "entryPoint": str,              # engine, tool and embedding-model; must be a fileManifest path (a tool: its executable;
+                                    # an embedding-model: its .gguf model file, at the top of the component)
     "requires": [component id, ...],
     "signer": str|null              # expected Authenticode publisher
   }
@@ -36,7 +37,7 @@ SCHEMA = "bitworks.fastllm-components/v1"
 ID_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{1,120}")
 RESERVED_RE = re.compile(r"(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?", re.IGNORECASE)
 SHA_RE = re.compile(r"[0-9a-f]{64}")
-KINDS = ("engine", "runtime", "model", "draft", "tool")
+KINDS = ("engine", "runtime", "model", "draft", "tool", "embedding-model")
 FORMATS = ("zip", "zip-tree", "gguf", "vendor-installer")
 MAX_CHAIN_DEPTH = 4
 CONSENTS = ("show", "accept")
@@ -277,6 +278,20 @@ def check_component(comp, errors):
             errors.append(f"{label}: a tool needs an entryPoint (its executable)")
         elif entry not in manifest_paths:
             errors.append(f"{label}: entryPoint {entry!r} is not in the fileManifest")
+    if comp["kind"] == "embedding-model":
+        # The model file of the embedding sidecar: it names its one .gguf file (hashed like every manifest file, and bound by sha256 to a
+        # measured sidecar row). It has no engine role and stands alone.
+        if "adapter" in comp:
+            errors.append(f"{label}: an embedding-model has no adapter")
+        entry = comp.get("entryPoint")
+        if not is_str(entry):
+            errors.append(f"{label}: an embedding-model needs an entryPoint (its .gguf model file)")
+        elif entry not in manifest_paths:
+            errors.append(f"{label}: entryPoint {entry!r} is not in the fileManifest")
+        elif not LEAF_RE.fullmatch(entry) or not entry.endswith(".gguf"):
+            errors.append(f"{label}: entryPoint {entry!r} must be a .gguf file at the top of the component")
+        if isinstance(comp["requires"], list) and comp["requires"]:
+            errors.append(f"{label}: an embedding-model requires no other component")
 
 
 def check_base_engine(components, catalog, errors):

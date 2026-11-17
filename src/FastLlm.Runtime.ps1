@@ -1110,6 +1110,9 @@ function Invoke-FastLlmSupervisedServer {
           # callers and the bench path): no request file is ever read and no field is added. -SwitchContext is Start-FastLlmServer's table for the
           # sequence (what this run is the outcome of, the accepted request, the plan that became ready); Start-FastLlmServer starts the other model.
           [switch] $AllowSwitch, [System.Collections.IDictionary] $SwitchContext,
+          # Opt-in embedding sidecar: the serving session's sidecar (FastLlm.Sidecar.ps1), passed only by Start-FastLlmServer inside a session
+          # that has one. Absent (every default start, direct callers and the bench path): nothing below runs and no field is added.
+          [System.Collections.IDictionary] $SidecarSession,
           # Opt-in: the run's API key, in its holder. Only a start with the key setting on passes it (Start-FastLlmServer reads the store);
           # every other caller, the bench path included, passes nothing and gets today's keyless start. Untyped on purpose (see FastLlm.ApiKey.ps1).
           $ApiKeyHolder)
@@ -1314,6 +1317,9 @@ function Invoke-FastLlmSupervisedServer {
     $runFailureMessage = $null
     Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'start' -Fields { Get-FastLlmRunLogStartFields -Plan $Plan -State $state -SelfTest ([bool] $SelfTest) }
     Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'preparing' }
+    # Opt-in embedding sidecar: the session's one block is this document's sidecars[0] from its first write (waiting until this run is Ready,
+    # or as it stands after a model switch). The top-level phase stays the text model's.
+    if ($null -ne $SidecarSession) { $state.sidecars = @(Enter-FastLlmSidecarRun -Session $SidecarSession -InstallRoot $InstallRoot -State $state -ApiKeyHolder $ApiKeyHolder) }
     $stopPath = Join-Path $stateRoot ('stop-' + $state.runId)
     $switchRequestPath = Join-Path $stateRoot ('switch-' + $state.runId + '.json')
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
@@ -1660,6 +1666,11 @@ function Invoke-FastLlmSupervisedServer {
                     try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { $null = $_ }
                 }
             }
+            # Opt-in embedding sidecar, only now that the text model is Ready and after the stop and switch checks above: one step per pass
+            # (start, wait for its model, its own checks, then watch it). Whatever happens to it changes only its own block.
+            if ($null -ne $SidecarSession -and (Step-FastLlmSidecar -Session $SidecarSession -InstallRoot $InstallRoot -State $state -TextPort ([int] $uri.Port))) {
+                try { $state.updatedAt = (Get-Date).ToUniversalTime().ToString('o'); Write-FastLlmState -InstallRoot $InstallRoot -State $state } catch { $null = $_ }
+            }
             # The GPU memory re-check, every 60 s. The read is time-boxed (200 ms), so the stop file above is still seen within one pass.
             # Only a change of state is logged and printed; the status always carries the latest numbers.
             $spillTick = Invoke-FastLlmSpillCheckTick -Previous $state.spillCheck -Now (Get-Date).ToUniversalTime() -NextDueUtc $spillNextCheck -Luid $spillLuid -Process $hostProcess.Process -Reidentify $spillReidentify
@@ -1684,6 +1695,9 @@ function Invoke-FastLlmSupervisedServer {
                     $idleStep = Invoke-FastLlmIdleStopPoll -State $idleDetector -Fetch { Get-FastLlmIdleMetricsText -BaseUrl $baseUrl -Request $apiKeyRequest -Result $idleRead } -Now $idleNow -IdleMinutes $IdleStopMinutes
                     $idleDetector = $idleStep.state
                     if ($null -ne $apiKeyRunExposure.failure) { throw $apiKeyRunExposure.failure }
+                    # With an embedding sidecar the idle stop counts both servers: activity on the sidecar, or a read of its /metrics that
+                    # proves nothing, resets the idle clock and withholds the stop.
+                    if ($null -ne $SidecarSession) { $idleStep = Join-FastLlmSidecarIdle -Session $SidecarSession -Step $idleStep -Now $idleNow -InstallRoot $InstallRoot -State $state; $idleDetector = $idleStep.state }
                     # A read refused with 401 (the key the server enforces is not the one this run holds) is a failed read like any other:
                     # it never stops the server. It is logged once for each run of refused reads, so the mismatch is not silent.
                     if ($idleStep.readFailed -and [int] $idleRead.status -eq 401) {
@@ -1790,6 +1804,15 @@ function Invoke-FastLlmSupervisedServer {
                     Set-FastLlmSwitchResult -State $state -InstallRoot $InstallRoot -Result 'refused' -FailureCode $switchEndCode
                 }
             } catch { $null = $_ }
+        }
+        # Opt-in embedding sidecar: this run ends the session's serving (a stop, an idle stop, a failure after Ready, a restore that did not
+        # serve), so the sidecar is stopped with it, before the final document is written. It is kept only when another run of the text model
+        # follows in the same session: a model switch was accepted, or this run was a switch target that failed and the previous model is
+        # restored next (not after a key that may have been sent to another program: that ends the sequence).
+        if ($null -ne $SidecarSession) {
+            $sidecarKeep = [bool] ($switchAccepted -or ($null -ne $switchOrigin -and [string] $switchOrigin.role -ceq 'target' -and -not $reachedReady -and
+                    [string] $state.phase -ceq 'failed' -and [string] $state.failureCode -cne 'api-key-listener-changed'))
+            try { Exit-FastLlmSidecarRun -Session $SidecarSession -InstallRoot $InstallRoot -State $state -Keep:$sidecarKeep } catch { $null = $_ }
         }
         # Run log: the final phase and the end event (before the child is disposed, so its exit code is read if it already exited).
         $serverExitCode = $null

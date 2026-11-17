@@ -34,6 +34,14 @@ $script:FastLlmRunLogAllowedFields = @{
     # Never anything else a request carried.
     'switch-request'      = @('fromModelId', 'toModelId')
     'switch-result'       = @('result', 'failureCode')
+    # Opt-in embedding sidecar: the role (a closed word), the component id, the port, the placement (a closed word), counts of the
+    # engine's own placement lines, the start check's verdict and vector length, a phase from a closed list and a failure code.
+    # Never anything a request, a document or a vector held. The idle-check-failed line is written once per run of failed reads.
+    'sidecar-start'       = @('role', 'componentId', 'port', 'placement')
+    'sidecar-placement'   = @('role', 'offloadLines', 'offloadedLayers', 'totalLayers', 'gpuBufferLines', 'cpuBufferLines')
+    'sidecar-canary'      = @('role', 'ok', 'dimension')
+    'sidecar-phase'       = @('role', 'phase', 'failureCode')
+    'sidecar-idle-check-failed' = @('role')
     'end'                 = @('phase', 'failureCode', 'failedAtPhase', 'failureMessage', 'exitCode', 'serverExitCode', 'droppedEvents')
 }
 
