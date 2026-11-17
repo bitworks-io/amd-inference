@@ -14,6 +14,7 @@ $module = Get-Module FastLlm
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
 . (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
 . (Join-Path $PSScriptRoot 'helpers/SidecarTestWorld.ps1')
+. (Join-Path $PSScriptRoot 'helpers/module-log-tap.ps1')
 $helpersRoot = Join-Path $PSScriptRoot 'helpers'
 $enginePath = (Get-Process -Id $PID).Path
 $isWindowsHost = ($env:OS -eq 'Windows_NT')
@@ -776,6 +777,7 @@ try {
     $logBeginLocal = [DateTime]::Now.AddSeconds(-1).ToString('yyyy-MM-dd HH:mm:ss')
     $logEventLog = 'Microsoft-Windows-PowerShell/Operational'
     if ($PSVersionTable.PSVersion.Major -ge 6) { $logEventLog = 'PowerShellCore/Operational' }
+    $logEvidence = @{ oneId = [long] -1; oneSnapshot = ''; lastWait = '' }
     function Read-ModuleLog {
         if ($logKind -ceq 'mac') {
             try { & '/usr/bin/log' show --style compact --start $logBeginLocal --predicate "processID == $PID" > $logCapturePath 2> ($logCapturePath + '.err'); return [IO.File]::ReadAllText($logCapturePath) } catch { return '' }
@@ -794,7 +796,9 @@ try {
             # A module function with the canary as a plain [string] parameter: logged exactly the way a key parameter would be.
             $null = InModule { param($R) Get-FastLlmApiKeyStoreState -InstallRoot $R } @((Join-Path $temp $Canary))
             Start-Sleep -Milliseconds 400
-            if ((Read-ModuleLog).IndexOf($Canary, [StringComparison]::Ordinal) -ge 0) { return $true }
+            $waitText = Read-ModuleLog
+            $logEvidence.lastWait = Get-ModuleLogFlags $waitText $logCanaryOne $logCanaryTwo
+            if ($waitText.IndexOf($Canary, [StringComparison]::Ordinal) -ge 0) { return $true }
         }
         return $false
     }
@@ -809,6 +813,7 @@ try {
         if ($logKind -cne 'none') {
             foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $true }
             $logSawOne = Wait-ModuleLogCanary $logCanaryOne 30
+            if ($logSawOne -and $logKind -ceq 'windows') { $logFirst = Get-ModuleLogFirstSeen $logEventLog $PID $logBegin $logCanaryOne; $logEvidence.oneId = $logFirst.recordId; $logEvidence.oneSnapshot = $logFirst.snapshot }
         }
         if ($logSawOne) {
             InModule { $script:FastLlmIdlePollSeconds = 1 }
@@ -828,6 +833,7 @@ try {
         foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $false }
         if ($logKind -cne 'none') { Start-Sleep -Milliseconds 500; $logText = Read-ModuleLog }
     }
+    foreach ($logInfoLine in @(Get-ModuleLogEvidenceLines $logKind $logEventLog $PID $logBegin $logEvidence $logText $logCanaryOne $logCanaryTwo)) { Write-Host $logInfoLine }
     if ($null -eq $logRun -or -not $logSawTwo) {
         $logSkipText = "the module-logging check of the sidecar's key path did not run to the end on this host: log source '$logKind', first canary seen: $logSawOne, second canary seen: $logSawTwo."
         # On Windows PowerShell 5.1 - the PowerShell the product runs in - this check is not optional.
@@ -839,7 +845,7 @@ try {
         Check ($logRun.completed -and $null -eq $logRun.failure -and $logRun.exit -eq 0 -and @($logRun.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' -and [string] $_.apiKey -ceq 'on' }).Count -ge 1 -and @($logAuth | Where-Object { $_ -ceq 'POST /v1/embeddings ok' }).Count -eq 2 -and @($logAuth | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -ge 1) 'module logging: with logging on, a keyed start with the sidecar ran to ready (its proof, its start check and its keyed /metrics reads) and stopped'
         $logFunctions = @('Start-FastLlmServer', 'Invoke-FastLlmSupervisedServer', 'Enter-FastLlmSidecarRun', 'Step-FastLlmSidecar', 'Start-FastLlmSidecarProcess', 'Complete-FastLlmSidecarChecks', 'Test-FastLlmSidecarCanary', 'Invoke-FastLlmSidecarRequest', 'Join-FastLlmSidecarIdle', 'Invoke-FastLlmHttp', 'Initialize-FastLlmEngineStartInfo', 'Get-FastLlmApiKeyText')
         $logMissing = @($logFunctions | Where-Object { $logText.IndexOf('ParameterBinding(' + $_ + ')', [StringComparison]::Ordinal) -lt 0 -and $logText.IndexOf('CommandInvocation(' + $_ + ')', [StringComparison]::Ordinal) -lt 0 })
-        Check ($logText.IndexOf($logCanaryOne, [StringComparison]::Ordinal) -ge 0 -and $logText.IndexOf($logCanaryTwo, [StringComparison]::Ordinal) -ge 0 -and $logMissing.Count -eq 0 -and $logText.IndexOf('System.Security.SecureString', [StringComparison]::Ordinal) -ge 0) "module logging: the log really recorded these calls - both canaries, the sidecar's functions and the key holder parameter (as a type name) are in it (not logged: $($logMissing -join ','))"
+        Check ($logText.IndexOf($logCanaryOne, [StringComparison]::Ordinal) -ge 0 -and $logText.IndexOf($logCanaryTwo, [StringComparison]::Ordinal) -ge 0 -and $logMissing.Count -eq 0 -and $logText.IndexOf('System.Security.SecureString', [StringComparison]::Ordinal) -ge 0) "module logging: the log really recorded these calls - both canaries, the sidecar's functions and the key holder parameter (as a type name) are in it ($(Get-ModuleLogFlags $logText $logCanaryOne $logCanaryTwo), not logged: $($logMissing -join ','))"
         $logCharacters = @($logMarker.ToCharArray() | ForEach-Object { [string] $_ })
         $logByteValues = @([Text.Encoding]::UTF8.GetBytes($logMarker) | ForEach-Object { [string] [int] $_ })
         $logForbidden = [ordered] @{

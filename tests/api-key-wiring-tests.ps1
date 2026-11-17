@@ -14,6 +14,7 @@ $module = Get-Module FastLlm
 . (Join-Path $root 'src/FastLlm.SupportBundle.ps1')
 . (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
+. (Join-Path $PSScriptRoot 'helpers/module-log-tap.ps1')
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $catalog = Join-Path $root 'config/catalog.json'
 $script:count = 0
@@ -1396,6 +1397,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $logBeginLocal = [DateTime]::Now.AddSeconds(-1).ToString('yyyy-MM-dd HH:mm:ss')
     $logEventLog = 'Microsoft-Windows-PowerShell/Operational'
     if ($PSVersionTable.PSVersion.Major -ge 6) { $logEventLog = 'PowerShellCore/Operational' }
+    $logEvidence = @{ oneId = [long] -1; oneSnapshot = ''; lastWait = '' }
     # What PowerShell logged for this process since the test began, as one text.
     function Read-ModuleLog {
         if ($logKind -ceq 'mac') {
@@ -1416,7 +1418,9 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
             # A module function with the canary as a plain [string] parameter: logged exactly the way a key parameter would be.
             $null = InModule { param($R) Get-FastLlmApiKeyStoreState -InstallRoot $R } @((Join-Path $logRoot $Canary))
             Start-Sleep -Milliseconds 400
-            if ((Read-ModuleLog).IndexOf($Canary, [StringComparison]::Ordinal) -ge 0) { return $true }
+            $waitText = Read-ModuleLog
+            $logEvidence.lastWait = Get-ModuleLogFlags $waitText $logCanaryOne $logCanaryTwo
+            if ($waitText.IndexOf($Canary, [StringComparison]::Ordinal) -ge 0) { return $true }
         }
         return $false
     }
@@ -1431,6 +1435,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         if ($logKind -cne 'none') {
             foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $true }
             $logResults.sawOne = Wait-ModuleLogCanary $logCanaryOne 30
+            if ($logResults.sawOne -and $logKind -ceq 'windows') { $logFirst = Get-ModuleLogFirstSeen $logEventLog $PID $logBegin $logCanaryOne; $logEvidence.oneId = $logFirst.recordId; $logEvidence.oneSnapshot = $logFirst.snapshot }
         }
         if ($logResults.sawOne) {
             # From here to the second canary this test hands the marker to no cmdlet itself: results are kept and checked afterwards.
@@ -1467,6 +1472,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $false }
         if ($logKind -cne 'none') { Start-Sleep -Milliseconds 500; $logText = Read-ModuleLog }
     }
+    foreach ($logInfoLine in @(Get-ModuleLogEvidenceLines $logKind $logEventLog $PID $logBegin $logEvidence $logText $logCanaryOne $logCanaryTwo)) { Write-Host $logInfoLine }
     if (-not $logResults.ran -or -not $logResults.sawTwo) {
         $logSkipText = "the module-logging check (M2, behavioural) did not run to the end on this host: log source '$logKind', first canary seen: $($logResults.sawOne), second canary seen: $($logResults.sawTwo)."
         # On Windows PowerShell 5.1 - the PowerShell the product runs in - this check is not optional: it is the only one that sees a key
@@ -1479,7 +1485,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         Check ([string]$logResults.shown -ceq $logMarker -and [string]$logResults.printed -ceq ($logMarker + [Environment]::NewLine) -and [string]$logResults.storeId -ceq $logMarkerId -and [string]$logResults.scrubbed -ceq 'the server said <api-key>' -and $logResults.keyedStatus -eq 200 -and $null -eq $logResults.start.failure -and [string]$logResults.start.status.apiKey -ceq 'on' -and $logResults.copy[0] -eq $true -and $logResults.copy[1] -eq $true -and $logResults.copy[2] -eq 2) "module logging: with logging on, the store read, Show, settings -ApiKey show, both copies, the scrub, a keyed request and a keyed start all worked$(if ($logResults.start.failure) { ': ' + [string]$logResults.start.failure.Exception.Message })"
         $logFunctions = @('Read-FastLlmApiKeyStore', 'Get-FastLlmApiKeyStoreState', 'Get-FastLlmApiKeyForDisplay', 'ConvertTo-FastLlmKeyFreeText', 'ConvertFrom-FastLlmApiKeyProtected', 'ConvertTo-FastLlmApiKeyHolder', 'Get-FastLlmApiKeyText', 'Invoke-FastLlmHttp', 'Invoke-FastLlmSupervisedServer', 'Initialize-FastLlmEngineStartInfo')
         $logMissing = @($logFunctions | Where-Object { $logText.IndexOf('ParameterBinding(' + $_ + ')', [StringComparison]::Ordinal) -lt 0 -and $logText.IndexOf('CommandInvocation(' + $_ + ')', [StringComparison]::Ordinal) -lt 0 })
-        Check ($logText.IndexOf($logCanaryOne, [StringComparison]::Ordinal) -ge 0 -and $logText.IndexOf($logCanaryTwo, [StringComparison]::Ordinal) -ge 0 -and $logMissing.Count -eq 0 -and $logText.IndexOf('System.Security.SecureString', [StringComparison]::Ordinal) -ge 0) "module logging: the log really recorded these calls - both canaries, the key functions and their holder parameters (as a type name) are in it (not logged: $($logMissing -join ','))"
+        Check ($logText.IndexOf($logCanaryOne, [StringComparison]::Ordinal) -ge 0 -and $logText.IndexOf($logCanaryTwo, [StringComparison]::Ordinal) -ge 0 -and $logMissing.Count -eq 0 -and $logText.IndexOf('System.Security.SecureString', [StringComparison]::Ordinal) -ge 0) "module logging: the log really recorded these calls - both canaries, the key functions and their holder parameters (as a type name) are in it ($(Get-ModuleLogFlags $logText $logCanaryOne $logCanaryTwo), not logged: $($logMissing -join ','))"
         # The key, parts of it, and the forms an array parameter is logged in: its characters, or its bytes, joined by ", ".
         $logCharacters = @($logMarker.ToCharArray() | ForEach-Object { [string]$_ })
         $logByteValues = @([Text.Encoding]::UTF8.GetBytes($logMarker) | ForEach-Object { [string][int]$_ })
