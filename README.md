@@ -149,6 +149,12 @@ The API key is off by default. With it on, the server answers only requests that
 - **The local chat page:** with the chat page on, the page itself still opens without the key (the server serves its files to anyone on this PC, by upstream design) and asks for the key in its own settings. FastLLM never puts the key in an address.
 - **Not for benchmarks:** `tools/benchmark.ps1` and the diagnostic tools send no key, and the benchmark report tool refuses a run started with the key on.
 
+## Switching models from the window
+
+Switching models while FastLLM runs is off by default. To use it, tick **Allow switching models while FastLLM runs** in Settings...; it applies from the next start (a run that is already going keeps the setting it started with, and the **Switch model...** button says so). With it on, **Switch model...** opens a list of every model with an answer for each one: it is the one running, it fits, it does not fit, it is not installed, FastLLM refuses it (for example the license is not accepted on this PC, or the file is damaged), or FastLLM cannot tell yet and checks when it switches. Only models that fit, or that FastLLM checks at the switch, can be picked. The list never downloads or installs anything.
+
+"Fits" is an estimate. FastLLM works it out from the free GPU memory measured before the current model was loaded, because while a model is loaded its memory is not free and adding it back would be a guess. When you pick a model, FastLLM finishes the requests in progress, stops the current model and starts the new one with the same checks as any start, with a fresh look at the free memory. If the new model cannot start, the previous model is started again once. Stop always wins, also while a switch is under way. If requests are still in progress after a minute the switch is refused and you can try again. The window shows the outcome of the switch under the status line.
+
 ## Logs and support bundle
 
 Each server start writes a small log to `state\logs\run-<time>-<id>.jsonl` under the install folder. FastLLM keeps the newest 20 logs, each at most 256 KiB. **Open logs** in the window opens the folder.
