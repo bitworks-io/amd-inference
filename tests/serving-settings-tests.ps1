@@ -294,5 +294,61 @@ foreach($case in 1){
     Check ($h.ServerPort -eq 0 -and $h.Thinking -ceq 'auto') 'host-arguments: malformed settings give the defaults'
     $o=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
     Check ($h.ChatPage -ceq $o.chatPage) 'host-arguments: agrees with Resolve-FastLlmServingOptions'
+
+    # embeddings-settings: off and port 8081 are the defaults and remove their keys; on and another port are stored. Same reader, writer and
+    # precedence as the port.
+    $r=Join-Path $work 'embeddings'; New-Item -ItemType Directory -Path $r | Out-Null
+    $s=Get-FastLlmServingSettings -InstallRoot $r
+    Check ($s.embeddings -ceq 'off' -and $s.embeddingPort -eq 8081) 'embeddings-settings: an absent file reads off and port 8081'
+    Write-Utf8 (Join-Path $r 'settings.json') '{"x":1,"serverPort":18181}'
+    Set-FastLlmServingSettings -InstallRoot $r -Embeddings 'on'
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check ($o.embeddings -ceq 'on' -and $o.x -eq 1 -and $o.serverPort -eq 18181 -and -not ($o.PSObject.Properties.Name -contains 'embeddingPort')) 'embeddings-settings: on is stored beside the other keys; the default port is not stored'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).embeddings -ceq 'on' -and (Get-FastLlmServingSettings -InstallRoot $r).embeddingPort -eq 8081) 'embeddings-settings: Get reads on and the default port'
+    Set-FastLlmServingSettings -InstallRoot $r -EmbeddingPort 18282
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check ($o.embeddingPort -eq 18282 -and ($o.embeddingPort -is [int] -or $o.embeddingPort -is [long]) -and $o.embeddings -ceq 'on') 'embeddings-settings: another port is stored as a number'
+    Set-FastLlmServingSettings -InstallRoot $r -EmbeddingPort '18283'
+    Check ((Get-FastLlmServingSettings -InstallRoot $r).embeddingPort -eq 18283) 'embeddings-settings: the text 18283 is accepted and read back as a number'
+    Set-FastLlmServingSettings -InstallRoot $r -Embeddings 'off' -EmbeddingPort 8081
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'embeddings') -and -not ($o.PSObject.Properties.Name -contains 'embeddingPort') -and $o.x -eq 1 -and $o.serverPort -eq 18181) 'embeddings-settings: off and 8081 remove their keys and keep the others'
+    foreach($bad in 'On','ON','yes','true',1,$true,$null,'',' on'){ Throws { Set-FastLlmServingSettings -InstallRoot $r -Embeddings $bad } 'serving-settings-invalid-embeddings' }
+    foreach($bad in 0,80,1023,65536,-1,'8081.5','port',$null,$true,8081.5,''){ Throws { Set-FastLlmServingSettings -InstallRoot $r -EmbeddingPort $bad } 'serving-settings-invalid-embedding-port' }
+    $o=Get-Content -LiteralPath (Join-Path $r 'settings.json') -Raw | ConvertFrom-Json
+    Check (-not ($o.PSObject.Properties.Name -contains 'embeddings') -and -not ($o.PSObject.Properties.Name -contains 'embeddingPort')) 'embeddings-settings: a refused value writes nothing'
+    foreach($bogus in '{"embeddings":"On"}','{"embeddings":true}','{"embeddings":1}','{"embeddings":null}','{"embeddings":["on"]}','{"embeddings":"yes"}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).embeddings -ceq 'off') "embeddings-settings: stored $bogus reads as off"
+    }
+    foreach($bogus in '{"embeddingPort":"18282"}','{"embeddingPort":80}','{"embeddingPort":65536}','{"embeddingPort":true}','{"embeddingPort":8081.5}','{"embeddingPort":null}','{"embeddingPort":99999999999}'){
+        Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((Get-FastLlmServingSettings -InstallRoot $r).embeddingPort -eq 8081) "embeddings-settings: stored $bogus reads as 8081"
+    }
+    # embeddings-resolve: parameter, then settings, then default.
+    Write-Utf8 (Join-Path $r 'settings.json') '{"embeddings":"on","embeddingPort":18282}'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($x.embeddings -ceq 'on' -and $x.embeddingPort -eq 18282 -and $x.source -ceq 'settings') 'embeddings-resolve: settings give on and the saved port'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Embeddings='off'}
+    Check ($x.embeddings -ceq 'off' -and $x.embeddingPort -eq 18282 -and $x.source -ceq 'parameter') 'embeddings-resolve: an explicit off wins over settings for this run'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{EmbeddingPort='18300'}
+    Check ($x.embeddings -ceq 'on' -and $x.embeddingPort -eq 18300 -and $x.embeddingPort -is [int] -and $x.source -ceq 'parameter') 'embeddings-resolve: an explicit port wins over the saved port'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Embeddings='maybe'} } 'serving-settings-invalid-embeddings'
+    Throws { Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{EmbeddingPort=70000} } 'serving-settings-invalid-embedding-port'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{} -IgnoreUserSettings
+    Check ($x.embeddings -ceq 'off' -and $x.embeddingPort -eq 8081 -and $x.source -ceq 'default') 'embeddings-bench: with user settings ignored embeddings are off, whatever is saved'
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{Embeddings='on'} -IgnoreUserSettings
+    Check ($x.embeddings -ceq 'on' -and $x.embeddingPort -eq 8081) 'embeddings-bench: an explicit parameter still applies with user settings ignored'
+    $r2=Join-Path $work 'embeddings-none'; New-Item -ItemType Directory -Path $r2 | Out-Null
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r2 -Bound @{}
+    Check ($x.embeddings -ceq 'off' -and $x.embeddingPort -eq 8081 -and $x.source -ceq 'default') 'embeddings-resolve: no parameter and no setting give off and 8081'
+    Write-Utf8 (Join-Path $r 'settings.json') '{ "embeddings": "on", broken'
+    $s=Get-FastLlmServingSettings -InstallRoot $r
+    $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+    Check ($s.malformed -and $s.embeddings -ceq 'off' -and $s.embeddingPort -eq 8081 -and $x.settingsMalformed -and $x.embeddings -ceq 'off') 'embeddings-malformed: a malformed file reads off and 8081'
+    Throws { Set-FastLlmServingSettings -InstallRoot $r -Embeddings 'on' } 'serving-settings-malformed'
+    # The window and the sign-in start do not start embeddings yet: their host arguments are the ones they always were.
+    Write-Utf8 (Join-Path $r 'settings.json') '{"embeddings":"on","embeddingPort":18282}'
+    Check ((@((Get-FastLlmServingHostArguments -InstallRoot $r).Keys | Sort-Object) -join ',') -ceq 'ChatPage,IdleStopMinutes,ServerPort,Thinking') 'embeddings-host-arguments: the background start arguments carry no embeddings option'
 }
 Write-Host "serving-settings-tests: $script:count checks passed"

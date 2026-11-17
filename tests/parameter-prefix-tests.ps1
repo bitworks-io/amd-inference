@@ -85,4 +85,23 @@ Check ($plan.ResolveParameter('S').Name -ceq 'ServerPort') 'Get-FastLlmPlan -S b
 Check ($plan.ResolveParameter('Serv').Name -ceq 'ServerPort') 'Get-FastLlmPlan -Serv binds ServerPort'
 $settings=Get-Command Set-FastLlmServingSettings
 Check ($settings.ResolveParameter('S').Name -ceq 'ServerPort') 'Set-FastLlmServingSettings -S binds ServerPort'
+# The embedding options. -E was already ambiguous (EngineOnly, ExpectedModelProvenanceSha256) and -En still means -EngineOnly; the new names
+# are told apart from -Embeddi on (-Embeddings and -EmbeddingP).
+Check ($script.ResolveParameter('En').Name -ceq 'EngineOnly' -and $script.ResolveParameter('Ex').Name -ceq 'ExpectedModelProvenanceSha256') 'fast-llm.ps1 -En still binds EngineOnly and -Ex still binds ExpectedModelProvenanceSha256'
+Check ($script.ResolveParameter('Embeddings').Name -ceq 'Embeddings' -and $script.ResolveParameter('EmbeddingPort').Name -ceq 'EmbeddingPort' -and $script.ResolveParameter('EmbeddingP').Name -ceq 'EmbeddingPort') 'fast-llm.ps1 has -Embeddings and -EmbeddingPort'
+$start=Get-Command Start-FastLlmServer
+$oldStart='Plan,CatalogPath,InstallRoot,LoadTimeoutSeconds,VulkanBarMitigation,ThroughputCanary,SelfTest,DeviceBinding,IdleStopMinutes,AllowSwitch,SwitchContext,SwitchObserver,ApiKey' -split ','
+$startRebound=@()
+foreach ($name in $oldStart) {
+    for ($length=1; $length -le $name.Length; $length++) {
+        $prefix=$name.Substring(0,$length)
+        if (@($oldStart | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) { continue }
+        $resolved=$null
+        try { $resolved=$start.ResolveParameter($prefix).Name } catch { $resolved='<'+$_.Exception.GetType().Name+'>' }
+        if ($resolved -cne $name) { $startRebound+="-$prefix ($name -> $resolved)" }
+    }
+}
+Check ($startRebound.Count -eq 0 -and $start.Parameters.ContainsKey('Embeddings') -and $start.Parameters.ContainsKey('EmbeddingPort')) "Start-FastLlmServer: the embedding parameters leave every prefix that was unique bound to the same parameter (changed: $($startRebound -join ' '))"
+$setSettings=Get-Command Set-FastLlmServingSettings
+Check ($setSettings.ResolveParameter('S').Name -ceq 'ServerPort' -and $setSettings.ResolveParameter('T').Name -ceq 'Thinking' -and $setSettings.ResolveParameter('C').Name -ceq 'ChatPage' -and $setSettings.Parameters.ContainsKey('Embeddings') -and $setSettings.Parameters.ContainsKey('EmbeddingPort')) 'Set-FastLlmServingSettings takes the embedding settings, and -S, -T and -C still bind ServerPort, Thinking and ChatPage'
 Write-Host "parameter-prefix-tests: $script:count checks passed"

@@ -116,6 +116,15 @@ foreach($keyValue in @('on','ON','yes')){
 }
 $readyKeyOff=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';apiKey='off';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
 Check ($null -eq (Get-ThinkingRefusal $readyKeyOff)) 'benchmark-refuses-api-key: state.apiKey off is accepted (a status without the field is covered above)'
+# benchmark-refuses-embeddings: a run with the embedding sidecar on (its status has a sidecars field, whatever the block says) is a user choice that
+# adds a second process on the PC, so it is never benchmarked. A status without the field is the default setup and passes (covered above).
+$embeddingsMessage='Benchmarks measure the default setup. Turn embeddings off, start again, then benchmark.'
+foreach($sidecarBlocks in @(@([pscustomobject]@{role='embedding';phase='ready'}),@([pscustomobject]@{role='embedding';phase='failed';failureCode='embeddings-server-exited'}),@([pscustomobject]@{role='embedding';phase='waiting'}),@())){
+    $readyEmbeddings=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';apiKey='off';sidecars=$sidecarBlocks;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+    Check ((Get-ThinkingRefusal $readyEmbeddings) -ceq $embeddingsMessage) "benchmark-refuses-embeddings: a status with a sidecars field ($(@($sidecarBlocks | ForEach-Object { $_.phase }) -join ',')) throws the exact message"
+}
+$readyNoSidecars=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';apiKey='off';recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
+Check ($null -eq (Get-ThinkingRefusal $readyNoSidecars)) 'benchmark-refuses-embeddings: a status without a sidecars field is unchanged'
 $readyIdleNever=[pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';idleStopMinutes=0;recipe=[pscustomobject]@{contextSize=32768;requestedArguments=$readyArgs}}
 Check ($null -eq (Get-ThinkingRefusal $readyIdleNever)) 'benchmark-refuses-idle-stop: an idle stop of 0 is accepted'
 Check ($null -eq (Get-ThinkingRefusal $readyChatOff)) 'old-status-without-new-fields: a ready state with no idleStopMinutes field passes the idle check'

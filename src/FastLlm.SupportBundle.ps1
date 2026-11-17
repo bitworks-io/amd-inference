@@ -11,7 +11,7 @@ $script:FastLlmRedactionOptions = [Text.RegularExpressions.RegexOptions]::Ignore
 # Test seam: a scriptblock param($Target) run just before the final move (to prove the move never overwrites). Default $null.
 $script:FastLlmSupportBundleBeforeMove = $null
 # apiKey is the on/off flag only; the key is not a setting and its store (api-key.dat) is never an entry of the bundle.
-$script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage', 'contextProfile', 'slots', 'apiKey')
+$script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage', 'contextProfile', 'slots', 'apiKey', 'embeddings', 'embeddingPort')
 
 # Replaces what identifies the PC or the user: the profile path (as \, JSON-escaped \\ and /, any case), the computer name, the user name,
 # Windows SIDs, MAC addresses and PnP instance suffixes (the last three use the patterns of the repository's leak scanner). Returns the redacted text;

@@ -1,0 +1,40 @@
+{
+  "schema": "bitworks.fastllm-components/v1",
+  "components": [
+    {
+      "id": "test-embedding-model-q8",
+      "kind": "embedding-model",
+      "displayName": "Test embedding model (fixture, not a real model)",
+      "version": "test-1",
+      "source": {
+        "url": "https://example.invalid/test-embedding-model-q8.zip",
+        "allowedRedirectHosts": [
+          "example.invalid"
+        ],
+        "sha256": "4f49c9e3dc2cb0007feec5717ed32019cae69237e8ed4f3b26563af5b54b365f",
+        "sizeBytes": 4096,
+        "format": "zip",
+        "fileManifest": [
+          {
+            "path": "test-embedding-model-q8.gguf",
+            "sizeBytes": 192,
+            "sha256": "71f07583f836c787ea7556c8dd2b0279ea408e5af4bb9a003c2e3b506f913707"
+          }
+        ]
+      },
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://example.invalid/license",
+        "consent": "accept"
+      },
+      "platform": {
+        "os": "windows",
+        "arch": "x64",
+        "backend": "cpu"
+      },
+      "entryPoint": "test-embedding-model-q8.gguf",
+      "requires": [],
+      "signer": null
+    }
+  ]
+}

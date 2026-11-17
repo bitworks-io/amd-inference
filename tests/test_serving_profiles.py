@@ -83,13 +83,15 @@ class ServingProfilesTests(unittest.TestCase):
         self.assertRefused([], "must be an object")
         self.assertRefused("x", "must be an object")
 
-    def test_add_ons_and_sidecars_must_stay_empty(self):
+    def test_add_ons_must_stay_empty_and_sidecars_must_be_a_list(self):
         add_on = {"kind": "vision", "modelId": "m", "modelSha256": "0" * 64, "engineId": "llama.cpp-b10698-vulkan", "backend": "vulkan",
                   "extraFreeVramMiB": {"default": 1}, "evidence": {}}
         self.assertRefused(top(lambda d: d.update(addOns=[add_on])), "addOns must be an empty list")
-        self.assertRefused(top(lambda d: d.update(sidecars=[{"role": "embedding"}])), "sidecars must be an empty list")
         self.assertRefused(top(lambda d: d.update(addOns={})), "addOns must be an empty list")
-        self.assertRefused(top(lambda d: d.update(sidecars=None)), "sidecars must be an empty list")
+        self.assertRefused(top(lambda d: d.update(sidecars=None)), "sidecars must be a list")
+        self.assertRefused(top(lambda d: d.update(sidecars={})), "sidecars must be a list")
+        # A sidecar row is checked like a profile row: a row that is only a role is refused for its missing keys.
+        self.assertRefused(top(lambda d: d.update(sidecars=[{"role": "embedding"}])), "missing keys")
 
     def test_row_keys_are_closed(self):
         self.assertRefused(mutated(lambda r: r.update(bogus=1)), "unexpected keys")
@@ -239,6 +241,135 @@ class ServingProfilesTests(unittest.TestCase):
     def test_digest_problem_text(self):
         root = self.make_root(GOOD, digest="0" * 64 + "  serving-profiles.json\n")
         self.assertTrue(any("serving-profiles.sha256 does not match" in e for e in sp.check_digest(str(root))))
+
+
+# ---- sidecars[]: the measured row of an embedding sidecar (a second llama-server with its own model, CPU placement) ----
+# Test rows and a test component only: config/serving-profiles.json ships no sidecar row and config/components.json no embedding model.
+SIDECAR_COMPONENTS = json.loads((ROOT / "tests" / "fixtures" / "embedding-components-test.json").read_text(encoding="utf-8"))
+SIDECAR_GOOD = json.loads((ROOT / "tests" / "fixtures" / "embedding-profiles-test.json").read_text(encoding="utf-8"))
+SIDECAR_KEYS = ["role", "componentId", "componentSha256", "engineId", "backend", "placement", "contextSize", "pooling", "dimension", "evidence"]
+
+
+def sidecar(fn):
+    doc = copy.deepcopy(SIDECAR_GOOD)
+    fn(doc["sidecars"][0])
+    return doc
+
+
+class SidecarRowTests(unittest.TestCase):
+    def errors(self, doc, components=None):
+        return sp.validate(doc, CATALOG, SIDECAR_COMPONENTS if components is None else components)
+
+    def assertRefused(self, doc, text, components=None):
+        errors = self.errors(doc, components)
+        self.assertTrue(errors, "expected a refusal")
+        self.assertTrue(any(text in e for e in errors), errors)
+
+    def test_shipped_file_has_no_sidecar_row_and_no_embedding_component(self):
+        self.assertEqual(SHIPPED["sidecars"], [])
+        self.assertEqual([c["id"] for c in COMPONENTS["components"] if c.get("kind") == "embedding-model"], [])
+
+    def test_test_row_passes_and_uses_exactly_the_row_keys(self):
+        self.assertEqual(self.errors(SIDECAR_GOOD), [])
+        self.assertEqual(len(SIDECAR_GOOD["sidecars"]), 1)
+        self.assertEqual(list(SIDECAR_GOOD["sidecars"][0]), SIDECAR_KEYS)
+        self.assertEqual(list(SIDECAR_GOOD["sidecars"][0]["evidence"]), ["resultId", "measuredAt", "gpuClasses"])
+
+    def test_test_row_is_refused_against_the_shipped_components(self):
+        # The fixture component is not a shipped component: the same row against config/components.json names an unknown component.
+        self.assertRefused(SIDECAR_GOOD, "is not a listed embedding-model component", components=COMPONENTS)
+
+    def test_row_keys_are_closed(self):
+        self.assertRefused(sidecar(lambda r: r.update(bogus=1)), "unexpected keys")
+        self.assertRefused(sidecar(lambda r: r.update(requiredFreeVramMiB=512)), "unexpected keys")
+        self.assertRefused(sidecar(lambda r: r.update(modelId="m")), "unexpected keys")
+        for key in SIDECAR_KEYS:
+            self.assertRefused(sidecar(lambda r, k=key: r.pop(k)), "missing keys")
+        self.assertRefused(top_sidecars(lambda rows: rows.append("row")), "must be an object")
+        self.assertRefused(sidecar(lambda r: r["evidence"].update(url="https://example.invalid/")), "unexpected keys")
+
+    def test_role(self):
+        for bad in ("rerank", "Embedding", "", None, 1):
+            self.assertRefused(sidecar(lambda r, b=bad: r.update(role=b)), "role must be 'embedding'")
+
+    def test_component_binding(self):
+        self.assertRefused(sidecar(lambda r: r.update(componentId="other-embedding-model")), "is not a listed embedding-model component")
+        self.assertRefused(sidecar(lambda r: r.update(componentId=7)), "is not a listed embedding-model component")
+        self.assertRefused(sidecar(lambda r: r.update(componentSha256="0" * 64)), "componentSha256 does not equal the sha256 of the model file")
+        for bad in ("A" * 64, "0" * 63, 5, None):
+            self.assertRefused(sidecar(lambda r, b=bad: r.update(componentSha256=b)), "componentSha256 must be 64 lowercase hex characters")
+        # A component of another kind with the same id is not an embedding model.
+        other = copy.deepcopy(SIDECAR_COMPONENTS)
+        other["components"][0]["kind"] = "model"
+        self.assertRefused(SIDECAR_GOOD, "is not a listed embedding-model component", components=other)
+
+    def test_engine_is_the_built_in_engine(self):
+        self.assertRefused(sidecar(lambda r: r.update(engineId="llama.cpp-b1-vulkan")), "engineId must be the built-in engine")
+        # A listed HIP engine component is a known engine for a profile row, but a sidecar runs on the built-in engine only.
+        hip = next(c["id"] for c in COMPONENTS["components"] if c.get("kind") == "engine" and c.get("platform", {}).get("backend") == "hip")
+        with_hip = copy.deepcopy(SIDECAR_COMPONENTS)
+        with_hip["components"].append(next(c for c in COMPONENTS["components"] if c["id"] == hip))
+        self.assertRefused(sidecar(lambda r: r.update(engineId=hip, backend="hip")), "engineId must be the built-in engine", components=with_hip)
+        self.assertRefused(sidecar(lambda r: r.update(backend="hip")), "backend must be 'vulkan'")
+        self.assertRefused(sidecar(lambda r: r.update(backend="cpu")), "backend must be 'vulkan'")
+
+    def test_built_in_engine_id_follows_the_catalog(self):
+        catalog = copy.deepcopy(CATALOG)
+        catalog["engine"]["version"] = "b99999"
+        self.assertTrue(any("engineId must be the built-in engine" in e for e in sp.validate(SIDECAR_GOOD, catalog, SIDECAR_COMPONENTS)))
+
+    def test_placement_is_cpu_only(self):
+        for bad in ("gpu", "auto", "CPU", "", None):
+            self.assertRefused(sidecar(lambda r, b=bad: r.update(placement=b)), "placement must be 'cpu'")
+
+    def test_numbers_and_pooling(self):
+        for bad in (0, -1, 1.5, "8192", True, None, 1048577):
+            self.assertRefused(sidecar(lambda r, b=bad: r.update(contextSize=b)), "contextSize must be a whole number from 1 to 1048576")
+        for bad in (0, -4, 2.0, "1024", True, None, 65537):
+            self.assertRefused(sidecar(lambda r, b=bad: r.update(dimension=b)), "dimension must be a whole number from 1 to 65536")
+        for bad in ("none", "rank", "MEAN", "", None, 3):
+            self.assertRefused(sidecar(lambda r, b=bad: r.update(pooling=b)), "pooling must be one of")
+        for good in ("mean", "cls", "last"):
+            self.assertEqual(self.errors(sidecar(lambda r, g=good: r.update(pooling=g))), [])
+
+    def test_evidence(self):
+        self.assertRefused(sidecar(lambda r: r["evidence"].update(resultId="")), "evidence.resultId")
+        self.assertRefused(sidecar(lambda r: r["evidence"].update(measuredAt="yesterday")), "evidence.measuredAt")
+        self.assertRefused(sidecar(lambda r: r["evidence"].update(gpuClasses=[])), "evidence.gpuClasses")
+        self.assertRefused(sidecar(lambda r: r.update(evidence="measured")), "must be an object")
+
+    def test_duplicate_rows(self):
+        doc = copy.deepcopy(SIDECAR_GOOD)
+        doc["sidecars"].append(copy.deepcopy(doc["sidecars"][0]))
+        self.assertRefused(doc, "duplicate sidecar row")
+
+    def test_profiles_and_sidecars_are_checked_together(self):
+        doc = copy.deepcopy(GOOD)
+        doc["sidecars"] = copy.deepcopy(SIDECAR_GOOD["sidecars"])
+        self.assertEqual(self.errors(doc), [])
+        doc["sidecars"][0]["placement"] = "gpu"
+        doc["profiles"][0]["contextTotal"] = 0
+        errors = self.errors(doc)
+        self.assertTrue(any("placement must be 'cpu'" in e for e in errors) and any("contextTotal" in e for e in errors), errors)
+
+    def test_cli_counts_sidecar_rows(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(root), True)
+        (root / "config").mkdir()
+        shutil.copyfile(str(ROOT / "config" / "catalog.json"), str(root / "config" / "catalog.json"))
+        (root / "config" / "components.json").write_text(json.dumps(SIDECAR_COMPONENTS), encoding="utf-8")
+        raw = json.dumps(SIDECAR_GOOD, indent=2) + "\n"
+        (root / "config" / "serving-profiles.json").write_bytes(raw.encode("utf-8"))
+        (root / "config" / "serving-profiles.sha256").write_bytes((hashlib.sha256(raw.encode("utf-8")).hexdigest() + "  serving-profiles.json\n").encode("ascii"))
+        self.assertEqual(sp.main(["--root", str(root)]), 0)
+        (root / "config" / "serving-profiles.json").write_bytes(raw.replace('"cpu"', '"gpu"').encode("utf-8"))
+        self.assertEqual(sp.main(["--root", str(root)]), 1)
+
+
+def top_sidecars(fn):
+    doc = copy.deepcopy(SIDECAR_GOOD)
+    fn(doc["sidecars"])
+    return doc
 
 
 if __name__ == "__main__":

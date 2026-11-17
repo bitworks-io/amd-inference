@@ -210,6 +210,58 @@ try {
     Check ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw) -notmatch 'ConnectInfo') 'ConnectInfo is not part of the module'
     Check ($entry.Contains("'FastLlm.ConnectInfo.ps1'") -and $ui.Contains("src/FastLlm.ConnectInfo.ps1")) 'ConnectInfo is dot-sourced by fast-llm.ps1 and fast-llm-ui.ps1'
 
+    # embeddings-row: the /v1/embeddings row and its base URL appear only when the status has an embedding sidecar block that is ready, with a
+    # passed canary, on a loopback endpoint. Without it the connection object is exactly the one it always was.
+    function New-SidecarStatus($Block,[bool]$Active=$true,[string]$ApiKey=''){
+        $status=New-Status 8080 32768
+        $status.active=$Active
+        if($null -ne $Block){ $status | Add-Member -NotePropertyName sidecars -NotePropertyValue @($Block) }
+        if($ApiKey){ $status | Add-Member -NotePropertyName apiKey -NotePropertyValue $ApiKey; $status | Add-Member -NotePropertyName apiKeyId -NotePropertyValue '0123abcd' }
+        return $status
+    }
+    function New-Block([string]$Phase='ready',$Canary=$true,[string]$Endpoint='http://127.0.0.1:8081/v1',[string]$Role='embedding',[string]$Component='test-embedding-model-q8',$Dimension=1024){
+        $block=[ordered]@{ role=$Role; componentId=$Component; endpoint=$Endpoint; phase=$Phase; processIdentity=[pscustomobject]@{ pid=4242; startUtcTicks=638000000000000000 }; placement='cpu'; canary=$null }
+        if($null -ne $Canary){ $block.canary=[pscustomobject]@{ ok=$Canary; dimension=$Dimension } }
+        if($Phase -ceq 'failed'){ $block.failureCode='embeddings-server-exited' }
+        return [pscustomobject]$block
+    }
+    $plainNames=@((Get-FastLlmConnectionInfo -Status (New-Status 8080 32768)).PSObject.Properties.Name)
+    $withRow=Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block))
+    Check ($withRow.PSObject.Properties['embeddings'] -and ((@($withRow.PSObject.Properties.Name | Where-Object { $_ -cne 'embeddings' })) -join ',') -ceq ($plainNames -join ',')) 'embeddings-row: a ready sidecar adds one field, embeddings, and changes no other'
+    Check ($withRow.embeddings.path -ceq '/v1/embeddings' -and $withRow.embeddings.baseUrl -ceq 'http://127.0.0.1:8081/v1' -and $withRow.embeddings.modelName -ceq 'test-embedding-model-q8' -and [int]$withRow.embeddings.dimension -eq 1024 -and $withRow.embeddings.apiKeyRequired -eq $false) 'embeddings-row: the row carries the path, the sidecar''s own base URL, the model name and the dimension'
+    Check ($withRow.baseUrl -ceq 'http://127.0.0.1:8080/v1' -and @($withRow.endpoints | Where-Object { $_.path -ceq '/v1/embeddings' }).Count -eq 0) 'embeddings-row: the text base URL is unchanged, and /v1/embeddings is never listed among the endpoints of the text server'
+    Check ((Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block '-' $true 'http://127.0.0.1:18282/v1' 'embedding') )).PSObject.Properties['embeddings'] -eq $null) 'embeddings-row: a phase that is not ready gives no row'
+    Check ((Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true 'http://127.0.0.1:18282/v1'))).embeddings.baseUrl -ceq 'http://127.0.0.1:18282/v1') 'embeddings-row: the base URL follows the sidecar''s port'
+    foreach($phase in 'waiting','starting','checking','failed','stopped','Ready','READY',''){
+        Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block $phase))).PSObject.Properties['embeddings']) "embeddings-row: no row while the sidecar block says '$phase'"
+    }
+    Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $false))).PSObject.Properties['embeddings'] -and -not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $null))).PSObject.Properties['embeddings'] -and -not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' 'true'))).PSObject.Properties['embeddings']) 'embeddings-row: no row without a canary that passed (false, missing, or not a boolean)'
+    foreach($endpoint in 'http://0.0.0.0:8081/v1','http://203.0.113.20:8081/v1','https://127.0.0.1:8081/v1','http://localhost:8081/v1','http://127.0.0.1:80/v1','http://127.0.0.1:8081/v1/extra','http://127.0.0.1:8081@example.com/v1','http://example.com/v1',''){
+        Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true $endpoint))).PSObject.Properties['embeddings']) "embeddings-row: no row for the endpoint '$endpoint' (only http://127.0.0.1:<port>/v1 is shown)"
+    }
+    Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true 'http://127.0.0.1:8081/v1' 'rerank'))).PSObject.Properties['embeddings'] -and -not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true 'http://127.0.0.1:8081/v1' 'embedding' 'not a component id'))).PSObject.Properties['embeddings']) 'embeddings-row: no row for another role or for a name that is not a component id'
+    foreach($dimension in 0,-1,'many',$null,1.5,70000){
+        Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true 'http://127.0.0.1:8081/v1' 'embedding' 'test-embedding-model-q8' $dimension))).PSObject.Properties['embeddings']) "embeddings-row: no row for the dimension '$dimension'"
+    }
+    Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block) $false)).PSObject.Properties['embeddings']) 'embeddings-row: no row when FastLLM is not running, whatever the last status says'
+    Check (-not (Get-FastLlmConnectionInfo -Status (New-SidecarStatus $null)).PSObject.Properties['embeddings'] -and ((@((Get-FastLlmConnectionInfo -Status (New-SidecarStatus $null)).PSObject.Properties.Name)) -join ',') -ceq ($plainNames -join ',')) 'embeddings-row: a status without a sidecars field gives exactly the fields it always did'
+    $twoBlocks=New-Status 8080 32768; $twoBlocks | Add-Member -NotePropertyName sidecars -NotePropertyValue @((New-Block),(New-Block 'ready' $true 'http://127.0.0.1:8082/v1'))
+    $notAList=New-Status 8080 32768; $notAList | Add-Member -NotePropertyName sidecars -NotePropertyValue 'ready'
+    Check (-not (Get-FastLlmConnectionInfo -Status $twoBlocks).PSObject.Properties['embeddings'] -and -not (Get-FastLlmConnectionInfo -Status $notAList).PSObject.Properties['embeddings']) 'embeddings-row: more than one embedding block, or a sidecars field that is not a list of blocks, gives no row'
+    $keyed=Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block) $true 'on')
+    Check ($keyed.embeddings.apiKeyRequired -eq $true -and $keyed.apiKeyRequired -eq $true -and (($keyed.embeddings | ConvertTo-Json -Compress) -cnotmatch 'fl-')) 'embeddings-row: with the API key on the row says the key is required, and never holds one'
+    # No client card is about embeddings, and no line claims a connection.
+    $cardText=(@($withRow.clients | ForEach-Object { $_.title + ' ' + $_.snippet }) -join "`n")
+    Check ($cardText -cnotmatch '(?i)embedding' -and @($withRow.clients).Count -eq @((Get-FastLlmConnectionInfo -Status (New-Status 8080 32768)).clients).Count) 'embeddings-row: no client card mentions embeddings, and no card was added'
+    Check ($withRow.embeddings.label -cnotmatch '(?i)connected|works with|supported' -and (Get-FastLlmEmbeddingsStatusText -Status (New-SidecarStatus (New-Block))) -ceq "Embeddings: ready at http://127.0.0.1:8081/v1 (model 'test-embedding-model-q8', 1024 dimensions).") 'embeddings-row: the status line states the checked facts and makes no connection claim'
+    # F8: .NET's \d matches digits of other scripts, and the cast of those to a number throws. Only ASCII digits make a port.
+    $arabicPort=([string][char]0x0668)+([string][char]0x0660)+([string][char]0x0668)+([string][char]0x0661)
+    $arabicRow=$null; $arabicThrew=$false
+    try { $arabicRow=Get-FastLlmConnectionInfo -Status (New-SidecarStatus (New-Block 'ready' $true ("http://127.0.0.1:$arabicPort/v1"))) } catch { $arabicThrew=$true }
+    Check (-not $arabicThrew -and $null -ne $arabicRow -and -not $arabicRow.PSObject.Properties['embeddings']) 'embeddings-row: a status endpoint with non-ASCII digits in the port does not throw and gives no row'
+    Check ((Get-FastLlmConnectEmbeddings -Status (New-SidecarStatus (New-Block 'ready' $true 'http://127.0.0.1:8081/v1'))).baseUrl -ceq 'http://127.0.0.1:8081/v1') 'embeddings-row: ASCII digits still give the row'
+    Check ((Get-FastLlmEmbeddingsStatusText -Status (New-SidecarStatus (New-Block 'failed'))) -ceq 'Embeddings: not available (embeddings-server-exited). The model is not affected.' -and (Get-FastLlmEmbeddingsStatusText -Status (New-SidecarStatus (New-Block 'starting' $null))) -ceq 'Embeddings: starting.' -and $null -eq (Get-FastLlmEmbeddingsStatusText -Status (New-Status 8080 32768))) 'embeddings-row: the status line says failed with the code, or starting; a status without the block has no line'
+
     # table for the window
     $table=Format-FastLlmApiCheckTable -Result $bad
     Check ($table.Contains('FAIL') -and $table.Contains('no reply') -and -not $table.Contains($marker)) 'window table shows fails and no text'

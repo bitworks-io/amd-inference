@@ -157,6 +157,17 @@ param(
     [ValidateSet('on', 'off')]
     [string] $StartAtSignIn,
 
+    # start and settings: off (the default) or on. on = after the model is Ready, FastLLM also starts a second local server for embeddings
+    # (/v1/embeddings) with the installed embedding model, on the CPU, on its own loopback port. It is refused when no approved embedding
+    # model is installed or when nothing is measured for it (this release lists no embedding model). An explicit value wins over the saved
+    # setting (and is not saved); on settings it saves the value (off removes it).
+    [ValidateSet('off', 'on')]
+    [string] $Embeddings,
+
+    # start and settings: the loopback port of the embeddings server (1024-65535, default 8081; it must differ from the model's port). Text,
+    # for the same reason as -ServerPort. On settings it saves the value (8081 removes it).
+    [string] $EmbeddingPort,
+
     # start, install and plan: ignore the saved settings for this run (explicit parameters still apply).
     [switch] $IgnoreUserSettings,
 
@@ -367,7 +378,7 @@ if ($PSBoundParameters.ContainsKey('KeyAction') -and $effectiveAction -ne 'setti
 $requestedKeyAction = $null
 if ($PSBoundParameters.ContainsKey('KeyAction')) { $requestedKeyAction = $KeyAction.ToLowerInvariant() }
 # The key is printed only by settings -ApiKey show on its own: never inside a JSON document, and never next to another change.
-if ($PSBoundParameters.ContainsKey('KeyAction') -and $requestedKeyAction -ceq 'show' -and ($AsJson -or @($PSBoundParameters.Keys | Where-Object { $_ -cin @('Port', 'Thinking', 'ChatPage', 'IdleStopMinutes', 'KvContextProfile', 'KvSlots', 'ComponentLicenses', 'StartAtSignIn') }).Count -gt 0)) {
+if ($PSBoundParameters.ContainsKey('KeyAction') -and $requestedKeyAction -ceq 'show' -and ($AsJson -or @($PSBoundParameters.Keys | Where-Object { $_ -cin @('Port', 'Thinking', 'ChatPage', 'IdleStopMinutes', 'KvContextProfile', 'KvSlots', 'ComponentLicenses', 'StartAtSignIn', 'Embeddings', 'EmbeddingPort') }).Count -gt 0)) {
     throw 'settings -ApiKey show prints the key and nothing else: it cannot be combined with -AsJson or with another setting.'
 }
 if ($PSBoundParameters.ContainsKey('Thinking') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
@@ -381,6 +392,11 @@ if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $null = ConvertTo-FastL
 if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvContextProfile is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots')) { $null = ConvertTo-FastLlmSlots -Value $KvSlots }
+# The embedding sidecar: start and settings only. The value is lower-cased into its own variable (the parameters are never assigned to).
+if (($PSBoundParameters.ContainsKey('Embeddings') -or $PSBoundParameters.ContainsKey('EmbeddingPort')) -and $effectiveAction -notin @('start', 'settings')) { throw '-Embeddings and -EmbeddingPort are supported only by start and settings.' }
+$requestedEmbeddings = $null
+if ($PSBoundParameters.ContainsKey('Embeddings')) { $requestedEmbeddings = $Embeddings.ToLowerInvariant() }
+if ($PSBoundParameters.ContainsKey('EmbeddingPort')) { $null = ConvertTo-FastLlmEmbeddingPort -Value $EmbeddingPort }
 # ValidateSet ignores case; the settings converter is exact, so the typed value is lower-cased once after binding.
 if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = $Thinking.ToLowerInvariant() }
 if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = $ChatPage.ToLowerInvariant() }
@@ -398,6 +414,8 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $servingBound.IdleStopMinutes = $IdleStopMinutes }
     if ($PSBoundParameters.ContainsKey('KvContextProfile')) { $servingBound.KvContextProfile = $requestedContextProfile }
     if ($PSBoundParameters.ContainsKey('KvSlots')) { $servingBound.KvSlots = $KvSlots }
+    if ($PSBoundParameters.ContainsKey('Embeddings')) { $servingBound.Embeddings = $requestedEmbeddings }
+    if ($PSBoundParameters.ContainsKey('EmbeddingPort')) { $servingBound.EmbeddingPort = $EmbeddingPort }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
     if ($effectiveAction -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
@@ -421,6 +439,10 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     $effectiveApiKey = 'off'
     if ([string] $servingOptions.apiKey -ceq 'on') { $effectiveApiKey = 'on' }
     if ([bool] $servingOptions.apiKeyUndetermined) { $effectiveApiKey = 'undetermined' }
+    # The embedding sidecar never reaches the planner either: a plan, a dry run and the text server's arguments are the same with or without
+    # it. Only a live start is handed the option, and only when it is on.
+    $effectiveEmbeddings = [string] $servingOptions.embeddings
+    $effectiveEmbeddingPort = [int] $servingOptions.embeddingPort
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -689,6 +711,8 @@ try {
             if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -IdleStopMinutes $IdleStopMinutes }
             if ($PSBoundParameters.ContainsKey('KvContextProfile')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -KvContextProfile $requestedContextProfile }
             if ($PSBoundParameters.ContainsKey('KvSlots')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -KvSlots $KvSlots }
+            if ($PSBoundParameters.ContainsKey('Embeddings')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -Embeddings $requestedEmbeddings }
+            if ($PSBoundParameters.ContainsKey('EmbeddingPort')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -EmbeddingPort $EmbeddingPort }
             $apiKeyLines = @()
             if ($PSBoundParameters.ContainsKey('KeyAction')) {
                 $apiKeyChange = Invoke-FastLlmApiKeySetting -InstallRoot $InstallRoot -Action $requestedKeyAction
@@ -715,6 +739,8 @@ try {
                 if ($apiKeyStoreState.available) { $settingsDocument.apiKeyId = [string] $apiKeyStoreState.apiKeyId }
                 $signInFields = Get-FastLlmSignInCliFields -View $signInView
                 foreach ($signInKey in @($signInFields.Keys)) { $settingsDocument[$signInKey] = $signInFields[$signInKey] }
+                $settingsDocument.embeddings = [string] $servingState.embeddings
+                $settingsDocument.embeddingPort = [int] $servingState.embeddingPort
                 $settingsDocument | ConvertTo-Json -Depth 6
             }
             else {
@@ -734,6 +760,8 @@ try {
                 elseif ($apiKeySettingText -ceq 'unreadable') { Write-Host 'apiKey: not set, and a key is stored (or the saved value is not on or off): FastLLM will not start until you choose (settings -ApiKey on or -ApiKey off)' }
                 else { Write-Host 'apiKey: off' }
                 foreach ($signInLine in @(Format-FastLlmSignInCliLines -View $signInView)) { Write-Host $signInLine }
+                Write-Host "embeddings: $($servingState.embeddings)"
+                Write-Host "embeddingPort: $($servingState.embeddingPort)"
             }
         }
         'status' {
@@ -745,6 +773,8 @@ try {
             if (-not $AsJson) {
                 # A model switch is in the document as its switch block; here it is also said in one plain line.
                 try { $switchLine = Get-FastLlmUiSwitchStatusText -Status $statusDocument; if ($switchLine) { Write-Host $switchLine } } catch { $null = $_ }
+                # The embedding sidecar is in the document as its sidecars block; here it is also said in one plain line.
+                try { $embeddingsLine = Get-FastLlmEmbeddingsStatusText -Status $statusDocument; if ($embeddingsLine) { Write-Host $embeddingsLine } } catch { $null = $_ }
                 try {
                     if (Get-Command -Name Get-FastLlmCachedUpdateNotice -ErrorAction SilentlyContinue) {
                         $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot
@@ -939,6 +969,9 @@ try {
             # a typed refusal, before any hardware probe, plan or launch. Nothing is started without the key that was asked for, and no key is created.
             if ($effectiveApiKey -ceq 'undetermined') { throw (New-FastLlmApiKeySettingFailure) }
             if ($effectiveApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot $InstallRoot }
+            # Embeddings, when on: refused here, typed, before any hardware probe, plan, download or launch, when no approved embedding model is
+            # installed, when nothing is measured for it, or when its placement is not the CPU. (The start checks it again.)
+            if ($effectiveEmbeddings -ceq 'on') { Assert-FastLlmEmbeddingsAvailable -CatalogPath $catalogPath -InstallRoot $InstallRoot -Port $effectiveEmbeddingPort }
             $maximumPlanAttempts = 3
             $serverCompleted = $false
             $recoveryAttempted = $false
@@ -996,6 +1029,9 @@ try {
                 if ($effectiveSwitchAllowed) { $startPolicyOptions.AllowSwitch = $true }
                 # Only the flag is passed, and only when it is on; the start reads the key store itself.
                 if ($effectiveApiKey -ceq 'on') { $startPolicyOptions.ApiKey = 'on' }
+                # Only when it is on: the start checks the installed embedding model and its measured row first, and refuses the option
+                # (typed, nothing started) when either is missing. A refusal is final: no re-plan and no other model can lift it.
+                if ($effectiveEmbeddings -ceq 'on') { $startPolicyOptions.Embeddings = 'on'; $startPolicyOptions.EmbeddingPort = $effectiveEmbeddingPort }
                 try {
                     $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions
                 }

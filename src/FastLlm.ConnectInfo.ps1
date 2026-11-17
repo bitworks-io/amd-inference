@@ -221,6 +221,76 @@ function Get-FastLlmConnectAgentWarning {
     return ("This setup's context is {0} tokens. Coding agents such as Claude Code, Codex, Cline and Roo Code often send longer requests; those requests are refused with an error." -f (Format-FastLlmConnectNumber -Value ([long] $ContextTokens)))
 }
 
+# The embedding sidecar's block of a status document (sidecars[] with exactly one block whose role is embedding), or $null. Tolerant:
+# anything else - no field, not a list, more than one block, another role - is $null.
+function Get-FastLlmConnectSidecarBlock {
+    param($Status)
+    $listed = Get-FastLlmConnectProp $Status 'sidecars'
+    if ($null -eq $listed -or $listed -is [string] -or -not ($listed -is [array])) { return $null }
+    $blocks = @($listed)
+    if ($blocks.Count -ne 1 -or $null -eq $blocks[0]) { return $null }
+    $role = Get-FastLlmConnectProp $blocks[0] 'role'
+    if (-not ($role -is [string]) -or $role -cne 'embedding') { return $null }
+    return $blocks[0]
+}
+
+# The /v1/embeddings row of Connect an app, or $null. It exists only for what the supervisor itself checked: FastLLM is running, the
+# sidecar's block says ready, its start check passed, and its endpoint is a loopback address on a port of its own. The embeddings server is a
+# SEPARATE server: the row carries its own base URL and is never listed among the endpoints of the text server's base URL.
+function Get-FastLlmConnectEmbeddings {
+    param($Status, [bool] $ApiKeyRequired = $false)
+    $active = Get-FastLlmConnectProp $Status 'active'
+    if (-not ($active -is [bool] -and $active)) { return $null }
+    $block = Get-FastLlmConnectSidecarBlock -Status $Status
+    if ($null -eq $block) { return $null }
+    $phase = Get-FastLlmConnectProp $block 'phase'
+    if (-not ($phase -is [string]) -or $phase -cne 'ready') { return $null }
+    $canary = Get-FastLlmConnectProp $block 'canary'
+    $canaryOk = Get-FastLlmConnectProp $canary 'ok'
+    if (-not ($canaryOk -is [bool] -and $canaryOk)) { return $null }
+    $dimension = Get-FastLlmConnectProp $canary 'dimension'
+    if (-not ($dimension -is [int] -or $dimension -is [long]) -or [long] $dimension -lt 1 -or [long] $dimension -gt 65536) { return $null }
+    $endpoint = Get-FastLlmConnectProp $block 'endpoint'
+    if (-not ($endpoint -is [string])) { return $null }
+    $match = [regex]::Match($endpoint, '\Ahttp://127\.0\.0\.1:([0-9]{1,5})/v1\z')
+    if (-not $match.Success) { return $null }
+    $port = [int] $match.Groups[1].Value
+    if ($port -lt 1024 -or $port -gt 65535) { return $null }
+    $componentId = Get-FastLlmConnectProp $block 'componentId'
+    if (-not ($componentId -is [string]) -or $componentId -cnotmatch '\A[a-z0-9][a-z0-9.\-]{1,120}\z') { return $null }
+    return [pscustomobject] [ordered] @{
+        path           = '/v1/embeddings'
+        label          = 'OpenAI-compatible embeddings (a separate server with its own base URL)'
+        baseUrl        = 'http://127.0.0.1:' + $port + '/v1'
+        modelName      = $componentId
+        dimension      = [int] $dimension
+        apiKeyRequired = [bool] $ApiKeyRequired
+    }
+}
+
+# One plain line about the embedding sidecar for `status`, or $null when the status has no sidecar block. It states what was checked.
+function Get-FastLlmEmbeddingsStatusText {
+    param($Status)
+    $block = Get-FastLlmConnectSidecarBlock -Status $Status
+    if ($null -eq $block) { return $null }
+    $phase = [string] (Get-FastLlmConnectProp $block 'phase')
+    if ($phase -ceq 'ready') {
+        $row = Get-FastLlmConnectEmbeddings -Status $Status
+        if ($null -ne $row) { return "Embeddings: ready at $($row.baseUrl) (model '$($row.modelName)', $($row.dimension) dimensions)." }
+        return 'Embeddings: not available.'
+    }
+    if ($phase -ceq 'failed') {
+        $code = Get-FastLlmConnectProp $block 'failureCode'
+        # A key that may have been seen stops the whole run: that code never says the model is not affected.
+        if ($code -is [string] -and $code -ceq 'api-key-listener-changed') { return "Embeddings: not available ($code). The API key may have been seen by another program: create a new key (fast-llm.ps1 settings -ApiKey rotate), give it to your apps, then start again." }
+        if ($code -is [string] -and $code -cmatch '\A[a-z][a-z0-9-]{0,63}\z') { return "Embeddings: not available ($code). The model is not affected." }
+        return 'Embeddings: not available. The model is not affected.'
+    }
+    if ($phase -ceq 'stopped') { return 'Embeddings: stopped.' }
+    if (@('waiting', 'starting', 'checking') -ccontains $phase) { return 'Embeddings: starting.' }
+    return 'Embeddings: not available.'
+}
+
 # Status in, connection facts out. Every read is tolerant: the status may be from an older version, partial, or not running.
 function Get-FastLlmConnectionInfo {
     [CmdletBinding()]
@@ -297,7 +367,7 @@ function Get-FastLlmConnectionInfo {
         $clients += [pscustomobject]@{ id = [string] $client.id; title = [string] $client.title; snippet = ($snippet.TrimEnd() -replace "`r`n", "`n"); docUrl = [string] $client.docUrl; docUrls = $docUrls }
     }
     $endpoints = @($script:FastLlmConnectEndpoints | ForEach-Object { [pscustomobject]@{ path = [string] $_.path; label = [string] $_.label } })
-    return [pscustomobject]@{
+    $connection = [pscustomobject]@{
         state            = $(if ($running) { 'running' } else { 'not running' })
         baseUrl          = $baseUrl
         anthropicBaseUrl = $anthropicBaseUrl
@@ -313,6 +383,11 @@ function Get-FastLlmConnectionInfo {
         apiKey           = $apiKeyState
         apiKeyId         = $apiKeyId
     }
+    # Additive, and present ONLY while the embedding sidecar is ready (its own start check passed): the /v1/embeddings row with the sidecar's
+    # own base URL. Without it the object has exactly the fields it always had. There is no client card for embeddings.
+    $embeddingsRow = Get-FastLlmConnectEmbeddings -Status $Status -ApiKeyRequired ([bool] $apiKeyRequired)
+    if ($null -ne $embeddingsRow) { $connection | Add-Member -NotePropertyName embeddings -NotePropertyValue $embeddingsRow }
+    return $connection
 }
 
 # A card as the window shows it: the token {KEY} becomes the placeholder. Never the key.

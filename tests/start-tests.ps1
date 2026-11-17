@@ -700,8 +700,11 @@ try {
     function Assert-FastLlmApiKeyStore { param($InstallRoot) $script:nd.log.Add('key-check');if($script:ndKeyUnreadable){$e=New-Object InvalidOperationException('api-key-unavailable: simulated');$e.Data['FastLlmFailureCode']='api-key-unavailable';$e.Data['FastLlmReason']='ApiKeyFailed';throw $e} }
     function New-FastLlmApiKeySettingFailure { $e=New-Object InvalidOperationException('api-key-setting-unreadable: simulated');$e.Data['FastLlmFailureCode']='api-key-setting-unreadable';$e.Data['FastLlmReason']='ApiKeyFailed';return $e }
     $script:ndApiKey='off';$script:ndKeyUnreadable=$false
-    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch,$ApiKey)
-        $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object);$script:nd.startBar=$VulkanBarMitigation
+    # The embeddings seam of the start branch: the availability check (recorded, and refusing on request).
+    function Assert-FastLlmEmbeddingsAvailable { param($CatalogPath,$InstallRoot,$Port) $script:nd.log.Add('embeddings-check');$script:ndEmbeddingsCheckedPort=$Port;if($script:ndEmbeddingsRefused){$e=New-Object InvalidOperationException('embeddings-no-model: simulated');$e.Data['FastLlmFailureCode']='embeddings-no-model';$e.Data['FastLlmReason']='EmbeddingsRefused';throw $e} }
+    $script:ndEmbeddings='off';$script:ndEmbeddingPort=8081;$script:ndEmbeddingsRefused=$false;$script:ndEmbeddingsCheckedPort=$null
+    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch,$ApiKey,$Embeddings,$EmbeddingPort)
+        $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object);$script:nd.startBar=$VulkanBarMitigation;$script:nd.startEmbeddings=([string]$Embeddings+'|'+[string]$EmbeddingPort)
         if($script:nd.startQueue.Count -gt 0){
             $next=$script:nd.startQueue.Dequeue()
             if($next -is [string]){$e=New-Object InvalidOperationException('simulated '+$next);$e.Data['FastLlmReason']=$next;throw $e}
@@ -716,6 +719,7 @@ try {
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$script:ndDryRun;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
         $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$effectiveIdleStopMinutes=[int]$script:ndIdleStop;$effectiveApiKey=[string]$script:ndApiKey;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe;$effectiveSwitchAllowed=[bool]$script:ndSwitchAllowed
+        $effectiveEmbeddings=[string]$script:ndEmbeddings;$effectiveEmbeddingPort=[int]$script:ndEmbeddingPort
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         function Write-Host { $script:ndHost.Add(($args -join ' ')) }
@@ -851,6 +855,27 @@ try {
     $script:ndApiKey='off'
     $f=Invoke-NdStart $false
     Check ($cliSource.Contains("if (`$effectiveApiKey -ceq 'on') { `$startPolicyOptions.ApiKey = 'on' }") -and $cliSource -cnotmatch 'startPolicyOptions\.ApiKeyHolder|Read-FastLlmApiKeyStore|Get-FastLlmApiKeyText') 'api-key-start: the command line passes the flag only; it never holds a key holder'
+
+    # -- embeddings (opt-in): asked about before any probe, handed to Start-FastLlmServer only when on, and a refusal is final
+    Reset-Nd
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and -not $script:nd.log.Contains('embeddings-check') -and $script:nd.startBound -cnotcontains 'Embeddings' -and $script:nd.startBound -cnotcontains 'EmbeddingPort') 'embeddings-start: with embeddings off nothing is checked and the start is handed no embeddings option (the call it always was)'
+    Reset-Nd; $script:ndEmbeddings='on'; $script:ndEmbeddingPort=18282
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and $script:nd.log.IndexOf('embeddings-check') -ge 0 -and $script:nd.log.IndexOf('embeddings-check') -lt $script:nd.log.IndexOf('hardware') -and [int]$script:ndEmbeddingsCheckedPort -eq 18282 -and $script:nd.startBound -ccontains 'Embeddings' -and $script:nd.startBound -ccontains 'EmbeddingPort' -and $script:nd.startEmbeddings -ceq 'on|18282') 'embeddings-start: with embeddings on the availability check runs before the first hardware probe, and the start is handed on and the port'
+    Reset-Nd; $script:ndEmbeddingsRefused=$true
+    $f=Invoke-NdStart $false
+    Check ((Get-NdCode $f) -ceq 'embeddings-no-model' -and (Test-NdNoAcquisition) -and -not $script:nd.log.Contains('hardware') -and -not $script:nd.log.Contains('plan') -and -not $script:nd.log.Contains('start')) 'embeddings-start: a refused option is embeddings-no-model before any probe, plan, download or start (nothing is started)'
+    Reset-Nd; $script:ndApiKey='on'; $script:ndKeyUnreadable=$true
+    $f=Invoke-NdStart $false
+    Check ((Get-NdCode $f) -ceq 'api-key-unavailable' -and -not $script:nd.log.Contains('embeddings-check')) 'embeddings-start: the API key refusal still comes first'
+    $script:ndApiKey='off'; $script:ndKeyUnreadable=$false; $script:ndEmbeddingsRefused=$false
+    foreach($embeddingsStartCode in @('embeddings-no-model','embeddings-not-measured','embeddings-gpu-not-offered')){
+        Reset-Nd; $script:nd.startQueue.Enqueue(@{reason='EmbeddingsRefused';code=$embeddingsStartCode})
+        $f=Invoke-NdStart $false
+        Check ((Get-NdCode $f) -ceq $embeddingsStartCode -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and (Test-NdNoAcquisition)) "embeddings-start: a start that is refused with $embeddingsStartCode is not retried, re-planned or recovered with another model"
+    }
+    $script:ndEmbeddings='off'; $script:ndEmbeddingPort=8081
 
     # -- idle stop (opt-in): the CLI hands it to Start-FastLlmServer only when it is on, and says why when the run ended on it
     if(-not (Get-Command Get-FastLlmUiIdleStopText -ErrorAction SilentlyContinue)){ . (Join-Path $root 'src/FastLlm.UiFlow.ps1') }

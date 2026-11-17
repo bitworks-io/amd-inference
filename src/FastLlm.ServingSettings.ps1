@@ -1,4 +1,5 @@
-# Serving preferences (loopback port, thinking, chat page, idle stop, context profile, slots, the API key flag) stored in <InstallRoot>\settings.json.
+# Serving preferences (loopback port, thinking, chat page, idle stop, context profile, slots, the API key flag, embeddings and their port)
+# stored in <InstallRoot>\settings.json.
 # Dot-sourced ONLY by fast-llm.ps1, fast-llm-ui.ps1 and the start-at-sign-in launcher tool, never by src/FastLlm.psm1 or the background host: the bench path
 # (Get-FastLlmPlan) reads no user settings. Windows PowerShell 5.1-safe; ASCII only.
 Set-StrictMode -Version 2
@@ -19,6 +20,9 @@ $script:FastLlmServingSettingsMaxBytes = 16384
 # The API key flag. settings.json holds only apiKey: "on" or "off"; the key itself is never a setting (it lives in the per-user store next to the settings).
 $script:FastLlmServingDefaultApiKey = 'off'
 $script:FastLlmServingApiKeyStoreName = 'api-key.dat'
+# The embedding sidecar: off by default, on its own loopback port (8081 by default). Both are stored only when they are not the default.
+$script:FastLlmServingDefaultEmbeddings = 'off'
+$script:FastLlmServingDefaultEmbeddingPort = 8081
 
 function Test-FastLlmServerPort {
     param([Parameter(Mandatory = $true)][int] $Port)
@@ -96,6 +100,20 @@ function ConvertTo-FastLlmApiKeySetting {
     param($Value)
     if ($Value -is [string] -and ($Value -ceq 'off' -or $Value -ceq 'on')) { return [string] $Value }
     throw 'serving-settings-invalid-apikey: ApiKey must be off or on.'
+}
+
+# Embeddings is a closed set: off (the default) or on. The match is case-sensitive.
+function ConvertTo-FastLlmEmbeddings {
+    param($Value)
+    if ($Value -is [string] -and ($Value -ceq 'off' -or $Value -ceq 'on')) { return [string] $Value }
+    throw 'serving-settings-invalid-embeddings: Embeddings must be off or on.'
+}
+
+# The embeddings port: the same strict parse as the server port (a whole number from 1024 to 65535), with its own code.
+function ConvertTo-FastLlmEmbeddingPort {
+    param($Value)
+    try { return (ConvertTo-FastLlmServerPort -Value $Value) }
+    catch { throw 'serving-settings-invalid-embedding-port: the embeddings port must be a whole number from 1024 to 65535.' }
 }
 
 # The refusal when the API key flag cannot be known (see Get-FastLlmServingSettings). Typed, and never retried or replaced by another setup.
@@ -192,6 +210,17 @@ function Get-FastLlmServingSettings {
         elseif (-not ($storedApiKey -is [string] -and $storedApiKey -ceq 'off')) { $apiKeyUndetermined = $true }
     }
     else { $apiKeyUndetermined = [bool] (Test-FastLlmServingApiKeyStorePresent -InstallRoot $InstallRoot) }
+    # Embeddings: on only for the exact stored text "on"; the port only for a stored whole number in range. Anything else is the default.
+    $embeddings = $script:FastLlmServingDefaultEmbeddings
+    if (-not $read.malformed -and $read.object.Contains('embeddings')) {
+        $storedEmbeddings = $read.object['embeddings']
+        if ($storedEmbeddings -is [string] -and $storedEmbeddings -ceq 'on') { $embeddings = 'on' }
+    }
+    $embeddingPort = $script:FastLlmServingDefaultEmbeddingPort
+    if (-not $read.malformed -and $read.object.Contains('embeddingPort')) {
+        $storedEmbeddingPort = $read.object['embeddingPort']
+        if (($storedEmbeddingPort -is [int] -or $storedEmbeddingPort -is [long]) -and (Test-FastLlmServerPort -Port ([int] [Math]::Max([Math]::Min([long] $storedEmbeddingPort, 2147483647L), 0L)))) { $embeddingPort = [int] $storedEmbeddingPort }
+    }
     return [pscustomobject]@{
         serverPort       = $port
         thinking         = $thinking
@@ -201,6 +230,8 @@ function Get-FastLlmServingSettings {
         slots            = $slots
         apiKey           = $apiKey
         apiKeyUndetermined = [bool] $apiKeyUndetermined
+        embeddings       = $embeddings
+        embeddingPort    = $embeddingPort
         malformed        = [bool] $read.malformed
     }
 }
@@ -215,8 +246,12 @@ function Set-FastLlmServingSettings {
         $IdleStopMinutes,
         $KvContextProfile,
         $KvSlots,
-        $ApiKey
+        $ApiKey,
+        $Embeddings,
+        $EmbeddingPort
     )
+    if ($PSBoundParameters.ContainsKey('Embeddings')) { $Embeddings = ConvertTo-FastLlmEmbeddings -Value $Embeddings }
+    if ($PSBoundParameters.ContainsKey('EmbeddingPort')) { $EmbeddingPort = ConvertTo-FastLlmEmbeddingPort -Value $EmbeddingPort }
     if ($PSBoundParameters.ContainsKey('ApiKey')) { $ApiKey = ConvertTo-FastLlmApiKeySetting -Value $ApiKey }
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort = ConvertTo-FastLlmServerPort -Value $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = ConvertTo-FastLlmThinking -Value $Thinking }
@@ -260,6 +295,14 @@ function Set-FastLlmServingSettings {
         elseif (Test-FastLlmServingApiKeyStorePresent -InstallRoot $InstallRoot) { $merged['apiKey'] = 'off' }
         else { $merged.Remove('apiKey') }
     }
+    if ($PSBoundParameters.ContainsKey('Embeddings')) {
+        if ($Embeddings -ceq $script:FastLlmServingDefaultEmbeddings) { $merged.Remove('embeddings') }
+        else { $merged['embeddings'] = $Embeddings }
+    }
+    if ($PSBoundParameters.ContainsKey('EmbeddingPort')) {
+        if ($EmbeddingPort -eq $script:FastLlmServingDefaultEmbeddingPort) { $merged.Remove('embeddingPort') }
+        else { $merged['embeddingPort'] = $EmbeddingPort }
+    }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
@@ -295,6 +338,8 @@ function Resolve-FastLlmServingOptions {
     # The API key has no start parameter: it comes from the saved setting only, so -IgnoreUserSettings (the bench path) never uses one.
     $apiKey = $script:FastLlmServingDefaultApiKey
     $apiKeyUndetermined = $false
+    $embeddings = $script:FastLlmServingDefaultEmbeddings
+    $embeddingPort = $script:FastLlmServingDefaultEmbeddingPort
     $source = 'default'
     $settingsMalformed = $false
     if (-not $IgnoreUserSettings) {
@@ -329,6 +374,14 @@ function Resolve-FastLlmServingOptions {
             $slots = $stored.slots
             $source = 'settings'
         }
+        if (-not $stored.malformed -and $stored.embeddings -cne $script:FastLlmServingDefaultEmbeddings) {
+            $embeddings = $stored.embeddings
+            $source = 'settings'
+        }
+        if (-not $stored.malformed -and $stored.embeddingPort -ne $script:FastLlmServingDefaultEmbeddingPort) {
+            $embeddingPort = $stored.embeddingPort
+            $source = 'settings'
+        }
     }
     if ($Bound.ContainsKey('ServerPort')) {
         $given = ConvertTo-FastLlmServerPort -Value $Bound['ServerPort']
@@ -355,7 +408,15 @@ function Resolve-FastLlmServingOptions {
         $slots = ConvertTo-FastLlmSlots -Value $Bound['KvSlots']
         $source = 'parameter'
     }
-    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; contextProfile = $contextProfile; slots = $slots; apiKey = $apiKey; apiKeyUndetermined = $apiKeyUndetermined; source = $source; settingsMalformed = $settingsMalformed }
+    if ($Bound.ContainsKey('Embeddings')) {
+        $embeddings = ConvertTo-FastLlmEmbeddings -Value $Bound['Embeddings']
+        $source = 'parameter'
+    }
+    if ($Bound.ContainsKey('EmbeddingPort')) {
+        $embeddingPort = ConvertTo-FastLlmEmbeddingPort -Value $Bound['EmbeddingPort']
+        $source = 'parameter'
+    }
+    return [pscustomobject]@{ serverPort = $port; thinking = $thinking; chatPage = $chatPage; idleStopMinutes = $idleStop; contextProfile = $contextProfile; slots = $slots; apiKey = $apiKey; apiKeyUndetermined = $apiKeyUndetermined; embeddings = $embeddings; embeddingPort = $embeddingPort; source = $source; settingsMalformed = $settingsMalformed }
 }
 
 # The serving parameters a user's own background-host start takes from the saved settings, as a hashtable to splat into

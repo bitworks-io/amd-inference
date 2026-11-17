@@ -14,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.DeviceBinding.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.SpillCheck.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.ApiKey.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.Sidecar.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DriverGuidance.ps1')
@@ -2352,7 +2353,7 @@ function Get-FastLlmComponents {
         }
         $label = "Component '$itemId'"
         $itemKind = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'kind' -Label $label)
-        if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft', 'tool')) {
+        if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft', 'tool', 'embedding-model')) {
             throw "$label has an unsupported kind '$itemKind'."
         }
         $itemVersion = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)
@@ -3502,7 +3503,7 @@ function Get-FastLlmComponentInventory {
 }
 
 # True when a running FastLLM can reach into the component root. A running server whose status records no engine path
-# cannot be proven to be elsewhere, so it also counts as in use.
+# cannot be proven to be elsewhere, so it also counts as in use. A live embedding sidecar keeps its embedding component in use.
 function Test-FastLlmComponentInUse {
     param(
         [Parameter(Mandatory = $true)]
@@ -3526,6 +3527,21 @@ function Test-FastLlmComponentInUse {
             if ($recordedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
                 return $true
             }
+        }
+    }
+    # A live embedding sidecar (waiting, starting, checking or ready) serves a model from an embedding-model component. Its block names the
+    # component and records no path, so the component's own folder decides: the root is in use when it lies inside that folder or holds it.
+    $sidecarBlocks = $status.PSObject.Properties['sidecars']
+    if ($sidecarBlocks) {
+        $embeddingFolders = Join-Path (Join-Path $InstallRoot 'components') 'embedding-model'
+        foreach ($sidecarBlock in @($sidecarBlocks.Value)) {
+            if ($null -eq $sidecarBlock -or -not $sidecarBlock.PSObject.Properties['phase'] -or @('waiting', 'starting', 'checking', 'ready') -cnotcontains [string] $sidecarBlock.phase) { continue }
+            $sidecarComponentId = $null
+            if ($sidecarBlock.PSObject.Properties['componentId']) { $sidecarComponentId = $sidecarBlock.componentId }
+            # A live block whose component cannot be named is in use for every root: it cannot be shown to be elsewhere.
+            if (-not ($sidecarComponentId -is [string]) -or $sidecarComponentId -cnotmatch '\A[a-z0-9][a-z0-9.\-]{1,120}\z') { return $true }
+            $componentPrefix = [System.IO.Path]::GetFullPath((Join-Path $embeddingFolders $sidecarComponentId)).TrimEnd([char[]] @('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+            if ($rootPrefix.StartsWith($componentPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or $componentPrefix.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
         }
     }
     return -not $recorded
@@ -3858,6 +3874,20 @@ function Start-FastLlmServer {
         # so a host that records what it serves can follow. A failure in it never changes a switch.
         [scriptblock] $SwitchObserver,
 
+        # Opt-in embedding sidecar (off by default; the bench path and every direct caller get off). on = after the text model is Ready, a
+        # second supervised llama-server with the installed, measured embedding model is started on the CPU at -EmbeddingPort (0 = 8081). It is
+        # refused here, typed, before anything is started, when no approved embedding model is installed, when nothing is measured for it on the
+        # built-in engine, or when its measured placement is not the CPU. See FastLlm.Sidecar.ps1.
+        [ValidateSet('off', 'on')]
+        [string] $Embeddings = 'off',
+
+        [ValidateRange(0, 65535)]
+        [int] $EmbeddingPort = 0,
+
+        # Internal: the sidecar of the serving session, passed only by the session's own starts (this function calling itself, the switch
+        # loop and the stand-in start). The call that does not receive it, with -Embeddings on, owns the session.
+        [System.Collections.IDictionary] $SidecarSession,
+
         # Opt-in: on = the server requires the user's API key. Only the CLI and the background host pass it, from the saved setting; the bench
         # path and every direct caller get off. The key itself is never a parameter: this function reads the per-user store.
         [ValidateSet('off', 'on')]
@@ -3870,6 +3900,20 @@ function Start-FastLlmServer {
     $ownsSwitchSequence = [bool] ($AllowSwitch -and -not $PSBoundParameters.ContainsKey('SwitchContext'))
     if ($ownsSwitchSequence) { $SwitchContext = @{ origin = $null; priorStopPaths = @(); accepted = $null; readyPlan = $null; runId = $null; runs = 0 } }
     $ApiKey = $ApiKey.ToLowerInvariant()
+
+    # Opt-in embedding sidecar: the caller's own start owns the serving session's sidecar. The option is checked first (a typed refusal,
+    # nothing started; with the key on, the key store's own refusal still comes before it), then this same start runs inside the session:
+    # every run of the text model in it - the first, a model switch's target, the one restore, the stand-in start - is given the session's
+    # sidecar, which starts after the first Ready and keeps running until the session ends here, whatever way it ends.
+    if ($Embeddings -ieq 'on' -and -not $PSBoundParameters.ContainsKey('SidecarSession')) {
+        if ($ApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot $InstallRoot }
+        $sidecarOwned = New-FastLlmSidecarSession -Plan (Get-FastLlmSidecarPlan -CatalogPath $CatalogPath -InstallRoot $InstallRoot -Port $EmbeddingPort)
+        $sidecarStart = @{}
+        foreach ($sidecarBoundName in @($PSBoundParameters.Keys)) { $sidecarStart[$sidecarBoundName] = $PSBoundParameters[$sidecarBoundName] }
+        $sidecarStart['SidecarSession'] = $sidecarOwned
+        try { return (Start-FastLlmServer @sidecarStart) }
+        finally { Stop-FastLlmSidecarSession -Session $sidecarOwned -InstallRoot $InstallRoot }
+    }
 
     # Fail closed, first: with the key on, a store that is missing or cannot be read by this user is the typed refusal api-key-unavailable,
     # before any check, probe or launch. A start that was asked for a key never runs without one, and never creates one.
@@ -4058,6 +4102,8 @@ function Start-FastLlmServer {
     if ($DeviceBinding -ne 'off') { $supervisorOptions.DeviceBinding = $DeviceBinding }
     if ($IdleStopMinutes -gt 0) { $supervisorOptions.IdleStopMinutes = $IdleStopMinutes }
     if ($AllowSwitch) { $supervisorOptions.AllowSwitch = $true; $supervisorOptions.SwitchContext = $SwitchContext }
+    # Passed only inside a session with an embedding sidecar, so every other call is the one it always was.
+    if ($null -ne $SidecarSession) { $supervisorOptions.SidecarSession = $SidecarSession }
     # What a start inside a switch sequence is given: the same options as this one, so the other model is served the same way.
     $switchStartOptions = @{ CatalogPath = $CatalogPath; InstallRoot = $InstallRoot; LoadTimeoutSeconds = $LoadTimeoutSeconds; DeviceBinding = $DeviceBinding }
     if ($PSBoundParameters.ContainsKey('VulkanBarMitigation')) { $switchStartOptions.VulkanBarMitigation = $VulkanBarMitigation }
@@ -4067,6 +4113,8 @@ function Start-FastLlmServer {
     # Every start inside a switch sequence (the target model, and the one restore of the previous model) gets the key exactly like this one:
     # only the flag is passed on, so that start reads the store itself, sets the key in its own server's environment and repeats the 401/200 proof.
     if ($ApiKey -ceq 'on') { $switchStartOptions.ApiKey = 'on' }
+    # Every start inside a switch sequence is a run of the same session: the sidecar is handed on, never started again.
+    if ($null -ne $SidecarSession) { $switchStartOptions.SidecarSession = $SidecarSession }
     # Passed only when the key is on (the supervisor treats the parameter's presence as "a key was asked for").
     if ($ApiKey -ceq 'on') { $supervisorOptions.ApiKeyHolder = $apiKeyHolder }
     $mayFallBack = (-not $startedExplicit) -and (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan)
@@ -4130,6 +4178,8 @@ function Start-FastLlmServer {
         # The stand-in runs with the key too: its start reads the store again (the same refusal when it cannot), sets the key in the stand-in
         # server's environment and repeats the 401/200 proof before anything says the key is on. It never starts keyless in place of a keyed start.
         if ($ApiKey -ceq 'on') { $startAgain.ApiKey = 'on' }
+        # The stand-in is a run of the same session: its Ready is the one the sidecar waits for.
+        if ($null -ne $SidecarSession) { $startAgain.SidecarSession = $SidecarSession }
         try {
             $serverExitCode = Start-FastLlmServer @startAgain
         }
@@ -4357,5 +4407,7 @@ Export-ModuleMember -Function @(
     'Initialize-FastLlmApiKeyStore',
     'Reset-FastLlmApiKeyStore',
     'Get-FastLlmApiKeyForDisplay',
-    'ConvertTo-FastLlmKeyFreeText'
+    'ConvertTo-FastLlmKeyFreeText',
+    # The optional embedding sidecar: the one question an entry point asks before a start (can embeddings be turned on here?).
+    'Assert-FastLlmEmbeddingsAvailable'
 )

@@ -5,7 +5,7 @@ Measured rows for the opt-in serving settings (context profile, slots). The plan
 model sha256, engine id and backend equal the plan's; with no row the option is refused. Nothing is derived from a formula.
 
 Shape:
-  { "schema": "bitworks.fastllm-serving-profiles/v1", "profiles": [ Profile, ... ], "addOns": [], "sidecars": [] }
+  { "schema": "bitworks.fastllm-serving-profiles/v1", "profiles": [ Profile, ... ], "addOns": [], "sidecars": [ Sidecar, ... ] }
   Profile = {
     "modelId": str                  # a config/catalog.json model id
     "modelSha256": 64 lowercase hex # equals that catalog model's sha256
@@ -19,7 +19,20 @@ Shape:
     "fitTargetMiB": int >= 0,
     "evidence": { "resultId": str, "measuredAt": "YYYY-MM-DDTHH:MM:SSZ", "gpuClasses": [str, ...] }
   }
-One row per (modelSha256, engineId, backend, id). "addOns" and "sidecars" are reserved and must be empty lists for now.
+  Sidecar = {                       # a second llama-server with its own model, beside the text model (embeddings)
+    "role": "embedding",
+    "componentId": str              # a config/components.json component of kind "embedding-model"
+    "componentSha256": 64 lowercase hex # equals the sha256 of that component's model file (its entryPoint in the file manifest)
+    "engineId": str                 # the built-in engine id only (llama.cpp-<catalog engine version>-vulkan)
+    "backend": "vulkan"             # the backend of that engine
+    "placement": "cpu"              # CPU placement only; a GPU placement is not offered
+    "contextSize": int 1..1048576   # the context the sidecar is started with (-c)
+    "pooling": "mean"|"cls"|"last"  # --pooling
+    "dimension": int 1..65536       # the length of one embedding vector; the start check compares it
+    "evidence": { "resultId": str, "measuredAt": "YYYY-MM-DDTHH:MM:SSZ", "gpuClasses": [str, ...] }
+  }
+One row per (modelSha256, engineId, backend, id), and one sidecar row per (role, componentSha256, engineId, backend).
+"addOns" is reserved and must be an empty list for now.
 config/serving-profiles.sha256 holds "<sha256 of the file>  serving-profiles.json" and a line feed.
 Usage: check-serving-profiles.py [--root R]
 """
@@ -42,6 +55,10 @@ EVIDENCE_KEYS = {"resultId", "measuredAt", "gpuClasses"}
 PROFILE_IDS = ("default", "long")
 CACHE_TYPES = ("f16", "q8_0")
 SLOT_SETS = ([1], [2], [1, 2])
+SIDECAR_KEYS = {"role", "componentId", "componentSha256", "engineId", "backend", "placement", "contextSize", "pooling", "dimension", "evidence"}
+SIDECAR_POOLINGS = ("mean", "cls", "last")
+SIDECAR_MAX_CONTEXT = 1048576
+SIDECAR_MAX_DIMENSION = 65536
 ENGINE_BACKENDS = ("vulkan", "hip")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 RESULT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
@@ -173,6 +190,64 @@ def check_profile(where, row, models, engines, errors):
     return None
 
 
+def embedding_models(components):
+    """{component id: sha256 of its model file} for the listed components of kind embedding-model that name a model file."""
+    models = {}
+    listed = components.get("components", []) if isinstance(components, dict) else []
+    for component in listed if isinstance(listed, list) else []:
+        if not isinstance(component, dict) or component.get("kind") != "embedding-model" or not is_str(component.get("id")):
+            continue
+        entry = component.get("entryPoint")
+        parts = [component["source"]] if isinstance(component.get("source"), dict) else component.get("sources")
+        digest = None
+        for part in parts if isinstance(parts, list) else []:
+            manifest = part.get("fileManifest") if isinstance(part, dict) else None
+            for item in manifest if isinstance(manifest, list) else []:
+                if isinstance(item, dict) and is_str(entry) and item.get("path") == entry and isinstance(item.get("sha256"), str):
+                    digest = item["sha256"].lower()
+        models[component["id"]] = digest
+    return models
+
+
+def check_sidecar(where, row, catalog, components, errors):
+    """Validates one sidecar row; returns its uniqueness key, or None when the row has no usable key."""
+    if not check_keys(where, row, SIDECAR_KEYS, errors):
+        return None
+    role = row["role"]
+    if not isinstance(role, str) or role != "embedding":
+        errors.append(f"{where}: role must be 'embedding'")
+        role = None
+    sha = row["componentSha256"]
+    sha_ok = isinstance(sha, str) and bool(SHA_RE.fullmatch(sha))
+    if not sha_ok:
+        errors.append(f"{where}: componentSha256 must be 64 lowercase hex characters")
+    models = embedding_models(components)
+    component_id = row["componentId"]
+    if not isinstance(component_id, str) or component_id not in models:
+        errors.append(f"{where}: componentId {component_id!r} is not a listed embedding-model component")
+    elif sha_ok and models[component_id] != sha:
+        errors.append(f"{where}: componentSha256 does not equal the sha256 of the model file of {component_id!r}")
+    # A sidecar runs on the built-in engine only, whatever engine serves the text model.
+    version = catalog.get("engine", {}).get("version") if isinstance(catalog, dict) and isinstance(catalog.get("engine"), dict) else None
+    built_in = "llama.cpp-" + version + "-vulkan" if is_str(version) else None
+    if built_in is None or not isinstance(row["engineId"], str) or row["engineId"] != built_in:
+        errors.append(f"{where}: engineId must be the built-in engine ({built_in!r})")
+    if not isinstance(row["backend"], str) or row["backend"] != "vulkan":
+        errors.append(f"{where}: backend must be 'vulkan' (the built-in engine)")
+    if not isinstance(row["placement"], str) or row["placement"] != "cpu":
+        errors.append(f"{where}: placement must be 'cpu': a GPU placement is not offered")
+    if not is_int(row["contextSize"]) or not 1 <= row["contextSize"] <= SIDECAR_MAX_CONTEXT:
+        errors.append(f"{where}: contextSize must be a whole number from 1 to {SIDECAR_MAX_CONTEXT}")
+    if not isinstance(row["pooling"], str) or row["pooling"] not in SIDECAR_POOLINGS:
+        errors.append(f"{where}: pooling must be one of {list(SIDECAR_POOLINGS)}")
+    if not is_int(row["dimension"]) or not 1 <= row["dimension"] <= SIDECAR_MAX_DIMENSION:
+        errors.append(f"{where}: dimension must be a whole number from 1 to {SIDECAR_MAX_DIMENSION}")
+    check_evidence(where, row["evidence"], errors)
+    if role is not None and sha_ok and isinstance(row["engineId"], str) and isinstance(row["backend"], str):
+        return (role, sha, row["engineId"], row["backend"])
+    return None
+
+
 def validate(document, catalog, components):
     """Returns a list of problems; empty means the document is valid against this catalog and component list."""
     errors = []
@@ -180,9 +255,21 @@ def validate(document, catalog, components):
         return errors
     if document["schema"] != SCHEMA:
         errors.append(f"schema must be {SCHEMA!r}")
-    for reserved in ("addOns", "sidecars"):
-        if not isinstance(document[reserved], list) or document[reserved]:
-            errors.append(f"{reserved} must be an empty list: its rows are reserved and not accepted yet")
+    if not isinstance(document["addOns"], list) or document["addOns"]:
+        errors.append("addOns must be an empty list: its rows are reserved and not accepted yet")
+    sidecars = document["sidecars"]
+    if not isinstance(sidecars, list):
+        errors.append("sidecars must be a list")
+        sidecars = []
+    seen_sidecars = set()
+    for index, row in enumerate(sidecars):
+        where = f"sidecars[{index}]"
+        key = check_sidecar(where, row, catalog, components, errors)
+        if key is None:
+            continue
+        if key in seen_sidecars:
+            errors.append(f"{where}: duplicate sidecar row for this role, component, engine and backend")
+        seen_sidecars.add(key)
     profiles = document["profiles"]
     if not isinstance(profiles, list):
         errors.append("profiles must be a list")
@@ -237,7 +324,10 @@ def main(argv=None):
         print(f"check-serving-profiles: {line}", file=sys.stderr)
     if errors:
         return 1
-    print(f"serving profiles ok ({len(document['profiles'])})")
+    if document["sidecars"]:
+        print(f"serving profiles ok ({len(document['profiles'])}, sidecars {len(document['sidecars'])})")
+    else:
+        print(f"serving profiles ok ({len(document['profiles'])})")
     return 0
 
 
