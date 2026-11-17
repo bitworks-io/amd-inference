@@ -6,6 +6,7 @@ function Get-FastLlmSamplerDiagnosticSourceHashes {
         diagnostic=(Join-Path $PSScriptRoot 'FastLlm.SamplerDiagnostic.ps1');tool=$ToolPath;taskTool=$TaskToolPath
         workload=(Join-Path $PSScriptRoot 'FastLlm.TaskWorkload.ps1')
         semantic=(Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1')
+        servingProfile=(Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1')
         module=(Join-Path $PSScriptRoot 'FastLlm.psm1')
         runtime=(Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
         benchmark=(Join-Path $PSScriptRoot 'FastLlm.Benchmark.ps1')

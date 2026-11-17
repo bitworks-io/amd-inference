@@ -4,7 +4,19 @@
 
 # The closed sets of the serving profiles (FastLlm.psm1 validates measured rows against the same ones).
 function Get-FastLlmServingProfileVocabulary {
-    return [pscustomobject]@{ slots = @(1, 2); cacheTypes = @('f16', 'q8_0'); defaultCacheType = 'f16' }
+    return [pscustomobject]@{ slots = @(1, 2); cacheTypes = @('f16', 'q8_0'); defaultCacheType = 'f16'; profileIds = @('default', 'long') }
+}
+
+# llama-server also accepts -np (--parallel), -ctk / -ctv (--cache-type-k / -v) and -c (--ctx-size). The product writes only the long forms
+# (the default argument goldens pin them), so a short form, with a space or an equals sign, is never the default run.
+function Test-FastLlmServingProfileShortForm {
+    param([string[]] $Arguments)
+    foreach ($argument in @($Arguments)) {
+        foreach ($short in @('-np', '-ctk', '-ctv', '-c')) {
+            if ($argument -ceq $short -or ([string] $argument).StartsWith($short + '=', [StringComparison]::Ordinal)) { return $true }
+        }
+    }
+    return $false
 }
 
 # What a measurement tool needs to know about a run, read from the status document of a start: is it a serving-profile run (an opt-in context
@@ -34,6 +46,7 @@ function Test-FastLlmServingProfileRun {
     $argumentsProperty = $recipe.PSObject.Properties['requestedArguments']
     if ($null -ne $argumentsProperty -and $null -ne $argumentsProperty.Value) {
         $arguments = @($argumentsProperty.Value | ForEach-Object { [string] $_ })
+        if (Test-FastLlmServingProfileShortForm $arguments) { return $true }
         $seen = @{}
         for ($i = 0; $i -lt $arguments.Count; $i++) {
             $name = $arguments[$i]
@@ -54,7 +67,7 @@ function Test-FastLlmServingProfileRun {
 
 # The rules a serving-profile run must meet to be measured at all (checked only behind an explicit opt-in): the product's own closed sets
 # (slots 1 or 2, KV cache f16 or q8_0, one cache type for K and V), a context total that divides by the slots, a per-slot context that the
-# canary saw, and a short lowercase profile id. The caller still checks --parallel and --ctx-size against these values.
+# canary saw, a profile id from the closed list, and no short-form argument. The caller still checks --parallel and --ctx-size against these values.
 function Test-FastLlmServingProfileState {
     param($State)
     $vocabulary = Get-FastLlmServingProfileVocabulary
@@ -69,11 +82,12 @@ function Test-FastLlmServingProfileState {
     if (-not (& $isWhole $slots) -or @($vocabulary.slots) -notcontains [int] $slots) { return $false }
     if (-not (& $isWhole $total) -or -not (& $isWhole $perSlot) -or [long] $perSlot -lt 1 -or ([long] $perSlot * [long] $slots) -ne [long] $total) { return $false }
     if (-not (& $isWhole $effective) -or [long] $effective -ne [long] $perSlot) { return $false }
-    $profile = & $read $recipe 'profile'
-    if ($null -ne $recipe.PSObject.Properties['profile'] -and ($profile -isnot [string] -or $profile -cnotmatch '^[a-z][a-z0-9-]{0,31}\z')) { return $false }
+    $profileId = & $read $recipe 'profile'
+    if ($null -ne $recipe.PSObject.Properties['profile'] -and ($profileId -isnot [string] -or @($vocabulary.profileIds) -cnotcontains $profileId)) { return $false }
     $arguments = @()
     $argumentsValue = & $read $recipe 'requestedArguments'
     if ($null -ne $argumentsValue) { $arguments = @($argumentsValue | ForEach-Object { [string] $_ }) }
+    if (Test-FastLlmServingProfileShortForm $arguments) { return $false }
     $cache = @{}
     foreach ($name in @('--cache-type-k', '--cache-type-v')) {
         $indices = @(for ($i = 0; $i -lt $arguments.Count; $i++) { if ($arguments[$i] -ceq $name) { $i } })

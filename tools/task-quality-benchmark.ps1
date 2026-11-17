@@ -24,6 +24,7 @@ function Get-TaskQualitySourceHashes {
         taskTool=$script:FastLlmTaskQualityToolPath
         workload=(Join-Path $toolRoot '../src/FastLlm.TaskWorkload.ps1')
         semantic=(Join-Path $toolRoot '../src/FastLlm.SemanticSmoke.ps1')
+        servingProfile=(Join-Path $toolRoot '../src/FastLlm.ServingProfileRun.ps1')
         concurrency=(Join-Path $toolRoot 'concurrency-benchmark.ps1')
         processHost=(Join-Path $toolRoot '../src/ProcessHost.cs')
         module=(Join-Path $toolRoot '../src/FastLlm.psm1')

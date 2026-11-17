@@ -53,7 +53,7 @@ function Test-FastLlmSemanticSmokeLane {
 
 # The lane names come from Get-FastLlmSemanticSmokeLanes only, so an engine refresh edits one table.
 function Assert-FastLlmSemanticSmokeState {
-    param($State,[string]$ExpectedBinding,[ValidateScript({@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name) -contains $_})][string[]]$AcceptedLanes=@('vulkan-b10698'),
+    param($State,[string]$ExpectedBinding,[ValidateScript({@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name) -ccontains $_})][string[]]$AcceptedLanes=@('vulkan-b10698'),
           [switch]$AllowServingProfile)
     # A serving-profile run (an opt-in context profile, a second slot or a non-default KV cache) is never the default normal run:
     # it is refused unless the caller opts in, and then only when its own record is consistent.
@@ -194,12 +194,14 @@ function ConvertFrom-FastLlmSemanticSmokeResponse {
 
 function Invoke-FastLlmSemanticSmokeCore {
     param([string]$OutputPath,[scriptblock]$ReadState,[scriptblock]$Request,[scriptblock]$CheckProcess,[int]$DeadlineSeconds=240,
-          [ValidateScript({@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name) -contains $_})][string[]]$AcceptedLanes=@('vulkan-b10698'))
+          [ValidateScript({@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name) -ccontains $_})][string[]]$AcceptedLanes=@('vulkan-b10698'))
     if($DeadlineSeconds -lt 1 -or $DeadlineSeconds -gt 240){throw 'Semantic smoke deadline is outside fixed bounds.'}
     if(Test-Path -LiteralPath $OutputPath){throw 'Semantic smoke output already exists.'}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     $sourcePath=Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1'
     $sourceSha=(Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $profilePath=Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1'
+    $profileSha=(Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $first=& $ReadState
     $binding=Assert-FastLlmSemanticSmokeState -State $first -AcceptedLanes $AcceptedLanes
     & $CheckProcess $first
@@ -229,7 +231,8 @@ function Invoke-FastLlmSemanticSmokeCore {
     }
     try{$current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes;& $CheckProcess $current}
     catch{$aborted=$true}
-    if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceSha){throw 'Semantic smoke source changed during evaluation.'}
+    if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceSha -or
+       (Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $profileSha){throw 'Semantic smoke source changed during evaluation.'}
     $passed=@($cases|Where-Object outcome -eq 'pass').Count
     $failed=@($cases|Where-Object outcome -eq 'fail').Count
     $inconclusive=@($cases|Where-Object outcome -eq 'inconclusive').Count
@@ -238,7 +241,7 @@ function Invoke-FastLlmSemanticSmokeCore {
         runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256
         engineVersion=$first.engineVersion;backend=[string]$first.recipe.backend;engineSha256=$first.recipe.engineSha256;catalogSha256=$first.recipe.catalogSha256
         endpoint=$first.endpoint;contextSize=[int]$first.recipe.contextSize;evidenceBindingSha256=$binding
-        sourceProvenance=@{semanticSmokeSha256=$sourceSha;scope='on-disk SHA-256 checked at start/end; loaded-code identity is not attested'}
+        sourceProvenance=@{semanticSmokeSha256=$sourceSha;servingProfileSha256=$profileSha;scope='on-disk SHA-256 checked at start/end; loaded-code identity is not attested'}
         methodology=@{caseSet='fastllm-fixed-semantic-smoke-v1';sampling='temperature-0-seed-42';thinkingRequested=$false;prefixCache=$false;
             maxOutputTokens=96;concurrency=1;elapsedBudgetSeconds=$DeadlineSeconds;requestTimeoutMaximumSeconds=60;
             hardWallClockDeadline=$false;interpretation='tiny hand-authored canary; elapsed request budget does not preempt OS process or file calls'}

@@ -39,6 +39,8 @@ function Invoke-FastLlmJsonFormatDiagnosticCore {
     $semanticPath=Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1'
     $sourceSha=(Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $semanticSha=(Get-FileHash -LiteralPath $semanticPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $profilePath=Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1'
+    $profileSha=(Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $toolSha=if($ToolSourcePath){(Get-FileHash -LiteralPath $ToolSourcePath -Algorithm SHA256).Hash.ToLowerInvariant()}else{$null}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     $first=& $ReadState
@@ -87,6 +89,7 @@ function Invoke-FastLlmJsonFormatDiagnosticCore {
     if($timer.Elapsed.TotalSeconds -gt $DeadlineSeconds){$failureCode='deadline';$aborted=$true}
     if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceSha -or
        (Get-FileHash -LiteralPath $semanticPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $semanticSha -or
+       (Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $profileSha -or
        ($ToolSourcePath -and (Get-FileHash -LiteralPath $ToolSourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $toolSha)){
         throw 'JSON-format diagnostic source changed during the run.'
     }
@@ -96,7 +99,7 @@ function Invoke-FastLlmJsonFormatDiagnosticCore {
         engineVersion=$first.engineVersion;engineSha256=$first.recipe.engineSha256;catalogSha256=$first.recipe.catalogSha256
         contextSize=[int]$first.recipe.contextSize;endpoint=$first.endpoint;evidenceBindingSha256=$binding
         fixedCaseId=$case.id;fixedPromptSha256=(Get-FastLlmSemanticSmokeSha256 $case.prompt)
-        sourceProvenance=@{diagnosticSha256=$sourceSha;semanticSmokeSha256=$semanticSha;toolSha256=$toolSha;
+        sourceProvenance=@{diagnosticSha256=$sourceSha;semanticSmokeSha256=$semanticSha;servingProfileSha256=$profileSha;toolSha256=$toolSha;
             scope='on-disk SHA-256 checked before/after; loaded-code identity is not attested'}
         methodology=@{requestVariants=$variants;singleDifference=$(if($Mode -ceq 'compare'){'response_format:{type:json_object}'}else{'not applicable: one fixed-case request'});
             sampling='temperature-0-seed-42';thinkingRequested=$false;prefixCache=$false;maxOutputTokens=96;

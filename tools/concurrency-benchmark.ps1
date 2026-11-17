@@ -266,6 +266,8 @@ function Invoke-ConcurrencyBenchmarkCore {
     $canonicalHash=(Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $bindingPath=Join-Path $PSScriptRoot '../src/FastLlm.SemanticSmoke.ps1'
     $bindingHash=(Get-FileHash -LiteralPath $bindingPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $profilePath=Join-Path $PSScriptRoot '../src/FastLlm.ServingProfileRun.ps1'
+    $profileHash=(Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $httpPath=Join-Path $PSScriptRoot '../src/ProcessHost.cs'
     $httpHash=(Get-FileHash -LiteralPath $httpPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $samples=@();$warmups=@();$summary=@();$levels=@(1,2,4,8);$artifacts=@()
@@ -362,6 +364,7 @@ function Invoke-ConcurrencyBenchmarkCore {
     if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceHash -or
        (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canonicalHash -or
        (Get-FileHash -LiteralPath $bindingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $bindingHash -or
+       (Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $profileHash -or
        (Get-FileHash -LiteralPath $httpPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $httpHash){throw 'Benchmark source changed during run.'}
     } catch {
         $reportStatus='aborted';$abortReasonCode=$failureCode
@@ -397,6 +400,7 @@ function Invoke-ConcurrencyBenchmarkCore {
         if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceHash -or
            (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canonicalHash -or
            (Get-FileHash -LiteralPath $bindingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $bindingHash -or
+       (Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $profileHash -or
            (Get-FileHash -LiteralPath $httpPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $httpHash){$sourceStatus='changed'}
     }catch{$sourceStatus='unavailable'}
     if($sourceStatus -ne 'verified'){
@@ -423,7 +427,7 @@ function Invoke-ConcurrencyBenchmarkCore {
         runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256;engineVersion=$first.engineVersion
         recipe=$first.recipe;endpoint=$first.endpoint;placement=$first.placement;canary=$first.canary;evidenceBindingSha256=$binding
         sourceProvenance=@{concurrencyScriptSha256=$sourceHash;canonicalBenchmarkParserSha256=$canonicalHash;
-            runBindingHelperSha256=$bindingHash;httpHelperSourceSha256=$httpHash;
+            runBindingHelperSha256=$bindingHash;servingProfileHelperSha256=$profileHash;httpHelperSourceSha256=$httpHash;
             endStatus=$sourceStatus;scope='On-disk source hashes observed at start and end; loaded-code identity is not attested.'}
         methodology=@{corpus='fastllm-repeated-prose-v1';sampling='greedy-seed42';prefixCache=$false;warmupWavesPerCondition=1;
             repetitions=$Repetitions;promptArtifacts=$artifacts;generationTokens=$GenerationTokens;requestedClientLevels=$levels;
