@@ -204,6 +204,10 @@ function Format-RawRequest([hashtable]$Fields) { return (ConvertTo-Json -InputOb
 
 # Runs one scenario: the operation lock is taken here (as the CLI and the background host do) and held until the start has returned and the
 # client has finished. Returns the start's exit code or failure, the client's record, each supervised run and the final status.
+# Every step of a scenario has a deadline (a few minutes; a step may carry its own timeoutSeconds). A scenario whose condition never
+# comes true - a switch that is refused when it should be accepted, or the other way round - then fails with what was observed,
+# and does not hold the suite for an hour.
+$script:SwitchStepTimeoutSeconds=240
 function Invoke-SwitchScenario {
     param([string]$Label,$World,[object[]]$Steps,[hashtable]$StartOptions=@{},[switch]$NoAllowSwitch)
     $stepsPath=Join-Path $World.root 'steps.json'
@@ -212,7 +216,7 @@ function Invoke-SwitchScenario {
     $lock=Enter-FastLlmOperation $World.root
     $client=New-Object Diagnostics.Process
     $client.StartInfo.FileName=$enginePath
-    $clientCode="& '$((Join-Path $PSScriptRoot 'helpers/switch-client.ps1').Replace("'","''"))' -Root '$($root.Replace("'","''"))' -InstallRoot '$($World.root.Replace("'","''"))' -WorldPath '$($World.path.Replace("'","''"))' -StepsPath '$($stepsPath.Replace("'","''"))' -ResultPath '$($resultPath.Replace("'","''"))'"
+    $clientCode="& '$((Join-Path $PSScriptRoot 'helpers/switch-client.ps1').Replace("'","''"))' -Root '$($root.Replace("'","''"))' -InstallRoot '$($World.root.Replace("'","''"))' -WorldPath '$($World.path.Replace("'","''"))' -StepsPath '$($stepsPath.Replace("'","''"))' -ResultPath '$($resultPath.Replace("'","''"))' -StepTimeoutSeconds $([int]$script:SwitchStepTimeoutSeconds)"
     $client.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($clientCode))
     $client.StartInfo.UseShellExecute=$false
     $exit=$null;$failure=$null;$clientExited=$false
@@ -223,7 +227,10 @@ function Invoke-SwitchScenario {
         if (-not $NoAllowSwitch) { $arguments.AllowSwitch=$true }
         foreach ($key in $StartOptions.Keys) { $arguments[$key]=$StartOptions[$key] }
         try { $exit=Start-FastLlmServer @arguments } catch { $failure=$_.Exception }
-        $clientExited=$client.WaitForExit(3600000)
+        # The client's own bound: every step's deadline, then its final release of whatever is still served (at most five minutes).
+        $clientSeconds=360
+        foreach ($scenarioStep in @($Steps)) { $stepSeconds=[int]$script:SwitchStepTimeoutSeconds; if ($scenarioStep.Contains('timeoutSeconds')) { $stepSeconds=[int]$scenarioStep['timeoutSeconds'] }; $clientSeconds+=$stepSeconds }
+        $clientExited=$client.WaitForExit($clientSeconds*1000)
     } finally {
         if (-not $client.HasExited) { $client.Kill() }
         $client.Dispose()
@@ -865,6 +872,60 @@ try {
         Invoke-FastLlmApiKeySetting -InstallRoot $world.root -Action off | Out-Null
         $cli=Resolve-KeyCliStart 'switch' $world.root
         Check ($cli.action -ceq 'start' -and $cli.switchAllowed -eq $true -and $cli.apiKey -ceq 'off') 'api key + idle-stopped switch: with the key setting off the same request is a start with switching allowed and no key'
+
+        # ---- the saved flag, as the command line reads it (M1) ----
+        # An installation that never had a key store starts without a key whatever its settings.json holds (none, empty, other settings
+        # only). A key store with no stored value is not "off": the flag cannot be known, and the start refuses it.
+        $flagShapes=[ordered]@{ 'no settings.json'=$null; 'an empty object'='{}'; 'other settings only'='{ "serverPort": 18181, "thinking": "off" }' }
+        foreach ($flagShape in $flagShapes.Keys) {
+            $plainRoot=Join-Path $temp ('flag-plain-'+[Guid]::NewGuid().ToString('N').Substring(0,8));New-Item -ItemType Directory -Path $plainRoot | Out-Null
+            if ($null -ne $flagShapes[$flagShape]) { [IO.File]::WriteAllText((Join-Path $plainRoot 'settings.json'),[string]$flagShapes[$flagShape]) }
+            $plainCli=Resolve-KeyCliStart 'start' $plainRoot
+            $keyedRoot=Join-Path $temp ('flag-keyed-'+[Guid]::NewGuid().ToString('N').Substring(0,8));New-Item -ItemType Directory -Path $keyedRoot | Out-Null
+            & $module { param($R,$K) Write-FastLlmApiKeyStore -InstallRoot $R -ApiKeyHolder $K } $keyedRoot $keyHolder
+            if ($null -ne $flagShapes[$flagShape]) { [IO.File]::WriteAllText((Join-Path $keyedRoot 'settings.json'),[string]$flagShapes[$flagShape]) }
+            $keyedCli=Resolve-KeyCliStart 'start' $keyedRoot
+            $keyedSwitch=Resolve-KeyCliStart 'switch' $keyedRoot
+            Check ($plainCli.action -ceq 'start' -and $plainCli.apiKey -ceq 'off' -and $keyedCli.apiKey -ceq 'undetermined' -and $keyedSwitch.action -ceq 'start' -and $keyedSwitch.apiKey -ceq 'undetermined') "saved flag ($flagShape): with no key store the command line reads off (a keyless start, as always); with a key store it reads undetermined, for start and for switch-as-start [$($plainCli.apiKey)/$($keyedCli.apiKey)/$($keyedSwitch.apiKey)]"
+        }
+        Check ($cliText.Contains("if (`$effectiveApiKey -ceq 'undetermined') { throw (New-FastLlmApiKeySettingFailure) }") -and $cliText.IndexOf("if (`$effectiveApiKey -ceq 'undetermined') { throw (New-FastLlmApiKeySettingFailure) }") -lt $cliText.IndexOf('$startPolicyOptions.AllowSwitch = $true')) 'saved flag: the start refuses undetermined (api-key-setting-unreadable) before it builds its start options'
+
+        # ---- L1 in a switch: the target's key may have gone to another program, so the previous model is NOT started again ----
+        # The listener is the target's own server before the first keyed request of its start (the proof) and something else right after
+        # it. That start fails with api-key-listener-changed, and the sequence ends there: a restore would serve with the same key.
+        function Get-KeyRealListenerOwners([int]$Port) {
+            if ($env:OS -ne 'Windows_NT') { return @(Get-KeyTestListenerOwners $Port) }
+            if (-not ('Bitworks.FastLlm.WindowsGpuTelemetry' -as [type])) { Add-Type -Path (Join-Path $root 'src/WindowsGpuTelemetry.cs') }
+            return @([Bitworks.FastLlm.WindowsGpuTelemetry]::GetLoopbackListenerOwners($Port))
+        }
+        $world=New-KeyWorld 'key-exposed' @{ 'model-a'=@('selftest-ok','selftest-ok'); 'model-b'=@('selftest-ok') } 'enforce'
+        $script:keyExposure=@{ world=$world; reads=0; changed=$false }
+        & $module { param($P) $script:FastLlmApiKeyListenerOwners=$P } {
+            param($Port)
+            if ($script:keyExposure.changed) { return @(4242) }
+            if (@(Get-ModeStarts $script:keyExposure.world 'model-b').Count -gt 0) {
+                $script:keyExposure.reads++
+                if ($script:keyExposure.reads -eq 2) { $script:keyExposure.changed=$true; return @(4242) }
+            }
+            return @(Get-KeyRealListenerOwners $Port)
+        }
+        try {
+            $r=Invoke-SwitchScenario -Label 'key-exposed' -World $world -StartOptions @{ SelfTest=$true; ApiKey='on' } -Steps @(
+                (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+                (New-Step @{ switchResult='failed-stopped' } 'none'))
+        }
+        finally {
+            if ($env:OS -ne 'Windows_NT') { & $module { param($P) $script:FastLlmApiKeyListenerOwners=$P } ${function:Get-KeyTestListenerOwners} } else { & $module { $script:FastLlmApiKeyListenerOwners=$null } }
+        }
+        $exposedCode='';$exposedText=''
+        if ($null -ne $r.failure) { $exposedCode=[string]$r.failure.Data['FastLlmFailureCode'];$exposedText=[string]$r.failure.Message }
+        Check ($r.completed -and $exposedCode -ceq 'api-key-listener-changed' -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a,model-b' -and $r.runs[1].failed -and $script:keyExposure.changed) "api key, listener changed in a switch: the target's start fails with api-key-listener-changed and the previous model is not started again (runs: $((($r.runs | ForEach-Object { $_.modelId }) -join ',')); code: $exposedCode)"
+        Check ($exposedText -cmatch 'Another program may have received the key' -and $exposedText -cmatch 'Create a new key' -and [string]$r.failure.Data['FastLlmReason'] -ceq 'ApiKeyFailed' -and $r.failure.Data['FastLlmSwitchAttempted'] -eq $true) 'api key, listener changed in a switch: the failure says to create a new key, and is final (never retried, recovered or replaced)'
+        Check ((Test-Block (Get-Block $r.final) 'model-a' 'model-b' 'failed-stopped' 'api-key-listener-changed' $false) -and [string]$r.final.phase -ceq 'failed' -and (Test-PortFree $world.port) -and (@(Get-ModeStarts $world 'model-a')).Count -eq 1) 'api key, listener changed in a switch: the status says failed-stopped with the code, nothing is served, and the first model was started once only'
+        $auth=@(Get-KeyAuth $world)
+        Check (@($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 2 -and @($auth | Where-Object { $_ -cmatch ' wrong$' }).Count -eq 0) 'api key, listener changed in a switch: two servers were started (the first and the target), never a third'
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0) "api key, listener changed in a switch: no key text in any status document, run log, state file or failure [$($leaks -join '; ')]"
 
     } finally {
         [Environment]::SetEnvironmentVariable('LLAMA_API_KEY',$savedInheritedKey)

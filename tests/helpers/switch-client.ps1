@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory = $true)][string] $InstallRoot,
     [Parameter(Mandatory = $true)][string] $WorldPath,
     [Parameter(Mandatory = $true)][string] $StepsPath,
-    [Parameter(Mandatory = $true)][string] $ResultPath
+    [Parameter(Mandatory = $true)][string] $ResultPath,
+    # The deadline of a step that names none: a condition that never comes true ends the scenario as failed after this long.
+    [ValidateRange(1, 3600)][int] $StepTimeoutSeconds = 240
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $Root 'src/FastLlm.psm1') -Force
@@ -123,7 +125,7 @@ $failed = $false
 $index = 0
 try {
     foreach ($step in $steps) {
-        $timeoutSeconds = 900
+        $timeoutSeconds = $StepTimeoutSeconds
         $configured = Get-Value $step 'timeoutSeconds'
         if ($null -ne $configured) { $timeoutSeconds = [int] $configured }
         $deadline = [Diagnostics.Stopwatch]::StartNew()
