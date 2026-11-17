@@ -703,6 +703,7 @@ $script:FastLlmReinstallReasonText = @{
     'target-changed'            = 'The previous version changed since you were asked. Nothing was changed.'
     'not-a-release'             = 'This is not an installed FastLLM release (no RELEASE.json), so there is nothing to go back from.'
     'approval-required'         = 'The reinstall was not confirmed. Nothing was changed.'
+    'api-key-on'                = "The API key is on, and the older version can't use it: it would serve without a key. To go back, turn the API key off in Settings, reinstall the older version, and turn the key on again after you update."
     'installed-changed'         = 'The installed version changed since you were asked. Nothing was changed.'
 }
 function Get-FastLlmReinstallReasonText {
@@ -858,6 +859,17 @@ function Get-FastLlmStoreRelease {
 #     again with the full path above before anything is installed.
 #   Both refuse with fresh-check-unreadable when the check gave no readable latest version.
 # Returns { decision; reason; target; installed; latest } ; latest is the store release to install when eligible, else $null.
+# True when the saved API key setting is on or cannot be determined. Uses the serving settings reader; if that cannot be read at all, the answer is "keyed" (fail closed).
+function Test-FastLlmReinstallKeyFlagBlocks {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot)
+    try {
+        if (-not (Get-Command -Name Get-FastLlmServingSettings -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'FastLlm.ServingSettings.ps1') }
+        $serving = Get-FastLlmServingSettings -InstallRoot $InstallRoot
+        return ([bool]$serving.apiKeyUndetermined -or [string]$serving.apiKey -cne 'off')
+    }
+    catch { return $true }
+}
+
 function Resolve-FastLlmReinstall {
     param([Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$AppRoot, [scriptblock]$Request, [switch]$OfferOnly, $Check)
     $make = {
@@ -869,6 +881,8 @@ function Resolve-FastLlmReinstall {
     # Pass 1, no network: the store entry is the one thing not known yet, so a refusal for any other reason is final.
     $local = Get-FastLlmReinstallDecision -InstalledPolicy $facts.installedPolicy -InstalledVersion $facts.installedVersion -PreviousRecord $facts.record -FreshLatest $null -StoreRelease $null
     if ([string]$local.reason -cne 'not-in-release-store') { return (& $make $local $facts.installedVersion $null) }
+    # An older release has no API key support: with the key on, or its setting unreadable, it would serve without a key. Local, so before any request.
+    if (Test-FastLlmReinstallKeyFlagBlocks -InstallRoot $InstallRoot) { return (& $make ([pscustomobject]@{ decision = 'refused'; reason = 'api-key-on'; target = $local.target }) $facts.installedVersion $null) }
 
     if ($OfferOnly -and $PSBoundParameters.ContainsKey('Check')) {
         # The window passes the check it already made, so a launch makes no second request. No result at all counts as a failed check.

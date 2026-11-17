@@ -639,6 +639,57 @@ $req = New-ReinstallRequest
 $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
 Check ($r.decision -ceq 'refused' -and $req.Urls.Count -eq 0) 'offer: no record means no request at all'
 
+# The API key and an older version: an older release has no key support, so with the key on (or its setting unreadable) nothing is offered
+# or reinstalled, decided locally, before any request. Key off and a never-keyed install are unchanged.
+. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.UiFlow.ps1')
+$keyText = "The API key is on, and the older version can't use it: it would serve without a key. To go back, turn the API key off in Settings, reinstall the older version, and turn the key on again after you update."
+$script:keyNetworkCalls = 0
+$throwingRequest = { param($Url, $Etag) $script:keyNetworkCalls++; throw 'the network must not be used' }
+$keyStates = @(
+    @{ Name = 'key on'; Json = '{"apiKey":"on"}' },
+    @{ Name = 'key undetermined (unreadable value)'; Json = '{"apiKey":"maybe"}' },
+    @{ Name = 'key undetermined (no setting saved, key store present)'; Json = $null; Store = $true })
+foreach ($state in $keyStates) {
+    $e = New-ReinstallEnv
+    if ($null -ne $state.Json) { Set-Content -LiteralPath (Join-Path $e.Install 'settings.json') -Value $state.Json }
+    if ($state.ContainsKey('Store')) { Set-Content -LiteralPath (Join-Path $e.Install $script:FastLlmServingApiKeyStoreName) -Value 'placeholder' }
+    $script:keyNetworkCalls = 0
+    $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $throwingRequest
+    Check ($r.decision -ceq 'refused' -and $r.reason -ceq 'api-key-on' -and $null -eq $r.latest -and $r.target -ceq $old -and $r.installed -ceq $cur -and $script:keyNetworkCalls -eq 0) ("api-key: $($state.Name) refuses with api-key-on and the request seam is never called")
+    $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $throwingRequest -OfferOnly
+    Check ($r.reason -ceq 'api-key-on' -and $script:keyNetworkCalls -eq 0 -and $null -eq (Get-FastLlmUiReinstallOffer -Resolved $r)) ("api-key: $($state.Name) shows no window offer, with no request")
+    $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $throwingRequest -OfferOnly -Check ([pscustomobject]@{ status = 'up-to-date'; installed = $cur; latest = @{ version = $cur } })
+    Check ($r.reason -ceq 'api-key-on' -and $null -eq (Get-FastLlmUiReinstallOffer -Resolved $r)) ("api-key: $($state.Name) shows no window offer even with a check passed in")
+    $s = Seams-For-Old
+    $r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveYes -Request $throwingRequest -UpdateSeams (Install-Seams $s)
+    $report = Get-FastLlmReinstallCliReport -Result $r
+    Check ($r.status -ceq 'refused' -and $r.step -ceq 'decision' -and $r.reason -ceq 'api-key-on' -and $s.Order.Count -eq 0 -and $script:keyNetworkCalls -eq 0 -and (Test-Path -LiteralPath (RecordFolder $e))) ("api-key: $($state.Name) installs nothing and keeps the record")
+    Check ($report.exitCode -eq 3 -and $report.text -ceq ('Reinstall refused: ' + $keyText) -and (Get-FastLlmReinstallReasonText 'api-key-on') -ceq $keyText) ("api-key: $($state.Name) update -Previous prints the approved text and exits 3")
+    Check ((Format-FastLlmUiReinstallResult -Result $r -To $old) -ceq ('Reinstall not done: ' + $keyText)) ("api-key: $($state.Name) the window shows the same text on a refused click")
+}
+# Key off, and never keyed: identical to a decision made without this rule.
+foreach ($unchanged in @(@{ Name = 'key off'; Json = '{"apiKey":"off"}' }, @{ Name = 'never keyed'; Json = $null })) {
+    $e = New-ReinstallEnv
+    if ($null -ne $unchanged.Json) { Set-Content -LiteralPath (Join-Path $e.Install 'settings.json') -Value $unchanged.Json }
+    $req = New-ReinstallRequest
+    $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request
+    Check ($r.decision -ceq 'eligible' -and $r.reason -ceq 'eligible' -and $r.target -ceq $old -and $r.installed -ceq $cur -and $r.latest.version -ceq $old -and $req.Urls.Count -eq 2 -and @($r.PSObject.Properties.Name).Count -eq 5) ("api-key: $($unchanged.Name) decides exactly as before: eligible, same fields, two requests")
+    $e = New-ReinstallEnv
+    if ($null -ne $unchanged.Json) { Set-Content -LiteralPath (Join-Path $e.Install 'settings.json') -Value $unchanged.Json }
+    $req = New-ReinstallRequest
+    $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $req.Request -OfferOnly
+    Check ($r.decision -ceq 'eligible' -and $null -eq $r.latest -and $req.Urls.Count -eq 1 -and $null -ne (Get-FastLlmUiReinstallOffer -Resolved $r)) ("api-key: $($unchanged.Name) still gets the window offer")
+    $s = Seams-For-Old
+    $r = Invoke-FastLlmReinstallPrevious -InstallRoot $e.Install -AppRoot $e.App -Approve $approveYes -Request (New-ReinstallRequest).Request -UpdateSeams (Install-Seams $s)
+    $report = Get-FastLlmReinstallCliReport -Result $r
+    Check ($r.status -ceq 'installed' -and $report.exitCode -eq 0 -and $report.text -ceq "FastLLM $old is reinstalled. Close and reopen FastLLM.") ("api-key: $($unchanged.Name) still reinstalls, with the same CLI text and exit code")
+    $e = New-ReinstallEnv -WithRecord $false
+    if ($null -ne $unchanged.Json) { Set-Content -LiteralPath (Join-Path $e.Install 'settings.json') -Value $unchanged.Json }
+    $r = Resolve-FastLlmReinstall -InstallRoot $e.Install -AppRoot $e.App -Request $throwingRequest
+    Check ($r.reason -ceq 'no-previous-record') ("api-key: $($unchanged.Name) keeps the other local refusals' own reasons")
+}
+
 # Update checks turned off: no store request, and the explicit action is refused (a newer release cannot be ruled out).
 $e = New-ReinstallEnv
 Set-FastLlmUpdateSettings -InstallRoot $e.Install -UpdateCheck 'off'
