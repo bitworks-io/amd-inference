@@ -1556,14 +1556,13 @@ function Invoke-FastLlmSupervisedServer {
             if ($null -ne $switchReadyResult) { Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'switch-result' -Fields { Get-FastLlmRunLogSwitchResultFields -Result $switchReadyResult -FailureCode $switchReadyCode } }
         }
         if ($state.recipe) {
-            # profile, requestedContextSize and backend are additive: ids and numbers only. Start at sign-in reads them to build its saved request
+            # profile and requestedContextSize are additive: ids and numbers only. Start at sign-in reads them to build its saved request
             # (the recovery reader ignores them). They are omitted when the plan does not carry them.
             $lastReady = [ordered]@{
                 kind='api-smoke-only';hardwareFingerprint=$Plan.hardwareFingerprint;modelId=$Plan.model.id;modelSha256=$Plan.model.sha256;catalogSha256=$state.recipe.catalogSha256
             }
             if ($Plan.PSObject.Properties['profile'] -and $Plan.profile) { $lastReady.profile = [string]$Plan.profile }
             if ($Plan.PSObject.Properties['requestedContextSize'] -and $null -ne $Plan.requestedContextSize) { $lastReady.requestedContextSize = [int]$Plan.requestedContextSize }
-            if ($state.recipe.backend) { $lastReady.backend = [string]$state.recipe.backend }
             Write-FastLlmState -InstallRoot $InstallRoot -FileName ($Plan.hardwareFingerprint+'.last-ready.json') -State $lastReady
         }
         if ($null -ne $deviceIdentity) {
