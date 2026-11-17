@@ -43,6 +43,11 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 # Community text ends up in a signed file and in the window: bound it and refuse anything that is not plain text.
 SOURCE_AUTHOR_MAX = 80
 SOURCE_URL_MAX = 300
+# The link's host must not be able to spoof another site: plain ASCII domain names only (international names in xn-- form).
+SOURCE_HOST_MAX = 253
+SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+SOURCE_TLD_RE = re.compile(r"^(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]+)$")
+SOURCE_PORT_RE = re.compile(r"^[0-9]{1,5}$")
 
 
 class RecipeError(Exception):
@@ -64,12 +69,38 @@ def plain_text(value):
     return isinstance(value, str) and not any(unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in value)
 
 
+def plain_ascii_host(url):
+    """True when the https:// URL is printable ASCII and its authority is a plain domain name with an optional port."""
+    if not all(0x21 <= ord(ch) <= 0x7E for ch in url):
+        return False
+    authority = re.split(r"[/?#]", url[len("https://"):], maxsplit=1)[0]
+    if "@" in authority:
+        return False
+    host, sep, port = authority.partition(":")
+    if sep and not (SOURCE_PORT_RE.match(port) and 1 <= int(port) <= 65535):
+        return False
+    labels = host.split(".")
+    if len(labels) < 2 or len(host) > SOURCE_HOST_MAX or not all(SOURCE_LABEL_RE.match(label) for label in labels):
+        return False
+    if not SOURCE_TLD_RE.match(labels[-1]):
+        return False
+    for label in labels:
+        if label.lower().startswith("xn--"):
+            try:
+                label[4:].encode("ascii").decode("punycode")
+            except UnicodeError:
+                return False
+    return True
+
+
 def check_source_text(rid, source):
     author, url = source.get("author"), source.get("url")
     if not plain_text(author) or len(author) > SOURCE_AUTHOR_MAX:
         raise RecipeError(f"{rid}: source.author must be plain text of at most {SOURCE_AUTHOR_MAX} characters")
     if not plain_text(url) or len(url) > SOURCE_URL_MAX or not re.match(r"^https://[^/\s?#]+", url) or re.search(r"\s", url):
         raise RecipeError(f"{rid}: source.url must be an https:// link of at most {SOURCE_URL_MAX} characters with no control characters or spaces")
+    if not plain_ascii_host(url):
+        raise RecipeError(f"{rid}: source.url host must be a plain ASCII domain name (an international name in its xn-- form), with no user name, IP address or non-ASCII characters")
 
 
 def positive(value):
