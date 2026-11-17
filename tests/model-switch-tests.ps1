@@ -141,6 +141,8 @@ $savedWriteState=& $module { (Get-Command Write-FastLlmState).ScriptBlock }
         return $true
     }
     function script:Get-FastLlmHardware {
+        # A seam for the picker: with it set, any call to the live inventory path throws (the picker must never take one).
+        if ($script:switchTest.ContainsKey('hardwareForbidden') -and $script:switchTest['hardwareForbidden']) { throw 'live hardware inventory was called' }
         $script:switchTest.events.Add('inventory')
         $world=$script:switchTest.world
         # What the status document says, and whether the operation lock is free, at the moment a (re)start takes its inventory.
@@ -1162,6 +1164,11 @@ try {
     function Write-BasisFor($World,$Hardware,[string]$RunId,$PlanOptions=@{ Profile='balanced' }) { return (& $module { param($I,$R,$H,$O) Write-FastLlmSwitchBasis -InstallRoot $I -RunId $R -Hardware $H -PlanOptions $O } $World.root $RunId $Hardware $PlanOptions) }
     Check ((Write-BasisFor $pickerWorld $validHardware $pickerRunId) -eq $true) 'picker: setup, the current run saved the reading its plan was built from (20000 MiB free)'
     $pickerStatus=New-PickerStatus $pickerWorld $pickerRunId
+    # The picker never calls the live inventory path: with a seam that throws if it is called, every verdict is unchanged.
+    $st.hardwareForbidden=$true
+    $forbiddenRows=Get-PickerRows $pickerWorld $pickerStatus
+    $st.hardwareForbidden=$false
+    Check ((@($forbiddenRows | ForEach-Object { [string]$_.id + '=' + [string]$_.state }) -join ',') -ceq 'model-a=current,model-b=fits,model-c=not-installed,model-d=refused,model-e=refused,model-f=refused,model-g=check-at-switch,model-h=does-not-fit') 'picker rows: with the live inventory path made to throw, the verdicts are the same (the picker never calls it)'
     $st.planCalls.Clear();$st.events.Clear()
     $rows=Get-PickerRows $pickerWorld $pickerStatus
     $catalogIds=@((Read-FastLlmJson -Path $pickerWorld.path).models | ForEach-Object { [string]$_.id })

@@ -217,6 +217,11 @@ try {
         $script:mockPlanThinkingBound = $PSBoundParameters.ContainsKey('Thinking')
         $script:mockPlanChatPage = $ChatPage
         $script:mockPlanChatPageBound = $PSBoundParameters.ContainsKey('ChatPage')
+        if ($script:throwPlanFit) {
+            if ($script:throwPlanFit -ceq 'model') { $fitFailure = New-Object System.InvalidOperationException("Requested model 'some-model' does not fit the estimated current free-memory budget. No other model was substituted."); $fitFailure.Data['FastLlmFailureCode'] = 'model-does-not-fit' }
+            else { $fitFailure = New-Object System.InvalidOperationException('No catalog profile fits the currently free AMD VRAM (100 MiB across a supported placement). Close GPU-heavy applications or select different hardware.'); $fitFailure.Data['FastLlmFailureCode'] = 'no-profile-fits' }
+            throw $fitFailure
+        }
         if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         if ($script:planMode -ceq 'hip-missing' -and -not [string]$ModelId) {
             if ($ResolveFallback) {
@@ -267,6 +272,7 @@ try {
     $script:throwServer = $false
     $script:throwPlanChanged = $false
     $script:throwPlan = $false
+    $script:throwPlanFit = ''
     $script:serverMovesStatus = $false
     $script:serverIdleStop = $false
     $script:serverSwitchesTo = ''
@@ -470,6 +476,7 @@ try {
         sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
         modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
         sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:throwPlanFit = ''
     $script:throwServer = $true
     $failed = $false
     $script:mockBarPolicy = $null
@@ -520,8 +527,26 @@ try {
     Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $script:mockStateWrites.Count -eq 2 -and $failedStatus.phase -ceq 'failed' -and $failedStatus.failureCode -ceq 'hip-device-not-found' -and $failedStatus.runId -ceq $script:mockStateWrites[0].runId -and $failedStatus.action -ceq 'start') 'A background failure before the supervisor must rewrite the preparing status to failed with the typed failure code.'
     $typedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($typedOwner.failureCode -ceq 'hip-device-not-found' -and [string]$typedOwner.failureReason -like 'hip-device-not-found:*') 'The background host record must keep the typed failure code (and its bounded message), not only the reason.'
+    # A plan that does not fit records its specific code and the existing message (bounded, one line), where a non-plan worker failure stays generic.
+    $fitCases = @(
+        @{ Id='51515151515151515151515151515151'; Mode='model'; Code='model-does-not-fit'; Text="Requested model 'some-model' does not fit the estimated current free-memory budget. No other model was substituted." },
+        @{ Id='dededededededededededededededede'; Mode='none'; Code='no-profile-fits'; Text='No catalog profile fits the currently free AMD VRAM (100 MiB across a supported placement). Close GPU-heavy applications or select different hardware.' })
+    foreach ($fitCase in $fitCases) {
+        $script:workerRequestId = $fitCase.Id
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+            sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+        $script:mockStateWrites.Clear(); $script:mockServerStarts = 0; $script:throwServer = $false; $script:throwPlanFit = $fitCase.Mode
+        try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+        $script:throwPlanFit = ''
+        $fitOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+        $fitStatus = $script:mockStateWrites[$script:mockStateWrites.Count - 1]
+        Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $fitOwner.phase -ceq 'failed' -and $fitOwner.failureCode -ceq $fitCase.Code -and [string]$fitOwner.failureReason -ceq $fitCase.Text -and $fitStatus.failureCode -ceq $fitCase.Code) ("A plan failure ($($fitCase.Code)) records that code and its existing message in the host record and the failed status.")
+    }
     # A supervisor that already moved the status on is not overwritten.
-    $script:workerRequestId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+    $script:workerRequestId = 'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9'
     Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
         sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
