@@ -620,6 +620,42 @@ Assert-True -Condition ($dryRunInstallExitCode -ne 0) -Message 'install rejects 
 Assert-True -Condition ((($dryRunInstallOutput | Out-String) -match '(?i)Use plan|non-mutating')) -Message 'install -DryRun directs users to the non-mutating plan action'
 Assert-True -Condition (-not (Test-Path -LiteralPath $dryRunInstallRoot)) -Message 'rejected install -DryRun creates no install state'
 
+# ---- the planner's two "does not fit" refusals carry a typed code (FastLlmFailureCode) next to a message that is unchanged ----
+$fitMessageModel = "Requested model 'qwen3.5-4b-iq4-xs' does not fit the estimated current free-memory budget. No other model was substituted."
+$fitMessageNone = 'No catalog profile fits the currently free AMD VRAM (100 MiB across a supported placement). Close GPU-heavy applications or select different hardware.'
+$tinyHardware = Read-FastLlmJson -Path (Join-Path $fixtureRoot 'amd-4gb.json')
+$tinyHardware.adapters[0].freeVramMiB = 100
+$fitFailureExplicit = $null
+try { Get-FastLlmPlan -Hardware $tinyHardware -CatalogPath $catalogPath -Profile balanced -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'qwen3.5-4b-iq4-xs' | Out-Null } catch { $fitFailureExplicit = $_.Exception }
+Assert-True -Condition ($null -ne $fitFailureExplicit -and [string] $fitFailureExplicit.Data['FastLlmFailureCode'] -ceq 'model-does-not-fit') -Message 'a requested model that does not fit carries the typed code model-does-not-fit'
+Assert-True -Condition ($null -ne $fitFailureExplicit -and [string] $fitFailureExplicit.Message -ceq $fitMessageModel) -Message 'the does-not-fit message is byte-identical to the one before the code was added (no code prefix)'
+$fitFailureNone = $null
+try { Get-FastLlmPlan -Hardware $tinyHardware -CatalogPath $catalogPath -Profile balanced -InstallRoot (Join-Path $projectRoot '.test-install') | Out-Null } catch { $fitFailureNone = $_.Exception }
+Assert-True -Condition ($null -ne $fitFailureNone -and [string] $fitFailureNone.Data['FastLlmFailureCode'] -ceq 'no-profile-fits') -Message 'an automatic pick with nothing that fits carries the typed code no-profile-fits'
+Assert-True -Condition ($null -ne $fitFailureNone -and [string] $fitFailureNone.Message -ceq $fitMessageNone) -Message 'the no-profile-fits message is byte-identical to the one before the code was added (no code prefix)'
+$otherFailure = $null
+try { Get-FastLlmPlan -Hardware $tinyHardware -CatalogPath $catalogPath -Profile balanced -InstallRoot (Join-Path $projectRoot '.test-install') -ModelId 'no-such-model' | Out-Null } catch { $otherFailure = $_.Exception }
+Assert-True -Condition ($null -ne $otherFailure -and -not $otherFailure.Data.Contains('FastLlmFailureCode')) -Message 'an unknown model id is not given a does-not-fit code'
+# The CLI plan output for the same fixtures is exactly what it was (the text of the refusal, with no code in front of it).
+$cliFitRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fast-llm-fit-cli-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $cliFitRoot -Force | Out-Null
+$cliFitHardware = Join-Path $cliFitRoot 'tiny.json'
+[IO.File]::WriteAllText($cliFitHardware, (ConvertTo-Json -InputObject $tinyHardware -Depth 6), (New-Object Text.UTF8Encoding($false)))
+$previousErrorActionPreferenceFit = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    $cliFitModel = (& $currentPowerShell -NoLogo -NoProfile -File $launcherPath plan -HardwareFile $cliFitHardware -ModelId 'qwen3.5-4b-iq4-xs' -InstallRoot (Join-Path $cliFitRoot 'install') 2>&1 | Out-String)
+    $cliFitNone = (& $currentPowerShell -NoLogo -NoProfile -File $launcherPath plan -HardwareFile $cliFitHardware -InstallRoot (Join-Path $cliFitRoot 'install') 2>&1 | Out-String)
+}
+finally { $ErrorActionPreference = $previousErrorActionPreferenceFit }
+$cliFitModel = [regex]::Replace($cliFitModel, '\x1b\[[0-9;]*m', '')
+$cliFitNone = [regex]::Replace($cliFitNone, '\x1b\[[0-9;]*m', '')
+Assert-True -Condition ($cliFitModel.Contains($fitMessageModel) -and -not $cliFitModel.Contains('model-does-not-fit')) -Message 'plan on a does-not-fit fixture prints the unchanged requested-model refusal'
+Assert-True -Condition ($cliFitNone.Contains($fitMessageNone) -and -not $cliFitNone.Contains('no-profile-fits')) -Message 'plan on a nothing-fits fixture prints the unchanged no-profile refusal'
+[IO.File]::Delete($cliFitHardware)
+if (Test-Path -LiteralPath (Join-Path $cliFitRoot 'install')) { [IO.Directory]::Delete((Join-Path $cliFitRoot 'install'), $true) }
+[IO.Directory]::Delete($cliFitRoot, $false)
+
 Write-Host "`n$script:passed passed; $script:failed failed"
 if ($script:failed -gt 0) {
     exit 1

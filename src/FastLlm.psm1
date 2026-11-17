@@ -1370,9 +1370,16 @@ function Get-FastLlmPlan {
     if (-not $selected) {
         # No candidate had a measured row at all: the option is refused with the one plain reason. A row that exists but does not fit is a fit refusal below.
         if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) { throw $script:FastLlmServingProfileNotMeasured }
-        if ($ModelId) { throw "Requested model '$ModelId' does not fit the estimated current free-memory budget. No other model was substituted." }
+        # The two refusals keep their text exactly (a typed failure would put the code in front of it); the code travels in Data['FastLlmFailureCode'].
+        if ($ModelId) {
+            $doesNotFit = New-Object -TypeName System.InvalidOperationException -ArgumentList "Requested model '$ModelId' does not fit the estimated current free-memory budget. No other model was substituted."
+            $doesNotFit.Data['FastLlmFailureCode'] = 'model-does-not-fit'
+            throw $doesNotFit
+        }
         $maximumAvailableCapacity = [int64] (($placements | Measure-Object -Property selectionCapacity -Maximum).Maximum)
-        throw "No catalog profile fits the currently free AMD VRAM ($maximumAvailableCapacity MiB across a supported placement). Close GPU-heavy applications or select different hardware."
+        $noProfileFits = New-Object -TypeName System.InvalidOperationException -ArgumentList "No catalog profile fits the currently free AMD VRAM ($maximumAvailableCapacity MiB across a supported placement). Close GPU-heavy applications or select different hardware."
+        $noProfileFits.Data['FastLlmFailureCode'] = 'no-profile-fits'
+        throw $noProfileFits
     }
 
     # Copy before narrowing context: the immutable artifact/provenance remains unchanged.
