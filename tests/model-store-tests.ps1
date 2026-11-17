@@ -125,6 +125,37 @@ try {
     Check ($listed.inUse -eq $true -and $listed.inUseReason -eq 'serving') 'list-installed-rows: the served model is marked in use'
     Release $lockHandle
 
+    # N4: while the current run's status says a switch is pending, the target of that switch is in use too (it may not be removed mid-switch)
+    $rsw=New-Root @($idA,$idB)
+    $lockHandle=Enter-FastLlmOperation -InstallRoot $rsw
+    [void]$holders.Add($lockHandle)
+    $switchRun=[Guid]::NewGuid().ToString('N')
+    Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='ready';modelId=$idA;switchAllowed=$true;'switch'=[ordered]@{from=$idA;to=$idB;pending=$true;result=$null;failureCode=$null}})
+    $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
+    $swA=@($swRows | Where-Object { $_.id -eq $idA })[0]; $swB=@($swRows | Where-Object { $_.id -eq $idB })[0]
+    Check ($swA.inUse -eq $true -and $swA.inUseReason -eq 'serving' -and $swB.inUse -eq $true -and $swB.inUseReason -eq 'switch-target') 'switch-target: while a switch is pending the model it switches to is in use (switch-target), the served one stays serving'
+    $res=Remove-Model $rsw $idB
+    Check ($res.removed -eq $false -and $res.reason -eq 'switch-target' -and (Test-Path -LiteralPath (ModelPath $rsw $idB))) 'switch-target: removing the target of a pending switch is refused with switch-target'
+    Check ((Get-FastLlmModelRemovalRefusalText -Reason 'switch-target') -like '*switching to this model*Nothing was removed.') 'switch-target: the refusal has its own plain sentence'
+    Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='ready';modelId=$idB;switchAllowed=$true;'switch'=[ordered]@{from=$idA;to=$idB;result='ok';failureCode=$null}})
+    $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
+    $swA=@($swRows | Where-Object { $_.id -eq $idA })[0]
+    Check ($swA.inUse -eq $false -and $swA.inUseReason -eq '') 'switch-target: a switch that is not pending protects nothing (the model it came from is free again)'
+    Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='ready';modelId=$idA;'switch'=[ordered]@{from=$idA;to=$idB;pending=$false;result=$null;failureCode=$null}})
+    $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
+    Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false) 'switch-target: pending = false protects nothing'
+    Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='ready';modelId=$idA})
+    $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
+    Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false -and @($swRows | Where-Object { $_.id -eq $idA })[0].inUseReason -eq 'serving' -and ((@($swRows[0].PSObject.Properties.Name) -join ',') -eq 'id,file,sizeBytes,present,sizeMatches,consent,inUse,inUseReason')) 'switch-target: with no switch block the rows are what they were'
+    Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='stopped';modelId=$idA;'switch'='not-a-block'})
+    $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
+    Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false) 'switch-target: a switch value that is not a block protects nothing'
+    Release $lockHandle
+    $rsw2=New-Root @($idA,$idB)
+    Write-FastLlmState -InstallRoot $rsw2 -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='stopped';stopReason='switch';modelId=$idA;'switch'=[ordered]@{from=$idA;to=$idB;pending=$true;result=$null;failureCode=$null}})
+    $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw2 -CatalogPath $smallCatalog)
+    Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false) 'switch-target: a pending document with no live supervisor (a crash) is stale and protects nothing'
+
     # operation-in-progress: the lock is held, status says nothing about this model
     $ro=New-Root @($idA)
     $lockHandle=Enter-FastLlmOperation -InstallRoot $ro
