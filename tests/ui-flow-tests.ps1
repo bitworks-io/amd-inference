@@ -1304,7 +1304,180 @@ Check ((Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' (SwitchBlock
 $hostileText=Get-FastLlmUiSwitchStatusText -Status (SwitchStatus 'ready' ([pscustomobject]@{from="model a`nINJECTED";to='<b>model</b>';result='failed-restored';failureCode='Free text, not a code!'}))
 Check ($hostileText -ceq 'Could not start the other model (an unnamed reason). The previous model was started again and is running.') 'switch-text: a value that is not an id or a code is never shown'
 $flowText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFlow.ps1'))
-Check ($flowText -notmatch "Request-FastLlmSwitch|AllowSwitch|SwitchAllowed|'switch-'") 'switch-text: the window helpers only describe a switch; nothing here asks for one (no picker yet)'
+$flowAst=[System.Management.Automation.Language.Parser]::ParseInput($flowText,[ref]$null,[ref]$null)
+$requestCalls=@($flowAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Request-FastLlmSwitch' },$true))
+$requestOwner=@($requestCalls | ForEach-Object { $parent=$_.Parent; while($parent -and $parent -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$parent=$parent.Parent}; if($parent){$parent.Name} })
+Check ($requestOwner.Count -eq 1 -and $requestOwner[0] -ceq 'Invoke-FastLlmUiSwitchPick' -and $flowText -notmatch "'switch-'") 'switch-text: the switch text helpers only describe a switch; the one place that asks for one is the picker click function (Invoke-FastLlmUiSwitchPick)'
+
+# ---- model switch window: the settings opt-in, the start arguments and the background request (off is what it always was) ----
+$swRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-sw-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $swRoot | Out-Null
+Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $false -and (Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $false) 'allow-switch setting: off when there is no settings file'
+Write-FastLlmUiSettings -InstallRoot $swRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on' })
+Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $false -and -not ([IO.File]::ReadAllText((Join-Path $swRoot 'settings.json'))).Contains('allowSwitch')) 'allow-switch setting: a write that does not carry it adds no key'
+$swBefore=[IO.File]::ReadAllText((Join-Path $swRoot 'settings.json'))
+Write-FastLlmUiSettings -InstallRoot $swRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; allowSwitch = $true })
+Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $true -and (Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $true -and (Read-FastLlmUiSettings -InstallRoot $swRoot).vulkanBarMitigation -ceq 'on') 'allow-switch setting: on round-trips and the other keys stay'
+Write-FastLlmUiSettings -InstallRoot $swRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on' })
+Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $true) 'allow-switch setting: a write that omits it keeps it'
+Write-FastLlmUiSettings -InstallRoot $swRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; allowSwitch = $false })
+Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $false -and [IO.File]::ReadAllText((Join-Path $swRoot 'settings.json')) -ceq $swBefore) 'allow-switch setting: turning it off removes the key, so settings.json is what it was before it was turned on'
+$swBad=$false
+try { Write-FastLlmUiSettings -InstallRoot $swRoot -Settings ([pscustomobject]@{ vulkanBarMitigation = 'on'; allowSwitch = 'yes' }) } catch { $swBad=$true }
+Check $swBad 'allow-switch setting: a value that is not true or false is refused'
+foreach ($stored in @('"true"','1','"on"','null','{"x":1}','[true]','false')) {
+    [IO.File]::WriteAllText((Join-Path $swRoot 'settings.json'),('{"vulkanBarMitigation":"auto","allowSwitch":'+$stored+'}'),(New-Object Text.UTF8Encoding($false)))
+    Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $false) "allow-switch setting: a stored $stored does not turn it on (only a JSON true does)"
+}
+[IO.File]::WriteAllText((Join-Path $swRoot 'settings.json'),'{"vulkanBarMitigation":"auto","allowSwitch":true,"somethingElse":5}',(New-Object Text.UTF8Encoding($false)))
+Check ((Read-FastLlmUiSettings -InstallRoot $swRoot).allowSwitch -eq $true) 'allow-switch setting: a stored JSON true turns it on'
+Set-FastLlmUiAllowSwitch -InstallRoot $swRoot -Value $false
+Check ((Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $false -and ([IO.File]::ReadAllText((Join-Path $swRoot 'settings.json'))).Contains('somethingElse')) 'allow-switch setting: Set-FastLlmUiAllowSwitch turns it off and keeps unknown keys'
+Set-FastLlmUiAllowSwitch -InstallRoot $swRoot -Value $true
+Check ((Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $true) 'allow-switch setting: Set-FastLlmUiAllowSwitch turns it on'
+[IO.File]::WriteAllText((Join-Path $swRoot 'settings.json'),'{not json',(New-Object Text.UTF8Encoding($false)))
+Check ((Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $false) 'allow-switch setting: an unreadable settings file means off'
+Remove-Item -LiteralPath $swRoot -Recurse -Force
+Check (@(Get-FastLlmUiSwitchArguments -AllowSwitch $false).Count -eq 0 -and (@(Get-FastLlmUiSwitchArguments -AllowSwitch $true) -join ' ') -ceq '-SwitchAllowed') 'allow-switch start: the foreground start gets -SwitchAllowed only when the setting is on; off adds no argument at all'
+$uiSwitchStart=@('start','-Unattended','-VulkanBarMitigation','auto')+@(Get-FastLlmUiSwitchArguments -AllowSwitch $false)
+Check (($uiSwitchStart -join '|') -ceq 'start|-Unattended|-VulkanBarMitigation|auto') 'allow-switch start: with the setting off the foreground start arguments are exactly what they always were'
+Check (((@('start','-Unattended','-VulkanBarMitigation','auto')+@(Get-FastLlmUiSwitchArguments -AllowSwitch $true)) -join '|') -ceq 'start|-Unattended|-VulkanBarMitigation|auto|-SwitchAllowed') 'allow-switch start: with the setting on the foreground start ends with -SwitchAllowed'
+$servingLine=@($uiText -split "`n" | Where-Object { $_.Contains("LaunchStep 'serving'") })
+Check ($servingLine.Count -eq 1 -and $servingLine[0].Contains('+@(Get-FastLlmUiSwitchArguments -AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot))') -and $servingLine[0].TrimEnd().EndsWith(';return')) 'allow-switch start: the one foreground start site (the serving step) appends the switch argument read from the launch-root setting'
+Check (@([regex]::Matches($uiText,"'start'")).Count -eq 1) 'allow-switch start: the window starts the server from one place only, so there is no second foreground launch to cover'
+$bgOff=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})
+$bgOffExplicit=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181}) -AllowSwitch $false
+$bgOn=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181}) -AllowSwitch $true
+Check ((@($bgOff.PSObject.Properties.Name) -join ',') -ceq 'sourceRoot,installRoot,profile,modelId,contextSize,vulkanBarMitigation,serverPort,thinking,chatPage,idleStopMinutes' -and (ConvertTo-Json -InputObject $bgOff -Compress) -ceq (ConvertTo-Json -InputObject $bgOffExplicit -Compress)) 'allow-switch background: with the setting off the request has exactly the fields it always had'
+Check ((@($bgOn.PSObject.Properties.Name) -join ',') -ceq 'sourceRoot,installRoot,profile,modelId,contextSize,vulkanBarMitigation,serverPort,thinking,chatPage,idleStopMinutes,allowSwitch' -and $bgOn.allowSwitch -eq $true) 'allow-switch background: with the setting on the request carries allowSwitch = true (and nothing else changes)'
+Check ($uiText.Contains('-AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot)') -and $uiText.Contains('-SwitchAllowed:$SwitchAllowed') -and $uiText.Contains('$Request.idleStopMinutes ([bool]($Request.PSObject.Properties[''allowSwitch''] -and $Request.allowSwitch))')) 'allow-switch background: the window reads the setting for the request and hands it to Start-FastLlmBackgroundHost as -SwitchAllowed'
+$noteBefore=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;allowSwitch=$false}
+$noteAfter=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;allowSwitch=$true}
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBefore -After $noteAfter) -ceq 'The new switching setting applies at the next start.' -and (Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $noteBefore -After $noteAfter) -ceq 'Settings saved.') 'allow-switch note: while a run is going the new switching setting is said to apply at the next start'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'}) -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'})) -ceq 'Settings saved.') 'allow-switch note: a caller that has no such value means no change'
+Check ($uiText.Contains('Allow switching models while FastLLM runs') -and $uiText.Contains('Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot')) 'allow-switch dialog: Settings has the checkbox "Allow switching models while FastLLM runs", saved under the launch root'
+Check ((SettingsTop 'switchBox') -ge ((SettingsTop 'idleHelp')+(SettingsHeight 'idleHelp')) -and (SettingsTop 'saveButton') -ge ((SettingsTop 'switchHelp')+(SettingsHeight 'switchHelp')) -and (SettingsTop 'switchHelp') -ge ((SettingsTop 'switchBox')+(SettingsHeight 'switchBox'))) 'allow-switch dialog: the checkbox and its help line sit below the idle stop row and above the buttons'
+$dialogHeightNow=[int][regex]::Match($uiText,"\`$dialog\.Text='FastLLM settings';\`$dialog\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)").Groups[1].Value
+Check ($dialogHeightNow -ge ((SettingsTop 'saveButton')+(SettingsHeight 'saveButton')+40)) 'allow-switch dialog: the dialog is tall enough for the buttons below the new row'
+
+# ---- N3: the gap between two runs of a switch, and the switch line under a serving status ----
+function SwStatus([string]$Phase,$Block,[bool]$SwitchAllowed=$true,[bool]$Active=$true,[string]$StopReason=''){
+    $document=[ordered]@{ runId=('a'*32); phase=$Phase; active=$Active; modelId='model-a' }
+    if($SwitchAllowed){ $document.switchAllowed=$true }
+    if($StopReason){ $document.stopReason=$StopReason }
+    if($null -ne $Block){ $document['switch']=$Block }
+    return [pscustomobject]$document
+}
+$gapStatus=SwStatus 'stopped' (SwitchBlock '' $null $true) $true $true 'switch'
+$gap=Get-FastLlmUiSwitchWindowState -Status $gapStatus -SettingOn $true
+Check ($gap.gap -eq $true -and $gap.statusText -ceq 'Switching to model-b.' -and $gap.statusText -ceq (Get-FastLlmUiSwitchStatusText -Status $gapStatus)) 'switch window: between the two runs (stopped, switch pending) the window says "Switching to model-b." with the existing text'
+Check ($gap.stopEnabled -eq $true -and $gap.startEnabled -eq $false -and $gap.switchButtonEnabled -eq $false -and $gap.line -ceq '') 'switch window: in the gap Stop stays enabled (stop always wins), Start and Switch model are disabled'
+$gapFailed=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'failed' (SwitchBlock '' 'self-test-failed' $true)) -SettingOn $true
+Check ($gapFailed.gap -eq $true -and $gapFailed.statusText -ceq 'Could not start model-b (self-test-failed). Starting model-a again.' -and $gapFailed.stopEnabled -eq $true -and $gapFailed.startEnabled -eq $false -and $gapFailed.switchButtonEnabled -eq $false) 'switch window: the failed target between the runs shows its failure and that the previous model is started again, with the same buttons'
+foreach ($notGap in @(
+    @{ n='a stopped run whose switch is final'; s=(SwStatus 'stopped' (SwitchBlock 'ok' $null)) },
+    @{ n='a stopped run with no switch block'; s=(SwStatus 'stopped' $null) },
+    @{ n='a loading target (its own document says pending)'; s=(SwStatus 'loading' (SwitchBlock '' $null $true)) },
+    @{ n='a ready run with a pending switch'; s=(SwStatus 'ready' (SwitchBlock '' $null $true)) },
+    @{ n='a failed restore'; s=(SwStatus 'failed' (SwitchBlock 'failed-stopped' 'port-in-use')) })) {
+    $result=Get-FastLlmUiSwitchWindowState -Status $notGap.s -SettingOn $true
+    Check ($result.gap -eq $false -and $result.statusText -ceq '' -and $result.startEnabled -eq $true -and $result.stopEnabled -eq $false) "switch window: $($notGap.n) is not the gap (no gap text, no extra Stop, Start unchanged)"
+}
+$line=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' (SwitchBlock '' $null $true)) -SettingOn $true
+Check ($line.line -ceq 'Switching to model-b when the requests in progress have finished.' -and $line.switchButtonEnabled -eq $false -and $line.switchButtonReason -ceq 'A model switch is already under way.') 'switch window: ready with a switch pending shows the waiting line and no second switch can be asked for'
+$lineOk=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' (SwitchBlock 'ok' $null)) -SettingOn $true
+Check ($lineOk.line -ceq 'Switched to model-b.' -and $lineOk.switchButtonEnabled -eq $true -and $lineOk.switchButtonReason -ceq '') 'switch window: ready with a switch that went through shows "Switched to model-b." and Switch model is enabled'
+$lineRefused=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' (SwitchBlock 'refused' 'switch-target-no-consent')) -SettingOn $true
+Check ($lineRefused.line -ceq 'Did not switch: the license of model-b has not been accepted on this PC. model-a keeps running.' -and $lineRefused.switchButtonEnabled -eq $true) 'switch window: a refused switch shows its refusal under the ready status'
+$lineBusy=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' (SwitchBlock 'refused-busy' $null)) -SettingOn $true
+Check ($lineBusy.line -ceq 'Did not switch to model-b: FastLLM was still answering requests. model-a keeps running.' -and $lineBusy.switchButtonEnabled -eq $true) 'switch window: a switch refused because FastLLM was busy says so, and the user can try again (no Force in the window)'
+$lineRestored=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' (SwitchBlock 'failed-restored' 'self-test-failed')) -SettingOn $true
+Check ($lineRestored.line -ceq 'Could not start model-b (self-test-failed). model-a was started again and is running.' -and $lineRestored.switchButtonEnabled -eq $true) 'switch window: a failed switch that was restored shows its failure under the ready status'
+$lineStopped=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'failed' (SwitchBlock 'failed-stopped' 'port-in-use')) -SettingOn $true
+Check ($lineStopped.line -ceq 'Could not start model-b (port-in-use), and model-a could not be started again. FastLLM is stopped.' -and $lineStopped.switchButtonEnabled -eq $false -and $lineStopped.gap -eq $false) 'switch window: a switch that failed with the restore failing too shows that FastLLM is stopped; nothing can be switched'
+$noBlock=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' $null) -SettingOn $true
+Check ($noBlock.line -ceq '' -and $noBlock.gap -eq $false -and $noBlock.switchButtonEnabled -eq $true) 'switch window: a ready run that allows switching and has no switch block shows no line (the text is unchanged) and Switch model is enabled'
+$noFlag=Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' (SwitchBlock 'ok' $null) $false) -SettingOn $true
+Check ($noFlag.line -ceq '' -and $noFlag.switchButtonEnabled -eq $false) 'switch window: a run that does not allow switching shows no switch line'
+Check ((Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' $null $false) -SettingOn $false).switchButtonReason -ceq 'Turn on ''Allow switching models'' in Settings; it applies from the next start.') 'switch window: with the setting off the button says to turn it on in Settings and that it applies from the next start'
+Check ((Get-FastLlmUiSwitchWindowState -Status (SwStatus 'ready' $null $false) -SettingOn $true).switchButtonReason -ceq 'This run was started before switching was turned on. Stop FastLLM and start it again to switch models.') 'switch window: with the setting on but a run that started without it, the button says to start again'
+Check ((Get-FastLlmUiSwitchWindowState -Status (SwStatus 'loading' $null) -SettingOn $true).switchButtonReason -ceq 'You can switch models once FastLLM is ready.' -and (Get-FastLlmUiSwitchWindowState -Status (SwStatus 'loading' $null) -SettingOn $true).switchButtonEnabled -eq $false) 'switch window: a run that is still loading cannot be switched yet'
+foreach ($none in @($null,[pscustomobject]@{phase='stopped';active=$false},(SwStatus 'ready' $null $true $false))) {
+    $idle=Get-FastLlmUiSwitchWindowState -Status $none -SettingOn $true
+    Check ($idle.switchButtonEnabled -eq $false -and $idle.switchButtonReason -ceq 'Start FastLLM to switch models.' -and $idle.gap -eq $false -and $idle.line -ceq '') 'switch window: with nothing running (or a run that is not alive) the button is disabled and says to start FastLLM'
+}
+Check ((Get-FastLlmUiSwitchWindowState -Status $null -SettingOn $false).switchButtonReason -ceq 'Turn on ''Allow switching models'' in Settings; it applies from the next start.') 'switch window: with nothing running and the setting off the reason is the Settings sentence'
+Check ((Get-FastLlmUiSwitchWindowState -Status ([pscustomobject]@{phase='ready';active=$true;switchAllowed=$true;'switch'='not-a-block'}) -SettingOn $true).line -ceq '') 'switch window: a switch value that is not a block gives no line and no error'
+
+# ---- the picker dialog's logic (the window only builds controls and wires events) ----
+$pickerRows=@(
+    [pscustomobject]@{ id='m-current'; displayName='Current 1B'; state='current'; reason='Running now' },
+    [pscustomobject]@{ id='m-fits'; displayName='Fits 2B'; state='fits'; reason='Fits (estimate from the free memory measured when the current model started; FastLLM checks again when it switches)' },
+    [pscustomobject]@{ id='m-nofit'; displayName='Big 70B'; state='does-not-fit'; reason='Does not fit (estimate from the free memory measured when the current model started)' },
+    [pscustomobject]@{ id='m-missing'; displayName='Missing 3B'; state='not-installed'; reason='Not installed' },
+    [pscustomobject]@{ id='m-refused'; displayName='Refused 4B'; state='refused'; reason='The license of the model ''m-refused'' has not been accepted on this PC. Install it first.' },
+    [pscustomobject]@{ id='m-check'; displayName='Check 5B'; state='check-at-switch'; reason='FastLLM can''t tell yet whether this fits; it checks when it switches.' })
+$pickerItems=@(Get-FastLlmUiSwitchPickerItems -Rows $pickerRows)
+Check ($pickerItems.Count -eq 6 -and (($pickerItems | ForEach-Object { [string]$_.id }) -join ',') -ceq 'm-current,m-fits,m-nofit,m-missing,m-refused,m-check') 'picker items: one item per row, in order'
+Check (($pickerItems | ForEach-Object { [string]$_.canSwitch }) -join ',' -ceq 'False,True,False,False,False,True') 'picker items: only fits and check-at-switch can be switched to'
+Check ($pickerItems[1].text -ceq 'Fits 2B  -  Fits (estimate from the free memory measured when the current model started; FastLLM checks again when it switches)' -and $pickerItems[3].text -ceq 'Missing 3B  -  Not installed') 'picker items: the text is the model name and the row''s own reason'
+Check ((Get-FastLlmUiSwitchPickerButtonState -Items $pickerItems -SelectedId 'm-fits').enabled -eq $true -and (Get-FastLlmUiSwitchPickerButtonState -Items $pickerItems -SelectedId 'm-check').enabled -eq $true) 'picker button: enabled for a fits row and a check-at-switch row'
+foreach ($disabledId in @('m-current','m-nofit','m-missing','m-refused','','nothing-like-it',$null)) {
+    Check ((Get-FastLlmUiSwitchPickerButtonState -Items $pickerItems -SelectedId $disabledId).enabled -eq $false) "picker button: disabled for '$disabledId'"
+}
+Check ((Get-FastLlmUiSwitchPickerButtonState -Items @() -SelectedId 'm-fits').enabled -eq $false) 'picker button: disabled with no items'
+$pickCalls=New-Object 'System.Collections.Generic.List[object]'
+$okRequest={ param($InstallRoot,$CatalogPath,$ModelId) $pickCalls.Add(@{ InstallRoot=$InstallRoot; CatalogPath=$CatalogPath; ModelId=$ModelId; Keys=(@($PSBoundParameters.Keys | Sort-Object) -join ',') }); Write-Host 'a status line meant for a console'; 'pipeline noise' }
+$pickOutput=@(Invoke-FastLlmUiSwitchPick -InstallRoot 'C:\FastLLM' -CatalogPath 'C:\app\config\catalog.json' -Items $pickerItems -ModelId 'm-fits' -Request $okRequest 6>&1)
+Check ($pickOutput.Count -eq 1 -and $pickOutput[0] -is [pscustomobject]) 'picker click: the function returns one result object; the request function''s console and pipeline output never leave it'
+$pickResult=$pickOutput[0]
+Check ($pickResult.ok -eq $true -and $pickResult.text -ceq 'Switch to Fits 2B requested. FastLLM finishes the requests in progress, stops the current model and starts the other one; this takes about one model load.') 'picker click: success says what was asked for in plain words'
+Check ($pickCalls.Count -eq 1 -and $pickCalls[0].InstallRoot -ceq 'C:\FastLLM' -and $pickCalls[0].CatalogPath -ceq 'C:\app\config\catalog.json' -and $pickCalls[0].ModelId -ceq 'm-fits' -and $pickCalls[0].Keys -ceq 'CatalogPath,InstallRoot,ModelId') 'picker click: the request is made with the install root, the verified catalog path and the model id, and nothing else (never Force)'
+$failRequest={ param($InstallRoot,$CatalogPath,$ModelId) throw (New-Object InvalidOperationException("The license of the model 'm-check' has not been accepted on this PC. Install it first. FastLLM did not switch.`r`nsecond line")) }
+$pickFail=Invoke-FastLlmUiSwitchPick -InstallRoot 'C:\FastLLM' -CatalogPath 'C:\c.json' -Items $pickerItems -ModelId 'm-check' -Request $failRequest
+Check ($pickFail.ok -eq $false -and $pickFail.text -ceq 'The license of the model ''m-check'' has not been accepted on this PC. Install it first. FastLLM did not switch.  second line') 'picker click: a refusal is shown with its message (one line), not thrown'
+$longRequest={ param($InstallRoot,$CatalogPath,$ModelId) throw (New-Object InvalidOperationException(('x'*1000))) }
+Check ((Invoke-FastLlmUiSwitchPick -InstallRoot 'C:\FastLLM' -CatalogPath 'C:\c.json' -Items $pickerItems -ModelId 'm-fits' -Request $longRequest).text.Length -le 400) 'picker click: a very long message is cut'
+$pickCalls.Clear()
+foreach ($blockedId in @('m-current','m-nofit','m-missing','m-refused','nothing-like-it','')) {
+    $blocked=Invoke-FastLlmUiSwitchPick -InstallRoot 'C:\FastLLM' -CatalogPath 'C:\c.json' -Items $pickerItems -ModelId $blockedId -Request $okRequest
+    Check ($blocked.ok -eq $false -and $blocked.text -ceq 'That model cannot be switched to from here.') "picker click: a row that cannot be switched to ('$blockedId') makes no request"
+}
+Check ($pickCalls.Count -eq 0) 'picker click: no request was made for any of them'
+$noServer=Invoke-FastLlmUiSwitchPick -InstallRoot (Join-Path ([IO.Path]::GetTempPath()) ('fastllm-none-'+[Guid]::NewGuid().ToString('N'))) -CatalogPath (Join-Path $root 'config/catalog.json') -Items $pickerItems -ModelId 'm-fits'
+Check ($noServer.ok -eq $false -and $noServer.text -like '*no ready FastLLM server*') 'picker click: with the real request function and no server running the message is shown in the dialog'
+$pickerModel=Get-FastLlmUiSwitchPickerModel -InstallRoot 'C:\x' -CatalogPath 'C:\c.json' -Status ([pscustomobject]@{}) -RowsProvider { param($InstallRoot,$CatalogPath,$Status) return $pickerRows }
+Check ($pickerModel.items.Count -eq 6 -and $pickerModel.message -ceq '') 'picker model: rows become items with no message'
+$pickerModelFail=Get-FastLlmUiSwitchPickerModel -InstallRoot 'C:\x' -CatalogPath 'C:\c.json' -Status ([pscustomobject]@{}) -RowsProvider { param($InstallRoot,$CatalogPath,$Status) throw (New-Object InvalidOperationException('catalog trouble')) }
+Check ($pickerModelFail.items.Count -eq 0 -and $pickerModelFail.message -ceq 'The model list could not be read: catalog trouble') 'picker model: a failure to compute the rows is shown as a message, not thrown'
+$swEmptyRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-sw-empty-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $swEmptyRoot 'models') -Force | Out-Null
+$realModel=Get-FastLlmUiSwitchPickerModel -InstallRoot $swEmptyRoot -CatalogPath (Join-Path $root 'config/catalog.json') -Status ([pscustomobject]@{ runId=('a'*32); phase='ready'; active=$true; modelId=[string]$catalog.models[0].id; switchAllowed=$true })
+Check ($realModel.message -ceq '' -and $realModel.items.Count -eq @($catalog.models).Count -and @($realModel.items | Where-Object { $_.canSwitch }).Count -eq 0 -and $realModel.items[0].text -like '*Running now') 'picker model: on the real catalog with nothing installed every model but the running one reads not installed, and nothing can be switched to'
+[IO.Directory]::Delete((Join-Path $swEmptyRoot 'models'))
+[IO.Directory]::Delete($swEmptyRoot)
+$catalogNames=@($catalog.models | ForEach-Object { Get-FastLlmModelDisplayName -Model $_ })
+$moduleRows=@(& (Get-Module FastLlm) { param($C,$R) Get-FastLlmSwitchPickerRows -InstallRoot $R -CatalogPath $C -Status ([pscustomobject]@{}) } (Join-Path $root 'config/catalog.json') (Join-Path ([IO.Path]::GetTempPath()) ('fastllm-none-'+[Guid]::NewGuid().ToString('N'))))
+Check ($moduleRows.Count -eq $catalogNames.Count -and ((@($moduleRows | ForEach-Object { [string]$_.displayName }) -join '|') -ceq ($catalogNames -join '|'))) 'picker rows: the display name the module gives every model is the one the window shows elsewhere (Get-FastLlmModelDisplayName)'
+
+# ---- the window script: thin wiring, rows computed once at open, nothing on the timer ----
+$pickerFn=Get-UiFunctionText 'ShowUiSwitchPicker'
+$pickerDispose=Test-NoDisposeInHandlers $pickerFn
+Check ($pickerDispose.handlers -ge 3 -and $pickerDispose.disposes -eq 0) 'picker dialog: no handler disposes anything (the dialog is disposed in its own finally)'
+Check ($pickerFn.Extent.Text.Contains('Get-FastLlmUiSwitchPickerModel') -and $pickerFn.Extent.Text.Contains('Invoke-FastLlmUiSwitchPick') -and $pickerFn.Extent.Text.Contains('Get-FastLlmUiSwitchPickerButtonState') -and -not $pickerFn.Extent.Text.Contains('Request-FastLlmSwitch') -and -not $pickerFn.Extent.Text.Contains('Get-FastLlmSwitchPickerRows')) 'picker dialog: the window function calls the UiFlow functions only (no request and no planner call of its own)'
+Check (-not $uiText.Contains('Request-FastLlmSwitch') -and -not $uiText.Contains('Get-FastLlmSwitchPickerRows') -and -not $uiText.Contains('Get-FastLlmSwitchPlanOptions')) 'picker dialog: fast-llm-ui.ps1 never names the request function, the rows function or the option helper'
+$modelCalls=@($uiAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Get-FastLlmUiSwitchPickerModel' },$true))
+$modelCallOwners=@($modelCalls | ForEach-Object { $parent=$_.Parent; while($parent -and $parent -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$parent=$parent.Parent}; if($parent){$parent.Name}else{'<script>'} })
+function Test-InsideHandler($Node){ $p=$Node.Parent; while($p){ if($p -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$p.Member.Value) -like 'Add_*'){return $true}; $p=$p.Parent }; return $false }
+$modelCallInHandler=@($modelCalls | Where-Object { Test-InsideHandler $_ })
+Check ($modelCalls.Count -eq 1 -and $modelCallOwners[0] -ceq 'ShowUiSwitchPicker' -and $modelCallInHandler.Count -eq 0) 'picker dialog: the rows are computed once, when the dialog opens (one call, in the open function, in no event handler and not on the timer)'
+Check ($pickerFn.Extent.Text -notmatch '\.Force|-Force|\bForce\b') 'picker dialog: there is no Force anywhere in the window''s picker (a busy refusal shows its text and the user tries again)'
+Check ($uiText.Contains("`$switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFailure `$_.Exception.Message}})")) 'picker dialog: the Switch model button opens the picker and shows any failure as the window''s other buttons do'
+Check ($uiText.Contains('Get-FastLlmUiSwitchWindowState') -and $uiText.Contains('$script:switchGap')) 'switch window: the window classifies the status through the UiFlow function and keeps a gap flag for Stop'
+$stopFn=Get-UiFunctionText 'StopUiOperation'
+Check ($stopFn.Extent.Text.Contains('$script:switchGap') -and $stopFn.Extent.Text.Contains('Request-FastLlmStop')) 'switch window: Stop in the gap asks the supervisor to stop (stop always wins)'
+$setBusyFn=Get-UiFunctionText 'SetBusy'
+Check ($setBusyFn.Extent.Text.Contains('$script:switchGap')) 'switch window: the gap keeps Stop enabled in SetBusy'
 
 # Reinstall previous version: the button exists only while the decision allows it, and the confirmation names both versions.
 $eligibleDecision = [pscustomobject]@{ decision = 'eligible'; reason = 'eligible'; target = '2026.10.15.1'; installed = '2026.10.16.1'; latest = @{ version = '2026.10.15.1' } }

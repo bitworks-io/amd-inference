@@ -710,7 +710,7 @@ function Read-FastLlmUiSettings {
         . (Join-Path $PSScriptRoot 'FastLlm.Update.ps1')
     }
     $update = Get-FastLlmUpdateSettings -InstallRoot $InstallRoot -AppRoot $AppRoot
-    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off'; lastUserStoppedBackgroundRequestId = '' }
+    $settings = [pscustomobject] [ordered]@{ vulkanBarMitigation = 'auto'; updateCheck = [string] $update.updateCheck; updateChannel = [string] $update.updateChannel; experimentalComponents = 'off'; lastUserStoppedBackgroundRequestId = ''; allowSwitch = $false }
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -724,6 +724,8 @@ function Read-FastLlmUiSettings {
             if ($stored.PSObject.Properties['lastUserStoppedBackgroundRequestId'] -and [string] $stored.lastUserStoppedBackgroundRequestId -cmatch '^[0-9a-f]{32}$') {
                 $settings.lastUserStoppedBackgroundRequestId = [string] $stored.lastUserStoppedBackgroundRequestId
             }
+            # Opt-in model switching: only a JSON true turns it on; absent or anything else is off.
+            if ($stored.PSObject.Properties['allowSwitch'] -and $stored.allowSwitch -is [bool] -and $stored.allowSwitch) { $settings.allowSwitch = $true }
         }
     }
     catch { }
@@ -787,10 +789,36 @@ function Write-FastLlmUiSettings {
         elseif ($stoppedValue -cmatch '^[0-9a-f]{32}$') { $merged['lastUserStoppedBackgroundRequestId'] = $stoppedValue }
         else { throw 'lastUserStoppedBackgroundRequestId must be 32 lowercase hex characters or empty.' }
     }
+    # Opt-in model switching: true is stored; false removes the key (so a file that never had it is what it was).
+    $switchProperty = $Settings.PSObject.Properties['allowSwitch']
+    if ($switchProperty -and $null -ne $switchProperty.Value) {
+        if ($switchProperty.Value -isnot [bool]) { throw 'allowSwitch must be true or false.' }
+        if ($switchProperty.Value) { $merged['allowSwitch'] = $true } else { $merged.Remove('allowSwitch') }
+    }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
     [IO.File]::WriteAllText($temporary, (([pscustomobject] $merged) | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $path -Force
+}
+
+# Whether the user allows switching models while FastLLM runs (settings.json under the launch root; off by default).
+function Get-FastLlmUiAllowSwitch {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    try { return [bool] (Read-FastLlmUiSettings -InstallRoot $InstallRoot).allowSwitch } catch { return $false }
+}
+
+# Saves only that setting; every other key (the BAR value included) is kept as it is.
+function Set-FastLlmUiAllowSwitch {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][bool] $Value)
+    $current = Read-FastLlmUiSettings -InstallRoot $InstallRoot
+    Write-FastLlmUiSettings -InstallRoot $InstallRoot -Settings ([pscustomobject] @{ vulkanBarMitigation = [string] $current.vulkanBarMitigation; allowSwitch = $Value })
+}
+
+# The arguments a foreground start adds for the opt-in model switch: none at all unless the setting is on.
+function Get-FastLlmUiSwitchArguments {
+    param([bool] $AllowSwitch)
+    if ($AllowSwitch) { return @('-SwitchAllowed') }
+    return @()
 }
 
 $script:FastLlmUiReleasesUrlPrefix = 'https://github.com/bitworks-io/amd-inference/releases'
@@ -1371,6 +1399,9 @@ function Get-FastLlmUiSettingsSavedNote {
         $beforeKey = if ($Before.PSObject.Properties['apiKey']) { [string]$Before.apiKey } else { 'off' }
         $afterKey = if ($After.PSObject.Properties['apiKey']) { [string]$After.apiKey } else { $beforeKey }
         if ($afterKey -cne $beforeKey) { return 'The new API key setting applies at the next start.' }
+        $beforeSwitch = [bool] ($Before.PSObject.Properties['allowSwitch'] -and $Before.allowSwitch -eq $true)
+        $afterSwitch = [bool] ($After.PSObject.Properties['allowSwitch'] -and $After.allowSwitch -eq $true)
+        if ($afterSwitch -ne $beforeSwitch) { return 'The new switching setting applies at the next start.' }
     }
     return 'Settings saved.'
 }
@@ -1384,7 +1415,7 @@ function Get-FastLlmUiChatPageOffNote {
 # The background start request. A malformed settings file reads as defaults (the caller shows the notice); start still works.
 function New-FastLlmUiBackgroundRequest {
     param([Parameter(Mandatory=$true)][string]$SourceRoot,[Parameter(Mandatory=$true)][string]$InstallRoot,
-          $ModelId,[int]$ContextSize,[string]$BarMitigation,[Parameter(Mandatory=$true)]$Settings)
+          $ModelId,[int]$ContextSize,[string]$BarMitigation,[Parameter(Mandatory=$true)]$Settings,[bool]$AllowSwitch=$false)
     $port = 8080
     if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
         $parsed = 0
@@ -1407,8 +1438,11 @@ function New-FastLlmUiBackgroundRequest {
     }
     $apiKey = 'off'
     if ($Settings -and $Settings.PSObject.Properties['apiKey'] -and [string]$Settings.apiKey -ceq 'on') { $apiKey = 'on' }
-    return [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
+    $request = [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
         modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage;idleStopMinutes=$idleStop;apiKey=$apiKey}
+    # Opt-in model switching: the field exists only when the setting is on, so a default request is the object it always was.
+    if ($AllowSwitch) { $request | Add-Member -NotePropertyName allowSwitch -NotePropertyValue $true }
+    return $request
 }
 
 function Get-FastLlmUiMalformedSettingsNotice {
@@ -1442,3 +1476,115 @@ function Format-FastLlmUiSupportBundleList {
     $lines.Add('The bundle is saved only where you choose. FastLLM does not upload it or send it anywhere; share it only with people you trust. It never contains prompts, answers or chat text.')
     return ($lines -join [Environment]::NewLine)
 }
+
+# ---- the window's model switch: the gap between two runs, the switch line, the Switch model button and the picker dialog ----
+
+$script:FastLlmUiSwitchSettingText = 'Turn on ''Allow switching models'' in Settings; it applies from the next start.'
+
+# How the window reads a run's status for a model switch. Pure. Returns
+#   gap                  $true between the old server stopping and the next run's first write: the document is stopped or failed and says the
+#                        switch is pending (and a supervisor is alive). The window then shows statusText (the existing switch text) instead of
+#                        an unverifiable occupied installation.
+#   stopEnabled          $true in the gap: Stop stays enabled there, because stop always wins
+#   startEnabled         $false in the gap (Start stays disabled); otherwise this classification does not restrict it
+#   statusText           the switch text in the gap, else ''
+#   line                 the switch text to show under a serving status: only for a run that allows switching, whenever its document has a
+#                        switch block (the gap excluded)
+#   switchButtonEnabled  the Switch model button: only for a live run that is ready, allows switching and has no switch pending
+#   switchButtonReason   why it is disabled ('' when enabled)
+function Get-FastLlmUiSwitchWindowState {
+    param($Status, [bool] $SettingOn = $false)
+    $result = [ordered] @{ gap = $false; stopEnabled = $false; startEnabled = $true; statusText = ''; line = ''; switchButtonEnabled = $false; switchButtonReason = '' }
+    $read = { param($Object, [string] $Name) if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { return $Object.PSObject.Properties[$Name].Value }; return $null }
+    $alive = [bool] ($null -ne $Status -and -not ($Status.PSObject.Properties['active'] -and $Status.active -eq $false))
+    $phase = [string] (& $read $Status 'phase')
+    $switchAllowed = [bool] ((& $read $Status 'switchAllowed') -eq $true)
+    $block = & $read $Status 'switch'
+    $hasBlock = [bool] ($block -is [System.Management.Automation.PSCustomObject])
+    $pending = [bool] ($hasBlock -and (& $read $block 'pending') -eq $true -and -not (& $read $block 'result'))
+    if ($alive -and $pending -and ($phase -ceq 'stopped' -or $phase -ceq 'failed')) {
+        $result.gap = $true
+        $result.stopEnabled = $true
+        $result.startEnabled = $false
+        $result.statusText = Get-FastLlmUiSwitchStatusText -Status $Status
+        $result.switchButtonReason = 'A model switch is under way.'
+        return [pscustomobject] $result
+    }
+    if ($alive -and $switchAllowed -and $hasBlock) { $result.line = Get-FastLlmUiSwitchStatusText -Status $Status }
+    $ready = [bool] ($alive -and $phase -ceq 'ready')
+    if ($ready -and $switchAllowed -and $pending) { $result.switchButtonReason = 'A model switch is already under way.' }
+    elseif ($ready -and $switchAllowed) { $result.switchButtonEnabled = $true }
+    elseif ($ready) {
+        if ($SettingOn) { $result.switchButtonReason = 'This run was started before switching was turned on. Stop FastLLM and start it again to switch models.' }
+        else { $result.switchButtonReason = $script:FastLlmUiSwitchSettingText }
+    }
+    elseif ($alive -and $switchAllowed -and @('preparing', 'loading', 'checking') -ccontains $phase) { $result.switchButtonReason = 'You can switch models once FastLLM is ready.' }
+    elseif ($SettingOn) { $result.switchButtonReason = 'Start FastLLM to switch models.' }
+    else { $result.switchButtonReason = $script:FastLlmUiSwitchSettingText }
+    return [pscustomobject] $result
+}
+
+# The picker's list items from the module's rows: { id, text, canSwitch }. Only a model that fits, or whose fit is checked at the switch, can be picked.
+function Get-FastLlmUiSwitchPickerItems {
+    param($Rows)
+    $items = New-Object System.Collections.ArrayList
+    foreach ($row in @($Rows)) {
+        if ($null -eq $row) { continue }
+        $id = [string] $row.id
+        $name = [string] $row.displayName
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $id }
+        [void] $items.Add([pscustomobject] [ordered] @{ id = $id; text = ($name + '  -  ' + [string] $row.reason); canSwitch = [bool] (@('fits', 'check-at-switch') -ccontains [string] $row.state) })
+    }
+    return @($items)
+}
+
+# Whether the Switch button of the picker is enabled for the selected item.
+function Get-FastLlmUiSwitchPickerButtonState {
+    param($Items, $SelectedId)
+    $enabled = $false
+    if ($SelectedId -is [string] -and $SelectedId) {
+        $match = @(@($Items) | Where-Object { [string] $_.id -ceq $SelectedId } | Select-Object -First 1)
+        if ($match.Count -eq 1 -and $match[0].canSwitch -eq $true) { $enabled = $true }
+    }
+    return [pscustomobject] @{ enabled = $enabled }
+}
+
+# One line of plain text from an exception message (no control characters, at most 400 characters).
+function ConvertTo-FastLlmUiOneLine {
+    param([string] $Text)
+    $line = [regex]::Replace([string] $Text, '[\x00-\x1f\x7f]', ' ')
+    if ($line.Length -gt 400) { $line = $line.Substring(0, 400) }
+    return $line
+}
+
+# The picker's rows as dialog items, computed once when the dialog opens. A failure is a message, never a throw. -RowsProvider is a test seam.
+function Get-FastLlmUiSwitchPickerModel {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $CatalogPath, $Status, [scriptblock] $RowsProvider)
+    try {
+        if ($null -eq $RowsProvider) { $RowsProvider = { param($InstallRoot, $CatalogPath, $Status) return (Get-FastLlmSwitchPickerRows -InstallRoot $InstallRoot -CatalogPath $CatalogPath -Status $Status) } }
+        $rows = @(& $RowsProvider $InstallRoot $CatalogPath $Status)
+        return [pscustomobject] @{ items = @(Get-FastLlmUiSwitchPickerItems -Rows $rows); message = '' }
+    }
+    catch { return [pscustomobject] @{ items = @(); message = 'The model list could not be read: ' + (ConvertTo-FastLlmUiOneLine -Text $_.Exception.Message) } }
+}
+
+# What the picker's Switch button does: asks the running supervisor for the switch (Request-FastLlmSwitch, with no Force: a busy refusal shows its
+# text and the user tries again). Everything the request function prints is dropped, every throw becomes the message of the result, and only a
+# row that can be switched to makes a request. Returns { ok, text }. -Request is a test seam.
+function Invoke-FastLlmUiSwitchPick {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $CatalogPath, $Items, [string] $ModelId, [scriptblock] $Request)
+    $item = $null
+    if ($ModelId) { $item = @(@($Items) | Where-Object { [string] $_.id -ceq $ModelId -and $_.canSwitch -eq $true } | Select-Object -First 1) }
+    if ($null -eq $item -or $item.Count -ne 1) { return [pscustomobject] @{ ok = $false; text = 'That model cannot be switched to from here.' } }
+    if ($null -eq $Request) { $Request = { param($InstallRoot, $CatalogPath, $ModelId) Request-FastLlmSwitch -InstallRoot $InstallRoot -CatalogPath $CatalogPath -ModelId $ModelId } }
+    $name = [string] $ModelId
+    $itemText = [string] $item[0].text
+    $separator = $itemText.IndexOf('  -  ', [StringComparison]::Ordinal)
+    if ($separator -gt 0) { $name = $itemText.Substring(0, $separator) }
+    try {
+        & $Request $InstallRoot $CatalogPath $ModelId 6>$null 5>$null 4>$null 3>$null | Out-Null
+        return [pscustomobject] @{ ok = $true; text = "Switch to $name requested. FastLLM finishes the requests in progress, stops the current model and starts the other one; this takes about one model load." }
+    }
+    catch { return [pscustomobject] @{ ok = $false; text = (ConvertTo-FastLlmUiOneLine -Text $_.Exception.Message) } }
+}
+
