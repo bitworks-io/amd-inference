@@ -636,7 +636,7 @@ function StopUiOperation {
     if(-not (Test-FastLlmUiVcActionAllowed -BrokerActive ($null -ne $script:vcBroker) -Action stop)){
         throw 'Microsoft prerequisite setup is still running. Complete or cancel it in the Microsoft window; FastLLM will not terminate it.'
     }
-    if($script:switchGap -and -not $script:child){
+    if($script:switchGap -and -not $script:child -and -not $script:bgState.attachedRequestId){
         # Between the two runs of a model switch the supervisor is alive: stop always wins, and it is asked the way the stop command asks.
         Request-FastLlmStop -InstallRoot ([IO.Path]::GetFullPath($pathBox.Text))
         $statusLabel.Text='Stop requested. FastLLM ends the switch and stops.'
