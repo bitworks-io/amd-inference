@@ -925,6 +925,10 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     Check ($refusedStart.exit -ne 0 -and $refusedStart.flat -cmatch '-ApiKey is supported only by settings') 'command line: -ApiKey is a settings action only (no start, plan or install takes it)'
     $refusedJson = Invoke-Cli @('settings', '-InstallRoot', $cliRoot, '-ApiKey', 'show', '-AsJson')
     Check ($refusedJson.exit -ne 0 -and $refusedJson.flat -cmatch 'cannot be combined with -AsJson') 'command line: settings -ApiKey show is refused with -AsJson, so no JSON document ever holds the key'
+    $refusedEmbeddings = Invoke-Cli @('settings', '-InstallRoot', $cliRoot, '-ApiKey', 'show', '-Embeddings', 'on')
+    Check ($refusedEmbeddings.exit -ne 0 -and $refusedEmbeddings.flat -cmatch 'cannot be combined with -AsJson or with another setting') 'command line: settings -ApiKey show is refused with -Embeddings, like the other settings'
+    $refusedEmbeddingPort = Invoke-Cli @('settings', '-InstallRoot', $cliRoot, '-ApiKey', 'show', '-EmbeddingPort', '8082')
+    Check ($refusedEmbeddingPort.exit -ne 0 -and $refusedEmbeddingPort.flat -cmatch 'cannot be combined with -AsJson or with another setting') 'command line: settings -ApiKey show is refused with -EmbeddingPort, like the other settings'
     $cliOff = Invoke-Cli @('settings', '-InstallRoot', $cliRoot, '-ApiKey', 'off')
     Check ($cliOff.exit -eq 0 -and $cliOff.text -cmatch '(?m)^apiKey: off\s*$' -and $cliOff.flat -cmatch 'off from the next start') 'command line: settings -ApiKey off saves off and lists apiKey: off'
     if ($isWindowsHost) {
