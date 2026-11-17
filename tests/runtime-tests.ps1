@@ -512,12 +512,16 @@ try {
     try { & $module { param($N,$P) Assert-FastLlmLoopbackPortFree -Port $N -ListenerProvider $P } $freshPort { throw 'simulated listener table failure' } } catch { $tableFailure=$_.Exception }
     Check ($null -ne $tableFailure -and [string]$tableFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$tableFailure.Data['FastLlmReason'] -ceq 'PortInUse') 'occupied-port-table-error-fails-closed: a table read error refuses with port-in-use'
 
-    # Test-FastLlmServerBindFailure matches llama-server's own bind error for this port only.
+    # Test-FastLlmServerBindFailure matches llama-server's own bind error for this port only. It takes the process host (never its output
+    # as a value: a command parameter can be recorded by PowerShell module logging) and reads the snapshot itself.
+    function New-FakeOutputHost([string]$Output){ $fake=[pscustomobject]@{}; $fake | Add-Member -MemberType ScriptMethod -Name Snapshot -Value { return $Output }.GetNewClosure(); return $fake }
     $bindText="main: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 18181"
-    Check (& $module { param($T) Test-FastLlmServerBindFailure -Text $T -Port 18181 } $bindText) 'Test-FastLlmServerBindFailure: matches the bind error for the port'
-    Check (-not (& $module { param($T) Test-FastLlmServerBindFailure -Text $T -Port 1818 } $bindText)) 'Test-FastLlmServerBindFailure: a port that is only a prefix does not match'
-    Check (-not (& $module { param($T) Test-FastLlmServerBindFailure -Text $T -Port 8080 } $bindText)) 'Test-FastLlmServerBindFailure: another port does not match'
-    Check (-not (& $module { Test-FastLlmServerBindFailure -Text 'load_tensors: offloaded 41/41 layers to GPU' -Port 18181 })) 'Test-FastLlmServerBindFailure: ordinary startup text does not match'
+    Check (& $module { param($H) Test-FastLlmServerBindFailure -HostProcess $H -Port 18181 } (New-FakeOutputHost $bindText)) 'Test-FastLlmServerBindFailure: matches the bind error for the port'
+    Check (-not (& $module { param($H) Test-FastLlmServerBindFailure -HostProcess $H -Port 1818 } (New-FakeOutputHost $bindText))) 'Test-FastLlmServerBindFailure: a port that is only a prefix does not match'
+    Check (-not (& $module { param($H) Test-FastLlmServerBindFailure -HostProcess $H -Port 8080 } (New-FakeOutputHost $bindText))) 'Test-FastLlmServerBindFailure: another port does not match'
+    Check (-not (& $module { param($H) Test-FastLlmServerBindFailure -HostProcess $H -Port 18181 } (New-FakeOutputHost 'load_tensors: offloaded 41/41 layers to GPU'))) 'Test-FastLlmServerBindFailure: ordinary startup text does not match'
+    Check (-not (& $module { param($H) Test-FastLlmServerBindFailure -HostProcess $H -Port 18181 } (New-FakeOutputHost $null))) 'Test-FastLlmServerBindFailure: no output does not match'
+    Check (-not (& $module { (Get-Command Test-FastLlmServerBindFailure).Parameters.ContainsKey('Text') })) 'Test-FastLlmServerBindFailure: has no -Text parameter (engine output is never a parameter value)'
 
     # server-bind-failure-mapped (R2): the child prints llama-server's bind error and exits 1 before /health.
     $bindPort=Get-FreeTestPort
@@ -530,6 +534,80 @@ try {
     try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } $bindPlan $bindRoot $catalog } catch { $bindFailure=$_.Exception } finally { $bindLock.Dispose() }
     Check ($null -ne $bindFailure -and [string]$bindFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$bindFailure.Data['FastLlmReason'] -ceq 'PortInUse' -and $bindFailure.Message -ceq (Get-ExpectedPortMessage $bindPort)) 'server-bind-failure-mapped: the engine bind error becomes the plain port-in-use refusal'
     Check ($null -ne $bindFailure -and $bindFailure.Message -notlike '*exited before readiness*') 'server-bind-failure-mapped: not the generic early-exit text'
+
+    # module-logging-engine-output: PowerShell module logging records every bound parameter value of a command call (event 4103; on macOS the
+    # unified log of this process). An engine that prints a marker, then fails to bind, must leave the marker out of that log, and the
+    # verdict (the plain port-in-use refusal) must not change. Two canaries, logged the same way before and after, prove the log held the
+    # window; where the log cannot be read the check is skipped and says so (on Windows PowerShell 5.1 it must run).
+    # The marker is random text made here: a marker written out in this file could be found in logged script text.
+    $mlMarker='ENGOUT'+[Guid]::NewGuid().ToString('N')
+    $mlCanaryOne='MODLOGCANARY1'+[Guid]::NewGuid().ToString('N')
+    $mlCanaryTwo='MODLOGCANARY2'+[Guid]::NewGuid().ToString('N')
+    $mlIsWindows=($PSVersionTable.PSVersion.Major -lt 6) -or ([bool](Test-Path Variable:IsWindows) -and [bool](Get-Variable -Name IsWindows -ValueOnly))
+    $mlOnMac=[bool](Test-Path Variable:IsMacOS) -and [bool](Get-Variable -Name IsMacOS -ValueOnly)
+    $mlKind='none'
+    if($mlOnMac -and (Test-Path -LiteralPath '/usr/bin/log')){$mlKind='mac'}elseif($mlIsWindows){$mlKind='windows'}
+    $mlCapture=Join-Path $temp 'module-log-capture.txt'
+    $mlBegin=[DateTime]::UtcNow.AddSeconds(-1)
+    $mlBeginLocal=[DateTime]::Now.AddSeconds(-1).ToString('yyyy-MM-dd HH:mm:ss')
+    $mlEventLog='Microsoft-Windows-PowerShell/Operational'
+    if($PSVersionTable.PSVersion.Major -ge 6){$mlEventLog='PowerShellCore/Operational'}
+    function Read-ModuleLogText {
+        if($mlKind -ceq 'mac'){
+            try { & '/usr/bin/log' show --style compact --start $mlBeginLocal --predicate "processID == $PID" > $mlCapture 2> ($mlCapture+'.err'); return [IO.File]::ReadAllText($mlCapture) } catch { return '' }
+        }
+        if($mlKind -ceq 'windows'){
+            $query="*[System[(EventID=4103) and Execution[@ProcessID=$PID] and TimeCreated[@SystemTime>='$($mlBegin.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))']]]"
+            $sb=New-Object Text.StringBuilder
+            try { foreach($logged in @(Get-WinEvent -LogName $mlEventLog -FilterXPath $query -ErrorAction Stop)){ [void]$sb.AppendLine([string]$logged.Message) } } catch { $null=$_ }
+            return $sb.ToString()
+        }
+        return ''
+    }
+    function Wait-ModuleLogCanaryText([string]$Canary,[int]$Seconds) {
+        $clock=[Diagnostics.Stopwatch]::StartNew()
+        while($clock.Elapsed.TotalSeconds -lt $Seconds){
+            # A module function with the canary as a plain [string] parameter, logged the way an engine line would be if it were bound.
+            $null=& $module { param($R) Get-FastLlmApiKeyStoreState -InstallRoot $R } (Join-Path $temp $Canary)
+            Start-Sleep -Milliseconds 400
+            if((Read-ModuleLogText).IndexOf($Canary,[StringComparison]::Ordinal) -ge 0){return $true}
+        }
+        return $false
+    }
+    $mlPort=Get-FreeTestPort
+    $mlRoot=Join-Path $temp 'bind-failure-logged'
+    $mlPlan=New-PortTestPlan $mlPort 'ok' (Join-Path $mlRoot 'unused.txt')
+    $mlCode="[Console]::Error.WriteLine(`"srv    load_model: loading $mlMarker a private prompt`"); [Console]::Error.WriteLine(`"couldn't bind HTTP server socket, hostname: 127.0.0.1, port: $mlPort`"); exit 1"
+    $mlPlan.serverArguments=@('-NoLogo','-NoProfile','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($mlCode)))
+    $mlModules=@($module)
+    foreach($builtIn in @('Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management')){ $mlModules+=@(Import-Module $builtIn -PassThru) }
+    $mlSawOne=$false;$mlSawTwo=$false;$mlFailure=$null;$mlRan=$false;$mlText=''
+    try {
+        if($mlKind -cne 'none'){
+            foreach($m in $mlModules){ $m.LogPipelineExecutionDetails=$true }
+            $mlSawOne=Wait-ModuleLogCanaryText $mlCanaryOne 30
+        }
+        if($mlSawOne){
+            $mlLock=Enter-FastLlmOperation $mlRoot
+            try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C | Out-Null } $mlPlan $mlRoot $catalog } catch { $mlFailure=$_.Exception } finally { $mlLock.Dispose() }
+            $mlRan=$true
+            $mlSawTwo=Wait-ModuleLogCanaryText $mlCanaryTwo 60
+        }
+    }
+    finally {
+        foreach($m in $mlModules){ $m.LogPipelineExecutionDetails=$false }
+        if($mlKind -cne 'none'){ Start-Sleep -Milliseconds 500; $mlText=Read-ModuleLogText }
+    }
+    if(-not $mlRan -or -not $mlSawTwo){
+        $mlSkip="the module-logging check (engine output) did not run to the end on this host: log source '$mlKind', first canary seen: $mlSawOne, second canary seen: $mlSawTwo."
+        Check (-not ($mlIsWindows -and $PSVersionTable.PSVersion.Major -lt 6)) "module-logging-engine-output: on Windows PowerShell 5.1 the check must run to the end, and $mlSkip"
+        Write-Host "SKIP: module-logging-engine-output: $mlSkip"
+    }
+    else {
+        Check ($null -ne $mlFailure -and [string]$mlFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$mlFailure.Data['FastLlmReason'] -ceq 'PortInUse' -and $mlFailure.Message -ceq (Get-ExpectedPortMessage $mlPort)) 'module-logging-engine-output: the bind-failure verdict is unchanged (the plain port-in-use refusal)'
+        Check ($mlText.IndexOf($mlCanaryOne,[StringComparison]::Ordinal) -ge 0 -and $mlText.IndexOf($mlCanaryTwo,[StringComparison]::Ordinal) -ge 0) 'module-logging-engine-output: the log really recorded calls through the window (both canaries are in it)'
+        Check ($mlText.IndexOf($mlMarker,[StringComparison]::Ordinal) -lt 0 -and $mlText.IndexOf('a private prompt',[StringComparison]::Ordinal) -lt 0) "module-logging-engine-output: no text the engine printed is in what PowerShell logged ($($mlText.Length) characters, source '$mlKind')"
+    }
 
     # The start-time fallback launches a second server right after the first failed: the first one must be fully gone (child process, port, status file)
     # and the second run must carry the fallback and its own recipe into status.json and selftest.json. Same run root, same port, mock servers.
