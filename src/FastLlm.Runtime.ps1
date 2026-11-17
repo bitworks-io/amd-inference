@@ -863,10 +863,11 @@ function Assert-FastLlmLoopbackPortFree {
 }
 
 # llama-server's own bind error: "couldn't bind HTTP server socket, hostname: 127.0.0.1, port: <n>" (the same text at both engine pins).
+# It takes the process host, not its output: what an engine prints can echo what an app sent it, and PowerShell module logging can record
+# every parameter value of a command. The output is matched in place and handed to no command.
 function Test-FastLlmServerBindFailure {
-    param([string] $Text, [Parameter(Mandatory = $true)][int] $Port)
-    if ([string]::IsNullOrEmpty($Text)) { return $false }
-    return [bool] ($Text -cmatch ("couldn't bind HTTP server socket, hostname: 127\.0\.0\.1, port: $Port(?![0-9])"))
+    param([Parameter(Mandatory = $true)] $HostProcess, [Parameter(Mandatory = $true)][int] $Port)
+    return [regex]::IsMatch([string] $HostProcess.Snapshot(), ("couldn't bind HTTP server socket, hostname: 127\.0\.0\.1, port: $Port(?![0-9])"))
 }
 
 # A typed device-binding failure (enforce). FastLlmFailureCode is the failure code, FastLlmReason = DeviceBindingFailed is what keeps it
@@ -1374,10 +1375,11 @@ function Invoke-FastLlmSupervisedServer {
             if ($AllowSwitch -and (Test-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths)) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
             if ($hostProcess.Process.HasExited) {
                 # llama-server's own bind error is the same plain refusal as the pre-start check (a bind race after the check).
-                # The snapshot is the pre-Ready startup output only, so no prompt text can be in it.
+                # The output is read inside the check and handed to no command (an app may already have sent the loading server a request, and an
+                # engine can echo one; module logging records command parameters).
                 $earlyOutputWait = [Diagnostics.Stopwatch]::StartNew()
                 while (-not $hostProcess.OutputCompleted -and $earlyOutputWait.ElapsedMilliseconds -lt 2000) { Start-Sleep -Milliseconds 50 }
-                if (Test-FastLlmServerBindFailure -Text ([string] $hostProcess.Snapshot()) -Port ([int] $uri.Port)) {
+                if (Test-FastLlmServerBindFailure -HostProcess $hostProcess -Port ([int] $uri.Port)) {
                     throw (New-FastLlmPortInUseFailure -Port ([int] $uri.Port))
                 }
                 # A HIP server that dies on a blocked or missing DLL is a typed failure; any other early exit stays the generic one.
