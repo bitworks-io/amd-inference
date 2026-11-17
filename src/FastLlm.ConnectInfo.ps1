@@ -11,6 +11,12 @@ $script:FastLlmConnectClaudeCodeNote = "Claude Code is designed for Anthropic's 
 $script:FastLlmConnectUnknownContextNotice = 'FastLLM is not running, so the context limit is not known yet. Coding agents often send requests longer than 32,768 tokens; check the limit after FastLLM starts.'
 $script:FastLlmApiCheckNotReadyMessage = 'Start FastLLM and wait for Ready before running the API check.'
 $script:FastLlmApiCheckPrompt = 'Reply with one short word.'
+# The API key in a card. Connection info never holds the key: with the key on, a card carries the token {KEY} where the key goes. The window
+# shows the placeholder below in its place and puts the real key in only when the user presses a card's Copy button. So the status document,
+# -AsJson output and the support bundle cannot contain the key.
+$script:FastLlmConnectKeyToken = '{KEY}'
+$script:FastLlmConnectKeyPlaceholder = '<your FastLLM key>'
+$script:FastLlmApiCheckUnauthorizedNote = 'The server refused the API key (HTTP 401). If you created a new key after this server started, restart FastLLM to use it.'
 
 # Endpoints exist at both pinned engine builds (upstream server README b10698 lines 1463 and 1572; b11658 lines 1488 and 1624).
 # FastLLM passes no flag that disables them.
@@ -24,6 +30,8 @@ $script:FastLlmConnectEndpoints = @(
 
 # Client cards. Tokens: {BASE} OpenAI base URL, {ANTHROPIC} Anthropic base URL, {HOSTPORT} host and port, {MODEL}, {LIMIT} the limit line.
 # Each doc URL is repeated in a comment; the card copies only what that page documents.
+# keyTemplate is the card when the API key is on. It uses only the key setting the card's own documentation page names; where that page
+# names none, the card says so and gives the key as FastLLM's own fact. {KEY} is left as it is by Get-FastLlmConnectionInfo.
 $script:FastLlmConnectClients = @(
     @{
         id = 'openai-compatible'; title = 'Any OpenAI-compatible app'
@@ -33,6 +41,14 @@ $script:FastLlmConnectClients = @(
 Base URL: {BASE}
 Model: {MODEL}
 API key: any text (FastLLM's own fact: it sets no key, so any text works)
+{LIMIT}
+'@
+        # The server README above documents the API key (--api-key) and that clients send it as "Authorization: Bearer <key>".
+        keyTemplate = @'
+Base URL: {BASE}
+Model: {MODEL}
+API key: {KEY}
+(FastLLM's own fact: the API key is on, so every request needs this key, sent as "Authorization: Bearer <key>".)
 {LIMIT}
 '@
     }
@@ -48,6 +64,15 @@ Auth: None
 Model: {MODEL}
 {LIMIT}
 '@
+        # That page shows a keyless server (Auth "None") and names no key setting for llama.cpp, so the card says so.
+        keyTemplate = @'
+Settings > Admin > Connections > OpenAI > Add Connection
+URL: {BASE}
+Model: {MODEL}
+The page linked below shows a server without a key and names no key setting.
+FastLLM's own fact: the API key is on, so this connection must send this key as a Bearer token: {KEY}
+{LIMIT}
+'@
     }
     @{
         id = 'continue'; title = 'Continue'
@@ -61,6 +86,17 @@ models:
     apiBase: http://{HOSTPORT}
 {LIMIT}
 '@
+        # That page's llama.cpp example has no key setting, so the card says so.
+        keyTemplate = @'
+models:
+  - name: FastLLM
+    provider: llama.cpp
+    model: {MODEL}
+    apiBase: http://{HOSTPORT}
+The page linked below names no key setting for this provider.
+FastLLM's own fact: the API key is on, so requests must send this key as a Bearer token: {KEY}
+{LIMIT}
+'@
     }
     @{
         id = 'cline-roo'; title = 'Cline and Roo Code'
@@ -72,6 +108,16 @@ models:
 API Provider: OpenAI Compatible
 Base URL: {BASE}
 API Key: any text (FastLLM's own fact: it sets no key, so any text works)
+Model: {MODEL}
+Model Configuration > Context Window (Cline: "Context Window size"): {CONTEXT}
+Roo Code's documentation says the model it uses must offer native tool calling.
+{LIMIT}
+'@
+        # Both pages document the "API Key" field of the OpenAI Compatible provider.
+        keyTemplate = @'
+API Provider: OpenAI Compatible
+Base URL: {BASE}
+API Key: {KEY}
 Model: {MODEL}
 Model Configuration > Context Window (Cline: "Context Window size"): {CONTEXT}
 Roo Code's documentation says the model it uses must offer native tool calling.
@@ -94,6 +140,16 @@ PowerShell:
 FastLLM serves the model as {MODEL}.
 {LIMIT}
 '@
+        # ANTHROPIC_AUTH_TOKEN is the documented variable (sent as "Authorization: Bearer").
+        keyTemplate = @'
+Claude Code is designed for Anthropic's Claude models; results with a local model may vary.
+PowerShell:
+  $env:ANTHROPIC_BASE_URL = "{ANTHROPIC}"
+  $env:ANTHROPIC_AUTH_TOKEN = "{KEY}"
+(FastLLM's own fact: the API key is on, so this must be the FastLLM key.)
+FastLLM serves the model as {MODEL}.
+{LIMIT}
+'@
     }
     @{
         id = 'codex'; title = 'Codex'
@@ -112,6 +168,26 @@ wire_api = "responses"
 
 The provider block follows the Codex documentation's local example (base_url ends in /v1 there too, with no key setting). wire_api = "responses" is the setting the documentation's proxy and Azure examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
 FastLLM's own fact: it needs no key, so this card sets none.
+/v1/responses: partial at this engine version
+{LIMIT}
+'@
+        # env_key is the documented provider setting: the name of the environment variable that holds the key.
+        keyTemplate = @'
+# config.toml
+model = "{MODEL}"
+model_provider = "fastllm"
+
+[model_providers.fastllm]
+name = "FastLLM"
+base_url = "{BASE}"
+wire_api = "responses"
+env_key = "FASTLLM_API_KEY"
+
+PowerShell, before starting Codex:
+  $env:FASTLLM_API_KEY = "{KEY}"
+
+The provider block follows the Codex documentation's custom provider examples (base_url ends in /v1 there too). env_key is the documentation's setting for the environment variable that holds the key; the variable name FASTLLM_API_KEY is this card's choice. wire_api = "responses" is the setting the documentation's proxy and Azure examples use; FastLLM's own fact: it serves the Responses API at /v1/responses.
+FastLLM's own fact: the API key is on, so the variable must hold the FastLLM key.
 /v1/responses: partial at this engine version
 {LIMIT}
 '@
@@ -178,6 +254,26 @@ function Get-FastLlmConnectionInfo {
         $perSlot = Get-FastLlmConnectProp (Get-FastLlmConnectProp $Status 'recipe') 'contextPerSlot'
         if ($null -ne $contextTokens -and ($perSlot -is [int] -or $perSlot -is [long]) -and [long] $perSlot -gt 0 -and [long] $perSlot -le $contextTokens) { $contextTokens = [long] $perSlot }
     }
+    # The API key. Running: only what the run proved (the status says apiKey "on" after the 401/200 check, with the key's public id).
+    # Not running: the saved setting, which is what the next start will use. No key ever enters this function: there is no parameter,
+    # setting or status field through which one could.
+    # A run that is still starting has proved nothing yet; like "not running" it shows what the saved setting asks for, so a card never
+    # says "no key" about a server that is about to require one. A run that is Ready without the key says so, whatever the setting is now.
+    $apiKeyRequired = $false
+    $apiKeyId = $null
+    $apiKeyState = 'off'
+    $statusApiKey = Get-FastLlmConnectProp $Status 'apiKey'
+    $statusPhase = Get-FastLlmConnectProp $Status 'phase'
+    $settingApiKey = Get-FastLlmConnectProp $Settings 'apiKey'
+    $settingOn = [bool] ($settingApiKey -is [string] -and $settingApiKey -ceq 'on')
+    if ($running -and $statusApiKey -is [string] -and $statusApiKey -ceq 'on') {
+        $apiKeyRequired = $true
+        $apiKeyState = 'on'
+        $statusApiKeyId = Get-FastLlmConnectProp $Status 'apiKeyId'
+        if ($statusApiKeyId -is [string] -and $statusApiKeyId -cmatch '\A[0-9a-f]{8}\z') { $apiKeyId = $statusApiKeyId }
+    }
+    elseif ($settingOn -and -not $running) { $apiKeyRequired = $true; $apiKeyState = 'on-at-next-start' }
+    elseif ($settingOn -and -not ($statusPhase -is [string] -and $statusPhase -ceq 'ready')) { $apiKeyRequired = $true; $apiKeyState = 'starting' }
     $baseUrl = 'http://127.0.0.1:' + $port + '/v1'
     $anthropicBaseUrl = 'http://127.0.0.1:' + $port
     $warning = Get-FastLlmConnectAgentWarning -ContextTokens $contextTokens
@@ -191,6 +287,8 @@ function Get-FastLlmConnectionInfo {
     $clients = @()
     foreach ($client in $script:FastLlmConnectClients) {
         $snippet = [string] $client.template
+        # With the key on, the card that names the key setting; {KEY} stays unresolved.
+        if ($apiKeyRequired) { $snippet = [string] $client.keyTemplate }
         $snippet = $snippet.Replace('{BASE}', $baseUrl).Replace('{ANTHROPIC}', $anthropicBaseUrl).Replace('{HOSTPORT}', '127.0.0.1:' + $port)
         $snippet = $snippet.Replace('{MODEL}', $modelText).Replace('{CONTEXT}', $contextText).Replace('{LIMIT}', $limitLine)
         $docUrls = @($client.docUrl)
@@ -207,7 +305,30 @@ function Get-FastLlmConnectionInfo {
         agentWarning     = $warning
         endpoints        = $endpoints
         clients          = $clients
+        # Additive. apiKeyRequired: the cards carry the unresolved token {KEY}. apiKey: on (proved by the running server), starting (a run
+        # is starting and the saved setting is on), on-at-next-start (nothing is running and the saved setting is on) or off.
+        # apiKeyId: the running key's public id, or $null.
+        apiKeyRequired   = [bool] $apiKeyRequired
+        apiKey           = $apiKeyState
+        apiKeyId         = $apiKeyId
     }
+}
+
+# A card as the window shows it: the token {KEY} becomes the placeholder. Never the key.
+function Get-FastLlmConnectDisplayText {
+    param([AllowNull()][string] $Snippet)
+    if ($null -eq $Snippet) { return '' }
+    return $Snippet.Replace($script:FastLlmConnectKeyToken, $script:FastLlmConnectKeyPlaceholder)
+}
+
+# A card as its Copy button puts it on the clipboard: the token {KEY} becomes the key. $Key is the text the window just read from the key
+# store for this one copy; with no key (the store could not be read) the placeholder is copied instead, so nothing misleading is pasted.
+# Untyped on purpose, like every other place the key passes.
+function Get-FastLlmConnectCopyText {
+    param([AllowNull()][string] $Snippet, $Key)
+    if ($null -eq $Snippet) { return '' }
+    if ($Key -is [string] -and $Key -cmatch '\Afl-[A-Za-z0-9_-]{43}\z') { return $Snippet.Replace($script:FastLlmConnectKeyToken, $Key) }
+    return (Get-FastLlmConnectDisplayText -Snippet $Snippet)
 }
 
 function Test-FastLlmApiCheckReady {
@@ -289,8 +410,11 @@ function Invoke-FastLlmApiCheck {
         catch { $passed = $false }
         $clock.Stop()
         if ($null -eq $elapsed) { $elapsed = [Math]::Round($clock.Elapsed.TotalMilliseconds, 1) }
+        # A request the server refused for the API key (HTTP 401) is its own result: the format was not tested at all.
+        $verdict = 'fail'
+        if ($passed) { $verdict = 'pass' } elseif ($httpStatus -eq 401) { $verdict = 'unauthorized' }
         $checks += [pscustomobject][ordered]@{
-            endpoint = [string] $spec.path; status = $(if ($passed) { 'pass' } else { 'fail' }); httpStatus = $httpStatus
+            endpoint = [string] $spec.path; status = $verdict; httpStatus = $httpStatus
             promptTokens = $promptTokens; completionTokens = $completionTokens; elapsedMs = $elapsed
         }
     }
@@ -324,7 +448,22 @@ function Invoke-FastLlmDoctorApiCheck {
     }
     $arguments = @{ BaseUrl = $info.baseUrl; ModelName = $info.modelName }
     if ($null -ne $Request) { $arguments.Request = $Request }
+    elseif ($info.apiKeyRequired) {
+        # The running server requires the key. Each request reads the key store inside the FastLlm module and sends the key through the
+        # module's loopback client, which first confirms that the listener is the server process this status records (process id and start
+        # time). The key never leaves the module. A store that cannot be read is api-key-unavailable: the check is not run without the key.
+        try { Assert-FastLlmApiKeyStore -InstallRoot $InstallRoot }
+        catch { return [pscustomobject]@{ exitCode = 2; message = 'api-key-unavailable: The running server requires the API key, but the stored key cannot be read, so the API check was not run. Create a new key (settings -ApiKey rotate) and restart FastLLM.'; result = $null } }
+        $apiCheckInstallRoot = $InstallRoot
+        $apiCheckServer = Get-FastLlmConnectProp $Status 'processIdentity'
+        $arguments.Request = {
+            param($Root, $Path, $Body, $TimeoutMs)
+            & (Get-Module FastLlm) { param($R, $P, $B, $T, $I, $S) Invoke-FastLlmHttp -BaseUrl $R -Path $P -Body $B -TimeoutMs $T -ApiKeyHolder (Read-FastLlmApiKeyStore -InstallRoot $I) -ApiKeyServer $S } $Root $Path $Body $TimeoutMs $apiCheckInstallRoot $apiCheckServer
+        }
+    }
     $result = Invoke-FastLlmApiCheck @arguments
+    $unauthorized = @($result.checks | Where-Object { $_.status -ceq 'unauthorized' }).Count
+    if ($unauthorized -gt 0) { $result | Add-Member -NotePropertyName note -NotePropertyValue $script:FastLlmApiCheckUnauthorizedNote -Force }
     Write-FastLlmApiCheckRunLog -InstallRoot $InstallRoot -RunId ([string] (Get-FastLlmConnectProp $Status 'runId')) -Result $result
     $failed = @($result.checks | Where-Object { $_.status -cne 'pass' }).Count
     return [pscustomobject]@{ exitCode = $(if ($failed -gt 0) { 1 } else { 0 }); message = $null; result = $result }
@@ -341,5 +480,7 @@ function Format-FastLlmApiCheckTable {
         $tokens = if ($null -ne $check.promptTokens -or $null -ne $check.completionTokens) { ' | tokens in/out: ' + $check.promptTokens + '/' + $check.completionTokens } else { '' }
         $lines += ('{0,-22} {1,-5} {2}{3} | {4} ms' -f $check.endpoint, ([string] $check.status).ToUpperInvariant(), $http, $tokens, $check.elapsedMs)
     }
+    $note = Get-FastLlmConnectProp $Result 'note'
+    if ($note -is [string] -and $note.Length -gt 0) { $lines += $note }
     return ($lines -join [Environment]::NewLine)
 }

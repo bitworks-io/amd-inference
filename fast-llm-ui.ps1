@@ -369,7 +369,7 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
             -not $script:bgState.observation.servingHealthy){
         $statusLabel.Text='Background run owner is verified, but the API health check failed.'
     }elseif($script:bgState.attachedRequestId -and $HealthChecked -and $script:bgState.observation.attachable){
-        $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API health passed; GPU residency/performance unqualified.' -State (GetUiBackgroundRunStatus)
+        $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API health passed; GPU residency/performance unqualified.' -State (GetUiBackgroundRunStatus) -ApiKeyStore (GetUiApiKeyStore)
     }elseif($wasPending -and -not $script:bgState.pendingRequestId -and $script:bgState.attention){
         $statusLabel.Text='Background launch needs attention. Review Diagnostics before another start.'
     }
@@ -908,10 +908,42 @@ function ShowDriverGuidance($Diagnostic) {
     try{$devices.SelectedIndex=0;[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     $statusLabel.Text='Driver guidance viewed. No driver changes made.'
 }
+# The optional API key. The window never keeps the key: what it remembers is the store state (readable or not, and the key's public id),
+# re-read only when the store file changed. The key itself is read from the store at the moment of a Show or a Copy and goes nowhere else.
+$script:apiKeyStore=$null;$script:apiKeyStoreStamp=''
+function GetUiApiKeyStore {
+    $stamp=[string]$script:installPath+'|none'
+    try{$storeItem=Get-Item -LiteralPath (Join-Path $script:installPath 'api-key.dat') -Force -ErrorAction Stop;$stamp=[string]$script:installPath+'|'+[string]$storeItem.LastWriteTimeUtc.Ticks+':'+[string]$storeItem.Length}catch{}
+    if($null -eq $script:apiKeyStore -or $stamp -cne $script:apiKeyStoreStamp){
+        try{$script:apiKeyStore=Get-FastLlmApiKeyStoreState -InstallRoot $script:installPath}catch{$script:apiKeyStore=$null}
+        $script:apiKeyStoreStamp=$stamp
+    }
+    return $script:apiKeyStore
+}
+function ReadUiApiKey { try{return [string](Get-FastLlmApiKeyForDisplay -InstallRoot $script:installPath)}catch{return $null} }
+# The one "Create a new key" action: asked, never silent. Returns $true when a new key was created.
+function NewUiApiKey($Owner) {
+    $store=GetUiApiKeyStore
+    $question=Get-FastLlmUiNewKeyConfirmText -HasReadableKey ([bool]($store -and $store.available))
+    if([Windows.Forms.MessageBox]::Show($Owner,$question,'Create a new key','YesNo','Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
+    $change=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action rotate
+    $script:apiKeyStore=$null
+    [void][Windows.Forms.MessageBox]::Show($Owner,(@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.'),'Create a new key','OK','Information')
+    return $true
+}
+# A start that failed on the API key: its own plain message, no retry, and the offer to create a new key when that is what helps.
+function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
+    $failure=Get-FastLlmUiApiKeyFailure -Code $Code
+    ShowFailure (Format-FastLlmUiTypedFailure -Code $Code -Text ([string]$failure.text))
+    if($failure.offerNewKey){
+        try{if(NewUiApiKey $form){$statusLabel.Text='A new API key was created. Give it to your apps (Connect an app), then start again.'}}
+        catch{$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message))}
+    }
+}
 function ShowUiSettings {
     $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,326);$dialog.StartPosition='CenterParent'
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,430);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
     $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
@@ -931,14 +963,38 @@ function ShowUiSettings {
     foreach($idleChoice in @('Never (default)','After 15 minutes','After 30 minutes','After 60 minutes')){[void]$idleBox.Items.Add($idleChoice)}
     $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$dialog.Controls.Add($idleBox)
     $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$dialog.Controls.Add($idleHelp)
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,230);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,230);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    # The API key (off by default). The box only sets the flag; turning it on creates a key when there is none. The key is shown in Connect an app.
+    $keyBox=New-Object Windows.Forms.CheckBox;$keyBox.Text='Require an API key (off by default)';$keyBox.Location=New-Object Drawing.Point(20,232);$keyBox.Size=New-Object Drawing.Size(510,27)
+    $keyBox.Checked=([string]$current.apiKey -ceq 'on');$dialog.Controls.Add($keyBox)
+    $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$dialog.Controls.Add($keyHelp)
+    $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$dialog.Controls.Add($newKeyButton)
+    $newKeyButton.Add_Click({
+        try{[void](NewUiApiKey $dialog)}
+        catch{[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message)),'FastLLM settings','OK','Warning')}
+    })
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,346);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,346);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
         try{
             $savedThinking=$(if($thinkingBox.SelectedIndex -eq 1){'off'}else{'auto'})
             $savedIdle=@(0,15,30,60)[[Math]::Max(0,[int]$idleBox.SelectedIndex)]
+            # The API key first, so a refusal leaves every setting as it was. On creates a key only when there is none; when the stored key
+            # cannot be read it is refused, and the one offer is to create a new key (asked, never silent).
+            $wantKey=[bool]$keyBox.Checked
+            if($wantKey -and [string]$current.apiKey -cne 'on'){
+                try{$null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action on}
+                catch{
+                    if([string]$_.Exception.Data['FastLlmFailureCode'] -cne 'api-key-unavailable'){throw}
+                    if(-not (NewUiApiKey $dialog)){throw 'The API key was not turned on: the stored key cannot be read and no new key was created. Nothing was changed.'}
+                    $null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action on
+                }
+            }elseif(-not $wantKey -and ([string]$current.apiKey -ceq 'on' -or [bool]$current.apiKeyUndetermined)){
+                $null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action off
+            }
+            $script:settingsSavedApiKey=$(if($wantKey){'on'}else{'off'})
+            $script:apiKeyStore=$null
             Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'}) -IdleStopMinutes $savedIdle
             $script:settingsSavedIdle=[int]$savedIdle
             $script:settingsSavedChatPage=$(if($chatBox.Checked){'on'}else{'off'})
@@ -946,15 +1002,15 @@ function ShowUiSettings {
             $script:settingsSavedThinking=$savedThinking
             $dialog.DialogResult='OK';$dialog.Close()
         }catch{
-            [void][Windows.Forms.MessageBox]::Show($dialog,[string]$_.Exception.Message,'FastLLM settings','OK','Warning')
+            [void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message)),'FastLLM settings','OK','Warning')
         }
     })
     SetTrayMenuAvailable $false
-    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     if([string]$result -ceq 'OK'){
         $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage;idleStopMinutes=[int]$script:settingsSavedIdle})
+        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage;idleStopMinutes=[int]$script:settingsSavedIdle;apiKey=[string]$script:settingsSavedApiKey})
         if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
             $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
         }
@@ -977,12 +1033,13 @@ function StartUiBackground {
         -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop)
+        # Only the flag (on or off) is passed; the background host reads the key store itself.
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop,$KeyFlag)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes $Request.apiKey
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
@@ -1007,7 +1064,7 @@ function AttachUiBackground {
     $script:bgEndedByUserStop=$false
     $script:bgState.observation | Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true -Force
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
-    $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.' -State (GetUiBackgroundRunStatus)
+    $statusLabel.Text=Format-FastLlmUiBackgroundReadyStatus -Text 'Ready background inference attached. API smoke checks passed; residency and performance remain unqualified.' -State (GetUiBackgroundRunStatus) -ApiKeyStore (GetUiApiKeyStore)
     $output.Text="Attached to exact request $($attached.requestId) and run $($attached.runId). Closing this window detaches; Stop ends this run."
     SetBusy $false
 }
@@ -1016,9 +1073,12 @@ $startButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:
 $backgroundStartButton.Add_Click({
     try{$null=StartUiBackground}
     catch{
-        $message=$_.Exception.Message
+        $message=ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message)
+        $backgroundFailureCode=[string]$_.Exception.Data['FastLlmFailureCode']
         RefreshUiBackgroundStatus
-        ShowFailure ($message+"`r`n"+(Get-FastLlmUiBackgroundFailureHint -Message $message))
+        # An API key refusal (the flag cannot be known, or the stored key cannot be read) is its own message; nothing was started.
+        if(Test-FastLlmUiApiKeyFailure -Code $backgroundFailureCode){ShowUiApiKeyFailure $backgroundFailureCode $message}
+        else{ShowFailure ($message+"`r`n"+(Get-FastLlmUiBackgroundFailureHint -Message $message))}
     }
 })
 $backgroundAttachButton.Add_Click({try{AttachUiBackground}catch{RefreshUiBackgroundStatus;ShowFailure $_.Exception.Message}})
@@ -1238,7 +1298,12 @@ $bundleButton.Add_Click({try{StartSupportBundle}catch{ShowFailure $_.Exception.M
 # Connect an app: the base URLs, model name and context limit with Copy buttons, the agent warning, the endpoint list and one card per client.
 # "Check the API formats" closes the dialog and runs `doctor -ApiCheck` as a side step (beside a serving run); the pass/fail table opens in a dialog.
 function ShowConnectDialog {
-    $info=Get-FastLlmConnectionInfo -Status (GetUiBackgroundRunStatus) -InstallRoot $script:installPath
+    $connectSettings=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    $info=Get-FastLlmConnectionInfo -Status (GetUiBackgroundRunStatus) -InstallRoot $script:installPath -Settings $connectSettings
+    # The API key row. $info never holds the key: a card carries the token {KEY}, shown as a placeholder; a Copy button reads the key from the
+    # store at that moment and puts it on the clipboard only.
+    $script:apiKeyStore=$null
+    $keyRow=Get-FastLlmUiApiKeyRow -Info $info -Settings $connectSettings -ApiKeyStore (GetUiApiKeyStore)
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='Connect an app';$dialog.Size=New-Object Drawing.Size(820,640);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
@@ -1260,6 +1325,30 @@ function ShowConnectDialog {
         $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
         $y+=36
     }
+    if($keyRow.visible){
+        $keyName=New-Object Windows.Forms.Label;$keyName.Text='API key';$keyName.Location=New-Object Drawing.Point(16,($y+4));$keyName.Size=New-Object Drawing.Size(170,24);$keyName.UseMnemonic=$false;$panel.Controls.Add($keyName)
+        $keyBox=New-Object Windows.Forms.TextBox;$keyBox.Text=[string]$keyRow.mask;$keyBox.ReadOnly=$true;$keyBox.Location=New-Object Drawing.Point(190,$y);$keyBox.Size=New-Object Drawing.Size(360,26);$panel.Controls.Add($keyBox)
+        $keyShow=New-Object Windows.Forms.Button;$keyShow.Text='Show';$keyShow.Location=New-Object Drawing.Point(558,($y-2));$keyShow.Size=New-Object Drawing.Size(84,30);$keyShow.Enabled=[bool]$keyRow.canShow;$panel.Controls.Add($keyShow)
+        $keyCopy=New-Object Windows.Forms.Button;$keyCopy.Text='Copy';$keyCopy.Location=New-Object Drawing.Point(650,($y-2));$keyCopy.Size=New-Object Drawing.Size(90,30);$keyCopy.Enabled=[bool]$keyRow.canShow;$panel.Controls.Add($keyCopy)
+        # Show reads the key from the store and puts it in this box only; Hide masks it again. Nothing else in the window holds it.
+        $keyShow.Add_Click({
+            if([string]$keyShow.Text -ceq 'Show'){
+                $shownKey=ReadUiApiKey
+                if($shownKey){$keyBox.Text=$shownKey;$keyShow.Text='Hide'}else{$keyBox.Text=[string]$keyRow.mask;$statusLabel.Text='The stored API key cannot be read.'}
+                $shownKey=$null
+            }else{$keyBox.Text=[string]$keyRow.mask;$keyShow.Text='Show'}
+        })
+        $keyCopy.Add_Click({
+            $copiedKey=ReadUiApiKey
+            try{if($copiedKey){[Windows.Forms.Clipboard]::SetText($copiedKey)}else{$statusLabel.Text='The stored API key cannot be read.'}}catch{$statusLabel.Text='Could not copy the API key.'}
+            $copiedKey=$null
+        })
+        $y+=36
+    }
+    if($keyRow.note){
+        $keyNote=New-Object Windows.Forms.Label;$keyNote.Text=[string]$keyRow.note;$keyNote.Location=New-Object Drawing.Point(16,$y);$keyNote.Size=New-Object Drawing.Size(740,40);$keyNote.UseMnemonic=$false
+        $panel.Controls.Add($keyNote);$y+=44
+    }
     if($info.agentWarning){
         $warn=New-Object Windows.Forms.Label;$warn.Text=[string]$info.agentWarning;$warn.Location=New-Object Drawing.Point(16,$y);$warn.Size=New-Object Drawing.Size(740,60);$warn.UseMnemonic=$false;$warn.ForeColor=[Drawing.Color]::DarkRed
         $panel.Controls.Add($warn);$y+=66
@@ -1269,12 +1358,18 @@ function ShowConnectDialog {
     $panel.Controls.Add($endpointLabel);$y+=120
     foreach($client in @($info.clients)){
         $title=New-Object Windows.Forms.Label;$title.Text=[string]$client.title;$title.Font=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold);$title.Location=New-Object Drawing.Point(16,$y);$title.Size=New-Object Drawing.Size(500,24);$title.UseMnemonic=$false;$panel.Controls.Add($title)
+        # The button keeps the card with its {KEY} token (never the key). On a click the key is read from the store and put into the copied text only.
         $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=[string]$client.snippet;$panel.Controls.Add($copy)
-        $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
+        $copy.Add_Click({param($sender,$e)
+            $cardKey=$null
+            if(([string]$sender.Tag).Contains('{KEY}')){$cardKey=ReadUiApiKey;if(-not $cardKey){$statusLabel.Text='The stored API key cannot be read, so the card was copied without it.'}}
+            try{[Windows.Forms.Clipboard]::SetText((Get-FastLlmConnectCopyText -Snippet ([string]$sender.Tag) -Key $cardKey))}catch{$statusLabel.Text='Could not copy the card.'}
+            $cardKey=$null
+        })
         $y+=30
         $lineCount=@(([string]$client.snippet) -split "`n").Count
         $snippetBox=New-Object Windows.Forms.TextBox;$snippetBox.Multiline=$true;$snippetBox.ReadOnly=$true;$snippetBox.ScrollBars='Vertical';$snippetBox.WordWrap=$true
-        $snippetBox.Text=([string]$client.snippet) -replace "`n",[Environment]::NewLine
+        $snippetBox.Text=(Get-FastLlmConnectDisplayText -Snippet ([string]$client.snippet)) -replace "`n",[Environment]::NewLine
         $snippetBox.Location=New-Object Drawing.Point(16,$y);$snippetBox.Size=New-Object Drawing.Size(724,[Math]::Min(190,24+18*$lineCount));$panel.Controls.Add($snippetBox);$y+=$snippetBox.Height+6
         foreach($docUrl in @($client.docUrls)){
             $link=New-Object Windows.Forms.LinkLabel;$link.Text='Documentation: '+$docUrl;$link.Location=New-Object Drawing.Point(16,$y);$link.AutoSize=$true;$link.Tag=[string]$docUrl;$panel.Controls.Add($link)
@@ -1617,7 +1712,7 @@ $timer.Add_Tick({
                     # Open chat and the ready-only actions follow this window's own run, not only a background one.
                     $runStatus=$null;if($isCurrentRun){$runStatus=$s}
                     if(UpdateUiRunState $runStatus $true){SetBusy $true}
-                    if($isCurrentRun -and $s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s;$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
+                    if($isCurrentRun -and $s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s -ApiKeyStore $(if($s.PSObject.Properties['apiKey']){GetUiApiKeyStore});$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
                     if($isCurrentRun -and $s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
                         $setupLine=Get-FastLlmUiRunSetupLine -State $s
@@ -1695,6 +1790,11 @@ $timer.Add_Tick({
                 if(Test-FastLlmUiTypedHipFailure -Code $failureCode){
                     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'error' -ErrorMessage $text
                     ShowFailure (Format-FastLlmUiTypedFailure -Code $failureCode -Text $text);return
+                }
+                # An API key failure is shown as its own message and is never retried: a second start must not run without the key.
+                if(Test-FastLlmUiApiKeyFailure -Code $failureCode){
+                    $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'error' -ErrorMessage ([string](Get-FastLlmUiApiKeyFailure -Code $failureCode).text)
+                    ShowUiApiKeyFailure $failureCode $text;return
                 }
                 $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-failed' -ErrorMessage $text
                 if($script:flow.phase -eq 'preview'){LaunchUiPhase;return}

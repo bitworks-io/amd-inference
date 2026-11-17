@@ -233,6 +233,9 @@ function Get-FastLlmUiBackgroundText {
     # A host that ended with no Stop and no recorded failure (for example a sign-out): nothing to review.
     $failureCode=if($State.observation.PSObject.Properties['failureCode']){[string]$State.observation.failureCode}else{''}
     $failureReason=if($State.observation.PSObject.Properties['failureReason']){[string]$State.observation.failureReason}else{''}
+    # A background run that ended on an API key failure says so; nothing is running, and FastLLM does not start without the key.
+    if($failureCode -ceq 'api-key-unavailable'){return 'The last background run did not start: the API key is on, but the stored key cannot be read. Create a new key in Settings, then start again.'}
+    if($failureCode -cmatch '^api-key-[a-z-]{1,40}$'){return 'The last background run did not start because of the API key ('+$failureCode+'). Check the API key in Settings, then start again.'}
     if($observedRequestId -and [string]$State.observation.phase -ceq 'stale' -and -not $failureCode -and -not $failureReason){
         return 'The last background run ended without Stop (for example when you signed out). Start in background to start a new one.'
     }
