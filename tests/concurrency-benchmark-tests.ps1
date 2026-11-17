@@ -135,6 +135,7 @@ try {
     Check ($report.reportStatus -eq 'aborted' -and $report.abortReasonCode -eq 'failed-wave' -and
         $report.failedCondition.requestedClients -eq 8 -and $report.failedCondition.warmup -eq $true -and
         $report.warmupWaves[-1].aggregateGeneratedTokensPerSecond -eq 560 -and $report.warmupWaves[-1].failedRequests -eq 1) 'failed warmup halts escalation and retains its shared wall denominator'
+    Check ($report.sourceProvenance.servingProfileHelperSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'concurrency report states the serving-profile helper hash'
     $disk=Get-Content -LiteralPath $reportPath -Raw
     Check ($disk.Contains('native-windows-api-private-concurrency-benchmark') -and -not $disk.Contains('"content":"X"')) 'private report is saved without completion text'
 

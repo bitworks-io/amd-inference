@@ -214,7 +214,7 @@ try{
     Fails {Get-FastLlmBackendParityCases} 'changed G3 prompt was accepted'
 }finally{Set-Item Function:Get-FastLlmTaskWorkloadCases -Value $savedCases}
 $hashes=Get-FastLlmBackendParitySourceHashes -ToolSourcePath $tool -TaskQualityToolSourcePath $taskQuality
-foreach($key in @('diagnostic','tool','taskQualityParser','cpuReferenceLab','workload','semanticSmoke','module','benchmark','runtime','httpHost','listener')){
+foreach($key in @('diagnostic','tool','taskQualityParser','cpuReferenceLab','workload','semanticSmoke','servingProfile','module','benchmark','runtime','httpHost','listener')){
     Check ($hashes.Contains($key) -and [string]$hashes[$key] -cmatch '^[0-9a-f]{64}$') "missing source hash $key"
 }
 Check (Test-FastLlmBackendParitySourceHashes $hashes $tool $taskQuality) 'unchanged sources rejected'

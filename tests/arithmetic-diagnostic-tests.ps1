@@ -63,7 +63,7 @@ try{
     Check $referenceDriftRejected 'changed historical arithmetic reference identity was accepted'
 }finally{Set-Item Function:Get-FastLlmTaskWorkloadReferenceSha256 -Value $savedReferenceHasher}
 $hashes=Get-FastLlmArithmeticDiagnosticSourceHashes -ToolSourcePath $tool -TaskQualityToolSourcePath $taskQuality
-foreach($key in @('diagnostic','tool','taskQualityParser','workload','semanticSmoke','module','benchmark','runtime','httpHost','listener')){
+foreach($key in @('diagnostic','tool','taskQualityParser','workload','semanticSmoke','servingProfile','module','benchmark','runtime','httpHost','listener')){
     Check ($hashes.Contains($key) -and [string]$hashes[$key] -cmatch '^[0-9a-f]{64}$') "missing source hash $key"
 }
 Check (Test-FastLlmArithmeticDiagnosticSourceHashes $hashes $tool $taskQuality) 'unchanged sources rejected'

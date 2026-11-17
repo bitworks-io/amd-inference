@@ -67,6 +67,7 @@ try{
     $saved=[IO.File]::ReadAllText($out)
     Check ($saved -notmatch '7 \+ 5|"Ada"|"READY"|private response' -and $saved -match 'native-windows-hip-semantic-smoke-experiment') 'Prompt/completion text leaked.'
     Check (@($report.cases|Where-Object {$_.promptSha256 -notmatch '^[0-9a-f]{64}$'}).Count -eq 0) 'Fixed case prompt hashes missing.'
+    Check ($report.sourceProvenance.servingProfileSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'HIP smoke did not state the serving-profile source hash.'
     Reject {& $invoke $out $read $request $check} 'Existing report was overwritten.'
 }finally{if(Test-Path $out){Remove-Item -LiteralPath $out -Force}}
 $script:answers=@('13','{"name":"Ada","age":38}','ready');$script:requests=0

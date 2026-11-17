@@ -257,6 +257,8 @@ try{
         }
     Check ($postMalformed.reportStatus -ceq 'aborted' -and $postMalformed.abortReasonCode -ceq 'props-unavailable' -and
         $postMalformed.methodology.issuedTaskRequests -eq 32) 'Post-props malformed body falsely completed.'
+    $samplerHashes=Get-FastLlmSamplerDiagnosticSourceHashes -ToolPath $tool -TaskToolPath $taskTool
+    Check ($samplerHashes.Contains('servingProfile') -and [string]$samplerHashes['servingProfile'] -cmatch '^[0-9a-f]{64}$') 'Sampler diagnostic does not report the serving-profile source hash.'
     $savedHashTest=(Get-Command Test-FastLlmSamplerDiagnosticSourceHashes).ScriptBlock
     try{
         Set-Item Function:Test-FastLlmSamplerDiagnosticSourceHashes -Value {return $false}

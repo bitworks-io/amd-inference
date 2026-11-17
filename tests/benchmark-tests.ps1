@@ -160,6 +160,11 @@ $profileCases=[ordered]@{
     '--parallel 2'=(New-ProfileStatus @{} (Set-ProfileArgument $realArgs '--parallel' '2'))
     '--cache-type-k q8_0'=(New-ProfileStatus @{} (Set-ProfileArgument $realArgs '--cache-type-k' 'q8_0'))
     '--cache-type-v q8_0'=(New-ProfileStatus @{} (Set-ProfileArgument $realArgs '--cache-type-v' 'q8_0'))
+    '-np 1'=(New-ProfileStatus @{} ($realArgs+@('-np','1')))
+    '-np=2'=(New-ProfileStatus @{} ($realArgs+@('-np=2')))
+    '-ctk f16'=(New-ProfileStatus @{} ($realArgs+@('-ctk','f16')))
+    '-ctv=q8_0'=(New-ProfileStatus @{} ($realArgs+@('-ctv=q8_0')))
+    '-c 8192'=(New-ProfileStatus @{} ($realArgs+@('-c','8192')))
 }
 foreach($name in $profileCases.Keys){
     Check ((Get-ThinkingRefusal $profileCases[$name]) -ceq $profileMessage) "benchmark-refuses-serving-profile: $name throws the exact message"

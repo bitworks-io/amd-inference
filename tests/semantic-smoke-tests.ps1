@@ -74,6 +74,7 @@ try{
             [pscustomobject]@{Status=200;Body=(@{choices=@(@{finish_reason='stop';message=@{role='assistant';content=$script:answers[$script:requests-1]}});usage=@{completion_tokens=4}}|ConvertTo-Json -Depth 8)}}
     Check ($report.cases.Count -eq 3 -and $report.passed -eq 3 -and $report.failed -eq 0) 'Three fixed semantic cases did not pass.'
     Check ($report.backend -ceq 'Vulkan') 'Smoke report did not carry the serving backend.'
+    Check ($report.sourceProvenance.servingProfileSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'Smoke report did not state the serving-profile source hash.'
     Check ($script:requests -eq 3 -and $script:checks -ge 7) 'Each request lacked a process check before and after.'
     Check ($report.qualification.semanticQualified -eq $false -and $report.qualification.performanceQualified -eq $false) 'Smoke report claimed qualification.'
     $bytes=[IO.File]::ReadAllText($out)
@@ -235,6 +236,39 @@ $vocabulary=Get-FastLlmServingProfileVocabulary
 $moduleSets=& $module {[pscustomobject]@{slots=@($script:FastLlmServingProfileSlots);cacheTypes=@($script:FastLlmServingProfileCacheTypes)}}
 Check ((@($vocabulary.slots) -join ',') -ceq (@($moduleSets.slots) -join ',') -and (@($vocabulary.cacheTypes) -join ',') -ceq (@($moduleSets.cacheTypes) -join ',')) 'The serving-profile closed sets are the module row-validation sets.'
 Check ((@($vocabulary.slots) -join ',') -ceq '1,2' -and (@($vocabulary.cacheTypes) -join ',') -ceq 'f16,q8_0') 'The serving-profile closed sets changed.'
+# Closed profile ids: the product's own list, in the shared vocabulary, with no pattern of its own.
+Check ((@((Get-FastLlmServingProfileVocabulary).profileIds) -join ',') -ceq 'default,long') 'The serving-profile ids are not default and long.'
+$moduleIds=@(& $module {@($script:FastLlmServingProfileIds)})
+Check (($moduleIds -join ',') -ceq 'default,long') 'The module profile ids changed.'
+$runText=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1') -Raw
+Check ($runText -cnotmatch '\$profile\b(?!Id)' -and -not $runText.Contains('[a-z][a-z0-9-]')) 'The serving-profile file shadows $PROFILE or keeps a profile id pattern.'
+foreach($id in @('bogus','xlong','short','a')){
+    $s=New-ProfileState;$s.recipe.profile=$id
+    Check (Test-Refuses $s -Allow) "A lowercase profile id outside the product list was accepted: $id."
+}
+foreach($id in @('default','long')){
+    Check ([bool](Assert-FastLlmSemanticSmokeState (New-ProfileState 2 8192 $id 'q8_0') -AllowServingProfile)) "A product profile id was refused: $id."
+}
+# llama-server short aliases are never the default run.
+$aliases=[ordered]@{'-np 1'=@('-np','1');'-np=1'=@('-np=1');'-np 2'=@('-np','2');'-ctk f16'=@('-ctk','f16');'-ctk q8_0'=@('-ctk','q8_0');'-ctk=f16'=@('-ctk=f16')
+    '-ctv f16'=@('-ctv','f16');'-ctv=q8_0'=@('-ctv=q8_0');'-c 8192'=@('-c','8192');'-c=8192'=@('-c=8192')}
+foreach($name in $aliases.Keys){
+    $d=New-DefaultRealState;$d.recipe.requestedArguments=@($d.recipe.requestedArguments)+@($aliases[$name])
+    Check (Test-FastLlmServingProfileRun $d) "The predicate missed the short form $name."
+    Check (Test-Refuses $d) "The default check accepted the short form $name."
+    Check (Test-Refuses $d -Allow) "The opt-in check accepted the short form $name on a default run."
+    $q=New-ProfileState;$q.recipe.requestedArguments=@($q.recipe.requestedArguments)+@($aliases[$name])
+    Check (Test-Refuses $q) "The default check accepted a profile state with the short form $name."
+    Check (Test-Refuses $q -Allow) "The opt-in check accepted a profile state with the short form $name."
+}
+# The product never writes a short form: its argument builder and goldens carry the long forms only.
+$builderText=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw
+Check ($builderText -cnotmatch "'-(np|ctk|ctv|c)'" -and (Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/default-server-arguments.json') -Raw) -cnotmatch '"-(np|ctk|ctv|c)"' -and (Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/optin-server-arguments.json') -Raw) -cnotmatch '"-(np|ctk|ctv|c)"') 'The product argument builder or a golden carries a short form.'
+# Lane names are case-sensitive at binding, like the lane check.
+foreach($call in @({Assert-FastLlmSemanticSmokeState $script:state -AcceptedLanes @('VULKAN-B10698')},{Invoke-FastLlmSemanticSmokeCore -OutputPath (TempPath) -ReadState {$script:state} -CheckProcess {param($S)} -Request {throw 'x'} -AcceptedLanes @('Vulkan-b10698')})){
+    $caught=$null;try{& $call}catch{$caught=$_}
+    Check ($null -ne $caught -and $caught.FullyQualifiedErrorId -like 'ParameterArgumentValidationError*') 'A lane name in the wrong case was not refused at binding.'
+}
 # Lanes have one source of truth.
 $laneNames=@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name)
 Check ($laneNames.Count -eq 2 -and $laneNames -ccontains 'vulkan-b10698' -and $laneNames -ccontains 'hip-b11658') 'The lane table changed.'

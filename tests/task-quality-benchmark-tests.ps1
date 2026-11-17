@@ -244,6 +244,28 @@ try {
     Check ((Get-TaskQualityMaskedReportText $defaultReportText) -ceq (Get-TaskQualityMaskedReportText $fixtureText)) 'default report is identical to the report main writes for the same inputs'
     Check (-not $defaultReportText.Contains('servingSetup') -and $report.methodology.serverSlots -eq 1 -and
         $report.methodology.interpretation -ceq 'Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification') 'default report has no serving setup and keeps the single-slot wording'
+    # The serving-profile file is a dependency of the state check, so it is one of the reported source hashes, checked at the same points.
+    Check ((Get-TaskQualitySourceHashes).Contains('servingProfile') -and (Get-TaskQualitySourceHashes)['servingProfile'] -cmatch '^[0-9a-f]{64}$') 'source provenance covers the serving-profile file'
+    Check ((@($report.sourceProvenance.sha256.PSObject.Properties.Name|Sort-Object) -join ',') -ceq (@(((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/task-quality-default-report.json') -Raw|ConvertFrom-Json).sourceProvenance.sha256.PSObject.Properties.Name)|Sort-Object) -join ',') -and
+        $report.sourceProvenance.sha256.servingProfile -cmatch '^[0-9a-f]{64}$') 'default report source entries are the fixture entries, including the serving-profile file'
+    $copyRoot=Join-Path $root 'copy'
+    foreach($relative in @('tools','src')){$null=New-Item -ItemType Directory -Path (Join-Path $copyRoot $relative) -Force}
+    $copied=@('tools/task-quality-benchmark.ps1','tools/concurrency-benchmark.ps1','src/FastLlm.TaskWorkload.ps1','src/FastLlm.SemanticSmoke.ps1','src/ProcessHost.cs',
+        'src/FastLlm.psm1','src/FastLlm.Benchmark.ps1','src/FastLlm.Runtime.ps1','src/WindowsGpuTelemetry.cs','src/FastLlm.ServingProfileRun.ps1')
+    foreach($relative in $copied){Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('../'+$relative)) -Destination (Join-Path $copyRoot $relative)}
+    $savedToolPath=$script:FastLlmTaskQualityToolPath
+    try{
+        $script:FastLlmTaskQualityToolPath=Join-Path $copyRoot 'tools/task-quality-benchmark.ps1'
+        $script:waveCalls=0
+        $editWave={param($Base,$Path,$Bodies,$Count,$TimeoutMs)
+            $script:waveCalls++
+            if($script:waveCalls -eq 1){[IO.File]::AppendAllText((Join-Path $copyRoot 'src/FastLlm.ServingProfileRun.ps1'),"`n# edited during the run")}
+            & $goodWave $Base $Path $Bodies $Count $TimeoutMs
+        }
+        $edited=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'profile-file-edit.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+            -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $editWave
+        Check ($edited.reportStatus -ceq 'aborted' -and $edited.sourceProvenance.endStatus -ceq 'changed' -and $edited.bindingStatus -ceq 'compromised' -and $script:waveCalls -eq 1) 'an edit to the serving-profile file during the run leaves the source status not verified'
+    }finally{$script:FastLlmTaskQualityToolPath=$savedToolPath}
     # Every state check the tool makes carries the lane list and the switch.
     $script:assertCalls=@()
     $null=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'calls-default.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
