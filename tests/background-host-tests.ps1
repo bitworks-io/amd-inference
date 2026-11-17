@@ -104,6 +104,44 @@ try {
         canary=[pscustomobject]@{passed=$true};processIdentity=$hostIdentity}
     $stop = Stop-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA -ExpectedRunId $runA
     Assert-BackgroundTest ($stop.stopRequested -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)))) 'Exact run-scoped stop was not sent.'
+    # A model switch (R3): between the two runs the owner is the same live run. The status shows it active (phase switching), not attachable (no server
+    # to check), with the old run id (so the window keeps its attachment), and Stop is accepted for that run.
+    Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)) -Force
+    function New-GapStatus([string]$Phase,[string]$StopReason,$Block,[string]$Request=$requestA,[string]$Run=$runA) {
+        $document=[ordered]@{active=$true;phase=$Phase;runId=$Run;backgroundRequestId=$Request;modelId='model-a';endpoint='http://127.0.0.1:8080/v1';processIdentity=$hostIdentity}
+        if($StopReason){$document.stopReason=$StopReason}
+        if($null -ne $Block){$document['switch']=$Block}
+        return [pscustomobject]$document
+    }
+    $pendingBlock=[pscustomobject]@{from='model-a';to='model-b';pending=$true;result=$null;failureCode=$null}
+    $script:mockStatus = New-GapStatus 'stopped' 'switch' $pendingBlock
+    $gapStatus = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapStatus.active -and $gapStatus.occupied -and -not $gapStatus.attachable -and $gapStatus.phase -ceq 'switching' -and $gapStatus.runId -ceq $runA -and $gapStatus.requestId -ceq $requestA) 'Switch gap: the same live run is reported active (phase switching) with its run id and request id.'
+    Assert-BackgroundTest ([int]$gapStatus.hostIdentity.pid -eq [int]$hostIdentity.pid -and [long]$gapStatus.hostIdentity.startUtcTicks -eq [long]$hostIdentity.startUtcTicks) 'Switch gap: the owner identity is the same host process.'
+    $gapStop = Stop-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA -ExpectedRunId $runA
+    Assert-BackgroundTest ($gapStop.stopRequested -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)))) 'Switch gap: Stop is accepted for the run the window is attached to.'
+    Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)) -Force
+    $script:mockStatus = New-GapStatus 'failed' '' ([pscustomobject]@{from='model-a';to='model-b';pending=$true;result=$null;failureCode='startup-or-runtime-check-failed'})
+    $gapFailed = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapFailed.active -and $gapFailed.phase -ceq 'switching' -and -not $gapFailed.attachable) 'Switch gap: a target that failed (restore follows) is still the same live run.'
+    $script:mockStatus = New-GapStatus 'loading' '' ([pscustomobject]@{from='model-a';to='model-b';pending=$true;result=$null;failureCode=$null}) $requestA $runB
+    $gapLoading = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapLoading.active -and $gapLoading.phase -ceq 'loading' -and $gapLoading.runId -ceq $runB) 'Switch gap: the target run loading under the same owner is the new active run.'
+    $script:mockStatus = [pscustomobject]@{active=$true;phase='ready';runId=$runB;backgroundRequestId=$requestA;modelId='model-a';endpoint='http://127.0.0.1:8080/v1';
+        canary=[pscustomobject]@{passed=$true};processIdentity=$hostIdentity;'switch'=[pscustomobject]@{from='model-a';to='model-b';result='ok';failureCode=$null}}
+    $gapReady = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapReady.active -and $gapReady.attachable -and $gapReady.runId -ceq $runB -and $gapReady.phase -ceq 'ready') 'Switch gap: after the target is ready the owner is attachable, with the new run id.'
+    foreach ($notGap in @(
+        @{ n='another owner''s request id'; s=(New-GapStatus 'stopped' 'switch' $pendingBlock $requestB) },
+        @{ n='a stopped run with no switch block'; s=(New-GapStatus 'stopped' 'switch' $null) },
+        @{ n='a stopped run that was not stopped for a switch'; s=(New-GapStatus 'stopped' 'user' $pendingBlock) },
+        @{ n='a switch that is not pending'; s=(New-GapStatus 'stopped' 'switch' ([pscustomobject]@{from='model-a';to='model-b';result='ok';failureCode=$null})) },
+        @{ n='a switch whose failure is final'; s=(New-GapStatus 'failed' '' ([pscustomobject]@{from='model-a';to='model-b';result='failed-stopped';failureCode='x'})) },
+        @{ n='a switch block that is not an object'; s=(New-GapStatus 'stopped' 'switch' 'pending') })) {
+        $script:mockStatus = $notGap.s
+        $notGapStatus = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+        Assert-BackgroundTest ($notGapStatus.occupied -and -not $notGapStatus.active -and $notGapStatus.phase -ceq 'occupied-unverified') "Switch gap: $($notGap.n) is not the gap (still unverified, as before)."
+    }
     $owner.phase = 'stopped'
     Write-FastLlmBackgroundDocument -Path $ownerPath -Value $owner
     $stopped = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source

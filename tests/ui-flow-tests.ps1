@@ -1288,6 +1288,7 @@ $switchRefusals=[ordered]@{
     'switch-target-size-mismatch'='Did not switch: the file of model-b is incomplete or damaged. model-a keeps running.'
     'switch-target-no-consent'='Did not switch: the license of model-b has not been accepted on this PC. model-a keeps running.'
     'switch-target-already-serving'='model-b is already running.'
+    'switch-target-experimental-model'='Did not switch: an experimental model is started from the command line, not by a switch. model-a keeps running.'
     'switch-recipe-experimental'='Did not switch: an experimental setup is started from the command line, not by a switch. model-a keeps running.'
     'switch-recipe-needs-default-options'='Did not switch: a measured setup needs the default context profile and one request at a time. model-a keeps running.'
     'switch-cancelled-by-stop'='The switch to model-b was cancelled by Stop.'

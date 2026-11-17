@@ -58,7 +58,7 @@ function Get-ModeStarts($World,[string]$ModelId) {
 $st=@{ events=(New-Object 'Collections.Generic.List[string]'); world=$null; enginePath=$enginePath; planCalls=(New-Object 'Collections.Generic.List[object]')
     planFailures=@{}; hashResults=@{}; hashHold=@{}; hashMarker=$null; inventoryHold=$false; stopAtSwitchWrite=$false; snapshots=(New-Object 'Collections.Generic.List[object]'); writes=(New-Object 'Collections.Generic.List[object]')
     lockFree=(New-Object 'Collections.Generic.List[string]'); runs=(New-Object 'Collections.Generic.List[object]'); thinking='auto'; chatPage='off'; serverExtra=@()
-    hardwareCalls=0; fixedFree=$null; requiredFree=@{}; needsProbe=@(); planHardware=(New-Object 'Collections.Generic.List[object]'); basisWrites=(New-Object 'Collections.Generic.List[object]') }
+    hardwareCalls=0; fixedFree=$null; requiredFree=@{}; needsProbe=@(); planHardware=(New-Object 'Collections.Generic.List[object]'); basisWrites=(New-Object 'Collections.Generic.List[object]'); kv=@{}; requiredFreeLong=@{} }
 function Read-StatusText($World) {
     $path=Join-Path $World.state 'status.json'
     for ($attempt=0; $attempt -lt 20; $attempt++) { try { if (Test-Path -LiteralPath $path) { return [IO.File]::ReadAllText($path) } } catch { $null=$_ }; Start-Sleep -Milliseconds 15 }
@@ -78,7 +78,11 @@ $st.newPlan={
     $chatPage='off'; if ($Bound -and $Bound.ContainsKey('ChatPage')) { $chatPage=[string]$Bound['ChatPage'] }
     $recipe=[pscustomobject]@{ id=$null; origin='manual'; label='Chosen by you'; evidenceUrl=$null; expected=$null }
     if ($RecipeId) { $recipe=[pscustomobject]@{ id=$RecipeId; origin='bitworks'; label='Measured by Bitworks on this card'; evidenceUrl=$null; expected=$null } }
-    return [pscustomobject]@{
+    $servingProfile=$null
+    $kvProfile='default'; if ($Bound -and $Bound.ContainsKey('KvContextProfile')) { $kvProfile=[string]$Bound['KvContextProfile'] }
+    $kvSlots=1; if ($Bound -and $Bound.ContainsKey('KvSlots')) { $kvSlots=[int]$Bound['KvSlots'] }
+    if ($kvProfile -cne 'default' -or $kvSlots -ne 1) { $servingProfile=[pscustomobject]@{ id=$kvProfile; slots=$kvSlots; contextPerSlot=[int](1024/$kvSlots) } }
+    $plan=[pscustomobject]@{
         schemaVersion=1; catalogVersion='switch-test'; hardwareFingerprint='synthetic'; profile='balanced'
         requestedModelId=$ModelId; requestedRecipeId=$(if($RecipeId){$RecipeId}else{$null}); recovered=$false; requestedContextSize=0
         requestedServerPort=[int]$world.port; requestedThinking=$thinking; requestedChatPage=$chatPage; allowExperimentalModel=$false
@@ -88,6 +92,8 @@ $st.newPlan={
         serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$($world.port)",'-ModeFile',(Join-Path $world.root ([string]$model.id+'.modes')),'-Model',[string]$model.id,'-Context','1024')+@($st.serverExtra)
         recipe=$recipe; warnings=@()
     }
+    if ($null -ne $servingProfile) { $plan | Add-Member -NotePropertyName servingProfile -NotePropertyValue $servingProfile }
+    return $plan
 }
 $savedSupervisor=& $module { (Get-Command Invoke-FastLlmSupervisedServer).ScriptBlock }
 $savedWriteState=& $module { (Get-Command Write-FastLlmState).ScriptBlock }
@@ -171,7 +177,10 @@ $savedWriteState=& $module { (Get-Command Write-FastLlmState).ScriptBlock }
             if ($NoEngineExecution -and $script:switchTest.needsProbe -contains [string]$ModelId) {
                 throw (New-FastLlmTypedFailure -Code 'fixture-plan-cannot-probe-engine' -Message "Recipe for '$ModelId' runs on the HIP engine, whose devices can only be listed by running it.")
             }
-            if ($script:switchTest.requiredFree.ContainsKey([string]$ModelId) -and [int64]$script:switchTest.requiredFree[[string]$ModelId] -gt [int64]@($Hardware.adapters)[0].freeVramMiB) {
+            $neededFree=$null
+            if ($script:switchTest.requiredFree.ContainsKey([string]$ModelId)) { $neededFree=[int64]$script:switchTest.requiredFree[[string]$ModelId] }
+            if ($KvContextProfile -ceq 'long' -and $script:switchTest.requiredFreeLong.ContainsKey([string]$ModelId)) { $neededFree=[int64]$script:switchTest.requiredFreeLong[[string]$ModelId] }
+            if ($null -ne $neededFree -and $neededFree -gt [int64]@($Hardware.adapters)[0].freeVramMiB) {
                 $doesNotFit=New-Object InvalidOperationException("Requested model '$ModelId' does not fit the estimated current free-memory budget. No other model was substituted.")
                 $doesNotFit.Data['FastLlmFailureCode']='model-does-not-fit'
                 throw $doesNotFit
@@ -182,7 +191,7 @@ $savedWriteState=& $module { (Get-Command Write-FastLlmState).ScriptBlock }
     function script:Invoke-FastLlmSupervisedServer {
         param($Plan,[string]$InstallRoot,[int]$LoadTimeoutSeconds=300,[string]$CatalogPath,[string]$VulkanBarMitigation='off',[switch]$ThroughputCanary,[switch]$SelfTest,[string]$DeviceBinding='off',[int]$IdleStopMinutes=0,[switch]$AllowSwitch,$SwitchContext,$ApiKeyHolder)
         $script:switchTest.events.Add('supervisor:'+[string]$Plan.model.id)
-        $run=@{ modelId=[string]$Plan.model.id; bound=(@($PSBoundParameters.Keys | Sort-Object) -join ','); idleStopMinutes=[int]$IdleStopMinutes; selfTest=[bool]$SelfTest; runId=$null; finalText=$null; failed=$false; thinking=[string]$Plan.requestedThinking }
+        $run=@{ modelId=[string]$Plan.model.id; bound=(@($PSBoundParameters.Keys | Sort-Object) -join ','); idleStopMinutes=[int]$IdleStopMinutes; selfTest=[bool]$SelfTest; runId=$null; finalText=$null; failed=$false; thinking=[string]$Plan.requestedThinking; plan=$Plan }
         $script:switchTest.runs.Add($run)
         try { return (& $script:switchTestOriginalSupervisor @PSBoundParameters) }
         catch { $run.failed=$true; throw }
@@ -197,7 +206,7 @@ function Use-World($World) {
     $st.world=$World
     $st.events.Clear();$st.planCalls.Clear();$st.snapshots.Clear();$st.lockFree.Clear();$st.runs.Clear();$st.writes.Clear()
     $st.planFailures=@{};$st.hashResults=@{};$st.hashHold=@{};$st.hashMarker=$null;$st.inventoryHold=$false;$st.stopAtSwitchWrite=$false;$st.serverExtra=@()
-    $st.hardwareCalls=0;$st.fixedFree=$null;$st.requiredFree=@{};$st.needsProbe=@();$st.planHardware.Clear();$st.basisWrites.Clear()
+    $st.hardwareCalls=0;$st.fixedFree=$null;$st.requiredFree=@{};$st.needsProbe=@();$st.planHardware.Clear();$st.basisWrites.Clear();$st.kv=@{};$st.requiredFreeLong=@{}
     Install-SwitchTestWorld -Module $module -WorldPath $World.path
 }
 function Set-BusyWait([double]$Seconds,[int]$PollMilliseconds) { & $module { param($S,$P) $script:FastLlmSwitchBusyWaitSeconds=$S; $script:FastLlmSwitchBusyPollMilliseconds=$P } $Seconds $PollMilliseconds }
@@ -224,6 +233,15 @@ function New-Step([hashtable]$Wait,[string]$Action,[hashtable]$More=@{}) {
     if ($Wait) { $step.wait=$Wait }
     foreach ($key in $More.Keys) { $step[$key]=$More[$key] }
     return $step
+}
+# The stop request files of a world are gone, waited for with a bounded deadline (the supervisor removes its own after the document is final).
+function Wait-StopFilesGone($World,[double]$Seconds) {
+    $deadline=[Diagnostics.Stopwatch]::StartNew()
+    while ($deadline.Elapsed.TotalSeconds -lt $Seconds) {
+        if (@(Get-ChildItem -LiteralPath $World.state -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'stop-*' }).Count -eq 0) { return $true }
+        Start-Sleep -Milliseconds 50
+    }
+    return (@(Get-ChildItem -LiteralPath $World.state -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'stop-*' }).Count -eq 0)
 }
 function Format-RawRequest([hashtable]$Fields) { return (ConvertTo-Json -InputObject $Fields -Compress) }
 
@@ -255,7 +273,7 @@ function Invoke-SwitchScenario {
     $exit=$null;$failure=$null;$clientExited=$false
     try {
         $client.Start() | Out-Null
-        $plan=& $st.newPlan 'model-a' '' @{ Thinking=$st.thinking; ChatPage=$st.chatPage }
+        $plan=& $st.newPlan 'model-a' '' (@{ Thinking=$st.thinking; ChatPage=$st.chatPage }+$st.kv)
         $arguments=@{ Plan=$plan; CatalogPath=$catalog; InstallRoot=$World.root; LoadTimeoutSeconds=$script:ScenarioLoadTimeoutSeconds }
         if (-not $NoAllowSwitch) { $arguments.AllowSwitch=$true }
         foreach ($key in $StartOptions.Keys) { $arguments[$key]=$StartOptions[$key] }
@@ -661,7 +679,7 @@ try {
     Check ($r.runs.Count -eq 1 -and -not ($r.events -join ',').Contains('supervisor:model-b') -and (@(Get-ModeStarts $world 'model-b')).Count -eq 0) 'stop during a switch: the target is never started'
     Check ($r.final.runId -ceq $r.runs[0].runId -and $r.final.phase -ceq 'stopped' -and $r.final.stopReason -ceq 'user' -and (Test-Block (Get-Block $r.final) 'model-a' 'model-b' 'refused' 'switch-cancelled-by-stop' $false)) 'stop during a switch: the document ends as a user stop with switch = { result refused, failureCode switch-cancelled-by-stop }'
     $results=@(Get-LogEvents (Get-RunLog $world $r.runs[0].runId) 'switch-result')
-    Check ($results.Count -eq 1 -and $results[0].result -ceq 'refused' -and $results[0].failureCode -ceq 'switch-cancelled-by-stop' -and @(Get-ChildItem -LiteralPath $world.state -Force | Where-Object { $_.Name -like 'stop-*' }).Count -eq 0) 'stop during a switch: the outcome is in the run log and the stop request is removed'
+    Check ($results.Count -eq 1 -and $results[0].result -ceq 'refused' -and $results[0].failureCode -ceq 'switch-cancelled-by-stop' -and (Wait-StopFilesGone $world 10)) 'stop during a switch: the outcome is in the run log and the stop request is removed'
 
     # ================= scenario: a stop that lands while the old server is shutting down for the switch =================
     $world=New-SwitchWorld 'stop-shutdown'
@@ -987,12 +1005,12 @@ try {
     $validHardware=[pscustomobject]@{ schemaVersion=1; source='switch-test'; backend='Vulkan'; enginePath=(Join-Path (Join-Path $basisUnit.root 'engines') 'mock-engine')
         adapters=@([pscustomobject]@{ device='Vulkan0'; name='Switch Test Adapter'; vendorId='1002'; vramMiB=24000; freeVramMiB=20000; driverVersion='test'; backend='Vulkan'; isAmd=$true; isIntegrated=$false }) }
     $basisPath=Join-Path $basisUnit.state ('switch-basis-'+$basisRunId+'.json')
-    function Write-Basis($Hardware,[string]$RunId=$basisRunId) { return (& $module { param($I,$R,$H) Write-FastLlmSwitchBasis -InstallRoot $I -RunId $R -Hardware $H } $basisUnit.root $RunId $Hardware) }
+    function Write-Basis($Hardware,[string]$RunId=$basisRunId,$PlanOptions=@{ Profile='balanced' }) { return (& $module { param($I,$R,$H,$O) Write-FastLlmSwitchBasis -InstallRoot $I -RunId $R -Hardware $H -PlanOptions $O } $basisUnit.root $RunId $Hardware $PlanOptions) }
     function Read-Basis([string]$RunId=$basisRunId) { return (& $module { param($I,$R) Read-FastLlmSwitchBasis -InstallRoot $I -RunId $R } $basisUnit.root $RunId) }
     function Write-RawBasis([string]$Text,[string]$RunId=$basisRunId) { [IO.File]::WriteAllText((Join-Path $basisUnit.state ('switch-basis-'+$RunId+'.json')),$Text,(New-Object Text.UTF8Encoding($false))) }
     function Remove-RawBasis([string]$RunId=$basisRunId) { $rawPath=Join-Path $basisUnit.state ('switch-basis-'+$RunId+'.json'); if (Test-Path -LiteralPath $rawPath) { [IO.File]::Delete($rawPath) } }
     function New-BasisText([hashtable]$Override=@{},[string[]]$Drop=@()) {
-        $document=[ordered]@{ schemaVersion=1; runId=$basisRunId; capturedAt=(Get-Date).ToUniversalTime().ToString('o'); hardware=$validHardware }
+        $document=[ordered]@{ schemaVersion=1; runId=$basisRunId; capturedAt=(Get-Date).ToUniversalTime().ToString('o'); hardware=$validHardware; planOptions=[pscustomobject]@{ Profile='balanced'; ServerPort=18080; Thinking='off' } }
         foreach ($key in $Override.Keys) { $document[$key]=$Override[$key] }
         foreach ($key in $Drop) { $document.Remove($key) }
         return (ConvertTo-Json -InputObject $document -Depth 8)
@@ -1000,7 +1018,7 @@ try {
     $wrote=Write-Basis $validHardware
     $basisDocument=Read-FastLlmJson -Path $basisPath
     Check ($wrote -eq $true -and (Test-Path -LiteralPath $basisPath -PathType Leaf)) 'basis: a valid reading is written to state\switch-basis-<runId>.json'
-    Check ((@($basisDocument.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'capturedAt,hardware,runId,schemaVersion' -and [int]$basisDocument.schemaVersion -eq 1 -and $basisDocument.runId -ceq $basisRunId) 'basis: the file holds exactly schemaVersion 1, runId, capturedAt and hardware'
+    Check ((@($basisDocument.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'capturedAt,hardware,planOptions,runId,schemaVersion' -and [int]$basisDocument.schemaVersion -eq 1 -and $basisDocument.runId -ceq $basisRunId) 'basis: the file holds exactly schemaVersion 1, runId, capturedAt, hardware and planOptions'
     $capturedMatch=[regex]::Match([IO.File]::ReadAllText($basisPath),'"capturedAt":\s*"(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)"')
     $capturedAt=[datetime]::MinValue
     Check ($capturedMatch.Success -and [datetime]::TryParse($capturedMatch.Groups[1].Value,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AdjustToUniversal,[ref]$capturedAt)) 'basis: capturedAt is a UTC ISO time'
@@ -1033,6 +1051,20 @@ try {
         @{ name='hardware with an impossible free number'; text=(New-BasisText @{ hardware=[pscustomobject]@{ backend='Vulkan'; adapters=@([pscustomobject]@{ device='Vulkan0'; name='x'; vramMiB=100; freeVramMiB=200; backend='Vulkan'; isAmd=$true }) } }) },
         @{ name='hardware with an unknown backend'; text=(New-BasisText @{ hardware=[pscustomobject]@{ backend='Metal'; adapters=@([pscustomobject]@{ device='Vulkan0'; name='x'; vramMiB=100; freeVramMiB=50; backend='Metal'; isAmd=$true }) } }) },
         @{ name='an extra field'; text=(New-BasisText @{ prompt='hello' }) },
+        @{ name='no planOptions'; text=(New-BasisText @{} @('planOptions')) },
+        @{ name='planOptions that is not an object'; text=(New-BasisText @{ planOptions='balanced' }) },
+        @{ name='planOptions with an extra name'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; ModelId='model-b' } }) },
+        @{ name='planOptions carrying a path'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; RecipesPath='C:\\x' } }) },
+        @{ name='planOptions with no Profile'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Thinking='off' } }) },
+        @{ name='a Profile that is not a profile'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='turbo' } }) },
+        @{ name='a Profile of the wrong type'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile=7 } }) },
+        @{ name='a ServerPort of the wrong type'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; ServerPort='8080' } }) },
+        @{ name='a ServerPort out of range'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; ServerPort=80 } }) },
+        @{ name='a Thinking that is not a thinking value'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; Thinking='maybe' } }) },
+        @{ name='a ChatPage of the wrong type'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; ChatPage=$true } }) },
+        @{ name='KvSlots out of range'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; KvSlots=3 } }) },
+        @{ name='a KvContextProfile that is not a profile'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; KvContextProfile='huge' } }) },
+        @{ name='AllowExperimentalModel as text'; text=(New-BasisText @{ planOptions=[pscustomobject]@{ Profile='balanced'; AllowExperimentalModel='yes' } }) },
         @{ name='an array'; text=('['+(New-BasisText)+']') },
         @{ name='not JSON'; text='{"schemaVersion":1,' },
         @{ name='empty'; text='' }
@@ -1048,6 +1080,7 @@ try {
     if ($env:OS -ceq 'Windows_NT') { [IO.Directory]::Delete($basisPath) } else { [IO.File]::Delete($basisPath) }
     Check ($null -eq $linked -and (Test-Path -LiteralPath $linkTargetBasis)) 'basis: a reparse point at the basis path reads as null and is not followed'
     $oversizeHardware=[pscustomobject]@{ schemaVersion=1; source='switch-test'; backend='Vulkan'; filler=('x'*70000); adapters=$validHardware.adapters }
+    Check ((Write-Basis $validHardware $basisRunId @{ Profile='balanced'; ModelId='model-b' }) -eq $false -and (Write-Basis $validHardware $basisRunId $null) -eq $false -and -not (Test-Path -LiteralPath $basisPath)) 'basis: options that are not on the allowlist (or none) are not written'
     Check ((Write-Basis $oversizeHardware) -eq $false -and -not (Test-Path -LiteralPath $basisPath)) 'basis: a reading that would not fit in 64 KiB is not written'
     Check ((Write-Basis ([pscustomobject]@{ synthetic=$true })) -eq $false -and -not (Test-Path -LiteralPath $basisPath)) 'basis: a reading that fails Assert-FastLlmHardware is not written'
     Check ((Write-Basis $validHardware 'not-a-run-id') -eq $false -and @(Get-ChildItem -LiteralPath $basisUnit.state -Filter 'switch-basis-*').Count -eq 0) 'basis: no file is written for a run id that is not a run id'
@@ -1077,7 +1110,7 @@ try {
     Check ([int]@($firstBasis.hardware.adapters)[0].freeVramMiB -eq $firstRunFree -and [int]@($secondBasis.hardware.adapters)[0].freeVramMiB -eq $secondRunFree -and $firstRunFree -ne $secondRunFree) 'basis run: each basis holds exactly the hardware its run''s own plan was built from (the pre-load reading; for the switch target the fresh reading taken after the old server stopped)'
     Check ($planFree.Count -eq 3 -and $secondRunFree -eq $planFree[2] -and $planFree[1] -ne $planFree[2]) 'basis run: the target''s basis is the reading of its own start, not the one the switch planned with before it'
     Check (@(Get-ChildItem -LiteralPath $world.state -Force | Where-Object { $_.Name -like 'switch-basis-*' }).Count -eq 0) 'basis run: every basis file is removed when its run ends, with the request file'
-    Check (@(Find-MarkerFiles $world).Count -eq 0 -and ($firstBasis.PSObject.Properties.Name -join ',') -ceq 'schemaVersion,runId,capturedAt,hardware') 'basis run: nothing but schemaVersion, runId, capturedAt and hardware is saved'
+    Check (@(Find-MarkerFiles $world).Count -eq 0 -and ($firstBasis.PSObject.Properties.Name -join ',') -ceq 'schemaVersion,runId,capturedAt,hardware,planOptions') 'basis run: nothing but schemaVersion, runId, capturedAt, hardware and planOptions is saved'
 
     $world=New-SwitchWorld 'basis-default'
     Use-World $world
@@ -1126,7 +1159,7 @@ try {
     Use-World $pickerWorld
     $st.fixedFree=20000;$st.requiredFree=@{ 'model-h'=99999 };$st.needsProbe=@('model-g')
     $pickerRunId=('a1'*16)
-    function Write-BasisFor($World,$Hardware,[string]$RunId) { return (& $module { param($I,$R,$H) Write-FastLlmSwitchBasis -InstallRoot $I -RunId $R -Hardware $H } $World.root $RunId $Hardware) }
+    function Write-BasisFor($World,$Hardware,[string]$RunId,$PlanOptions=@{ Profile='balanced' }) { return (& $module { param($I,$R,$H,$O) Write-FastLlmSwitchBasis -InstallRoot $I -RunId $R -Hardware $H -PlanOptions $O } $World.root $RunId $Hardware $PlanOptions) }
     Check ((Write-BasisFor $pickerWorld $validHardware $pickerRunId) -eq $true) 'picker: setup, the current run saved the reading its plan was built from (20000 MiB free)'
     $pickerStatus=New-PickerStatus $pickerWorld $pickerRunId
     $st.planCalls.Clear();$st.events.Clear()
@@ -1135,14 +1168,14 @@ try {
     Check ($rows.Count -eq $catalogIds.Count -and ($rows | ForEach-Object { [string]$_.id }) -join ',' -ceq ($catalogIds -join ',')) 'picker rows: one row per catalog model, in catalog order'
     Check (@($rows | Where-Object { (@($_.PSObject.Properties.Name) -join ',') -cne 'id,displayName,state,reason' }).Count -eq 0 -and @($rows | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.displayName) -or [string]::IsNullOrWhiteSpace([string]$_.reason) }).Count -eq 0) 'picker rows: every row is { id, displayName, state, reason } with a name and a reason'
     $stateList=(@($rows | ForEach-Object { [string]$_.id + '=' + [string]$_.state }) -join ',')
-    Check ($stateList -ceq 'model-a=current,model-b=fits,model-c=not-installed,model-d=refused,model-e=refused,model-f=check-at-switch,model-g=check-at-switch,model-h=does-not-fit') "picker rows: each model gets the verdict of its own check [$stateList]"
+    Check ($stateList -ceq 'model-a=current,model-b=fits,model-c=not-installed,model-d=refused,model-e=refused,model-f=refused,model-g=check-at-switch,model-h=does-not-fit') "picker rows: each model gets the verdict of its own check [$stateList]"
     Check ((Get-Row $rows 'model-b').reason -clike 'Fits (estimate from the free memory measured when the current model started;*FastLLM checks again when it switches*') 'picker rows: a fit is worded as an estimate that FastLLM checks again at the switch'
     Check ((Get-Row $rows 'model-c').reason -ceq 'Not installed') 'picker rows: a model that is not installed says so and nothing else'
     Check ((Get-Row $rows 'model-d').reason -ceq (& $module { Get-FastLlmSwitchRefusalText -Code 'switch-target-size-mismatch' -ModelId 'model-d' }) -and (Get-Row $rows 'model-e').reason -ceq (& $module { Get-FastLlmSwitchRefusalText -Code 'switch-target-no-consent' -ModelId 'model-e' })) 'picker rows: a refusal is worded with the same sentence the switch refuses with (size mismatch, no consent)'
-    Check ((Get-Row $rows 'model-f').reason -clike '*can''t tell yet whether this fits; it checks when it switches*' -and (Get-Row $rows 'model-g').reason -ceq (Get-Row $rows 'model-f').reason) 'picker rows: what is not known says FastLLM checks when it switches'
+    Check ((Get-Row $rows 'model-f').reason -ceq (& $module { Get-FastLlmSwitchRefusalText -Code 'switch-target-experimental-model' -ModelId 'model-f' }) -and (Get-Row $rows 'model-g').reason -clike '*can''t tell yet whether this fits; it checks when it switches*') 'picker rows: an experimental model is refused with the switch''s sentence; what is not known says FastLLM checks when it switches'
     Check ((Get-Row $rows 'model-h').reason -clike 'Does not fit*free memory measured when the current model started*' -and (Get-Row $rows 'model-a').reason -ceq 'Running now') 'picker rows: a does-not-fit and the running model are worded plainly'
     Check ($script:pickerOutput.Count -eq 0) 'picker rows: the function writes nothing to the console or the window (no Write-Host output)'
-    Check (@($st.events | Where-Object { $_ -ceq 'inventory' -or $_ -clike 'supervisor:*' -or $_ -clike 'hash:*' -or $_ -ceq 'INSTALL-MODEL' -or $_ -ceq 'NETWORK-SAVE' }).Count -eq 0 -and @($st.events | Where-Object { $_ -clike 'plan:*' }).Count -eq 4) 'picker rows: no inventory, no hash, no download and no run: only the planner is asked, once for each model that passed the switch''s own checks'
+    Check (@($st.events | Where-Object { $_ -ceq 'inventory' -or $_ -clike 'supervisor:*' -or $_ -clike 'hash:*' -or $_ -ceq 'INSTALL-MODEL' -or $_ -ceq 'NETWORK-SAVE' }).Count -eq 0 -and @($st.events | Where-Object { $_ -clike 'plan:*' }).Count -eq 3) 'picker rows: no inventory, no hash, no download and no run: only the planner is asked, once for each model that passed the switch''s own checks'
     $helperCall=$st.planCalls[0]
     Check ($helperCall.ContainsKey('NoEngineExecution') -and $helperCall.ContainsKey('Hardware') -and [int]@($helperCall['Hardware'].adapters)[0].freeVramMiB -eq 20000 -and @($st.planHardware | Where-Object { [int]@($_.adapters)[0].freeVramMiB -ne 20000 }).Count -eq 0) 'picker rows: the planner is given the saved reading (never a fresh inventory) and may not run an engine'
     Check (@(Get-ChildItem -LiteralPath $pickerWorld.state -Force | Where-Object { $_.Name -notlike 'switch-basis-*' -and $_.Name -notlike 'operation.lock' }).Count -eq 0) 'picker rows: computing rows writes nothing'
@@ -1151,7 +1184,7 @@ try {
     $noBasisStatus=New-PickerStatus $pickerWorld ('b2'*16)
     $rows=Get-PickerRows $pickerWorld $noBasisStatus
     $stateList=(@($rows | ForEach-Object { [string]$_.id + '=' + [string]$_.state }) -join ',')
-    Check ($stateList -ceq 'model-a=current,model-b=check-at-switch,model-c=not-installed,model-d=refused,model-e=refused,model-f=check-at-switch,model-g=check-at-switch,model-h=check-at-switch') "picker rows: with no basis for the run every model that needs the planner is check-at-switch [$stateList]"
+    Check ($stateList -ceq 'model-a=current,model-b=check-at-switch,model-c=not-installed,model-d=refused,model-e=refused,model-f=refused,model-g=check-at-switch,model-h=check-at-switch') "picker rows: with no basis for the run every model that needs the planner is check-at-switch [$stateList]"
     Check ((Get-Row $rows 'model-b').reason -clike '*can''t tell yet whether this fits; it checks when it switches*') 'picker rows: the missing-basis reason says FastLLM checks when it switches'
     Copy-Item -LiteralPath (Join-Path $pickerWorld.state ('switch-basis-'+$pickerRunId+'.json')) -Destination (Join-Path $pickerWorld.state ('switch-basis-'+('b2'*16)+'.json'))
     $rows=Get-PickerRows $pickerWorld $noBasisStatus
@@ -1183,7 +1216,7 @@ try {
     & $module { param($Original,$S)
         $script:switchTestOriginalOptions=$Original
         function script:Get-FastLlmSwitchPlanOptions {
-            param($PreviousPlan,$Request,$CatalogPath,$InstallRoot)
+            param($PreviousPlan,$ServingOptions,$Request,$CatalogPath,$InstallRoot)
             $built=& $script:switchTestOriginalOptions @PSBoundParameters
             if ($script:switchTest.ContainsKey('mutateOptions') -and $script:switchTest['mutateOptions']) { $built.ContextSize=777 }
             return $built
@@ -1194,7 +1227,7 @@ try {
     $null=Get-PickerRows $pickerWorld $pickerStatus
     $mutated=@($st.planCalls | Where-Object { $_.ContainsKey('ContextSize') -and [int]$_['ContextSize'] -eq 777 })
     $st.mutateOptions=$false
-    Check ($mutated.Count -eq 4) 'picker mutation check: when the option helper is changed, every plan the picker asks for changes with it (the picker has no options of its own)'
+    Check ($mutated.Count -eq 3) 'picker mutation check: when the option helper is changed, every plan the picker asks for changes with it (the picker has no options of its own)'
     $st.planCalls.Clear()
     $null=& $module { param($P,$C,$R) New-FastLlmSwitchTargetPlan -PreviousPlan $P -Request ([pscustomobject]@{ modelId='model-b'; recipeId=$null }) -CatalogPath $C -InstallRoot $R } (& $st.newPlan 'model-a' '' @{}) $catalog $pickerWorld.root
     Check (-not $st.planCalls[$st.planCalls.Count-1].ContainsKey('ContextSize')) 'picker mutation check: with the helper as it ships, the real switch asks the planner exactly what it did before'
@@ -1202,9 +1235,69 @@ try {
     Check ($pickerText.Contains('Get-FastLlmSwitchPlanOptions') -and $pickerText -notmatch 'RecipesPath|GpuVariantsPath|\bProfile\s*=|KvContextProfile|KvSlots') 'picker mutation check: the picker names the option helper and none of the planner options itself'
     Check ($pickerText -notmatch '\.Message|-like|-match|-clike|-cmatch|-contains' -and $pickerText.Contains("FastLlmFailureCode")) 'picker mutation check: a failure is classified by its typed code, with no test of message text'
 
+    # ================= the basis carries the switch's serving options (what Get-FastLlmSwitchPlanOptions takes from the run's real plan) =================
+    foreach ($optCase in @(@{ name='default'; kv=@{}; mode='ok' }, @{ name='slots'; kv=@{ KvSlots=2 }; mode='slots2' }, @{ name='long'; kv=@{ KvContextProfile='long' }; mode='ok' })) {
+        $w=New-SwitchWorld ('basis-options-'+$optCase.name) @{ 'model-a'=@($optCase.mode) }
+        Use-World $w
+        $st.kv=$optCase.kv
+        $r=Invoke-SwitchScenario -Label ('basis-options-'+$optCase.name) -World $w -Steps @((New-Step @{ phase='ready'; modelId='model-a' } 'stop' @{ timeoutSeconds=120 }))
+        $savedBasis=$st.basisWrites[0].Text | ConvertFrom-Json
+        $servingOf=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $r.runs[0].plan
+        $savedNames=(@($savedBasis.planOptions.PSObject.Properties.Name) | Sort-Object) -join ','
+        $sameValues=$true
+        foreach ($key in $servingOf.Keys) { if (([string]$savedBasis.planOptions.$key) -cne ([string]$servingOf[$key])) { $sameValues=$false } }
+        Check ($r.completed -and $savedNames -ceq ((@($servingOf.Keys) | Sort-Object) -join ',') -and $sameValues) ("basis options ($($optCase.name) run): planOptions equal what Get-FastLlmSwitchServingOptions returns for the run's plan [$savedNames]")
+        Check (-not ($savedNames -match 'Path|ModelId|RecipeId|Catalog|InstallRoot|Hardware')) ("basis options ($($optCase.name) run): no path, model or hardware is among the options")
+        if ($optCase.name -ceq 'slots') { Check ([int]$savedBasis.planOptions.KvSlots -eq 2 -and -not $savedBasis.planOptions.PSObject.Properties['KvContextProfile']) 'basis options (slots run): the slot count is carried' }
+        if ($optCase.name -ceq 'long') { Check ($savedBasis.planOptions.KvContextProfile -ceq 'long' -and -not $savedBasis.planOptions.PSObject.Properties['KvSlots']) 'basis options (long run): the context profile is carried' }
+        if ($optCase.name -ceq 'default') { Check ((@($savedBasis.planOptions.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'Profile,ServerPort' -and $savedBasis.planOptions.Profile -ceq 'balanced') 'basis options (default run): only the profile and the port, as a default switch asks' }
+    }
+    # A run on the long-context profile: a target that fits the default options does not fit its long profile. The real switch fails with the typed
+    # code, and the picker (which uses the options the run saved) says so, where default options would have said fits.
+    $w=New-SwitchWorld 'basis-long-fit' @{ 'model-a'=@('ok','ok') }
+    Add-PickerModels $w
+    Use-World $w
+    $st.fixedFree=20000;$st.requiredFree=@{ 'model-h'=15000 };$st.requiredFreeLong=@{ 'model-h'=25000 };$st.kv=@{ KvContextProfile='long' }
+    $r=Invoke-SwitchScenario -Label 'basis-long-fit' -World $w -Steps @(
+        (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-h' }),
+        (New-Step @{ phase='ready'; modelId='model-a'; switchResult='failed-restored' } 'stop'))
+    $longBlock=Get-Block $r.final
+    Check ($r.completed -and (Test-Block $longBlock 'model-a' 'model-h' 'failed-restored' 'model-does-not-fit' $false)) 'long profile: the real switch to a model that does not fit the long profile fails with model-does-not-fit and restores'
+    $longBasis=$st.basisWrites[0]
+    [IO.File]::WriteAllText((Join-Path $w.state $longBasis.FileName),$longBasis.Text,(New-Object Text.UTF8Encoding($false)))
+    $longStatus=Get-RunFinal $r.runs[0]
+    $longRows=Get-PickerRows $w $longStatus
+    Check ((Get-Row $longRows 'model-h').state -ceq 'does-not-fit') 'long profile: the picker says does-not-fit, as the real switch found'
+    $defaultText=$longBasis.Text | ConvertFrom-Json
+    $defaultText.planOptions=[pscustomobject]@{ Profile='balanced'; ServerPort=[int]$w.port }
+    [IO.File]::WriteAllText((Join-Path $w.state $longBasis.FileName),(ConvertTo-Json -InputObject $defaultText -Depth 12),(New-Object Text.UTF8Encoding($false)))
+    Check ((Get-Row (Get-PickerRows $w $longStatus) 'model-h').state -ceq 'fits') 'long profile: with default options the same target would have read fits (the saved options are what decide it)'
+    $tampered=$longBasis.Text | ConvertFrom-Json
+    $tampered.planOptions | Add-Member -NotePropertyName ModelId -NotePropertyValue 'model-b'
+    [IO.File]::WriteAllText((Join-Path $w.state $longBasis.FileName),(ConvertTo-Json -InputObject $tampered -Depth 12),(New-Object Text.UTF8Encoding($false)))
+    Check ((Get-Row (Get-PickerRows $w $longStatus) 'model-h').state -ceq 'check-at-switch' -and (Get-Row (Get-PickerRows $w $longStatus) 'model-b').state -ceq 'check-at-switch') 'tampered options: an extra name in planOptions makes the whole basis unusable (check-at-switch)'
+    $tampered2=$longBasis.Text | ConvertFrom-Json
+    $tampered2.planOptions.KvContextProfile=7
+    [IO.File]::WriteAllText((Join-Path $w.state $longBasis.FileName),(ConvertTo-Json -InputObject $tampered2 -Depth 12),(New-Object Text.UTF8Encoding($false)))
+    Check ((Get-Row (Get-PickerRows $w $longStatus) 'model-h').state -ceq 'check-at-switch') 'tampered options: a value of the wrong type makes the whole basis unusable (check-at-switch)'
+
+    # An experimental model is refused by the switch's own check, before anything is stopped.
+    $expTarget=& $module { param($C,$R) Resolve-FastLlmSwitchTarget -CatalogPath $C -InstallRoot $R -ModelId 'model-f' -CurrentModelId 'model-a' } $catalog $pickerWorld.root
+    Check (-not $expTarget.ok -and $expTarget.code -ceq 'switch-target-experimental-model' -and $expTarget.modelId -ceq 'model-f') 'experimental: Resolve-FastLlmSwitchTarget refuses an experimental model with switch-target-experimental-model'
+    Check ((& $module { Get-FastLlmSwitchRefusalText -Code 'switch-target-experimental-model' -ModelId 'model-f' }) -clike '*experimental model*command line*not by a switch*') 'experimental: the refusal text says it is started from the command line, not by a switch'
+    $expWorld=New-SwitchWorld 'experimental-raw' @{ 'model-a'=@('ok') }
+    Add-PickerModels $expWorld
+    Use-World $expWorld
+    $r=Invoke-SwitchScenario -Label 'experimental-raw' -World $expWorld -Steps @(
+        (New-Step @{ phase='ready'; modelId='model-a' } 'raw' @{ text=(Format-RawRequest @{ schemaVersion=1; modelId='model-f'; force=$false }) }),
+        (New-Step @{ phase='ready'; modelId='model-a'; switchResult='refused' } 'stop'))
+    $expBlock=Get-Block (@($r.observations | Where-Object { $null -ne $_.switch })[-1])
+    Check ($r.completed -and $r.runs.Count -eq 1 -and (@(Get-ModeStarts $expWorld 'model-f')).Count -eq 0 -and (Test-Block $expBlock 'model-a' 'model-f' 'refused' 'switch-target-experimental-model' $false)) 'experimental: a request for an experimental model that reaches the supervisor is refused (switch.result refused) and the server is not restarted'
+    Check (@($r.observations | Where-Object { $_.runId -ceq $r.runs[0].runId -and $_.phase -cin @('stopped','failed') -and $_.stopReason -ceq 'switch' }).Count -eq 0 -and @(Get-ChildItem -LiteralPath $expWorld.state -Force | Where-Object { $_.Name -like 'switch-*' }).Count -eq 0) 'experimental: the current run was never stopped for a switch and no request file is left'
+
     # ================= parity: the picker's verdict against what the real switch does with the same hardware =================
     # Hardware is fixed (20000 MiB free). model-b fits, model-h needs more than that, model-g needs an engine probe a fixture plan cannot make
-    # (a real plan makes it), model-f is experimental (the real start refuses it unless the run was started with it), c is not downloaded, d has
+    # (a real plan makes it), model-f is experimental (the switch refuses it before anything stops), c is not downloaded, d has
     # the wrong size, e has no consent. The real switch is run (a supervised start with a client asking for it); the picker is asked about the
     # same hardware: the basis the real run saved, and the status the real run wrote.
     $parity=@()
@@ -1227,14 +1320,12 @@ try {
     $fitsCase=Invoke-ParityScenario 'model-b' 'ok' 'model-b'
     $notFitCase=Invoke-ParityScenario 'model-h' 'failed-restored' 'model-a'
     $probeCase=Invoke-ParityScenario 'model-g' 'ok' 'model-g'
-    $experimentalCase=Invoke-ParityScenario 'model-f' 'failed-restored' 'model-a'
-    foreach ($case in @($fitsCase,$notFitCase,$probeCase,$experimentalCase)) { Check ($case.run.completed -and $null -eq $case.run.failure) ("parity: the real switch to "+$case.row.id+" ran to its end") }
+    foreach ($case in @($fitsCase,$notFitCase,$probeCase)) { Check ($case.run.completed -and $null -eq $case.run.failure) ("parity: the real switch to "+$case.row.id+" ran to its end") }
     $realBlock={ param($Case) $b=Get-Block $Case.run.final; if ($b.result -ceq 'ok') { return 'ok' }; return ([string]$b.result+':'+[string]$b.failureCode) }
     Check ((& $realBlock $fitsCase) -ceq 'ok' -and $fitsCase.row.state -ceq 'fits') 'parity fits: the real switch succeeds and the picker says fits'
     Check ((& $realBlock $notFitCase) -ceq 'failed-restored:model-does-not-fit' -and $notFitCase.row.state -ceq 'does-not-fit') 'parity does not fit: the real switch fails with the typed code model-does-not-fit (and restores) and the picker says does-not-fit'
     Check ((& $realBlock $probeCase) -ceq 'ok' -and $probeCase.row.state -ceq 'check-at-switch') 'parity engine probe: the real switch succeeds (a real plan runs the probe); the picker, whose fixture plan refuses it, says check-at-switch and never does-not-fit'
-    Check ((& $realBlock $experimentalCase) -ceq 'failed-restored:switch-start-failed' -and $experimentalCase.row.state -ceq 'check-at-switch') 'parity experimental: the real switch cannot plan an experimental model (and restores); the picker does not claim it fits, and says check-at-switch'
-    foreach ($case in @($fitsCase,$notFitCase,$probeCase,$experimentalCase)) {
+    foreach ($case in @($fitsCase,$notFitCase,$probeCase)) {
         $basisSaved=$case.basisText | ConvertFrom-Json
         Check ($basisSaved.runId -ceq $case.status.runId -and [int]@($basisSaved.hardware.adapters)[0].freeVramMiB -eq 20000) ("parity: the basis the real run saved for "+$case.row.id+"'s scenario is the injected 20000 MiB reading, under that run")
         $realKeys=@($case.realCall.Keys | Sort-Object)
@@ -1255,7 +1346,7 @@ try {
     $refusalLock=Enter-FastLlmOperation $refusalWorld.root
     try {
         Write-FastLlmState -InstallRoot $refusalWorld.root -State ([ordered]@{ schemaVersion=1; runId=$refusalRunId; phase='ready'; modelId='model-a'; switchAllowed=$true })
-        foreach ($case in @(@{id='model-c';code='switch-target-not-installed';state='not-installed'},@{id='model-d';code='switch-target-size-mismatch';state='refused'},@{id='model-e';code='switch-target-no-consent';state='refused'})) {
+        foreach ($case in @(@{id='model-c';code='switch-target-not-installed';state='not-installed'},@{id='model-d';code='switch-target-size-mismatch';state='refused'},@{id='model-e';code='switch-target-no-consent';state='refused'},@{id='model-f';code='switch-target-experimental-model';state='refused'})) {
             $thrown=$null
             try { Request-FastLlmSwitch -InstallRoot $refusalWorld.root -CatalogPath $catalog -ModelId $case.id 6>$null | Out-Null } catch { $thrown=$_.Exception }
             $row=Get-Row $refusalRows $case.id

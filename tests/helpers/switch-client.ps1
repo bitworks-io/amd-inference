@@ -22,6 +22,9 @@ $steps = @($document.steps)
 $observations = New-Object 'System.Collections.Generic.List[object]'
 $outcomes = New-Object 'System.Collections.Generic.List[object]'
 $script:lastKey = ''
+# Runs a stop was already asked for (by a step or by the release loop below): one stop request per run is enough, and asking again after the supervisor
+# has consumed it would leave a stop file behind for a run that is over.
+$script:stoppedRuns = @{}
 $clock = [Diagnostics.Stopwatch]::StartNew()
 
 function Get-Value($Object, [string] $Name) {
@@ -111,7 +114,7 @@ function Invoke-Step($Step, $Status) {
         }
         'directory' { New-Item -ItemType Directory -Path $requestPath | Out-Null }
         'remove-directory' { [IO.Directory]::Delete($requestPath) }
-        'stop' { Request-FastLlmStop -InstallRoot $InstallRoot 6>$null | Out-Null }
+        'stop' { $script:stoppedRuns[$runId] = $true; Request-FastLlmStop -InstallRoot $InstallRoot 6>$null | Out-Null }
         'stop-then-raw' {
             # Both requests are on disk before the supervisor's next pass can end: the stop file first, the switch request right after it.
             [IO.File]::WriteAllText($stopPath, '')
@@ -156,7 +159,11 @@ finally {
         $switching = [bool] ($null -ne $status -and [bool] (Get-Value $status 'active') -and [bool] (Get-Value (Get-Value $status 'switch') 'pending'))
         if ($serving -or $switching) {
             $quiet = 0
-            try { Request-FastLlmStop -InstallRoot $InstallRoot 6>$null | Out-Null } catch { $null = $_ }
+            $releaseRunId = [string] (Get-Value $status 'runId')
+            if (-not $script:stoppedRuns.ContainsKey($releaseRunId)) {
+                $script:stoppedRuns[$releaseRunId] = $true
+                try { Request-FastLlmStop -InstallRoot $InstallRoot 6>$null | Out-Null } catch { $null = $_; $script:stoppedRuns.Remove($releaseRunId) }
+            }
         }
         else { $quiet++ }
         Start-Sleep -Milliseconds 200

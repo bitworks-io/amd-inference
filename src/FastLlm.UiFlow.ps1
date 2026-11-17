@@ -1371,6 +1371,7 @@ function Get-FastLlmUiSwitchStatusText {
                 'switch-target-no-consent' { return "Did not switch: the license of $to has not been accepted on this PC. $keeps" }
                 'switch-target-already-serving' { return "$to is already running." }
                 'switch-target-unknown' { return "Did not switch: the requested model is not in FastLLM's list. $keeps" }
+                'switch-target-experimental-model' { return "Did not switch: an experimental model is started from the command line, not by a switch. $keeps" }
                 'switch-recipe-experimental' { return "Did not switch: an experimental setup is started from the command line, not by a switch. $keeps" }
                 'switch-recipe-needs-default-options' { return "Did not switch: a measured setup needs the default context profile and one request at a time. $keeps" }
                 'switch-cancelled-by-stop' { return "The switch to $to was cancelled by Stop." }

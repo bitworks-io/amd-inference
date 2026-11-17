@@ -228,4 +228,51 @@ $idleActive=New-FastLlmUiBackgroundState
 $idleActive.attachedRequestId=$requestId;$idleActive.attachedRunId=$runId
 $null=Set-FastLlmUiBackgroundObservation $idleActive $ready
 Assert-True ($null -ne $idleActive.attachedRequestId) 'A run that is still active keeps its attachment (the idle handling needs an inactive run).'
+# A model switch: the host reports the gap between the two runs as the same live run (phase switching), and the window stays attached and follows the new run.
+$newRunId='dddddddddddddddddddddddddddddddd'
+$restoredRunId='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+$gapObservation=[pscustomobject]@{phase='switching';active=$true;attachable=$false;occupied=$true;requestId=$requestId;runId=$runId;hostIdentity=$hostIdentity;readyIdentityVerified=$false}
+$loadingTarget=[pscustomobject]@{phase='loading';active=$true;attachable=$false;occupied=$true;requestId=$requestId;runId=$newRunId;hostIdentity=$hostIdentity;readyIdentityVerified=$false}
+$readyTarget=[pscustomobject]@{phase='ready';active=$true;attachable=$true;occupied=$true;requestId=$requestId;runId=$newRunId;hostIdentity=$hostIdentity;readyIdentityVerified=$true}
+$readyRestored=[pscustomobject]@{phase='ready';active=$true;attachable=$true;occupied=$true;requestId=$requestId;runId=$restoredRunId;hostIdentity=$hostIdentity;readyIdentityVerified=$true}
+$switchState=New-FastLlmUiBackgroundState
+$null=Set-FastLlmUiBackgroundObservation $switchState $ready
+$switchState.attachedRequestId=$requestId;$switchState.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $switchState $gapObservation
+Assert-True ($switchState.attachedRequestId -ceq $requestId -and $switchState.attachedRunId -ceq $runId -and -not $switchState.attention) 'switch gap: the window stays attached to the run while its host switches models'
+Assert-True ((Get-FastLlmUiBackgroundText -State $switchState) -like '*switching models*') 'switch gap: the background line says the attached run is switching models, not that its health failed'
+$stopSent=$null
+$gapStop=Invoke-FastLlmUiBackgroundStop -State $switchState -Stop {param($Request,$Run) $script:stopSent=@($Request,$Run); [pscustomobject]@{stopRequested=$true;runId=$Run}}
+Assert-True ($gapStop.stopRequested -and $script:stopSent[1] -ceq $runId) 'switch gap: Stop works through the attached path for the run the window is attached to'
+$null=Set-FastLlmUiBackgroundObservation $switchState $loadingTarget
+Assert-True ($switchState.attachedRequestId -ceq $requestId -and $switchState.attachedRunId -ceq $newRunId -and -not $switchState.attention) 'switch gap: when the target run starts loading the attachment follows the same host to the new run id'
+$null=Set-FastLlmUiBackgroundObservation $switchState $readyTarget
+Assert-True ($switchState.attachedRunId -ceq $newRunId -and $switchState.attachedRequestId -ceq $requestId -and -not $switchState.attention) 'switch gap: when the target is ready the window is still attached, now to the new run'
+$null=Set-FastLlmUiBackgroundObservation $switchState $readyTarget
+$switchState.attachedRunId='cccccccccccccccccccccccccccccccc'
+$null=Set-FastLlmUiBackgroundObservation $switchState $readyTarget
+Assert-True ($null -eq $switchState.attachedRequestId) 'switch gap: once the switch is over a run id that differs from the attached one is a changed run again (attachment dropped)'
+$restoreState=New-FastLlmUiBackgroundState
+$restoreState.attachedRequestId=$requestId;$restoreState.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $restoreState $gapObservation
+$null=Set-FastLlmUiBackgroundObservation $restoreState $loadingTarget
+$null=Set-FastLlmUiBackgroundObservation $restoreState $gapObservation
+$null=Set-FastLlmUiBackgroundObservation $restoreState $readyRestored
+Assert-True ($restoreState.attachedRequestId -ceq $requestId -and $restoreState.attachedRunId -ceq $restoredRunId -and -not $restoreState.attention) 'switch gap: after a failed target the restored run is followed too'
+$stoppedState=New-FastLlmUiBackgroundState
+$stoppedState.attachedRequestId=$requestId;$stoppedState.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $stoppedState $gapObservation
+$stoppedObservation=[pscustomobject]@{phase='stale';active=$false;attachable=$false;occupied=$false;requestId=$requestId;runId=$null;hostIdentity=$hostIdentity}
+$null=Set-FastLlmUiBackgroundObservation $stoppedState $stoppedObservation
+Assert-True ($null -eq $stoppedState.attachedRequestId -and $stoppedState.attention) 'switch gap: a switch that ends with the host stopped is the usual ended-run handling'
+$otherHost=New-FastLlmUiBackgroundState
+$otherHost.attachedRequestId=$requestId;$otherHost.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $otherHost $ready
+$otherRequest=[pscustomobject]@{phase='loading';active=$true;attachable=$false;occupied=$true;requestId='ffffffffffffffffffffffffffffffff';runId=$newRunId;hostIdentity=$hostIdentity;readyIdentityVerified=$false}
+$null=Set-FastLlmUiBackgroundObservation $otherHost $otherRequest
+Assert-True ($null -eq $otherHost.attachedRequestId) 'switch gap: a different request''s run is never followed, switch or not'
+$noGap=New-FastLlmUiBackgroundState
+$noGap.attachedRequestId=$requestId;$noGap.attachedRunId=$runId
+$null=Set-FastLlmUiBackgroundObservation $noGap $readyTarget
+Assert-True ($null -eq $noGap.attachedRequestId) 'switch gap: with no gap seen, a new run id under the attached request is still a changed run'
 "UI background operational coordination checks passed: $passes"

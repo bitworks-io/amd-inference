@@ -4116,6 +4116,9 @@ function Start-FastLlmServer {
         # The hardware reading this start's plan was just built from: the supervised run saves it as its switch basis (the reading before this run's
         # server loads; for the target of a switch, the one taken after the old server stopped).
         $SwitchContext['basisHardware'] = $freshHardware
+        # ... and the serving options of the plan that runs, as the real switch takes them (no basis without them).
+        $SwitchContext['basisPlanOptions'] = $null
+        try { $SwitchContext['basisPlanOptions'] = Get-FastLlmSwitchServingOptions -PreviousPlan $Plan } catch { $SwitchContext['basisHardware'] = $null }
     }
     # Passed only inside a session with an embedding sidecar, so every other call is the one it always was.
     if ($null -ne $SidecarSession) { $supervisorOptions.SidecarSession = $SidecarSession }
@@ -4210,20 +4213,13 @@ function Start-FastLlmServer {
     return (Invoke-FastLlmSwitchLoop -ExitCode $serverExitCode -Context $SwitchContext -StartOptions $switchStartOptions -CatalogPath $CatalogPath -InstallRoot $InstallRoot -Observer $SwitchObserver)
 }
 
-# The planner options of a switch target: the SAME serving options as the plan that served (port, thinking, chat page, context profile, slots),
-# the same profile and the same experimental-model switch. An explicit context size, a fallback and a recovery label belong to the previous
-# model and are not carried over. No hardware is in the table: the caller adds the reading its plan is built from. The real switch and the
-# window's model picker both build their options here and only here, so the picker can never ask the planner a different question.
-function Get-FastLlmSwitchPlanOptions {
-    param([Parameter(Mandatory = $true)] $PreviousPlan, [Parameter(Mandatory = $true)] $Request, [Parameter(Mandatory = $true)][string] $CatalogPath, [Parameter(Mandatory = $true)][string] $InstallRoot)
-    $configRoot = Split-Path -Parent $CatalogPath
-    $options = @{ CatalogPath = $CatalogPath; InstallRoot = $InstallRoot; Profile = ([string] $PreviousPlan.profile)
-        RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
-    if ($Request.recipeId) { $options.RecipeId = [string] $Request.recipeId }
-    else {
-        $options.ModelId = [string] $Request.modelId
-        if ($PreviousPlan.PSObject.Properties['allowExperimentalModel'] -and $PreviousPlan.allowExperimentalModel) { $options.AllowExperimentalModel = $true }
-    }
+# The serving options of the plan that served, as the planner takes them: the profile, the experimental-model switch, the port, thinking, chat page
+# and the checked context profile and slots. An explicit context size, a fallback and a recovery label belong to the previous model and are not
+# carried over. A run that allows switching saves exactly this table in its switch basis, so the picker asks the planner what the real switch asks.
+function Get-FastLlmSwitchServingOptions {
+    param([Parameter(Mandatory = $true)] $PreviousPlan)
+    $options = @{ Profile = ([string] $PreviousPlan.profile) }
+    if ($PreviousPlan.PSObject.Properties['allowExperimentalModel'] -and $PreviousPlan.allowExperimentalModel) { $options.AllowExperimentalModel = $true }
     if ($PreviousPlan.PSObject.Properties['requestedServerPort'] -and $null -ne $PreviousPlan.requestedServerPort -and [int] $PreviousPlan.requestedServerPort -gt 0) { $options.ServerPort = [int] $PreviousPlan.requestedServerPort }
     if ($PreviousPlan.PSObject.Properties['requestedThinking'] -and [string] $PreviousPlan.requestedThinking -ceq 'off') { $options.Thinking = 'off' }
     if ($PreviousPlan.PSObject.Properties['requestedChatPage'] -and [string] $PreviousPlan.requestedChatPage -ceq 'on') { $options.ChatPage = 'on' }
@@ -4232,8 +4228,25 @@ function Get-FastLlmSwitchPlanOptions {
     if ($null -ne $servedProfile) {
         if ([string] $servedProfile.id -cne 'default') { $options.KvContextProfile = [string] $servedProfile.id }
         if ([int] $servedProfile.slots -ne 1) { $options.KvSlots = [int] $servedProfile.slots }
-        if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     }
+    return $options
+}
+
+# The planner options of a switch target: the serving options (of the plan that served, or the saved table of them) plus the caller's verified paths
+# and the target. No hardware is in the table: the caller adds the reading its plan is built from. The real switch and the window's model picker both
+# build their options here and only here, so the picker can never ask the planner a different question.
+function Get-FastLlmSwitchPlanOptions {
+    param($PreviousPlan, [System.Collections.IDictionary] $ServingOptions, [Parameter(Mandatory = $true)] $Request, [Parameter(Mandatory = $true)][string] $CatalogPath, [Parameter(Mandatory = $true)][string] $InstallRoot)
+    if ($null -eq $ServingOptions) { $ServingOptions = Get-FastLlmSwitchServingOptions -PreviousPlan $PreviousPlan }
+    $configRoot = Split-Path -Parent $CatalogPath
+    $options = @{ CatalogPath = $CatalogPath; InstallRoot = $InstallRoot
+        RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
+    foreach ($name in @($ServingOptions.Keys)) {
+        if ($Request.recipeId -and [string] $name -ceq 'AllowExperimentalModel') { continue }
+        $options[[string] $name] = $ServingOptions[$name]
+    }
+    if ($Request.recipeId) { $options.RecipeId = [string] $Request.recipeId } else { $options.ModelId = [string] $Request.modelId }
+    if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     return $options
 }
 
@@ -4246,30 +4259,6 @@ function New-FastLlmSwitchTargetPlan {
     $targetPlan = Get-FastLlmPlan @options
     if ($PreviousPlan.PSObject.Properties['backgroundRequestId']) { $targetPlan | Add-Member -NotePropertyName backgroundRequestId -NotePropertyValue ([string] $PreviousPlan.backgroundRequestId) -Force }
     return $targetPlan
-}
-
-# A plan-shaped object made from a run's status document, with exactly the fields Get-FastLlmSwitchPlanOptions reads from the plan that served: the
-# port (from the endpoint), thinking, chat page and the serving profile (id, slots, context per slot, from the recipe block). The profile name
-# (fast, balanced, quality) and the experimental-model switch are not in a status document: with an explicit model the profile does not decide
-# what fits, and a model that needs the experimental switch is never claimed to fit.
-function New-FastLlmSwitchPlanFromStatus {
-    param($Status)
-    $read = { param($Object, [string] $Name) if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { return $Object.PSObject.Properties[$Name].Value }; return $null }
-    $plan = [ordered] @{ profile = 'balanced'; requestedServerPort = 0; requestedThinking = 'auto'; requestedChatPage = 'off' }
-    $port = 0
-    $endpoint = [string] (& $read $Status 'endpoint')
-    if ($endpoint -cmatch '^http://127\.0\.0\.1:(\d{1,5})/v1\z') { $port = [int] $Matches[1] }
-    if ($port -ge 1024 -and $port -le 65535) { $plan.requestedServerPort = $port }
-    if ([string] (& $read $Status 'thinking') -ceq 'off') { $plan.requestedThinking = 'off' }
-    if ([string] (& $read $Status 'chatPage') -ceq 'on') { $plan.requestedChatPage = 'on' }
-    $recipe = & $read $Status 'recipe'
-    $profileId = & $read $recipe 'profile'
-    if ($null -ne $profileId) {
-        $total = & $read $recipe 'contextSize'
-        $plan.model = [pscustomobject] @{ contextSize = $total }
-        $plan.servingProfile = [pscustomobject] @{ id = $profileId; slots = (& $read $recipe 'slots'); contextPerSlot = (& $read $recipe 'contextPerSlot') }
-    }
-    return [pscustomobject] $plan
 }
 
 # The model picker's rows: one per catalog model, { id, displayName, state, reason }. state is one of
@@ -4289,7 +4278,8 @@ function Get-FastLlmSwitchPickerRows {
     $profileActive = [bool] ($null -ne (& $read (& $read $Status 'recipe') 'profile'))
     $basis = $null
     if ($runId) { $basis = Read-FastLlmSwitchBasis -InstallRoot $InstallRoot -RunId $runId }
-    $previous = New-FastLlmSwitchPlanFromStatus -Status $Status
+    $servingOptions = $null
+    if ($null -ne $basis) { $servingOptions = @{}; foreach ($property in @($basis.planOptions.PSObject.Properties)) { $servingOptions[[string] $property.Name] = $property.Value } }
     $estimate = 'the free memory measured when the current model started'
     $rows = New-Object System.Collections.ArrayList
     foreach ($model in @($catalog.models)) {
@@ -4314,7 +4304,7 @@ function Get-FastLlmSwitchPickerRows {
                 $planned = $false
                 $unfit = $false
                 try {
-                    $options = Get-FastLlmSwitchPlanOptions -PreviousPlan $previous -Request ([pscustomobject] @{ modelId = $id; recipeId = $null }) -CatalogPath $CatalogPath -InstallRoot $InstallRoot
+                    $options = Get-FastLlmSwitchPlanOptions -ServingOptions $servingOptions -Request ([pscustomobject] @{ modelId = $id; recipeId = $null }) -CatalogPath $CatalogPath -InstallRoot $InstallRoot
                     $options.Hardware = $basis.hardware
                     $options.NoEngineExecution = $true
                     $null = Get-FastLlmPlan @options
