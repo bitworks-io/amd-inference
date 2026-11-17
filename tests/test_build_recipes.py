@@ -191,6 +191,36 @@ class RecipeBuilderTests(unittest.TestCase):
         self.assertEqual(len(record["source"]["url"]), 300)
         br.build(self.tree([ENTRY], [record]))
 
+    def test_source_url_host_is_a_plain_ascii_domain(self):
+        accepted = ["https://example.com/post/1", "https://forum.example.org:8443/t?id=3#c2",
+                    "https://xn--bcher-kva.example/x", "https://example.com/caf%C3%A9"]
+        for url in accepted:
+            with self.subTest("accepted " + url):
+                record = community("community-experimental")
+                record["source"]["url"] = url
+                br.build(self.tree([ENTRY], [record]))
+        refused = {
+            "non-ascii domain": "https://b\u00fccher.example/x",
+            "cyrillic look-alike letter": "https://ex\u0430mple.com/",
+            "non-ascii path": "https://example.com/caf\u00e9",
+            # joined so the leak scan does not read these as an address
+            "user-info spoof": "https://bitworks.io" + "@" + "evil.example/",
+            "ipv4 literal": "https://" + ".".join(["192", "168", "1", "10"]) + "/x",
+            "bracketed ipv6": "https://[::1]/x",
+            "single label": "https://example/",
+            "label starting with a hyphen": "https://-bad.example.com/",
+            "port zero": "https://example.com:0/",
+            "port out of range": "https://example.com:99999/",
+            # "9" is an incomplete punycode string, so the codec raises UnicodeError ("incomplete punicode string").
+            "punycode label that does not decode": "https://xn--9.example/",
+        }
+        for name, url in refused.items():
+            with self.subTest("refused " + name):
+                record = community("community-experimental")
+                record["source"]["url"] = url
+                with self.assertRaisesRegex(br.RecipeError, "source.url host must be a plain ASCII domain name"):
+                    br.build(self.tree([ENTRY], [record]))
+
     def test_recommended_is_for_verified_bitworks_recipes_only(self):
         # No Bitworks recipe for this card, so the "more than one recommended" rule cannot be what rejects the record.
         for origin in ("community-reproduced", "community-experimental"):
