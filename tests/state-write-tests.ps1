@@ -547,6 +547,82 @@ Set-Content -LiteralPath $Done -Value 'done'
     $plain=Invoke-FinalWriteRun 'final-plain' 'plain'
     Check ($plain.error -and $plain.error.Message -ceq 'final status write failed [injected]') 'an unflagged failure of the final status write is rethrown'
 
+    # n. The model switch request (state\switch-<runId>.json): the reader's verdicts through the attribute seam, the writer's pre-check, and a
+    #    reader loop while another process replaces the request 200 times (a reader must never see half a request or refuse a whole one).
+    $install=New-Install 'n'; $stateDir=Join-Path $install 'state'
+    $switchRunId=('d'*32); $switchLeaf='switch-'+$switchRunId+'.json'; $switchPath=Join-Path $stateDir $switchLeaf
+    function Read-SwitchRequest([string]$Path) { return (& $module { param($p) Read-FastLlmSwitchRequest -Path $p } $Path) }
+    Write-State $install ([ordered]@{schemaVersion=1;modelId='model-b';force=$false}) $switchLeaf
+    $read=Read-SwitchRequest $switchPath
+    Check ($read.state -ceq 'ok' -and $read.modelId -ceq 'model-b' -and $read.force -eq $false) 'a switch request written by the state writer is read back by the supervisor reader'
+    $box=@{pattern='*switch-*';attributes=-1;calls=0}
+    Set-AttributesShadow $box
+    try { $read=Read-SwitchRequest $switchPath } finally { Clear-AttributesShadow }
+    Check ($box.calls -eq 1 -and $read.state -ceq 'transient') 'switch request reader: Attributes -1 (the name is mid-replace) is transient, never a refusal'
+    $box=@{pattern='*switch-*';attributes=$null;calls=0}
+    Set-AttributesShadow $box
+    try { $read=Read-SwitchRequest $switchPath } finally { Clear-AttributesShadow }
+    Check ($box.calls -eq 1 -and $read.state -ceq 'transient') 'switch request reader: an unreadable name is transient, never a refusal'
+    foreach($unsafe in @(@{value=1024;name='a reparse point'},@{value=16;name='a directory'},@{value=1040;name='a directory junction'})){
+        $box=@{pattern='*switch-*';attributes=$unsafe.value;calls=0}
+        Set-AttributesShadow $box
+        try { $read=Read-SwitchRequest $switchPath } finally { Clear-AttributesShadow }
+        Check ($box.calls -eq 1 -and $read.state -ceq 'refused' -and $read.code -ceq 'switch-request-unsafe' -and $null -eq $read.modelId) ('switch request reader: ' + $unsafe.name + ' is refused at once as switch-request-unsafe and is not opened')
+    }
+    [IO.File]::WriteAllText($switchPath,('{"schemaVersion":1,"modelId":"model-b","force":false}' + (' ' * 4096)))
+    $read=Read-SwitchRequest $switchPath
+    Check ($read.state -ceq 'refused' -and $read.code -ceq 'switch-request-too-large') 'switch request reader: a request over 4 KiB is refused on the opened handle'
+    [IO.File]::Delete($switchPath)
+    # The writer: its own pre-check refuses a reparse point at once; a transient name does not block the write.
+    $savedResolve=& $module {(Get-Command Resolve-FastLlmSwitchTarget -CommandType Function).ScriptBlock}
+    & $module { function script:Resolve-FastLlmSwitchTarget { return [pscustomobject]@{ ok=$true; code=$null; modelId='model-b'; recipeId=$null } } }
+    Write-State $install ([ordered]@{schemaVersion=1;runId=$switchRunId;phase='ready';modelId='model-a';switchAllowed=$true})
+    $lockHolder=[IO.File]::Open((Join-Path $stateDir 'operation.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    try {
+        $switchCatalog=Join-Path $root 'config/catalog.json'
+        $box=@{pattern='*switch-*';attributes=1024;calls=0}
+        Set-AttributesShadow $box
+        $thrown=$null
+        try { Request-FastLlmSwitch -InstallRoot $install -CatalogPath $switchCatalog -ModelId 'model-b' 6>$null | Out-Null } catch { $thrown=$_.Exception } finally { Clear-AttributesShadow }
+        Check ($thrown -and $thrown.Message -ceq 'Unsafe switch request path.' -and $box.calls -eq 1 -and -not (Test-Path -LiteralPath $switchPath) -and @(Get-ChildItem -LiteralPath $stateDir -Filter '*.tmp').Count -eq 0) 'Request-FastLlmSwitch refuses a real reparse point at once and writes nothing (no temp either)'
+        $box=@{pattern='*switch-*';attributes=-1;calls=0}
+        Set-AttributesShadow $box
+        $thrown=$null
+        try { Request-FastLlmSwitch -InstallRoot $install -CatalogPath $switchCatalog -ModelId 'model-b' 6>$null | Out-Null } catch { $thrown=$_.Exception } finally { Clear-AttributesShadow }
+        Check ($null -eq $thrown -and (Read-FastLlmJson $switchPath).modelId -ceq 'model-b' -and @(Get-ChildItem -LiteralPath $stateDir -Filter '*.tmp').Count -eq 0) ('Request-FastLlmSwitch is not blocked by a transient Attributes -1: the atomic replace owns the wait' + $(if($thrown){': '+$thrown.Message}))
+        $read=Read-SwitchRequest $switchPath
+        Check ($read.state -ceq 'ok' -and $read.modelId -ceq 'model-b' -and (Get-Item -LiteralPath $switchPath).Length -le 4096) 'the request Request-FastLlmSwitch writes is at most 4 KiB and the reader accepts it'
+    } finally {
+        $lockHolder.Dispose()
+        & $module { param($Original) Set-Item -Path 'Function:script:Resolve-FastLlmSwitchTarget' -Value $Original } $savedResolve
+    }
+    # Another process replaces the request 200 times while this process reads it in a loop.
+    $switchWriter=Join-Path $scratch 'writer-switch.ps1'
+    $switchDone=Join-Path $scratch 'writer-switch.done'
+    Set-Content -LiteralPath $switchWriter -Encoding ASCII -Value @'
+param([string]$Root,[string]$Install,[string]$Leaf,[string]$Done)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version 2
+try {
+    Import-Module (Join-Path $Root 'src/FastLlm.psm1') -Force
+    $m=Get-Module FastLlm
+    for($i=1;$i -le 200;$i++){ & $m { param($a,$b,$c) Write-FastLlmState -InstallRoot $a -FileName $c -State ([ordered]@{schemaVersion=1;modelId=('model-'+$b);force=$false}) } $Install $i $Leaf }
+    Set-Content -LiteralPath $Done -Value 'ok'
+} catch { Set-Content -LiteralPath $Done -Value ('error: ' + $_.Exception.Message) }
+'@
+    $writer=Start-Process -FilePath $ps -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$switchWriter,$root,$install,$switchLeaf,$switchDone) -PassThru -WindowStyle Hidden
+    $total=[Diagnostics.Stopwatch]::StartNew(); $reads=0; $whole=0; $switchError=$null
+    while(-not (Test-Path -LiteralPath $switchDone) -and $total.Elapsed.TotalSeconds -lt 25){
+        try {
+            $read=Read-SwitchRequest $switchPath; $reads++
+            if($read.state -ceq 'ok'){ $whole++; if([string]$read.modelId -cnotmatch '^model-(b|[0-9]{1,3})$'){ $switchError='unexpected id'; break } }
+            elseif($read.state -cne 'transient'){ $switchError=[string]$read.state + ':' + [string]$read.code; break }
+        } catch { $switchError=$_.Exception.Message; break }
+    }
+    [void]$writer.WaitForExit(5000)
+    Check ($switchError -eq $null -and $whole -gt 0) ('the switch request reader saw only whole requests or a transient name over ' + $reads + ' reads (' + $whole + ' whole)' + $(if($switchError){': '+$switchError}))
+    Check ((Test-Path -LiteralPath $switchDone) -and (Get-Content -LiteralPath $switchDone -Raw).Trim() -eq 'ok') 'switch request writer process completed 200 replaces'
+
     $ok=$true
 } finally {
     if($ok){ Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }

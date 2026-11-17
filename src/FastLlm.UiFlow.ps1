@@ -1124,6 +1124,59 @@ function Get-FastLlmUiServiceStoppedText {
     return 'Service stopped.'
 }
 
+# The status line for a model change, read from the status document's change block ({ from, to, pending, result, failureCode }). '' when the
+# document has none (every start that was not asked to change its model) or when the result is one this version does not know. A model id is
+# shown only when it has the shape of an id and a failure code only when it has the shape of a code; nothing else from the document is shown.
+function Get-FastLlmUiSwitchStatusText {
+    param($Status)
+    if ($null -eq $Status -or -not $Status.PSObject.Properties['switch']) { return '' }
+    $block = $Status.PSObject.Properties['switch'].Value
+    if ($null -eq $block -or $block -isnot [System.Management.Automation.PSCustomObject]) { return '' }
+    $read = { param([string] $Name) if ($block.PSObject.Properties[$Name]) { return $block.PSObject.Properties[$Name].Value }; return $null }
+    $isId = { param($Value) return [bool] ($Value -is [string] -and $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z') }
+    $toValue = & $read 'to'
+    $fromValue = & $read 'from'
+    $toKnown = [bool] (& $isId $toValue)
+    $to = 'the other model'
+    if ($toKnown) { $to = [string] $toValue }
+    $from = 'the previous model'
+    $fromStart = 'The previous model'
+    if (& $isId $fromValue) { $from = [string] $fromValue; $fromStart = [string] $fromValue }
+    $code = 'an unnamed reason'
+    $codeValue = & $read 'failureCode'
+    if ($codeValue -is [string] -and $codeValue -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,63}\z') { $code = [string] $codeValue }
+    $result = [string] (& $read 'result')
+    if ((& $read 'pending') -eq $true -and -not $result) {
+        if ($codeValue) { return "Could not start $to ($code). Starting $from again." }
+        if ($Status.PSObject.Properties['phase'] -and [string] $Status.phase -ceq 'ready') { return "Switching to $to when the requests in progress have finished." }
+        return "Switching to $to."
+    }
+    $keeps = "$fromStart keeps running."
+    switch -CaseSensitive ($result) {
+        'ok' { return "Switched to $to." }
+        'refused-busy' { return "Did not switch to ${to}: FastLLM was still answering requests. $keeps" }
+        'failed-restored' { return "Could not start $to ($code). $fromStart was started again and is running." }
+        'failed-stopped' { return "Could not start $to ($code), and $from could not be started again. FastLLM is stopped." }
+        'refused' {
+            switch -CaseSensitive ($code) {
+                'switch-target-not-installed' { return "Did not switch: $to is not downloaded. $keeps" }
+                'switch-target-size-mismatch' { return "Did not switch: the file of $to is incomplete or damaged. $keeps" }
+                'switch-target-no-consent' { return "Did not switch: the license of $to has not been accepted on this PC. $keeps" }
+                'switch-target-already-serving' { return "$to is already running." }
+                'switch-target-unknown' { return "Did not switch: the requested model is not in FastLLM's list. $keeps" }
+                'switch-recipe-experimental' { return "Did not switch: an experimental setup is started from the command line, not by a switch. $keeps" }
+                'switch-recipe-needs-default-options' { return "Did not switch: a measured setup needs the default context profile and one request at a time. $keeps" }
+                'switch-cancelled-by-stop' { return "The switch to $to was cancelled by Stop." }
+                'switch-request-invalid' { return "Did not switch: the request could not be read. $keeps" }
+                'switch-request-unsafe' { return "Did not switch: the request could not be read. $keeps" }
+                'switch-request-too-large' { return "Did not switch: the request could not be read. $keeps" }
+                default { return "Did not switch to $to ($code). $keeps" }
+            }
+        }
+    }
+    return ''
+}
+
 # The status line after Settings is saved. While a run is going, a changed value applies at the next start.
 # The idle stop is read tolerantly: a caller that has no such value means no change.
 function Get-FastLlmUiSettingsSavedNote {

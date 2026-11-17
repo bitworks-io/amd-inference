@@ -348,7 +348,7 @@ try {
     Check ($null -eq (Get-FastLlmServingSettingsWarning -InstallRoot $malCliRoot)) 'cli-malformed-settings: a valid settings.json gives no warning'
     [IO.File]::WriteAllText((Join-Path $malCliRoot 'settings.json'),'{not json')
     $liveStartSource=[IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
-    Check ($liveStartSource.Contains("if (`$Action -eq 'start' -and -not `$DryRun -and -not `$AsJson -and -not `$IgnoreUserSettings) {") -and $liveStartSource.Contains('$servingWarning = Get-FastLlmServingSettingsWarning -InstallRoot $InstallRoot') -and $liveStartSource.Contains('Write-Warning $servingWarning')) 'cli-malformed-settings: fast-llm.ps1 warns through Get-FastLlmServingSettingsWarning on a live start only (not dry run, JSON or ignored settings)'
+    Check ($liveStartSource.Contains("if (`$effectiveAction -eq 'start' -and -not `$DryRun -and -not `$AsJson -and -not `$IgnoreUserSettings) {") -and $liveStartSource.Contains('$servingWarning = Get-FastLlmServingSettingsWarning -InstallRoot $InstallRoot') -and $liveStartSource.Contains('Write-Warning $servingWarning')) 'cli-malformed-settings: fast-llm.ps1 warns through Get-FastLlmServingSettingsWarning on a live start only (not dry run, JSON or ignored settings)'
     $malPlan=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$malCliRoot)
     Check ($malPlan.text -notlike '*not valid JSON*' -and $null -ne ($malPlan.text | ConvertFrom-Json)) 'cli-malformed-settings: plan -AsJson stays clean JSON'
 
@@ -622,22 +622,22 @@ try {
     function Invoke-RestMethod { $script:nd.log.Add('NETWORK-REST') }
     function Get-FastLlmRecoveryPlan { param($Hardware,$CatalogPath,$InstallRoot,$Profile,$FailedModelId,$RequestedModelId,$ContextSize)
         $script:nd.log.Add('recovery-plan');if($script:nd.recovery){return [pscustomobject]@{model=[pscustomobject]@{id='other-model'}}};return $null }
-    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes)
+    function Start-FastLlmServer { param($Plan,$CatalogPath,$InstallRoot,$LoadTimeoutSeconds,$VulkanBarMitigation,[switch]$ThroughputCanary,$DeviceBinding,[switch]$SelfTest,$IdleStopMinutes,[switch]$AllowSwitch)
         $script:nd.log.Add('start');$script:nd.startBound=@($PSBoundParameters.Keys | Sort-Object);$script:nd.startBar=$VulkanBarMitigation
         if($script:nd.startQueue.Count -gt 0){
             $next=$script:nd.startQueue.Dequeue()
             if($next -is [string]){$e=New-Object InvalidOperationException('simulated '+$next);$e.Data['FastLlmReason']=$next;throw $e}
-            if($next -is [hashtable]){$e=New-Object InvalidOperationException('simulated '+$next.reason);$e.Data['FastLlmReason']=$next.reason;$e.Data['FastLlmFailureCode']=$next.code;if($next.ContainsKey('attempted') -and $next.attempted){$e.Data['FastLlmFallbackAttempted']=$true};throw $e}
+            if($next -is [hashtable]){$e=New-Object InvalidOperationException('simulated '+$next.reason);$e.Data['FastLlmReason']=$next.reason;$e.Data['FastLlmFailureCode']=$next.code;if($next.ContainsKey('attempted') -and $next.attempted){$e.Data['FastLlmFallbackAttempted']=$true};if($next.ContainsKey('switchAttempted') -and $next.switchAttempted){$e.Data['FastLlmSwitchAttempted']=$true};throw $e}
             return [int]$next
         }
         return 0 }
-    $script:ndDeviceBinding='off';$script:ndPlanRecipeId='';$script:ndIdleStop=0
+    $script:ndDeviceBinding='off';$script:ndPlanRecipeId='';$script:ndIdleStop=0;$script:ndSwitchAllowed=$false
     $script:ndRecipe=$null;$script:ndPlanComponent=$false;$script:ndPlanHip=$false;$script:ndBar='auto';$script:ndHost=New-Object 'Collections.Generic.List[string]'
     $script:ndUnattended=$true;$script:ndDryRun=$false;$script:ndUseFallback=$false;$script:ndFallbackReason='components-declined';$script:ndPlanOwnReason='';$script:ndPlannedRecipe=''
     $script:ndSkipSelfTest=$true   # these start tests are not about serving quality: the self-test is skipped unless a check opts in
     function Invoke-NdStart([bool]$NoDownloadSwitch) {
         $DryRun=$script:ndDryRun;$InstallRoot=$ndRoot;$Profile='balanced';$ModelId='nd-model';$ContextSize=0;$AllowExperimentalModel=$false;$LoadTimeoutSeconds=30
-        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$effectiveIdleStopMinutes=[int]$script:ndIdleStop;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe
+        $AcceptModelLicense=$false;$Unattended=$script:ndUnattended;$ThroughputCanary=$false;$SkipSelfTest=[switch]$script:ndSkipSelfTest;$VulkanBarMitigation=$script:ndBar;$effectiveIdleStopMinutes=[int]$script:ndIdleStop;$DeviceBinding=$script:ndDeviceBinding;$NoDownload=[switch]$NoDownloadSwitch;$UseFallback=[switch]$script:ndUseFallback;$FallbackReason=$script:ndFallbackReason;$PlannedRecipe=$script:ndPlannedRecipe;$effectiveSwitchAllowed=[bool]$script:ndSwitchAllowed
         $selectionOptions=@{ModelId=$ModelId;ContextSize=0;AllowExperimentalModel=$false;RecipeId=$script:ndRecipe}
         $failure=$null
         function Write-Host { $script:ndHost.Add(($args -join ' ')) }
@@ -765,6 +765,22 @@ try {
     Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation' -and @($script:ndHost | Where-Object { $_ -like 'Stopped after*' }).Count -eq 0) 'idle-start: with the idle stop off nothing is passed and nothing is printed'
     $script:ndIdleStop=0
     Remove-Item -Path Function:Get-FastLlmStatus -ErrorAction SilentlyContinue
+    # -- model switch (opt-in): the CLI hands -AllowSwitch to Start-FastLlmServer only with -SwitchAllowed, and a failure after a switch is final
+    Reset-Nd
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation') 'switch-start: a start without -SwitchAllowed calls Start-FastLlmServer exactly as before (no -AllowSwitch)'
+    Reset-Nd; $script:ndSwitchAllowed=$true
+    $f=Invoke-NdStart $false
+    Check ($null -eq $f -and ($script:nd.startBound -join ',') -ceq 'AllowSwitch,CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,VulkanBarMitigation') 'switch-start: -SwitchAllowed reaches Start-FastLlmServer as -AllowSwitch and nothing else changes'
+    foreach($taggedReason in @('PlanChanged','ModelNeedsProvisioning','RuntimeCheckFailed','SwitchFailed')){
+        Reset-Nd; $script:ndSwitchAllowed=$true; $script:nd.startQueue.Enqueue(@{reason=$taggedReason;code='switch-failed-stopped';switchAttempted=$true})
+        $f=Invoke-NdStart $false
+        Check ($null -ne $f -and $f.Data['FastLlmSwitchAttempted'] -eq $true -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and -not $script:nd.log.Contains('recovery-plan') -and -not $script:nd.log.Contains('INSTALL-MODEL')) "switch-start: a failure after a model switch ($taggedReason) ends the start: one start, no re-plan, no model repair, no recovery"
+    }
+    Reset-Nd; $script:ndSwitchAllowed=$true; $script:nd.startQueue.Enqueue(@{reason='ModelNeedsProvisioning';code='';switchAttempted=$true})
+    $f=Invoke-NdStart $true
+    Check ($null -ne $f -and $f.Data['FastLlmSwitchAttempted'] -eq $true -and (Get-NdCode $f) -cne 'needs-setup-model-invalid' -and (Test-NdNoAcquisition)) 'switch-start: with -NoDownload a failure after a model switch is passed on as it is'
+    $script:ndSwitchAllowed=$false
     # -- W03 Phase A: the CLI passes -DeviceBinding only when it is not off (an off start calls Start-FastLlmServer exactly as before)
     Reset-Nd
     $f=Invoke-NdStart $false
@@ -854,6 +870,41 @@ try {
     Check ($cliSource.Contains("FastLlm.Update.ps1") -and -not ([IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.psm1'))).Contains('FastLlm.Update.ps1')) 'FastLlm.Update.ps1 is dot-sourced by fast-llm.ps1 and never by FastLlm.psm1'
     Check ($null -ne $statusClause -and $null -ne $updateCheckClause -and $null -ne $updateClause) 'the status, update-check and update clauses exist'
     Check ($statusClause.Item2.Extent.Text.Contains('Get-FastLlmCachedUpdateNotice') -and $startText.Contains('Get-FastLlmCachedUpdateNotice')) 'start and status print the cached update notice'
+
+    # -- model switch: the switch action, its two switches, and what `switch` does when no server is running
+    Check ($cliSource.Contains("'status', 'switch', 'stop', 'update-check'") -and $cliSource.Contains('[switch] $SwitchAllowed') -and $cliSource.Contains('[switch] $SwitchForce')) 'fast-llm.ps1 declares the switch action, -SwitchAllowed and -SwitchForce'
+    Check ($cliSource.Contains('-SwitchAllowed is supported only by a live start.') -and $cliSource.Contains('-SwitchForce is supported only by switch.') -and $cliSource.Contains('switch needs exactly one of -ModelId <id> or -Recipe <id>.')) 'fast-llm.ps1 refuses -SwitchAllowed outside a live start, -SwitchForce outside switch, and a switch without exactly one target'
+    Check ($startText.Contains('if ($effectiveSwitchAllowed) { $startPolicyOptions.AllowSwitch = $true }') -and $startText.Contains("`$_.Exception.Data['FastLlmSwitchAttempted']")) 'the start branch passes -AllowSwitch only when asked and rethrows a failure that follows a model switch'
+    $switchClause=@($cliSwitch.Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'switch'" })[0]
+    Check ($null -ne $switchClause) 'the switch clause exists'
+    $switchClauseText=$switchClause.Item2.Extent.Text
+    $switchBranch=[scriptblock]::Create($switchClauseText.Substring(1,$switchClauseText.Length-2))
+    $script:ndSwitchRequest=$null
+    function Request-FastLlmSwitch { param($InstallRoot,$CatalogPath,$ModelId,$RecipeId,[switch]$Force) $script:ndSwitchRequest=@{}; foreach($key in $PSBoundParameters.Keys){ $script:ndSwitchRequest[$key]=$PSBoundParameters[$key] } }
+    function Invoke-NdSwitch([string]$Model,[string]$RecipeName,[bool]$ForceSwitch) {
+        $InstallRoot=$ndRoot;$catalogPath='catalog.json';$ModelId=$Model;$Recipe=$RecipeName;$SwitchForce=[switch]$ForceSwitch
+        $script:ndSwitchRequest=$null
+        & $switchBranch | Out-Null
+        return $script:ndSwitchRequest
+    }
+    $sent=Invoke-NdSwitch 'model-b' '' $false
+    Check ($null -ne $sent -and (@($sent.Keys | Sort-Object) -join ',') -ceq 'CatalogPath,InstallRoot,ModelId' -and $sent['ModelId'] -ceq 'model-b' -and $sent['InstallRoot'] -ceq $ndRoot) 'switch -ModelId hands the model id to the request writer (no force)'
+    $sent=Invoke-NdSwitch '' 'recipe-b' $true
+    Check ($null -ne $sent -and (@($sent.Keys | Sort-Object) -join ',') -ceq 'CatalogPath,Force,InstallRoot,RecipeId' -and $sent['RecipeId'] -ceq 'recipe-b' -and [bool]$sent['Force']) 'switch -Recipe -SwitchForce hands the recipe id and force to the request writer'
+    Remove-Item -Path Function:Request-FastLlmSwitch -ErrorAction SilentlyContinue
+    $switchActionAst=@($cliTree.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-FastLlmSwitchCliAction'},$true))
+    Check ($switchActionAst.Count -eq 1) 'fast-llm.ps1 defines Get-FastLlmSwitchCliAction'
+    . ([scriptblock]::Create($switchActionAst[0].Extent.Text))
+    Check ((Get-FastLlmSwitchCliAction -Status ([pscustomobject]@{phase='ready';active=$true})) -ceq 'switch' -and (Get-FastLlmSwitchCliAction -Status ([pscustomobject]@{phase='loading';active=$true})) -ceq 'switch') 'switch with a supervised server running is a switch request to that server'
+    Check ((Get-FastLlmSwitchCliAction -Status ([pscustomobject]@{phase='stopped';active=$false;stopReason='idle';idleStopMinutes=30})) -ceq 'start' -and (Get-FastLlmSwitchCliAction -Status ([pscustomobject]@{phase='stopped';active=$false})) -ceq 'start' -and (Get-FastLlmSwitchCliAction -Status ([pscustomobject]@{phase='failed';active=$false})) -ceq 'start' -and (Get-FastLlmSwitchCliAction -Status $null) -ceq 'start') 'switch with no supervised server running (idle-stopped, stopped, failed or never started) is a normal start of the target'
+    Check ($cliSource.Contains("if ((Get-FastLlmSwitchCliAction -Status (Get-FastLlmStatus -InstallRoot `$InstallRoot)) -ceq 'start') {") -and $cliSource -match "(?s)Get-FastLlmSwitchCliAction -Status \(Get-FastLlmStatus.{0,400}\`$effectiveAction = 'start'.{0,200}\`$effectiveSwitchAllowed = \`$true") 'fast-llm.ps1 turns that case into the start action with switching allowed, before anything is planned or locked'
+    # The parameters themselves are never assigned to (PowerShell variable names ignore case, so a local named like a parameter IS the parameter):
+    # the converted values live in locals, and everything after that point reads the locals.
+    $switchAssigned=@($cliTree.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst]},$true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+    Check (@($switchAssigned | Where-Object { @('Action','SwitchAllowed','SwitchForce') -contains $_ }).Count -eq 0 -and $switchAssigned -ccontains 'effectiveAction' -and $switchAssigned -ccontains 'effectiveSwitchAllowed') 'fast-llm.ps1 never assigns to -Action, -SwitchAllowed or -SwitchForce; the effective action and opt-in are locals'
+    $afterSwitchBlock=$cliSource.Substring($cliSource.IndexOf("`$effectiveSwitchAllowed = `$true"))
+    Check ($afterSwitchBlock.Contains('switch ($effectiveAction) {') -and $afterSwitchBlock.Contains("if (`$effectiveAction -in @('install', 'start') -and -not `$DryRun) {") -and $afterSwitchBlock.Contains("`$Recipe -and `$effectiveAction -in @('plan', 'start', 'install', 'doctor')") -and $afterSwitchBlock -notmatch '\$SwitchAllowed\b' -and @([regex]::Matches($afterSwitchBlock,'\$Action\b')).Count -eq 2) 'after that point the dispatch, the operation lock and the experimental gate read the effective action (the parameter is read only for components and models)'
+    Check ($statusClause.Item2.Extent.Text.Contains('Get-FastLlmUiSwitchStatusText -Status $statusDocument') -and $statusClause.Item2.Extent.Text.Contains('if (-not $AsJson)')) 'status prints the switch block in the document and, outside -AsJson, one plain line about it'
     Check (-not $statusClause.Item2.Extent.Text.Contains('Invoke-FastLlmUpdateCheck') -and -not $startText.Contains('Invoke-FastLlmUpdateCheck') -and -not $statusClause.Item2.Extent.Text.Contains('Invoke-FastLlmVerifiedUpdate') -and -not $startText.Contains('Invoke-FastLlmVerifiedUpdate')) 'start and status make no update request'
     Check ($updateCheckClause.Item2.Extent.Text.Contains('Invoke-FastLlmUpdateCheck') -and $updateCheckClause.Item2.Extent.Text.Contains('-Force') -and $updateClause.Item2.Extent.Text.Contains('Invoke-FastLlmVerifiedUpdate') -and $updateClause.Item2.Extent.Text.Contains('exit $updateExit')) 'update-check forces a check and update runs the verified flow with its exit code'
 

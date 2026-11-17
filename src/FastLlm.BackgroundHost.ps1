@@ -453,6 +453,8 @@ function Start-FastLlmBackgroundHost {
           [ValidateSet('auto','off')][string]$Thinking='auto',
           [ValidateSet('off','on')][string]$ChatPage='off',
           [ValidateSet(0,15,30,60)][int]$IdleStopMinutes=0,
+          # Opt-in: let the background server change its model on request. Off by default; the request then has no allowSwitch field.
+          [switch]$SwitchAllowed,
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     if ($ServerPort -ne 0 -and ($ServerPort -lt 1024 -or $ServerPort -gt 65535)) { throw 'ServerPort must be 0 (catalog port) or 1024-65535.' }
@@ -470,6 +472,8 @@ function Start-FastLlmBackgroundHost {
         contextSize=$ContextSize;allowExperimentalModel=[bool]$AllowExperimentalModel
         loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant();idleStopMinutes=$IdleStopMinutes;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
     }
+    # Present only when asked for, so a default request is the document it always was.
+    if ($SwitchAllowed) { $request.allowSwitch = $true }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -551,6 +555,8 @@ function Invoke-FastLlmBackgroundServe {
     # idleStopMinutes is read the same way: only a whole 15, 30 or 60 counts; absent or anything else is 0 (never).
     $requestedIdleStop = 0
     if ($request.PSObject.Properties['idleStopMinutes'] -and ($request.idleStopMinutes -is [int] -or $request.idleStopMinutes -is [long]) -and @(15,30,60) -contains [int]$request.idleStopMinutes) { $requestedIdleStop = [int]$request.idleStopMinutes }
+    # allowSwitch is read the same way: only a JSON true turns it on; absent or anything else is off.
+    $requestedAllowSwitch = [bool]($request.PSObject.Properties['allowSwitch'] -and $request.allowSwitch -is [bool] -and $request.allowSwitch)
     Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
     $lease = $null
     $operation = $null
@@ -595,6 +601,12 @@ function Invoke-FastLlmBackgroundServe {
         # download, quarantine, or consent path is reachable here.
         $serverOptions = @{}
         if ($requestedIdleStop -gt 0) { $serverOptions.IdleStopMinutes = $requestedIdleStop }
+        if ($requestedAllowSwitch) {
+            # The supervisor may then change its model on request (a full normal start of the other model, under the lock held here). The host
+            # record names the model that is served, so it follows each switch and each restore before that model starts.
+            $serverOptions.AllowSwitch = $true
+            $serverOptions.SwitchObserver = { param($ServedModelId) $record.modelId = [string]$ServedModelId; Write-FastLlmBackgroundDocument -Path $recordPath -Value $record }
+        }
         $exit = Start-FastLlmServer -Plan $plan -CatalogPath $catalog -InstallRoot $install `
             -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -VulkanBarMitigation $barMitigation -SelfTest @serverOptions
         $record.phase = 'stopped'

@@ -62,6 +62,10 @@ try {
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'idle-stop' -Fields @{ metrics='llamacpp:prompt_tokens_total 1' } } 'run-log-field-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'idle-check-failed' -Fields @{ detail='x' } } 'run-log-field-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'spill-check-changed' -Fields @{ from='ok'; to='spilled'; error='free text' } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'switch-request' -Fields @{ fromModelId='a'; toModelId='b'; request='{"modelId":"b"}' } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'switch-request' -Fields @{ fromModelId='a'; force=$true } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'switch-result' -Fields @{ result='failed-stopped'; failureMessage='free text' } } 'run-log-field-not-allowed'
+    Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'switch-result' -Fields @{ result='ok'; toModelId='b' } } 'run-log-field-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'phase' -Fields @{ phase=@('a','b') } } 'run-log-value-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId $id -Event 'phase' -Fields @{ phase=@{ a=1 } } } 'run-log-value-not-allowed'
     Throws { Write-FastLlmRunLogEvent -InstallRoot $r -RunId '..\evil' -Event 'phase' -Fields @{ phase='loading' } } 'run-log-run-id'
@@ -77,6 +81,8 @@ try {
         'idle-check-failed'=@{}
         'spill-check'=@{ state='ok'; sharedMiB=49.4; dedicatedMiB=9309.9; floorMiB=256 }
         'spill-check-changed'=@{ from='ok'; to='spilled'; sharedMiB=1080.1; dedicatedMiB=8279.2 }
+        'switch-request'=@{ fromModelId='model-a'; toModelId='model-b' }
+        'switch-result'=@{ result='failed-restored'; failureCode='self-test-failed' }
         'end'=@{ phase='stopped'; failureCode='x'; failedAtPhase='loading'; failureMessage='Server exited before readiness.'; exitCode=0; droppedEvents=0 }
     }
     foreach ($eventName in $allowed.Keys) {
@@ -85,7 +91,7 @@ try {
     $files=@(Get-ChildItem -LiteralPath (Get-LogDir $r) -Filter 'run-*.jsonl')
     Check ($files.Count -eq 1 -and $files[0].Name -cmatch '^run-\d{8}T\d{6}Z-0123456789abcdef0123456789abcdef\.jsonl$') 'field-allowlist: one file run-<yyyyMMddTHHmmssZ>-<runId>.jsonl'
     $lines=@(Read-LogLines $files[0].FullName)
-    Check ($lines.Count -eq 11) 'field-allowlist: every allowed event is one JSON line'
+    Check ($lines.Count -eq 13) 'field-allowlist: every allowed event is one JSON line'
     $envelope=@('ts','runId','event')
     $mismatch=0
     foreach ($line in $lines) {
@@ -160,6 +166,32 @@ try {
     Check ([string]$profileFields.profile -ceq 'long' -and $profileFields.slots -is [int] -and [int]$profileFields.slots -eq 2 -and [int]$profileFields.contextSize -eq 65536) 'serving-profile-fields: a plan with a serving profile adds profile and slots (contextSize stays the total)'
     $oddFields=& $startFieldsFor ([pscustomobject]@{ model=[pscustomobject]@{ id='m'; contextSize=65536 }; backend='Vulkan'; engineVersion='b1'; endpoint='http://127.0.0.1:8080/v1'; servingProfile=[pscustomobject]@{ id='long FLLM-MARKER-PROMPT-7f3a'; slots='two' } })
     Check (-not $oddFields.Contains('profile') -and -not $oddFields.Contains('slots')) 'serving-profile-fields: a profile id or slot count outside the closed values is not logged'
+
+    # ---- model switch events: catalog ids, a closed result and a failure code; never anything a request carried ---------------------
+    $switchAllowed=& $module { $script:FastLlmRunLogAllowedFields }
+    Check (($switchAllowed['switch-request'] -join ',') -ceq 'fromModelId,toModelId' -and ($switchAllowed['switch-result'] -join ',') -ceq 'result,failureCode') 'switch-events: the allowlist has exactly switch-request { fromModelId, toModelId } and switch-result { result, failureCode }'
+    $requestFieldsFor={ param($From,$To) & $module { param($F,$T) Get-FastLlmRunLogSwitchRequestFields -FromModelId $F -ToModelId $T } $From $To }
+    $resultFieldsFor={ param($Result,$Code) & $module { param($R,$C) Get-FastLlmRunLogSwitchResultFields -Result $R -FailureCode $C } $Result $Code }
+    $requestFields=& $requestFieldsFor 'qwen3.5-9b-q4-k-m' 'qwen3.8-27b-ud-iq4-xs'
+    Check ((@($requestFields.Keys | Sort-Object) -join ',') -ceq 'fromModelId,toModelId' -and [string]$requestFields.fromModelId -ceq 'qwen3.5-9b-q4-k-m' -and [string]$requestFields.toModelId -ceq 'qwen3.8-27b-ud-iq4-xs') 'switch-events: a request line carries the two model ids'
+    $requestFields=& $requestFieldsFor 'qwen3.5-9b-q4-k-m' $null
+    Check ((@($requestFields.Keys) -join ',') -ceq 'fromModelId') 'switch-events: a request whose target is not a catalog id carries no target'
+    $requestFields=& $requestFieldsFor 'model a FLLM-MARKER-PROMPT-7f3a' "two`nlines"
+    Check ($requestFields.Count -eq 0) 'switch-events: a value that is not an id (spaces, line breaks, free text) is not logged'
+    $resultFields=& $resultFieldsFor 'ok' $null
+    Check ((@($resultFields.Keys) -join ',') -ceq 'result' -and [string]$resultFields.result -ceq 'ok') 'switch-events: an ok result carries no failure code'
+    foreach ($closedResult in @('ok','refused','refused-busy','failed-restored','failed-stopped')) {
+        $resultFields=& $resultFieldsFor $closedResult 'self-test-failed'
+        Check ([string]$resultFields.result -ceq $closedResult -and [string]$resultFields.failureCode -ceq 'self-test-failed') "switch-events: result $closedResult with a failure code is logged"
+    }
+    $resultFields=& $resultFieldsFor 'restored FLLM-MARKER-FAILURE-7f3a' 'The model failed: FLLM-MARKER-FAILURE-7f3a'
+    Check ($resultFields.Count -eq 0) 'switch-events: a result outside the closed list and a failure text that is not a code are not logged'
+    $sw=New-Dir 'allow-switch'
+    Write-FastLlmRunLogEvent -InstallRoot $sw -RunId $id -Event 'switch-request' -Fields (& $requestFieldsFor 'model-a' 'model-b') | Out-Null
+    Write-FastLlmRunLogEvent -InstallRoot $sw -RunId $id -Event 'switch-result' -Fields (& $resultFieldsFor 'refused-busy' $null) | Out-Null
+    $swLines=@(Read-LogLines (@(Get-ChildItem -LiteralPath (Get-LogDir $sw) -Filter 'run-*.jsonl')[0].FullName))
+    Check ($swLines.Count -eq 2 -and (@($swLines[0].PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'event,fromModelId,runId,toModelId,ts' -and (@($swLines[1].PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'event,result,runId,ts') 'switch-events: the lines carry exactly their allowlisted fields'
+    Check (@(Find-MarkerFiles @($sw)).Count -eq 0) 'switch-events: no marker text reaches the log'
 
     # ---- file-cap-256k ---------------------------------------------------------------------------------------------------------
     $r=New-Dir 'cap'
