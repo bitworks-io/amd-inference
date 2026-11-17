@@ -3856,7 +3856,12 @@ function Start-FastLlmServer {
 
         # Optional: called with a model id each time a switch is about to start that model (the target, then the previous model on a restore),
         # so a host that records what it serves can follow. A failure in it never changes a switch.
-        [scriptblock] $SwitchObserver
+        [scriptblock] $SwitchObserver,
+
+        # Opt-in: on = the server requires the user's API key. Only the CLI and the background host pass it, from the saved setting; the bench
+        # path and every direct caller get off. The key itself is never a parameter: this function reads the per-user store.
+        [ValidateSet('off', 'on')]
+        [string] $ApiKey = 'off'
     )
 
     # ValidateSet ignores case and keeps the typed value; normalise once, before any comparison or forwarding.
@@ -3864,6 +3869,12 @@ function Start-FastLlmServer {
     # The caller's own start owns the switch sequence; a start inside the sequence is given the table and runs once.
     $ownsSwitchSequence = [bool] ($AllowSwitch -and -not $PSBoundParameters.ContainsKey('SwitchContext'))
     if ($ownsSwitchSequence) { $SwitchContext = @{ origin = $null; priorStopPaths = @(); accepted = $null; readyPlan = $null; runId = $null; runs = 0 } }
+    $ApiKey = $ApiKey.ToLowerInvariant()
+
+    # Fail closed, first: with the key on, a store that is missing or cannot be read by this user is the typed refusal api-key-unavailable,
+    # before any check, probe or launch. A start that was asked for a key never runs without one, and never creates one.
+    $apiKeyHolder = $null
+    if ($ApiKey -ceq 'on') { $apiKeyHolder = Read-FastLlmApiKeyStore -InstallRoot $InstallRoot }
 
     Assert-FastLlmWindowsPrerequisites
 
@@ -4053,6 +4064,11 @@ function Start-FastLlmServer {
     if ($ThroughputCanary) { $switchStartOptions.ThroughputCanary = $true }
     if ($SelfTest) { $switchStartOptions.SelfTest = $true }
     if ($IdleStopMinutes -gt 0) { $switchStartOptions.IdleStopMinutes = $IdleStopMinutes }
+    # Every start inside a switch sequence (the target model, and the one restore of the previous model) gets the key exactly like this one:
+    # only the flag is passed on, so that start reads the store itself, sets the key in its own server's environment and repeats the 401/200 proof.
+    if ($ApiKey -ceq 'on') { $switchStartOptions.ApiKey = 'on' }
+    # Passed only when the key is on (the supervisor treats the parameter's presence as "a key was asked for").
+    if ($ApiKey -ceq 'on') { $supervisorOptions.ApiKeyHolder = $apiKeyHolder }
     $mayFallBack = (-not $startedExplicit) -and (Test-FastLlmPlanFallsBackOnFailure -Plan $Plan)
     $serverExitCode = $null
     try {
@@ -4066,9 +4082,9 @@ function Start-FastLlmServer {
         if ($firstFailure.Data) { $firstReason = [string] $firstFailure.Data['FastLlmReason']; $firstCode = [string] $firstFailure.Data['FastLlmFailureCode']; $afterReady = [bool] $firstFailure.Data['FastLlmAfterReady'] }
         # The fallback is a start-time mechanism for a failed HIP start: a typed failure, or a failure of the HIP server after it was spawned.
         # Not eligible: a failure before the spawn that is not typed, an occupied port (PortInUse; the stand-in would need the same port), a crash after the server was ready, a device-binding
-        # refusal, a changed plan, a model to repair and a state-write error.
+        # refusal, a changed plan, a model to repair, a state-write error and an API key failure (ApiKeyFailed: another setup cannot fix the key).
         $hipStartFailure = ($firstCode -ne '') -or ($firstReason -ceq 'RuntimeCheckFailed')
-        if (-not $mayFallBack -or $afterReady -or -not $hipStartFailure -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed', 'PortInUse')) { throw }
+        if (-not $mayFallBack -or $afterReady -or -not $hipStartFailure -or $firstReason -cin @('DeviceBindingFailed', 'PlanChanged', 'ModelNeedsProvisioning', 'StateWriteFailed', 'PortInUse', 'ApiKeyFailed')) { throw }
         $fallbackReasonCode = 'start-failed'
         if ($firstCode -cmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,95}$') { $fallbackReasonCode = $firstCode }
         $fromRecipeId = [string] $Plan.recipe.id
@@ -4098,7 +4114,8 @@ function Start-FastLlmServer {
             $missingModelFailure.Data['FastLlmFallbackFirstCode'] = $fallbackReasonCode
             throw $missingModelFailure
         }
-        $firstText = [regex]::Replace([string] $firstFailure.Message, '\s+', ' ').Trim()
+        # The first failure's text is printed, so it passes the key scrub (with the run's key when there is one).
+        $firstText = [regex]::Replace((ConvertTo-FastLlmKeyFreeText -Text ([string] $firstFailure.Message) -ApiKeyHolder $apiKeyHolder), '\s+', ' ').Trim()
         Write-Host "The HIP setup did not start ($fallbackReasonCode): $firstText Started the Vulkan setup instead."
         # The stand-in goes through the whole start again (engine, model, hash, consent checks, re-plan), with the same options. It has a
         # `fallback`, so it can never fall back again: the second failure propagates.
@@ -4109,6 +4126,9 @@ function Start-FastLlmServer {
         if ($IdleStopMinutes -gt 0) { $startAgain.IdleStopMinutes = $IdleStopMinutes }
         # The stand-in is one start inside the same switch sequence: it looks for switch requests too, and the sequence stays with this call.
         if ($AllowSwitch) { $startAgain.AllowSwitch = $true; $startAgain.SwitchContext = $SwitchContext }
+        # The stand-in runs with the key too: its start reads the store again (the same refusal when it cannot), sets the key in the stand-in
+        # server's environment and repeats the 401/200 proof before anything says the key is on. It never starts keyless in place of a keyed start.
+        if ($ApiKey -ceq 'on') { $startAgain.ApiKey = 'on' }
         try {
             $serverExitCode = Start-FastLlmServer @startAgain
         }

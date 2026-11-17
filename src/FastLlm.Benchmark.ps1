@@ -1729,7 +1729,7 @@ function New-FastLlmBenchmarkFailureReport {
 # A Thinking setting is a user choice, never the recipe configuration: a run started with it off (or with any --reasoning argument) is not benchmarked.
 # The local chat page is the same: a run started with it on (or without --no-ui) is not benchmarked.
 # The idle stop is the same: a run that may stop itself part-way through a measurement is not benchmarked.
-# state.thinking, state.chatPage, state.idleStopMinutes and requestedArguments are read tolerantly; a status written before a field existed means the default.
+# state.thinking, state.chatPage, state.idleStopMinutes, state.apiKey and requestedArguments are read tolerantly; a status written before a field existed means the default.
 function Assert-FastLlmBenchmarkDefaultSetup {
     param($State)
     $refusal = 'Benchmarks measure the default setup. Set Thinking to Auto, start again, then benchmark.'
@@ -1739,6 +1739,9 @@ function Assert-FastLlmBenchmarkDefaultSetup {
     $idleRefusal = 'Benchmarks measure the default setup. Set Stop the model when idle to Never, start again, then benchmark.'
     $idleMinutes = 0
     if ($State.PSObject.Properties['idleStopMinutes'] -and [int]::TryParse([string]$State.idleStopMinutes, [ref]$idleMinutes) -and $idleMinutes -gt 0) { throw $idleRefusal }
+    # The API key is the same: a user choice, and the benchmark sends no key (the measured requests would be refused). Any value but an absent field or off is refused.
+    $keyRefusal = 'Benchmarks measure the default setup. Turn the API key off, start again, then benchmark.'
+    if ($State.PSObject.Properties['apiKey'] -and [string]$State.apiKey -cne 'off') { throw $keyRefusal }
     if ($State.recipe -and $State.recipe.PSObject.Properties['requestedArguments']) {
         $hasNoUi = $false
         foreach ($argument in @($State.recipe.requestedArguments)) { if (([string]$argument) -ceq '--no-ui') { $hasNoUi = $true } }

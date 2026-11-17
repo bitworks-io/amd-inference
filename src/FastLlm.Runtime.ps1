@@ -463,7 +463,11 @@ function Remove-FastLlmSwitchPriorStop {
 # A request is consumed (removed) as soon as it is read: one request, one answer. An unsafe object is answered once and never opened.
 function Step-FastLlmSwitchPoll {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Poll, [Parameter(Mandatory = $true)][string] $RequestPath, [Parameter(Mandatory = $true)][string] $CatalogPath,
-        [Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $BaseUrl, [string] $CurrentModelId, [string] $CurrentRecipeId, [bool] $ServingProfileActive)
+        [Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $BaseUrl, [string] $CurrentModelId, [string] $CurrentRecipeId, [bool] $ServingProfileActive,
+        # Replaces the sender of the /metrics read, as for the idle read: a start with the API key on passes the run's keyed sender (the server
+        # then answers /metrics only with the key). Without it the read is the keyless one it always was. (Not named Request: this function
+        # has a local of that name, and variable names are not case-sensitive.)
+        [scriptblock] $MetricsRequest)
     $first = $false
     if ($null -eq $Poll['wait']) {
         if (-not (Test-Path -LiteralPath $RequestPath)) { $Poll['unsafeReported'] = $false; $Poll['stuckStamp'] = $null; return $null }
@@ -495,7 +499,9 @@ function Step-FastLlmSwitchPoll {
         $wait.nextPollMs = [long] $wait.clock.ElapsedMilliseconds + [long] $script:FastLlmSwitchBusyPollMilliseconds
         # The idle detector's counters: a request that is processing or deferred is never cut off. A read that fails proves nothing, so it waits.
         $counters = $null
-        try { $counters = ConvertFrom-FastLlmIdleMetrics -Text (Get-FastLlmIdleMetricsText -BaseUrl $BaseUrl) } catch { $counters = $null }
+        # With the API key on the read carries the run's key (the same sender, and the same listener check, as the idle read); a read the
+        # server refuses is a failed read like any other, so the request waits and is refused as busy, never forced through.
+        try { $counters = ConvertFrom-FastLlmIdleMetrics -Text (Get-FastLlmIdleMetricsText -BaseUrl $BaseUrl -Request $MetricsRequest) } catch { $counters = $null }
         if ($null -ne $counters -and $counters.processing -eq 0 -and $counters.deferred -eq 0) { $Poll['wait'] = $null; $step.action = 'accept'; return $step }
         if ($wait.clock.Elapsed.TotalSeconds -ge [double] $script:FastLlmSwitchBusyWaitSeconds) { $Poll['wait'] = $null; $step.action = 'refused'; $step.code = 'refused-busy'; return $step }
     }
@@ -705,9 +711,14 @@ function Step-FastLlmIdleDetector {
 
 # GET /metrics on the loopback address with a short timeout (250 ms, so a poll never delays the loop's stop check by more than that;
 # a read that times out is a failed read, which never stops the server). Only a 200 body counts; anything else is $null (a failed read).
+# -Request replaces the sender (a start with the API key on passes the one that attaches the run's key; /metrics needs the key then).
+# -Result, when given, receives the HTTP status of the read (0 when there was no answer), so a refused read (401) can be told apart.
 function Get-FastLlmIdleMetricsText {
-    param([Parameter(Mandatory = $true)][string] $BaseUrl)
-    $response = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/metrics' -TimeoutMs 250
+    param([Parameter(Mandatory = $true)][string] $BaseUrl, [scriptblock] $Request, [System.Collections.IDictionary] $Result)
+    if ($null -ne $Result) { $Result['status'] = 0 }
+    if ($Request) { $response = & $Request '/metrics' $null 250 }
+    else { $response = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/metrics' -TimeoutMs 250 }
+    if ($null -ne $Result -and $null -ne $response) { $Result['status'] = [int] $response.Status }
     if ($null -ne $response -and $response.Status -eq 200) { return [string] $response.Body }
     return $null
 }
@@ -729,27 +740,32 @@ function Invoke-FastLlmIdleStopPoll {
 # one slot (the check it always was); a plan with a serving profile passes total / slots and its slot count.
 function Test-FastLlmApiCanary {
     [CmdletBinding()]
-    param([string] $BaseUrl, [string] $ModelId, [int] $ContextSize, [ValidateSet(1, 2)][int] $Slots = 1)
-    $models = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/v1/models'
+    param([string] $BaseUrl, [string] $ModelId, [int] $ContextSize, [ValidateSet(1, 2)][int] $Slots = 1,
+          # Replaces the sender (path, body, timeout in ms), as in the self-test. A start with the API key on passes the one that attaches the run's key.
+          [scriptblock] $Request)
+    $send = { param($CanaryPath, $CanaryBody, $CanaryTimeoutMs)
+        if ($Request) { return (& $Request $CanaryPath $CanaryBody $CanaryTimeoutMs) }
+        return (Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path $CanaryPath -Body $CanaryBody -TimeoutMs $CanaryTimeoutMs) }
+    $models = & $send '/v1/models' $null 5000
     if ($models.Status -ne 200 -or @((ConvertFrom-Json $models.Body).data | Where-Object { $_.id -eq $ModelId }).Count -ne 1) { throw 'Served model identity does not match the plan.' }
-    $props = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/props'
+    $props = & $send '/props' $null 5000
     if ($props.Status -ne 200) { throw 'Server properties are unavailable.' }
     $properties = ConvertFrom-Json $props.Body
     if ([int]$properties.default_generation_settings.n_ctx -ne $ContextSize -or [int]$properties.total_slots -ne $Slots) { throw 'Effective context/slots differ from the requested configuration.' }
     $firstToken = $null
     for ($i=0; $i -lt 2; $i++) {
-        $answer = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/completion' -TimeoutMs 30000 -Body @{
+        $answer = & $send '/completion' @{
             prompt='The capital of France is'; n_predict=1; temperature=0; seed=42; cache_prompt=$false; return_tokens=$true; ignore_eos=$true; stream=$false
-        }
+        } 30000
         if ($answer.Status -ne 200) { throw 'One-token inference canary failed.' }
         $data = ConvertFrom-Json $answer.Body
         if (@($data.tokens).Count -ne 1 -or [long]$data.tokens[0] -lt 0) { throw 'One-token canary returned an invalid token.' }
         if ($i -eq 0) { $firstToken = [long]$data.tokens[0] }
         elseif ([long]$data.tokens[0] -ne $firstToken) { throw 'Greedy one-token canary was not repeatable.' }
     }
-    $chat = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/v1/chat/completions' -TimeoutMs 30000 -Body @{
+    $chat = & $send '/v1/chat/completions' @{
         model=$ModelId; messages=@(@{role='user';content='Say hello.'}); max_tokens=8; temperature=0; seed=42; stream=$false
-    }
+    } 30000
     if ($chat.Status -ne 200) { throw 'Synchronous OpenAI chat canary failed.' }
     $chatData = ConvertFrom-Json $chat.Body
     if (@($chatData.choices).Count -ne 1) { throw 'Synchronous chat returned an invalid choice count.' }
@@ -761,9 +777,9 @@ function Test-FastLlmApiCanary {
         if ($property -and -not [string]::IsNullOrEmpty([string]$property.Value)) { $chatText=$true }
     }
     if (-not $chatText) { throw 'Synchronous chat returned no text.' }
-    $stream = Invoke-FastLlmHttp -BaseUrl $BaseUrl -Path '/v1/chat/completions' -TimeoutMs 30000 -Body @{
+    $stream = & $send '/v1/chat/completions' @{
         model=$ModelId; messages=@(@{role='user';content='Say hello.'}); max_tokens=8; temperature=0; seed=42; stream=$true
-    }
+    } 30000
     if ($stream.Status -ne 200) { throw 'OpenAI streaming canary failed.' }
     $hasText = $false; $done = $false
     foreach ($line in ($stream.Body -split "`r?`n")) {
@@ -1082,11 +1098,30 @@ function Invoke-FastLlmSupervisedServer {
           # Opt-in model switch: only with this switch does the post-Ready loop look for state\switch-<runId>.json. Absent (every default start, direct
           # callers and the bench path): no request file is ever read and no field is added. -SwitchContext is Start-FastLlmServer's table for the
           # sequence (what this run is the outcome of, the accepted request, the plan that became ready); Start-FastLlmServer starts the other model.
-          [switch] $AllowSwitch, [System.Collections.IDictionary] $SwitchContext)
+          [switch] $AllowSwitch, [System.Collections.IDictionary] $SwitchContext,
+          # Opt-in: the run's API key, in its holder. Only a start with the key setting on passes it (Start-FastLlmServer reads the store);
+          # every other caller, the bench path included, passes nothing and gets today's keyless start. Untyped on purpose (see FastLlm.ApiKey.ps1).
+          $ApiKeyHolder)
     # ValidateSet ignores case and keeps the typed value, but the enforce checks below are case-sensitive: normalise once, first.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     # $null for every plan without a serving profile (all of today's plans): nothing below then differs from before. Checked before anything is written or launched.
     $servingProfile = Get-FastLlmPlanServingProfile -Plan $Plan
+    # A key was asked for exactly when the parameter was passed. Then the holder must be a well-formed key (typed api-key-invalid otherwise,
+    # before anything is written or launched): a start that was asked for a key never runs without one.
+    $apiKeyRequested = $PSBoundParameters.ContainsKey('ApiKeyHolder')
+    $apiKeyId = $null
+    # The one sender of this run's key: it is handed to the API check, the self-test, the throughput canary and the idle read, which call it
+    # with (path, body, timeout). It runs inside those functions, so the names it reads are ones none of them uses. Each request goes through
+    # the listener check in Invoke-FastLlmHttp first. $null without a key: every call below is then the one it always was.
+    $apiKeyRequest = $null
+    $apiKeyRunServer = $null
+    if ($apiKeyRequested) {
+        $apiKeyId = [string] (Get-FastLlmApiKeyId -ApiKeyHolder $ApiKeyHolder)
+        $apiKeyRunHolder = $ApiKeyHolder
+        $apiKeyRunBaseUrl = $Plan.endpoint -replace '/v1$', ''
+        $apiKeyRequest = { param($KeyedPath, $KeyedBody, $KeyedTimeoutMs)
+            Invoke-FastLlmHttp -BaseUrl $apiKeyRunBaseUrl -Path $KeyedPath -Body $KeyedBody -TimeoutMs $KeyedTimeoutMs -ApiKeyHolder $apiKeyRunHolder -ApiKeyServer $apiKeyRunServer }
+    }
     Initialize-FastLlmProcessHost
     $state = [ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='loading'; updatedAt=(Get-Date).ToUniversalTime().ToString('o'); modelId=$Plan.model.id; endpoint=$Plan.endpoint; hardwareFingerprint=$Plan.hardwareFingerprint; engineVersion=$Plan.engineVersion; modelSha256=$Plan.model.sha256; canary=$null; placement=$null; startupDiagnostics=$null; selectedDeviceCapture=$null; selectedDeviceIdentity=$null; failureCode=$null; performanceQualified=$false; recipe=$null; thinking=$(if ($Plan.PSObject.Properties['requestedThinking'] -and [string]$Plan.requestedThinking -ceq 'off') { 'off' } else { 'auto' }); chatPage=$(if ($Plan.PSObject.Properties['requestedChatPage'] -and [string]$Plan.requestedChatPage -ceq 'on') { 'on' } else { 'off' }); processIdentity=$null; vulkanMemoryPolicy=$null; barGuidance=[ordered]@{ shown = $false; text = $null } }
     # Recorded from the start (only when on) so the Ready status already says so; the status of a default run is unchanged.
@@ -1279,7 +1314,11 @@ function Invoke-FastLlmSupervisedServer {
         $info.Arguments = Join-FastLlmProcessArguments -Arguments $Plan.serverArguments
         $info.WorkingDirectory = Split-Path -Parent $Plan.enginePath
         # The scrub, sandbox paths, PATH and (Vulkan lane, opt-in) the BAR variable all come from the one environment builder the device probe also uses.
-        Initialize-FastLlmEngineStartInfo -StartInfo $info -Plan $Plan -Sandbox $sandbox -VulkanBarMitigation:($state.vulkanMemoryPolicy.effective -eq 'on')
+        # With a key, the same builder also sets LLAMA_API_KEY for this server child only: the arguments above are the same with or without it.
+        if ($apiKeyRequested) { Initialize-FastLlmEngineStartInfo -StartInfo $info -Plan $Plan -Sandbox $sandbox -VulkanBarMitigation:($state.vulkanMemoryPolicy.effective -eq 'on') -ApiKeyHolder $ApiKeyHolder }
+        else { Initialize-FastLlmEngineStartInfo -StartInfo $info -Plan $Plan -Sandbox $sandbox -VulkanBarMitigation:($state.vulkanMemoryPolicy.effective -eq 'on') }
+        # W1: besides every line with an api_key label, the process host drops any output line that holds this run's key itself.
+        if ($apiKeyRequested) { $hostProcess.DropLinesContaining((Get-FastLlmApiKeyText -ApiKeyHolder $ApiKeyHolder)) }
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         try { $hostProcess.Start($info) }
         catch {
@@ -1297,6 +1336,8 @@ function Invoke-FastLlmSupervisedServer {
             pid=[int]$hostProcess.Process.Id
             startUtcTicks=[long]$hostProcess.Process.StartTime.ToUniversalTime().Ticks
         }
+        # The key is only ever sent to this process (the listener check compares the port's owner with this identity).
+        $apiKeyRunServer = $state.processIdentity
         $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         $runPhase = 'loading'
@@ -1382,6 +1423,26 @@ function Invoke-FastLlmSupervisedServer {
                 throw (New-FastLlmDeviceBindingFailure -Code 'device-binding-post-load-mismatch' -Message ("Device binding (enforce): the server's device list does not match the bound GPU (check $($postLoad.item)). The server was stopped. Use -DeviceBinding record or -DeviceBinding off to start without this requirement."))
             }
         }
+        if ($apiKeyRequested) {
+            # The proof, before anything says the key is on: one request without the key must be refused (401) and one with it must be
+            # answered (200). A request that gets no answer counts as status 0. Anything but 401 and 200 stops the server (the start's
+            # finally) with api-key-not-enforced. The captures above are frozen, so these requests add nothing to them.
+            $proofWithout = 0
+            $proofWith = 0
+            try { $proofWithout = [int] (Invoke-FastLlmHttp -BaseUrl $baseUrl -Path '/props' -TimeoutMs 5000).Status } catch { $proofWithout = 0 }
+            try { $proofWith = [int] (& $apiKeyRequest '/props' $null 5000).Status }
+            catch {
+                # A refusal of the key path itself (the listener is not this run's server) keeps its own code; a request that failed is status 0.
+                if ($_.Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed') { throw }
+                $proofWith = 0
+            }
+            if ((Get-FastLlmApiKeyEnforcement -WithoutKeyStatus $proofWithout -WithKeyStatus $proofWith) -cne 'enforced') {
+                throw (New-FastLlmApiKeyFailure -Code 'api-key-not-enforced' -Message "The API key is on, but the server did not enforce it: a request without the key got HTTP status $proofWithout (401 expected) and a request with the key got $proofWith (200 expected). The server was stopped.")
+            }
+            # Only now may the status, the window and Connect an app say the key is on. The id is public: it tells two keys apart, nothing more.
+            $state.apiKey = 'on'
+            $state.apiKeyId = $apiKeyId
+        }
         $state.phase='checking'; $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
         Write-FastLlmState -InstallRoot $InstallRoot -State $state
         # Capture only normalized placement lines as they arrive. The general
@@ -1402,8 +1463,11 @@ function Invoke-FastLlmSupervisedServer {
         $runPhase = 'checking'
         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'phase' -Fields @{ phase = 'checking' }
         # The slot count and the per-slot context come from the plan's serving profile; without one the call is exactly the one it always was.
-        if ($servingProfile) { $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $servingProfile.contextPerSlot -Slots $servingProfile.slots }
-        else { $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $Plan.model.contextSize }
+        # With a key the check, the self-test, the throughput canary and the idle read all send through the run's keyed sender; without one nothing is added to any call.
+        $apiKeyRequestOption = @{}
+        if ($apiKeyRequested) { $apiKeyRequestOption.Request = $apiKeyRequest }
+        if ($servingProfile) { $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $servingProfile.contextPerSlot -Slots $servingProfile.slots @apiKeyRequestOption }
+        else { $state.canary = Test-FastLlmApiCanary -BaseUrl $baseUrl -ModelId $Plan.model.id -ContextSize $Plan.model.contextSize @apiKeyRequestOption }
         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'api-check' -Fields { Get-FastLlmRunLogApiCheckFields -Canary $state.canary }
         if ($hostProcess.Process.HasExited) { throw 'Server exited during canary.' }
         $hostProcess.DiscardOutput()
@@ -1419,7 +1483,7 @@ function Invoke-FastLlmSupervisedServer {
             if ($servingProfile) { $contextForTest = [int] $servingProfile.contextPerSlot }
             $mitigation = 'off'
             if ($state.vulkanMemoryPolicy -and $state.vulkanMemoryPolicy.effective -eq 'on') { $mitigation = 'on' }
-            $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation
+            $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation @apiKeyRequestOption
             # The GPU memory check right after the self-test (the KV buffer exists by now). A state that is not ok makes the numbers not comparable.
             $spillStep = Invoke-FastLlmSpillCheckAtReady -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $spillBindingLuid -BarDecision $state.vulkanMemoryPolicy -Process $hostProcess.Process
             $selfTestResult = Set-FastLlmSelfTestSpillMark -SelfTest $selfTestResult -SpillCheck $spillStep.spillCheck
@@ -1482,6 +1546,7 @@ function Invoke-FastLlmSupervisedServer {
             } catch { }
         }
         Write-Host "Ready: $($Plan.endpoint) - API smoke test and reported GPU layers passed; physical residency/performance remain unqualified."
+        if ($apiKeyRequested) { Write-Host "API key: on (key id $apiKeyId). Checked: a request without the key is refused. Apps need the key; show it with: fast-llm.ps1 settings -ApiKey show" }
         # The GPU memory check line (never a layer-based claim). The unavailable text is shown once per run, here or at its first change.
         $spillUnknownShown = $false
         $spillReadyText = Get-FastLlmSpillCheckText -SpillCheck $state.spillCheck
@@ -1492,7 +1557,7 @@ function Invoke-FastLlmSupervisedServer {
                 $canaryNames = @(@($Plan.selectedAdapters) | ForEach-Object { if ($_.PSObject.Properties['name']) { [string]$_.name } })
                 $contextForCanary = if ($Plan.model.PSObject.Properties['contextSize']) { [int]$Plan.model.contextSize } else { 0 }
                 if ($servingProfile) { $contextForCanary = [int] $servingProfile.contextPerSlot }
-                $state.throughputCanary = Invoke-FastLlmThroughputCanary -BaseUrl $baseUrl -ContextSize $contextForCanary -AdapterNames $canaryNames -ModelId ([string]$Plan.model.id)
+                $state.throughputCanary = Invoke-FastLlmThroughputCanary -BaseUrl $baseUrl -ContextSize $contextForCanary -AdapterNames $canaryNames -ModelId ([string]$Plan.model.id) @apiKeyRequestOption
             } catch { $state.throughputCanary = [pscustomobject][ordered]@{ ppTokPerS=$null; floor=$null; floorSource=$null; warmupPpTokPerS=$null; status='failed'; promptTokens=$null; promptArtifactSha256=$null; reason='canary-error' } }
             try {
                 $state.updatedAt=(Get-Date).ToUniversalTime().ToString('o')
@@ -1509,6 +1574,9 @@ function Invoke-FastLlmSupervisedServer {
         }
         $idleDetector = $null
         $idleNextPoll = [DateTime]::MaxValue
+        # The HTTP status of the latest idle read, and whether a refused read (401) was already logged for the current run of them.
+        $idleRead = @{ status = 0 }
+        $idleUnauthorizedLogged = $false
         if ($IdleStopMinutes -gt 0) {
             $idleNow = (Get-Date).ToUniversalTime()
             $idleDetector = New-FastLlmIdleDetectorState -Now $idleNow
@@ -1523,6 +1591,9 @@ function Invoke-FastLlmSupervisedServer {
         }
         # Opt-in model switch: the request that waits for requests in progress, if any, and what was already answered.
         $switchPoll = @{ wait = $null; unsafeReported = $false; stuckStamp = $null }
+        # With the API key on, the busy read of a switch goes through the run's keyed sender; without a key nothing is added to the call.
+        $switchMetricsOption = @{}
+        if ($apiKeyRequested) { $switchMetricsOption.MetricsRequest = $apiKeyRequest }
         $switchCurrentRecipeId = ''
         if ($AllowSwitch -and $Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id'] -and $Plan.recipe.id) { $switchCurrentRecipeId = [string] $Plan.recipe.id }
         while (-not $hostProcess.Process.WaitForExit(250)) {
@@ -1531,7 +1602,7 @@ function Invoke-FastLlmSupervisedServer {
             if ($AllowSwitch) {
                 if (Test-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
                 $switchStep = Step-FastLlmSwitchPoll -Poll $switchPoll -RequestPath $switchRequestPath -CatalogPath $CatalogPath -InstallRoot $InstallRoot -BaseUrl $baseUrl `
-                    -CurrentModelId ([string] $Plan.model.id) -CurrentRecipeId $switchCurrentRecipeId -ServingProfileActive ([bool] ($null -ne $servingProfile))
+                    -CurrentModelId ([string] $Plan.model.id) -CurrentRecipeId $switchCurrentRecipeId -ServingProfileActive ([bool] ($null -ne $servingProfile)) @switchMetricsOption
                 if ($null -ne $switchStep) {
                     $switchFrom = [string] $Plan.model.id
                     $switchTo = [string] $switchStep.toModelId
@@ -1577,8 +1648,17 @@ function Invoke-FastLlmSupervisedServer {
                 $idleNow = (Get-Date).ToUniversalTime()
                 if ($idleNow -ge $idleNextPoll) {
                     $idleNextPoll = $idleNow.AddSeconds($script:FastLlmIdlePollSeconds)
-                    $idleStep = Invoke-FastLlmIdleStopPoll -State $idleDetector -Fetch { Get-FastLlmIdleMetricsText -BaseUrl $baseUrl } -Now $idleNow -IdleMinutes $IdleStopMinutes
+                    $idleStep = Invoke-FastLlmIdleStopPoll -State $idleDetector -Fetch { Get-FastLlmIdleMetricsText -BaseUrl $baseUrl -Request $apiKeyRequest -Result $idleRead } -Now $idleNow -IdleMinutes $IdleStopMinutes
                     $idleDetector = $idleStep.state
+                    # A read refused with 401 (the key the server enforces is not the one this run holds) is a failed read like any other:
+                    # it never stops the server. It is logged once for each run of refused reads, so the mismatch is not silent.
+                    if ($idleStep.readFailed -and [int] $idleRead.status -eq 401) {
+                        if (-not $idleUnauthorizedLogged) {
+                            $idleUnauthorizedLogged = $true
+                            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'idle-metrics-unauthorized' -Fields @{}
+                        }
+                    }
+                    elseif (-not $idleStep.readFailed) { $idleUnauthorizedLogged = $false }
                     if ($idleStep.readFailed -and [int] $idleDetector.failedReads -eq 1) {
                         # Logged once for each run of failed reads in a row, however long it lasts. Nothing is stopped for it.
                         Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'idle-check-failed' -Fields @{}
@@ -1602,7 +1682,8 @@ function Invoke-FastLlmSupervisedServer {
         return $exitCode
     } catch {
         $state.phase='failed'
-        $runFailureMessage = [string] $_.Exception.Message
+        # What is recorded about a failure passes the key scrub first (with this run's key, when there is one).
+        $runFailureMessage = ConvertTo-FastLlmKeyFreeText -Text ([string] $_.Exception.Message) -ApiKeyHolder $ApiKeyHolder
         # A failure after the server was ready (a crash while serving) is not a start failure: the start-time fallback never applies to it.
         if ($reachedReady) { $_.Exception.Data['FastLlmAfterReady']=$true }
         if ($_.Exception.Data['FastLlmStateWrite'] -eq $true) {
@@ -1621,6 +1702,12 @@ function Invoke-FastLlmSupervisedServer {
             # An occupied port (found before the spawn, or reported by the engine's own bind error) keeps its typed code and reason: model
             # recovery and the start-time fallback would only meet the same port.
             $state.failureCode='port-in-use'
+        } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed') {
+            # A key failure (not enforced, the listener is not this run's server, a malformed key) keeps its typed code and a reason that is
+            # never retried, recovered with another model or replaced by the stand-in setup.
+            $apiKeyFailureCode = [string] $_.Exception.Data['FastLlmFailureCode']
+            if ($apiKeyFailureCode -cnotmatch '^api-key-[a-z-]{1,40}$') { $apiKeyFailureCode = 'api-key-unavailable' }
+            $state.failureCode = $apiKeyFailureCode
         } elseif ($_.Exception.Data['FastLlmReason'] -ceq 'HipDllFailed') {
             # A blocked or missing HIP DLL keeps its typed code and a reason that model recovery does not retry (recovery would re-plan onto Vulkan).
             $state.failureCode=[string]$_.Exception.Data['FastLlmFailureCode']
@@ -1633,6 +1720,13 @@ function Invoke-FastLlmSupervisedServer {
         if ($AllowSwitch -and -not $reachedReady) {
             $switchRunFailureCode = Get-FastLlmSwitchFailureCode -Exception $_.Exception -StatusCode ([string] $state.failureCode)
             $_.Exception.Data['FastLlmSwitchFailureCode'] = $switchRunFailureCode
+        }
+        # A failure whose own text holds the key (or what the server prints of it) is not passed on as it is: every later reader - the
+        # command line, the window, the background record, the stand-in start's console line - gets a copy with the scrubbed text and the same data.
+        if ($runFailureMessage -cne [string] $_.Exception.Message) {
+            $scrubbedFailure = New-Object -TypeName System.InvalidOperationException -ArgumentList $runFailureMessage
+            foreach ($failureDataKey in @($_.Exception.Data.Keys)) { $scrubbedFailure.Data[$failureDataKey] = $_.Exception.Data[$failureDataKey] }
+            throw $scrubbedFailure
         }
         throw
     } finally {

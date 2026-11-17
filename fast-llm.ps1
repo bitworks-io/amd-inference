@@ -57,6 +57,8 @@ param(
 
     # doctor only: send one short fixed prompt to /v1/chat/completions, /v1/messages and /v1/responses of the running server and print the
     # pass/fail result as JSON. Needs a Ready server. Records numbers and verdicts only, never text. Never run by start.
+    # The alias keeps the abbreviation -Api meaning -ApiCheck now that -ApiKey exists (an exact alias wins over a prefix).
+    [Alias('Api')]
     [switch] $ApiCheck,
 
     # Advisory post-Ready prompt-processing measurement (live start only; default off).
@@ -141,6 +143,14 @@ param(
 
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
+
+    # settings only, written -ApiKey on|off|rotate|show: the optional API key (off by default). on = the server requires a key from the next
+    # start (a key is created if there is none); off = no key from the next start; rotate = create a new key in place of the stored one;
+    # show = print the key. settings.json holds only the flag apiKey "on"; the key is kept in a per-user protected store and is never an
+    # argument of the server. The parameter itself is named -KeyAction so that no existing abbreviation becomes ambiguous; -ApiKey is its alias.
+    [Alias('ApiKey')]
+    [ValidateSet('on', 'off', 'rotate', 'show')]
+    [string] $KeyAction,
 
     # start, install and plan: ignore the saved settings for this run (explicit parameters still apply).
     [switch] $IgnoreUserSettings,
@@ -345,6 +355,14 @@ $selectionOptions = @{
 # settings (unless -IgnoreUserSettings), then the default. The planner takes 0 for the catalog port, so the default plan call is unchanged.
 if ($PSBoundParameters.ContainsKey('ServerPort') -and $effectiveAction -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('Port') -and $effectiveAction -ne 'settings') { throw '-Port is supported only by settings.' }
+if ($PSBoundParameters.ContainsKey('KeyAction') -and $effectiveAction -ne 'settings') { throw '-ApiKey is supported only by settings.' }
+# ValidateSet ignores case; the later comparisons are exact. The value is lower-cased into its own variable (the parameter itself is never assigned to).
+$requestedKeyAction = $null
+if ($PSBoundParameters.ContainsKey('KeyAction')) { $requestedKeyAction = $KeyAction.ToLowerInvariant() }
+# The key is printed only by settings -ApiKey show on its own: never inside a JSON document, and never next to another change.
+if ($PSBoundParameters.ContainsKey('KeyAction') -and $requestedKeyAction -ceq 'show' -and ($AsJson -or @($PSBoundParameters.Keys | Where-Object { $_ -cin @('Port', 'Thinking', 'ChatPage', 'IdleStopMinutes', 'KvContextProfile', 'KvSlots', 'ComponentLicenses') }).Count -gt 0)) {
+    throw 'settings -ApiKey show prints the key and nothing else: it cannot be combined with -AsJson or with another setting.'
+}
 if ($PSBoundParameters.ContainsKey('Thinking') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('ChatPage') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('IdleStopMinutes') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-IdleStopMinutes is supported only by plan, install, start and settings.' }
@@ -387,6 +405,11 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     }
     # The idle stop never reaches the planner: it changes no server argument. It is handed to the start only.
     $effectiveIdleStopMinutes = [int] $servingOptions.idleStopMinutes
+    # The API key never reaches the planner either, and no plan or dry run mentions it. A live start gets the flag from the saved setting
+    # only (there is no start parameter, and -IgnoreUserSettings gives off). 'undetermined' is refused inside the start, before anything runs.
+    $effectiveApiKey = 'off'
+    if ([string] $servingOptions.apiKey -ceq 'on') { $effectiveApiKey = 'on' }
+    if ([bool] $servingOptions.apiKeyUndetermined) { $effectiveApiKey = 'undetermined' }
 }
 
 # A fixture plan (-HardwareFile) never runs an engine: the planner refuses a recipe whose engine would have to be probed (the HIP engine).
@@ -655,12 +678,29 @@ try {
             if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -IdleStopMinutes $IdleStopMinutes }
             if ($PSBoundParameters.ContainsKey('KvContextProfile')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -KvContextProfile $requestedContextProfile }
             if ($PSBoundParameters.ContainsKey('KvSlots')) { Set-FastLlmServingSettings -InstallRoot $InstallRoot -KvSlots $KvSlots }
+            $apiKeyLines = @()
+            if ($PSBoundParameters.ContainsKey('KeyAction')) {
+                $apiKeyChange = Invoke-FastLlmApiKeySetting -InstallRoot $InstallRoot -Action $requestedKeyAction
+                if ($requestedKeyAction -ceq 'show') {
+                    # The one place the command line prints the key: on this explicit request, as the only output, and nowhere else.
+                    Write-Output ([string] $apiKeyChange.key)
+                    break
+                }
+                $apiKeyLines = @($apiKeyChange.lines)
+            }
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
             $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
+            # The key's public id (never the key), when a key is stored and this user can read it.
+            $apiKeyStoreState = Get-FastLlmApiKeyStoreState -InstallRoot $InstallRoot
+            $apiKeySettingText = [string] $servingState.apiKey
+            if ([bool] $servingState.apiKeyUndetermined) { $apiKeySettingText = 'unreadable' }
             if ($AsJson) {
-                [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage; idleStopMinutes = $servingState.idleStopMinutes; contextProfile = $servingState.contextProfile; slots = $servingState.slots } | ConvertTo-Json -Depth 6
+                $settingsDocument = [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage; idleStopMinutes = $servingState.idleStopMinutes; contextProfile = $servingState.contextProfile; slots = $servingState.slots; apiKey = $apiKeySettingText }
+                if ($apiKeyStoreState.available) { $settingsDocument.apiKeyId = [string] $apiKeyStoreState.apiKeyId }
+                $settingsDocument | ConvertTo-Json -Depth 6
             }
             else {
+                foreach ($apiKeyLine in $apiKeyLines) { Write-Host $apiKeyLine }
                 if ([string] $licenseState.mode -ceq 'accept-automatically') {
                     Write-Host "componentLicenses: accept-automatically (turned on $($licenseState.acceptedAt); $(@($licenseState.accepted).Count) license(s) accepted)"
                 }
@@ -671,6 +711,10 @@ try {
                 Write-Host "idleStopMinutes: $($servingState.idleStopMinutes)"
                 Write-Host "contextProfile: $($servingState.contextProfile)"
                 Write-Host "slots: $($servingState.slots)"
+                if ($apiKeySettingText -ceq 'on' -and $apiKeyStoreState.available) { Write-Host "apiKey: on (key id $($apiKeyStoreState.apiKeyId))" }
+                elseif ($apiKeySettingText -ceq 'on') { Write-Host 'apiKey: on, but the stored key cannot be read: FastLLM will not start until you create a new key (settings -ApiKey rotate) or turn the key off' }
+                elseif ($apiKeySettingText -ceq 'unreadable') { Write-Host 'apiKey: the saved value is not on or off: FastLLM will not start until you set it (settings -ApiKey on or -ApiKey off)' }
+                else { Write-Host 'apiKey: off' }
             }
         }
         'status' {
@@ -872,6 +916,10 @@ try {
                     throw (New-FastLlmTypedFailure -Code 'needs-setup-engine-missing' -Message 'The verified engine is not installed and -NoDownload forbids installing it.')
                 }
             }
+            # The API key, fail closed and first: a flag that cannot be known, or a key that is on but cannot be read, ends the start here with
+            # a typed refusal, before any hardware probe, plan or launch. Nothing is started without the key that was asked for, and no key is created.
+            if ($effectiveApiKey -ceq 'undetermined') { throw (New-FastLlmApiKeySettingFailure) }
+            if ($effectiveApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot $InstallRoot }
             $maximumPlanAttempts = 3
             $serverCompleted = $false
             $recoveryAttempted = $false
@@ -927,6 +975,8 @@ try {
                 if ($effectiveIdleStopMinutes -gt 0) { $startPolicyOptions.IdleStopMinutes = $effectiveIdleStopMinutes }
                 # Only when asked: the supervisor then also looks for a switch request, and a switch is a full start of the other model.
                 if ($effectiveSwitchAllowed) { $startPolicyOptions.AllowSwitch = $true }
+                # Only the flag is passed, and only when it is on; the start reads the key store itself.
+                if ($effectiveApiKey -ceq 'on') { $startPolicyOptions.ApiKey = 'on' }
                 try {
                     $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions
                 }
@@ -946,6 +996,8 @@ try {
                     # A failure of the fallback attempt (the stand-in's own start) ends the start: no re-plan onto the HIP setup, no repair, no recovery.
                     if ($_.Exception.Data['FastLlmFallbackAttempted']) { throw }
                     if ($_.Exception.Data['FastLlmReason'] -ceq 'DeviceBindingFailed' -or [string]$_.Exception.Data['FastLlmFailureCode'] -clike 'device-binding-*') { throw }
+                    # An API key failure (unavailable, not enforced, the listener is not this run's server) is never retried, re-planned or recovered with another model.
+                    if ($_.Exception.Data['FastLlmReason'] -ceq 'ApiKeyFailed' -or [string]$_.Exception.Data['FastLlmFailureCode'] -clike 'api-key-*') { throw }
                     # A plan on an engine component (HIP) never recovers onto another recipe or engine: the failure is rethrown with its own code.
                     # Keyed on the PLAN, so a built-in Vulkan recipe start (including a UI-forwarded -Recipe) keeps its recovery.
                     $planOnEngineComponent = [bool](($plan.PSObject.Properties['engineComponentId'] -and $plan.engineComponentId) -or ($plan.PSObject.Properties['backend'] -and [string]$plan.backend -ieq 'hip'))
@@ -1127,7 +1179,9 @@ catch {
             Write-FastLlmState -InstallRoot $InstallRoot -State $state
         } catch { Write-Warning 'Failure status could not be saved; the operation lock will still be released.' }
     }
+    # The text is printed, so it passes the API key scrub first (the function is the module's; before the module is loaded no key was read).
     $failureMessage = [string] $failure.Exception.Message
+    if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $failureMessage = ConvertTo-FastLlmKeyFreeText -Text $failureMessage }
     # A device-binding failure prints its message only when it already carries the conforming '<code>: ' prefix; otherwise a fixed text (no part of the message).
     if ($isBindingFailure -and -not $failureMessage.StartsWith($bindingCode + ': ', [StringComparison]::Ordinal)) {
         $failureMessage = $bindingCode + ': device binding failed (details withheld; see status)'
