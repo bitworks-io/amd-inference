@@ -25,6 +25,37 @@ function New-HipState([string]$Engine='b11658',[string]$Backend='hip',[string[]]
     return $copy
 }
 $bothLanes=@('vulkan-b10698','hip-b11658')
+# Drift: an engine refresh that forgets the lane table fails here. Experimental components are labelled in their display name.
+# The check takes the components file as a parameter so a fixture with an engine that has no lane can show it going red.
+function Get-LaneDriftMisses([string]$ComponentsPath){
+    $found=(Get-Content -LiteralPath $ComponentsPath -Raw|ConvertFrom-Json).components
+    $misses=@();$mappedLanes=@()
+    foreach($engine in @($found|Where-Object {$_.kind -ceq 'engine'})){
+        if([string]$engine.displayName -match '(?i)experimental'){continue}
+        $lane=@(Get-FastLlmSemanticSmokeLanes|Where-Object {$_.engine -ceq [string]$engine.version -and $_.backend -ieq [string]$engine.platform.backend})
+        if($lane.Count -lt 1){$misses+="$($engine.id) ($($engine.version), $($engine.platform.backend))"}else{$mappedLanes+="$($engine.id)=$($lane[0].name)"}
+    }
+    return [pscustomobject]@{misses=@($misses);mapped=@($mappedLanes)}
+}
+$drift=Get-LaneDriftMisses (Join-Path $root 'config/components.json')
+Check ($drift.misses.Count -eq 0) "Engine component has no semantic-smoke lane: $($drift.misses -join '; ')."
+Check ($drift.mapped.Count -ge 2) 'No non-experimental engine was mapped to a lane.'
+Write-Host ("Lane drift check: "+($drift.mapped -join '; '))
+$driftScratch=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-drift-'+[Guid]::NewGuid().ToString('N'))
+$null=New-Item -ItemType Directory -Path $driftScratch
+try{
+    $driftFixture=Get-Content -LiteralPath (Join-Path $root 'config/components.json') -Raw|ConvertFrom-Json
+    $extra=$driftFixture.components|Where-Object {$_.id -ceq 'llama.cpp-hip-b11658'}|ConvertTo-Json -Depth 20|ConvertFrom-Json
+    $extra.id='llama.cpp-hip-b12000';$extra.version='b12000'
+    $driftFixture.components=@($driftFixture.components)+@($extra)
+    $driftPath=Join-Path $driftScratch 'components.json'
+    [IO.File]::WriteAllText($driftPath,($driftFixture|ConvertTo-Json -Depth 20))
+    $driftBad=Get-LaneDriftMisses $driftPath
+    Check ($driftBad.misses.Count -eq 1 -and $driftBad.misses[0] -clike 'llama.cpp-hip-b12000*') 'The lane drift check did not flag an engine component with no lane.'
+    $extra.displayName=$extra.displayName+' experimental'
+    [IO.File]::WriteAllText($driftPath,($driftFixture|ConvertTo-Json -Depth 20))
+    Check ((Get-LaneDriftMisses $driftPath).misses.Count -eq 0) 'The lane drift check flagged an experimental engine component.'
+}finally{if(Test-Path -LiteralPath $driftPath){Remove-Item -LiteralPath $driftPath -Force};if(Test-Path -LiteralPath $driftScratch){Remove-Item -LiteralPath $driftScratch -Force}}
 Check ([bool](Assert-FastLlmSemanticSmokeState $script:state)) 'Vulkan state rejected with default lanes.'
 Check ([bool](Assert-FastLlmSemanticSmokeState $script:state -AcceptedLanes $bothLanes)) 'Vulkan state rejected with both lanes.'
 Check ([bool](Assert-FastLlmSemanticSmokeState (New-HipState) -AcceptedLanes $bothLanes)) 'Synthetic HIP state rejected with HIP lane enabled.'
@@ -205,6 +236,7 @@ $rej=[ordered]@{}
 $s=New-ProfileState;$s.recipe.slots=3;$rej['recipe.slots 3']=$s
 $s=New-ProfileState;$s.recipe.slots=0;$rej['recipe.slots 0']=$s
 $s=New-ProfileState;Set-Argument $s '--parallel' '1';$rej['--parallel differs from recipe.slots']=$s
+$s=New-ProfileState 3 9000;$rej['recipe.slots 3 with a total that divides by 3']=$s
 $s=New-ProfileState;$s.recipe.requestedArguments=@($s.recipe.requestedArguments)+@('--parallel','2');$rej['--parallel twice']=$s
 $s=New-ProfileState;$s.recipe.requestedArguments=@($s.recipe.requestedArguments|Where-Object {$true});$s.recipe.requestedArguments=@($s.recipe.requestedArguments)+@('--ctx-size','8192');$rej['--ctx-size twice']=$s
 $s=New-ProfileState;Set-Argument $s '--ctx-size' '4096';$rej['--ctx-size differs from contextSize']=$s
@@ -280,17 +312,4 @@ Check $threw 'An unknown lane next to a known one was accepted.'
 $threw=$false
 try{$null=Invoke-FastLlmSemanticSmokeCore -OutputPath (TempPath) -ReadState {$script:state} -CheckProcess {param($S)} -Request {throw 'must not be reached'} -AcceptedLanes @('nonsense')}catch{$threw=$true}
 Check $threw 'The smoke core accepted an unknown lane name.'
-# Drift: an engine refresh that forgets the lane table fails here. Experimental components are labelled in their display name.
-$components=(Get-Content -LiteralPath (Join-Path $root 'config/components.json') -Raw|ConvertFrom-Json).components
-$engines=@($components|Where-Object {$_.kind -ceq 'engine'})
-Check ($engines.Count -ge 2) 'The components file lists no engines.'
-$mapped=@()
-foreach($engine in $engines){
-    if([string]$engine.displayName -match '(?i)experimental'){continue}
-    $lane=@(Get-FastLlmSemanticSmokeLanes|Where-Object {$_.engine -ceq [string]$engine.version -and $_.backend -ieq [string]$engine.platform.backend})
-    Check ($lane.Count -ge 1) "Engine component $($engine.id) ($($engine.version), $($engine.platform.backend)) has no semantic-smoke lane."
-    $mapped+="$($engine.id)=$($lane[0].name)"
-}
-Check ($mapped.Count -ge 2) 'No non-experimental engine was mapped to a lane.'
-Write-Host ("Lane drift check: "+($mapped -join '; '))
 Write-Host "$count semantic smoke focused assertions passed."
