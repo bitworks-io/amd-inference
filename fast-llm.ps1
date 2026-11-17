@@ -323,11 +323,15 @@ function Get-FastLlmSwitchCliAction {
     if ($null -ne $Status -and $Status.PSObject.Properties['active'] -and [bool] $Status.active) { return 'switch' }
     return 'start'
 }
+# The parameters are never assigned to. From here on the action that runs is $effectiveAction and the opt-in is $effectiveSwitchAllowed: the
+# same as -Action and -SwitchAllowed, except that switch with no server running is the start action with switching allowed.
+$effectiveAction = [string] $Action
+$effectiveSwitchAllowed = [bool] $SwitchAllowed
 if ($Action -eq 'switch') {
     if ((Get-FastLlmSwitchCliAction -Status (Get-FastLlmStatus -InstallRoot $InstallRoot)) -ceq 'start') {
         Write-Host 'No FastLLM server is running, so this is a normal start of the requested model, with model switching allowed.'
-        $Action = 'start'
-        $SwitchAllowed = $true
+        $effectiveAction = 'start'
+        $effectiveSwitchAllowed = $true
     }
 }
 $recipesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'recipes.json'
@@ -339,14 +343,14 @@ $selectionOptions = @{
 
 # Serving settings (port). Validated here, next to the other parameter checks, and resolved once: explicit parameter, then saved
 # settings (unless -IgnoreUserSettings), then the default. The planner takes 0 for the catalog port, so the default plan call is unchanged.
-if ($PSBoundParameters.ContainsKey('ServerPort') -and $Action -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
-if ($PSBoundParameters.ContainsKey('Port') -and $Action -ne 'settings') { throw '-Port is supported only by settings.' }
-if ($PSBoundParameters.ContainsKey('Thinking') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
-if ($PSBoundParameters.ContainsKey('ChatPage') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
-if ($PSBoundParameters.ContainsKey('IdleStopMinutes') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-IdleStopMinutes is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('ServerPort') -and $effectiveAction -notin @('plan', 'install', 'start')) { throw '-ServerPort is supported only by plan, install and start.' }
+if ($PSBoundParameters.ContainsKey('Port') -and $effectiveAction -ne 'settings') { throw '-Port is supported only by settings.' }
+if ($PSBoundParameters.ContainsKey('Thinking') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('ChatPage') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('IdleStopMinutes') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-IdleStopMinutes is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $null = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
-if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-KvContextProfile is supported only by plan, install, start and settings.' }
-if ($PSBoundParameters.ContainsKey('KvSlots') -and $Action -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvContextProfile is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('KvSlots') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots')) { $null = ConvertTo-FastLlmSlots -Value $KvSlots }
 # ValidateSet ignores case; the settings converter is exact, so the typed value is lower-cased once after binding.
 if ($PSBoundParameters.ContainsKey('Thinking')) { $Thinking = $Thinking.ToLowerInvariant() }
@@ -354,10 +358,10 @@ if ($PSBoundParameters.ContainsKey('ChatPage')) { $ChatPage = $ChatPage.ToLowerI
 # -KvContextProfile is lower-cased into its own variable (the parameter itself is never assigned to).
 $requestedContextProfile = $null
 if ($PSBoundParameters.ContainsKey('KvContextProfile')) { $requestedContextProfile = $KvContextProfile.ToLowerInvariant() }
-if ($IgnoreUserSettings -and $Action -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
+if ($IgnoreUserSettings -and $effectiveAction -notin @('plan', 'install', 'start')) { throw '-IgnoreUserSettings is supported only by plan, install and start.' }
 if ($PSBoundParameters.ContainsKey('ServerPort')) { $null = ConvertTo-FastLlmServerPort -Value $ServerPort }
 if ($PSBoundParameters.ContainsKey('Port')) { $null = ConvertTo-FastLlmServerPort -Value $Port }
-if ($Action -in @('plan', 'install', 'start', 'doctor')) {
+if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     $servingBound = @{}
     if ($PSBoundParameters.ContainsKey('ServerPort')) { $servingBound.ServerPort = $ServerPort }
     if ($PSBoundParameters.ContainsKey('Thinking')) { $servingBound.Thinking = $Thinking }
@@ -367,7 +371,7 @@ if ($Action -in @('plan', 'install', 'start', 'doctor')) {
     if ($PSBoundParameters.ContainsKey('KvSlots')) { $servingBound.KvSlots = $KvSlots }
     $servingOptions = Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound $servingBound -IgnoreUserSettings:$IgnoreUserSettings
     # A live start says so when the settings file could not be read; plan, dry runs and JSON output stay clean.
-    if ($Action -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
+    if ($effectiveAction -eq 'start' -and -not $DryRun -and -not $AsJson -and -not $IgnoreUserSettings) {
         $servingWarning = Get-FastLlmServingSettingsWarning -InstallRoot $InstallRoot
         if ($null -ne $servingWarning) { Write-Warning $servingWarning }
     }
@@ -475,15 +479,15 @@ $operationLock = $null
 $componentsLock = $null
 try {
     # An experimental recipe is refused before anything is planned, locked or downloaded.
-    if ($Recipe -and $Action -in @('plan', 'start', 'install', 'doctor')) {
+    if ($Recipe -and $effectiveAction -in @('plan', 'start', 'install', 'doctor')) {
         $gateComponents = @()
         if (Test-Path -LiteralPath $componentsFilePath -PathType Leaf) { $gateComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFilePath) }
         Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $InstallRoot -RecipeId $Recipe -Recipes @(Read-FastLlmRecipes -Path $recipesPath) -Components $gateComponents -AcceptExperimental:$AcceptExperimental
     }
-    if ($Action -in @('install', 'start') -and -not $DryRun) {
+    if ($effectiveAction -in @('install', 'start') -and -not $DryRun) {
         if ($env:OS -ne 'Windows_NT') { throw 'Live execution is Windows-only. Use plan -HardwareFile for offline testing.' }
         $operationLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
-        Write-FastLlmState -InstallRoot $InstallRoot -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action=$Action })
+        Write-FastLlmState -InstallRoot $InstallRoot -State ([ordered]@{ schemaVersion=1; runId=[Guid]::NewGuid().ToString('N'); phase='preparing'; action=$effectiveAction })
     }
     # components -Install and -Remove change what a start or an install relies on, so they take the same operation lock (and write no status).
     if ($Action -eq 'components' -and ($PSBoundParameters.ContainsKey('Install') -or $PSBoundParameters.ContainsKey('Remove'))) {
@@ -496,7 +500,7 @@ try {
         if ($env:OS -ne 'Windows_NT') { throw 'Live execution is Windows-only. Use models -Preload -DryRun for offline testing.' }
         $componentsLock = Enter-FastLlmOperation -InstallRoot $InstallRoot
     }
-    switch ($Action) {
+    switch ($effectiveAction) {
         'models' {
             $preloadTiersPath = Join-Path (Join-Path $PSScriptRoot 'config') 'preload-tiers.json'
             $preloadGpuVariantsPath = Join-Path (Join-Path $PSScriptRoot 'config') 'gpu-variants.json'
@@ -922,7 +926,7 @@ try {
                 if ($DeviceBinding -ne 'off') { $startPolicyOptions.DeviceBinding = $DeviceBinding }
                 if ($effectiveIdleStopMinutes -gt 0) { $startPolicyOptions.IdleStopMinutes = $effectiveIdleStopMinutes }
                 # Only when asked: the supervisor then also looks for a switch request, and a switch is a full start of the other model.
-                if ($SwitchAllowed) { $startPolicyOptions.AllowSwitch = $true }
+                if ($effectiveSwitchAllowed) { $startPolicyOptions.AllowSwitch = $true }
                 try {
                     $exitCode = Start-FastLlmServer -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot -LoadTimeoutSeconds $LoadTimeoutSeconds @startPolicyOptions
                 }
