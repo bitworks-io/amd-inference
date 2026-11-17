@@ -70,7 +70,7 @@ $script:state=[pscustomobject]@{
             '--offline','--no-mmproj','--jinja','--no-agent','--no-ui','--metrics','--no-cors-credentials')}
 }
 $hashes=Get-FastLlmSamplerDiagnosticSourceHashes -ToolPath $tool -TaskToolPath $taskTool
-Check ($hashes.Count -eq 10 -and (Test-FastLlmSamplerDiagnosticSourceHashes $hashes $tool $taskTool)) 'Source manifest incomplete.'
+Check ($hashes.Count -eq 11 -and (Test-FastLlmSamplerDiagnosticSourceHashes $hashes $tool $taskTool)) 'Source manifest incomplete.'
 $toolSource=[IO.File]::ReadAllText($tool)
 $coreSource=[IO.File]::ReadAllText($diagnostic)
 foreach($term in @('benchmark.lock','[IO.FileMode]::CreateNew','WindowsBuiltInRole]::Administrator',
