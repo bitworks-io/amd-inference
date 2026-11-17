@@ -345,6 +345,22 @@ function Get-FastLlmUiKeyClipboardFormats {
     }
 }
 
+# Fills one clipboard data object from a copy payload and publishes it. The window passes the two Windows calls: -NewDataObject makes a
+# Windows.Forms.DataObject, -Publish hands it to the clipboard. Everything else is here, so it is tested without a window:
+#   the text is set first, as UnicodeText with conversion to the other text formats;
+#   then every format of the payload, under its exact name, without conversion, as a stream of its raw bytes (a byte array given to a
+#   data object directly would be serialized, not written as the four bytes Windows expects);
+#   then the object is published, once.
+function Set-FastLlmUiClipboard {
+    param([Parameter(Mandatory = $true)] $Payload, [Parameter(Mandatory = $true)][scriptblock] $NewDataObject, [Parameter(Mandatory = $true)][scriptblock] $Publish)
+    $clipboardData = & $NewDataObject
+    $clipboardData.SetData('UnicodeText', $true, [string] $Payload.text)
+    foreach ($formatName in @($Payload.formats.Keys)) {
+        $clipboardData.SetData([string] $formatName, $false, [IO.MemoryStream]::new([byte[]] $Payload.formats[$formatName]))
+    }
+    $null = & $Publish $clipboardData
+}
+
 # The one copy routine for both places that copy the key: the API key row (-KeyOnly: the key alone) and a client card (the card text, with
 # its {KEY} token replaced). The window passes three script blocks and holds no key itself:
 #   -ReadKey       returns the key text read from the store for this one copy, or $null

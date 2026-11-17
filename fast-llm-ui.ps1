@@ -923,11 +923,9 @@ function GetUiApiKeyStore {
 function ReadUiApiKey { try{return [string](Get-FastLlmApiKeyForDisplay -InstallRoot $script:installPath)}catch{return $null} }
 # Puts one copy on the clipboard: the text, plus the formats that came with it. A copy that holds the key comes with the three formats that
 # keep it out of the clipboard history and the cloud clipboard (Get-FastLlmUiKeyClipboardFormats); each is four raw bytes, hence the stream.
+# What goes into the data object, and in which order, is Set-FastLlmUiClipboard (tested without a window); only the two Windows calls are here.
 function SetUiClipboardPayload($Payload) {
-    $clipboardData=New-Object Windows.Forms.DataObject
-    $clipboardData.SetData([Windows.Forms.DataFormats]::UnicodeText,$true,[string]$Payload.text)
-    foreach($formatName in @($Payload.formats.Keys)){$clipboardData.SetData([string]$formatName,$false,[IO.MemoryStream]::new([byte[]]$Payload.formats[$formatName]))}
-    [Windows.Forms.Clipboard]::SetDataObject($clipboardData,$true)
+    Set-FastLlmUiClipboard -Payload $Payload -NewDataObject {New-Object Windows.Forms.DataObject} -Publish {param($ClipboardData) [Windows.Forms.Clipboard]::SetDataObject($ClipboardData,$true)}
 }
 # The one "Create a new key" action: asked, never silent. Returns $true when a new key was created.
 function NewUiApiKey($Owner) {
@@ -941,7 +939,7 @@ function NewUiApiKey($Owner) {
 }
 # A start that failed on the API key: its own plain message, no retry, and the offer to create a new key when that is what helps.
 function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
-    $failure=Get-FastLlmUiApiKeyFailure -Code $Code
+    $failure=Get-FastLlmUiApiKeyFailure -Code $Code -SettingsPath (Join-Path $script:installPath 'settings.json')
     ShowFailure (Format-FastLlmUiTypedFailure -Code $Code -Text ([string]$failure.text))
     if($failure.offerNewKey){
         try{if(NewUiApiKey $form){$statusLabel.Text='A new API key was created. Give it to your apps (Connect an app), then start again.'}}
@@ -1809,7 +1807,7 @@ $timer.Add_Tick({
                 }
                 # An API key failure is shown as its own message and is never retried: a second start must not run without the key.
                 if(Test-FastLlmUiApiKeyFailure -Code $failureCode){
-                    $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'error' -ErrorMessage ([string](Get-FastLlmUiApiKeyFailure -Code $failureCode).text)
+                    $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'error' -ErrorMessage ([string](Get-FastLlmUiApiKeyFailure -Code $failureCode -SettingsPath (Join-Path $script:installPath 'settings.json')).text)
                     ShowUiApiKeyFailure $failureCode $text;return
                 }
                 $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-failed' -ErrorMessage $text

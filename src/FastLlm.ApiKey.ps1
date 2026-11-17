@@ -387,12 +387,19 @@ function Assert-FastLlmApiKeyListener {
 # W4, after the request. The check above and the request are two steps: a server that ends in between, with another program taking the
 # port, would be sent the key. That cannot be prevented here, so it is detected: the same check runs again once the request is over.
 #   -Answered (something answered the request): anything but 'verified' is a failure - whoever answered cannot be confirmed.
-#   not answered (the request failed):           only 'other' is a failure. With nothing listening the key was sent to nobody (the usual
-#                                                case: the server itself ended), and the request's own failure stands.
+#   not answered (the request failed):           only 'other' is a failure. When the request got no answer and nothing is listening
+#                                                afterwards (the usual case: the server itself ended), no alarm is raised and the
+#                                                request's own failure stands. That is not proof that the key reached nobody.
+# 'unknown' (the listener table could not be read, most likely) is read again, up to twice with a short pause: one failed read of the
+# table must not raise the key alarm. A check that still cannot be made after that counts as before.
 # The failure is api-key-listener-changed: the run stops, and the text says to create a new key, because this one may have been seen.
 function Assert-FastLlmApiKeyListenerAfterSend {
     param([string] $BaseUrl, $ServerIdentity, [switch] $Answered)
     $verdict = Get-FastLlmApiKeyListenerVerdict -BaseUrl $BaseUrl -ServerIdentity $ServerIdentity
+    for ($again = 0; $again -lt 2 -and $verdict -ceq 'unknown'; $again++) {
+        [Threading.Thread]::Sleep(100)
+        $verdict = Get-FastLlmApiKeyListenerVerdict -BaseUrl $BaseUrl -ServerIdentity $ServerIdentity
+    }
     if ($verdict -ceq 'verified') { return }
     if (-not $Answered -and $verdict -cne 'other') { return }
     throw (New-FastLlmApiKeyFailure -Code 'api-key-listener-changed' -Message 'Right after FastLLM sent a request with the API key, the program listening on the FastLLM port could no longer be confirmed to be the FastLLM server this run started. Another program may have received the key. FastLLM stopped. Create a new key (fast-llm.ps1 settings -ApiKey rotate, or Create a new key in Settings), give the new key to your apps, then start again.')

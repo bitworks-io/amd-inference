@@ -109,7 +109,7 @@ function New-FastLlmApiKeySettingFailure {
 }
 
 # Returns @{ malformed = [bool]; object = [ordered] }. An absent file is empty and not malformed. A file over 16 KiB, a reparse
-# point, text that is not a JSON object, or text that does not parse is malformed.
+# point, text that is not a JSON object (an array, a string, a number, true, false or null), or text that does not parse is malformed.
 function Read-FastLlmServingSettingsObject {
     param([Parameter(Mandatory = $true)][string] $InstallRoot)
     $result = [ordered]@{}
@@ -121,8 +121,14 @@ function Read-FastLlmServingSettingsObject {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return @{ malformed = $true; object = $result } }
         if ($item.Length -gt $script:FastLlmServingSettingsMaxBytes) { return @{ malformed = $true; object = $result } }
         $text = [IO.File]::ReadAllText($path)
+        # The root must be a JSON object, so the text must begin with "{". (PowerShell 7 hands back the one element of a one-element
+        # array as if it were the document; Windows PowerShell 5.1 does not. The first character settles it for both.)
+        if (-not $text.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { return @{ malformed = $true; object = $result } }
         $stored = $text | ConvertFrom-Json -ErrorAction Stop
-        if ($null -eq $stored -or $stored -isnot [pscustomobject]) { return @{ malformed = $true; object = $result } }
+        # A JSON object and nothing else. [pscustomobject] cannot tell: it is PSObject, which every value a cmdlet returns is wrapped in, so
+        # an array (which Windows PowerShell 5.1 returns in one piece), a string, a number or true would pass as an object with
+        # properties like Length and Count. The class PSCustomObject is what a parsed JSON object really is.
+        if ($null -eq $stored -or $stored -isnot [System.Management.Automation.PSCustomObject]) { return @{ malformed = $true; object = $result } }
         foreach ($property in $stored.PSObject.Properties) { $result[$property.Name] = $property.Value }
     }
     catch { return @{ malformed = $true; object = [ordered]@{} } }

@@ -170,8 +170,13 @@ function Read-FastLlmSettingsObject {
                 $readable = $false
                 $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
                 if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le 16384) {
-                    $stored = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-                    if ($null -ne $stored -and $stored -is [pscustomobject]) {
+                    $storedText = [IO.File]::ReadAllText($path)
+                    $stored = $null
+                    # A JSON object and nothing else. The text must begin with "{" (PowerShell 7 would hand back the one element of a
+                    # one-element array as the document), and the parsed value must be the class PSCustomObject - not [pscustomobject]
+                    # (PSObject), which an array, a string or a number returned by a cmdlet would pass too.
+                    if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { $stored = $storedText | ConvertFrom-Json -ErrorAction Stop }
+                    if ($null -ne $stored -and $stored -is [System.Management.Automation.PSCustomObject]) {
                         foreach ($property in $stored.PSObject.Properties) { $result[$property.Name] = $property.Value }
                         $readable = $true
                     }

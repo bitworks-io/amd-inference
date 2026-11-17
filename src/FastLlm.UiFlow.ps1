@@ -748,8 +748,13 @@ function Write-FastLlmUiSettings {
             $readable = $false
             $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
             if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le 16384) {
-                $stored = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-                if ($null -ne $stored -and $stored -is [pscustomobject]) {
+                $storedText = [IO.File]::ReadAllText($path)
+                $stored = $null
+                # A JSON object and nothing else. The text must begin with "{" (PowerShell 7 would hand back the one element of a
+                # one-element array as the document), and the parsed value must be the class PSCustomObject - not [pscustomobject]
+                # (PSObject), which an array, a string or a number returned by a cmdlet would pass too.
+                if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { $stored = $storedText | ConvertFrom-Json -ErrorAction Stop }
+                if ($null -ne $stored -and $stored -is [System.Management.Automation.PSCustomObject]) {
                     foreach ($property in $stored.PSObject.Properties) { $merged[$property.Name] = $property.Value }
                     $readable = $true
                 }
@@ -1030,8 +1035,18 @@ function Test-FastLlmUiApiKeyFailure {
 
 # The plain text for an API key failure, and whether the window offers the one action that helps: "Create a new key" (when the stored key
 # cannot be read, or may have been seen by another program). Nothing is created without that click.
+# What the window says when it cannot tell whether the API key is required (api-key-setting-unreadable). The way out is to choose in
+# Settings - but Settings cannot save while the settings file is not valid JSON, so the text names that file by its full path and says
+# to fix or delete it first. (Deleting it is safe: with a key stored, a missing setting is still "not chosen", never "off".)
+function Get-FastLlmUiApiKeySettingText {
+    param([string] $SettingsPath)
+    $file = 'settings.json in the FastLLM data folder'
+    if (-not [string]::IsNullOrWhiteSpace($SettingsPath)) { $file = $SettingsPath }
+    return 'FastLLM cannot tell whether the API key is required: a key is stored, and the settings file does not say whether to use it. Nothing was started. If the settings file is not valid JSON, fix or delete it first (' + $file + '). Then open Settings, tick or clear "Require an API key", and save.'
+}
+
 function Get-FastLlmUiApiKeyFailure {
-    param([string] $Code)
+    param([string] $Code, [string] $SettingsPath)
     $text = 'The API key could not be used, so FastLLM did not start.'
     $offerNewKey = $false
     switch -CaseSensitive ($Code) {
@@ -1041,7 +1056,7 @@ function Get-FastLlmUiApiKeyFailure {
         }
         'api-key-not-enforced' { $text = 'The API key is on, but the server did not enforce it, so FastLLM stopped the server. Nothing is running. To run without a key, turn the API key off in Settings.' }
         'api-key-listener-not-verified' { $text = 'FastLLM could not confirm that its own server is the program listening on its port, so it did not send the API key and stopped the server. Close the other program that uses the port, or choose another port in Settings.' }
-        'api-key-setting-unreadable' { $text = 'FastLLM cannot tell whether the API key is required: this installation has a stored API key, and the saved settings do not say whether to use it. FastLLM did not start. Open Settings, tick or clear "Require an API key", and save.' }
+        'api-key-setting-unreadable' { $text = Get-FastLlmUiApiKeySettingText -SettingsPath $SettingsPath }
         'api-key-listener-changed' {
             $text = 'Right after FastLLM sent a request with the API key, it could no longer confirm that its own server was the program listening on its port. Another program may have received the key, so FastLLM stopped. Create a new key, give it to your apps, then start again.'
             $offerNewKey = $true
@@ -1077,7 +1092,7 @@ function Get-FastLlmUiApiKeySaveAction {
 }
 
 function Get-FastLlmUiApiKeyChoiceText {
-    return 'FastLLM cannot tell whether the API key is required: a key is stored, but the saved settings do not say whether to use it. Tick "Require an API key" to use the key, or clear it to run without one, then save. Nothing was saved.'
+    return 'FastLLM cannot tell whether the API key is required: a key is stored, but the saved settings do not say whether to use it. Tick "Require an API key" to use the key, or clear it to run without one, then save. Nothing was saved. (If saving then fails because the settings file is not valid JSON, fix or delete that file first.)'
 }
 
 # The question asked before a new key replaces the stored one (the Settings button, and the offer after a failed start).
@@ -1355,7 +1370,7 @@ function New-FastLlmUiBackgroundRequest {
     # The API key is NOT read tolerantly: when the flag cannot be known the request is refused (nothing is started), and only the exact
     # saved "on" asks for the key. The request carries the flag only, never a key.
     if ($Settings -and $Settings.PSObject.Properties['apiKeyUndetermined'] -and [bool]$Settings.apiKeyUndetermined) {
-        $undetermined = New-Object -TypeName System.InvalidOperationException -ArgumentList 'api-key-setting-unreadable: FastLLM cannot tell whether the API key is required: this installation has a stored API key, and the saved settings do not say whether to use it. Nothing was started. Open Settings, tick or clear "Require an API key", and save.'
+        $undetermined = New-Object -TypeName System.InvalidOperationException -ArgumentList ('api-key-setting-unreadable: ' + (Get-FastLlmUiApiKeySettingText -SettingsPath (Join-Path $InstallRoot 'settings.json')))
         $undetermined.Data['FastLlmFailureCode'] = 'api-key-setting-unreadable'
         throw $undetermined
     }

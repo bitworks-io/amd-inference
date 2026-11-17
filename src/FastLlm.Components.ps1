@@ -26,8 +26,13 @@ function Read-FastLlmComponentSettingsObject {
                 $readable = $false
                 $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
                 if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le 16384) {
-                    $stored = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
-                    if ($null -ne $stored -and $stored -is [pscustomobject]) {
+                    $storedText = [IO.File]::ReadAllText($path)
+                    $stored = $null
+                    # A JSON object and nothing else. The text must begin with "{" (PowerShell 7 would hand back the one element of a
+                    # one-element array as the document), and the parsed value must be the class PSCustomObject - not [pscustomobject]
+                    # (PSObject), which an array, a string or a number returned by a cmdlet would pass too.
+                    if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { $stored = $storedText | ConvertFrom-Json -ErrorAction Stop }
+                    if ($null -ne $stored -and $stored -is [System.Management.Automation.PSCustomObject]) {
                         foreach ($property in $stored.PSObject.Properties) { $result[$property.Name] = $property.Value }
                         $readable = $true
                     }
@@ -559,7 +564,7 @@ function Add-FastLlmUiDeclinedSetup {
     foreach ($id in @(Get-FastLlmUiDeclinedSetups -InstallRoot $InstallRoot)) { $ids.Add([string] $id) }
     if ($ids.Contains($RecipeId)) { return }
     $ids.Add($RecipeId)
-    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -ForWrite
     $merged['declinedSetups'] = $ids.ToArray()
     Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
 }
@@ -568,7 +573,7 @@ function Remove-FastLlmUiDeclinedSetup {
     param([Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)][string] $RecipeId)
     $current = @(Get-FastLlmUiDeclinedSetups -InstallRoot $InstallRoot)
     if ($current -cnotcontains $RecipeId) { return }
-    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -ForWrite
     $merged['declinedSetups'] = @($current | Where-Object { $_ -cne $RecipeId })
     Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
 }
@@ -576,7 +581,7 @@ function Remove-FastLlmUiDeclinedSetup {
 # The user turned the automatic install on: remembered declines no longer apply.
 function Clear-FastLlmUiDeclinedSetups {
     param([Parameter(Mandatory = $true)][string] $InstallRoot)
-    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -ForWrite
     if (-not $merged.Contains('declinedSetups')) { return }
     $merged['declinedSetups'] = @()
     Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged

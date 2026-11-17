@@ -236,7 +236,7 @@ function Get-FastLlmUiBackgroundText {
     # A background run that ended on an API key failure says so; nothing is running, and FastLLM does not start without the key.
     if($failureCode -ceq 'api-key-unavailable'){return 'The last background run did not start: the API key is on, but the stored key cannot be read. Create a new key in Settings, then start again.'}
     if($failureCode -ceq 'api-key-listener-changed'){return 'The last background run was stopped: another program may have received the API key. Create a new key in Settings, give it to your apps, then start again.'}
-    if($failureCode -ceq 'api-key-setting-unreadable'){return 'The last background run did not start: a key is stored, but the saved settings do not say whether to use it. Open Settings, tick or clear "Require an API key", and save.'}
+    if($failureCode -ceq 'api-key-setting-unreadable'){return 'The last background run did not start: a key is stored, but the settings file does not say whether to use it. If the settings file (settings.json in the FastLLM data folder) is not valid JSON, fix or delete it first. Then open Settings, tick or clear "Require an API key", and save.'}
     if($failureCode -cmatch '^api-key-[a-z-]{1,40}$'){return 'The last background run did not start because of the API key ('+$failureCode+'). Check the API key in Settings, then start again.'}
     if($observedRequestId -and [string]$State.observation.phase -ceq 'stale' -and -not $failureCode -and -not $failureReason){
         return 'The last background run ended without Stop (for example when you signed out). Start in background to start a new one.'
