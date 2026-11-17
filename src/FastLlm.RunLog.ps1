@@ -25,6 +25,8 @@ $script:FastLlmRunLogAllowedFields = @{
     # Opt-in idle stop: the minutes setting and two times. The check-failed event has no field; it is written once per run.
     'idle-stop'           = @('idleStopMinutes', 'lastActivityUtc', 'stoppedAtUtc')
     'idle-check-failed'   = @()
+    # The idle read of /metrics was refused with HTTP 401 (an API key mismatch). No field; written once per run of refused reads. Nothing is stopped for it.
+    'idle-metrics-unauthorized' = @()
     # GPU memory check: the state names and numbers only (MiB); no text.
     'spill-check'         = @('state', 'sharedMiB', 'dedicatedMiB', 'floorMiB')
     'spill-check-changed' = @('from', 'to', 'sharedMiB', 'dedicatedMiB')
@@ -51,7 +53,8 @@ function ConvertTo-FastLlmRunLogValue {
         return $Value
     }
     if ($Value -is [string]) {
-        $text = [regex]::Replace($Value, '[\x00-\x1f\x7f]', ' ')
+        # The key scrub runs first, on the whole value, so a key that straddles the length cap below is removed in full.
+        $text = [regex]::Replace((ConvertTo-FastLlmKeyFreeText -Text $Value), '[\x00-\x1f\x7f]', ' ')
         if ($text.Length -gt $script:FastLlmRunLogMaxString) { $text = $text.Substring(0, $script:FastLlmRunLogMaxString) }
         return $text
     }

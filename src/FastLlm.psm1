@@ -4319,5 +4319,12 @@ Export-ModuleMember -Function @(
     'Test-FastLlmHipSupportedName',
     'Test-FastLlmIntegratedName',
     'Test-FastLlmModelConsentReceipt',
-    'Test-FastLlmPlanMatchesPlannedRecipe'
+    'Test-FastLlmPlanMatchesPlannedRecipe',
+    # The optional API key: what the entry points need. None of these takes a key as a parameter; only Get-FastLlmApiKeyForDisplay returns one.
+    'Get-FastLlmApiKeyStoreState',
+    'Assert-FastLlmApiKeyStore',
+    'Initialize-FastLlmApiKeyStore',
+    'Reset-FastLlmApiKeyStore',
+    'Get-FastLlmApiKeyForDisplay',
+    'ConvertTo-FastLlmKeyFreeText'
 )

@@ -10,7 +10,8 @@ $script:FastLlmSupportBundleLogCount = 5
 $script:FastLlmRedactionOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [Text.RegularExpressions.RegexOptions]::CultureInvariant
 # Test seam: a scriptblock param($Target) run just before the final move (to prove the move never overwrites). Default $null.
 $script:FastLlmSupportBundleBeforeMove = $null
-$script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage', 'contextProfile', 'slots')
+# apiKey is the on/off flag only; the key is not a setting and its store (api-key.dat) is never an entry of the bundle.
+$script:FastLlmSupportBundleSettingsKeys = @('vulkanBarMitigation', 'updateCheck', 'updateChannel', 'experimentalComponents', 'serverPort', 'thinking', 'chatPage', 'contextProfile', 'slots', 'apiKey')
 
 # Replaces what identifies the PC or the user: the profile path (as \, JSON-escaped \\ and /, any case), the computer name, the user name,
 # Windows SIDs, MAC addresses and PnP instance suffixes (the last three use the patterns of the repository's leak scanner). Returns the redacted text;
@@ -70,6 +71,9 @@ function Get-FastLlmRedactionRules {
     $rules.Add(@{ pattern = '\bS-1-5-21-\d{6,10}-\d{6,10}-\d{6,10}\b'; replacement = '<sid>' })
     $rules.Add(@{ pattern = '\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b'; replacement = '<mac>' })
     $rules.Add(@{ pattern = '(VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}[^\s"'']*?\\{1,2})[0-9A-F]&[0-9A-F]{6,8}&[0-9A-F]&[0-9A-F]{8}'; replacement = '${1}<instance>' })
+    # A FastLLM API key (fl- and 43 base64url characters). No source of the bundle holds one; this is the last line of defence.
+    # The lookahead and lookbehind keep a longer run of the same characters (a folder name, a hash) from matching.
+    $rules.Add(@{ pattern = '(?<![A-Za-z0-9_-])fl-[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])'; replacement = '<api-key>' })
     return $rules.ToArray()
 }
 

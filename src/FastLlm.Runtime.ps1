@@ -102,7 +102,8 @@ function Write-FastLlmState {
         # transient and are not retried: the replace below waits. A REAL reparse point is unsafe at once.
         $existingAttributes = Get-FastLlmStateFileAttributes -Path $path
         if ($null -ne $existingAttributes -and [int]$existingAttributes -ne -1 -and ([int]$existingAttributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Unsafe status path.' }
-        $State | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $temporary -Encoding UTF8
+        # Every state document passes the key scrub on its way to disk: a well-formed API key can never be stored in one, whatever put it into the state.
+        $State | ConvertTo-Json -Depth 12 | ForEach-Object { ConvertTo-FastLlmKeyFreeText -Text $_ -Structured } | Set-Content -LiteralPath $temporary -Encoding UTF8
         $written = $true
         Move-FastLlmFileReplacing -Source $temporary -Destination $path
         # Success consumed the temp. Garbage from earlier FAILED replaces (kept on purpose) is swept now, best-effort.
@@ -620,12 +621,18 @@ function ConvertFrom-FastLlmStartupDiagnostics {
 }
 
 function Invoke-FastLlmHttp {
-    param([string] $BaseUrl, [string] $Path, $Body, [int] $TimeoutMs=5000, $ApiKeyHolder)
+    param([string] $BaseUrl, [string] $Path, $Body, [int] $TimeoutMs=5000, $ApiKeyHolder, $ApiKeyServer)
     Initialize-FastLlmProcessHost
     $json = if ($null -ne $Body) { ConvertTo-Json -InputObject $Body -Depth 12 -Compress } else { $null }
     # The key, when given in a holder, travels only as an Authorization header on this one loopback-only client; no other host is ever sent it.
     # It becomes text here, at the last hop. A plain string or a malformed key is refused (typed, no key text in the error).
-    if ($null -ne $ApiKeyHolder) { return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576, (Get-FastLlmApiKeyText -ApiKeyHolder $ApiKeyHolder)) }
+    # -ApiKeyServer is the server process the key belongs to (process id and start time, as status.json records them). The key is sent only
+    # after that process is confirmed to be the one listener on the port; without that confirmation nothing is sent.
+    if ($null -ne $ApiKeyHolder) {
+        $null = Get-FastLlmApiKeyId -ApiKeyHolder $ApiKeyHolder
+        Assert-FastLlmApiKeyListener -BaseUrl $BaseUrl -ServerIdentity $ApiKeyServer
+        return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576, (Get-FastLlmApiKeyText -ApiKeyHolder $ApiKeyHolder))
+    }
     return [Bitworks.FastLlm.LoopbackHttp]::Request($BaseUrl + $Path, $json, $TimeoutMs, 1048576)
 }
 

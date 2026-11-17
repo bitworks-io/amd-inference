@@ -1,5 +1,6 @@
-# Loaded into FastLlm.psm1. Optional API key building blocks: generation, a per-user protected store, and the rule that decides whether a
-# running server really enforces its key. Nothing here is called from a start, a setting or a window yet.
+# Loaded into FastLlm.psm1. The optional API key: generation, a per-user protected store, the rule that decides whether a running server
+# really enforces its key, the check that the key is sent only to FastLLM's own server, and the text scrub used wherever a failure is
+# recorded or printed. The key is off unless the user turns it on (settings.json holds only apiKey: "on"; the key lives in the store).
 #
 # The key is a secret. It is never placed in an argument list, a status document, a run log, a support bundle, a console line or an
 # exception message. Failures here are typed and carry fixed text only: no error from the protector, the file system or a parser is
@@ -16,6 +17,11 @@ $script:FastLlmApiKeyIdPrefix = 'fastllm-api-key-id-v1:'
 # The seam. $null means the real per-user protector. A test may set a hashtable of two script blocks: Protect and Unprotect, each taking
 # and returning a byte array.
 $script:FastLlmApiKeyProtector = $null
+# The second seam. $null means the real Windows listener table. A test may set a script block that takes a port and returns the ids of the
+# processes that listen on 127.0.0.1 at that port.
+$script:FastLlmApiKeyListenerOwners = $null
+# A well-formed key inside other text. The edges keep a longer run of the same characters (a folder name, a hash) from matching.
+$script:FastLlmApiKeyInTextPattern = '(?<![A-Za-z0-9_-])fl-[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])'
 
 # The key never crosses a function boundary as a plain [string] parameter: PowerShell module logging records bound parameter values
 # verbatim. It travels in a [System.Security.SecureString] holder, whose logged form is only its type name, and is turned into text at the
@@ -26,6 +32,9 @@ function New-FastLlmApiKeyFailure {
     param([Parameter(Mandatory = $true)][string] $Code, [Parameter(Mandatory = $true)][string] $Message)
     $exception = New-Object -TypeName System.InvalidOperationException -ArgumentList ($Code + ': ' + $Message)
     $exception.Data['FastLlmFailureCode'] = $Code
+    # A key failure is never retried, recovered with another model or replaced by the stand-in setup: none of those can fix it, and a
+    # second start must not run without the key that was asked for.
+    $exception.Data['FastLlmReason'] = 'ApiKeyFailed'
     return $exception
 }
 
@@ -190,4 +199,146 @@ function Get-FastLlmApiKeyEnforcement {
     param([Parameter(Mandatory = $true)][int] $WithoutKeyStatus, [Parameter(Mandatory = $true)][int] $WithKeyStatus)
     if ($WithoutKeyStatus -eq 401 -and $WithKeyStatus -eq 200) { return 'enforced' }
     return 'api-key-not-enforced'
+}
+
+# ---- wiring: what the entry points may ask of the store, the scrub, and the listener check ----
+
+# What can be known about the store without the key: whether a store file exists, whether this user can read it, and the key's public id.
+# Never throws and never returns the key.
+function Get-FastLlmApiKeyStoreState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $exists = $false
+    $available = $false
+    $id = $null
+    try { $exists = [bool] (Test-Path -LiteralPath (Get-FastLlmApiKeyStorePath -InstallRoot $InstallRoot)) } catch { $exists = $false }
+    if ($exists) {
+        try { $id = [string] (Get-FastLlmApiKeyId -ApiKeyHolder (Read-FastLlmApiKeyStore -InstallRoot $InstallRoot)); $available = $true }
+        catch { $id = $null; $available = $false }
+    }
+    return [pscustomobject] [ordered] @{ exists = $exists; available = $available; apiKeyId = $id }
+}
+
+# Throws api-key-unavailable unless the stored key can be read now. For the checks that run before anything is started.
+function Assert-FastLlmApiKeyStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $null = Read-FastLlmApiKeyStore -InstallRoot $InstallRoot
+}
+
+# Writes a new key and reads it back. A key that cannot be read back was not created: api-key-store-failed.
+function New-FastLlmApiKeyStoreEntry {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $holder = New-FastLlmApiKey
+    Write-FastLlmApiKeyStore -InstallRoot $InstallRoot -ApiKeyHolder $holder
+    $state = Get-FastLlmApiKeyStoreState -InstallRoot $InstallRoot
+    if (-not $state.available -or [string] $state.apiKeyId -cne [string] (Get-FastLlmApiKeyId -ApiKeyHolder $holder)) {
+        throw (New-FastLlmApiKeyFailure -Code 'api-key-store-failed' -Message 'The new API key was written but could not be read back. Create a new key again.')
+    }
+    return [string] $state.apiKeyId
+}
+
+# Turning the key on: keeps a readable key, creates one only when there is no store file, and refuses (changing nothing) when a store file
+# exists that this user cannot read. Replacing such a store is always the separate, explicit "create a new key" action.
+function Initialize-FastLlmApiKeyStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $state = Get-FastLlmApiKeyStoreState -InstallRoot $InstallRoot
+    if ($state.available) { return [pscustomobject] [ordered] @{ created = $false; apiKeyId = [string] $state.apiKeyId } }
+    if ($state.exists) {
+        throw (New-FastLlmApiKeyFailure -Code 'api-key-unavailable' -Message 'The stored API key cannot be read by this user (for example after a moved profile or a restored backup). Nothing was changed. Create a new key.')
+    }
+    return [pscustomobject] [ordered] @{ created = $true; apiKeyId = (New-FastLlmApiKeyStoreEntry -InstallRoot $InstallRoot) }
+}
+
+# The explicit "create a new key" action (rotation, or recovery from an unreadable store): one atomic replace of the store. The key a
+# running server was started with keeps working until that server stops; the new key applies at the next start.
+function Reset-FastLlmApiKeyStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    $before = Get-FastLlmApiKeyStoreState -InstallRoot $InstallRoot
+    return [pscustomobject] [ordered] @{ created = $true; apiKeyId = (New-FastLlmApiKeyStoreEntry -InstallRoot $InstallRoot); previousApiKeyId = $before.apiKeyId }
+}
+
+# The key as text, for the two places a person asks to see or copy it (settings -ApiKey show, and Show / Copy in Connect an app).
+# The return value of a function is not recorded by module logging; the caller prints or copies it and keeps it nowhere.
+function Get-FastLlmApiKeyForDisplay {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    return (Get-FastLlmApiKeyText -ApiKeyHolder (Read-FastLlmApiKeyStore -InstallRoot $InstallRoot))
+}
+
+# The scrub. Text that is recorded (status, run log, background record, support bundle) or printed (a failure line) passes through here:
+# a well-formed key anywhere in it becomes <api-key>. In free text, whatever follows an api_key label is also removed to the end of its
+# line (the server prints the last characters of the key there). -Structured is for serialized JSON: only the key itself is replaced, so
+# the document keeps its shape. With the run's holder the exact key and its masked tail are removed as well.
+# It never throws: a text it cannot work on is replaced whole (free text) or by an empty JSON object (-Structured).
+function ConvertTo-FastLlmKeyFreeText {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string] $Text, $ApiKeyHolder, [switch] $Structured)
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    try {
+        $result = $Text
+        if ($null -ne $ApiKeyHolder) {
+            $keyText = $null
+            try { $keyText = Get-FastLlmApiKeyText -ApiKeyHolder $ApiKeyHolder } catch { $keyText = $null }
+            if ($null -ne $keyText) {
+                $result = $result.Replace($keyText, '<api-key>')
+                $result = [regex]::Replace($result, ('\*{2,}' + [regex]::Escape($keyText.Substring($keyText.Length - 4))), '<api-key>')
+            }
+        }
+        $result = [regex]::Replace($result, $script:FastLlmApiKeyInTextPattern, '<api-key>')
+        if (-not $Structured) { $result = [regex]::Replace($result, '(?i)(api_keys?\b[ \t]*[:=]?)[^\r\n]*', '${1} <removed>') }
+        return $result
+    }
+    catch {
+        if ($Structured) { return '{}' }
+        return '<text removed: it could not be checked for the API key>'
+    }
+}
+
+# W4. The ids of the processes that listen on 127.0.0.1 at the port. Off Windows there is no listener table to ask (and no live start),
+# so without the test seam this throws and the caller refuses.
+function Get-FastLlmApiKeyListenerOwners {
+    param([Parameter(Mandatory = $true)][int] $Port)
+    if ($null -ne $script:FastLlmApiKeyListenerOwners) { return @(& $script:FastLlmApiKeyListenerOwners $Port) }
+    if ($env:OS -ne 'Windows_NT') { throw 'The listener table is available on Windows only.' }
+    if (-not ('Bitworks.FastLlm.WindowsGpuTelemetry' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'WindowsGpuTelemetry.cs') -ErrorAction Stop }
+    return @([Bitworks.FastLlm.WindowsGpuTelemetry]::GetLoopbackListenerOwners($Port))
+}
+
+# W4. The key is sent only to FastLLM's own server. Before every request that carries it: the server process this run recorded (process id
+# and start time) must still be running, and it must be the one and only owner of the 127.0.0.1 listener on the port. Anything else - a
+# port taken over by another program after the server died, a second listener on the same port, a recorded process that is gone, a check
+# that cannot be made - is api-key-listener-not-verified, and nothing is sent.
+function Assert-FastLlmApiKeyListener {
+    param([string] $BaseUrl, $ServerIdentity)
+    $verified = $false
+    try {
+        $uri = [Uri] $BaseUrl
+        $recordedPid = 0
+        $recordedTicks = 0L
+        $pidValue = $null
+        $ticksValue = $null
+        if ($ServerIdentity -is [System.Collections.IDictionary]) { $pidValue = $ServerIdentity['pid']; $ticksValue = $ServerIdentity['startUtcTicks'] }
+        elseif ($null -ne $ServerIdentity) {
+            if ($ServerIdentity.PSObject.Properties['pid']) { $pidValue = $ServerIdentity.pid }
+            if ($ServerIdentity.PSObject.Properties['startUtcTicks']) { $ticksValue = $ServerIdentity.startUtcTicks }
+        }
+        if ($uri.Scheme -ceq 'http' -and $uri.Host -ceq '127.0.0.1' -and $uri.Port -ge 1 -and $uri.Port -le 65535 -and
+            [int]::TryParse([string] $pidValue, [ref] $recordedPid) -and $recordedPid -gt 0 -and
+            [long]::TryParse([string] $ticksValue, [ref] $recordedTicks) -and $recordedTicks -gt 0) {
+            $process = [Diagnostics.Process]::GetProcessById($recordedPid)
+            try { $alive = (-not $process.HasExited) -and ($process.StartTime.ToUniversalTime().Ticks -eq $recordedTicks) }
+            finally { $process.Dispose() }
+            if ($alive) {
+                $owners = @(Get-FastLlmApiKeyListenerOwners -Port ([int] $uri.Port))
+                if ($owners.Count -eq 1 -and [int] $owners[0] -eq $recordedPid) { $verified = $true }
+            }
+        }
+    }
+    catch { $verified = $false }
+    if (-not $verified) {
+        throw (New-FastLlmApiKeyFailure -Code 'api-key-listener-not-verified' -Message 'The program listening on the FastLLM port could not be confirmed to be the FastLLM server this run started, so the API key was not sent to it.')
+    }
 }
