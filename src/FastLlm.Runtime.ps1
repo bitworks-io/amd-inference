@@ -386,7 +386,7 @@ function Get-FastLlmSwitchRefusalText {
         'switch-target-size-mismatch' { return "The file of the model $name is incomplete or damaged. Install it again first; a switch never downloads." }
         'switch-target-no-consent' { return "The license of the model $name has not been accepted on this PC. Install it first." }
         'switch-target-already-serving' { return "The model $name is already running." }
-        'switch-target-experimental-model' { return "The model $name is experimental. An experimental model is started from the command line (start -ModelId ... -AcceptExperimental), not by a switch." }
+        'switch-target-experimental-model' { return "The model $name is experimental. An experimental model is started from the command line (start -ModelId ... -AllowExperimentalModel), not by a switch." }
         'switch-recipe-experimental' { return 'An experimental recipe is started from the command line (start -Recipe ... -AcceptExperimental), not by a switch.' }
         'switch-recipe-needs-default-options' { return 'A recipe is measured for the default context profile and one request at a time; this server runs with another setting.' }
         default { return 'The switch target could not be checked. Nothing was changed.' }

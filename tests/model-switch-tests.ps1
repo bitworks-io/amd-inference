@@ -1285,6 +1285,17 @@ try {
     $expTarget=& $module { param($C,$R) Resolve-FastLlmSwitchTarget -CatalogPath $C -InstallRoot $R -ModelId 'model-f' -CurrentModelId 'model-a' } $catalog $pickerWorld.root
     Check (-not $expTarget.ok -and $expTarget.code -ceq 'switch-target-experimental-model' -and $expTarget.modelId -ceq 'model-f') 'experimental: Resolve-FastLlmSwitchTarget refuses an experimental model with switch-target-experimental-model'
     Check ((& $module { Get-FastLlmSwitchRefusalText -Code 'switch-target-experimental-model' -ModelId 'model-f' }) -clike '*experimental model*command line*not by a switch*') 'experimental: the refusal text says it is started from the command line, not by a switch'
+    # The flag the refusal names is a real parameter of fast-llm.ps1 that start accepts together with -ModelId (read from the param block by AST).
+    $launcherAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm.ps1'),[ref]$null,[ref]$null)
+    $launcherParams=@{}
+    foreach ($launcherParam in @($launcherAst.ParamBlock.Parameters)) { $launcherParams[[string]$launcherParam.Name.VariablePath.UserPath]=$launcherParam }
+    $refusalSentence=& $module { Get-FastLlmSwitchRefusalText -Code 'switch-target-experimental-model' -ModelId 'model-f' }
+    $namedFlags=@([regex]::Matches($refusalSentence,'(?<![\w-])-([A-Za-z]+)') | ForEach-Object { $_.Groups[1].Value })
+    $flagAst=$launcherParams['AllowExperimentalModel']
+    $flagIsSwitch=$false; $flagSetNames=@()
+    if ($null -ne $flagAst) { $flagIsSwitch=([string]$flagAst.StaticType.Name -ceq 'SwitchParameter'); $flagSetNames=@($flagAst.Attributes | Where-Object { $_.TypeName.Name -ceq 'Parameter' } | ForEach-Object { @($_.NamedArguments | Where-Object { $_.ArgumentName -ceq 'ParameterSetName' }) }) }
+    Check (($namedFlags -join ',') -ceq 'ModelId,AllowExperimentalModel' -and $launcherParams.ContainsKey('ModelId') -and $flagIsSwitch -and $flagSetNames.Count -eq 0) 'experimental: the flags the refusal names (-ModelId, -AllowExperimentalModel) are parameters of fast-llm.ps1, the second a switch in no parameter set, so start accepts them together'
+    Check ($refusalSentence -cnotmatch 'AcceptExperimental') 'experimental: the refusal does not name -AcceptExperimental (that flag belongs to experimental recipes)'
     $expWorld=New-SwitchWorld 'experimental-raw' @{ 'model-a'=@('ok') }
     Add-PickerModels $expWorld
     Use-World $expWorld
