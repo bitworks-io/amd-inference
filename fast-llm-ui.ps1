@@ -21,6 +21,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.Components.ps1')
 # Serving settings (port) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.ServingSettings.ps1')
+# Start at sign-in: only the Settings checkbox (a user click) ever turns it on; no start path registers it.
+. (Join-Path $PSScriptRoot 'src/FastLlm.SignInStart.ps1')
 # The support bundle (reads settings.json) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.SupportBundle.ps1')
 # Connection info and the API-format check are dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
@@ -949,7 +951,7 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
 function ShowUiSettings {
     $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,430);$dialog.StartPosition='CenterParent'
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,546);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
     $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
@@ -985,8 +987,25 @@ function ShowUiSettings {
         try{[void](NewUiApiKey $dialog)}
         catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
     })
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,346);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,346);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$dialog.Controls.Add($startBox)
+    $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$dialog.Controls.Add($startState)
+    $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$dialog.Controls.Add($startLast)
+    # The Run entry is the truth (never settings.json): the checkbox shows what was read back after each change.
+    $showSignIn={
+        param($View)
+        $startBox.Checked=[bool]$View.checked;$startState.Text=[string]$View.stateText;$startLast.Text=[string]$View.lastResultText
+    }
+    try{& $showSignIn (Get-FastLlmSignInSettingsView -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}
+    catch{$startBox.Enabled=$false;$startState.Text='Start at sign-in could not be read on this PC.'}
+    $startBox.Add_Click({
+        try{& $showSignIn (Set-FastLlmSignInStartEnabled -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot) -Enabled ([bool]$startBox.Checked))}
+        catch{
+            [void][Windows.Forms.MessageBox]::Show($dialog,[string]$_.Exception.Message,'FastLLM settings','OK','Warning')
+            try{& $showSignIn (Get-FastLlmSignInSettingsView -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}catch{$null=$_}
+        }
+    })
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,462);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,462);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({

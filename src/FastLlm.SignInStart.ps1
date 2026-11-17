@@ -254,3 +254,215 @@ function Invoke-FastLlmSignInLaunch {
     }
     return (Write-FastLlmSignInResult -InstallRoot $InstallRoot -Result 'started' -FailureCode $null)
 }
+
+# --- the window and command-line switch ---------------------------------------------------------------------------------
+# The Run value is the truth: nothing here reads or writes settings.json. Only the explicit switch (window checkbox or
+# `settings -StartAtSignIn on`) ever calls Set-FastLlmSignInStart; no start, install or bench path does.
+
+# The last recorded sign-in attempt (state\signin-start.json), or $null when none was recorded or the file is unreadable.
+function Read-FastLlmSignInResult {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][string]$InstallRoot)
+    $path = Join-Path (Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'state') $script:FastLlmSignInResultFile
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try {
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 65536) { return $null }
+        $document = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path)) -ErrorAction Stop
+        $names = @($document.PSObject.Properties.Name)
+        if ($names -cnotcontains 'result') { return $null }
+        $time = ''
+        if ($names -ccontains 'time') {
+            # Windows PowerShell 5.1 keeps the text; PowerShell 7 turns it into a date. Both read back as the same UTC text.
+            if ($document.time -is [DateTime]) { $time = ([DateTime]$document.time).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) }
+            else { $time = [string]$document.time }
+        }
+        $code = $null
+        if ($names -ccontains 'failureCode' -and $null -ne $document.failureCode) { $code = [string]$document.failureCode }
+        return [pscustomobject]@{ time = $time; result = [string]$document.result; failureCode = $code }
+    } catch { return $null }
+}
+
+# Plain words for the last attempt. Only the short recorded code is shown, never an exception message.
+function Get-FastLlmSignInResultText {
+    [CmdletBinding()]
+    param($Result)
+    if ($null -eq $Result) { return 'No start at sign-in has been recorded yet.' }
+    $when = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$Result.time)) { $when = ' (' + [string]$Result.time + ')' }
+    switch ([string]$Result.result) {
+        'started' { return 'Started at sign-in' + $when + '.' }
+        'skipped-occupied' { return 'Start at sign-in was skipped because FastLLM was already running or busy' + $when + '.' }
+        'refused-elevated' { return 'Start at sign-in was refused because the session was running as administrator' + $when + '.' }
+        'needs-setup' {
+            $detail = 'it has no saved start setup'
+            if ([string]$Result.failureCode -ceq 'needs-setup-model') { $detail = 'it has no saved model' }
+            return 'Start at sign-in did not start FastLLM because ' + $detail + $when + '.'
+        }
+        'host-failed' {
+            $code = [string]$Result.failureCode
+            if ([string]::IsNullOrWhiteSpace($code)) { $code = 'host-start-failed' }
+            return 'Start at sign-in failed: ' + $code + $when + '.'
+        }
+        default { return 'The last start at sign-in recorded an unknown result' + $when + '.' }
+    }
+}
+
+# What Settings shows for the switch. checked is true only for state 'on'.
+function Get-FastLlmSignInStateText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)]$State)
+    switch ([string]$State.reason) {
+        'on' { return 'FastLLM starts when you sign in.' }
+        'command-differs' { return 'Off. The saved sign-in entry points to a different FastLLM location; turn it on here to use this one.' }
+        'disabled-in-startup-apps' { return "Windows has this turned off in Startup apps. FastLLM will not change that: turn it back on in Windows Settings, Apps, Startup, then it shows here." }
+        default { return 'Off.' }
+    }
+}
+
+function Get-FastLlmSignInSettingsView {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][string]$AppRoot, [Parameter(Mandatory=$true)][string]$InstallRoot)
+    $state = Get-FastLlmSignInStartState -AppRoot $AppRoot
+    $result = Read-FastLlmSignInResult -InstallRoot $InstallRoot
+    return [pscustomobject]@{
+        checked = ([bool]$state.on -and [string]$state.reason -ceq 'on')
+        reason = [string]$state.reason
+        stateText = (Get-FastLlmSignInStateText -State $state)
+        lastResult = $result
+        lastResultText = (Get-FastLlmSignInResultText -Result $result)
+        refused = $false
+    }
+}
+
+# --- the saved request ---------------------------------------------------------------------------------------------------
+# The request the launcher reads (Read-FastLlmSignInRequest): profile, modelId, contextSize. Ids and numbers only: no paths, prompts or secrets.
+# Serving settings (port, thinking, chat page, idle stop) are read at launch from the user's saved settings, not copied here.
+# The API-key flag is not part of the request yet: B11 adds it when the key exists.
+
+# Seam: the fingerprint of this PC's hardware, as the planner computes it. $null when it cannot be read.
+if (-not (Get-Variable -Scope Script -Name FastLlmSignInHardware -ErrorAction SilentlyContinue)) { $script:FastLlmSignInHardware = $null }
+function Get-FastLlmSignInHardwareFingerprint {
+    param([string]$SourceRoot, [string]$InstallRoot)
+    if ($null -ne $script:FastLlmSignInHardware) { $seam = $script:FastLlmSignInHardware; return (& $seam $SourceRoot $InstallRoot) }
+    try {
+        $module = Get-Module FastLlm
+        if ($null -eq $module) { return $null }
+        $catalog = Join-Path (Join-Path $SourceRoot 'config') 'catalog.json'
+        return (& $module { param($Catalog, $Root) Get-FastLlmFingerprint -Hardware (Get-FastLlmHardware -CatalogPath $Catalog -InstallRoot $Root) } $catalog $InstallRoot)
+    } catch { return $null }
+}
+
+# The request built from the setup that reached Ready on this PC (state\<fingerprint>.last-ready.json, written by the runtime only at Ready),
+# or $null when there is no usable record. Records from before the profile was recorded are not used.
+function Get-FastLlmSignInReadyRequest {
+    param([string]$InstallRoot, [string]$Fingerprint)
+    if ([string]::IsNullOrWhiteSpace($Fingerprint) -or $Fingerprint -notmatch '^[0-9A-Za-z_-]{1,128}$') { return $null }
+    $path = Join-Path (Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'state') ($Fingerprint + '.last-ready.json')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try {
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 16384) { return $null }
+        $record = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path)) -ErrorAction Stop
+        $names = @($record.PSObject.Properties.Name)
+        foreach ($required in @('kind', 'hardwareFingerprint', 'modelId', 'profile', 'requestedContextSize')) { if ($names -cnotcontains $required) { return $null } }
+        if ([string]$record.kind -cne 'api-smoke-only' -or [string]$record.hardwareFingerprint -cne $Fingerprint) { return $null }
+        if ([string]::IsNullOrWhiteSpace([string]$record.modelId)) { return $null }
+        if (@('fast', 'balanced', 'quality') -cnotcontains [string]$record.profile) { return $null }
+        $context = [int]$record.requestedContextSize
+        if ($context -lt 0 -or $context -gt 1048576) { return $null }
+        return [ordered]@{ profile = [string]$record.profile; modelId = [string]$record.modelId; contextSize = $context }
+    } catch { return $null }
+}
+
+function Write-FastLlmSignInRequest {
+    param([string]$InstallRoot, $Request)
+    $state = Get-FastLlmSignInStateFolder -InstallRoot $InstallRoot
+    $target = Join-Path $state $script:FastLlmSignInRequestFile
+    if (Test-Path -LiteralPath $target) {
+        $existing = Get-Item -LiteralPath $target -Force
+        if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe sign-in request path.' }
+    }
+    $temporary = Join-Path $state ($script:FastLlmSignInRequestFile + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $backup = Join-Path $state ($script:FastLlmSignInRequestFile + '.' + [Guid]::NewGuid().ToString('N') + '.bak.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary, ($Request | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $target) { [IO.File]::Replace($temporary, $target, $backup) }
+        else { [IO.File]::Move($temporary, $target) }
+    } finally {
+        foreach ($leftover in @($temporary, $backup)) {
+            if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+function Remove-FastLlmSignInRequest {
+    param([string]$InstallRoot)
+    $path = Join-Path (Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'state') $script:FastLlmSignInRequestFile
+    if (Test-Path -LiteralPath $path) {
+        $item = Get-Item -LiteralPath $path -Force
+        if (-not $item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Remove-Item -LiteralPath $path -Force }
+    }
+}
+
+# Apply the switch, then re-read the state so the caller shows the truth, not the request. Windows' own Startup apps switch is never rewritten:
+# when it is disabled there, asking for "on" changes nothing and the view says what the user must do. Turning on needs a setup that has reached
+# Ready on this PC; without one nothing is written. The request is saved before the Run value and removed again if the Run value cannot be set.
+function Set-FastLlmSignInStartEnabled {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][string]$AppRoot, [Parameter(Mandatory=$true)][string]$InstallRoot, [Parameter(Mandatory=$true)][bool]$Enabled)
+    $refusal = $null
+    if ($Enabled) {
+        $before = Get-FastLlmSignInStartState -AppRoot $AppRoot
+        if ([string]$before.reason -cne 'disabled-in-startup-apps') {
+            $fingerprint = Get-FastLlmSignInHardwareFingerprint -SourceRoot $AppRoot -InstallRoot $InstallRoot
+            $request = Get-FastLlmSignInReadyRequest -InstallRoot $InstallRoot -Fingerprint $fingerprint
+            if ($null -eq $request) {
+                $refusal = 'Start FastLLM once with the setup you want; then turn this on.'
+            } else {
+                Write-FastLlmSignInRequest -InstallRoot $InstallRoot -Request $request
+                try { Set-FastLlmSignInStart -AppRoot $AppRoot }
+                catch { try { Remove-FastLlmSignInRequest -InstallRoot $InstallRoot } catch { $null = $_ }; throw }
+            }
+        }
+    } else {
+        Remove-FastLlmSignInStart
+        Remove-FastLlmSignInRequest -InstallRoot $InstallRoot
+    }
+    $view = Get-FastLlmSignInSettingsView -AppRoot $AppRoot -InstallRoot $InstallRoot
+    if ($null -ne $refusal) { $view.stateText = $refusal; $view.refused = $true }
+    return $view
+}
+
+# Command-line parity for the `settings` action. $View is a Get-FastLlmSignInSettingsView object, or $null when the registry cannot be read
+# (for example on a machine that is not Windows).
+function Get-FastLlmSignInCliFields {
+    [CmdletBinding()]
+    param($View)
+    if ($null -eq $View) { return [ordered]@{ startAtSignIn = 'unavailable'; startAtSignInReason = 'registry-unavailable'; lastSignInStart = $null } }
+    $last = $null
+    if ($null -ne $View.lastResult) { $last = [ordered]@{ time = $View.lastResult.time; result = $View.lastResult.result; failureCode = $View.lastResult.failureCode } }
+    $word = 'off'
+    if ($View.checked) { $word = 'on' }
+    return [ordered]@{ startAtSignIn = $word; startAtSignInReason = $View.reason; lastSignInStart = $last }
+}
+
+function Format-FastLlmSignInCliLines {
+    [CmdletBinding()]
+    param($View)
+    if ($null -eq $View) { return @('startAtSignIn: unavailable') }
+    $word = 'off'
+    if ($View.checked) { $word = 'on' }
+    $lines = @('startAtSignIn: ' + $word)
+    if ($View.refused -or ($View.reason -cne 'on' -and $View.reason -cne 'value-missing')) { $lines += ('startAtSignIn note: ' + $View.stateText) }
+    if ($null -ne $View.lastResult) { $lines += ('lastSignInStart: ' + $View.lastResultText) }
+    return $lines
+}
+
+# The view for the settings action. $Enabled is $null to only read. A registry that cannot be read gives $null instead of an error.
+function Invoke-FastLlmSignInSettingsAction {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][string]$AppRoot, [Parameter(Mandatory=$true)][string]$InstallRoot, $Enabled)
+    if ($null -ne $Enabled) { return (Set-FastLlmSignInStartEnabled -AppRoot $AppRoot -InstallRoot $InstallRoot -Enabled ([bool]$Enabled)) }
+    try { return (Get-FastLlmSignInSettingsView -AppRoot $AppRoot -InstallRoot $InstallRoot) } catch { return $null }
+}

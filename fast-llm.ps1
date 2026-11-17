@@ -151,6 +151,11 @@ param(
     [Alias('ApiKey')]
     [ValidateSet('on', 'off', 'rotate', 'show')]
     [string] $KeyAction,
+    # settings only: on adds the per-user Run entry (shown in Windows' Startup apps) so FastLLM makes one start attempt when you sign in; off removes it.
+    # Default off. The Run entry is the truth, not settings.json; settings always shows the state and the last sign-in attempt. If Windows has it
+    # turned off in Startup apps, on changes nothing and says so.
+    [ValidateSet('on', 'off')]
+    [string] $StartAtSignIn,
 
     # start, install and plan: ignore the saved settings for this run (explicit parameters still apply).
     [switch] $IgnoreUserSettings,
@@ -322,6 +327,8 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.Components.ps1')
 # Serving settings (port) is dot-sourced here and in fast-llm-ui.ps1, never imported through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ServingSettings.ps1')
+# The start-at-sign-in switch (settings -StartAtSignIn only); no other action registers anything.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SignInStart.ps1')
 # The support bundle reads settings.json, so like the serving settings it is dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SupportBundle.ps1')
 # Connection info and the API-format check are dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
@@ -360,12 +367,16 @@ if ($PSBoundParameters.ContainsKey('KeyAction') -and $effectiveAction -ne 'setti
 $requestedKeyAction = $null
 if ($PSBoundParameters.ContainsKey('KeyAction')) { $requestedKeyAction = $KeyAction.ToLowerInvariant() }
 # The key is printed only by settings -ApiKey show on its own: never inside a JSON document, and never next to another change.
-if ($PSBoundParameters.ContainsKey('KeyAction') -and $requestedKeyAction -ceq 'show' -and ($AsJson -or @($PSBoundParameters.Keys | Where-Object { $_ -cin @('Port', 'Thinking', 'ChatPage', 'IdleStopMinutes', 'KvContextProfile', 'KvSlots', 'ComponentLicenses') }).Count -gt 0)) {
+if ($PSBoundParameters.ContainsKey('KeyAction') -and $requestedKeyAction -ceq 'show' -and ($AsJson -or @($PSBoundParameters.Keys | Where-Object { $_ -cin @('Port', 'Thinking', 'ChatPage', 'IdleStopMinutes', 'KvContextProfile', 'KvSlots', 'ComponentLicenses', 'StartAtSignIn') }).Count -gt 0)) {
     throw 'settings -ApiKey show prints the key and nothing else: it cannot be combined with -AsJson or with another setting.'
 }
 if ($PSBoundParameters.ContainsKey('Thinking') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-Thinking is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('ChatPage') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-ChatPage is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('IdleStopMinutes') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-IdleStopMinutes is supported only by plan, install, start and settings.' }
+if ($PSBoundParameters.ContainsKey('StartAtSignIn') -and $effectiveAction -ne 'settings') { throw '-StartAtSignIn is supported only by settings.' }
+# ValidateSet ignores case; the value is lower-cased into its own variable (the parameter itself is never assigned to).
+$requestedStartAtSignIn = $null
+if ($PSBoundParameters.ContainsKey('StartAtSignIn')) { $requestedStartAtSignIn = $StartAtSignIn.ToLowerInvariant() }
 if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $null = ConvertTo-FastLlmIdleStopMinutes -Value $IdleStopMinutes }
 if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvContextProfile is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
@@ -690,6 +701,9 @@ try {
                 }
                 $apiKeyLines = @($apiKeyChange.lines)
             }
+            $signInEnabled = $null
+            if ($PSBoundParameters.ContainsKey('StartAtSignIn')) { $signInEnabled = ($requestedStartAtSignIn -ceq 'on') }
+            $signInView = Invoke-FastLlmSignInSettingsAction -AppRoot $projectRoot -InstallRoot $InstallRoot -Enabled $signInEnabled
             $licenseState = Get-FastLlmComponentLicenseSettings -InstallRoot $InstallRoot
             $servingState = Get-FastLlmServingSettings -InstallRoot $InstallRoot
             # The key's public id (never the key), when a key is stored and this user can read it.
@@ -699,6 +713,8 @@ try {
             if ($AsJson) {
                 $settingsDocument = [ordered]@{ componentLicenses = $licenseState; serverPort = $servingState.serverPort; thinking = $servingState.thinking; chatPage = $servingState.chatPage; idleStopMinutes = $servingState.idleStopMinutes; contextProfile = $servingState.contextProfile; slots = $servingState.slots; apiKey = $apiKeySettingText }
                 if ($apiKeyStoreState.available) { $settingsDocument.apiKeyId = [string] $apiKeyStoreState.apiKeyId }
+                $signInFields = Get-FastLlmSignInCliFields -View $signInView
+                foreach ($signInKey in @($signInFields.Keys)) { $settingsDocument[$signInKey] = $signInFields[$signInKey] }
                 $settingsDocument | ConvertTo-Json -Depth 6
             }
             else {
@@ -717,6 +733,7 @@ try {
                 elseif ($apiKeySettingText -ceq 'on') { Write-Host 'apiKey: on, but the stored key cannot be read: FastLLM will not start until you create a new key (settings -ApiKey rotate) or turn the key off' }
                 elseif ($apiKeySettingText -ceq 'unreadable') { Write-Host 'apiKey: not set, and a key is stored (or the saved value is not on or off): FastLLM will not start until you choose (settings -ApiKey on or -ApiKey off)' }
                 else { Write-Host 'apiKey: off' }
+                foreach ($signInLine in @(Format-FastLlmSignInCliLines -View $signInView)) { Write-Host $signInLine }
             }
         }
         'status' {
