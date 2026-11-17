@@ -242,6 +242,17 @@ try {
     $defaultReportText=Get-Content -LiteralPath $reportPath -Raw
     $fixtureText=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/task-quality-default-report.json') -Raw
     Check ((Get-TaskQualityMaskedReportText $defaultReportText) -ceq (Get-TaskQualityMaskedReportText $fixtureText)) 'default report is identical to the report main writes for the same inputs'
+    # The compare is layout-independent but not blind: an extra key, a changed value or a changed number each make the texts differ,
+    # and the same report in another layout (indent, spacing, escaping) does not.
+    $maskedDefault=Get-TaskQualityMaskedReportText $defaultReportText
+    $extraKeyReport=$defaultReportText|ConvertFrom-Json;$extraKeyReport.methodology|Add-Member -NotePropertyName servingSetup -NotePropertyValue 'x'
+    $changedReport=$defaultReportText|ConvertFrom-Json;$changedReport.methodology.serverSlots=2
+    $changedNumber=$defaultReportText|ConvertFrom-Json;$changedNumber.waves[0].requests[0].endToEndLatencyMs=[double]$changedNumber.waves[0].requests[0].endToEndLatencyMs+0.5
+    Check ((Get-TaskQualityMaskedReportText ($extraKeyReport|ConvertTo-Json -Depth 30)) -cne $maskedDefault) 'the report compare catches one extra key'
+    Check ((Get-TaskQualityMaskedReportText ($changedReport|ConvertTo-Json -Depth 30)) -cne $maskedDefault) 'the report compare catches one changed value'
+    Check ((Get-TaskQualityMaskedReportText ($changedNumber|ConvertTo-Json -Depth 30)) -cne $maskedDefault) 'the report compare catches a changed number'
+    Check ((Get-TaskQualityMaskedReportText ($defaultReportText|ConvertFrom-Json|ConvertTo-Json -Depth 30 -Compress)) -ceq $maskedDefault -and
+        (Get-TaskQualityMaskedReportText ($defaultReportText|ConvertFrom-Json|ConvertTo-Json -Depth 30)) -ceq $maskedDefault) 'the report compare ignores the JSON layout'
     Check (-not $defaultReportText.Contains('servingSetup') -and $report.methodology.serverSlots -eq 1 -and
         $report.methodology.interpretation -ceq 'Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification') 'default report has no serving setup and keeps the single-slot wording'
     # The serving-profile file is a dependency of the state check, so it is one of the reported source hashes, checked at the same points.
