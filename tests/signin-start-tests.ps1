@@ -292,6 +292,63 @@ $r = Invoke-Case (New-FakeHost) $root
 Assert-Equal $r.result 'started' 'with the key setting off the start is requested'
 Assert-True (-not $script:Captured['arguments'].ContainsKey('UseApiKey')) 'without the key the start arguments have no key flag'
 
+# the launcher tool itself: it runs in its own process, so it must bring in the FastLlm module (the key-store pre-check of the real
+# background start lives there). The real Start-FastLlmBackgroundHost runs with its Windows-only checks and its request writer replaced
+# by a probe that records the request and stops: nothing is ever launched.
+function Invoke-LauncherTool([string]$Root, [string]$StoreMode) {
+    $probeFile = Join-Path $Root 'probe-request.json'
+    $childPath = Join-Path $work ('launcher-child-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $childText = @'
+param([string]$Repo, [string]$Root, [string]$StoreMode, [string]$ProbeFile)
+$ErrorActionPreference = 'Stop'
+$script:FastLlmSignInHost = @{
+    IsElevated = { $false }
+    IsOccupied = { param($InstallRoot) $false }
+    Sleep = { param($Seconds) }
+    Start = {
+        param($Arguments)
+        if ($StoreMode -ceq 'readable') {
+            & (Get-Module FastLlm) {
+                param($Protector)
+                $script:FastLlmApiKeyProtector = $Protector
+            } @{
+                Protect = { param([byte[]]$Bytes) $out = New-Object 'System.Collections.Generic.List[byte]'; foreach ($b in $Bytes) { $out.Add([byte]($b -bxor 0x5A)) }; return , ($out.ToArray()) }
+                Unprotect = { param([byte[]]$Bytes) $out = New-Object 'System.Collections.Generic.List[byte]'; foreach ($b in $Bytes) { $out.Add([byte]($b -bxor 0x5A)) }; return , ($out.ToArray()) }
+            }
+            $null = Initialize-FastLlmApiKeyStore -InstallRoot $Root
+        }
+        else { [IO.File]::WriteAllBytes((Join-Path $Root 'api-key.dat'), [byte[]](1, 2, 3, 4, 5, 6, 7, 8)) }
+        function Assert-FastLlmBackgroundNativeHost { }
+        function Assert-FastLlmBackgroundPrivateState { param($InstallRoot) }
+        function Get-FastLlmBackgroundHostStatus { param($InstallRoot, $SourceRoot) return [pscustomobject]@{ occupied = $false } }
+        function Get-FastLlmBackgroundSourcePins { param($SourceRoot) return @{} }
+        function Write-FastLlmBackgroundDocument { param($Path, $Value, [switch]$CreateNew) [IO.File]::WriteAllText($ProbeFile, ($Value | ConvertTo-Json -Compress)); throw 'launcher-probe: the request was written; nothing is launched' }
+        Start-FastLlmBackgroundHost @Arguments | Out-Null
+    }
+}
+. (Join-Path $Repo 'tools/signin-start.ps1') -InstallRoot $Root -DelaySeconds 0
+'@
+    [IO.File]::WriteAllText($childPath, $childText, (New-Object Text.UTF8Encoding($false)))
+    $shell = (Get-Process -Id $PID).Path
+    $null = & $shell -NoLogo -NoProfile -NonInteractive -File $childPath -Repo $repo -Root $Root -StoreMode $StoreMode -ProbeFile $probeFile 2>&1
+    $code = $LASTEXITCODE
+    Remove-Item -LiteralPath $childPath -Force
+    return [pscustomobject]@{ exitCode = $code; probeFile = $probeFile }
+}
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "on" }')
+$tool = Invoke-LauncherTool $root 'readable'
+$file = Read-Result $root
+Assert-True (Test-Path -LiteralPath $tool.probeFile) "the launcher tool with the key on and a readable key store reaches the point where the request is written (result: $($file.result) $($file.failureCode))"
+Assert-Equal ([string](Get-Content -LiteralPath $tool.probeFile -Raw | ConvertFrom-Json).apiKey) 'on' 'the request of a sign-in start with the key on carries the key flag (the host then runs the 401/200 proof)'
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "on" }')
+$tool = Invoke-LauncherTool $root 'unreadable'
+$file = Read-Result $root
+Assert-Equal ([string]$file.result) 'host-failed' 'an unreadable key store is a failed start'
+Assert-Equal ([string]$file.failureCode) 'api-key-unavailable' 'the launcher tool records the typed api-key-unavailable code for an unreadable key store'
+Assert-True (-not (Test-Path -LiteralPath $tool.probeFile)) 'nothing is requested when the key store is unreadable'
+
 # a second run overwrites the first result
 $root = New-Install
 $null = Invoke-Case (New-FakeHost -StartBehavior 'throw') $root
@@ -499,7 +556,7 @@ Assert-True ($callers.Count -eq 3 -and $callers -ccontains 'FastLlm.SignInStart.
 $cliText = Get-Content -LiteralPath (Join-Path $repo 'fast-llm.ps1') -Raw
 $settingsCase = $cliText.Substring($cliText.IndexOf("        'settings' {"), $cliText.IndexOf("        'status' {") - $cliText.IndexOf("        'settings' {"))
 Assert-True ($settingsCase -match "ContainsKey\('StartAtSignIn'\)") 'the CLI registers only when -StartAtSignIn is bound'
-Assert-True ($cliText -match "ContainsKey\('StartAtSignIn'\) -and \`$Action -ne 'settings'") 'the CLI refuses -StartAtSignIn outside settings'
+Assert-True ($cliText -match "ContainsKey\('StartAtSignIn'\) -and \`$effectiveAction -ne 'settings'") 'the CLI refuses -StartAtSignIn outside settings'
 $beforeSettings = $cliText.Substring(0, $cliText.IndexOf("        'settings' {"))
 Assert-True ($beforeSettings -notmatch 'Set-FastLlmSignInStart|Invoke-FastLlmSignInSettingsAction') 'no earlier action in the CLI registers'
 Assert-True ($cliText -match '(?s)\[ValidateSet\(''on'', ''off''\)\]\s*\[string\] \$StartAtSignIn') 'the CLI parameter is on or off'

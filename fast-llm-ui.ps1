@@ -987,7 +987,6 @@ function ShowUiSettings {
         try{[void](NewUiApiKey $dialog)}
         catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
     })
-
     $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$dialog.Controls.Add($startBox)
     $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$dialog.Controls.Add($startState)
     $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$dialog.Controls.Add($startLast)
@@ -1005,9 +1004,9 @@ function ShowUiSettings {
             try{& $showSignIn (Get-FastLlmSignInSettingsView -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}catch{$null=$_}
         }
     })
-
     $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,462);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,462);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)    $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,462);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
         try{

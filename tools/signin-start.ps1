@@ -7,6 +7,8 @@ param([string]$InstallRoot,
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $source = Split-Path -Parent $PSScriptRoot
+# The module brings the key-store checks that the background start runs before it writes a request.
+Import-Module (Join-Path $source 'src\FastLlm.psm1') -Force
 . (Join-Path $source 'src\FastLlm.BackgroundHost.ps1')
 . (Join-Path $source 'src\FastLlm.ServingSettings.ps1')
 . (Join-Path $source 'src\FastLlm.SignInStart.ps1')
