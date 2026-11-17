@@ -1,0 +1,803 @@
+{
+  "schemaVersion": 1,
+  "resultKind": "private-task-quality-screen",
+  "recordedAt": "<masked>",
+  "reportStatus": "complete",
+  "abortReasonCode": null,
+  "bindingStatus": "verified",
+  "failedCondition": null,
+  "qualityPass": true,
+  "controllerOutcomeAuthoritative": false,
+  "runId": "1234567890abcdef1234567890abcdef",
+  "processIdentity": {
+    "pid": 42,
+    "startUtcTicks": 123
+  },
+  "modelId": "mock-model",
+  "modelSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "engineVersion": "b10698",
+  "recipe": {
+    "contextSize": 8192
+  },
+  "endpoint": "http://127.0.0.1:8080/v1",
+  "evidenceBindingSha256": "1234567890abcdef1234567890abcdef",
+  "sourceProvenance": {
+    "endStatus": "verified",
+    "scope": "On-disk hashes before/after; loaded code not attested",
+    "sha256": {
+      "taskTool": "<masked>",
+      "workload": "<masked>",
+      "semantic": "<masked>",
+      "concurrency": "<masked>",
+      "processHost": "<masked>",
+      "module": "<masked>",
+      "benchmark": "<masked>",
+      "runtime": "<masked>",
+      "listener": "<masked>"
+    }
+  },
+  "methodology": {
+    "actualUsageRequired": true,
+    "answerPolicy": "stop-incorrect-or-inconclusive",
+    "cases": [
+      {
+        "id": "extract-order-v1",
+        "kind": "structured-json",
+        "promptSha256": "f84f8f48d0cf792ebf7f28e946d40bf1e821d0419fae24e8ec44b799a6cad9f4",
+        "referenceSha256": "d6ab559500a2ba78398c4d91a68708b413e79aba0bccb2642476c3a639f943d1",
+        "maxOutputTokens": 96,
+        "responseFormat": "explicit",
+        "responseFormatSha256": "799ae4ba09cebba9d7563ff3f7a9b388e8749348a9f090cc11975641b83c6c31"
+      },
+      {
+        "id": "filter-candidates-v1",
+        "kind": "filter",
+        "promptSha256": "3589d1e0b2fef7494aa92d16b85f8a2f8b9ac3123a1e21254f111e582fe5e8d9",
+        "referenceSha256": "9fa069279ff09e03c73359e5653957cf4dbce21d2f4fed60231e6f3b40c32c35",
+        "maxOutputTokens": 32,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      },
+      {
+        "id": "sort-integers-v1",
+        "kind": "sort",
+        "promptSha256": "04763edaef5c31c3c141a991059c2bea6a456ab4f287e0128817c8ceebbc16ad",
+        "referenceSha256": "1fe2b9b59f80577bff5f7f8eb1271d3492e22c71017cbb3d82877b867ffa26d0",
+        "maxOutputTokens": 32,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      },
+      {
+        "id": "arithmetic-invoice-v1",
+        "kind": "arithmetic",
+        "promptSha256": "a239eca38f916a456a7dd46e355142662a6a4f9c9921b89306e00d1f6de0d6de",
+        "referenceSha256": "2963f23b5d79371ea1a4b66617a977b69f127c8d3088c018128b41427304516d",
+        "maxOutputTokens": 32,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      },
+      {
+        "id": "arithmetic-steps-v1",
+        "kind": "arithmetic",
+        "promptSha256": "8075c10d5c487b7976efbbb22ef8d50fcef17697aa6b12559945459d1c04c028",
+        "referenceSha256": "3f6195f88d915f645e3a63eab36fed5bfc54e67f80152c1e178e359b7bb7eef9",
+        "maxOutputTokens": 32,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      },
+      {
+        "id": "dependency-chain-v1",
+        "kind": "dependency-order",
+        "promptSha256": "7743df5f85abd29719c7ba7082f26402ffae4ee2e87b5fa00d4b17ee486e278b",
+        "referenceSha256": "acfddb908c38f09615df361ce9f13e0d9e112cb7c867687cda533cede64082f8",
+        "maxOutputTokens": 48,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      },
+      {
+        "id": "retrieve-head-v1",
+        "kind": "context-retrieval",
+        "promptSha256": "a5ef81a2ddeec0f8cdbdd571dad61128e1151f1842f0f713fb987b1149e050cd",
+        "referenceSha256": "6b10e55d4c1fa222fbeaedc21ea778a16f68404352f1b1bc91c035e1ee4622c5",
+        "maxOutputTokens": 32,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      },
+      {
+        "id": "retrieve-tail-v1",
+        "kind": "context-retrieval",
+        "promptSha256": "b8c468a2c4f15dd71c7c72e9ce98be36cdf8aa50ae597ce959dee1dbd0cbf73b",
+        "referenceSha256": "23c38e675edf1b1dff13c769185b66653bea9528520dfebf8986184464614953",
+        "maxOutputTokens": 32,
+        "responseFormat": "none",
+        "responseFormatSha256": null
+      }
+    ],
+    "conditionOrder": "C1, C2, C4; same eight task IDs at each level; sequential bursts of C requests; no warmup",
+    "contextEvidence": "response usage only; no pretokenized or context qualification",
+    "distractorCount": 0,
+    "firstText": "not-measured",
+    "interpretation": "Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification",
+    "overallDeadlineSeconds": 60,
+    "perLevelPlannedTasks": 8,
+    "plannedTotalTasks": 24,
+    "prefixCache": false,
+    "protocolVersion": "task-quality-screen-v1",
+    "requestTimeoutBaseSeconds": 10,
+    "sampling": "temperature-0-seed-42-thinking-disabled",
+    "serverSlots": 1,
+    "start": "barrier release within each burst",
+    "stream": false,
+    "suiteVersion": "task-quality-v1"
+  },
+  "waves": [
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "extract-order-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "extract-order-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "filter-candidates-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "filter-candidates-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "sort-integers-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "sort-integers-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "arithmetic-invoice-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "arithmetic-invoice-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "arithmetic-steps-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "arithmetic-steps-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "dependency-chain-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "dependency-chain-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "retrieve-head-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "retrieve-head-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 1,
+      "taskIds": [
+        "retrieve-tail-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 1.0,
+      "overlappingHttpRequestsPeak": 1,
+      "serverParallelDecodeObserved": false,
+      "correct": 1,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "retrieve-tail-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 2,
+      "taskIds": [
+        "extract-order-v1",
+        "filter-candidates-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 2.0,
+      "overlappingHttpRequestsPeak": 2,
+      "serverParallelDecodeObserved": false,
+      "correct": 2,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "extract-order-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 2,
+          "taskId": "filter-candidates-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 3.0,
+          "endToEndLatencyMs": 2.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 2,
+      "taskIds": [
+        "sort-integers-v1",
+        "arithmetic-invoice-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 2.0,
+      "overlappingHttpRequestsPeak": 2,
+      "serverParallelDecodeObserved": false,
+      "correct": 2,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "sort-integers-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 2,
+          "taskId": "arithmetic-invoice-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 3.0,
+          "endToEndLatencyMs": 2.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 2,
+      "taskIds": [
+        "arithmetic-steps-v1",
+        "dependency-chain-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 2.0,
+      "overlappingHttpRequestsPeak": 2,
+      "serverParallelDecodeObserved": false,
+      "correct": 2,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "arithmetic-steps-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 2,
+          "taskId": "dependency-chain-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 3.0,
+          "endToEndLatencyMs": 2.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 2,
+      "taskIds": [
+        "retrieve-head-v1",
+        "retrieve-tail-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 2.0,
+      "overlappingHttpRequestsPeak": 2,
+      "serverParallelDecodeObserved": false,
+      "correct": 2,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "retrieve-head-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 2,
+          "taskId": "retrieve-tail-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 3.0,
+          "endToEndLatencyMs": 2.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 4,
+      "taskIds": [
+        "extract-order-v1",
+        "filter-candidates-v1",
+        "sort-integers-v1",
+        "arithmetic-invoice-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 4.0,
+      "overlappingHttpRequestsPeak": 4,
+      "serverParallelDecodeObserved": false,
+      "correct": 4,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "extract-order-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 2,
+          "taskId": "filter-candidates-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 3.0,
+          "endToEndLatencyMs": 2.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 3,
+          "taskId": "sort-integers-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 4.0,
+          "endToEndLatencyMs": 3.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 4,
+          "taskId": "arithmetic-invoice-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 5.0,
+          "endToEndLatencyMs": 4.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    },
+    {
+      "requestedClients": 4,
+      "taskIds": [
+        "arithmetic-steps-v1",
+        "dependency-chain-v1",
+        "retrieve-head-v1",
+        "retrieve-tail-v1"
+      ],
+      "releasedMs": 1.0,
+      "wallMs": 4.0,
+      "overlappingHttpRequestsPeak": 4,
+      "serverParallelDecodeObserved": false,
+      "correct": 4,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "requests": [
+        {
+          "client": 1,
+          "taskId": "arithmetic-steps-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 2.0,
+          "endToEndLatencyMs": 1.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 2,
+          "taskId": "dependency-chain-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 3.0,
+          "endToEndLatencyMs": 2.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 3,
+          "taskId": "retrieve-head-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 4.0,
+          "endToEndLatencyMs": 3.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        },
+        {
+          "client": 4,
+          "taskId": "retrieve-tail-v1",
+          "dispatchStartMs": 1.0,
+          "httpFinishMs": 5.0,
+          "endToEndLatencyMs": 4.0,
+          "timeToFirstTextMs": null,
+          "firstTextMeasurement": "not-measured-nonstreaming",
+          "httpStatus": 200,
+          "finishReason": "stop",
+          "actualPromptTokens": 100,
+          "actualOutputTokens": 4,
+          "grade": "correct",
+          "classification": "strict-pass",
+          "errorCode": null
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "requestedClients": 1,
+      "planned": 8,
+      "attempted": 8,
+      "correct": 8,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "unattempted": 0,
+      "wholeSuiteWallMs": "<masked>",
+      "suiteStartCollectorMs": "<masked>",
+      "suiteFinishCollectorMs": "<masked>",
+      "complete": true,
+      "usefulTasksPerSecond": "<masked>",
+      "timingScope": "level pre-dispatch checks through final post-wave checks, including inter-wave gaps"
+    },
+    {
+      "requestedClients": 2,
+      "planned": 8,
+      "attempted": 8,
+      "correct": 8,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "unattempted": 0,
+      "wholeSuiteWallMs": "<masked>",
+      "suiteStartCollectorMs": "<masked>",
+      "suiteFinishCollectorMs": "<masked>",
+      "complete": true,
+      "usefulTasksPerSecond": "<masked>",
+      "timingScope": "level pre-dispatch checks through final post-wave checks, including inter-wave gaps"
+    },
+    {
+      "requestedClients": 4,
+      "planned": 8,
+      "attempted": 8,
+      "correct": 8,
+      "incorrect": 0,
+      "inconclusive": 0,
+      "unattempted": 0,
+      "wholeSuiteWallMs": "<masked>",
+      "suiteStartCollectorMs": "<masked>",
+      "suiteFinishCollectorMs": "<masked>",
+      "complete": true,
+      "usefulTasksPerSecond": "<masked>",
+      "timingScope": "level pre-dispatch checks through final post-wave checks, including inter-wave gaps"
+    }
+  ],
+  "totals": {
+    "planned": 24,
+    "attempted": 24,
+    "correct": 24,
+    "incorrect": 0,
+    "inconclusive": 0,
+    "unattempted": 0
+  },
+  "qualification": {
+    "approved": false,
+    "contextQualified": false,
+    "exclusiveWorkloadConfirmed": false,
+    "parallelDecodeVerified": false,
+    "performanceQualified": false,
+    "physicalResidency": false,
+    "qualityEvaluation": false
+  }
+}

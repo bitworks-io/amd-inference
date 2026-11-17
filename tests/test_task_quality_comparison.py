@@ -237,6 +237,55 @@ class TaskQualityComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Actual prompt usage differs'):
             compare.compare(self.s1, other)
 
+    def _long_setup(self, **changes):
+        setup = {'profile': 'long', 'contextTotal': 16384, 'contextPerSlot': 8192, 'slots': 2,
+                 'cacheTypeK': 'q8_0', 'cacheTypeV': 'q8_0'}
+        setup.update(changes)
+        return setup
+
+    def test_refuses_reports_with_different_serving_setups(self):
+        # An absent servingSetup is the default setup, so a profile report never compares with a default one.
+        for left, right in ((self._long_setup(), None), (None, self._long_setup())):
+            s1, s2 = copy.deepcopy(self.s1), copy.deepcopy(self.s2)
+            for report, setup in ((s1, left), (s2, right)):
+                if setup is not None:
+                    report['methodology']['servingSetup'] = setup
+            with self.assertRaisesRegex(compare.ServingSetupMismatch, 'serving setups differ'):
+                compare.compare(s1, s2)
+
+    def test_refuses_each_differing_serving_setup_field(self):
+        for field, value in (('profile', 'default'), ('contextTotal', 32768), ('contextPerSlot', 16384),
+                             ('slots', 1), ('cacheTypeK', 'f16'), ('cacheTypeV', 'f16')):
+            s1, s2 = copy.deepcopy(self.s1), copy.deepcopy(self.s2)
+            s1['methodology']['servingSetup'] = self._long_setup()
+            s2['methodology']['servingSetup'] = self._long_setup(**{field: value})
+            with self.assertRaises(compare.ServingSetupMismatch, msg=field):
+                compare.compare(s1, s2)
+
+    def test_serving_setup_error_is_typed_and_a_value_error(self):
+        self.assertTrue(issubclass(compare.ServingSetupMismatch, ValueError))
+        self.assertEqual(compare.ServingSetupMismatch.code, 'serving-setup-differs')
+
+    def test_identical_serving_setups_compare(self):
+        s1, s2 = copy.deepcopy(self.s1), copy.deepcopy(self.s2)
+        for report in (s1, s2):
+            report['methodology']['servingSetup'] = self._long_setup()
+        self.assertIsNone(compare.compare(s1, s2)['rankingOrWinner'])
+
+    def test_default_setup_states_equal_an_absent_one(self):
+        s1, s2 = copy.deepcopy(self.s1), copy.deepcopy(self.s2)
+        s1['methodology']['servingSetup'] = {'profile': 'default', 'contextTotal': 32768, 'contextPerSlot': 32768,
+                                             'slots': 1, 'cacheTypeK': 'f16', 'cacheTypeV': 'f16'}
+        self.assertIsNone(compare.compare(s1, s2)['rankingOrWinner'])
+
+    def test_malformed_serving_setup_is_refused(self):
+        for bad in ('long', [], {'profile': 'long'}, self._long_setup(slots='2'), self._long_setup(slots=True),
+                    self._long_setup(profile=3), self._long_setup(extra=1)):
+            s1, s2 = copy.deepcopy(self.s1), copy.deepcopy(self.s2)
+            s1['methodology']['servingSetup'] = bad
+            with self.assertRaisesRegex(ValueError, 'servingSetup'):
+                compare.compare(s1, s2)
+
     def test_reader_rejects_duplicate_keys_and_nonfinite_json(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'bad.json'

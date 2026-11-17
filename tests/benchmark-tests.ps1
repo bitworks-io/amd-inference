@@ -136,4 +136,41 @@ $readyAt=$benchSource.IndexOf("throw 'Start a supervised FastLLM server and wait
 $assertAt=$benchSource.IndexOf('Assert-FastLlmBenchmarkDefaultSetup -State $state',$readyAt)
 $lockAt=$benchSource.IndexOf("'benchmark.lock'",$readyAt)
 Check ($readyAt -gt 0 -and $assertAt -gt $readyAt -and $assertAt -lt $lockAt) 'benchmark-refuses-thinking-off: the check sits between the ready check and the benchmark lock, before any request'
+# benchmark-refuses-serving-profile: a serving-profile run (opt-in context profile, slots or non-default KV cache) is a user choice, never the default setup.
+$profileMessage='Benchmarks measure the default setup. Set the context profile to default and requests at once to 1 (-KvContextProfile default -KvSlots 1), start again, then benchmark.'
+$realArgs=@('--model','<verified-model>','--offline','--no-mmproj','--spec-type','none','--alias','qwen-test','--host','127.0.0.1','--port','8080',
+    '--cors-origins','localhost','--no-cors-credentials','--ctx-size','32768','--parallel','1','--n-gpu-layers','all','--fit','on','--fit-target','768',
+    '--device','Vulkan0','--split-mode','none','--flash-attn','auto','--cache-type-k','f16','--cache-type-v','f16','--jinja','--metrics',
+    '--log-verbosity','4','--no-agent','--no-ui')
+function New-ProfileStatus([hashtable]$Recipe,[string[]]$ArgumentList=$realArgs){
+    $fields=[ordered]@{contextSize=32768;slots=1;requestedArguments=$ArgumentList}
+    foreach($key in $Recipe.Keys){$fields[$key]=$Recipe[$key]}
+    return [pscustomobject]@{active=$true;phase='ready';thinking='auto';chatPage='off';apiKey='off';idleStopMinutes=0;recipe=[pscustomobject]$fields}
+}
+function Set-ProfileArgument([string[]]$ArgumentList,[string]$Name,[string]$Value){
+    $copy=@($ArgumentList);for($i=0;$i -lt $copy.Count;$i++){if($copy[$i] -ceq $Name){$copy[$i+1]=$Value}};return $copy
+}
+Check ($null -eq (Get-ThinkingRefusal (New-ProfileStatus @{}))) 'benchmark-refuses-serving-profile: the real default argv (f16 cache types, --parallel 1) is accepted'
+Check ($null -eq (Get-ThinkingRefusal $readyOldBoth)) 'benchmark-refuses-serving-profile: a status with none of the fields is unchanged'
+$profileCases=[ordered]@{
+    'recipe.profile long with one slot'=(New-ProfileStatus @{profile='long'})
+    'recipe.profile default with two slots'=(New-ProfileStatus @{profile='default';slots=2;contextPerSlot=16384})
+    'recipe.slots 2'=(New-ProfileStatus @{slots=2})
+    'contextPerSlot below contextSize'=(New-ProfileStatus @{contextPerSlot=16384})
+    '--parallel 2'=(New-ProfileStatus @{} (Set-ProfileArgument $realArgs '--parallel' '2'))
+    '--cache-type-k q8_0'=(New-ProfileStatus @{} (Set-ProfileArgument $realArgs '--cache-type-k' 'q8_0'))
+    '--cache-type-v q8_0'=(New-ProfileStatus @{} (Set-ProfileArgument $realArgs '--cache-type-v' 'q8_0'))
+}
+foreach($name in $profileCases.Keys){
+    Check ((Get-ThinkingRefusal $profileCases[$name]) -ceq $profileMessage) "benchmark-refuses-serving-profile: $name throws the exact message"
+}
+$profileThinking=New-ProfileStatus @{slots=2};$profileThinking.thinking='off'
+Check ((Get-ThinkingRefusal $profileThinking) -ceq $thinkingMessage) 'benchmark-refuses-serving-profile: the existing Thinking refusal still comes first'
+$profileKey=New-ProfileStatus @{slots=2};$profileKey.apiKey='on'
+Check ((Get-ThinkingRefusal $profileKey) -ceq $keyMessage) 'benchmark-refuses-serving-profile: the API key refusal still comes first'
+$profileAt=$benchSource.IndexOf('$profileRefusal')
+$keyAt=$benchSource.IndexOf('$keyRefusal')
+$argsAt=$benchSource.IndexOf('$hasNoUi = $false')
+Check ($keyAt -gt 0 -and $profileAt -gt $keyAt -and $profileAt -lt $argsAt) 'benchmark-refuses-serving-profile: the check sits as its own line right after the API key refusal'
+Check ([regex]::Matches($benchSource,'Test-FastLlmServingProfileRun').Count -eq 1) 'benchmark-refuses-serving-profile: the benchmark calls the one shared predicate'
 Write-Host "$count benchmark/build checks passed. No GPU benchmark executed."
