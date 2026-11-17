@@ -921,6 +921,14 @@ function GetUiApiKeyStore {
     return $script:apiKeyStore
 }
 function ReadUiApiKey { try{return [string](Get-FastLlmApiKeyForDisplay -InstallRoot $script:installPath)}catch{return $null} }
+# Puts one copy on the clipboard: the text, plus the formats that came with it. A copy that holds the key comes with the three formats that
+# keep it out of the clipboard history and the cloud clipboard (Get-FastLlmUiKeyClipboardFormats); each is four raw bytes, hence the stream.
+function SetUiClipboardPayload($Payload) {
+    $clipboardData=New-Object Windows.Forms.DataObject
+    $clipboardData.SetData([Windows.Forms.DataFormats]::UnicodeText,$true,[string]$Payload.text)
+    foreach($formatName in @($Payload.formats.Keys)){$clipboardData.SetData([string]$formatName,$false,[IO.MemoryStream]::new([byte[]]$Payload.formats[$formatName]))}
+    [Windows.Forms.Clipboard]::SetDataObject($clipboardData,$true)
+}
 # The one "Create a new key" action: asked, never silent. Returns $true when a new key was created.
 function NewUiApiKey($Owner) {
     $store=GetUiApiKeyStore
@@ -937,7 +945,7 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
     ShowFailure (Format-FastLlmUiTypedFailure -Code $Code -Text ([string]$failure.text))
     if($failure.offerNewKey){
         try{if(NewUiApiKey $form){$statusLabel.Text='A new API key was created. Give it to your apps (Connect an app), then start again.'}}
-        catch{$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message))}
+        catch{$newKeyFailureText=[string]$_.Exception.Message;$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))}
     }
 }
 function ShowUiSettings {
@@ -965,12 +973,19 @@ function ShowUiSettings {
     $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$dialog.Controls.Add($idleHelp)
     # The API key (off by default). The box only sets the flag; turning it on creates a key when there is none. The key is shown in Connect an app.
     $keyBox=New-Object Windows.Forms.CheckBox;$keyBox.Text='Require an API key (off by default)';$keyBox.Location=New-Object Drawing.Point(20,232);$keyBox.Size=New-Object Drawing.Size(510,27)
-    $keyBox.Checked=([string]$current.apiKey -ceq 'on');$dialog.Controls.Add($keyBox)
+    # When the setting cannot be known (a key is stored, but the saved settings do not say whether to use it) the box is neither ticked nor
+    # clear, and Save is refused until the user ticks or clears it: the first click clears it, the next one ticks it.
+    $keyBoxState=Get-FastLlmUiApiKeyBoxState -Settings $current
+    $script:settingsKeyTouched=$false
+    if($keyBoxState -ceq 'indeterminate'){$keyBox.ThreeState=$true;$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate;$keyBox.Text='Require an API key (not set: tick or clear this box to choose)'}
+    else{$keyBox.Checked=($keyBoxState -ceq 'checked')}
+    $keyBox.Add_Click({$script:settingsKeyTouched=$true;$keyBox.ThreeState=$false})
+    $dialog.Controls.Add($keyBox)
     $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$dialog.Controls.Add($keyHelp)
     $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$dialog.Controls.Add($newKeyButton)
     $newKeyButton.Add_Click({
         try{[void](NewUiApiKey $dialog)}
-        catch{[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message)),'FastLLM settings','OK','Warning')}
+        catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
     })
     $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,346);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
     $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,346);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
@@ -982,15 +997,17 @@ function ShowUiSettings {
             $savedIdle=@(0,15,30,60)[[Math]::Max(0,[int]$idleBox.SelectedIndex)]
             # The API key first, so a refusal leaves every setting as it was. On creates a key only when there is none; when the stored key
             # cannot be read it is refused, and the one offer is to create a new key (asked, never silent).
+            $keyAction=Get-FastLlmUiApiKeySaveAction -Current ([string]$current.apiKey) -Undetermined ([bool]$current.apiKeyUndetermined) -BoxState ([string]$keyBox.CheckState).ToLowerInvariant() -Touched ([bool]$script:settingsKeyTouched)
+            if($keyAction -ceq 'ask'){throw (Get-FastLlmUiApiKeyChoiceText)}
             $wantKey=[bool]$keyBox.Checked
-            if($wantKey -and [string]$current.apiKey -cne 'on'){
+            if($keyAction -ceq 'on'){
                 try{$null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action on}
                 catch{
                     if([string]$_.Exception.Data['FastLlmFailureCode'] -cne 'api-key-unavailable'){throw}
                     if(-not (NewUiApiKey $dialog)){throw 'The API key was not turned on: the stored key cannot be read and no new key was created. Nothing was changed.'}
                     $null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action on
                 }
-            }elseif(-not $wantKey -and ([string]$current.apiKey -ceq 'on' -or [bool]$current.apiKeyUndetermined)){
+            }elseif($keyAction -ceq 'off'){
                 $null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action off
             }
             $script:settingsSavedApiKey=$(if($wantKey){'on'}else{'off'})
@@ -1002,7 +1019,8 @@ function ShowUiSettings {
             $script:settingsSavedThinking=$savedThinking
             $dialog.DialogResult='OK';$dialog.Close()
         }catch{
-            [void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message)),'FastLLM settings','OK','Warning')
+            $saveFailureText=[string]$_.Exception.Message
+            [void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)),'FastLLM settings','OK','Warning')
         }
     })
     SetTrayMenuAvailable $false
@@ -1073,7 +1091,8 @@ $startButton.Add_Click({try{ReadSelection;AssertUiBackgroundNotOccupied;$script:
 $backgroundStartButton.Add_Click({
     try{$null=StartUiBackground}
     catch{
-        $message=ConvertTo-FastLlmKeyFreeText -Text ([string]$_.Exception.Message)
+        $startFailureText=[string]$_.Exception.Message
+        $message=ConvertTo-FastLlmKeyFreeText -Text ([ref]$startFailureText)
         $backgroundFailureCode=[string]$_.Exception.Data['FastLlmFailureCode']
         RefreshUiBackgroundStatus
         # An API key refusal (the flag cannot be known, or the stored key cannot be read) is its own message; nothing was started.
@@ -1338,10 +1357,10 @@ function ShowConnectDialog {
                 $shownKey=$null
             }else{$keyBox.Text=[string]$keyRow.mask;$keyShow.Text='Show'}
         })
+        # Copy goes through the one copy routine: it reads the key for this one copy and hands it to the clipboard only. This handler never
+        # holds the key, and the status line is given fixed text only.
         $keyCopy.Add_Click({
-            $copiedKey=ReadUiApiKey
-            try{if($copiedKey){[Windows.Forms.Clipboard]::SetText($copiedKey)}else{$statusLabel.Text='The stored API key cannot be read.'}}catch{$statusLabel.Text='Could not copy the API key.'}
-            $copiedKey=$null
+            [void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})
         })
         $y+=36
     }
@@ -1361,10 +1380,7 @@ function ShowConnectDialog {
         # The button keeps the card with its {KEY} token (never the key). On a click the key is read from the store and put into the copied text only.
         $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=[string]$client.snippet;$panel.Controls.Add($copy)
         $copy.Add_Click({param($sender,$e)
-            $cardKey=$null
-            if(([string]$sender.Tag).Contains('{KEY}')){$cardKey=ReadUiApiKey;if(-not $cardKey){$statusLabel.Text='The stored API key cannot be read, so the card was copied without it.'}}
-            try{[Windows.Forms.Clipboard]::SetText((Get-FastLlmConnectCopyText -Snippet ([string]$sender.Tag) -Key $cardKey))}catch{$statusLabel.Text='Could not copy the card.'}
-            $cardKey=$null
+            [void](Invoke-FastLlmUiKeyCopy -Snippet ([string]$sender.Tag) -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})
         })
         $y+=30
         $lineCount=@(([string]$client.snippet) -split "`n").Count

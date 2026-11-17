@@ -10,9 +10,34 @@ $script:FastLlmExperimentalParagraph = 'Experimental community recipes are setup
     'Nothing is chosen for you: an experimental recipe is only used when you pick it and accept each of its components. ' +
     'You can turn this off at any time. Components you installed stay on disk until you remove them.'
 
+# A plain read is lenient: a file that cannot be read gives no stored values, and the defaults apply.
+# -ForWrite is the read of a read-modify-write. A settings.json that exists but is not a readable JSON object (it does not parse, it is not
+# an object, it is a folder or a link, it is over 16 KiB, it cannot be read right now) is then refused instead of being read as empty:
+# written back, an empty read would erase every setting the file held, the API key flag among them, and the next start would run
+# without the key that was asked for. The same verdict as Read-FastLlmServingSettingsObject (malformed). An absent file is empty.
 function Read-FastLlmComponentSettingsObject {
-    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [switch] $ForWrite)
     $result = [ordered]@{}
+    if ($ForWrite) {
+        $readable = $true
+        try {
+            $path = Join-Path $InstallRoot 'settings.json'
+            if (Test-Path -LiteralPath $path) {
+                $readable = $false
+                $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $item.Length -le 16384) {
+                    $stored = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+                    if ($null -ne $stored -and $stored -is [pscustomobject]) {
+                        foreach ($property in $stored.PSObject.Properties) { $result[$property.Name] = $property.Value }
+                        $readable = $true
+                    }
+                }
+            }
+        }
+        catch { $readable = $false }
+        if (-not $readable) { throw 'settings-malformed: settings.json is not valid JSON, so it was not changed. Fix or delete it, then try again.' }
+        return $result
+    }
     try {
         $path = Join-Path $InstallRoot 'settings.json'
         if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -54,7 +79,7 @@ function Set-FastLlmComponentSettings {
         [Parameter(Mandatory = $true)][string] $InstallRoot,
         [Parameter(Mandatory = $true)][ValidateSet('on', 'off')][string] $ExperimentalComponents
     )
-    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -ForWrite
     $merged['experimentalComponents'] = $ExperimentalComponents
     Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
 }
@@ -373,7 +398,7 @@ function Set-FastLlmComponentLicenseSettings {
         }
         if ($entries.Count -eq 0) { throw 'accept-automatically needs at least one accepted license.' }
     }
-    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot
+    $merged = Read-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -ForWrite
     $merged['componentLicenses'] = [pscustomobject] [ordered] @{
         mode       = $Mode
         acceptedAt = $(if ($Mode -ceq 'accept-automatically') { $AcceptedAt } else { '' })

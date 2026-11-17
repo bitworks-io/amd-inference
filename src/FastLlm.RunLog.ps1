@@ -54,7 +54,7 @@ function ConvertTo-FastLlmRunLogValue {
     }
     if ($Value -is [string]) {
         # The key scrub runs first, on the whole value, so a key that straddles the length cap below is removed in full.
-        $text = [regex]::Replace((ConvertTo-FastLlmKeyFreeText -Text $Value), '[\x00-\x1f\x7f]', ' ')
+        $text = [regex]::Replace((ConvertTo-FastLlmKeyFreeText -Text ([ref] $Value)), '[\x00-\x1f\x7f]', ' ')
         if ($text.Length -gt $script:FastLlmRunLogMaxString) { $text = $text.Substring(0, $script:FastLlmRunLogMaxString) }
         return $text
     }

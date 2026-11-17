@@ -239,7 +239,7 @@ function Write-FastLlmBackgroundDocument {
     $json = ConvertTo-Json -InputObject $Value -Depth 12 -Compress
     # Like every state document, a background document passes the API key scrub on its way to disk (the scrub is the FastLlm module's;
     # without the module loaded nothing in this process has read a key).
-    if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $json = ConvertTo-FastLlmKeyFreeText -Text $json -Structured }
+    if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $json = ConvertTo-FastLlmKeyFreeText -Text ([ref] $json) -Structured }
     if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 16384) { throw 'Background state document exceeds its size limit.' }
     $temp = Join-Path $parent ([Guid]::NewGuid().ToString('N') + '.background.tmp')
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json)
@@ -667,7 +667,7 @@ function Invoke-FastLlmBackgroundServe {
             # The text is recorded, so it passes the key scrub first. The scrub is the module's; a failure before the module was loaded
             # cannot hold a key (only the module ever reads one).
             $failureText = [string]$_.Exception.Message
-            if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $failureText = ConvertTo-FastLlmKeyFreeText -Text $failureText }
+            if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $failureText = ConvertTo-FastLlmKeyFreeText -Text ([ref] $failureText) }
             if ($_.Exception.Data['FastLlmReason'] -ceq 'PlanChanged' -or $failureText.StartsWith("Recipe '", [StringComparison]::Ordinal) -or $_.Exception.Data['FastLlmFailureCode']) {
                 $record.failureReason = [regex]::Replace($failureText, '[\x00-\x1f\x7f]', ' ')
                 if ($record.failureReason.Length -gt 400) { $record.failureReason = $record.failureReason.Substring(0, 400) }

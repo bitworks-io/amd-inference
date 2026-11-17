@@ -4115,7 +4115,8 @@ function Start-FastLlmServer {
             throw $missingModelFailure
         }
         # The first failure's text is printed, so it passes the key scrub (with the run's key when there is one).
-        $firstText = [regex]::Replace((ConvertTo-FastLlmKeyFreeText -Text ([string] $firstFailure.Message) -ApiKeyHolder $apiKeyHolder), '\s+', ' ').Trim()
+        $firstFailureText = [string] $firstFailure.Message
+        $firstText = [regex]::Replace((ConvertTo-FastLlmKeyFreeText -Text ([ref] $firstFailureText) -ApiKeyHolder $apiKeyHolder), '\s+', ' ').Trim()
         Write-Host "The HIP setup did not start ($fallbackReasonCode): $firstText Started the Vulkan setup instead."
         # The stand-in goes through the whole start again (engine, model, hash, consent checks, re-plan), with the same options. It has a
         # `fallback`, so it can never fall back again: the second failure propagates.
@@ -4224,6 +4225,16 @@ function Invoke-FastLlmSwitchLoop {
         else {
             # No target run wrote a document: the previous run's document says why the restore follows.
             Set-FastLlmSwitchOutcome -InstallRoot $InstallRoot -Block (New-FastLlmSwitchBlock -From $fromModelId -To $toModelId -Pending -FailureCode $failureCode)
+        }
+        # A key that may have been sent to another program ends the sequence: the previous model would be served with the same key, so it
+        # is not started again. The outcome is recorded as failed-stopped, and the failure (with its "create a new key" text) is passed on.
+        if ([string] $targetFailure.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed') {
+            Write-Host "Could not start '$toModelId' ($failureCode). '$fromModelId' is not started again: the API key may have been seen by another program."
+            Set-FastLlmSwitchOutcome -InstallRoot $InstallRoot -Block (New-FastLlmSwitchBlock -From $fromModelId -To $toModelId -Result 'failed-stopped' -FailureCode $failureCode)
+            Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State @{ runId = [string] $Context['runId'] } -Event 'switch-result' -Fields { Get-FastLlmRunLogSwitchResultFields -Result 'failed-stopped' -FailureCode $failureCode }
+            Remove-FastLlmSwitchPriorStop -Paths @($priorStops)
+            $targetFailure.Data['FastLlmSwitchAttempted'] = $true
+            throw $targetFailure
         }
         Write-Host "Could not start '$toModelId' ($failureCode). Starting '$fromModelId' again."
 

@@ -683,7 +683,9 @@ try {
                 $apiKeyChange = Invoke-FastLlmApiKeySetting -InstallRoot $InstallRoot -Action $requestedKeyAction
                 if ($requestedKeyAction -ceq 'show') {
                     # The one place the command line prints the key: on this explicit request, as the only output, and nowhere else.
-                    Write-Output ([string] $apiKeyChange.key)
+                    # It is written straight to the console's standard output. A cmdlet (Write-Output, Write-Host) would be handed the
+                    # key as input, and PowerShell module logging records a cmdlet's input.
+                    [Console]::Out.WriteLine([string] $apiKeyChange.key)
                     break
                 }
                 $apiKeyLines = @($apiKeyChange.lines)
@@ -713,7 +715,7 @@ try {
                 Write-Host "slots: $($servingState.slots)"
                 if ($apiKeySettingText -ceq 'on' -and $apiKeyStoreState.available) { Write-Host "apiKey: on (key id $($apiKeyStoreState.apiKeyId))" }
                 elseif ($apiKeySettingText -ceq 'on') { Write-Host 'apiKey: on, but the stored key cannot be read: FastLLM will not start until you create a new key (settings -ApiKey rotate) or turn the key off' }
-                elseif ($apiKeySettingText -ceq 'unreadable') { Write-Host 'apiKey: the saved value is not on or off: FastLLM will not start until you set it (settings -ApiKey on or -ApiKey off)' }
+                elseif ($apiKeySettingText -ceq 'unreadable') { Write-Host 'apiKey: not set, and a key is stored (or the saved value is not on or off): FastLLM will not start until you choose (settings -ApiKey on or -ApiKey off)' }
                 else { Write-Host 'apiKey: off' }
             }
         }
@@ -1181,7 +1183,7 @@ catch {
     }
     # The text is printed, so it passes the API key scrub first (the function is the module's; before the module is loaded no key was read).
     $failureMessage = [string] $failure.Exception.Message
-    if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $failureMessage = ConvertTo-FastLlmKeyFreeText -Text $failureMessage }
+    if (Get-Command -Name ConvertTo-FastLlmKeyFreeText -ErrorAction SilentlyContinue) { $failureMessage = ConvertTo-FastLlmKeyFreeText -Text ([ref] $failureMessage) }
     # A device-binding failure prints its message only when it already carries the conforming '<code>: ' prefix; otherwise a fixed text (no part of the message).
     if ($isBindingFailure -and -not $failureMessage.StartsWith($bindingCode + ': ', [StringComparison]::Ordinal)) {
         $failureMessage = $bindingCode + ': device binding failed (details withheld; see status)'

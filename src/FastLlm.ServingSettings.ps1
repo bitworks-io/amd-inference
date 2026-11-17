@@ -16,7 +16,7 @@ $script:FastLlmServingDefaultContextProfile = 'default'
 $script:FastLlmServingDefaultSlots = 1
 $script:FastLlmServingSlotsChoices = @(1, 2)
 $script:FastLlmServingSettingsMaxBytes = 16384
-# The API key flag. settings.json holds only apiKey: "on"; the key itself is never a setting (it lives in the per-user store next to the settings).
+# The API key flag. settings.json holds only apiKey: "on" or "off"; the key itself is never a setting (it lives in the per-user store next to the settings).
 $script:FastLlmServingDefaultApiKey = 'off'
 $script:FastLlmServingApiKeyStoreName = 'api-key.dat'
 
@@ -99,8 +99,10 @@ function ConvertTo-FastLlmApiKeySetting {
 }
 
 # The refusal when the API key flag cannot be known (see Get-FastLlmServingSettings). Typed, and never retried or replaced by another setup.
+# The text names the choice (on or off) and nothing else. It does not suggest deleting settings.json: with a key store present, a
+# missing file leaves the flag just as unknown.
 function New-FastLlmApiKeySettingFailure {
-    $failure = New-Object -TypeName System.InvalidOperationException -ArgumentList 'api-key-setting-unreadable: FastLLM cannot tell whether the API key is required: settings.json cannot be read or its apiKey value is not on or off. Nothing was started. Run "fast-llm.ps1 settings -ApiKey on" or "-ApiKey off" to set it; if settings.json is not valid JSON, fix or delete the file first.'
+    $failure = New-Object -TypeName System.InvalidOperationException -ArgumentList 'api-key-setting-unreadable: FastLLM cannot tell whether the API key is required. This installation has a stored API key, and settings.json does not say whether to use it: it has no apiKey value, it cannot be read, or its apiKey value is not on or off. Nothing was started. Choose one: run "fast-llm.ps1 settings -ApiKey on" or "fast-llm.ps1 settings -ApiKey off", or tick or clear "Require an API key" in Settings and save.'
     $failure.Data['FastLlmFailureCode'] = 'api-key-setting-unreadable'
     $failure.Data['FastLlmReason'] = 'ApiKeyFailed'
     return $failure
@@ -125,6 +127,12 @@ function Read-FastLlmServingSettingsObject {
     }
     catch { return @{ malformed = $true; object = [ordered]@{} } }
     return @{ malformed = $false; object = $result }
+}
+
+# Whether this installation has a key store file (readable or not). A question that cannot be answered counts as yes: the callers fail closed.
+function Test-FastLlmServingApiKeyStorePresent {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot)
+    try { return [bool] (Test-Path -LiteralPath (Join-Path $InstallRoot $script:FastLlmServingApiKeyStoreName) -ErrorAction Stop) } catch { return $true }
 }
 
 function Get-FastLlmServingSettings {
@@ -160,20 +168,24 @@ function Get-FastLlmServingSettings {
         $storedSlots = $read.object['slots']
         if (($storedSlots -is [int] -or $storedSlots -is [long]) -and [long] $storedSlots -eq 2) { $slots = 2 }
     }
-    # The API key flag fails closed. It is on only for the exact stored text "on", and off only for no value or the exact text "off".
-    # Any other stored value means the flag cannot be known. So does a settings file that cannot be read when this installation has a key
-    # store (the key was turned on here at some time): unlike the other settings, the default (off) must not stand in then, because a start
-    # would run without the key that was asked for. apiKeyUndetermined says so; a start refuses it.
+    # The API key flag fails closed. It is on only for the exact stored text "on" and off for the exact stored text "off"; any other
+    # stored value means the flag cannot be known.
+    # With no stored value the answer depends on whether this installation has a key store (api-key.dat):
+    #   no key store   off. The key was never turned on here, so an installation that never used the key - no settings.json, an empty
+    #                  one, or one with other settings only - starts exactly as it always did.
+    #   a key store    the flag cannot be known. Once a key exists, "off" is always stored as apiKey "off"; a missing value then means
+    #                  the setting was lost (settings.json deleted, replaced or rewritten), and the default (off) must not stand in for
+    #                  it: a start would run without the key that was asked for.
+    # A settings file that cannot be read is the same case: unknown with a key store, off without one.
+    # apiKeyUndetermined says so; a start refuses it.
     $apiKey = $script:FastLlmServingDefaultApiKey
     $apiKeyUndetermined = $false
-    if ($read.malformed) {
-        try { $apiKeyUndetermined = [bool] (Test-Path -LiteralPath (Join-Path $InstallRoot $script:FastLlmServingApiKeyStoreName)) } catch { $apiKeyUndetermined = $true }
-    }
-    elseif ($read.object.Contains('apiKey')) {
+    if (-not $read.malformed -and $read.object.Contains('apiKey')) {
         $storedApiKey = $read.object['apiKey']
         if ($storedApiKey -is [string] -and $storedApiKey -ceq 'on') { $apiKey = 'on' }
         elseif (-not ($storedApiKey -is [string] -and $storedApiKey -ceq 'off')) { $apiKeyUndetermined = $true }
     }
+    else { $apiKeyUndetermined = [bool] (Test-FastLlmServingApiKeyStorePresent -InstallRoot $InstallRoot) }
     return [pscustomobject]@{
         serverPort       = $port
         thinking         = $thinking
@@ -233,10 +245,14 @@ function Set-FastLlmServingSettings {
         if ($KvSlots -eq $script:FastLlmServingDefaultSlots) { $merged.Remove('slots') }
         else { $merged['slots'] = $KvSlots }
     }
-    # Only the flag: on is stored as apiKey "on", off removes it. This also replaces a stored value that was neither.
+    # Only the flag: on is stored as apiKey "on". Off is stored as apiKey "off" whenever this installation has a key store, because a
+    # missing value next to a key store means "cannot be known" (see Get-FastLlmServingSettings); without a key store off is the default
+    # and the value is removed, so an installation that never used the key keeps the settings file it always had. Either way this
+    # replaces a stored value that was neither.
     if ($PSBoundParameters.ContainsKey('ApiKey')) {
-        if ($ApiKey -ceq $script:FastLlmServingDefaultApiKey) { $merged.Remove('apiKey') }
-        else { $merged['apiKey'] = $ApiKey }
+        if ($ApiKey -ceq 'on') { $merged['apiKey'] = 'on' }
+        elseif (Test-FastLlmServingApiKeyStorePresent -InstallRoot $InstallRoot) { $merged['apiKey'] = 'off' }
+        else { $merged.Remove('apiKey') }
     }
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
     $path = Join-Path $InstallRoot 'settings.json'
@@ -362,8 +378,10 @@ function Get-FastLlmServingHostArguments {
 # .key, for the caller to print or copy; nothing here writes it anywhere.
 #   on      keeps a readable key, creates one when there is no store, refuses (changing nothing) when the store cannot be read.
 #           The flag is saved only after a readable key exists.
-#   off     removes the flag. The stored key is kept, so turning the key on again does not change it.
-#   rotate  creates a new key in place of the stored one (one atomic replace). The flag is not changed.
+#   off     saves off: as apiKey "off" when a key is stored (so the setting stays known), by removing the value when there is none.
+#           The stored key is kept, so turning the key on again does not change it.
+#   rotate  creates a new key in place of the stored one (one atomic replace). The flag is not changed; when it was off with no key
+#           stored, off is now saved as apiKey "off", so the new key store does not leave the setting unknown.
 #   show    returns the stored key.
 # Every change applies at the next start: a running server keeps the key (or no key) it was started with.
 function Invoke-FastLlmApiKeySetting {
@@ -372,7 +390,7 @@ function Invoke-FastLlmApiKeySetting {
         [Parameter(Mandatory = $true)][ValidateSet('on', 'off', 'rotate', 'show')][string] $Action
     )
     $Action = $Action.ToLowerInvariant()
-    $result = [ordered]@{ action = $Action; apiKey = $null; apiKeyId = $null; created = $false; lines = @() }
+    $result = [ordered]@{ action = $Action; apiKey = $null; apiKeyUndetermined = $false; apiKeyId = $null; created = $false; lines = @() }
     if ($Action -cne 'show') {
         # A settings file that cannot be read is refused before a key is created or replaced.
         if ((Read-FastLlmServingSettingsObject -InstallRoot $InstallRoot).malformed) { throw 'serving-settings-malformed: settings.json is not valid JSON. Fix or delete it, then try again.' }
@@ -391,7 +409,11 @@ function Invoke-FastLlmApiKeySetting {
         $result.lines = @('The API key is off from the next start. A server that is running now keeps the key it was started with until it stops.')
     }
     elseif ($Action -ceq 'rotate') {
+        # Known to be off before the key is created (and so also after it): saved as an explicit "off" below. An unknown flag stays
+        # unknown - creating a key is not a choice between on and off.
+        $flagBefore = Get-FastLlmServingSettings -InstallRoot $InstallRoot
         $store = Reset-FastLlmApiKeyStore -InstallRoot $InstallRoot
+        if (-not [bool] $flagBefore.apiKeyUndetermined -and [string] $flagBefore.apiKey -ceq 'off') { Set-FastLlmServingSettings -InstallRoot $InstallRoot -ApiKey 'off' }
         $result.apiKeyId = [string] $store.apiKeyId
         $result.created = $true
         $result.lines = @('A new API key was created (key id ' + $store.apiKeyId + '). It applies at the next start; from then on apps need the new key and the old key stops working.', 'Show it with: fast-llm.ps1 settings -ApiKey show')
@@ -402,6 +424,8 @@ function Invoke-FastLlmApiKeySetting {
     }
     $flag = Get-FastLlmServingSettings -InstallRoot $InstallRoot
     $result.apiKey = [string] $flag.apiKey
-    if ($Action -ceq 'rotate' -and [string] $flag.apiKey -cne 'on') { $result.lines = @($result.lines) + @('The API key setting is off: turn it on with: fast-llm.ps1 settings -ApiKey on') }
+    $result.apiKeyUndetermined = [bool] $flag.apiKeyUndetermined
+    if ($Action -ceq 'rotate' -and [bool] $flag.apiKeyUndetermined) { $result.lines = @($result.lines) + @('Whether the API key is required is not set yet. Choose: fast-llm.ps1 settings -ApiKey on, or fast-llm.ps1 settings -ApiKey off.') }
+    elseif ($Action -ceq 'rotate' -and [string] $flag.apiKey -cne 'on') { $result.lines = @($result.lines) + @('The API key setting is off: turn it on with: fast-llm.ps1 settings -ApiKey on') }
     return [pscustomobject] $result
 }

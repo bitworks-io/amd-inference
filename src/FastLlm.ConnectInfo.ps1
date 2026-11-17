@@ -16,6 +16,7 @@ $script:FastLlmApiCheckPrompt = 'Reply with one short word.'
 # -AsJson output and the support bundle cannot contain the key.
 $script:FastLlmConnectKeyToken = '{KEY}'
 $script:FastLlmConnectKeyPlaceholder = '<your FastLLM key>'
+$script:FastLlmApiCheckKeyExposedMessage = 'api-key-listener-changed: Right after the API check sent a request with the API key, the program listening on the FastLLM port could no longer be confirmed to be the running FastLLM server. Another program may have received the key. Stop FastLLM, create a new key (fast-llm.ps1 settings -ApiKey rotate), give the new key to your apps, then start again.'
 $script:FastLlmApiCheckUnauthorizedNote = 'The server refused the API key (HTTP 401). If you created a new key after this server started, restart FastLLM to use it.'
 
 # Endpoints exist at both pinned engine builds (upstream server README b10698 lines 1463 and 1572; b11658 lines 1488 and 1624).
@@ -321,14 +322,70 @@ function Get-FastLlmConnectDisplayText {
     return $Snippet.Replace($script:FastLlmConnectKeyToken, $script:FastLlmConnectKeyPlaceholder)
 }
 
-# A card as its Copy button puts it on the clipboard: the token {KEY} becomes the key. $Key is the text the window just read from the key
-# store for this one copy; with no key (the store could not be read) the placeholder is copied instead, so nothing misleading is pasted.
-# Untyped on purpose, like every other place the key passes.
+# A card as its Copy button puts it on the clipboard: the token {KEY} becomes the key. -Key is a [ref] to the text the window just read
+# from the key store for this one copy (the key never crosses a function boundary as a plain value); with no key (the store could not be
+# read) the placeholder is copied instead, so nothing misleading is pasted.
 function Get-FastLlmConnectCopyText {
-    param([AllowNull()][string] $Snippet, $Key)
+    param([AllowNull()][string] $Snippet, [ref] $Key)
     if ($null -eq $Snippet) { return '' }
-    if ($Key -is [string] -and $Key -cmatch '\Afl-[A-Za-z0-9_-]{43}\z') { return $Snippet.Replace($script:FastLlmConnectKeyToken, $Key) }
+    $keyText = $null
+    if ($null -ne $Key) { $keyText = $Key.Value }
+    if ($keyText -is [string] -and $keyText -cmatch '\Afl-[A-Za-z0-9_-]{43}\z') { return $Snippet.Replace($script:FastLlmConnectKeyToken, $keyText) }
     return (Get-FastLlmConnectDisplayText -Snippet $Snippet)
+}
+
+# What goes on the clipboard next to a text that holds the key: the three clipboard formats Windows documents for keeping a copy out of
+# the clipboard history and the cloud clipboard. Each value is four bytes (a DWORD); zero means "no", and the first format only has to
+# be present. The key stays on the clipboard until the user copies something else: there is no timer, so a later paste still works.
+function Get-FastLlmUiKeyClipboardFormats {
+    return [ordered] @{
+        'ExcludeClipboardContentFromMonitorProcessing' = [byte[]] (1, 0, 0, 0)
+        'CanIncludeInClipboardHistory'                 = [byte[]] (0, 0, 0, 0)
+        'CanUploadToCloudClipboard'                    = [byte[]] (0, 0, 0, 0)
+    }
+}
+
+# The one copy routine for both places that copy the key: the API key row (-KeyOnly: the key alone) and a client card (the card text, with
+# its {KEY} token replaced). The window passes three script blocks and holds no key itself:
+#   -ReadKey       returns the key text read from the store for this one copy, or $null
+#   -SetClipboard  is given one payload, @{ text; formats }: the text, and the formats above when (and only when) the text holds the key
+#   -SetStatus     is given a fixed text to show; it is never given the key or the copied text
+# Returns $true when something was put on the clipboard.
+function Invoke-FastLlmUiKeyCopy {
+    param(
+        [AllowNull()][string] $Snippet,
+        [switch] $KeyOnly,
+        [Parameter(Mandatory = $true)][scriptblock] $ReadKey,
+        [Parameter(Mandatory = $true)][scriptblock] $SetClipboard,
+        [Parameter(Mandatory = $true)][scriptblock] $SetStatus
+    )
+    $keyText = $null
+    $copyText = $null
+    $holdsKey = $false
+    try {
+        if ($KeyOnly -or ([string] $Snippet).Contains($script:FastLlmConnectKeyToken)) {
+            try { $keyText = & $ReadKey } catch { $keyText = $null }
+            $holdsKey = [bool] ($keyText -is [string] -and $keyText -cmatch '\Afl-[A-Za-z0-9_-]{43}\z')
+        }
+        if ($KeyOnly) {
+            if (-not $holdsKey) { $null = & $SetStatus 'The stored API key cannot be read.'; return $false }
+            $copyText = $keyText
+        }
+        else {
+            if (-not $holdsKey) { $keyText = $null }
+            if (([string] $Snippet).Contains($script:FastLlmConnectKeyToken) -and -not $holdsKey) { $null = & $SetStatus 'The stored API key cannot be read, so the card was copied without it.' }
+            $copyText = Get-FastLlmConnectCopyText -Snippet $Snippet -Key ([ref] $keyText)
+        }
+        $formats = [ordered] @{}
+        if ($holdsKey) { $formats = Get-FastLlmUiKeyClipboardFormats }
+        try { $null = & $SetClipboard @{ text = $copyText; formats = $formats } }
+        catch {
+            if ($KeyOnly) { $null = & $SetStatus 'Could not copy the API key.' } else { $null = & $SetStatus 'Could not copy the card.' }
+            return $false
+        }
+        return $true
+    }
+    finally { $keyText = $null; $copyText = $null }
 }
 
 function Test-FastLlmApiCheckReady {
@@ -447,6 +504,7 @@ function Invoke-FastLlmDoctorApiCheck {
         return [pscustomobject]@{ exitCode = 2; message = $script:FastLlmApiCheckNotReadyMessage; result = $null }
     }
     $arguments = @{ BaseUrl = $info.baseUrl; ModelName = $info.modelName }
+    $apiCheckExposure = $null
     if ($null -ne $Request) { $arguments.Request = $Request }
     elseif ($info.apiKeyRequired) {
         # The running server requires the key. Each request reads the key store inside the FastLlm module and sends the key through the
@@ -456,12 +514,24 @@ function Invoke-FastLlmDoctorApiCheck {
         catch { return [pscustomobject]@{ exitCode = 2; message = 'api-key-unavailable: The running server requires the API key, but the stored key cannot be read, so the API check was not run. Create a new key (settings -ApiKey rotate) and restart FastLLM.'; result = $null } }
         $apiCheckInstallRoot = $InstallRoot
         $apiCheckServer = Get-FastLlmConnectProp $Status 'processIdentity'
+        # The loopback client checks the listener again after each request. If it is then not the recorded server, the key may have been
+        # sent to another program (api-key-listener-changed): that is kept here, no further request is sent, and the check reports it.
+        $apiCheckExposure = @{ seen = $false }
         $arguments.Request = {
             param($Root, $Path, $Body, $TimeoutMs)
-            & (Get-Module FastLlm) { param($R, $P, $B, $T, $I, $S) Invoke-FastLlmHttp -BaseUrl $R -Path $P -Body $B -TimeoutMs $T -ApiKeyHolder (Read-FastLlmApiKeyStore -InstallRoot $I) -ApiKeyServer $S } $Root $Path $Body $TimeoutMs $apiCheckInstallRoot $apiCheckServer
+            if ($apiCheckExposure.seen) { throw 'The API check was stopped.' }
+            try { & (Get-Module FastLlm) { param($R, $P, $B, $T, $I, $S) Invoke-FastLlmHttp -BaseUrl $R -Path $P -Body $B -TimeoutMs $T -ApiKeyHolder (Read-FastLlmApiKeyStore -InstallRoot $I) -ApiKeyServer $S } $Root $Path $Body $TimeoutMs $apiCheckInstallRoot $apiCheckServer }
+            catch {
+                if ([string] $_.Exception.Data['FastLlmFailureCode'] -ceq 'api-key-listener-changed') { $apiCheckExposure.seen = $true }
+                throw
+            }
         }
     }
     $result = Invoke-FastLlmApiCheck @arguments
+    if ($null -ne $apiCheckExposure -and $apiCheckExposure.seen) {
+        Write-FastLlmApiCheckRunLog -InstallRoot $InstallRoot -RunId ([string] (Get-FastLlmConnectProp $Status 'runId')) -Result $result
+        return [pscustomobject]@{ exitCode = 1; message = $script:FastLlmApiCheckKeyExposedMessage; result = $result }
+    }
     $unauthorized = @($result.checks | Where-Object { $_.status -ceq 'unauthorized' }).Count
     if ($unauthorized -gt 0) { $result | Add-Member -NotePropertyName note -NotePropertyValue $script:FastLlmApiCheckUnauthorizedNote -Force }
     Write-FastLlmApiCheckRunLog -InstallRoot $InstallRoot -RunId ([string] (Get-FastLlmConnectProp $Status 'runId')) -Result $result
