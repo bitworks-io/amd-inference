@@ -8,6 +8,10 @@ param(
     [ValidateRange(60,3600)][int]$DeadlineSeconds=1200,
     [ValidateRange(10,300)][int]$RequestTimeoutBaseSeconds=120,
     [switch]$AssessmentMode,
+    # Lanes the state check accepts (names from the semantic-smoke lane table). Default: the Vulkan lane only.
+    [string[]]$AcceptedLanes=@('vulkan-b10698'),
+    # A measurement harness can opt in to measure a serving-profile run (an opt-in context profile, slots or KV cache type); off by default.
+    [switch]$AllowServingProfile,
     [switch]$WorkerMode,
     [string]$WorkerNonce
 )
@@ -143,8 +147,55 @@ function New-TaskQualityAbortRecord([string]$OutputPath,$State,[string]$ReasonCo
     return $target
 }
 
-function Test-TaskQualityControllerReport($Report,$State,[bool]$Assessment,[int]$Distractors){
+# A child host started with -File receives a list as one comma-joined string, so a list is split on commas wherever it is read.
+function Expand-TaskQualityLanes([string[]]$Lanes){
+    $names=@()
+    foreach($entry in @($Lanes)){foreach($name in ([string]$entry -split ',')){$names+= $name}}
+    return $names
+}
+
+function Assert-TaskQualityLanes([string[]]$Lanes,[string[]]$KnownLanes){
+    $bad=@($Lanes|Where-Object {$KnownLanes -cnotcontains $_})
+    if(@($Lanes).Count -lt 1 -or $bad.Count -gt 0 -or @($Lanes|Select-Object -Unique).Count -ne @($Lanes).Count){
+        $exception=New-Object System.InvalidOperationException 'task-quality-lane-unknown: -AcceptedLanes must name one or more distinct lanes from the semantic-smoke lane table.'
+        $exception.Data['FastLlmFailureCode']='task-quality-lane-unknown'
+        throw $exception
+    }
+}
+
+function Get-TaskQualityArgumentValue([object[]]$Arguments,[string]$Name,[string]$Default){
+    for($i=0;$i -lt @($Arguments).Count-1;$i++){if([string]$Arguments[$i] -ceq $Name){return [string]$Arguments[$i+1]}}
+    return $Default
+}
+
+# The serving setup a report states, read from the state alone. A cache type absent from the arguments is the default, f16.
+function Get-TaskQualityServingSetup($State){
+    $recipe=$State.recipe
+    $slotsProperty=$recipe.PSObject.Properties['slots']
+    $perSlotProperty=$recipe.PSObject.Properties['contextPerSlot']
+    $profileProperty=$recipe.PSObject.Properties['profile']
+    $argumentsProperty=$recipe.PSObject.Properties['requestedArguments']
+    $arguments=if($argumentsProperty){@($argumentsProperty.Value)}else{@()}
+    $total=[int]$recipe.contextSize
+    return [ordered]@{
+        profile=$(if($profileProperty){[string]$profileProperty.Value}else{'default'})
+        contextTotal=$total
+        contextPerSlot=$(if($perSlotProperty){[int]$perSlotProperty.Value}else{$total})
+        slots=$(if($slotsProperty){[int]$slotsProperty.Value}else{1})
+        cacheTypeK=(Get-TaskQualityArgumentValue $arguments '--cache-type-k' 'f16')
+        cacheTypeV=(Get-TaskQualityArgumentValue $arguments '--cache-type-v' 'f16')
+    }
+}
+
+function Get-TaskQualityInterpretation([int]$Slots){
+    if($Slots -eq 2){return 'Two-slot queue-pressure and useful-task measurement at the stated serving setup, not parallel GPU proof or quality qualification'}
+    return 'Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification'
+}
+
+function Test-TaskQualityControllerReport($Report,$State,[bool]$Assessment,[int]$Distractors,[bool]$AllowServingProfile=$false){
     try {
+    $expectedSlots=1;$expectedSetup=$null
+    if($AllowServingProfile){$expectedSetup=Get-TaskQualityServingSetup $State;$expectedSlots=[int]$expectedSetup.slots}
     $kind=if($Assessment){'private-task-quality-assessment'}else{'private-task-quality-screen'}
     $protocol=if($Assessment){'task-quality-assessment-v1'}else{'task-quality-screen-v1'}
     $policy=if($Assessment){'continue-incorrect-stop-inconclusive'}else{'stop-incorrect-or-inconclusive'}
@@ -158,7 +209,7 @@ function Test-TaskQualityControllerReport($Report,$State,[bool]$Assessment,[int]
        $Report.methodology.suiteVersion -cne (Get-FastLlmTaskWorkloadSuiteVersion) -or
        [int]$Report.methodology.distractorCount -ne $Distractors -or
        $Report.methodology.sampling -cne 'temperature-0-seed-42-thinking-disabled' -or
-       $Report.methodology.stream -ne $false -or $Report.methodology.serverSlots -ne 1 -or
+       $Report.methodology.stream -ne $false -or $Report.methodology.serverSlots -ne $expectedSlots -or
        $Report.methodology.prefixCache -ne $false -or
        [int]$Report.methodology.plannedTotalTasks -ne 24 -or
        @($Report.summary).Count -ne 3 -or
@@ -170,6 +221,17 @@ function Test-TaskQualityControllerReport($Report,$State,[bool]$Assessment,[int]
        (-not $Assessment -and ([int]$Report.totals.correct -ne 24 -or [int]$Report.totals.incorrect -ne 0)) -or
        $Report.qualification.approved -ne $false -or $Report.qualification.qualityEvaluation -ne $false -or
        $Report.qualityPass -ne ($Report.totals.correct -eq 24)){return $false}
+    if($AllowServingProfile){
+        $setup=$Report.methodology.PSObject.Properties['servingSetup']
+        if($null -eq $setup -or $null -eq $setup.Value -or $Report.methodology.interpretation -cne (Get-TaskQualityInterpretation $expectedSlots)){return $false}
+        $names=@($setup.Value.PSObject.Properties.Name|Sort-Object)
+        if(($names -join ',') -cne (@($expectedSetup.Keys|Sort-Object) -join ',')){return $false}
+        foreach($key in $expectedSetup.Keys){
+            $actual=$setup.Value.$key
+            if($expectedSetup[$key] -is [string]){if($actual -isnot [string] -or $actual -cne $expectedSetup[$key]){return $false}}
+            elseif(($actual -isnot [int] -and $actual -isnot [long]) -or [long]$actual -ne [long]$expectedSetup[$key]){return $false}
+        }
+    }
     foreach($name in @('planned','attempted','correct','incorrect','inconclusive','unattempted')){
         if($Report.totals.$name -isnot [int] -and $Report.totals.$name -isnot [long]){return $false}
     }
@@ -215,7 +277,10 @@ function Test-TaskQualityControllerReport($Report,$State,[bool]$Assessment,[int]
 
 function Invoke-TaskQualityBenchmarkCore {
     param([string]$OutputPath,[int]$DistractorCount,[int]$DeadlineSeconds,[int]$RequestTimeoutBaseSeconds,
-          [scriptblock]$ReadState,[scriptblock]$CheckProcess,[scriptblock]$Wave,[switch]$AssessmentMode)
+          [scriptblock]$ReadState,[scriptblock]$CheckProcess,[scriptblock]$Wave,[switch]$AssessmentMode,
+          [string[]]$AcceptedLanes=@('vulkan-b10698'),[switch]$AllowServingProfile)
+    $AcceptedLanes=@(Expand-TaskQualityLanes $AcceptedLanes)
+    Assert-TaskQualityLanes $AcceptedLanes @(Get-FastLlmSemanticSmokeLanes|ForEach-Object name)
     if(Test-Path -LiteralPath $OutputPath){throw 'Task-quality report already exists.'}
     if($DistractorCount -notin @(0,32,128) -or $DeadlineSeconds -lt 60 -or $DeadlineSeconds -gt 3600 -or
        $RequestTimeoutBaseSeconds -lt 10 -or $RequestTimeoutBaseSeconds -gt 300 -or
@@ -224,9 +289,12 @@ function Invoke-TaskQualityBenchmarkCore {
     if(-not (Test-Path -LiteralPath (Split-Path $full -Parent) -PathType Container)){throw 'Private output parent must already exist.'}
     $clock=[Diagnostics.Stopwatch]::StartNew()
     $first=& $ReadState
-    $binding=Assert-FastLlmSemanticSmokeState -State $first
+    $binding=Assert-FastLlmSemanticSmokeState -State $first -AcceptedLanes $AcceptedLanes -AllowServingProfile:$AllowServingProfile
     & $CheckProcess $first
     $effectiveContext=[int]$first.recipe.contextSize
+    $servingSetup=$null
+    # A request gets its slot's context, never the total: under the opt-in the headroom guard reads the per-slot value from the state.
+    if($AllowServingProfile){$servingSetup=Get-TaskQualityServingSetup $first;$effectiveContext=[int]$servingSetup.contextPerSlot}
     $source=Get-TaskQualitySourceHashes
     $cases=@(Get-FastLlmTaskWorkloadCases -DistractorCount $DistractorCount)
     Assert-TaskQualityCases $cases $DistractorCount
@@ -251,7 +319,7 @@ function Invoke-TaskQualityBenchmarkCore {
                 $remaining=[int][Math]::Floor(($DeadlineSeconds-$clock.Elapsed.TotalSeconds)*1000)
                 if($remaining -lt 1000){$abortReason='overall-deadline';throw 'Overall deadline.'}
                 $state=& $ReadState
-                $null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding
+                $null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes -AllowServingProfile:$AllowServingProfile
                 & $CheckProcess $state
                 if(-not (Test-TaskQualitySourceHashes $source)){$abortReason='source-changed';throw 'Source changed.'}
                 $burst=@($cases[$offset..($offset+$clients-1)])
@@ -283,7 +351,7 @@ function Invoke-TaskQualityBenchmarkCore {
                 $waves+=$waveRecord
                 $waveRecorded=$true
                 $state=& $ReadState
-                $null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding
+                $null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes -AllowServingProfile:$AllowServingProfile
                 & $CheckProcess $state
                 $postChecked=$true
                 if(-not (Test-TaskQualitySourceHashes $source)){$abortReason='source-changed';throw 'Source changed.'}
@@ -308,7 +376,7 @@ function Invoke-TaskQualityBenchmarkCore {
             Write-Host "Private task-quality: clients $clients, correct $(@($suiteRequests|Where-Object grade -eq 'correct').Count)/8"
         }
         $state=& $ReadState
-        $null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding
+        $null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes -AllowServingProfile:$AllowServingProfile
         & $CheckProcess $state
         if(-not (Test-TaskQualitySourceHashes $source)){$abortReason='source-changed';throw 'Source changed.'}
     }catch{
@@ -330,11 +398,11 @@ function Invoke-TaskQualityBenchmarkCore {
         $failedCondition=[pscustomobject]@{requestedClients=$currentLevel;taskOffset=$currentOffset;
             reasonCode=$abortReason;waveIssued=$waveIssued;postChecked=$postChecked}
         if($waveIssued -and -not $postChecked){
-            try{$state=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding;& $CheckProcess $state}
+            try{$state=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes -AllowServingProfile:$AllowServingProfile;& $CheckProcess $state}
             catch{$bindingStatus='compromised';$abortReason='binding-changed-after-wave';$failedCondition.reasonCode=$abortReason}
         }
     }
-    try{$state=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding;& $CheckProcess $state}
+    try{$state=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $state -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes -AllowServingProfile:$AllowServingProfile;& $CheckProcess $state}
     catch{$bindingStatus='compromised';if($reportStatus -eq 'complete'){$reportStatus='aborted';$abortReason='binding-changed-at-finish'}}
     if(-not (Test-TaskQualitySourceHashes $source)){
         $sourceStatus='changed';$bindingStatus='compromised';$reportStatus='aborted';$abortReason='source-changed'
@@ -360,14 +428,7 @@ function Invoke-TaskQualityBenchmarkCore {
         incorrect=@($all|Where-Object grade -eq 'incorrect').Count;
         inconclusive=@($all|Where-Object grade -eq 'inconclusive').Count;
         unattempted=24-$all.Count}
-    $report=[ordered]@{schemaVersion=1;resultKind=$(if($AssessmentMode){'private-task-quality-assessment'}else{'private-task-quality-screen'});recordedAt=[DateTime]::UtcNow.ToString('o');
-        reportStatus=$reportStatus;abortReasonCode=$abortReason;bindingStatus=$bindingStatus;failedCondition=$failedCondition;
-        qualityPass=($reportStatus -ceq 'complete' -and $totals.correct -eq 24 -and $totals.incorrect -eq 0 -and $totals.inconclusive -eq 0);
-        controllerOutcomeAuthoritative=$false;
-        runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256;
-        engineVersion=$first.engineVersion;recipe=$first.recipe;endpoint=$first.endpoint;evidenceBindingSha256=$binding;
-        sourceProvenance=@{sha256=$source;endStatus=$sourceStatus;scope='On-disk hashes before/after; loaded code not attested'};
-        methodology=@{suiteVersion=$suiteVersion;
+    $methodology=@{suiteVersion=$suiteVersion;
             protocolVersion=$(if($AssessmentMode){'task-quality-assessment-v1'}else{'task-quality-screen-v1'});
             answerPolicy=$(if($AssessmentMode){'continue-incorrect-stop-inconclusive'}else{'stop-incorrect-or-inconclusive'});
             distractorCount=$DistractorCount;cases=$caseMetadata;
@@ -376,7 +437,21 @@ function Invoke-TaskQualityBenchmarkCore {
             stream=$false;firstText='not-measured';sampling='temperature-0-seed-42-thinking-disabled';prefixCache=$false;
             requestTimeoutBaseSeconds=$RequestTimeoutBaseSeconds;overallDeadlineSeconds=$DeadlineSeconds;
             actualUsageRequired=$true;contextEvidence='response usage only; no pretokenized or context qualification';
-            interpretation='Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification'};
+            interpretation='Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification'}
+    # Only an opt-in run states its serving setup; without the switch the methodology is exactly what it always was.
+    if($AllowServingProfile){
+        $methodology.serverSlots=[int]$servingSetup.slots
+        $methodology.servingSetup=$servingSetup
+        $methodology.interpretation=Get-TaskQualityInterpretation ([int]$servingSetup.slots)
+    }
+    $report=[ordered]@{schemaVersion=1;resultKind=$(if($AssessmentMode){'private-task-quality-assessment'}else{'private-task-quality-screen'});recordedAt=[DateTime]::UtcNow.ToString('o');
+        reportStatus=$reportStatus;abortReasonCode=$abortReason;bindingStatus=$bindingStatus;failedCondition=$failedCondition;
+        qualityPass=($reportStatus -ceq 'complete' -and $totals.correct -eq 24 -and $totals.incorrect -eq 0 -and $totals.inconclusive -eq 0);
+        controllerOutcomeAuthoritative=$false;
+        runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256;
+        engineVersion=$first.engineVersion;recipe=$first.recipe;endpoint=$first.endpoint;evidenceBindingSha256=$binding;
+        sourceProvenance=@{sha256=$source;endStatus=$sourceStatus;scope='On-disk hashes before/after; loaded code not attested'};
+        methodology=$methodology;
         waves=$waves;summary=$summary;totals=$totals;
         qualification=@{approved=$false;qualityEvaluation=$false;performanceQualified=$false;physicalResidency=$false;
             parallelDecodeVerified=$false;exclusiveWorkloadConfirmed=$false;contextQualified=$false}}
@@ -399,9 +474,12 @@ if($MyInvocation.InvocationName -ne '.'){
     $semanticSource=Join-Path $sourceRoot 'FastLlm.SemanticSmoke.ps1'
     $workloadSource=Join-Path $sourceRoot 'FastLlm.TaskWorkload.ps1'
     $concurrencyTool=Join-Path $PSScriptRoot 'concurrency-benchmark.ps1'
+    # An unknown lane is refused here, before the state is read or any request is made.
+    $AcceptedLanes=@(Expand-TaskQualityLanes $AcceptedLanes)
+    Assert-TaskQualityLanes $AcceptedLanes @(& $module {param($Semantic) . $Semantic; @(Get-FastLlmSemanticSmokeLanes|ForEach-Object name)} $semanticSource)
     if($WorkerMode){
         $result=& $module {
-            param($Tool,$Semantic,$Workload,$Concurrency,$Root,$Destination,$Distractors,$Deadline,$Timeout,$Assessment)
+            param($Tool,$Semantic,$Workload,$Concurrency,$Root,$Destination,$Distractors,$Deadline,$Timeout,$Assessment,$Lanes,$Allow)
             . $Semantic
             . $Workload
             . $Concurrency -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-task-quality-helper.json')
@@ -411,15 +489,15 @@ if($MyInvocation.InvocationName -ne '.'){
             Invoke-TaskQualityBenchmarkCore -OutputPath $Destination -DistractorCount $Distractors -DeadlineSeconds $Deadline -RequestTimeoutBaseSeconds $Timeout `
                 -ReadState {Get-FastLlmStatus -InstallRoot $Root} -CheckProcess {param($State) Assert-FastLlmSemanticSmokeProcess -State $State} `
                 -Wave {param($Base,$Path,$Bodies,$Count,$TimeoutMs) Invoke-ConcurrencyWave -Url ($Base+$Path) -Bodies $Bodies -Clients $Count -TimeoutMs $TimeoutMs} `
-                -AssessmentMode:$Assessment
-        } $PSCommandPath $semanticSource $workloadSource $concurrencyTool $InstallRoot $OutputPath $DistractorCount $DeadlineSeconds $RequestTimeoutBaseSeconds ([bool]$AssessmentMode)
+                -AssessmentMode:$Assessment -AcceptedLanes $Lanes -AllowServingProfile:$Allow
+        } $PSCommandPath $semanticSource $workloadSource $concurrencyTool $InstallRoot $OutputPath $DistractorCount $DeadlineSeconds $RequestTimeoutBaseSeconds ([bool]$AssessmentMode) $AcceptedLanes ([bool]$AllowServingProfile)
         if($result.reportStatus -cne 'complete'){throw "Private task-quality screen aborted; report saved with reason $($result.abortReasonCode)."}
     }else{
         . $workloadSource
         $outFull=[IO.Path]::GetFullPath($OutputPath)
         if(Test-Path -LiteralPath $outFull){throw 'Task-quality report already exists.'}
-        $status=& $module {param($Root,$Semantic) . $Semantic; $state=Get-FastLlmStatus -InstallRoot $Root;
-            $null=Assert-FastLlmSemanticSmokeState -State $state;Assert-FastLlmSemanticSmokeProcess -State $state;$state} $InstallRoot $semanticSource
+        $status=& $module {param($Root,$Semantic,$Lanes,$Allow) . $Semantic; $state=Get-FastLlmStatus -InstallRoot $Root;
+            $null=Assert-FastLlmSemanticSmokeState -State $state -AcceptedLanes $Lanes -AllowServingProfile:$Allow;Assert-FastLlmSemanticSmokeProcess -State $state;$state} $InstallRoot $semanticSource $AcceptedLanes ([bool]$AllowServingProfile)
         $controllerSource=Get-TaskQualitySourceHashes
         $root=& $module {param($Root)Get-FastLlmStateRoot -InstallRoot $Root} $InstallRoot
         $lockPath=Join-Path $root 'benchmark.lock'
@@ -432,6 +510,9 @@ if($MyInvocation.InvocationName -ne '.'){
                 '-InstallRoot',$InstallRoot,'-OutputPath',$outFull,'-DistractorCount',([string]$DistractorCount),
                 '-DeadlineSeconds',([string]$DeadlineSeconds),'-RequestTimeoutBaseSeconds',([string]$RequestTimeoutBaseSeconds))
             if($AssessmentMode){$workerArguments+= '-AssessmentMode'}
+            # A list reaches a child started with -File as one string, so the lanes travel comma-joined and are split and checked again there.
+            $workerArguments+= @('-AcceptedLanes',($AcceptedLanes -join ','))
+            if($AllowServingProfile){$workerArguments+= '-AllowServingProfile'}
             $worker=& $module {
                 param($Tool,$Concurrency,$Exe,$WorkerArguments,$Directory,$Seconds,$Nonce)
                 . $Concurrency -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-task-quality-helper.json')
@@ -454,7 +535,7 @@ if($MyInvocation.InvocationName -ne '.'){
             if(-not (Test-TaskQualitySourceHashes $controllerSource)){
                 $failure=New-TaskQualityAbortRecord $outFull $status 'controller-source-changed';throw "Source changed while task worker ran: $failure"
             }
-            if(-not (Test-TaskQualityControllerReport -Report $final -State $status -Assessment ([bool]$AssessmentMode) -Distractors $DistractorCount)){
+            if(-not (Test-TaskQualityControllerReport -Report $final -State $status -Assessment ([bool]$AssessmentMode) -Distractors $DistractorCount -AllowServingProfile ([bool]$AllowServingProfile))){
                 $failure=New-TaskQualityAbortRecord $outFull $status 'contained-task-worker-report-rejected'
                 throw "Task worker report did not pass controller checks: $failure"
             }

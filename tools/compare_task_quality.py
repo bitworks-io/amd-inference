@@ -57,6 +57,34 @@ def require(condition, message):
         raise ValueError(message)
 
 
+class ServingSetupMismatch(ValueError):
+    """Two reports were measured under different serving setups (typed refusal)."""
+    code = 'serving-setup-differs'
+
+
+# A report written with the task-quality tool's -AllowServingProfile switch states the serving setup it measured under;
+# a report without it was measured under the default setup.
+SERVING_SETUP_FIELDS = (('profile', str), ('contextTotal', int), ('contextPerSlot', int),
+                        ('slots', int), ('cacheTypeK', str), ('cacheTypeV', str))
+
+
+def serving_setup(report, arm):
+    """The serving setup a report states, or None for the default setup (an absent or default-valued servingSetup)."""
+    methodology = report.get('methodology') if isinstance(report, dict) else None
+    require(isinstance(methodology, dict), f'{arm} methodology missing')
+    if 'servingSetup' not in methodology:
+        return None
+    setup = methodology['servingSetup']
+    require(isinstance(setup, dict) and set(setup) == {name for name, _ in SERVING_SETUP_FIELDS} and
+            all(type(setup[name]) is kind for name, kind in SERVING_SETUP_FIELDS) and
+            all(setup[name] for name in ('profile', 'cacheTypeK', 'cacheTypeV')),
+            f'{arm} servingSetup is malformed')
+    if (setup['profile'] == 'default' and setup['slots'] == 1 and setup['cacheTypeK'] == setup['cacheTypeV'] == 'f16'
+            and setup['contextTotal'] == setup['contextPerSlot']):
+        return None
+    return tuple(setup[name] for name, _ in SERVING_SETUP_FIELDS)
+
+
 def number(value, label, *, positive=False):
     require(type(value) in (int, float) and math.isfinite(value) and
             (value > 0 if positive else value >= 0), f'Invalid {label}')
@@ -322,6 +350,10 @@ def validate(report, arm):
 
 def compare(s1, s2, *, s2_input_sha256=None):
     require(s2_input_sha256 is None or sha(s2_input_sha256), 'Invalid observed S2 report digest')
+    left_setup, right_setup = serving_setup(s1, 's1'), serving_setup(s2, 's2')
+    if left_setup != right_setup:
+        raise ServingSetupMismatch(f'{ServingSetupMismatch.code}: serving setups differ between the two reports '
+                                   '(an absent servingSetup is the default setup); they are not compared.')
     a, b = validate(s1, 's1'), validate(s2, 's2')
     require(s1['runId'] != s2['runId'], 'Assessment run IDs must be distinct')
     for field, value in (('modelId', 'qwen3.8-27b-ud-q4-k-m'),
