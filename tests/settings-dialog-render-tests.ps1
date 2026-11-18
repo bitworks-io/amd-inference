@@ -245,6 +245,8 @@ try {
                 Check ($display.Height -gt $panel.ClientSize.Height) "the content is taller than the panel, so it scrolls ($label): content $contentBottom px, panel $($panel.ClientSize.Height) px, scroll area $($display.Height) px"
             }
             if ($case.scale -eq 1.0 -and $case.cap -eq 0) { Check ($display.Height -le $panel.ClientSize.Height) "at 100% nothing needs scrolling ($label): scroll area $($display.Height) px, panel $($panel.ClientSize.Height) px" }
+            $contentRight = [int](@($panel.Controls | ForEach-Object { $_.Right }) | Measure-Object -Maximum).Maximum
+            Write-Host "INFO: horizontal fit ($label): widest setting ends at $contentRight px; panel shows $($panel.ClientSize.Width) px; scroll area $($display.Width) px"
             foreach ($required in @(
                     @{ name = 'the API key box'; control = $built.keyBox; text = 'Require an API key*' },
                     @{ name = 'Create a new key'; control = $built.newKeyButton; text = 'Create a new key*' },

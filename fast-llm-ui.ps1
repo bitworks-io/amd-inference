@@ -976,8 +976,9 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
     }
 }
 # The dialog is at most as tall as the screen's working area; the anchors then shrink the scrolling panel and lift Save and Cancel with the bottom edge.
+# A shortened dialog is also widened by the vertical scroll bar, so the widest setting still fits beside it and needs no horizontal scrolling.
 function FitUiSettingsDialog($Dialog,[int]$MaxHeight){
-    if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight)}
+    if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight);$Dialog.Width=$Dialog.Width+[Windows.Forms.SystemInformation]::VerticalScrollBarWidth}
 }
 function GetUiSettingsDialogMaxHeight($Owner){
     return [int][Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height
