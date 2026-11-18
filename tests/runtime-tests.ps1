@@ -7,6 +7,7 @@ $module=Get-Module FastLlm
 $catalog=Join-Path $root 'config/catalog.json'
 $hardware=Read-FastLlmJson (Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json')
 $count=0
+. (Join-Path $PSScriptRoot 'helpers/module-log-tap.ps1')
 function Check([bool]$Condition,[string]$Message) { if (-not $Condition) { throw "FAIL: $Message" }; $script:count++; Write-Host "PASS: $Message" }
 function Get-RuntimeTestProcessEvidence([int]$ProcessId,[long]$ExpectedStartUtcTicks=0) {
     $evidence=[ordered]@{pid=$ProcessId; identityState='not-found'; alive=$false; startUtcTicks=$null; matchesExpectedStart=$false; inspectionError=$null}
@@ -536,9 +537,11 @@ try {
     Check ($null -ne $bindFailure -and $bindFailure.Message -notlike '*exited before readiness*') 'server-bind-failure-mapped: not the generic early-exit text'
 
     # module-logging-engine-output: PowerShell module logging records every bound parameter value of a command call (event 4103; on macOS the
-    # unified log of this process). An engine that prints a marker, then fails to bind, must leave the marker out of that log, and the
-    # verdict (the plain port-in-use refusal) must not change. Two canaries, logged the same way before and after, prove the log held the
-    # window; where the log cannot be read the check is skipped and says so (on Windows PowerShell 5.1 it must run).
+    # unified log of this process, on Windows a live capture of the PowerShell operational event log, tests/helpers/module-log-tap.ps1: a
+    # subscription that keeps each event as it is written, so the size of that circular log cannot take anything out of the window). An
+    # engine that prints a marker, then fails to bind, must leave the marker out of that log, and the verdict (the plain port-in-use refusal)
+    # must not change. Two canaries, logged the same way before and after, mark the window; on Windows every record between them must also
+    # have been delivered (a check of its own). Where the log cannot be read the check is skipped and says so (on Windows PowerShell 5.1 it must run).
     # The marker is random text made here: a marker written out in this file could be found in logged script text.
     $mlMarker='ENGOUT'+[Guid]::NewGuid().ToString('N')
     $mlCanaryOne='MODLOGCANARY1'+[Guid]::NewGuid().ToString('N')
@@ -552,15 +555,17 @@ try {
     $mlBeginLocal=[DateTime]::Now.AddSeconds(-1).ToString('yyyy-MM-dd HH:mm:ss')
     $mlEventLog='Microsoft-Windows-PowerShell/Operational'
     if($PSVersionTable.PSVersion.Major -ge 6){$mlEventLog='PowerShellCore/Operational'}
+    $mlTap=$null
+    $mlTapReport=$null
+    $mlEvidence=@{ oneId=[long]-1; oneSnapshot=''; lastWait='' }
     function Read-ModuleLogText {
         if($mlKind -ceq 'mac'){
             try { & '/usr/bin/log' show --style compact --start $mlBeginLocal --predicate "processID == $PID" > $mlCapture 2> ($mlCapture+'.err'); return [IO.File]::ReadAllText($mlCapture) } catch { return '' }
         }
         if($mlKind -ceq 'windows'){
-            $query="*[System[(EventID=4103) and Execution[@ProcessID=$PID] and TimeCreated[@SystemTime>='$($mlBegin.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))']]]"
-            $sb=New-Object Text.StringBuilder
-            try { foreach($logged in @(Get-WinEvent -LogName $mlEventLog -FilterXPath $query -ErrorAction Stop)){ [void]$sb.AppendLine([string]$logged.Message) } } catch { $null=$_ }
-            return $sb.ToString()
+            # The live capture: the 4103 events of this process, kept as they were written.
+            if($null -eq $mlTap){return ''}
+            return $mlTap.Text()
         }
         return ''
     }
@@ -570,7 +575,9 @@ try {
             # A module function with the canary as a plain [string] parameter, logged the way an engine line would be if it were bound.
             $null=& $module { param($R) Get-FastLlmApiKeyStoreState -InstallRoot $R } (Join-Path $temp $Canary)
             Start-Sleep -Milliseconds 400
-            if((Read-ModuleLogText).IndexOf($Canary,[StringComparison]::Ordinal) -ge 0){return $true}
+            $waitText=Read-ModuleLogText
+            $mlEvidence.lastWait=Get-ModuleLogFlags $waitText $mlCanaryOne $mlCanaryTwo
+            if($waitText.IndexOf($Canary,[StringComparison]::Ordinal) -ge 0){return $true}
         }
         return $false
     }
@@ -584,8 +591,11 @@ try {
     $mlSawOne=$false;$mlSawTwo=$false;$mlFailure=$null;$mlRan=$false;$mlText=''
     try {
         if($mlKind -cne 'none'){
+            # The capture starts before logging is turned on, so compiling it and creating it log nothing.
+            if($mlKind -ceq 'windows'){ $mlTap=Start-ModuleLogTap $mlEventLog $PID }
             foreach($m in $mlModules){ $m.LogPipelineExecutionDetails=$true }
             $mlSawOne=Wait-ModuleLogCanaryText $mlCanaryOne 30
+            if($mlSawOne -and $mlKind -ceq 'windows'){ $mlEvidence.oneId=[long]$mlTap.FindRecord($mlCanaryOne); $mlEvidence.oneSnapshot=Get-ModuleLogSnapshot $mlEventLog }
         }
         if($mlSawOne){
             $mlLock=Enter-FastLlmOperation $mlRoot
@@ -597,14 +607,18 @@ try {
     finally {
         foreach($m in $mlModules){ $m.LogPipelineExecutionDetails=$false }
         if($mlKind -cne 'none'){ Start-Sleep -Milliseconds 500; $mlText=Read-ModuleLogText }
+        # Canary two is in the capture when the wait saw it; delivery is in record order, so everything before it is in the text too.
+        if($null -ne $mlTap){ $mlTapReport=Get-ModuleLogTapReport $mlTap $mlCanaryOne $mlCanaryTwo; Stop-ModuleLogTap $mlTap }
     }
+    foreach($mlInfoLine in @(Get-ModuleLogEvidenceLines $mlKind $mlEventLog $PID $mlBegin $mlEvidence $mlText $mlCanaryOne $mlCanaryTwo $mlTapReport)){ Write-Host $mlInfoLine }
     if(-not $mlRan -or -not $mlSawTwo){
-        $mlSkip="the module-logging check (engine output) did not run to the end on this host: log source '$mlKind', first canary seen: $mlSawOne, second canary seen: $mlSawTwo."
+        $mlSkip="the module-logging check (engine output) did not run to the end on this host: log source '$mlKind', first canary seen: $mlSawOne, second canary seen: $mlSawTwo, live capture start error: '$($script:moduleLogTapStartError)'."
         Check (-not ($mlIsWindows -and $PSVersionTable.PSVersion.Major -lt 6)) "module-logging-engine-output: on Windows PowerShell 5.1 the check must run to the end, and $mlSkip"
         Write-Host "SKIP: module-logging-engine-output: $mlSkip"
     }
     else {
         Check ($null -ne $mlFailure -and [string]$mlFailure.Data['FastLlmFailureCode'] -ceq 'port-in-use' -and [string]$mlFailure.Data['FastLlmReason'] -ceq 'PortInUse' -and $mlFailure.Message -ceq (Get-ExpectedPortMessage $mlPort)) 'module-logging-engine-output: the bind-failure verdict is unchanged (the plain port-in-use refusal)'
+        if($mlKind -ceq 'windows'){ Check (Test-ModuleLogTapComplete $mlTapReport) "module-logging-engine-output: the live capture lost nothing - no subscription error, and every record from canary one's to canary two's was delivered (records missing between them: $($mlTapReport.missing), subscription errors: $($mlTapReport.errors) $($mlTapReport.errorType))" }
         Check ($mlText.IndexOf($mlCanaryOne,[StringComparison]::Ordinal) -ge 0 -and $mlText.IndexOf($mlCanaryTwo,[StringComparison]::Ordinal) -ge 0) 'module-logging-engine-output: the log really recorded calls through the window (both canaries are in it)'
         Check ($mlText.IndexOf($mlMarker,[StringComparison]::Ordinal) -lt 0 -and $mlText.IndexOf('a private prompt',[StringComparison]::Ordinal) -lt 0) "module-logging-engine-output: no text the engine printed is in what PowerShell logged ($($mlText.Length) characters, source '$mlKind')"
     }
