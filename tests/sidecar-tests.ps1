@@ -139,8 +139,18 @@ $st = New-SidecarTestState -EnginePath $enginePath -HelpersRoot $helpersRoot
 $savedControl = [Environment]::GetEnvironmentVariable('FASTLLM_TEST_SIDECAR_CONTROL')
 $suitePassed = $false
 
+# The deadline of one scenario step: its own timeoutSeconds, else the suite's step wait.
+function Get-StepTimeoutSeconds([object[]] $Steps, $Index) {
+    $step = @($Steps)[[int] $Index]
+    if ($null -ne $step -and $step.Contains('timeoutSeconds')) { return [int] $step['timeoutSeconds'] }
+    return [int] $script:StepTimeoutSeconds
+}
 # Runs one scenario: the operation lock is taken here (as the CLI does) and held until the start has returned and the client has finished.
-$script:StepTimeoutSeconds = 240
+$script:ScenarioLoadTimeoutSeconds = 600
+# The client's step wait is what the product may take for a step: the text model's load timeout, then the sidecar's load timeout (read from
+# the module) and its canary request (30 s, the timeout in FastLlm.Sidecar.ps1), and a margin for a loaded machine. A scenario that never
+# matches still fails, only later.
+$script:StepTimeoutSeconds = [int] $script:ScenarioLoadTimeoutSeconds + [int] (InModule { $script:FastLlmSidecarLoadTimeoutSeconds }) + 30 + 60
 function Invoke-SidecarScenario {
     param([string] $Label, $World, [object[]] $Steps, [hashtable] $StartOptions = @{}, [switch] $NoEmbeddings)
     $stepsPath = Join-Path $World.root 'steps.json'
@@ -159,7 +169,7 @@ function Invoke-SidecarScenario {
     try {
         $client.Start() | Out-Null
         $plan = New-SidecarTextPlan -World $World -HelpersRoot $helpersRoot -EnginePath $enginePath -ModelId 'model-a'
-        $arguments = @{ Plan = $plan; CatalogPath = $World.catalog; InstallRoot = $World.root; LoadTimeoutSeconds = 600 }
+        $arguments = @{ Plan = $plan; CatalogPath = $World.catalog; InstallRoot = $World.root; LoadTimeoutSeconds = $script:ScenarioLoadTimeoutSeconds }
         if (-not $NoEmbeddings) { $arguments.Embeddings = 'on'; $arguments.EmbeddingPort = [int] $World.embeddingPort }
         foreach ($key in $StartOptions.Keys) { $arguments[$key] = $StartOptions[$key] }
         try {
@@ -185,8 +195,8 @@ function Invoke-SidecarScenario {
     if ($null -ne $record) { $outcomes = @($record.steps); $observations = @($record.observations) }
     $completed = [bool] ($null -ne $record -and $record.completed -and $clientExited)
     if (-not $completed) {
-        Write-Host ("Scenario ${Label}: client steps: " + (@($outcomes | ForEach-Object { "$($_.index):$($_.action):matched=$($_.matched):$($_.error)" }) -join ' | '))
-        Write-Host ("Scenario ${Label}: observations: " + (@($observations | ForEach-Object { "$($_.phase)/$($_.modelId)/$($_.sidecarPhase)/$($_.sidecarFailureCode)" }) -join ' | '))
+        Write-Host ("Scenario ${Label}: client steps: " + (@($outcomes | ForEach-Object { "$($_.index):$($_.action):matched=$($_.matched):ms=$($_.ms):timeout=$(Get-StepTimeoutSeconds $Steps $_.index)s:$($_.error)" }) -join ' | '))
+        Write-Host ("Scenario ${Label}: observations: " + (@($observations | ForEach-Object { "$($_.ms)ms:$($_.phase)/$($_.modelId)/$($_.sidecarPhase)/$($_.sidecarFailureCode)" }) -join ' | '))
         Write-Host ("Scenario ${Label}: events: " + ($st.events -join ','))
         Write-Host ("Scenario ${Label}: console: " + ($console -join ' || '))
     }
@@ -424,6 +434,16 @@ try {
     # Nothing is derived from a file size: a model file of another size is simply not the installed component.
     [IO.File]::WriteAllBytes($goodWorld.modelFile, (New-Object byte[] 4096))
     Check ((& $planCode $goodWorld).StartsWith('embeddings-no-model|')) 'plan: a model file of another size is not the installed component (embeddings-no-model); no fit is derived from a size'
+
+    # ================= the client waits at least as long as the product may take =================
+    # A client step waits for a status condition. The product is allowed the text model's load timeout, then the sidecar's own load timeout
+    # (read from the module) and the sidecar's canary request (30 s, the timeout in FastLlm.Sidecar.ps1); a client that gives up sooner judges
+    # faster than the product does, which fails a scenario the product was still inside its budgets for (a timing race under load).
+    $sidecarLoadSeconds = [int] (InModule { $script:FastLlmSidecarLoadTimeoutSeconds })
+    $canarySeconds = 30
+    $stepMarginSeconds = 60
+    $stepBudget = [int] $script:ScenarioLoadTimeoutSeconds + $sidecarLoadSeconds + $canarySeconds + $stepMarginSeconds
+    Check ($sidecarLoadSeconds -gt 0 -and [int] $script:StepTimeoutSeconds -ge $stepBudget) "client step wait: $([int] $script:StepTimeoutSeconds) s covers the text load timeout ($([int] $script:ScenarioLoadTimeoutSeconds) s) + the sidecar load timeout ($sidecarLoadSeconds s) + the canary ($canarySeconds s) + a margin ($stepMarginSeconds s) = $stepBudget s"
 
     # ================= off by default: a start without the option is the start it always was =================
     $offWorld = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label 'default-off'
