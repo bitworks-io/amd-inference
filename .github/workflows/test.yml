@@ -374,6 +374,21 @@ jobs:
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
+      # Builds the real Settings dialog off-screen (never shown) and saves PNGs at 100% and 150% for a person to look at.
+      - name: Settings dialog render tests in Windows PowerShell 5.1 (off-screen)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        env:
+          FASTLLM_RENDER_DIR: ${{ runner.temp }}\fastllm-settings-dialog
+        run: .\tests\settings-dialog-render-tests.ps1
+      - name: Upload the Settings dialog renders
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: settings-dialog-render
+          path: ${{ runner.temp }}\fastllm-settings-dialog\*.png
+          if-no-files-found: ignore
+          retention-days: 14
       # These mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
       #   runner creates belong to Administrators.

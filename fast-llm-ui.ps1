@@ -975,9 +975,9 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
         catch{$newKeyFailureText=[string]$_.Exception.Message;$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))}
     }
 }
-function ShowUiSettings {
-    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
-    $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
+# The Settings dialog is built here and nothing else: ShowUiSettings runs it in its OWN scope (". BuildUiSettingsDialog"), so every control and
+# handler variable lives where it always did. tests/settings-dialog-render-tests.ps1 builds the same function off-screen to render the layout.
+function BuildUiSettingsDialog {
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,628);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
@@ -1074,6 +1074,11 @@ function ShowUiSettings {
             [void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)),'FastLLM settings','OK','Warning')
         }
     })
+}
+function ShowUiSettings {
+    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
+    . BuildUiSettingsDialog
     SetTrayMenuAvailable $false
     $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey;$script:settingsSavedSwitch=[bool]$current.allowSwitch
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
