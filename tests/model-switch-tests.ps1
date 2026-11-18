@@ -207,6 +207,7 @@ function Format-RawRequest([hashtable]$Fields) { return (ConvertTo-Json -InputOb
 # Every step of a scenario has a deadline (a few minutes; a step may carry its own timeoutSeconds). A scenario whose condition never
 # comes true - a switch that is refused when it should be accepted, or the other way round - then fails with what was observed,
 # and does not hold the suite for an hour.
+$script:ScenarioLoadTimeoutSeconds=600
 $script:SwitchStepTimeoutSeconds=240
 function Invoke-SwitchScenario {
     param([string]$Label,$World,[object[]]$Steps,[hashtable]$StartOptions=@{},[switch]$NoAllowSwitch)
@@ -223,7 +224,7 @@ function Invoke-SwitchScenario {
     try {
         $client.Start() | Out-Null
         $plan=& $st.newPlan 'model-a' '' @{ Thinking=$st.thinking; ChatPage=$st.chatPage }
-        $arguments=@{ Plan=$plan; CatalogPath=$catalog; InstallRoot=$World.root; LoadTimeoutSeconds=600 }
+        $arguments=@{ Plan=$plan; CatalogPath=$catalog; InstallRoot=$World.root; LoadTimeoutSeconds=$script:ScenarioLoadTimeoutSeconds }
         if (-not $NoAllowSwitch) { $arguments.AllowSwitch=$true }
         foreach ($key in $StartOptions.Keys) { $arguments[$key]=$StartOptions[$key] }
         try { $exit=Start-FastLlmServer @arguments } catch { $failure=$_.Exception }
@@ -268,6 +269,15 @@ $defaultSupervisorBound='CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan'
 $switchSupervisorBound='AllowSwitch,CatalogPath,InstallRoot,LoadTimeoutSeconds,Plan,SwitchContext'
 $suitePassed=$false
 try {
+    # ================= the client waits at least as long as the product may take =================
+    # A step that asks for a switch waits through what the product may take for it: the supervisor's wait for requests in progress (the module's
+    # default, read before any scenario changes it), then the full start of the other model, which has the same load timeout as the first. A
+    # client that gives up sooner judges faster than the product does (a timing race under load).
+    $busyWaitSeconds=[int](& $module { $script:FastLlmSwitchBusyWaitSeconds })
+    $stepMarginSeconds=60
+    $stepBudget=[int]$script:ScenarioLoadTimeoutSeconds+$busyWaitSeconds+$stepMarginSeconds
+    Check ($busyWaitSeconds -gt 0 -and [int]$script:SwitchStepTimeoutSeconds -ge $stepBudget) "client step wait: $([int]$script:SwitchStepTimeoutSeconds) s covers the target's load timeout ($([int]$script:ScenarioLoadTimeoutSeconds) s) + the busy wait ($busyWaitSeconds s) + a margin ($stepMarginSeconds s) = $stepBudget s"
+
     # ================= the request file: reader =================
     $unitWorld=New-SwitchWorld 'unit'
     Use-World $unitWorld
