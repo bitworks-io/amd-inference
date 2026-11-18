@@ -759,8 +759,10 @@ try {
     # ---- module logging: nothing on the sidecar's key path is handed to PowerShell as a loggable value ----
     # PowerShell module logging records every bound parameter value of a module's functions and of cmdlets. With it on for FastLLM and for
     # PowerShell's own utility and management cmdlets, a whole keyed start with the sidecar runs, and what PowerShell logged is read: on
-    # macOS the unified log of this process, on Windows the PowerShell operational event log (event 4103) of this process. Two canary values,
-    # logged the same way before and after, prove the log held the whole window; without them the check is skipped and says so.
+    # macOS the unified log of this process, on Windows a live capture of the PowerShell operational event log (event 4103 of this process,
+    # tests/helpers/module-log-tap.ps1): a subscription that keeps each event as it is written, so the size of that circular log cannot
+    # take anything out of the window. Two canary values, logged the same way before and after, mark the window; on Windows every record
+    # between them must also have been delivered (a check of its own). Without the canaries the check is skipped and says so.
     # The key of this check is random text made here (never a real key): PowerShell may also log script text, and a marker written out in a
     # test file would be found in that text and not because a value was logged.
     $logMarker = 'fl-' + ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')).Substring(0, 43)
@@ -777,16 +779,17 @@ try {
     $logBeginLocal = [DateTime]::Now.AddSeconds(-1).ToString('yyyy-MM-dd HH:mm:ss')
     $logEventLog = 'Microsoft-Windows-PowerShell/Operational'
     if ($PSVersionTable.PSVersion.Major -ge 6) { $logEventLog = 'PowerShellCore/Operational' }
+    $logTap = $null
+    $logTapReport = $null
     $logEvidence = @{ oneId = [long] -1; oneSnapshot = ''; lastWait = '' }
     function Read-ModuleLog {
         if ($logKind -ceq 'mac') {
             try { & '/usr/bin/log' show --style compact --start $logBeginLocal --predicate "processID == $PID" > $logCapturePath 2> ($logCapturePath + '.err'); return [IO.File]::ReadAllText($logCapturePath) } catch { return '' }
         }
         if ($logKind -ceq 'windows') {
-            $query = "*[System[(EventID=4103) and Execution[@ProcessID=$PID] and TimeCreated[@SystemTime>='$($logBegin.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))']]]"
-            $text = New-Object Text.StringBuilder
-            try { foreach ($logged in @(Get-WinEvent -LogName $logEventLog -FilterXPath $query -ErrorAction Stop)) { [void] $text.AppendLine([string] $logged.Message) } } catch { $null = $_ }
-            return $text.ToString()
+            # The live capture: the 4103 events of this process, kept as they were written.
+            if ($null -eq $logTap) { return '' }
+            return $logTap.Text()
         }
         return ''
     }
@@ -811,9 +814,11 @@ try {
     $logDocRun = $null
     try {
         if ($logKind -cne 'none') {
+            # The capture starts before logging is turned on, so compiling it and creating it log nothing.
+            if ($logKind -ceq 'windows') { $logTap = Start-ModuleLogTap $logEventLog $PID }
             foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $true }
             $logSawOne = Wait-ModuleLogCanary $logCanaryOne 30
-            if ($logSawOne -and $logKind -ceq 'windows') { $logFirst = Get-ModuleLogFirstSeen $logEventLog $PID $logBegin $logCanaryOne; $logEvidence.oneId = $logFirst.recordId; $logEvidence.oneSnapshot = $logFirst.snapshot }
+            if ($logSawOne -and $logKind -ceq 'windows') { $logEvidence.oneId = [long] $logTap.FindRecord($logCanaryOne); $logEvidence.oneSnapshot = Get-ModuleLogSnapshot $logEventLog }
         }
         if ($logSawOne) {
             InModule { $script:FastLlmIdlePollSeconds = 1 }
@@ -832,10 +837,12 @@ try {
         InModule { $script:FastLlmIdlePollSeconds = 30 }
         foreach ($loggedModule in $loggedModules) { $loggedModule.LogPipelineExecutionDetails = $false }
         if ($logKind -cne 'none') { Start-Sleep -Milliseconds 500; $logText = Read-ModuleLog }
+        # Canary two is in the capture when the wait saw it; delivery is in record order, so everything before it is in the text too.
+        if ($null -ne $logTap) { $logTapReport = Get-ModuleLogTapReport $logTap $logCanaryOne $logCanaryTwo; Stop-ModuleLogTap $logTap }
     }
-    foreach ($logInfoLine in @(Get-ModuleLogEvidenceLines $logKind $logEventLog $PID $logBegin $logEvidence $logText $logCanaryOne $logCanaryTwo)) { Write-Host $logInfoLine }
+    foreach ($logInfoLine in @(Get-ModuleLogEvidenceLines $logKind $logEventLog $PID $logBegin $logEvidence $logText $logCanaryOne $logCanaryTwo $logTapReport)) { Write-Host $logInfoLine }
     if ($null -eq $logRun -or -not $logSawTwo) {
-        $logSkipText = "the module-logging check of the sidecar's key path did not run to the end on this host: log source '$logKind', first canary seen: $logSawOne, second canary seen: $logSawTwo."
+        $logSkipText = "the module-logging check of the sidecar's key path did not run to the end on this host: log source '$logKind', first canary seen: $logSawOne, second canary seen: $logSawTwo, live capture start error: '$($script:moduleLogTapStartError)'."
         # On Windows PowerShell 5.1 - the PowerShell the product runs in - this check is not optional.
         Check (-not ($isWindowsHost -and $PSVersionTable.PSVersion.Major -lt 6)) "module logging: on Windows PowerShell 5.1 the check must run to the end, and $logSkipText (The log is $logEventLog, event 4103.)"
         Write-Host "SKIP: $logSkipText The static rules of the API key suite cover src/FastLlm.Sidecar.ps1."
@@ -845,6 +852,7 @@ try {
         Check ($logRun.completed -and $null -eq $logRun.failure -and $logRun.exit -eq 0 -and @($logRun.writes | Where-Object { [string] (Get-Sidecar $_).phase -ceq 'ready' -and [string] $_.apiKey -ceq 'on' }).Count -ge 1 -and @($logAuth | Where-Object { $_ -ceq 'POST /v1/embeddings ok' }).Count -eq 2 -and @($logAuth | Where-Object { $_ -ceq 'GET /metrics ok' }).Count -ge 1) 'module logging: with logging on, a keyed start with the sidecar ran to ready (its proof, its start check and its keyed /metrics reads) and stopped'
         $logFunctions = @('Start-FastLlmServer', 'Invoke-FastLlmSupervisedServer', 'Enter-FastLlmSidecarRun', 'Step-FastLlmSidecar', 'Start-FastLlmSidecarProcess', 'Complete-FastLlmSidecarChecks', 'Test-FastLlmSidecarCanary', 'Invoke-FastLlmSidecarRequest', 'Join-FastLlmSidecarIdle', 'Invoke-FastLlmHttp', 'Initialize-FastLlmEngineStartInfo', 'Get-FastLlmApiKeyText')
         $logMissing = @($logFunctions | Where-Object { $logText.IndexOf('ParameterBinding(' + $_ + ')', [StringComparison]::Ordinal) -lt 0 -and $logText.IndexOf('CommandInvocation(' + $_ + ')', [StringComparison]::Ordinal) -lt 0 })
+        if ($logKind -ceq 'windows') { Check (Test-ModuleLogTapComplete $logTapReport) "module logging: the live capture lost nothing - no subscription error, and every record from canary one's to canary two's was delivered (records missing between them: $($logTapReport.missing), subscription errors: $($logTapReport.errors) $($logTapReport.errorType))" }
         Check ($logText.IndexOf($logCanaryOne, [StringComparison]::Ordinal) -ge 0 -and $logText.IndexOf($logCanaryTwo, [StringComparison]::Ordinal) -ge 0 -and $logMissing.Count -eq 0 -and $logText.IndexOf('System.Security.SecureString', [StringComparison]::Ordinal) -ge 0) "module logging: the log really recorded these calls - both canaries, the sidecar's functions and the key holder parameter (as a type name) are in it ($(Get-ModuleLogFlags $logText $logCanaryOne $logCanaryTwo), not logged: $($logMissing -join ','))"
         $logCharacters = @($logMarker.ToCharArray() | ForEach-Object { [string] $_ })
         $logByteValues = @([Text.Encoding]::UTF8.GetBytes($logMarker) | ForEach-Object { [string] [int] $_ })
