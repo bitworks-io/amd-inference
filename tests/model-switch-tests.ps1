@@ -208,7 +208,14 @@ function Format-RawRequest([hashtable]$Fields) { return (ConvertTo-Json -InputOb
 # comes true - a switch that is refused when it should be accepted, or the other way round - then fails with what was observed,
 # and does not hold the suite for an hour.
 $script:ScenarioLoadTimeoutSeconds=600
-$script:SwitchStepTimeoutSeconds=240
+# What a step that asks for a switch may wait through: the supervisor's wait for requests in progress (the module's default), the other
+# model's full start (the same load timeout) and a margin for a loaded machine. A scenario that never matches still fails, only later.
+$script:SwitchStepTimeoutSeconds=[int]$script:ScenarioLoadTimeoutSeconds+[int](& $module { $script:FastLlmSwitchBusyWaitSeconds })+60
+function Get-StepTimeoutSeconds([object[]]$Steps,$Index) {
+    $step=@($Steps)[[int]$Index]
+    if ($null -ne $step -and $step.Contains('timeoutSeconds')) { return [int]$step['timeoutSeconds'] }
+    return [int]$script:SwitchStepTimeoutSeconds
+}
 function Invoke-SwitchScenario {
     param([string]$Label,$World,[object[]]$Steps,[hashtable]$StartOptions=@{},[switch]$NoAllowSwitch)
     $stepsPath=Join-Path $World.root 'steps.json'
@@ -243,8 +250,8 @@ function Invoke-SwitchScenario {
     $outcomes=@();$observations=@()
     if ($null -ne $record) { $outcomes=@($record.steps);$observations=@($record.observations) }
     if ($null -eq $record -or -not $record.completed -or -not $clientExited) {
-        Write-Host ("Scenario ${Label}: client steps: " + (@($outcomes | ForEach-Object { "$($_.index):$($_.action):matched=$($_.matched):$($_.error)" }) -join ' | '))
-        Write-Host ("Scenario ${Label}: observations: " + (@($observations | ForEach-Object { "$($_.phase)/$($_.modelId)/$($_.stopReason)/" + $(if($_.switch){ConvertTo-Json -InputObject $_.switch -Compress}else{'-'}) }) -join ' | '))
+        Write-Host ("Scenario ${Label}: client steps: " + (@($outcomes | ForEach-Object { "$($_.index):$($_.action):matched=$($_.matched):ms=$($_.ms):timeout=$(Get-StepTimeoutSeconds $Steps $_.index)s:$($_.error)" }) -join ' | '))
+        Write-Host ("Scenario ${Label}: observations: " + (@($observations | ForEach-Object { "$($_.ms)ms:$($_.phase)/$($_.modelId)/$($_.stopReason)/" + $(if($_.switch){ConvertTo-Json -InputObject $_.switch -Compress}else{'-'}) }) -join ' | '))
         Write-Host ("Scenario ${Label}: events: " + ($st.events -join ','))
     }
     $finalStatus=ConvertFrom-StatusText (Read-StatusText $World)
