@@ -135,14 +135,15 @@ function ConvertFrom-FastLlmPciJoinOutput {
 
 function New-FastLlmPciIdentityResult {
     param([bool]$Stable,[object[]]$Dxgi,[object[]]$Pnp,[object[]]$Kmt,[string]$GgmlStatus,$GgmlDeviceCount)
-    $matches=if($Stable){@(Join-FastLlmPciAddressScope -Dxgi $Dxgi -Pnp $Pnp -Kmt $Kmt)}else{@()}
+    $joinMatches=@()
+    if($Stable){$joinMatches=@(Join-FastLlmPciAddressScope -Dxgi $Dxgi -Pnp $Pnp -Kmt $Kmt)}
     return [ordered]@{
         schemaVersion=1;applicable=$true;qualified=$false;stableAcrossCollection=$Stable
         identityScope='independent-process-address-scope-advisory'
         source='DXGI-LUID + D3DKMT_ADAPTERADDRESS + exact SetupAPI PCI location and VEN/DEV'
         pciSegmentKnown=$false;ggmlJoin=$null;ggmlJoinReason='unknown-pci-segment'
         ggmlEvidenceStatus=$GgmlStatus;ggmlDeviceCount=$GgmlDeviceCount
-        matches=$matches
+        matches=$joinMatches
         note='Only unique bus/device/function plus PCI VEN/DEV identify an address-scope PnP record. KMT supplies no PCI segment; no full BDF, GGML adapter, serving-process, or benchmark adapter binding is claimed.'
     }
 }
