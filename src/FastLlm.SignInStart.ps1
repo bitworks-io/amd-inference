@@ -5,6 +5,9 @@
 # The launcher entry point is tools/signin-start.ps1, started through FastLLM.cmd /signin.
 Set-StrictMode -Version 2.0
 
+# The one reader of the model-switching opt-in, shared with the control window. This file never loads the window's code.
+. (Join-Path $PSScriptRoot 'FastLlm.UiSettings.ps1')
+
 $script:FastLlmSignInValueName = 'FastLLM'
 $script:FastLlmSignInRunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $script:FastLlmSignInApprovedKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
@@ -212,6 +215,15 @@ function Read-FastLlmSignInRequest {
     }
 }
 
+# Whether the user allows switching models while FastLLM runs: read through the shared reader the window uses (Get-FastLlmUiAllowSwitch, src/FastLlm.UiSettings.ps1), so a sign-in
+# start and a window start see the same answer. Fails closed: an absent, false or unreadable setting is off, and never stops a start.
+function Get-FastLlmSignInAllowSwitch {
+    param([string]$InstallRoot)
+    try {
+        return [bool](Get-FastLlmUiAllowSwitch -InstallRoot $InstallRoot)
+    } catch { return $false }
+}
+
 # One attempt: wait, then start the background host once from the saved request, and record the outcome. No retry.
 # Only a short code is recorded; an exception message never reaches the result file.
 function Invoke-FastLlmSignInLaunch {
@@ -234,6 +246,9 @@ function Invoke-FastLlmSignInLaunch {
         # The user's current saved serving settings, resolved by the settings module exactly as the command line does.
         $serving = Get-FastLlmServingHostArguments -InstallRoot $InstallRoot
         foreach ($key in @($serving.Keys)) { $arguments[$key] = $serving[$key] }
+        # The window's opt-in model switching: with it saved on, the host is asked for -SwitchAllowed exactly as a window background start is
+        # (so the switch basis is written and the model picker works after a sign-in start). Off or unreadable adds nothing.
+        if (Get-FastLlmSignInAllowSwitch -InstallRoot $InstallRoot) { $arguments.SwitchAllowed = $true }
         $arguments.SourceRoot = $SourceRoot
         $arguments.InstallRoot = $InstallRoot
         $arguments.NoWait = $true

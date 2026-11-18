@@ -104,6 +104,44 @@ try {
         canary=[pscustomobject]@{passed=$true};processIdentity=$hostIdentity}
     $stop = Stop-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA -ExpectedRunId $runA
     Assert-BackgroundTest ($stop.stopRequested -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)))) 'Exact run-scoped stop was not sent.'
+    # A model switch (R3): between the two runs the owner is the same live run. The status shows it active (phase switching), not attachable (no server
+    # to check), with the old run id (so the window keeps its attachment), and Stop is accepted for that run.
+    Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)) -Force
+    function New-GapStatus([string]$Phase,[string]$StopReason,$Block,[string]$Request=$requestA,[string]$Run=$runA) {
+        $document=[ordered]@{active=$true;phase=$Phase;runId=$Run;backgroundRequestId=$Request;modelId='model-a';endpoint='http://127.0.0.1:8080/v1';processIdentity=$hostIdentity}
+        if($StopReason){$document.stopReason=$StopReason}
+        if($null -ne $Block){$document['switch']=$Block}
+        return [pscustomobject]$document
+    }
+    $pendingBlock=[pscustomobject]@{from='model-a';to='model-b';pending=$true;result=$null;failureCode=$null}
+    $script:mockStatus = New-GapStatus 'stopped' 'switch' $pendingBlock
+    $gapStatus = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapStatus.active -and $gapStatus.occupied -and -not $gapStatus.attachable -and $gapStatus.phase -ceq 'switching' -and $gapStatus.runId -ceq $runA -and $gapStatus.requestId -ceq $requestA) 'Switch gap: the same live run is reported active (phase switching) with its run id and request id.'
+    Assert-BackgroundTest ([int]$gapStatus.hostIdentity.pid -eq [int]$hostIdentity.pid -and [long]$gapStatus.hostIdentity.startUtcTicks -eq [long]$hostIdentity.startUtcTicks) 'Switch gap: the owner identity is the same host process.'
+    $gapStop = Stop-FastLlmBackgroundHost -InstallRoot $scratch -SourceRoot $source -ExpectedRequestId $requestA -ExpectedRunId $runA
+    Assert-BackgroundTest ($gapStop.stopRequested -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)))) 'Switch gap: Stop is accepted for the run the window is attached to.'
+    Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $ownerPath) ('stop-' + $runA)) -Force
+    $script:mockStatus = New-GapStatus 'failed' '' ([pscustomobject]@{from='model-a';to='model-b';pending=$true;result=$null;failureCode='startup-or-runtime-check-failed'})
+    $gapFailed = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapFailed.active -and $gapFailed.phase -ceq 'switching' -and -not $gapFailed.attachable) 'Switch gap: a target that failed (restore follows) is still the same live run.'
+    $script:mockStatus = New-GapStatus 'loading' '' ([pscustomobject]@{from='model-a';to='model-b';pending=$true;result=$null;failureCode=$null}) $requestA $runB
+    $gapLoading = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapLoading.active -and $gapLoading.phase -ceq 'loading' -and $gapLoading.runId -ceq $runB) 'Switch gap: the target run loading under the same owner is the new active run.'
+    $script:mockStatus = [pscustomobject]@{active=$true;phase='ready';runId=$runB;backgroundRequestId=$requestA;modelId='model-a';endpoint='http://127.0.0.1:8080/v1';
+        canary=[pscustomobject]@{passed=$true};processIdentity=$hostIdentity;'switch'=[pscustomobject]@{from='model-a';to='model-b';result='ok';failureCode=$null}}
+    $gapReady = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+    Assert-BackgroundTest ($gapReady.active -and $gapReady.attachable -and $gapReady.runId -ceq $runB -and $gapReady.phase -ceq 'ready') 'Switch gap: after the target is ready the owner is attachable, with the new run id.'
+    foreach ($notGap in @(
+        @{ n='another owner''s request id'; s=(New-GapStatus 'stopped' 'switch' $pendingBlock $requestB) },
+        @{ n='a stopped run with no switch block'; s=(New-GapStatus 'stopped' 'switch' $null) },
+        @{ n='a stopped run that was not stopped for a switch'; s=(New-GapStatus 'stopped' 'user' $pendingBlock) },
+        @{ n='a switch that is not pending'; s=(New-GapStatus 'stopped' 'switch' ([pscustomobject]@{from='model-a';to='model-b';result='ok';failureCode=$null})) },
+        @{ n='a switch whose failure is final'; s=(New-GapStatus 'failed' '' ([pscustomobject]@{from='model-a';to='model-b';result='failed-stopped';failureCode='x'})) },
+        @{ n='a switch block that is not an object'; s=(New-GapStatus 'stopped' 'switch' 'pending') })) {
+        $script:mockStatus = $notGap.s
+        $notGapStatus = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
+        Assert-BackgroundTest ($notGapStatus.occupied -and -not $notGapStatus.active -and $notGapStatus.phase -ceq 'occupied-unverified') "Switch gap: $($notGap.n) is not the gap (still unverified, as before)."
+    }
     $owner.phase = 'stopped'
     Write-FastLlmBackgroundDocument -Path $ownerPath -Value $owner
     $stopped = Get-FastLlmBackgroundHostStatus -InstallRoot $scratch -SourceRoot $source
@@ -179,6 +217,11 @@ try {
         $script:mockPlanThinkingBound = $PSBoundParameters.ContainsKey('Thinking')
         $script:mockPlanChatPage = $ChatPage
         $script:mockPlanChatPageBound = $PSBoundParameters.ContainsKey('ChatPage')
+        if ($script:throwPlanFit) {
+            if ($script:throwPlanFit -ceq 'model') { $fitFailure = New-Object System.InvalidOperationException("Requested model 'some-model' does not fit the estimated current free-memory budget. No other model was substituted."); $fitFailure.Data['FastLlmFailureCode'] = 'model-does-not-fit' }
+            else { $fitFailure = New-Object System.InvalidOperationException('No catalog profile fits the currently free AMD VRAM (100 MiB across a supported placement). Close GPU-heavy applications or select different hardware.'); $fitFailure.Data['FastLlmFailureCode'] = 'no-profile-fits' }
+            throw $fitFailure
+        }
         if ($script:throwPlan) { $planFailure = New-Object System.InvalidOperationException('hip-device-not-found: no matching device'); $planFailure.Data['FastLlmFailureCode'] = 'hip-device-not-found'; throw $planFailure }
         if ($script:planMode -ceq 'hip-missing' -and -not [string]$ModelId) {
             if ($ResolveFallback) {
@@ -229,6 +272,7 @@ try {
     $script:throwServer = $false
     $script:throwPlanChanged = $false
     $script:throwPlan = $false
+    $script:throwPlanFit = ''
     $script:serverMovesStatus = $false
     $script:serverIdleStop = $false
     $script:serverSwitchesTo = ''
@@ -432,6 +476,7 @@ try {
         sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
         modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
         sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+    $script:throwPlanFit = ''
     $script:throwServer = $true
     $failed = $false
     $script:mockBarPolicy = $null
@@ -482,8 +527,26 @@ try {
     Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $script:mockStateWrites.Count -eq 2 -and $failedStatus.phase -ceq 'failed' -and $failedStatus.failureCode -ceq 'hip-device-not-found' -and $failedStatus.runId -ceq $script:mockStateWrites[0].runId -and $failedStatus.action -ceq 'start') 'A background failure before the supervisor must rewrite the preparing status to failed with the typed failure code.'
     $typedOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
     Assert-BackgroundTest ($typedOwner.failureCode -ceq 'hip-device-not-found' -and [string]$typedOwner.failureReason -like 'hip-device-not-found:*') 'The background host record must keep the typed failure code (and its bounded message), not only the reason.'
+    # A plan that does not fit records its specific code and the existing message (bounded, one line), where a non-plan worker failure stays generic.
+    $fitCases = @(
+        @{ Id='51515151515151515151515151515151'; Mode='model'; Code='model-does-not-fit'; Text="Requested model 'some-model' does not fit the estimated current free-memory budget. No other model was substituted." },
+        @{ Id='dededededededededededededededede'; Mode='none'; Code='no-profile-fits'; Text='No catalog profile fits the currently free AMD VRAM (100 MiB across a supported placement). Close GPU-heavy applications or select different hardware.' })
+    foreach ($fitCase in $fitCases) {
+        $script:workerRequestId = $fitCase.Id
+        Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
+            schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
+            sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';
+            modelId='';contextSize=0;allowExperimentalModel=$false;loadTimeoutSeconds=30;
+            sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)})
+        $script:mockStateWrites.Clear(); $script:mockServerStarts = 0; $script:throwServer = $false; $script:throwPlanFit = $fitCase.Mode
+        try { Invoke-FastLlmBackgroundServe -RequestId $script:workerRequestId -InstallRoot $workerRoot -SourceRoot $source | Out-Null } catch { }
+        $script:throwPlanFit = ''
+        $fitOwner = Read-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf 'background-host.json')
+        $fitStatus = $script:mockStateWrites[$script:mockStateWrites.Count - 1]
+        Assert-BackgroundTest ($script:mockServerStarts -eq 0 -and $fitOwner.phase -ceq 'failed' -and $fitOwner.failureCode -ceq $fitCase.Code -and [string]$fitOwner.failureReason -ceq $fitCase.Text -and $fitStatus.failureCode -ceq $fitCase.Code) ("A plan failure ($($fitCase.Code)) records that code and its existing message in the host record and the failed status.")
+    }
     # A supervisor that already moved the status on is not overwritten.
-    $script:workerRequestId = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+    $script:workerRequestId = 'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9'
     Write-FastLlmBackgroundDocument -Path (Get-FastLlmBackgroundPath -InstallRoot $workerRoot -Leaf ('background-request-' + $script:workerRequestId + '.json')) -CreateNew -Value ([ordered]@{
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$script:workerRequestId;
         sourceRoot=$source;installRoot=[IO.Path]::GetFullPath($workerRoot);profile='balanced';

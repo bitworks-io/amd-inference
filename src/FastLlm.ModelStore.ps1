@@ -66,12 +66,17 @@ function Get-FastLlmModelStoreHostState {
 # The background record is read directly (capped at 64 KiB, a reparse point refused); in doubt, the model counts as busy.
 function Get-FastLlmModelStoreBusyContext {
     param([Parameter(Mandatory = $true)][string] $InstallRoot, [switch] $SkipStatus)
-    $context = [ordered]@{ statusUnknown = $false; statusActive = $false; statusModelId = ''; backgroundUnknown = $false; backgroundBusy = $false; backgroundModelId = '' }
+    $context = [ordered]@{ statusUnknown = $false; statusActive = $false; statusModelId = ''; statusSwitchToId = ''; backgroundUnknown = $false; backgroundBusy = $false; backgroundModelId = '' }
     if (-not $SkipStatus) {
         try {
             $status = Get-FastLlmStatus -InstallRoot $InstallRoot
             $context.statusActive = [bool] $status.active
             if ($status.PSObject.Properties['modelId']) { $context.statusModelId = [string] $status.modelId }
+            # The target of a switch that is pending is in use too: the supervisor is about to start it (only a live run's document counts).
+            if ($context.statusActive -and $status.PSObject.Properties['switch'] -and $status.switch -is [System.Management.Automation.PSCustomObject] -and
+                $status.switch.PSObject.Properties['pending'] -and $status.switch.pending -eq $true -and $status.switch.PSObject.Properties['to'] -and $status.switch.to -is [string]) {
+                $context.statusSwitchToId = [string] $status.switch.to
+            }
         }
         catch { $context.statusUnknown = $true }
     }
@@ -99,11 +104,12 @@ function Get-FastLlmModelStoreBusyContext {
     return [pscustomobject] $context
 }
 
-# '' when nothing holds the model, else serving | background-owned | download-in-progress.
+# '' when nothing holds the model, else serving | switch-target | background-owned | download-in-progress.
 function Get-FastLlmModelStoreBusyReason {
     param([Parameter(Mandatory = $true)] $Model, [Parameter(Mandatory = $true)][string] $InstallRoot, [Parameter(Mandatory = $true)] $Context)
     if ($Context.statusUnknown) { return 'serving' }
     if ($Context.statusActive -and $Context.statusModelId -ceq [string] $Model.id) { return 'serving' }
+    if ($Context.statusSwitchToId -and $Context.statusSwitchToId -ceq [string] $Model.id) { return 'switch-target' }
     if ($Context.backgroundUnknown) { return 'background-owned' }
     if ($Context.backgroundBusy -and $Context.backgroundModelId -ceq [string] $Model.id) { return 'background-owned' }
     $modelsRoot = Get-FastLlmModelStoreDirectory -InstallRoot $InstallRoot
@@ -207,6 +213,7 @@ function Remove-FastLlmInstalledModel {
     if (-not $OperationLockHeld) {
         $earlyContext = Get-FastLlmModelStoreBusyContext -InstallRoot $InstallRoot
         if ($earlyContext.statusUnknown -or ($earlyContext.statusActive -and $earlyContext.statusModelId -ceq [string] $model.id)) { return (& $result $false 'serving' 0) }
+        if ($earlyContext.statusSwitchToId -and $earlyContext.statusSwitchToId -ceq [string] $model.id) { return (& $result $false 'switch-target' 0) }
     }
     $lock = $null
     try {
@@ -294,6 +301,7 @@ function Get-FastLlmModelRemovalRefusalText {
         'not-installed'             { return 'That model file is not on this PC. Nothing was removed.' }
         'path-outside-install-root' { return 'The models folder or that model file is a link, so FastLLM left it alone. Nothing was removed.' }
         'serving'                   { return 'FastLLM is serving this model. Stop it first. Nothing was removed.' }
+        'switch-target'             { return 'FastLLM is switching to this model right now. Wait for the switch to finish. Nothing was removed.' }
         'background-owned'          { return 'A background run uses this model. Stop it first. Nothing was removed.' }
         'operation-in-progress'     { return 'FastLLM is busy or serving; stop it first. Nothing was removed.' }
         'download-in-progress'      { return 'This model is being downloaded right now. Nothing was removed.' }

@@ -363,6 +363,18 @@ function Get-FastLlmBackgroundHostStatus {
         $status.phase -in @('loading','checking','ready') -and
         $status.PSObject.Properties['runId'] -and [string]$status.runId -match '^[0-9a-f]{32}$' -and
         $status.PSObject.Properties['backgroundRequestId'] -and [string]$status.backgroundRequestId -ceq [string]$owner.requestId)
+    # A model switch (opt-in): between the end of the old run and the start of the next one the owner is the same live run. Its document is stopped
+    # (stopReason switch) or failed (the target did not start; the previous model is started again), says the switch is pending, and still names this
+    # request. The same host process runs both models, so the owner identity is unchanged; the window keeps its attachment through the gap.
+    $switchGap = [bool]($alive -and $sourceMatches -and $occupied -and $owner.phase -eq 'loading' -and
+        $status.phase -in @('stopped','failed') -and
+        ($status.phase -ne 'stopped' -or ($status.PSObject.Properties['stopReason'] -and [string]$status.stopReason -ceq 'switch')) -and
+        $status.PSObject.Properties['runId'] -and [string]$status.runId -match '^[0-9a-f]{32}$' -and
+        $status.PSObject.Properties['backgroundRequestId'] -and [string]$status.backgroundRequestId -ceq [string]$owner.requestId -and
+        $status.PSObject.Properties['switch'] -and $status.switch -is [System.Management.Automation.PSCustomObject] -and
+        $status.switch.PSObject.Properties['pending'] -and $status.switch.pending -eq $true -and
+        (-not $status.switch.PSObject.Properties['result'] -or -not $status.switch.result))
+    if ($switchGap) { $active = $true }
     $readyIdentity = [bool]($active -and $status.phase -eq 'ready' -and
         $status.PSObject.Properties['processIdentity'] -and
         (Test-FastLlmBackgroundProcessIdentity -Identity $status.processIdentity) -and
@@ -371,7 +383,7 @@ function Get-FastLlmBackgroundHostStatus {
         $status.PSObject.Properties['canary'] -and $null -ne $status.canary)
     $healthy = [bool]($readyIdentity -and -not $SkipHealth -and (Test-FastLlmBackgroundLoopbackHealth -Port $recordPort))
     return [pscustomobject]@{
-        phase = if ($active) { [string]$status.phase } elseif ($occupied) { 'occupied-unverified' } elseif ($alive) { [string]$owner.phase } else { 'stale' }
+        phase = if ($switchGap) { 'switching' } elseif ($active) { [string]$status.phase } elseif ($occupied) { 'occupied-unverified' } elseif ($alive) { [string]$owner.phase } else { 'stale' }
         active = $active
         occupied = $occupied
         attachable = $healthy

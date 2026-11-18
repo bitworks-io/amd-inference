@@ -9,6 +9,7 @@ function New-FastLlmUiBackgroundState {
         attachedRequestId=$null
         attachedRunId=$null
         attention=$null
+        attachedSwitching=$false
     }
 }
 
@@ -67,6 +68,19 @@ function Set-FastLlmUiBackgroundObservation {
         }
     }
     if($State.attachedRequestId){
+        # A model switch inside the attached host: the gap (phase switching) keeps the attachment, and the runs that follow it under the same request
+        # (the target, or the restored model) are the same attachment, now to their own run id. The host is the same process for all of them.
+        if($valid.active -and $observedRequestId -ceq [string]$State.attachedRequestId){
+            if([string]$valid.phase -ceq 'switching'){
+                $State.attachedSwitching=$true
+                if($valid.PSObject.Properties['runId'] -and [string]$valid.runId -match '^[0-9a-f]{32}$'){$State.attachedRunId=[string]$valid.runId}
+            }
+            elseif($State.attachedSwitching -and $valid.PSObject.Properties['runId'] -and [string]$valid.runId -match '^[0-9a-f]{32}$' -and
+                   [string]$valid.phase -in @('loading','checking','ready')){
+                $State.attachedRunId=[string]$valid.runId
+                if([string]$valid.phase -ceq 'ready'){$State.attachedSwitching=$false}
+            }
+        }
         if(-not $valid.active -or $observedRequestId -cne [string]$State.attachedRequestId -or
            [string]$valid.runId -cne [string]$State.attachedRunId){
             $State.attachedRequestId=$null;$State.attachedRunId=$null
@@ -191,6 +205,9 @@ function Get-FastLlmUiBackgroundText {
            $State.observation.uiHealthChecked -and $State.observation.PSObject.Properties['servingHealthy'] -and
            -not $State.observation.servingHealthy){
             return 'Attached background owner is verified, but API health failed. Review Diagnostics or use Stop.'
+        }
+        if([string]$State.observation.phase -ceq 'switching'){
+            return 'Attached to the background run. It is switching models; use Stop to end it.'
         }
         if(-not $State.observation.PSObject.Properties['uiHealthChecked'] -or -not $State.observation.uiHealthChecked){
             return 'Attached to verified background owner. Checking API health; use Stop to end this run.'

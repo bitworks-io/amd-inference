@@ -130,7 +130,13 @@ $statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)
 $progress=New-Object Windows.Forms.ProgressBar
 $progress.Location=New-Object Drawing.Point(24,458);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
 $output=New-Object Windows.Forms.TextBox
-$output.Location=New-Object Drawing.Point(24,484);$output.Size=New-Object Drawing.Size(796,162);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
+$output.Location=New-Object Drawing.Point(24,512);$output.Size=New-Object Drawing.Size(796,134);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
+# The model switch row under the status line: the switch line, or why Switch model is off, and the Switch model button.
+$switchLabel=New-Object Windows.Forms.Label
+$switchLabel.Location=New-Object Drawing.Point(24,474);$switchLabel.Size=New-Object Drawing.Size(640,26);$switchLabel.Text='';$switchLabel.UseMnemonic=$false;$switchLabel.AutoEllipsis=$true;$form.Controls.Add($switchLabel)
+$switchButton=ButtonAt ('Switch model'+[string][char]0x2026) 672 470 148
+$switchButton.Enabled=$false
+$script:switchGap=$false
 $script:evidenceUrl=$null
 $resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
 $notesLabel=New-Object Windows.Forms.Label
@@ -313,7 +319,7 @@ function SetBusy([bool]$Busy) {
         (-not $script:bgState.pendingRequestId -or [string]$script:bgState.observation.requestId -ceq [string]$script:bgState.pendingRequestId))
     $backgroundCheckButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child)
     $stopButton.Enabled=($null -eq $script:vcBroker -and -not $script:bgStopRequested -and
-        ($script:child -or $script:bgState.attachedRequestId -or -not $occupied))
+        ($script:child -or $script:bgState.attachedRequestId -or -not $occupied -or $script:switchGap))
     $trayButton.Enabled=($null -eq $script:vcBroker)
     $openChatButton.Enabled=[bool]$script:chatUrl
     $progress.Visible=$Busy
@@ -333,6 +339,17 @@ function UpdateUiRunState($Status,[bool]$ForegroundChildActive) {
     $changed=([string]$script:chatUrl -cne [string]$chat.url) -or ([bool]$script:runReady -ne $ready)
     $script:chatUrl=$chat.url;$script:runReady=$ready
     return $changed
+}
+# The model switch controls follow the status the window already reads for this run (nothing extra is polled). The classification is Get-FastLlmUiSwitchWindowState.
+function UpdateUiSwitchState($Status) {
+    $switchState=Get-FastLlmUiSwitchWindowState -Status $Status -SettingOn ([bool]$script:uiSettings.allowSwitch)
+    $script:switchGap=[bool]$switchState.gap
+    $switchButton.Enabled=[bool]$switchState.switchButtonEnabled
+    $switchLabel.Text=$(if($switchState.gap){''}elseif($switchState.line){[string]$switchState.line}elseif($switchState.switchButtonEnabled){''}else{[string]$switchState.switchButtonReason})
+    if($switchState.gap){$statusLabel.Text=[string]$switchState.statusText}
+}
+function RefreshUiSwitchState {
+    try{UpdateUiSwitchState (GetUiBackgroundRunStatus)}catch{UpdateUiSwitchState $null}
 }
 function GetUiBackgroundStatus([switch]$SkipHealth) {
     return & (Get-Module FastLlm) {param($Source,$Install,$Project,$Skip)
@@ -381,6 +398,7 @@ function ApplyUiBackgroundStatus($observation,[bool]$HealthChecked=$false) {
     if($script:bgState.observation -and -not $script:bgState.observation.active){$script:bgStopRequested=$false}
     # A foreground child owns the run state through the timer; the background poll must not clear it.
     if(-not $script:child){try{[void](UpdateUiRunState (GetUiBackgroundRunStatus) $false)}catch{$script:chatUrl=$null;$script:runReady=$false}}
+    if(-not $script:child){RefreshUiSwitchState}
     SetBusy ([bool]($script:child -or $script:vcBroker))
 }
 function SetUiBackgroundUnknown {
@@ -618,9 +636,15 @@ function StopUiOperation {
     if(-not (Test-FastLlmUiVcActionAllowed -BrokerActive ($null -ne $script:vcBroker) -Action stop)){
         throw 'Microsoft prerequisite setup is still running. Complete or cancel it in the Microsoft window; FastLLM will not terminate it.'
     }
+    if($script:switchGap -and -not $script:child -and -not $script:bgState.attachedRequestId){
+        # Between the two runs of a model switch the supervisor is alive: stop always wins, and it is asked the way the stop command asks.
+        Request-FastLlmStop -InstallRoot ([IO.Path]::GetFullPath($pathBox.Text))
+        $statusLabel.Text='Stop requested. FastLLM ends the switch and stops.'
+        return
+    }
     if($script:child){
         $script:child.Dispose();$script:child=$null;$script:step='idle'
-        $script:chatUrl=$null;$script:runReady=$false
+        $script:chatUrl=$null;$script:runReady=$false;UpdateUiSwitchState $null
         if($script:flow){$script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event stop}
         RefreshUiBackgroundStatus
         $statusLabel.Text=if($script:bgState.observation.occupied){
@@ -805,7 +829,7 @@ function LaunchUiPhase {
             # The preview's label and link describe the preview only; clear them until the running plan reports its own.
             $resultsLink.Visible=$false;$script:evidenceUrl=$null
             $statusLabel.Text='Starting the server...'
-            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan -ChosenRecipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest)+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe));return
+            LaunchStep 'serving' (@('start','-Unattended','-VulkanBarMitigation',(GetBarValue))+@(Get-FastLlmUiStartRecipeArguments -Plan $script:flow.pendingPlan -ChosenRecipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest)+@(Get-FastLlmUiRecipeSelection -Selection $script:selection -Recipe $script:chosenRecipe)+@(Get-FastLlmUiSwitchArguments -AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot)));return
         }
         default { throw "The control-window workflow cannot launch phase '$($script:flow.phase)'." }
     }
@@ -951,29 +975,44 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
         catch{$newKeyFailureText=[string]$_.Exception.Message;$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))}
     }
 }
-function ShowUiSettings {
-    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
+# The dialog is at most as tall as the screen's working area; the anchors then shrink the scrolling panel and lift Save and Cancel with the bottom edge.
+# A shortened dialog is also widened by the vertical scroll bar, so the widest setting still fits beside it and needs no horizontal scrolling.
+function FitUiSettingsDialog($Dialog,[int]$MaxHeight){
+    if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight);$Dialog.Width=$Dialog.Width+[Windows.Forms.SystemInformation]::VerticalScrollBarWidth}
+}
+function GetUiSettingsDialogMaxHeight($Owner){
+    return [int][Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height
+}
+# The Settings dialog is built here and nothing else: ShowUiSettings runs it in its OWN scope (". BuildUiSettingsDialog"), so every control and
+# handler variable lives where it always did. tests/settings-dialog-render-tests.ps1 builds the same function off-screen to render the layout.
+function BuildUiSettingsDialog {
     $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,546);$dialog.StartPosition='CenterParent'
+    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,628);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
-    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
+    # The settings sit in a scrolling panel that fills the dialog above a button row docked to its bottom edge (Save and Cancel in it, right-aligned).
+    # Docking is laid out again after every resize, so a small screen or large text never hides Save and Cancel. At 100% the panel is 536 px tall
+    # and Save and Cancel are at y=544, as before. The row gets its full width before the buttons are added, so their right anchors hold.
+    # Tab order is the settings first, then Save and Cancel, as before.
+    $buttonRow=New-Object Windows.Forms.Panel;$buttonRow.Size=New-Object Drawing.Size($dialog.ClientSize.Width,[Math]::Max(46,$dialog.ClientSize.Height-536));$buttonRow.Dock='Bottom';$buttonRow.TabIndex=1;$dialog.Controls.Add($buttonRow)
+    $settingsPanel=New-Object Windows.Forms.Panel;$settingsPanel.Dock='Fill';$settingsPanel.AutoScroll=$true;$settingsPanel.TabIndex=0;$dialog.Controls.Add($settingsPanel);$settingsPanel.BringToFront()
+    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
     $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
-    $portBox.Value=[decimal][int]$current.serverPort;$dialog.Controls.Add($portBox)
-    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(95,27);$thinkingLabel.UseMnemonic=$false;$dialog.Controls.Add($thinkingLabel)
+    $portBox.Value=[decimal][int]$current.serverPort;$settingsPanel.Controls.Add($portBox)
+    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(95,27);$thinkingLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($thinkingLabel)
     $thinkingBox=New-Object Windows.Forms.ComboBox
     $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
     [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
-    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$dialog.Controls.Add($thinkingBox)
+    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$settingsPanel.Controls.Add($thinkingBox)
     $chatBox=New-Object Windows.Forms.CheckBox;$chatBox.Text='Local chat page (off by default)';$chatBox.Location=New-Object Drawing.Point(20,104);$chatBox.Size=New-Object Drawing.Size(510,27)
-    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$dialog.Controls.Add($chatBox)
-    $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$dialog.Controls.Add($chatPrivacy)
-    $idleLabel=New-Object Windows.Forms.Label;$idleLabel.Text='Stop the model when idle';$idleLabel.Location=New-Object Drawing.Point(20,168);$idleLabel.Size=New-Object Drawing.Size(200,27);$idleLabel.UseMnemonic=$false;$dialog.Controls.Add($idleLabel)
+    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$settingsPanel.Controls.Add($chatBox)
+    $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$settingsPanel.Controls.Add($chatPrivacy)
+    $idleLabel=New-Object Windows.Forms.Label;$idleLabel.Text='Stop the model when idle';$idleLabel.Location=New-Object Drawing.Point(20,168);$idleLabel.Size=New-Object Drawing.Size(200,27);$idleLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($idleLabel)
     $idleBox=New-Object Windows.Forms.ComboBox
     $idleBox.DropDownStyle='DropDownList';$idleBox.Location=New-Object Drawing.Point(230,166);$idleBox.Size=New-Object Drawing.Size(300,27)
     foreach($idleChoice in @('Never (default)','After 15 minutes','After 30 minutes','After 60 minutes')){[void]$idleBox.Items.Add($idleChoice)}
-    $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$dialog.Controls.Add($idleBox)
-    $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$dialog.Controls.Add($idleHelp)
+    $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$settingsPanel.Controls.Add($idleBox)
+    $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($idleHelp)
     # The API key (off by default). The box only sets the flag; turning it on creates a key when there is none. The key is shown in Connect an app.
     $keyBox=New-Object Windows.Forms.CheckBox;$keyBox.Text='Require an API key (off by default)';$keyBox.Location=New-Object Drawing.Point(20,232);$keyBox.Size=New-Object Drawing.Size(510,27)
     # When the setting cannot be known (a key is stored, but the saved settings do not say whether to use it) the box is neither ticked nor
@@ -983,16 +1022,16 @@ function ShowUiSettings {
     if($keyBoxState -ceq 'indeterminate'){$keyBox.ThreeState=$true;$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate;$keyBox.Text='Require an API key (not set: tick or clear this box to choose)'}
     else{$keyBox.Checked=($keyBoxState -ceq 'checked')}
     $keyBox.Add_Click({$script:settingsKeyTouched=$true;$keyBox.ThreeState=$false})
-    $dialog.Controls.Add($keyBox)
-    $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$dialog.Controls.Add($keyHelp)
-    $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$dialog.Controls.Add($newKeyButton)
+    $settingsPanel.Controls.Add($keyBox)
+    $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($keyHelp)
+    $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$settingsPanel.Controls.Add($newKeyButton)
     $newKeyButton.Add_Click({
         try{[void](NewUiApiKey $dialog)}
         catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
     })
-    $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$dialog.Controls.Add($startBox)
-    $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$dialog.Controls.Add($startState)
-    $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$dialog.Controls.Add($startLast)
+    $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$settingsPanel.Controls.Add($startBox)
+    $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$settingsPanel.Controls.Add($startState)
+    $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$settingsPanel.Controls.Add($startLast)
     # The Run entry is the truth (never settings.json): the checkbox shows what was read back after each change.
     $showSignIn={
         param($View)
@@ -1007,8 +1046,11 @@ function ShowUiSettings {
             try{& $showSignIn (Get-FastLlmSignInSettingsView -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}catch{$null=$_}
         }
     })
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,462);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,462);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $switchBox=New-Object Windows.Forms.CheckBox;$switchBox.Text='Allow switching models while FastLLM runs';$switchBox.Location=New-Object Drawing.Point(20,458);$switchBox.Size=New-Object Drawing.Size(510,27)
+    $switchBox.Checked=[bool]$script:uiSettings.allowSwitch;$settingsPanel.Controls.Add($switchBox)
+    $switchHelp=New-Object Windows.Forms.Label;$switchHelp.Text='Off by default; applies from the next start. A switch checks the new model again and starts the old one if it cannot start. Stop always wins.';$switchHelp.Location=New-Object Drawing.Point(44,486);$switchHelp.Size=New-Object Drawing.Size(486,48);$switchHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($switchHelp)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,8);$saveButton.Size=New-Object Drawing.Size(100,38);$saveButton.Anchor='Top,Right';$buttonRow.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,8);$cancelButton.Size=New-Object Drawing.Size(100,38);$cancelButton.Anchor='Top,Right';$buttonRow.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
@@ -1033,6 +1075,9 @@ function ShowUiSettings {
             $script:settingsSavedApiKey=$(if($wantKey){'on'}else{'off'})
             $script:apiKeyStore=$null
             Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'}) -IdleStopMinutes $savedIdle
+            Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot -Value ([bool]$switchBox.Checked)
+            $script:uiSettings.allowSwitch=[bool]$switchBox.Checked
+            $script:settingsSavedSwitch=[bool]$switchBox.Checked
             $script:settingsSavedIdle=[int]$savedIdle
             $script:settingsSavedChatPage=$(if($chatBox.Checked){'on'}else{'off'})
             $script:settingsSavedPort=[int]$portBox.Value
@@ -1043,12 +1088,19 @@ function ShowUiSettings {
             [void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)),'FastLLM settings','OK','Warning')
         }
     })
+}
+function ShowUiSettings {
+    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
+    $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
+    . BuildUiSettingsDialog
+    FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form)
     SetTrayMenuAvailable $false
-    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey
+    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey;$script:settingsSavedSwitch=[bool]$current.allowSwitch
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
     if([string]$result -ceq 'OK'){
+        RefreshUiSwitchState
         $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage;idleStopMinutes=[int]$script:settingsSavedIdle;apiKey=[string]$script:settingsSavedApiKey})
+        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage;idleStopMinutes=[int]$script:settingsSavedIdle;apiKey=[string]$script:settingsSavedApiKey;allowSwitch=[bool]$script:settingsSavedSwitch})
         if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
             $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
         }
@@ -1068,16 +1120,16 @@ function StartUiBackground {
     $serving=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $settingsNotice=Get-FastLlmUiMalformedSettingsNotice -Settings $serving
     $request=New-FastLlmUiBackgroundRequest -SourceRoot $PSScriptRoot -InstallRoot $script:installPath -ModelId $selectedModel `
-        -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving
+        -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving -AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot)
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
         # Only the flag (on or off) is passed; the background host reads the key store itself.
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop,$KeyFlag)
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop,$KeyFlag,$SwitchAllowed)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -SwitchAllowed:$SwitchAllowed -NoWait
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes $Request.apiKey
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes $Request.apiKey ([bool]($Request.PSObject.Properties['allowSwitch'] -and $Request.allowSwitch))
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
@@ -1291,6 +1343,47 @@ function ShowModelsWindow {
     finally{$script:modelsView=$null;$dialog.Dispose()}
 }
 $modelsButton.Add_Click({try{ShowModelsWindow}catch{ShowFailure $_.Exception.Message}})
+# Switch model: the list of models with the planner's verdict, computed once here when the dialog opens (never on the timer). All of the logic is
+# in the UiFlow functions (rows -> items, button state, the click -> the request and its text); this only builds controls and wires events.
+$script:switchPickerRequested=''
+function ShowUiSwitchPicker {
+    $status=$null
+    try{$status=Get-FastLlmStatus -InstallRoot $script:installPath}catch{}
+    $picker=Get-FastLlmUiSwitchPickerModel -InstallRoot $script:installPath -CatalogPath (Join-Path $PSScriptRoot 'config/catalog.json') -Status $status
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Switch model';$dialog.Size=New-Object Drawing.Size(720,500);$dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
+    $intro=New-Object Windows.Forms.Label
+    $intro.Text='FastLLM finishes the requests in progress, stops the running model and starts the one you pick. If the new model cannot start, the old one is started again. "Fits" is an estimate; FastLLM checks again when it switches.'
+    $intro.Location=New-Object Drawing.Point(20,16);$intro.Size=New-Object Drawing.Size(660,62);$intro.UseMnemonic=$false
+    $list=New-Object Windows.Forms.ListBox
+    $list.Location=New-Object Drawing.Point(20,86);$list.Size=New-Object Drawing.Size(660,260);$list.HorizontalScrollbar=$true
+    foreach($pickerItem in @($picker.items)){[void]$list.Items.Add([string]$pickerItem.text)}
+    $message=New-Object Windows.Forms.Label
+    $message.Location=New-Object Drawing.Point(20,358);$message.Size=New-Object Drawing.Size(660,64);$message.Text=[string]$picker.message;$message.UseMnemonic=$false
+    $switchNow=New-Object Windows.Forms.Button
+    $switchNow.Text='Switch';$switchNow.Location=New-Object Drawing.Point(450,428);$switchNow.Size=New-Object Drawing.Size(110,32);$switchNow.Enabled=$false
+    $closeSwitch=New-Object Windows.Forms.Button
+    $closeSwitch.Text='Close';$closeSwitch.Location=New-Object Drawing.Point(570,428);$closeSwitch.Size=New-Object Drawing.Size(110,32)
+    $dialog.Controls.Add($intro);$dialog.Controls.Add($list);$dialog.Controls.Add($message);$dialog.Controls.Add($switchNow);$dialog.Controls.Add($closeSwitch)
+    $dialog.CancelButton=$closeSwitch
+    $closeSwitch.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
+    $list.Add_SelectedIndexChanged({
+        $selectedId=$null;if($list.SelectedIndex -ge 0){$selectedId=[string]@($picker.items)[$list.SelectedIndex].id}
+        $switchNow.Enabled=[bool](Get-FastLlmUiSwitchPickerButtonState -Items $picker.items -SelectedId $selectedId).enabled
+    })
+    $switchNow.Add_Click({
+        $selectedId=$null;if($list.SelectedIndex -ge 0){$selectedId=[string]@($picker.items)[$list.SelectedIndex].id}
+        $outcome=Invoke-FastLlmUiSwitchPick -InstallRoot $script:installPath -CatalogPath (Join-Path $PSScriptRoot 'config/catalog.json') -Items $picker.items -ModelId $selectedId
+        $message.Text=[string]$outcome.text
+        if($outcome.ok){$script:switchPickerRequested=[string]$outcome.text;$dialog.DialogResult='OK';$dialog.Close()}
+    })
+    $script:switchPickerRequested=''
+    SetTrayMenuAvailable $false
+    $result='Cancel'
+    try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    if([string]$result -ceq 'OK' -and $script:switchPickerRequested){$statusLabel.Text=$script:switchPickerRequested}
+}
+$switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFailure $_.Exception.Message}})
 # Open logs: the run logs folder (state\logs) in Explorer, created if it is not there yet.
 function OpenLogsFolder {
     ReadSideSelection
@@ -1787,6 +1880,7 @@ $timer.Add_Tick({
                     # Open chat and the ready-only actions follow this window's own run, not only a background one.
                     $runStatus=$null;if($isCurrentRun){$runStatus=$s}
                     if(UpdateUiRunState $runStatus $true){SetBusy $true}
+                    UpdateUiSwitchState $runStatus
                     if($isCurrentRun -and $s.active -and $s.phase -eq 'ready'){$statusLabel.Text=Format-FastLlmUiReadyStatus -State $s -ApiKeyStore $(if($s.PSObject.Properties['apiKey']){GetUiApiKeyStore});$progress.Visible=$false;$script:evidenceUrl=Get-FastLlmUiRunEvidenceUrl -State $s;$resultsLink.Visible=[bool]$script:evidenceUrl}
                     if($isCurrentRun -and $s.active -and $s.phase -eq 'ready' -and -not $script:servingNotesDone){
                         $lines=@()
@@ -1805,7 +1899,7 @@ $timer.Add_Tick({
         }
         $script:child.Process.WaitForExit();$text=$script:child.Snapshot();$code=$script:child.Process.ExitCode;$step=$script:step
         $script:child.Dispose();$script:child=$null;$script:step='idle'
-        $script:chatUrl=$null;$script:runReady=$false
+        $script:chatUrl=$null;$script:runReady=$false;UpdateUiSwitchState $null
         if($step -eq 'setup check'){
             if($code -notin @(0,2)){ShowFailure 'The read-only setup check could not complete. Open Diagnostics for details; no installation was attempted.';return}
             $diagnostic=ConvertFrom-FastLlmUiSetupCheckOutput -Text $text
@@ -1917,6 +2011,7 @@ $timer.Add_Tick({
     }
 })
 $script:bgNextPollUtc=[DateTime]::UtcNow.AddSeconds(2)
+RefreshUiSwitchState
 StartUiBackgroundPoll
 $form.Add_FormClosing({param($sender,$event)
     SetTrayMenuAvailable $false

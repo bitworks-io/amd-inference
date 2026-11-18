@@ -359,6 +359,10 @@ function Resolve-FastLlmSwitchTarget {
             $result.code = 'switch-target-already-serving'
             return [pscustomobject] $result
         }
+        # Switching never goes to an experimental model (not auto-eligible): that start is made directly, with its own acceptance. Refused here, before
+        # anything is stopped, rather than failing at the plan after the working server was stopped.
+        $autoEligible = $model[0].PSObject.Properties['autoEligible']
+        if ($autoEligible -and -not [bool] $autoEligible.Value) { $result.code = 'switch-target-experimental-model'; return [pscustomobject] $result }
         $modelsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'models' -Label 'Models root'
         $modelPath = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $model[0].file) -Label 'Model file'
         if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) { $result.code = 'switch-target-not-installed'; return [pscustomobject] $result }
@@ -382,6 +386,7 @@ function Get-FastLlmSwitchRefusalText {
         'switch-target-size-mismatch' { return "The file of the model $name is incomplete or damaged. Install it again first; a switch never downloads." }
         'switch-target-no-consent' { return "The license of the model $name has not been accepted on this PC. Install it first." }
         'switch-target-already-serving' { return "The model $name is already running." }
+        'switch-target-experimental-model' { return "The model $name is experimental. An experimental model is started from the command line (start -ModelId ... -AllowExperimentalModel), not by a switch." }
         'switch-recipe-experimental' { return 'An experimental recipe is started from the command line (start -Recipe ... -AcceptExperimental), not by a switch.' }
         'switch-recipe-needs-default-options' { return 'A recipe is measured for the default context profile and one request at a time; this server runs with another setting.' }
         default { return 'The switch target could not be checked. Nothing was changed.' }
@@ -438,6 +443,114 @@ function Remove-FastLlmSwitchRequestFile {
         Start-Sleep -Milliseconds 15
     }
     return $false
+}
+
+# ---- the switch basis: the hardware reading a run's plan was built from ----
+# While a model is loaded, the free memory of the card excludes it, so a fresh reading cannot say whether another model would fit once this one
+# is gone (and adding the running model's use back would invent a fit). The honest input is the reading this run's own plan was built from:
+# taken before this run's server loaded (for the target of a switch, after the old server stopped). A run that allows switching saves it once,
+# at its start, to state\switch-basis-<runId>.json: schemaVersion 1, runId, capturedAt, hardware and planOptions (the serving options). Nothing else: no key, no prompt, no path
+# outside the install. It is removed where the run's request file is removed. The window's model picker reads it, strictly.
+$script:FastLlmSwitchBasisMaxBytes = 65536
+$script:FastLlmSwitchBasisRunIdPattern = '^[0-9a-f]{32}\z'
+
+# The serving options a basis may carry, checked against an allowlist of names, types and values (no path, no model, nothing else). Returns an
+# ordered table of the checked values, or $null for an unknown name, a wrong type, an out-of-range value or a missing Profile.
+function ConvertTo-FastLlmSwitchBasisPlanOptions {
+    param($Options)
+    if ($null -eq $Options) { return $null }
+    $pairs = @()
+    if ($Options -is [System.Collections.IDictionary]) { foreach ($key in @($Options.Keys)) { $pairs += , @([string] $key, $Options[$key]) } }
+    elseif ($Options -is [System.Management.Automation.PSCustomObject]) { foreach ($property in @($Options.PSObject.Properties)) { $pairs += , @([string] $property.Name, $property.Value) } }
+    else { return $null }
+    $whole = { param($Value) return [bool] ($Value -is [int] -or $Value -is [long]) }
+    $checked = [ordered] @{}
+    foreach ($pair in $pairs) {
+        $name = $pair[0]
+        $value = $pair[1]
+        switch -CaseSensitive ($name) {
+            'Profile' { if ($value -isnot [string] -or @('fast', 'balanced', 'quality') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
+            'AllowExperimentalModel' { if ($value -isnot [bool]) { return $null }; $checked[$name] = [bool] $value }
+            'ServerPort' { if (-not (& $whole $value) -or [long] $value -lt 1024 -or [long] $value -gt 65535) { return $null }; $checked[$name] = [int] $value }
+            'Thinking' { if ($value -isnot [string] -or @('auto', 'off') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
+            'ChatPage' { if ($value -isnot [string] -or @('off', 'on') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
+            'KvContextProfile' { if ($value -isnot [string] -or @('default', 'long') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
+            'KvSlots' { if (-not (& $whole $value) -or @(1, 2) -notcontains [int] $value) { return $null }; $checked[$name] = [int] $value }
+            default { return $null }
+        }
+    }
+    if (-not $checked.Contains('Profile')) { return $null }
+    return $checked
+}
+
+# Saves the basis for a run. $true when it was written; $false (and no file) for a reading that is not a valid hardware reading, that would
+# not fit in 64 KiB, or for a run id that is not a run id. Never throws: a basis is an aid to the window, never a reason a start fails.
+function Write-FastLlmSwitchBasis {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $RunId, $Hardware, $PlanOptions)
+    try {
+        if ($RunId -cnotmatch $script:FastLlmSwitchBasisRunIdPattern -or $null -eq $Hardware) { return $false }
+        Assert-FastLlmHardware -Hardware $Hardware
+        $checkedOptions = ConvertTo-FastLlmSwitchBasisPlanOptions -Options $PlanOptions
+        if ($null -eq $checkedOptions) { return $false }
+        $document = [ordered] @{ schemaVersion = 1; runId = $RunId; capturedAt = (Get-Date).ToUniversalTime().ToString('o'); hardware = $Hardware; planOptions = $checkedOptions }
+        $size = (New-Object Text.UTF8Encoding($false)).GetByteCount((ConvertTo-Json -InputObject $document -Depth 12))
+        # Room for the byte order mark Windows PowerShell 5.1 writes.
+        if ($size -gt ($script:FastLlmSwitchBasisMaxBytes - 16)) { return $false }
+        Write-FastLlmState -InstallRoot $InstallRoot -State $document -FileName ('switch-basis-' + $RunId + '.json')
+        return $true
+    }
+    catch { return $false }
+}
+
+# Reads the basis of a run, strictly. Returns { schemaVersion, runId, capturedAt, hardware } or $null: a missing file, a file over 64 KiB, a
+# reparse point or a directory, anything that is not exactly the document above, a runId that is not the run asked for, or hardware that does
+# not pass Assert-FastLlmHardware. Never a partial object, never an error.
+function Read-FastLlmSwitchBasis {
+    param([Parameter(Mandatory = $true)][string] $InstallRoot, [string] $RunId)
+    try {
+        if ($RunId -cnotmatch $script:FastLlmSwitchBasisRunIdPattern) { return $null }
+        $path = Join-Path (Get-FastLlmStateRoot -InstallRoot $InstallRoot) ('switch-basis-' + $RunId + '.json')
+        $attributes = Get-FastLlmStateFileAttributes -Path $path
+        if ($null -eq $attributes -or [int] $attributes -eq -1) { return $null }
+        if (([int] $attributes -band [int] [IO.FileAttributes]::ReparsePoint) -ne 0 -or ([int] $attributes -band [int] [IO.FileAttributes]::Directory) -ne 0) { return $null }
+        # At most 64 KiB are read, checked on the opened handle; the text must be one JSON object (a one-element array is not a basis).
+        $text = $null
+        $stream = $null
+        try {
+            $stream = New-Object IO.FileStream($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            if ($stream.Length -gt $script:FastLlmSwitchBasisMaxBytes) { return $null }
+            $buffer = New-Object byte[] ($script:FastLlmSwitchBasisMaxBytes + 1)
+            $total = 0
+            while ($total -le $script:FastLlmSwitchBasisMaxBytes) {
+                $count = $stream.Read($buffer, $total, ($script:FastLlmSwitchBasisMaxBytes + 1 - $total))
+                if ($count -le 0) { break }
+                $total += $count
+            }
+            if ($total -gt $script:FastLlmSwitchBasisMaxBytes) { return $null }
+            $text = (New-Object Text.UTF8Encoding($false)).GetString($buffer, 0, $total)
+        }
+        finally { if ($stream) { $stream.Dispose() } }
+        $text = $text.TrimStart([char] 0xFEFF)
+        if (-not $text.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) { return $null }
+        $document = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+        if ($null -eq $document -or $document -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+        if ((@($document.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'capturedAt,hardware,planOptions,runId,schemaVersion') { return $null }
+        if (-not ($document.schemaVersion -is [int] -or $document.schemaVersion -is [long]) -or [long] $document.schemaVersion -ne 1) { return $null }
+        if ($document.runId -isnot [string] -or $document.runId -cne $RunId) { return $null }
+        # PowerShell 7 turns an ISO time into a date while reading; Windows PowerShell 5.1 leaves the text. Both are accepted, and the time is returned as ISO text.
+        $capturedAt = [datetime]::MinValue
+        $capturedText = $null
+        if ($document.capturedAt -is [datetime]) { $capturedText = ([datetime] $document.capturedAt).ToUniversalTime().ToString('o') }
+        elseif ($document.capturedAt -is [string] -and [datetime]::TryParse([string] $document.capturedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref] $capturedAt)) { $capturedText = [string] $document.capturedAt }
+        else { return $null }
+        if ($document.hardware -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+        Assert-FastLlmHardware -Hardware $document.hardware
+        if ($document.planOptions -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+        $checkedOptions = ConvertTo-FastLlmSwitchBasisPlanOptions -Options $document.planOptions
+        if ($null -eq $checkedOptions) { return $null }
+        return [pscustomobject] [ordered] @{ schemaVersion = 1; runId = [string] $document.runId; capturedAt = $capturedText; hardware = $document.hardware; planOptions = ([pscustomobject] $checkedOptions) }
+    }
+    catch { return $null }
 }
 
 # True when a stop was asked for against a previous run of this start (a stop during a model switch names the run whose document was current).
@@ -1154,6 +1267,8 @@ function Invoke-FastLlmSupervisedServer {
     $switchPriorStopPaths = @()
     $switchAccepted = $false
     $switchRunFailureCode = $null
+    $switchBasisHardware = $null
+    $switchBasisPlanOptions = $null
     if ($AllowSwitch) {
         if ($null -eq $SwitchContext) { throw 'A start that allows a model switch goes through Start-FastLlmServer: the supervisor cannot start the other model by itself.' }
         if (-not $CatalogPath) { throw 'A start that allows a model switch requires the verified catalog path.' }
@@ -1168,6 +1283,9 @@ function Invoke-FastLlmSupervisedServer {
             $state['switch'] = New-FastLlmSwitchBlock -From ([string] $switchOrigin.from) -To ([string] $switchOrigin.to) -Pending -FailureCode ([string] $switchOrigin.failureCode)
         }
         if ($null -ne $SwitchContext['priorStopPaths']) { $switchPriorStopPaths = @($SwitchContext['priorStopPaths']) }
+        # The reading this run's plan was built from, taken from the table once (a later run is given its own).
+        if ($SwitchContext.Contains('basisHardware')) { $switchBasisHardware = $SwitchContext['basisHardware']; $SwitchContext['basisHardware'] = $null }
+        if ($SwitchContext.Contains('basisPlanOptions')) { $switchBasisPlanOptions = $SwitchContext['basisPlanOptions']; $SwitchContext['basisPlanOptions'] = $null }
     }
     # A HIP plan (the engine component's lane) has no Vulkan memory policy, BAR mitigation, device binding or Vulkan identity capture.
     $isHipPlan = [bool] ($Plan.PSObject.Properties['backend'] -and ([string] $Plan.backend) -ieq 'hip')
@@ -1323,6 +1441,7 @@ function Invoke-FastLlmSupervisedServer {
     if ($null -ne $SidecarSession) { $state.sidecars = @(Enter-FastLlmSidecarRun -Session $SidecarSession -InstallRoot $InstallRoot -State $state -ApiKeyHolder $ApiKeyHolder) }
     $stopPath = Join-Path $stateRoot ('stop-' + $state.runId)
     $switchRequestPath = Join-Path $stateRoot ('switch-' + $state.runId + '.json')
+    $switchBasisPath = Join-Path $stateRoot ('switch-basis-' + $state.runId + '.json')
     $sandbox = New-FastLlmRuntimeSandbox -InstallRoot $InstallRoot
     $hostProcess = New-Object Bitworks.FastLlm.ProcessHost
     $spawned = $false
@@ -1330,6 +1449,9 @@ function Invoke-FastLlmSupervisedServer {
     $baseUrl = $Plan.endpoint -replace '/v1$', ''
     try {
         # A stop asked for while the previous run was being replaced by this one names that run. Stop always wins: nothing is launched.
+        # A run that allows switching saves, once, the hardware reading its own plan was built from (Start-FastLlmServer hands it over in the table of the
+        # sequence); it is removed with the request file below. Best-effort, and nothing at all for a default run.
+        if ($AllowSwitch -and $switchBasisHardware) { [void] (Write-FastLlmSwitchBasis -InstallRoot $InstallRoot -RunId ([string] $state.runId) -Hardware $switchBasisHardware -PlanOptions $switchBasisPlanOptions) }
         if ($AllowSwitch -and (Test-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths)) { $state.stopReason='user'; $state.phase='stopped'; return 0 }
         if ($null -ne $deviceBindingGate) { throw $deviceBindingGate }
         # Refuse an already occupied port with a plain message. A same-user bind race after this check remains possible.
@@ -1870,6 +1992,7 @@ function Invoke-FastLlmSupervisedServer {
                         # The switch request is run-scoped too: a plain leftover is removed, an unsafe object is never touched. A stop that named a
                         # previous run was honoured by now.
                         try { [void] (Remove-FastLlmSwitchRequestFile -Path $switchRequestPath) } catch { $null = $_ }
+                        try { [void] (Remove-FastLlmSwitchRequestFile -Path $switchBasisPath) } catch { $null = $_ }
                         try { Remove-FastLlmSwitchPriorStop -Paths $switchPriorStopPaths } catch { $null = $_ }
                     }
                 }

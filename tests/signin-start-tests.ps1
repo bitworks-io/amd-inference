@@ -292,6 +292,78 @@ $r = Invoke-Case (New-FakeHost) $root
 Assert-Equal $r.result 'started' 'with the key setting off the start is requested'
 Assert-True (-not $script:Captured['arguments'].ContainsKey('UseApiKey')) 'without the key the start arguments have no key flag'
 
+# the saved allowSwitch (the window's "Allow switching models" setting) is honoured by the sign-in start, read through the window's own function:
+# the host is then asked for -SwitchAllowed exactly as a window background start is, so the basis is written and the picker works after a sign-in start
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "allowSwitch": true, "serverPort": 18181 }')
+$r = Invoke-Case (New-FakeHost) $root
+Assert-Equal $r.result 'started' 'with allowSwitch saved the start is requested'
+Assert-True ($script:Captured['arguments'].ContainsKey('SwitchAllowed') -and $script:Captured['arguments'].SwitchAllowed -eq $true) 'a saved allowSwitch true: the launch arguments carry SwitchAllowed'
+Assert-Equal ([int]$script:Captured['arguments'].ServerPort) 18181 'with allowSwitch saved the other saved serving settings still reach the host'
+Assert-True (-not $script:Captured['arguments'].ContainsKey('UseApiKey')) 'allowSwitch alone does not ask for the key'
+foreach ($noSwitch in @(
+        @{ name = 'allowSwitch absent'; text = '{ "serverPort": 18181 }' },
+        @{ name = 'allowSwitch false'; text = '{ "allowSwitch": false }' },
+        @{ name = 'allowSwitch the text "true"'; text = '{ "allowSwitch": "true" }' },
+        @{ name = 'allowSwitch 1'; text = '{ "allowSwitch": 1 }' },
+        @{ name = 'settings that do not parse'; text = '{ not json' },
+        @{ name = 'settings that are an array'; text = '[ { "allowSwitch": true } ]' })) {
+    $root = New-Install
+    [IO.File]::WriteAllText((Join-Path $root 'settings.json'), $noSwitch.text)
+    $r = Invoke-Case (New-FakeHost) $root
+    Assert-Equal $r.result 'started' "$($noSwitch.name): the launch still starts"
+    Assert-True (-not $script:Captured['arguments'].ContainsKey('SwitchAllowed')) "$($noSwitch.name): no SwitchAllowed in the launch arguments"
+}
+$root = New-Install
+$r = Invoke-Case (New-FakeHost) $root
+Assert-True ($r.result -ceq 'started' -and -not $script:Captured['arguments'].ContainsKey('SwitchAllowed')) 'no settings.json: no SwitchAllowed, and the launch starts'
+# the key and the switch setting are independent: both ride on the one start
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "on", "allowSwitch": true }')
+$r = Invoke-Case (New-FakeHost) $root
+Assert-True ($r.result -ceq 'started' -and [string]$script:Captured['arguments'].UseApiKey -ceq 'on' -and $script:Captured['arguments'].SwitchAllowed -eq $true) 'key on and allowSwitch true: the one start carries UseApiKey on and SwitchAllowed'
+# unreadable settings with the key store present: #65's typed refusal stays, and nothing is started (the switch setting is never a way around it)
+$root = New-Install
+[IO.File]::WriteAllBytes((Join-Path $root 'api-key.dat'), [byte[]](1, 2, 3, 4))
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ not json')
+$r = Invoke-Case (New-FakeHost) $root
+$file = Read-Result $root
+Assert-True ($r.result -ceq 'host-failed' -and [string]$file.failureCode -ceq 'api-key-setting-unreadable' -and (Count-Calls 'start') -eq 0) 'unreadable settings with a key store: the typed api-key-setting-unreadable refusal, nothing started'
+
+# the sign-in path never loads window code: the opt-in reader is the shared src/FastLlm.UiSettings.ps1, and SignInStart.ps1 neither loads nor names
+# the window's files (a source scan), and the reader resolves with the window's files absent (a child process with only the two files copied)
+$signInSource = [IO.File]::ReadAllText((Join-Path $repo 'src/FastLlm.SignInStart.ps1'))
+$signInCode = (($signInSource -split "`n") | Where-Object { $_.TrimStart() -cnotlike '#*' }) -join "`n"
+Assert-True ($signInCode -cnotmatch 'FastLlm\.UiFlow|fast-llm-ui|Windows\.Forms|Add-Type|Read-FastLlmUiSettings|Write-FastLlmUiSettings') 'SignInStart.ps1 code neither loads nor references FastLlm.UiFlow.ps1, fast-llm-ui.ps1, forms or the window settings functions'
+Assert-True ($signInCode -cmatch "FastLlm\.UiSettings\.ps1") 'SignInStart.ps1 loads the shared reader file FastLlm.UiSettings.ps1'
+$sharedSource = [IO.File]::ReadAllText((Join-Path $repo 'src/FastLlm.UiSettings.ps1'))
+Assert-True ($sharedSource -cnotmatch '(?m)^\s*[^#\r\n]*(\. \(Join-Path|Add-Type|Windows\.Forms|System\.Windows|\bSet-Content\b|WriteAllText|Out-File)') 'the shared reader file loads nothing, has no forms or Add-Type and writes nothing'
+$readerDefinitions = @(Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Filter '*.ps1' | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?m)^function Get-FastLlmUiAllowSwitch\b' } | ForEach-Object Name)
+Assert-True ($readerDefinitions.Count -eq 1 -and $readerDefinitions[0] -ceq 'FastLlm.UiSettings.ps1') 'there is one copy of the reader and it lives in FastLlm.UiSettings.ps1'
+$isolated = Join-Path $work ('isolated-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $isolated | Out-Null
+foreach ($copyName in @('FastLlm.SignInStart.ps1', 'FastLlm.UiSettings.ps1')) { Copy-Item -LiteralPath (Join-Path $repo "src/$copyName") -Destination (Join-Path $isolated $copyName) }
+Assert-True (@(Get-ChildItem -LiteralPath $isolated -File).Count -eq 2 -and -not (Test-Path -LiteralPath (Join-Path $isolated 'FastLlm.UiFlow.ps1'))) 'the isolated folder holds only the sign-in file and the shared reader (no window file)'
+$isolatedInstall = New-Install
+$isolatedChild = Join-Path $work ('isolated-child-' + [guid]::NewGuid().ToString('N') + '.ps1')
+[IO.File]::WriteAllText($isolatedChild, @'
+param([string]$Folder, [string]$Root)
+$ErrorActionPreference = 'Stop'
+. (Join-Path $Folder 'FastLlm.SignInStart.ps1')
+$source = (Get-Command Get-FastLlmUiAllowSwitch).ScriptBlock.File
+$uiFlowLoaded = [bool](Get-Command Get-FastLlmUiPendingDecision -ErrorAction SilentlyContinue)
+$settingsPath = Join-Path $Root 'settings.json'
+$absent = Get-FastLlmSignInAllowSwitch -InstallRoot $Root
+[IO.File]::WriteAllText($settingsPath, '{ "allowSwitch": true }')
+$on = Get-FastLlmSignInAllowSwitch -InstallRoot $Root
+[IO.File]::WriteAllText($settingsPath, '{ not json')
+$bad = Get-FastLlmSignInAllowSwitch -InstallRoot $Root
+Write-Output ('RESULT ' + (Split-Path -Leaf $source) + ' ' + $uiFlowLoaded + ' ' + $absent + ' ' + $on + ' ' + $bad)
+'@, (New-Object Text.UTF8Encoding($false)))
+$isolatedShell = (Get-Process -Id $PID).Path
+$isolatedOutput = @(& $isolatedShell -NoLogo -NoProfile -NonInteractive -File $isolatedChild -Folder $isolated -Root $isolatedInstall 2>&1 | ForEach-Object { [string]$_ })
+Assert-True (($isolatedOutput -join "`n") -ceq 'RESULT FastLlm.UiSettings.ps1 False False True False') "with the window's files absent the sign-in reader resolves from the shared file: not loaded, absent off, true on, unreadable off (got: $($isolatedOutput -join ' | '))"
+
 # the launcher tool itself: it runs in its own process, so it must bring in the FastLlm module (the key-store pre-check of the real
 # background start lives there). The real Start-FastLlmBackgroundHost runs with its Windows-only checks and its request writer replaced
 # by a probe that records the request and stops: nothing is ever launched.
@@ -348,6 +420,20 @@ $file = Read-Result $root
 Assert-Equal ([string]$file.result) 'host-failed' 'an unreadable key store is a failed start'
 Assert-Equal ([string]$file.failureCode) 'api-key-unavailable' 'the launcher tool records the typed api-key-unavailable code for an unreadable key store'
 Assert-True (-not (Test-Path -LiteralPath $tool.probeFile)) 'nothing is requested when the key store is unreadable'
+
+# the real launcher tool (its own process, the real background start): a saved allowSwitch reaches the request the host is given
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "on", "allowSwitch": true }')
+$tool = Invoke-LauncherTool $root 'readable'
+$file = Read-Result $root
+Assert-True (Test-Path -LiteralPath $tool.probeFile) "the launcher tool with the key and the switch setting on reaches the point where the request is written (result: $($file.result) $($file.failureCode))"
+$probeRequest = Get-Content -LiteralPath $tool.probeFile -Raw | ConvertFrom-Json
+Assert-True ([string]$probeRequest.apiKey -ceq 'on' -and $probeRequest.allowSwitch -eq $true) 'the request of a sign-in start carries both the key flag and allowSwitch (the host then writes the switch basis)'
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{ "apiKey": "on" }')
+$tool = Invoke-LauncherTool $root 'readable'
+$probeRequest = Get-Content -LiteralPath $tool.probeFile -Raw | ConvertFrom-Json
+Assert-True ([string]$probeRequest.apiKey -ceq 'on' -and -not $probeRequest.PSObject.Properties['allowSwitch']) 'without a saved allowSwitch the request of a sign-in start has no allowSwitch field'
 
 # a second run overwrites the first result
 $root = New-Install

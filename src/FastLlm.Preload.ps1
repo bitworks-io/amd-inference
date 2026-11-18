@@ -124,7 +124,7 @@ function Get-FastLlmPreloadSet {
             try {
                 $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $CatalogPath -Profile balanced -RecipesPath $RecipesPath -GpuVariantsPath $GpuVariantsPath -NoEngineExecution
             } catch {
-                if ([string] $_.Exception.Message -like 'No catalog profile fits*') {
+                if ([string] $_.Exception.Data['FastLlmFailureCode'] -ceq 'no-profile-fits') {
                     $emptyTiers += [pscustomobject]@{ tier = $tier.id; budget = $budget }
                     continue
                 }
