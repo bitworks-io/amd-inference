@@ -1302,7 +1302,7 @@ try {
         $w=New-SwitchWorld ('basis-options-'+$optCase.name) @{ 'model-a'=@($optCase.mode) }
         Use-World $w
         $st.kv=$optCase.kv
-        $r=Invoke-SwitchScenario -Label ('basis-options-'+$optCase.name) -World $w -Steps @((New-Step @{ phase='ready'; modelId='model-a' } 'stop' @{ timeoutSeconds=120 }))
+        $r=Invoke-SwitchScenario -Label ('basis-options-'+$optCase.name) -World $w -Steps @((New-Step @{ phase='ready'; modelId='model-a' } 'stop'))
         $savedBasis=$st.basisWrites[0].Text | ConvertFrom-Json
         $servingOf=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $r.runs[0].plan
         $savedNames=(@($savedBasis.planOptions.PSObject.Properties.Name) | Sort-Object) -join ','
