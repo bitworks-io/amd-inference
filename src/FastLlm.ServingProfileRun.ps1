@@ -11,7 +11,9 @@ function Get-FastLlmServingProfileVocabulary {
 # (the default argument goldens pin them), so a short form, with a space or an equals sign, is never the default run.
 function Test-FastLlmServingProfileShortForm {
     param([string[]] $Arguments)
-    foreach ($argument in @($Arguments)) {
+    # A null list has no short form (Windows PowerShell 5.1 returns $null for @($x) on an array-typed $null, so it is not wrapped).
+    if ($null -eq $Arguments) { return $false }
+    foreach ($argument in $Arguments) {
         foreach ($short in @('-np', '-ctk', '-ctv', '-c')) {
             if ($argument -ceq $short -or ([string] $argument).StartsWith($short + '=', [StringComparison]::Ordinal)) { return $true }
         }

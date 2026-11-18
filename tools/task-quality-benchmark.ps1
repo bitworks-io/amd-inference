@@ -151,13 +151,15 @@ function New-TaskQualityAbortRecord([string]$OutputPath,$State,[string]$ReasonCo
 # A child host started with -File receives a list as one comma-joined string, so a list is split on commas wherever it is read.
 function Expand-TaskQualityLanes([string[]]$Lanes){
     $names=@()
-    foreach($entry in @($Lanes)){foreach($name in ([string]$entry -split ',')){$names+= $name}}
+    # Windows PowerShell 5.1 gives back $null for @($x) on an array-typed $null, so a null list is skipped, not wrapped.
+    if($null -ne $Lanes){foreach($entry in $Lanes){if($null -ne $entry){foreach($name in ([string]$entry -split ',')){$names+= $name}}}}
     return $names
 }
 
 function Assert-TaskQualityLanes([string[]]$Lanes,[string[]]$KnownLanes){
+    # A null list is a refusal; .Length of a real array never depends on @() wrapping, which differs between Windows PowerShell 5.1 and 7.
     $bad=@($Lanes|Where-Object {$KnownLanes -cnotcontains $_})
-    if(@($Lanes).Count -lt 1 -or $bad.Count -gt 0 -or @($Lanes|Select-Object -Unique).Count -ne @($Lanes).Count){
+    if($null -eq $Lanes -or $Lanes.Length -lt 1 -or $bad.Count -gt 0 -or @($Lanes|Select-Object -Unique).Count -ne $Lanes.Length){
         $exception=New-Object System.InvalidOperationException 'task-quality-lane-unknown: -AcceptedLanes must name one or more distinct lanes from the semantic-smoke lane table.'
         $exception.Data['FastLlmFailureCode']='task-quality-lane-unknown'
         throw $exception
@@ -165,7 +167,9 @@ function Assert-TaskQualityLanes([string[]]$Lanes,[string[]]$KnownLanes){
 }
 
 function Get-TaskQualityArgumentValue([object[]]$Arguments,[string]$Name,[string]$Default){
-    for($i=0;$i -lt @($Arguments).Count-1;$i++){if([string]$Arguments[$i] -ceq $Name){return [string]$Arguments[$i+1]}}
+    # A null list has no value. .Length of a real array never depends on @() wrapping, which differs between Windows PowerShell 5.1 and 7.
+    if($null -eq $Arguments){return $Default}
+    for($i=0;$i -lt ($Arguments.Length-1);$i++){if([string]$Arguments[$i] -ceq $Name){return [string]$Arguments[$i+1]}}
     return $Default
 }
 
@@ -176,7 +180,9 @@ function Get-TaskQualityServingSetup($State){
     $perSlotProperty=$recipe.PSObject.Properties['contextPerSlot']
     $profileProperty=$recipe.PSObject.Properties['profile']
     $argumentsProperty=$recipe.PSObject.Properties['requestedArguments']
-    $arguments=if($argumentsProperty){@($argumentsProperty.Value)}else{@()}
+    # Not an if-expression: one that yields @() assigns nothing, so $arguments would be $null.
+    $arguments=@()
+    if($argumentsProperty){$arguments=@($argumentsProperty.Value)}
     $total=[int]$recipe.contextSize
     return [ordered]@{
         profile=$(if($profileProperty){[string]$profileProperty.Value}else{'default'})
