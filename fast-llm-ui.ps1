@@ -480,15 +480,16 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
     if($script:installPath){try{[void](Sync-FastLlmExperimentalSwitch -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{if(Test-FastLlmUiStepReadsExperimentalSwitch -Arguments $Arguments){throw "The experimental components setting could not be applied to the install folder: $($_.Exception.Message)"}}}
     # The automatic-install setting is mirrored the same way; a mirror failure blocks only the steps that read it.
     if($script:installPath){try{[void](Sync-FastLlmComponentLicenseSetting -SourceRoot $script:settingsRoot -TargetRoot $script:installPath)}catch{if(Test-FastLlmUiStepReadsLicenseSetting -Arguments $Arguments){throw "The automatic install setting could not be applied to the install folder: $($_.Exception.Message)"}}}
-    $info=New-Object Diagnostics.ProcessStartInfo
-    $info.FileName=(Get-Process -Id $PID).Path
     if($Step -ceq 'vc prepare'){
         if(@($Arguments).Count -ne 0){throw 'VC++ preparation accepts no arbitrary child arguments.'}
+        $info=New-Object Diagnostics.ProcessStartInfo
+        $info.FileName=(Get-Process -Id $PID).Path
         $argsList=Get-FastLlmUiVcPrepareArguments -ProjectRoot $PSScriptRoot -CacheRoot $script:vcCacheRoot
+        $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
     }else{
-        $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $PSScriptRoot 'fast-llm.ps1'))+$Arguments
+        # A fast-llm.ps1 child: the one helper that also asks it for UTF-8 on stderr (see the helper's contract in src/FastLlm.UiFlow.ps1).
+        $info=New-FastLlmUiCliStartInfo -AppRoot $PSScriptRoot -Arguments $Arguments
     }
-    $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
     if($Step -ceq 'serving'){
         # Remember the previous run so a failure code left by an earlier run is never blamed on this start.
         $script:servingPreviousRunId=''
@@ -511,10 +512,7 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
 function LaunchSideStep([string]$Step,[object[]]$Arguments) {
     if($Step -cnotin @('api check','bundle list','bundle save')){throw 'That step cannot run beside a server.'}
     if($script:sideChild){throw 'Another check is still running. Wait for it to finish.'}
-    $info=New-Object Diagnostics.ProcessStartInfo
-    $info.FileName=(Get-Process -Id $PID).Path
-    $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $PSScriptRoot 'fast-llm.ps1'))+$Arguments
-    $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
+    $info=New-FastLlmUiCliStartInfo -AppRoot $PSScriptRoot -Arguments $Arguments
     $script:sideChild=New-Object Bitworks.FastLlm.ProcessHost
     $script:sideStep=$Step
     try{$script:sideChild.Start($info)}catch{$script:sideChild.Dispose();$script:sideChild=$null;$script:sideStep='idle';SetBusy ([bool]($script:child -or $script:vcBroker));throw}

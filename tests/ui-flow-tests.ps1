@@ -901,12 +901,10 @@ try {
     $tiny=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/amd-4gb.json') -Raw|ConvertFrom-Json
     $tiny.adapters[0].freeVramMiB=100
     [IO.File]::WriteAllText($tinyFile,(ConvertTo-Json -InputObject $tiny -Depth 6),(New-Object Text.UTF8Encoding($false)))
-    # The same child the window starts in LaunchStep: the host's own path, Join-FastLlmProcessArguments, no shell, no window, both streams captured.
+    # The same child the window starts for a fast-llm.ps1 action (the real helper: host path, Join-FastLlmProcessArguments, UTF-8 stderr and
+    # FASTLLM_STDERR_ENCODING=utf-8), through ProcessHost with no shell and no window, both streams captured.
     function CaptureRefusal([string[]]$ActionArguments) {
-        $info=New-Object Diagnostics.ProcessStartInfo
-        $info.FileName=(Get-Process -Id $PID).Path
-        $argsList=@('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',(Join-Path $root 'fast-llm.ps1'))+$ActionArguments
-        $info.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} $argsList
+        $info=New-FastLlmUiCliStartInfo -AppRoot $root -Arguments $ActionArguments
         $info.UseShellExecute=$false
         $info.CreateNoWindow=$true
         $child=New-Object Bitworks.FastLlm.ProcessHost
@@ -947,6 +945,54 @@ try {
         Check ($wideResult.exitCode -eq 1) 'A refusal that echoes a path with non-ASCII characters exits 1 through the window ProcessHost child.'
         Check (@($wideLines|Where-Object{$_ -ceq ('JSON file was not found: '+$missingFile)}).Count -eq 1) 'The window capture of a refusal that echoes a path with non-ASCII characters holds the message whole and unchanged on one line.'
         Check ($wideResult.text -cnotmatch '\x1b\[' -and -not $wideResult.text.Contains([string][char]0xFFFD)) 'The capture of the non-ASCII refusal has no ANSI escape and no replacement character.'
+        # Without the variable (or with any value but exactly 'utf-8') the child writes as before, in its console code page. The same child is run with
+        # System.Diagnostics.Process and its stderr is read as raw bytes. The console code page of a child under these launch settings is measured by
+        # a test-only probe child (a script in the temp folder), not assumed.
+        function RunRawChild($info) {
+            $info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+            $process=New-Object Diagnostics.Process
+            $process.StartInfo=$info
+            try {
+                [void]$process.Start()
+                $errorBytes=New-Object IO.MemoryStream
+                $errorCopy=$process.StandardError.BaseStream.CopyToAsync($errorBytes)
+                $outputRead=$process.StandardOutput.ReadToEndAsync()
+                if (-not $process.WaitForExit(120000)) { try { $process.Kill() } catch {}; throw 'The raw-bytes child did not exit in time.' }
+                if (-not $errorCopy.Wait(30000) -or -not $outputRead.Wait(30000)) { throw 'The raw-bytes child output was not complete in time.' }
+                return [pscustomobject]@{exitCode=$process.ExitCode;stderr=$errorBytes.ToArray();stdout=$outputRead.Result}
+            } finally { $process.Dispose(); $global:LASTEXITCODE=0 }
+        }
+        function ContainsBytes([byte[]]$Haystack,[byte[]]$Needle) {
+            for ($i=0; $i -le $Haystack.Length-$Needle.Length; $i++) {
+                $j=0
+                while ($j -lt $Needle.Length -and $Haystack[$i+$j] -eq $Needle[$j]) { $j++ }
+                if ($j -eq $Needle.Length) { return $true }
+            }
+            return $false
+        }
+        $probeFile=Join-Path $refusalTemp 'codepage-probe.ps1'
+        [IO.File]::WriteAllText($probeFile,'[Console]::Out.Write([Console]::OutputEncoding.CodePage)')
+        $probeInfo=New-Object Diagnostics.ProcessStartInfo
+        $probeInfo.FileName=(Get-Process -Id $PID).Path
+        $probeInfo.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',$probeFile)
+        $probeResult=RunRawChild $probeInfo
+        $codePage=[int]($probeResult.stdout.Trim())
+        $consoleEncoding=[Text.Encoding]::GetEncoding($codePage)
+        $wideMessage='JSON file was not found: '+$missingFile
+        $expectedConsoleBytes=$consoleEncoding.GetBytes($wideMessage+[Environment]::NewLine)
+        $utf8Bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($wideMessage+[Environment]::NewLine)
+        $encodingsDiffer=-not [Linq.Enumerable]::SequenceEqual([byte[]]$expectedConsoleBytes,[byte[]]$utf8Bytes)
+        Write-Output ("INFO: the child console code page is $codePage; the console and UTF-8 bytes of the message "+$(if($encodingsDiffer){'differ'}else{'are the same'})+'.')
+        foreach($value in @($null,'UTF-8','utf8','utf-8 ','')) {
+            $label=$(if($null -eq $value){'no variable'}else{"the value '$value'"})
+            $rawInfo=New-FastLlmUiCliStartInfo -AppRoot $root -Arguments @('plan','-HardwareFile',$missingFile,'-InstallRoot',(Join-Path $refusalTemp 'install-wide'))
+            [void]$rawInfo.EnvironmentVariables.Remove('FASTLLM_STDERR_ENCODING')
+            if ($null -ne $value) { $rawInfo.EnvironmentVariables['FASTLLM_STDERR_ENCODING']=$value }
+            $raw=RunRawChild $rawInfo
+            Check ($raw.exitCode -eq 1) "With $label the non-ASCII refusal exits 1."
+            Check (ContainsBytes $raw.stderr $expectedConsoleBytes) "With $label stderr is the message in the console code page, one line, as before."
+            if ($encodingsDiffer) { Check (-not (ContainsBytes $raw.stderr $utf8Bytes)) "With $label stderr is not the UTF-8 bytes of the message." }
+        }
     } finally {
         if (Test-Path -LiteralPath $wideDir) { try { [IO.Directory]::Delete($wideDir, $false) } catch {} }
         $wideInstall=Join-Path $refusalTemp 'install-wide'
@@ -954,6 +1000,8 @@ try {
     }
 } finally {
     if (Test-Path -LiteralPath $tinyFile) { [IO.File]::Delete($tinyFile) }
+    $probeLeftover = Join-Path $refusalTemp 'codepage-probe.ps1'
+    if (Test-Path -LiteralPath $probeLeftover) { [IO.File]::Delete($probeLeftover) }
     foreach ($leftover in @('install-does-not-fit','install-nothing-fits')) {
         $leftoverPath = Join-Path $refusalTemp $leftover
         if (Test-Path -LiteralPath $leftoverPath) { try { [IO.Directory]::Delete($leftoverPath, $false) } catch {} }
@@ -987,8 +1035,37 @@ for($i=0;$i -lt $catchStatements.Count;$i++){
 }
 Check ($scrubIndex -ge 0 -and $redirectIndex -gt $scrubIndex) 'The key scrub comes before the failure message is written, and the write is guarded by [Console]::IsErrorRedirected.'
 $redirectStatement=$catchStatements[$redirectIndex]
-Check ($redirectStatement.Clauses.Count -eq 1 -and @($redirectStatement.Clauses[0].Item2.Statements).Count -eq 1 -and $redirectStatement.Clauses[0].Item2.Statements[0].Extent.Text -ceq '[Console]::Error.WriteLine($failureMessage)') 'With stderr redirected the catch writes the message with [Console]::Error.WriteLine.'
+# Redirected stderr: only the exact value 'utf-8' of FASTLLM_STDERR_ENCODING gives the UTF-8 writer; anything else is today's [Console]::Error.WriteLine.
+$redirectBody=@($redirectStatement.Clauses[0].Item2.Statements)
+$gate=$(if($redirectStatement.Clauses.Count -eq 1 -and $redirectBody.Count -eq 1 -and $redirectBody[0] -is [Management.Automation.Language.IfStatementAst]){$redirectBody[0]}else{$null})
+Check ($null -ne $gate -and $gate.Clauses.Count -eq 1 -and $gate.Clauses[0].Item1.Extent.Text -ceq '[string] $env:FASTLLM_STDERR_ENCODING -ceq ''utf-8''') 'The UTF-8 stderr writer is chosen only when FASTLLM_STDERR_ENCODING is exactly utf-8.'
+$gatedTexts=@($gate.Clauses[0].Item2.Statements|ForEach-Object{$_.Extent.Text})
+Check ($gatedTexts.Count -eq 3 -and $gatedTexts[0] -ceq '$errorWriter = New-Object IO.StreamWriter([Console]::OpenStandardError(), (New-Object Text.UTF8Encoding($false)))' -and $gatedTexts[1] -ceq '$errorWriter.WriteLine($failureMessage)' -and $gatedTexts[2] -ceq '$errorWriter.Flush()') 'With the variable the catch writes UTF-8 without a byte order mark to standard error, then flushes.'
+Check ($null -ne $gate.ElseClause -and @($gate.ElseClause.Statements).Count -eq 1 -and $gate.ElseClause.Statements[0].Extent.Text -ceq '[Console]::Error.WriteLine($failureMessage)') 'Without the variable the catch writes the message with [Console]::Error.WriteLine as before.'
+$cliTokens=$null
+[void][Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm.ps1'),[ref]$cliTokens,[ref]$null)
+$variableTokens=@($cliTokens|Where-Object{$_.Kind -ne 'Comment' -and $_.Text.Contains('FASTLLM_STDERR_ENCODING')})
+Check ($variableTokens.Count -eq 1 -and $variableTokens[0].Extent.StartOffset -ge $redirectStatement.Clauses[0].Item2.Extent.StartOffset -and $variableTokens[0].Extent.EndOffset -le $redirectStatement.Clauses[0].Item2.Extent.EndOffset) 'fast-llm.ps1 reads FASTLLM_STDERR_ENCODING only inside the redirected-stderr branch of its failure catch.'
+Check (-not $cli.Contains('[Console]::OutputEncoding')) 'The CLI never sets the console output encoding.'
 Check ($null -ne $redirectStatement.ElseClause -and @($redirectStatement.ElseClause.Statements).Count -eq 1 -and $redirectStatement.ElseClause.Statements[0].Extent.Text -ceq 'Write-Error $failureMessage -ErrorAction Continue') 'An interactive console keeps Write-Error for the failure message.'
+# The window asks only its own fast-llm.ps1 children for UTF-8 stderr, through the one helper: not the VC++ preparation child, not ProcessHost, never the
+# window's own environment.
+$uiAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$null,[ref]$null)
+$launchStep=@($uiAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'LaunchStep'},$true))
+$sideStep=@($uiAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'LaunchSideStep'},$true))
+Check ($launchStep.Count -eq 1 -and $sideStep.Count -eq 1) 'The window has one LaunchStep and one LaunchSideStep.'
+$vcBranch=@($launchStep[0].FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -ceq "`$Step -ceq 'vc prepare'"},$true))
+Check ($vcBranch.Count -eq 1 -and $null -ne $vcBranch[0].ElseClause -and $vcBranch[0].ElseClause.Extent.Text.Contains('New-FastLlmUiCliStartInfo -AppRoot $PSScriptRoot -Arguments $Arguments') -and -not $vcBranch[0].Clauses[0].Item2.Extent.Text.Contains('New-FastLlmUiCliStartInfo') -and ([regex]::Matches($launchStep[0].Extent.Text,'New-FastLlmUiCliStartInfo')).Count -eq 1) 'LaunchStep uses the helper only in the branch that runs fast-llm.ps1, not for VC++ preparation.'
+Check (([regex]::Matches($sideStep[0].Extent.Text,'New-FastLlmUiCliStartInfo')).Count -eq 1 -and $sideStep[0].Extent.Text.Contains('New-FastLlmUiCliStartInfo -AppRoot $PSScriptRoot -Arguments $Arguments')) 'LaunchSideStep uses the helper for its fast-llm.ps1 child.'
+Check (-not $launchStep[0].Extent.Text.Contains('StandardErrorEncoding') -and -not $sideStep[0].Extent.Text.Contains('StandardErrorEncoding')) 'The launchers set no stderr encoding of their own; the helper does.'
+$variableLines=New-Object Collections.Generic.List[string]
+foreach($file in @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File|Where-Object{$_.Extension -in @('.ps1','.psm1')})+@(Get-Item -LiteralPath (Join-Path $root 'fast-llm-ui.ps1'))){
+    foreach($line in (Get-Content -LiteralPath $file.FullName)){
+        if($line.Contains('FASTLLM_STDERR_ENCODING') -and -not $line.TrimStart().StartsWith('#')){$variableLines.Add($file.Name+': '+$line.Trim())}
+    }
+}
+Check ($variableLines.Count -eq 1 -and $variableLines[0] -ceq "FastLlm.UiFlow.ps1: `$info.EnvironmentVariables['FASTLLM_STDERR_ENCODING'] = 'utf-8'") 'The variable is set in exactly one place: the helper, on the child start information (no window or process environment assignment).'
+Check (-not (Get-Content -LiteralPath (Join-Path $root 'src/ProcessHost.cs') -Raw).Contains('StandardErrorEncoding')) 'ProcessHost itself sets no encoding: engines, benchmarks and diagnostics decode as before.'
 Check ($catchStatements.Count -eq $redirectIndex+2 -and $catchStatements[$redirectIndex+1].Extent.Text -ceq 'exit 1') 'The catch exits 1 right after writing the failure message.'
 
 # Source pin: the compact path of doctor no longer compresses the JSON onto one line.
