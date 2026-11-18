@@ -641,33 +641,59 @@ $cliFitRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('fast-llm-fit-cli-' +
 New-Item -ItemType Directory -Path $cliFitRoot -Force | Out-Null
 $cliFitHardware = Join-Path $cliFitRoot 'tiny.json'
 [IO.File]::WriteAllText($cliFitHardware, (ConvertTo-Json -InputObject $tinyHardware -Depth 6), (New-Object Text.UTF8Encoding($false)))
-$previousErrorActionPreferenceFit = $ErrorActionPreference
-try {
-    $ErrorActionPreference = 'Continue'
-    $cliFitModel = (& $currentPowerShell -NoLogo -NoProfile -File $launcherPath plan -HardwareFile $cliFitHardware -ModelId 'qwen3.5-4b-iq4-xs' -InstallRoot (Join-Path $cliFitRoot 'install') 2>&1 | Out-String)
-    $cliFitModelExit = $LASTEXITCODE
-    $cliFitNone = (& $currentPowerShell -NoLogo -NoProfile -File $launcherPath plan -HardwareFile $cliFitHardware -InstallRoot (Join-Path $cliFitRoot 'install') 2>&1 | Out-String)
-    $cliFitNoneExit = $LASTEXITCODE
+# The two plan children run under System.Diagnostics.Process with stdout and stderr redirected, so the test reads the child's own raw
+# stderr. Capturing through "2>&1 | Out-String" in Windows PowerShell 5.1 turns every stderr line into a NativeCommandError record
+# whose decoration ("powershell.EXE : ", "At ...", "+ CategoryInfo") lands in the middle of a message the child had wrapped.
+$fastLlmModuleHandle = Get-Module -Name 'FastLlm'
+function Invoke-FitPlanChild {
+    param([Parameter(Mandatory = $true)] [string[]] $PlanArguments)
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $currentPowerShell
+    $argv = @('-NoLogo', '-NoProfile', '-File', $launcherPath) + $PlanArguments
+    $info.Arguments = & $fastLlmModuleHandle { param($A) Join-FastLlmProcessArguments $A } $argv
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $child = New-Object System.Diagnostics.Process
+    $child.StartInfo = $info
+    try {
+        [void] $child.Start()
+        $stdoutTask = $child.StandardOutput.ReadToEndAsync()
+        $stderrTask = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(120000)) {
+            try { $child.Kill() } catch { }
+            return [pscustomobject]@{ timedOut = $true; exitCode = $null; stdout = ''; stderr = '' }
+        }
+        $child.WaitForExit()
+        return [pscustomobject]@{ timedOut = $false; exitCode = $child.ExitCode; stdout = [string] $stdoutTask.Result; stderr = [string] $stderrTask.Result }
+    }
+    finally { $child.Dispose() }
 }
-finally { $ErrorActionPreference = $previousErrorActionPreferenceFit }
-$cliFitModel = [regex]::Replace($cliFitModel, '\x1b\[[0-9;]*m', '')
-$cliFitNone = [regex]::Replace($cliFitNone, '\x1b\[[0-9;]*m', '')
-# The refusal reaches the console through Write-Error. Windows PowerShell 5.1 wraps redirected error text at the buffer width
-# (120 columns), even inside a word, and these messages are longer than that. So the text is compared with all whitespace removed
-# on both sides: every other character of the unchanged message must still appear, in order. The in-process checks above pin the
-# message byte for byte.
-$cliFitModelFlat = $cliFitModel -replace '\s', ''
-$cliFitNoneFlat = $cliFitNone -replace '\s', ''
+$cliFitModelRun = Invoke-FitPlanChild -PlanArguments @('plan', '-HardwareFile', $cliFitHardware, '-ModelId', 'qwen3.5-4b-iq4-xs', '-InstallRoot', (Join-Path $cliFitRoot 'install'))
+$cliFitNoneRun = Invoke-FitPlanChild -PlanArguments @('plan', '-HardwareFile', $cliFitHardware, '-InstallRoot', (Join-Path $cliFitRoot 'install'))
+$ansiPattern = '\x1b\[[0-9;]*m'
+$cliFitModelExit = $cliFitModelRun.exitCode
+$cliFitNoneExit = $cliFitNoneRun.exitCode
+$cliFitModelErr = [regex]::Replace($cliFitModelRun.stderr, $ansiPattern, '')
+$cliFitNoneErr = [regex]::Replace($cliFitNoneRun.stderr, $ansiPattern, '')
+$cliFitModelOut = [regex]::Replace($cliFitModelRun.stdout, $ansiPattern, '')
+$cliFitNoneOut = [regex]::Replace($cliFitNoneRun.stdout, $ansiPattern, '')
+# Windows PowerShell 5.1 wraps redirected error text at the buffer width (120 columns), even inside a word, and these messages are
+# longer than that. So the text is compared with all whitespace removed on both sides: every other character of the unchanged message
+# must still appear, in order. The in-process checks above pin the message byte for byte.
+$cliFitModelFlat = $cliFitModelErr -replace '\s', ''
+$cliFitNoneFlat = $cliFitNoneErr -replace '\s', ''
 $fitMessageModelFlat = $fitMessageModel -replace '\s', ''
 $fitMessageNoneFlat = $fitMessageNone -replace '\s', ''
 # A wrap can also split a leaked code ("model-does-n" / "ot-fit"), so the code must be absent from the flat text too; and an empty
-# expected text would match anything.
+# expected text would match anything. The non-empty guard also covers a child that printed nothing on stderr.
 Assert-True -Condition ($fitMessageModelFlat.Length -gt 0 -and $fitMessageNoneFlat.Length -gt 0) -Message 'the expected plan refusals are not empty once whitespace is removed'
-$cliFitModelOk = $cliFitModelFlat.Contains($fitMessageModelFlat) -and -not $cliFitModel.Contains('model-does-not-fit') -and -not $cliFitModelFlat.Contains('model-does-not-fit')
-$cliFitNoneOk = $cliFitNoneFlat.Contains($fitMessageNoneFlat) -and -not $cliFitNone.Contains('no-profile-fits') -and -not $cliFitNoneFlat.Contains('no-profile-fits')
-# Evidence on failure only: the exit code and the start of the child's output (a fixture plan; no prompt, key or path of note).
-if (-not $cliFitModelOk) { Write-Host ("INFO: does-not-fit plan exit=$cliFitModelExit output: " + (([regex]::Replace($cliFitModel, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
-if (-not $cliFitNoneOk) { Write-Host ("INFO: nothing-fits plan exit=$cliFitNoneExit output: " + (([regex]::Replace($cliFitNone, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
+$cliFitModelOk = (-not $cliFitModelRun.timedOut) -and ($cliFitModelExit -ne 0) -and $cliFitModelFlat.Length -gt 0 -and $cliFitModelFlat.Contains($fitMessageModelFlat) -and -not $cliFitModelErr.Contains('model-does-not-fit') -and -not $cliFitModelFlat.Contains('model-does-not-fit') -and -not $cliFitModelOut.Contains('model-does-not-fit') -and -not ($cliFitModelOut -replace '\s', '').Contains('model-does-not-fit')
+$cliFitNoneOk = (-not $cliFitNoneRun.timedOut) -and ($cliFitNoneExit -ne 0) -and $cliFitNoneFlat.Length -gt 0 -and $cliFitNoneFlat.Contains($fitMessageNoneFlat) -and -not $cliFitNoneErr.Contains('no-profile-fits') -and -not $cliFitNoneFlat.Contains('no-profile-fits') -and -not $cliFitNoneOut.Contains('no-profile-fits') -and -not ($cliFitNoneOut -replace '\s', '').Contains('no-profile-fits')
+# Evidence on failure only: the exit code and the start of the child's stderr (a fixture plan; no prompt, key or path of note).
+if (-not $cliFitModelOk) { Write-Host ("INFO: does-not-fit plan exit=$cliFitModelExit timedOut=$($cliFitModelRun.timedOut) stderr: " + (([regex]::Replace($cliFitModelErr, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
+if (-not $cliFitNoneOk) { Write-Host ("INFO: nothing-fits plan exit=$cliFitNoneExit timedOut=$($cliFitNoneRun.timedOut) stderr: " + (([regex]::Replace($cliFitNoneErr, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
 Assert-True -Condition $cliFitModelOk -Message 'plan on a does-not-fit fixture prints the unchanged requested-model refusal'
 Assert-True -Condition $cliFitNoneOk -Message 'plan on a nothing-fits fixture prints the unchanged no-profile refusal'
 [IO.File]::Delete($cliFitHardware)
