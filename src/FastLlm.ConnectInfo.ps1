@@ -310,7 +310,7 @@ function Get-FastLlmConnectionInfo {
     $contextTokens = $null
     if ($running) {
         $endpoint = [string] (Get-FastLlmConnectProp $Status 'endpoint')
-        $match = [regex]::Match($endpoint, '^http://127\.0\.0\.1:(\d{1,5})(?:/v1)?/?$')
+        $match = [regex]::Match($endpoint, '^http://127\.0\.0\.1:([0-9]{1,5})(?:/v1)?/?$')
         if ($match.Success) {
             $endpointPort = [int] $match.Groups[1].Value
             if ($endpointPort -ge 1024 -and $endpointPort -le 65535) { $port = $endpointPort }

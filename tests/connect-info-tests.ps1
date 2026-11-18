@@ -93,6 +93,14 @@ try {
         Check ($client.snippet.Contains('127.0.0.1:18181')) "connection-follows-port: $($client.id) mentions 18181"
         Check ($client.snippet -notmatch '8080') "connection-follows-port: $($client.id) has no 8080"
     }
+
+    # ascii-digits-only: the port of the status endpoint is read as ASCII digits. Arabic-Indic digits (U+0661 U+0668 U+0661 U+0668 U+0661, which read as 18181) are not a
+    # port: the parse does not throw and the endpoint is not taken (the card keeps the default port); an ordinary endpoint is unchanged.
+    $arabicPort=-join @(0x0661,0x0668,0x0661,0x0668,0x0661 | ForEach-Object { [string][char]$_ })
+    $arabicInfo=$null;$arabicThrew=$false
+    try { $arabicInfo=Get-FastLlmConnectionInfo -Status ([pscustomobject]@{ phase='ready'; active=$true; modelId='m'; endpoint="http://127.0.0.1:$arabicPort/v1"; recipe=[pscustomobject]@{ contextSize=32768 } }) } catch { $arabicThrew=$true }
+    Check (-not $arabicThrew -and $null -ne $arabicInfo -and $arabicInfo.baseUrl -ceq 'http://127.0.0.1:8080/v1' -and $arabicInfo.baseUrl.StartsWith('http://127.0.0.1:')) 'ascii-digits-only: a status endpoint with non-ASCII digits in the port does not throw and is not taken'
+    Check ((Get-FastLlmConnectionInfo -Status (New-Status 18181 32768)).baseUrl -ceq 'http://127.0.0.1:18181/v1') 'ascii-digits-only: an ordinary status endpoint is unchanged'
     Check ($moved.modelName -ceq 'fastllm-test-model') 'modelName is status.modelId'
 
     # not running: the configured port, no context
