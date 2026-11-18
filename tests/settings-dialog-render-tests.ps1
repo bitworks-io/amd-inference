@@ -70,17 +70,19 @@ $script:uiSettings = [pscustomobject]@{ allowSwitch = $true }
 function NewUiApiKey($Owner) { return $false }
 function SetTrayMenuAvailable($Value) { }
 
-function Build-SettingsDialog([double]$Scale, [int]$MaxHeight) {
+function Build-SettingsDialog([double]$Scale, [int]$MaxHeight, [switch]$EmptyLists) {
     $form = New-Object Windows.Forms.Form
     $form.Font = New-Object Drawing.Font('Segoe UI', 10)
     $current = Get-FastLlmServingSettings -InstallRoot $script:installPath
     $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
     . BuildUiSettingsDialog
+    # The self-check build: both lists with no selection, so the text-area measurement can be shown to read below the threshold.
+    if ($EmptyLists) { $thinkingBox.SelectedIndex = -1; $idleBox.SelectedIndex = -1 }
     # Placed far off every screen and kept out of the taskbar before the window handle exists, in case this dialog is rendered from a shown window.
     $dialog.StartPosition = 'Manual'; $dialog.Location = New-Object Drawing.Point(-32000, -32000); $dialog.ShowInTaskbar = $false
     if ($Scale -ne 1.0) {
         $dialog.Scale((New-Object Drawing.SizeF([single]$Scale, [single]$Scale)))
-        # The panel and the two buttons are the dialog's children; the settings controls take the panel's font when they set none.
+        # The settings panel and the button row are the dialog's children; the controls in them take their font when they set none.
         foreach ($control in @($dialog.Controls)) { $control.Font = New-Object Drawing.Font($control.Font.FontFamily, [single]($control.Font.Size * $Scale), $control.Font.Style) }
     }
     $dialog.PerformLayout()
@@ -90,7 +92,7 @@ function Build-SettingsDialog([double]$Scale, [int]$MaxHeight) {
     [void]$dialog.Handle
     foreach ($control in @($dialog.Controls)) { Initialize-ControlHandles $control }
     return [pscustomobject]@{
-        form = $form; dialog = $dialog; save = $saveButton; cancel = $cancelButton; current = $current
+        form = $form; dialog = $dialog; save = $saveButton; cancel = $cancelButton; buttonRow = $buttonRow; current = $current
         settingsPanel = $settingsPanel; portBox = $portBox; thinkingBox = $thinkingBox; idleBox = $idleBox; chatBox = $chatBox
         keyBox = $keyBox; keyHelp = $keyHelp; newKeyButton = $newKeyButton; startBox = $startBox; startState = $startState; startLast = $startLast
         switchBox = $switchBox; switchHelp = $switchHelp
@@ -162,12 +164,18 @@ function Get-InkCount($Image, [Drawing.Rectangle]$Bounds, $Background) {
 
 # Ink inside a control's bounds in a saved render. The client area starts after the left border and the title bar (the borders of this fixed
 # dialog are the same width on the left, right and bottom). Panel children are panel-relative and the panel sits at (0,0) at scroll 0.
-function Get-ControlInk($Built, [string]$Png, $Control) {
+function Get-ControlInk($Built, [string]$Png, $Control, [switch]$TextArea) {
     $dialog = $Built.dialog
     $offsetX = [int](($dialog.Width - $dialog.ClientSize.Width) / 2)
     $offsetY = [int]($dialog.Height - $dialog.ClientSize.Height - $offsetX)
     $bounds = $Control.Bounds
     if ($Control.Parent -is [Windows.Forms.Panel]) { $bounds = New-Object Drawing.Rectangle(($bounds.Left + $Control.Parent.Left), ($bounds.Top + $Control.Parent.Top), $bounds.Width, $bounds.Height) }
+    if ($TextArea) {
+        # Only where the value's text is drawn: inside the border and left of the drop-down or up-down buttons (about a scroll bar wide), so a
+        # border or an arrow alone never counts as painted text.
+        $inset = 4; $buttonsWidth = [Windows.Forms.SystemInformation]::VerticalScrollBarWidth + 4
+        $bounds = New-Object Drawing.Rectangle(($bounds.Left + $inset), ($bounds.Top + $inset), [Math]::Max(0, $bounds.Width - 2 * $inset - $buttonsWidth), [Math]::Max(0, $bounds.Height - 2 * $inset))
+    }
     $shifted = New-Object Drawing.Rectangle(($bounds.Left + $offsetX), ($bounds.Top + $offsetY), $bounds.Width, $bounds.Height)
     $image = New-Object Drawing.Bitmap($Png)
     try { return (Get-InkCount $image $shifted $dialog.BackColor) } finally { $image.Dispose() }
@@ -199,13 +207,21 @@ try {
             Save-Render $built $png
             if ($case.name -ceq '100') {
                 $neverShownInk = [ordered]@{
-                    'the Port box' = (Get-ControlInk $built $png $built.portBox)
-                    'the Thinking list' = (Get-ControlInk $built $png $built.thinkingBox)
-                    'the idle list' = (Get-ControlInk $built $png $built.idleBox)
+                    'the Port box' = (Get-ControlInk $built $png $built.portBox -TextArea)
+                    'the Thinking list' = (Get-ControlInk $built $png $built.thinkingBox -TextArea)
+                    'the idle list' = (Get-ControlInk $built $png $built.idleBox -TextArea)
                 }
             }
         } finally { $built.dialog.Dispose(); $built.form.Dispose() }
     }
+    # Self-check of the measurement: the same dialog with both lists empty must read below the threshold in their text areas.
+    $emptyPng = Join-Path $renderRoot 'self-check-empty-lists.png'
+    $emptyBuilt = Build-SettingsDialog 1.0 0 -EmptyLists
+    try {
+        Save-Render $emptyBuilt $emptyPng
+        $emptyInk = @((Get-ControlInk $emptyBuilt $emptyPng $emptyBuilt.thinkingBox -TextArea), (Get-ControlInk $emptyBuilt $emptyPng $emptyBuilt.idleBox -TextArea))
+    } finally { $emptyBuilt.dialog.Dispose(); $emptyBuilt.form.Dispose(); if (Test-Path -LiteralPath $emptyPng) { [IO.File]::Delete($emptyPng) } }
+    Check ($emptyInk[0] -lt 40 -and $emptyInk[1] -lt 40) "self-check: empty Thinking and idle lists read below the text threshold in the never-shown render ($($emptyInk -join ', ') pixels)"
     $blankFields = @($neverShownInk.Keys | Where-Object { $neverShownInk[$_] -lt 40 })
     $inkText = (@($neverShownInk.Keys | ForEach-Object { "$_=$($neverShownInk[$_])" }) -join ', ')
     $shownRender = ($blankFields.Count -gt 0)
@@ -213,6 +229,16 @@ try {
         Write-Host 'INFO: never-shown render paints the Port, Thinking and idle values (case a)'
     } else {
         Write-Host "INFO: never-shown render leaves $($blankFields -join ', ') blank with values set (case b): ink=$inkText"
+        # The same self-check for the shown render: empty lists read below the threshold there too.
+        $emptyShownPng = Join-Path $renderRoot 'self-check-empty-lists-shown.png'
+        $emptyBuilt = Build-SettingsDialog 1.0 0 -EmptyLists
+        try {
+            Save-ShownRender $emptyBuilt $emptyShownPng 'self-check'
+            $emptyCheck = Build-SettingsDialog 1.0 0 -EmptyLists
+            try { $emptyShownInk = @((Get-ControlInk $emptyCheck $emptyShownPng $emptyCheck.thinkingBox -TextArea), (Get-ControlInk $emptyCheck $emptyShownPng $emptyCheck.idleBox -TextArea)) }
+            finally { $emptyCheck.dialog.Dispose(); $emptyCheck.form.Dispose() }
+        } finally { $emptyBuilt.dialog.Dispose(); $emptyBuilt.form.Dispose(); if (Test-Path -LiteralPath $emptyShownPng) { [IO.File]::Delete($emptyShownPng) } }
+        Check ($emptyShownInk[0] -lt 40 -and $emptyShownInk[1] -lt 40) "self-check: empty Thinking and idle lists read below the text threshold in the shown render ($($emptyShownInk -join ', ') pixels)"
         # Second pass: every case again, from a window shown only off every screen, overwriting that case's PNG.
         foreach ($case in $cases) {
             $built = Build-SettingsDialog $case.scale $case.cap
@@ -227,18 +253,25 @@ try {
             $panel = $built.settingsPanel
             $label = "at $($case.name)%"
             Check (-not $dialog.Visible) "the dialog under layout checks is built off-screen and not shown ($label)"
-            if ($case.scale -eq 1.0 -and $case.cap -eq 0) { Check ($dialog.Height -eq 628 -and $built.save.Top -eq 544 -and $built.cancel.Top -eq 544) "the dialog is the 628 px layout with Save and Cancel at y=544 ($label)" }
+            $row = $built.buttonRow
+            # Save and Cancel in dialog coordinates (they sit in the button row).
+            $saveRect = New-Object Drawing.Rectangle(($row.Left + $built.save.Left), ($row.Top + $built.save.Top), $built.save.Width, $built.save.Height)
+            $cancelRect = New-Object Drawing.Rectangle(($row.Left + $built.cancel.Left), ($row.Top + $built.cancel.Top), $built.cancel.Width, $built.cancel.Height)
+            if ($case.scale -eq 1.0 -and $case.cap -eq 0) { Check ($dialog.Height -eq 628 -and $saveRect.Top -eq 544 -and $cancelRect.Top -eq 544 -and $saveRect.Left -eq 300 -and $cancelRect.Left -eq 420 -and $panel.Width -eq $dialog.ClientSize.Width -and $panel.Height -eq 536) "the dialog is the 628 px layout: settings 536 px tall, Save at (300,544) and Cancel at (420,544) ($label): $saveRect $cancelRect panel $($panel.Bounds)" }
             if ($case.scale -eq 1.5) { Check ([Math]::Abs($built.keyBox.Font.Size - 15.0) -lt 0.1) "the settings text is 1.5 times larger ($label): $($built.keyBox.Font.Size) pt" }
             if ($case.cap -gt 0) { Check ($dialog.Height -le $case.cap) "the dialog is no taller than its cap ($label): $($dialog.Height) px of $($case.cap)" }
             # Save and Cancel pinned and visible; the panel sits above them.
-            Check ($dialog.ClientRectangle.Contains($built.save.Bounds) -and $dialog.ClientRectangle.Contains($built.cancel.Bounds)) "Save and Cancel lie fully inside the client area ($label): $($built.save.Bounds) $($built.cancel.Bounds) in $($dialog.ClientRectangle)"
-            Check ($panel.Bottom -le $built.save.Top -and $panel.Bottom -le $built.cancel.Top -and -not $panel.Bounds.IntersectsWith($built.save.Bounds) -and -not $panel.Bounds.IntersectsWith($built.cancel.Bounds)) "the settings panel ends above Save and Cancel and overlaps neither ($label): panel $($panel.Bounds)"
+            Check ($dialog.ClientRectangle.Contains($saveRect) -and $dialog.ClientRectangle.Contains($cancelRect)) "Save and Cancel lie fully inside the client area ($label): $saveRect $cancelRect in $($dialog.ClientRectangle)"
+            Check ($row.Bottom -eq $dialog.ClientSize.Height -and $row.Left -eq 0 -and $row.Width -eq $dialog.ClientSize.Width -and $row.ClientRectangle.Contains($built.save.Bounds) -and $row.ClientRectangle.Contains($built.cancel.Bounds)) "the button row is docked to the bottom edge, full width, and holds Save and Cancel inside it ($label): row $($row.Bounds)"
+            Check ($panel.Top -eq 0 -and $panel.Bottom -eq $row.Top -and -not $panel.Bounds.IntersectsWith($saveRect) -and -not $panel.Bounds.IntersectsWith($cancelRect)) "the settings panel fills the dialog down to the button row and overlaps neither button ($label): panel $($panel.Bounds)"
             Check ($dialog.ClientRectangle.Contains($panel.Bounds)) "the settings panel lies within the client area ($label)"
             Check ($built.save.Bounds.Right -le $built.cancel.Bounds.Left -or $built.save.Bounds.Bottom -le $built.cancel.Bounds.Top) "Save and Cancel do not overlap each other ($label)"
             Check ($panel.AutoScroll) "the settings panel scrolls ($label)"
             # Every settings control is the panel's child and can be reached by scrolling.
             $dialogChildren = @($dialog.Controls | ForEach-Object { $_ })
-            Check ($dialogChildren.Count -eq 3 -and $dialog.Controls.Contains($panel) -and $dialog.Controls.Contains($built.save) -and $dialog.Controls.Contains($built.cancel)) "the dialog holds only the settings panel, Save and Cancel ($label)"
+            Check ($dialogChildren.Count -eq 2 -and $dialog.Controls.Contains($panel) -and $dialog.Controls.Contains($row)) "the dialog holds only the settings panel and the button row ($label)"
+            $rowChildren = @($row.Controls | ForEach-Object { $_ })
+            Check ($rowChildren.Count -eq 2 -and $row.Controls.Contains($built.save) -and $row.Controls.Contains($built.cancel)) "the button row holds only Save and Cancel ($label)"
             $panel.PerformLayout()
             $display = $panel.DisplayRectangle
             $unreachable = @($panel.Controls | Where-Object { -not $display.Contains($_.Bounds) } | ForEach-Object { [string]$_.GetType().Name + '@' + $_.Bounds })
@@ -266,7 +299,7 @@ try {
             Check ($built.idleBox.SelectedIndex -ge 0 -and -not [string]::IsNullOrWhiteSpace([string]$built.idleBox.Text)) "the idle list has a selection and text ($label): $($built.idleBox.Text)"
             # Reading order: the switching controls sit below the sign-in ones, and the panel that holds them is above Save and Cancel.
             Check ($built.switchBox.Top -ge $built.startLast.Bottom) "the switching controls sit below the sign-in controls ($label)"
-            if ($case.cap -eq 0) { Check ($built.switchHelp.Bottom -le $built.save.Top) "the switching help sits above Save and Cancel when nothing is capped ($label)" }
+            if ($case.cap -eq 0) { Check ($built.switchHelp.Bottom -le $row.Top) "the switching help sits above Save and Cancel when nothing is capped ($label)" }
             if ($case.scale -eq 1.0) {
                 # The switching text must fit its label (informational for the older labels: printed, not asserted).
                 $flags = [Windows.Forms.TextFormatFlags]::WordBreak -bor [Windows.Forms.TextFormatFlags]::NoPadding
@@ -293,7 +326,7 @@ try {
             }
             $valueInk = [ordered]@{}
             foreach ($valueField in @(@{ name = 'the Port box'; control = $built.portBox }, @{ name = 'the Thinking list'; control = $built.thinkingBox }, @{ name = 'the idle list'; control = $built.idleBox })) {
-                $valueInk[$valueField.name] = @{ ink = (Get-ControlInk $built $png $valueField.control); visible = ($valueField.control.Bottom -le $panel.ClientSize.Height) }
+                $valueInk[$valueField.name] = @{ ink = (Get-ControlInk $built $png $valueField.control -TextArea); visible = ($valueField.control.Bottom -le $panel.ClientSize.Height) }
             }
             Write-Host ("INFO: values ($label): Port=$($built.portBox.Value) Thinking='$($built.thinkingBox.Text)' idle='$($built.idleBox.Text)'; ink " + ((@($valueInk.Keys | ForEach-Object { "$_=$($valueInk[$_].ink)" })) -join ', '))
             if ($shownRender) {
