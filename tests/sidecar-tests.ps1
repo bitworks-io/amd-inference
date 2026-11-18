@@ -140,6 +140,7 @@ $savedControl = [Environment]::GetEnvironmentVariable('FASTLLM_TEST_SIDECAR_CONT
 $suitePassed = $false
 
 # Runs one scenario: the operation lock is taken here (as the CLI does) and held until the start has returned and the client has finished.
+$script:ScenarioLoadTimeoutSeconds = 600
 $script:StepTimeoutSeconds = 240
 function Invoke-SidecarScenario {
     param([string] $Label, $World, [object[]] $Steps, [hashtable] $StartOptions = @{}, [switch] $NoEmbeddings)
@@ -159,7 +160,7 @@ function Invoke-SidecarScenario {
     try {
         $client.Start() | Out-Null
         $plan = New-SidecarTextPlan -World $World -HelpersRoot $helpersRoot -EnginePath $enginePath -ModelId 'model-a'
-        $arguments = @{ Plan = $plan; CatalogPath = $World.catalog; InstallRoot = $World.root; LoadTimeoutSeconds = 600 }
+        $arguments = @{ Plan = $plan; CatalogPath = $World.catalog; InstallRoot = $World.root; LoadTimeoutSeconds = $script:ScenarioLoadTimeoutSeconds }
         if (-not $NoEmbeddings) { $arguments.Embeddings = 'on'; $arguments.EmbeddingPort = [int] $World.embeddingPort }
         foreach ($key in $StartOptions.Keys) { $arguments[$key] = $StartOptions[$key] }
         try {
@@ -424,6 +425,16 @@ try {
     # Nothing is derived from a file size: a model file of another size is simply not the installed component.
     [IO.File]::WriteAllBytes($goodWorld.modelFile, (New-Object byte[] 4096))
     Check ((& $planCode $goodWorld).StartsWith('embeddings-no-model|')) 'plan: a model file of another size is not the installed component (embeddings-no-model); no fit is derived from a size'
+
+    # ================= the client waits at least as long as the product may take =================
+    # A client step waits for a status condition. The product is allowed the text model's load timeout, then the sidecar's own load timeout
+    # (read from the module) and the sidecar's canary request (30 s, the timeout in FastLlm.Sidecar.ps1); a client that gives up sooner judges
+    # faster than the product does, which fails a scenario the product was still inside its budgets for (a timing race under load).
+    $sidecarLoadSeconds = [int] (InModule { $script:FastLlmSidecarLoadTimeoutSeconds })
+    $canarySeconds = 30
+    $stepMarginSeconds = 60
+    $stepBudget = [int] $script:ScenarioLoadTimeoutSeconds + $sidecarLoadSeconds + $canarySeconds + $stepMarginSeconds
+    Check ($sidecarLoadSeconds -gt 0 -and [int] $script:StepTimeoutSeconds -ge $stepBudget) "client step wait: $([int] $script:StepTimeoutSeconds) s covers the text load timeout ($([int] $script:ScenarioLoadTimeoutSeconds) s) + the sidecar load timeout ($sidecarLoadSeconds s) + the canary ($canarySeconds s) + a margin ($stepMarginSeconds s) = $stepBudget s"
 
     # ================= off by default: a start without the option is the start it always was =================
     $offWorld = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label 'default-off'
