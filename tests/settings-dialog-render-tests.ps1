@@ -16,6 +16,14 @@ function Check([bool]$Condition, [string]$Message) { if (-not $Condition) { thro
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# Control.Visible is the effective visibility: it is false for every control on a form that is not shown, and this dialog is never shown.
+# What the dialog shows once it is opened is each control's own visible flag, which WinForms keeps as the state bit STATE_VISIBLE (0x2)
+# behind the non-public Control.GetState. If this WinForms has no such method, the check below fails rather than skipping.
+$script:controlGetState = [Windows.Forms.Control].GetMethod('GetState', [Reflection.BindingFlags]'NonPublic, Instance', $null, [Type[]]@([int]), $null)
+Check ($null -ne $script:controlGetState) "WinForms has Control.GetState(int), which this test reads for a control's own visible flag"
+function Test-OwnVisible($Control) { return [bool]$script:controlGetState.Invoke($Control, @([int]2)) }
+# DrawToBitmap paints only child controls that have a window; on a dialog that is never shown, accessing Handle creates them.
+function Initialize-ControlHandles($Control) { [void]$Control.Handle; foreach ($child in @($Control.Controls)) { Initialize-ControlHandles $child } }
 Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $root 'src/FastLlm.Update.ps1')
@@ -29,6 +37,8 @@ $tree = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $ro
 Check ($parseErrors.Count -eq 0) 'fast-llm-ui.ps1 parses'
 $builders = @($tree.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'BuildUiSettingsDialog' }, $true))
 Check ($builders.Count -eq 1) 'fast-llm-ui.ps1 defines BuildUiSettingsDialog once'
+$builderText = [string]$builders[0].Extent.Text
+Check ($builderText -notmatch '\.Visible\s*=' -and $builderText -notmatch '\.Hide\(\)') 'BuildUiSettingsDialog hides no control (it never sets .Visible or calls .Hide())'
 $script:renderAppRoot = $root
 Invoke-Expression ([string]$builders[0].Extent.Text.Replace('$PSScriptRoot', '$script:renderAppRoot'))
 
@@ -52,6 +62,7 @@ function Build-SettingsDialog([double]$Scale) {
         foreach ($control in @($dialog.Controls)) { $control.Font = New-Object Drawing.Font($control.Font.FontFamily, [single]($control.Font.Size * $Scale), $control.Font.Style) }
     }
     [void]$dialog.Handle
+    foreach ($control in @($dialog.Controls)) { Initialize-ControlHandles $control }
     return [pscustomobject]@{
         form = $form; dialog = $dialog; save = $saveButton; cancel = $cancelButton
         keyBox = $keyBox; keyHelp = $keyHelp; newKeyButton = $newKeyButton; startBox = $startBox; startState = $startState; startLast = $startLast
@@ -76,7 +87,14 @@ if ([string]::IsNullOrWhiteSpace($outputFolder)) {
 New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
 
 try {
-    foreach ($case in @(@{ scale = 1.0; name = '100' }, @{ scale = 1.5; name = '150' })) {
+    $cases = @(@{ scale = 1.0; name = '100' }, @{ scale = 1.5; name = '150' })
+    # The pictures first, so both are saved for a person to look at even when a check below fails.
+    foreach ($case in $cases) {
+        $built = Build-SettingsDialog $case.scale
+        try { Save-Render $built (Join-Path $outputFolder ('settings-dialog-' + $case.name + '.png')) }
+        finally { $built.dialog.Dispose(); $built.form.Dispose() }
+    }
+    foreach ($case in $cases) {
         $built = Build-SettingsDialog $case.scale
         try {
             $dialog = $built.dialog
@@ -99,10 +117,10 @@ try {
                     @{ name = 'Create a new key'; control = $built.newKeyButton; text = 'Create a new key*' },
                     @{ name = 'the start at sign-in box'; control = $built.startBox; text = 'Start FastLLM when I sign in' },
                     @{ name = 'the switching box'; control = $built.switchBox; text = 'Allow switching models while FastLLM runs' })) {
-                Check ($dialog.Controls.Contains($required.control) -and $required.control.Visible -and $required.control.Width -gt 0 -and $required.control.Height -gt 0 -and $required.control.Text -clike $required.text) "$($required.name) is present and visible ($label)"
+                Check ($dialog.Controls.Contains($required.control) -and (Test-OwnVisible $required.control) -and $required.control.Width -gt 0 -and $required.control.Height -gt 0 -and $required.control.Text -clike $required.text) "$($required.name) is present and visible ($label)"
             }
             foreach ($help in @($built.keyHelp, $built.startState, $built.startLast, $built.switchHelp)) {
-                Check ($dialog.Controls.Contains($help) -and $help.Visible) "the text under the key, sign-in and switching controls is present ($label): $($help.GetType().Name)@$($help.Bounds)"
+                Check ($dialog.Controls.Contains($help) -and (Test-OwnVisible $help)) "the text under the key, sign-in and switching controls is present ($label): $($help.GetType().Name)@$($help.Bounds)"
             }
             # Reading order: the switching controls sit below the sign-in ones and above Save and Cancel.
             Check ($built.switchBox.Top -ge $built.startLast.Bottom -and $built.switchHelp.Bottom -le $built.save.Top) "the switching controls sit below the sign-in controls and above Save and Cancel ($label)"
@@ -117,8 +135,31 @@ try {
                 }
             }
             $png = Join-Path $outputFolder ('settings-dialog-' + $case.name + '.png')
-            Save-Render $built $png
             Check ((Test-Path -LiteralPath $png -PathType Leaf) -and (Get-Item -LiteralPath $png).Length -gt 1000) "the render was saved: $png"
+            # The picture shows the controls, not an empty frame: inside each control's bounds the saved render has text and border
+            # pixels that differ from the dialog background. The client area starts after the left border and the title bar
+            # (the borders of this fixed dialog are the same width on the left, right and bottom).
+            $image = New-Object Drawing.Bitmap($png)
+            try {
+                $offsetX = [int](($dialog.Width - $dialog.ClientSize.Width) / 2)
+                $offsetY = [int]($dialog.Height - $dialog.ClientSize.Height - $offsetX)
+                $background = $dialog.BackColor
+                foreach ($painted in @(
+                        @{ name = 'the API key box'; control = $built.keyBox },
+                        @{ name = 'the start at sign-in box'; control = $built.startBox },
+                        @{ name = 'the switching box'; control = $built.switchBox },
+                        @{ name = 'Save'; control = $built.save })) {
+                    $bounds = $painted.control.Bounds
+                    $ink = 0
+                    for ($y = [Math]::Max(0, $bounds.Top + $offsetY); $y -lt [Math]::Min($image.Height, $bounds.Bottom + $offsetY); $y++) {
+                        for ($x = [Math]::Max(0, $bounds.Left + $offsetX); $x -lt [Math]::Min($image.Width, $bounds.Right + $offsetX); $x++) {
+                            $pixel = $image.GetPixel($x, $y)
+                            if (([Math]::Abs([int]$pixel.R - [int]$background.R) + [Math]::Abs([int]$pixel.G - [int]$background.G) + [Math]::Abs([int]$pixel.B - [int]$background.B)) -gt 96) { $ink++ }
+                        }
+                    }
+                    Check ($ink -ge 40) "the render shows $($painted.name) ($label): $ink text or border pixels in its bounds"
+                }
+            } finally { $image.Dispose() }
         } finally {
             $built.dialog.Dispose()
             $built.form.Dispose()
