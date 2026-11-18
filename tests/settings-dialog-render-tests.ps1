@@ -117,11 +117,14 @@ function Test-OnAnyScreen([Drawing.Rectangle]$Rectangle) {
 function Save-ShownRender($Built, [string]$Path, [string]$Label) {
     $dialog = $Built.dialog
     $hwnd = $dialog.Handle
-    Check (-not (Test-OnAnyScreen $dialog.Bounds)) "the dialog is placed on no screen before it is shown ($Label): $($dialog.Bounds)"
     $width = $dialog.Width; $height = $dialog.Height
     $afterBounds = [Drawing.Rectangle]::Empty; $captured = $false
     try {
-        [void][FastLlmRenderNative]::SetWindowPos($hwnd, [IntPtr]::Zero, -32000, -32000, $width, $height, [uint32](0x0010 -bor 0x0040 -bor 0x0004))
+        # Moved to (-32000, -32000) while still hidden (SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE), checked to be on no screen, and only then
+        # shown where it is (SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE).
+        [void][FastLlmRenderNative]::SetWindowPos($hwnd, [IntPtr]::Zero, -32000, -32000, 0, 0, [uint32](0x0010 -bor 0x0004 -bor 0x0001))
+        Check (-not (Test-OnAnyScreen $dialog.Bounds)) "the dialog is placed on no screen before it is shown ($Label): $($dialog.Bounds)"
+        [void][FastLlmRenderNative]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, 0, 0, [uint32](0x0040 -bor 0x0010 -bor 0x0004 -bor 0x0002 -bor 0x0001))
         $afterBounds = $dialog.Bounds
         Check (-not (Test-OnAnyScreen $afterBounds)) "the shown dialog is on no screen ($Label): $afterBounds"
         $watch = [Diagnostics.Stopwatch]::StartNew()
