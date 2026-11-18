@@ -1257,7 +1257,10 @@ catch {
     if ($isBindingFailure -and -not $failureMessage.StartsWith($bindingCode + ': ', [StringComparison]::Ordinal)) {
         $failureMessage = $bindingCode + ': device binding failed (details withheld; see status)'
     }
-    Write-Error $failureMessage -ErrorAction Continue
+    # A caller that captures stderr (the window's ProcessHost) gets the message whole on one line; Windows PowerShell 5.1 would add the script path,
+    # wrap at 120 columns and add record lines. An interactive console keeps Write-Error.
+    if ([Console]::IsErrorRedirected) { [Console]::Error.WriteLine($failureMessage) }
+    else { Write-Error $failureMessage -ErrorAction Continue }
     exit 1
 }
 finally { if ($operationLock) { $operationLock.Dispose() }; if ($componentsLock) { $componentsLock.Dispose() } }
