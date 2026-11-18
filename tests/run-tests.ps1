@@ -658,8 +658,13 @@ $cliFitNone = [regex]::Replace($cliFitNone, '\x1b\[[0-9;]*m', '')
 # message byte for byte.
 $cliFitModelFlat = $cliFitModel -replace '\s', ''
 $cliFitNoneFlat = $cliFitNone -replace '\s', ''
-$cliFitModelOk = $cliFitModelFlat.Contains(($fitMessageModel -replace '\s', '')) -and -not $cliFitModel.Contains('model-does-not-fit')
-$cliFitNoneOk = $cliFitNoneFlat.Contains(($fitMessageNone -replace '\s', '')) -and -not $cliFitNone.Contains('no-profile-fits')
+$fitMessageModelFlat = $fitMessageModel -replace '\s', ''
+$fitMessageNoneFlat = $fitMessageNone -replace '\s', ''
+# A wrap can also split a leaked code ("model-does-n" / "ot-fit"), so the code must be absent from the flat text too; and an empty
+# expected text would match anything.
+Assert-True -Condition ($fitMessageModelFlat.Length -gt 0 -and $fitMessageNoneFlat.Length -gt 0) -Message 'the expected plan refusals are not empty once whitespace is removed'
+$cliFitModelOk = $cliFitModelFlat.Contains($fitMessageModelFlat) -and -not $cliFitModel.Contains('model-does-not-fit') -and -not $cliFitModelFlat.Contains('model-does-not-fit')
+$cliFitNoneOk = $cliFitNoneFlat.Contains($fitMessageNoneFlat) -and -not $cliFitNone.Contains('no-profile-fits') -and -not $cliFitNoneFlat.Contains('no-profile-fits')
 # Evidence on failure only: the exit code and the start of the child's output (a fixture plan; no prompt, key or path of note).
 if (-not $cliFitModelOk) { Write-Host ("INFO: does-not-fit plan exit=$cliFitModelExit output: " + (([regex]::Replace($cliFitModel, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
 if (-not $cliFitNoneOk) { Write-Host ("INFO: nothing-fits plan exit=$cliFitNoneExit output: " + (([regex]::Replace($cliFitNone, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
