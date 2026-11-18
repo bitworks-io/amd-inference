@@ -1385,6 +1385,20 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     # where the log cannot be read) the check is skipped and says so.
     # The marker key of this check is random text made here (never a real key): PowerShell may also log script text, and a marker that is
     # written out in a test file would be found in that text and not because a value was logged.
+    # The live capture's gap count and completeness rule are pure, so they are pinned here on every OS: a gap, an unsorted input with a
+    # duplicate, a bad range, and each clause of the completeness rule failing alone.
+    Check ((Get-ModuleLogMissingCount @(1, 2, 4) 1 4) -eq 1) 'module logging: gap count: ids 1,2,4 over 1..4 miss one'
+    Check ((Get-ModuleLogMissingCount @(1, 2, 3) 1 3) -eq 0) 'module logging: gap count: ids 1,2,3 over 1..3 miss none'
+    Check ((Get-ModuleLogMissingCount @(4, 1, 2, 2) 1 4) -eq 1) 'module logging: gap count: unsorted ids with a duplicate (4,1,2,2 over 1..4) miss one'
+    Check ((Get-ModuleLogMissingCount @(1, 2, 3) -1 3) -eq -1) 'module logging: gap count: a first id below zero is -1'
+    Check ((Get-ModuleLogMissingCount @(1, 2, 3) 3 2) -eq -1) 'module logging: gap count: a last id below the first is -1'
+    $logGoodReport = @{ errors = 0; oneId = [long] 10; twoId = [long] 20; missing = [long] 0 }
+    Check (Test-ModuleLogTapComplete ([pscustomobject] $logGoodReport)) 'module logging: completeness: a report with no error, both canaries and no gap is complete'
+    foreach ($logBad in @(@('a subscription error', @{ errors = 1 }), @('canary one not seen', @{ oneId = [long] -1 }), @('canary two before canary one', @{ twoId = [long] 5 }), @('a missing record', @{ missing = [long] 1 }), @('an unusable range (-1 missing)', @{ missing = [long] -1 }))) {
+        $logBadReport = $logGoodReport.Clone()
+        foreach ($logKey in $logBad[1].Keys) { $logBadReport[$logKey] = $logBad[1][$logKey] }
+        Check (-not (Test-ModuleLogTapComplete ([pscustomobject] $logBadReport))) "module logging: completeness: $($logBad[0]) alone makes the report incomplete"
+    }
     $logMarker = 'fl-' + ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')).Substring(0, 43)
     $logMarkerHolder = New-Holder $logMarker
     $logMarkerId = [string](InModule { param($K) Get-FastLlmApiKeyId -ApiKeyHolder $K } @(, $logMarkerHolder))

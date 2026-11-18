@@ -118,6 +118,16 @@ function Stop-ModuleLogTap($Tap) {
     if ($null -ne $Tap) { $Tap.Dispose() }
 }
 
+# How many record ids from First to Last (both included) are not in Ids; -1 when the range is not a range. Duplicates and order do not matter.
+function Get-ModuleLogMissingCount([long[]] $Ids, [long] $First, [long] $Last) {
+    if ($First -lt 0 -or $Last -lt $First) { return [long] -1 }
+    $seen = [Collections.Generic.HashSet[long]]::new()
+    foreach ($id in $Ids) { [void] $seen.Add($id) }
+    $missing = [long] 0
+    for ($id = $First; $id -le $Last; $id++) { if (-not $seen.Contains($id)) { $missing++ } }
+    return $missing
+}
+
 # What the live capture proves: no subscription error, and every record id from canary one's record to canary two's was delivered.
 function Get-ModuleLogTapReport($Tap, [string] $CanaryOne, [string] $CanaryTwo) {
     $oneId = [long] $Tap.FindRecord($CanaryOne)
@@ -127,7 +137,7 @@ function Get-ModuleLogTapReport($Tap, [string] $CanaryOne, [string] $CanaryTwo) 
         errorType = [string] $Tap.FirstErrorType
         oneId = $oneId
         twoId = $twoId
-        missing = [long] $Tap.MissingBetween($oneId, $twoId)
+        missing = (Get-ModuleLogMissingCount $Tap.RecordIds() $oneId $twoId)
         delivered = [int] $Tap.RecordIds().Length
     }
 }

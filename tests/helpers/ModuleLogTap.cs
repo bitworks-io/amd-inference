@@ -90,19 +90,6 @@ namespace FastLlmTests
             lock (gate) { return ids.ToArray(); }
         }
 
-        // How many record ids from first to last (both included) were never delivered.
-        public long MissingBetween(long first, long last)
-        {
-            if (first < 0 || last < first) { return -1; }
-            lock (gate)
-            {
-                HashSet<long> seen = new HashSet<long>(ids);
-                long missing = 0;
-                for (long id = first; id <= last; id++) { if (!seen.Contains(id)) { missing++; } }
-                return missing;
-            }
-        }
-
         public int Errors { get { lock (gate) { return errors; } } }
 
         public string FirstErrorType { get { lock (gate) { return firstErrorType == null ? "" : firstErrorType; } } }
