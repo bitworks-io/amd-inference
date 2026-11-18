@@ -1258,7 +1258,7 @@ foreach($case in @(@{Value=30;Expect=30},@{Value=15;Expect=15},@{Value=60;Expect
     Check ($idleRequest.idleStopMinutes -eq $case.Expect) ("idle-request: a saved idleStopMinutes of $($case.Value) is carried as $($case.Expect)")
 }
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $idleRequestRoot -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).idleStopMinutes -eq 0) 'idle-request: a settings object without idleStopMinutes gives 0'
-Check ($uiText.Contains('-ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -NoWait') -and $uiText.Contains('$Request.chatPage $Request.idleStopMinutes')) 'idle-request: Start in background hands the saved idle stop to the host'
+Check ($uiText.Contains('-ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -SwitchAllowed:$SwitchAllowed -NoWait') -and $uiText.Contains('$Request.chatPage $Request.idleStopMinutes')) 'idle-request: Start in background hands the saved idle stop to the host'
 # The Settings dialog row: Never / after 15 / 30 / 60 minutes, saved through Set-FastLlmServingSettings, no label over its control, below the chat page rows and above the buttons.
 Check ($uiText.Contains("Text='Stop the model when idle'") -and $uiText.Contains("'Never (default)','After 15 minutes','After 30 minutes','After 60 minutes'")) 'idle-dialog: the row is Stop the model when idle with Never, After 15, 30 and 60 minutes'
 Check ($uiText.Contains('-IdleStopMinutes $savedIdle') -and $uiText.Contains('@(0,15,30,60)[')) 'idle-dialog: Save writes the chosen minutes through Set-FastLlmServingSettings'
@@ -1338,6 +1338,14 @@ Set-FastLlmUiAllowSwitch -InstallRoot $swRoot -Value $true
 Check ((Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $true) 'allow-switch setting: Set-FastLlmUiAllowSwitch turns it on'
 [IO.File]::WriteAllText((Join-Path $swRoot 'settings.json'),'{not json',(New-Object Text.UTF8Encoding($false)))
 Check ((Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $false) 'allow-switch setting: an unreadable settings file means off'
+foreach($unreadableSwitchText in @('[ { "allowSwitch": true } ]','"allowSwitch"','{ "allowSwitch": true,','',('{ "allowSwitch": true, "note": "'+('x'*17000)+'" }'))){
+    [IO.File]::WriteAllText((Join-Path $swRoot 'settings.json'),$unreadableSwitchText,(New-Object Text.UTF8Encoding($false)))
+    $beforeBytes=[IO.File]::ReadAllBytes((Join-Path $swRoot 'settings.json'))
+    $setRefusal=$null;try{Set-FastLlmUiAllowSwitch -InstallRoot $swRoot -Value $true}catch{$setRefusal=$_}
+    $afterBytes=[IO.File]::ReadAllBytes((Join-Path $swRoot 'settings.json'))
+    Check ($null -ne $setRefusal -and [string]$setRefusal.Exception.Message -clike 'settings-malformed:*' -and (@($beforeBytes) -join ',') -ceq (@($afterBytes) -join ',') -and @(Get-ChildItem -LiteralPath $swRoot -Force | Where-Object { $_.Name -cne 'settings.json' }).Count -eq 0) "allow-switch setting: Set-FastLlmUiAllowSwitch refuses to write over unreadable settings ($($unreadableSwitchText.Length) chars) and leaves the file as it was"
+    if($unreadableSwitchText -ne ''){ Check ((Get-FastLlmUiAllowSwitch -InstallRoot $swRoot) -eq $false) "allow-switch setting: unreadable settings ($($unreadableSwitchText.Length) chars) still read as off (fails closed)" }
+}
 Remove-Item -LiteralPath $swRoot -Recurse -Force
 Check (@(Get-FastLlmUiSwitchArguments -AllowSwitch $false).Count -eq 0 -and (@(Get-FastLlmUiSwitchArguments -AllowSwitch $true) -join ' ') -ceq '-SwitchAllowed') 'allow-switch start: the foreground start gets -SwitchAllowed only when the setting is on; off adds no argument at all'
 $uiSwitchStart=@('start','-Unattended','-VulkanBarMitigation','auto')+@(Get-FastLlmUiSwitchArguments -AllowSwitch $false)
@@ -1345,13 +1353,41 @@ Check (($uiSwitchStart -join '|') -ceq 'start|-Unattended|-VulkanBarMitigation|a
 Check (((@('start','-Unattended','-VulkanBarMitigation','auto')+@(Get-FastLlmUiSwitchArguments -AllowSwitch $true)) -join '|') -ceq 'start|-Unattended|-VulkanBarMitigation|auto|-SwitchAllowed') 'allow-switch start: with the setting on the foreground start ends with -SwitchAllowed'
 $servingLine=@($uiText -split "`n" | Where-Object { $_.Contains("LaunchStep 'serving'") })
 Check ($servingLine.Count -eq 1 -and $servingLine[0].Contains('+@(Get-FastLlmUiSwitchArguments -AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot))') -and $servingLine[0].TrimEnd().EndsWith(';return')) 'allow-switch start: the one foreground start site (the serving step) appends the switch argument read from the launch-root setting'
-Check (@([regex]::Matches($uiText,"'start'")).Count -eq 1) 'allow-switch start: the window starts the server from one place only, so there is no second foreground launch to cover'
+Check (@([regex]::Matches($uiText,"@\('start',")).Count -eq 1) 'allow-switch start: the window starts the server from one place only, so there is no second foreground launch to cover'
 $bgOff=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})
 $bgOffExplicit=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181}) -AllowSwitch $false
 $bgOn=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181}) -AllowSwitch $true
-Check ((@($bgOff.PSObject.Properties.Name) -join ',') -ceq 'sourceRoot,installRoot,profile,modelId,contextSize,vulkanBarMitigation,serverPort,thinking,chatPage,idleStopMinutes' -and (ConvertTo-Json -InputObject $bgOff -Compress) -ceq (ConvertTo-Json -InputObject $bgOffExplicit -Compress)) 'allow-switch background: with the setting off the request has exactly the fields it always had'
-Check ((@($bgOn.PSObject.Properties.Name) -join ',') -ceq 'sourceRoot,installRoot,profile,modelId,contextSize,vulkanBarMitigation,serverPort,thinking,chatPage,idleStopMinutes,allowSwitch' -and $bgOn.allowSwitch -eq $true) 'allow-switch background: with the setting on the request carries allowSwitch = true (and nothing else changes)'
-Check ($uiText.Contains('-AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot)') -and $uiText.Contains('-SwitchAllowed:$SwitchAllowed') -and $uiText.Contains('$Request.idleStopMinutes ([bool]($Request.PSObject.Properties[''allowSwitch''] -and $Request.allowSwitch))')) 'allow-switch background: the window reads the setting for the request and hands it to Start-FastLlmBackgroundHost as -SwitchAllowed'
+Check ((@($bgOff.PSObject.Properties.Name) -join ',') -ceq 'sourceRoot,installRoot,profile,modelId,contextSize,vulkanBarMitigation,serverPort,thinking,chatPage,idleStopMinutes,apiKey' -and (ConvertTo-Json -InputObject $bgOff -Compress) -ceq (ConvertTo-Json -InputObject $bgOffExplicit -Compress)) 'allow-switch background: with the setting off the request has exactly the fields it always had'
+Check ((@($bgOn.PSObject.Properties.Name) -join ',') -ceq 'sourceRoot,installRoot,profile,modelId,contextSize,vulkanBarMitigation,serverPort,thinking,chatPage,idleStopMinutes,apiKey,allowSwitch' -and $bgOn.allowSwitch -eq $true) 'allow-switch background: with the setting on the request carries allowSwitch = true (and nothing else changes)'
+Check ($uiText.Contains('-AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot)') -and $uiText.Contains('-SwitchAllowed:$SwitchAllowed') -and $uiText.Contains('$Request.idleStopMinutes $Request.apiKey ([bool]($Request.PSObject.Properties[''allowSwitch''] -and $Request.allowSwitch))')) 'allow-switch background: the window reads the setting for the request and hands it to Start-FastLlmBackgroundHost as -SwitchAllowed'
+# The window's background start carries the API key setting (#65's -UseApiKey) and the switch setting (-SwitchAllowed) together on ONE request.
+# The real Start block of StartUiBackground runs here with only the module call and the host function replaced: the engine-free capture
+# records exactly what Start-FastLlmBackgroundHost would be bound to.
+$startBlockMatch=[regex]::Match($uiText,'(?s)-Start \{\s*param\(\$Request\)(.*?)\r?\n    \}\r?\n    \$backgroundLabel')
+Check $startBlockMatch.Success 'key + switch background: the window''s Start block is found in fast-llm-ui.ps1'
+function Capture-BgStart {
+    [CmdletBinding()]
+    param([string]$SourceRoot,[string]$InstallRoot,[string]$Profile,[string]$ModelId,[int]$ContextSize,[string]$VulkanBarMitigation,[int]$ServerPort,[string]$Thinking,[string]$ChatPage,[int]$IdleStopMinutes,
+          [ValidateSet('off','on')][string]$UseApiKey='off',[switch]$SwitchAllowed,[switch]$NoWait)
+    $script:bgCaptured=@{}
+    foreach ($key in $PSBoundParameters.Keys) { $script:bgCaptured[$key]=$PSBoundParameters[$key] }
+}
+function Invoke-WindowBackgroundStart($Settings,[bool]$AllowSwitch) {
+    $startRequest=New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $idleRequestRoot -ModelId 'model-x' -ContextSize 4096 -BarMitigation 'on' -Settings $Settings -AllowSwitch $AllowSwitch
+    $body=$startBlockMatch.Groups[1].Value.Replace('& (Get-Module FastLlm) {','& {').Replace('. $Source','').Replace('Start-FastLlmBackgroundHost','Capture-BgStart').Replace('$PSScriptRoot','.')
+    $script:bgCaptured=$null
+    & ([scriptblock]::Create('param($Request)'+$body)) $startRequest
+    return [pscustomobject]@{ request=$startRequest; bound=$script:bgCaptured }
+}
+$keyAndSwitch=Invoke-WindowBackgroundStart ([pscustomobject]@{serverPort=18181;apiKey='on'}) $true
+Check ($keyAndSwitch.request.apiKey -ceq 'on' -and $keyAndSwitch.request.allowSwitch -eq $true) 'key + switch background: with both on, the one request carries apiKey on and allowSwitch true'
+Check ($null -ne $keyAndSwitch.bound -and [string]$keyAndSwitch.bound.UseApiKey -ceq 'on' -and $keyAndSwitch.bound.SwitchAllowed -eq $true -and $keyAndSwitch.bound.NoWait -eq $true -and $keyAndSwitch.bound.ModelId -ceq 'model-x' -and [int]$keyAndSwitch.bound.ServerPort -eq 18181) 'key + switch background: the single Start-FastLlmBackgroundHost call gets -UseApiKey on and -SwitchAllowed together (and the model and port from the same request)'
+$keyNoSwitch=Invoke-WindowBackgroundStart ([pscustomobject]@{serverPort=18181;apiKey='on'}) $false
+Check ($keyNoSwitch.request.apiKey -ceq 'on' -and -not $keyNoSwitch.request.PSObject.Properties['allowSwitch'] -and [string]$keyNoSwitch.bound.UseApiKey -ceq 'on' -and -not [bool]$keyNoSwitch.bound['SwitchAllowed']) 'key + switch background: key on, switch off: the start is asked for the key and not for switching'
+$noKeySwitch=Invoke-WindowBackgroundStart ([pscustomobject]@{serverPort=18181}) $true
+Check ([string]$noKeySwitch.bound.UseApiKey -ceq 'off' -and $noKeySwitch.bound.SwitchAllowed -eq $true) 'key + switch background: key off, switch on: the key flag is off and switching is allowed (neither setting leaks into the other)'
+$neither=Invoke-WindowBackgroundStart ([pscustomobject]@{serverPort=18181}) $false
+Check ([string]$neither.bound.UseApiKey -ceq 'off' -and -not [bool]$neither.bound['SwitchAllowed']) 'key + switch background: both off: neither is asked for'
 $noteBefore=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;allowSwitch=$false}
 $noteAfter=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;allowSwitch=$true}
 Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBefore -After $noteAfter) -ceq 'The new switching setting applies at the next start.' -and (Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $noteBefore -After $noteAfter) -ceq 'Settings saved.') 'allow-switch note: while a run is going the new switching setting is said to apply at the next start'

@@ -714,7 +714,8 @@ function Read-FastLlmUiSettings {
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            $storedText = Get-Content -LiteralPath $path -Raw
+            $stored = $storedText | ConvertFrom-Json
             if ($stored.PSObject.Properties['vulkanBarMitigation'] -and @('auto', 'on', 'off') -contains [string] $stored.vulkanBarMitigation) {
                 $settings.vulkanBarMitigation = [string] $stored.vulkanBarMitigation
             }
@@ -725,7 +726,8 @@ function Read-FastLlmUiSettings {
                 $settings.lastUserStoppedBackgroundRequestId = [string] $stored.lastUserStoppedBackgroundRequestId
             }
             # Opt-in model switching: only a JSON true turns it on; absent or anything else is off.
-            if ($stored.PSObject.Properties['allowSwitch'] -and $stored.allowSwitch -is [bool] -and $stored.allowSwitch) { $settings.allowSwitch = $true }
+            # The text must be a JSON object: PowerShell 7 hands back the one element of a one-element array as the document, which must not turn it on; a file over the writer's 16 KiB limit counts as unreadable too (the same verdict as Write-FastLlmUiSettings).
+            if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal) -and [Text.Encoding]::UTF8.GetByteCount($storedText) -le 16384 -and $stored.PSObject.Properties['allowSwitch'] -and $stored.allowSwitch -is [bool] -and $stored.allowSwitch) { $settings.allowSwitch = $true }
         }
     }
     catch { }

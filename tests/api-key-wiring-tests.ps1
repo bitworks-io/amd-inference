@@ -778,6 +778,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     # has something to write throws; the two that only remove a remembered decline have nothing to do when they find none (quiet).
     $settingsWriters = [ordered]@{
         'Write-FastLlmUiSettings (the Resizable BAR box, stopping a background run)' = @{ run = { param($R) Write-FastLlmUiSettings -InstallRoot $R -Settings ([pscustomobject]@{ vulkanBarMitigation = 'auto'; lastUserStoppedBackgroundRequestId = ('a' * 32) }) } }
+        'Set-FastLlmUiAllowSwitch (the window''s Allow switching models box)' = @{ run = { param($R) Set-FastLlmUiAllowSwitch -InstallRoot $R -Value $true } }
         'Set-FastLlmUpdateSettings (the update check box, settings -Channel)' = @{ run = { param($R) Set-FastLlmUpdateSettings -InstallRoot $R -UpdateCheck off } }
         'Set-FastLlmComponentSettings (the experimental components switch)' = @{ run = { param($R) Set-FastLlmComponentSettings -InstallRoot $R -ExperimentalComponents off } }
         'Set-FastLlmComponentLicenseSettings (settings -ComponentLicenses)' = @{ run = { param($R) Set-FastLlmComponentLicenseSettings -InstallRoot $R -Mode ask } }
@@ -1179,7 +1180,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $apiKeyFailureAt = $uiSource.IndexOf('if(Test-FastLlmUiApiKeyFailure -Code $failureCode){')
     $retryAt = $uiSource.IndexOf("`$script:flow=Move-FastLlmUiFlow -Flow `$script:flow -Event 'serving-failed'")
     Check ($apiKeyFailureAt -gt 0 -and $retryAt -gt $apiKeyFailureAt) 'window: an API key failure is handled before the retry path of a failed start (it is never retried)'
-    Check ($uiSource.Contains('-IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -NoWait') -and $uiSource.Contains('$Request.idleStopMinutes $Request.apiKey')) 'window: Start in background hands the flag to the background host'
+    Check ($uiSource.Contains('-IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -SwitchAllowed:$SwitchAllowed -NoWait') -and $uiSource.Contains('$Request.idleStopMinutes $Request.apiKey ([bool]($Request.PSObject.Properties[''allowSwitch'']')) 'window: Start in background hands the flag to the background host'
     $backgroundText = . { . (Join-Path $root 'src/FastLlm.UiBackground.ps1'); $bgState = New-FastLlmUiBackgroundState; $bgState.observation = [pscustomobject]@{ occupied = $false; phase = 'stale'; requestId = ('a' * 32); failureCode = 'api-key-unavailable'; failureReason = 'x'; attachable = $false }; Get-FastLlmUiBackgroundText -State $bgState }
     Check ([string]$backgroundText -cmatch 'stored key cannot be read' -and [string]$backgroundText -cmatch 'Create a new key') 'window: a background run that ended on api-key-unavailable says so and names the action'
 

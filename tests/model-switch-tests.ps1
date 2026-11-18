@@ -510,7 +510,8 @@ try {
     Check (([regex]::Matches($loopFunctionText,'Start-FastLlmServer ')).Count -eq 2) 'loop: the switch loop has exactly two starts per request: the target and ONE restore (never a third attempt)'
     # Default and bench starts never ask for it: only the supervisor, the start and the background host know the parameter.
     # FastLlm.UiFlow.ps1 is the control window's own logic (its Settings opt-in and its picker); the window passes the opt-in only for a start the user made there.
-    $allowed=@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.BackgroundHost.ps1','FastLlm.UiFlow.ps1')
+    # FastLlm.SignInStart.ps1 is the user's own start at sign-in: it passes the opt-in only when the user's saved setting (the one the window writes) is on.
+    $allowed=@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.BackgroundHost.ps1','FastLlm.UiFlow.ps1','FastLlm.SignInStart.ps1')
     $others=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File | Where-Object { $_.Extension -in @('.ps1','.psm1') -and $allowed -cnotcontains $_.Name -and ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
     $tools=@(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -File -Filter '*.ps1' | Where-Object { ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
     Check ($others.Count -eq 0 -and $tools.Count -eq 0) ('bench path: no lab, benchmark, diagnostic or tool source passes -AllowSwitch: ['+((@($others)+@($tools) | ForEach-Object Name) -join ',')+']')
@@ -990,6 +991,53 @@ try {
         Check (@($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 2 -and @($auth | Where-Object { $_ -cmatch ' wrong$' }).Count -eq 0) 'api key, listener changed in a switch: two servers were started (the first and the target), never a third'
         $leaks=@(Find-KeyLeaks $r)
         Check ($leaks.Count -eq 0) "api key, listener changed in a switch: no key text in any status document, run log, state file or failure [$($leaks -join '; ')]"
+
+        # ================= the API key with the model picker (the switch basis): the key stays in #65's path, the basis never holds it =================
+        # A start that allows switching writes a switch basis for each server it starts (the picker reads it). With the key on, the target of a
+        # switch is still served under the same key, with its own proof, through the one supervisor path; the basis carries no key and no key setting.
+        $basisLeakPattern='(?i)api[-_ ]?key|LLAMA_API|LEAKMARKER|Zq7_|bearer'
+        function Test-BasisKeyFree($Scenario) {
+            $texts=@($st.basisWrites | ForEach-Object { [string]$_.Text })
+            $names=@()
+            foreach ($text in $texts) { $names+=@(($text | ConvertFrom-Json).planOptions.PSObject.Properties.Name) }
+            return [pscustomobject]@{ count=$texts.Count; clean=[bool](@($texts | Where-Object { $_ -match $basisLeakPattern }).Count -eq 0); names=@($names | Select-Object -Unique) }
+        }
+        # (a) the allowlist itself: a key or a key setting among the options makes the whole option set unusable, so it can never be saved.
+        foreach ($keyedOptions in @(@{ Profile='balanced'; ApiKey='on' },@{ Profile='balanced'; UseApiKey='on' },@{ Profile='balanced'; ApiKeyHolder='x' })) {
+            $keyedName=@($keyedOptions.Keys | Where-Object { $_ -ne 'Profile' })[0]
+            $checkedKeyed=& $module { param($O) ConvertTo-FastLlmSwitchBasisPlanOptions -Options $O } $keyedOptions
+            Check ($null -eq $checkedKeyed) "api key + picker basis: plan options carrying $keyedName are refused by the allowlist"
+        }
+        $checkedPlain=& $module { ConvertTo-FastLlmSwitchBasisPlanOptions -Options @{ Profile='balanced'; ServerPort=18080; Thinking='off'; ChatPage='on' } }
+        Check ($null -ne $checkedPlain -and (@($checkedPlain.Keys | Sort-Object) -join ',') -ceq 'ChatPage,Profile,ServerPort,Thinking') 'api key + picker basis: the allowlist still takes the ordinary serving options'
+        # (b) a picker-driven switch with the key on: the target is keyed, proved, and the basis is key-free.
+        $world=New-KeyWorld 'key-picker-switch' @{ 'model-a'=@('selftest-ok'); 'model-b'=@('selftest-ok') } 'enforce'
+        $r=Invoke-SwitchScenario -Label 'key-picker-switch' -World $world -StartOptions @{ SelfTest=$true; ApiKey='on' } -Steps @(
+            (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+            (New-Step @{ phase='ready'; modelId='model-b'; switchResult='ok' } 'stop'))
+        Check ($r.completed -and $null -eq $r.failure -and $r.exit -eq 0 -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a,model-b') 'api key + picker: with the key on, a picker-driven switch ends with the target served'
+        $auth=@(Get-KeyAuth $world)
+        $targetFinal=Get-RunFinal $r.runs[1]
+        Check ([string]$targetFinal.apiKey -ceq 'on' -and [string]$targetFinal.apiKeyId -ceq $keyId -and @($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 2 -and @($auth | Where-Object { $_ -cmatch ' wrong$' }).Count -eq 0) 'api key + picker: the target is served under the same key (UseApiKey on, the key in its environment only), and its status says apiKey on'
+        Check (@($auth | Where-Object { $_ -ceq 'GET /props none' }).Count -eq 2) 'api key + picker: the target ran its own 401/200 proof (one unkeyed probe per server)'
+        Check ($r.runs[1].bound -ceq $keySupervisorBound) 'api key + picker: the target start went through the one supervisor path with the key option, like the first start'
+        $basisCheck=Test-BasisKeyFree $r
+        Check ($basisCheck.count -ge 2 -and $basisCheck.clean -and -not ($basisCheck.names -match '(?i)key')) "api key + picker: a basis was written for each server, none holds a key, a key setting or key text [$($basisCheck.count) files; options $($basisCheck.names -join ',')]"
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0) "api key + picker: no key text in any status document, run log, state file or basis [$($leaks -join '; ')]"
+        # (c) a picker-driven restore after a failed target with the key on: the restored model is keyed too.
+        $world=New-KeyWorld 'key-picker-restore' @{ 'model-a'=@('selftest-ok','selftest-ok'); 'model-b'=@('ok') } 'enforce'
+        $r=Invoke-SwitchScenario -Label 'key-picker-restore' -World $world -StartOptions @{ SelfTest=$true; ApiKey='on' } -Steps @(
+            (New-Step @{ phase='ready'; modelId='model-a' } 'switch' @{ modelId='model-b' }),
+            (New-Step @{ phase='ready'; modelId='model-a'; switchResult='failed-restored' } 'stop'))
+        Check ($r.completed -and $null -eq $r.failure -and (($r.runs | ForEach-Object { $_.modelId }) -join ',') -ceq 'model-a,model-b,model-a' -and $r.runs[1].failed) 'api key + picker restore: after a failed target the previous model is started once more'
+        $auth=@(Get-KeyAuth $world)
+        $restoredFinal=Get-RunFinal $r.runs[2]
+        Check ([string]$restoredFinal.apiKey -ceq 'on' -and [string]$restoredFinal.apiKeyId -ceq $keyId -and @($auth | Where-Object { $_ -ceq 'env key-present' }).Count -eq 3 -and @($auth | Where-Object { $_ -ceq 'env key-absent' }).Count -eq 0 -and $r.runs[2].bound -ceq $keySupervisorBound) 'api key + picker restore: the restored model is served under the key (keyed start, the key in its environment, apiKey on in its status)'
+        $basisCheck=Test-BasisKeyFree $r
+        Check ($basisCheck.count -ge 2 -and $basisCheck.clean) 'api key + picker restore: no basis written during the sequence holds a key, a key setting or key text'
+        $leaks=@(Find-KeyLeaks $r)
+        Check ($leaks.Count -eq 0) "api key + picker restore: no key text in any status document, run log, state file or basis [$($leaks -join '; ')]"
 
     } finally {
         [Environment]::SetEnvironmentVariable('LLAMA_API_KEY',$savedInheritedKey)

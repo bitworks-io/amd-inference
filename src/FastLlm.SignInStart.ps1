@@ -212,6 +212,16 @@ function Read-FastLlmSignInRequest {
     }
 }
 
+# Whether the user allows switching models while FastLLM runs: read through the window's own function (Get-FastLlmUiAllowSwitch), so a sign-in
+# start and a window start see the same answer. Fails closed: an absent, false or unreadable setting is off, and never stops a start.
+function Get-FastLlmSignInAllowSwitch {
+    param([string]$InstallRoot)
+    try {
+        if (-not (Get-Command Get-FastLlmUiAllowSwitch -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'FastLlm.UiFlow.ps1') }
+        return [bool](Get-FastLlmUiAllowSwitch -InstallRoot $InstallRoot)
+    } catch { return $false }
+}
+
 # One attempt: wait, then start the background host once from the saved request, and record the outcome. No retry.
 # Only a short code is recorded; an exception message never reaches the result file.
 function Invoke-FastLlmSignInLaunch {
@@ -234,6 +244,9 @@ function Invoke-FastLlmSignInLaunch {
         # The user's current saved serving settings, resolved by the settings module exactly as the command line does.
         $serving = Get-FastLlmServingHostArguments -InstallRoot $InstallRoot
         foreach ($key in @($serving.Keys)) { $arguments[$key] = $serving[$key] }
+        # The window's opt-in model switching: with it saved on, the host is asked for -SwitchAllowed exactly as a window background start is
+        # (so the switch basis is written and the model picker works after a sign-in start). Off or unreadable adds nothing.
+        if (Get-FastLlmSignInAllowSwitch -InstallRoot $InstallRoot) { $arguments.SwitchAllowed = $true }
         $arguments.SourceRoot = $SourceRoot
         $arguments.InstallRoot = $InstallRoot
         $arguments.NoWait = $true
