@@ -1063,3 +1063,6 @@ $reinstallSource = $updateSource.Substring($reinstallStart)
 Check (-not ($reinstallSource -match 'Write-Host|Write-Output|Add-Content|Out-File|Write-Verbose')) 'reinstall: the reinstall code writes no log or console text of its own'
 
 Write-Host 'update-tests: PASS'
+# The CLI refusal cases leave a child's non-zero exit code in $LASTEXITCODE. CI runs the suites in one session and fails the step
+# when the final value is non-zero, so reset it once every check has passed.
+$global:LASTEXITCODE = 0
