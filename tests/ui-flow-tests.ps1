@@ -934,6 +934,24 @@ try {
         }
         Check ($result.text -cnotmatch '\x1b\[') "The window's capture of the $($case.name) refusal has no ANSI escape."
     }
+    # A refusal whose message echoes user input, with characters inside (e-acute, degree) and outside (ellipsis, a CJK character) the US OEM
+    # code page 437: Read-FastLlmJson throws "JSON file was not found: <path>" inside the CLI's try (src/FastLlm.psm1:121). The characters are
+    # built from code points so the test file stays ASCII (Windows PowerShell 5.1 reads a file without a byte order mark as ANSI).
+    $wideName='dir-'+[string][char]0xE9+[string][char]0x2026+[string][char]0xB0+[string][char]0x65E5
+    $wideDir=Join-Path $refusalTemp $wideName
+    [void](New-Item -ItemType Directory -Path $wideDir)
+    try {
+        $missingFile=Join-Path $wideDir 'missing.json'
+        $wideResult=CaptureRefusal @('plan','-HardwareFile',$missingFile,'-InstallRoot',(Join-Path $refusalTemp 'install-wide'))
+        $wideLines=@($wideResult.text -split "`r?`n")
+        Check ($wideResult.exitCode -eq 1) 'A refusal that echoes a path with non-ASCII characters exits 1 through the window ProcessHost child.'
+        Check (@($wideLines|Where-Object{$_ -ceq ('JSON file was not found: '+$missingFile)}).Count -eq 1) 'The window capture of a refusal that echoes a path with non-ASCII characters holds the message whole and unchanged on one line.'
+        Check ($wideResult.text -cnotmatch '\x1b\[' -and -not $wideResult.text.Contains([string][char]0xFFFD)) 'The capture of the non-ASCII refusal has no ANSI escape and no replacement character.'
+    } finally {
+        if (Test-Path -LiteralPath $wideDir) { try { [IO.Directory]::Delete($wideDir, $false) } catch {} }
+        $wideInstall=Join-Path $refusalTemp 'install-wide'
+        if (Test-Path -LiteralPath $wideInstall) { try { [IO.Directory]::Delete($wideInstall, $false) } catch {} }
+    }
 } finally {
     if (Test-Path -LiteralPath $tinyFile) { [IO.File]::Delete($tinyFile) }
     foreach ($leftover in @('install-does-not-fit','install-nothing-fits')) {
