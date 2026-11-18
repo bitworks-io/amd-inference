@@ -645,13 +645,26 @@ $previousErrorActionPreferenceFit = $ErrorActionPreference
 try {
     $ErrorActionPreference = 'Continue'
     $cliFitModel = (& $currentPowerShell -NoLogo -NoProfile -File $launcherPath plan -HardwareFile $cliFitHardware -ModelId 'qwen3.5-4b-iq4-xs' -InstallRoot (Join-Path $cliFitRoot 'install') 2>&1 | Out-String)
+    $cliFitModelExit = $LASTEXITCODE
     $cliFitNone = (& $currentPowerShell -NoLogo -NoProfile -File $launcherPath plan -HardwareFile $cliFitHardware -InstallRoot (Join-Path $cliFitRoot 'install') 2>&1 | Out-String)
+    $cliFitNoneExit = $LASTEXITCODE
 }
 finally { $ErrorActionPreference = $previousErrorActionPreferenceFit }
 $cliFitModel = [regex]::Replace($cliFitModel, '\x1b\[[0-9;]*m', '')
 $cliFitNone = [regex]::Replace($cliFitNone, '\x1b\[[0-9;]*m', '')
-Assert-True -Condition ($cliFitModel.Contains($fitMessageModel) -and -not $cliFitModel.Contains('model-does-not-fit')) -Message 'plan on a does-not-fit fixture prints the unchanged requested-model refusal'
-Assert-True -Condition ($cliFitNone.Contains($fitMessageNone) -and -not $cliFitNone.Contains('no-profile-fits')) -Message 'plan on a nothing-fits fixture prints the unchanged no-profile refusal'
+# The refusal reaches the console through Write-Error. Windows PowerShell 5.1 wraps redirected error text at the buffer width
+# (120 columns), even inside a word, and these messages are longer than that. So the text is compared with all whitespace removed
+# on both sides: every other character of the unchanged message must still appear, in order. The in-process checks above pin the
+# message byte for byte.
+$cliFitModelFlat = $cliFitModel -replace '\s', ''
+$cliFitNoneFlat = $cliFitNone -replace '\s', ''
+$cliFitModelOk = $cliFitModelFlat.Contains(($fitMessageModel -replace '\s', '')) -and -not $cliFitModel.Contains('model-does-not-fit')
+$cliFitNoneOk = $cliFitNoneFlat.Contains(($fitMessageNone -replace '\s', '')) -and -not $cliFitNone.Contains('no-profile-fits')
+# Evidence on failure only: the exit code and the start of the child's output (a fixture plan; no prompt, key or path of note).
+if (-not $cliFitModelOk) { Write-Host ("INFO: does-not-fit plan exit=$cliFitModelExit output: " + (([regex]::Replace($cliFitModel, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
+if (-not $cliFitNoneOk) { Write-Host ("INFO: nothing-fits plan exit=$cliFitNoneExit output: " + (([regex]::Replace($cliFitNone, '\s+', ' ')).Trim() | ForEach-Object { $_.Substring(0, [Math]::Min(600, $_.Length)) })) }
+Assert-True -Condition $cliFitModelOk -Message 'plan on a does-not-fit fixture prints the unchanged requested-model refusal'
+Assert-True -Condition $cliFitNoneOk -Message 'plan on a nothing-fits fixture prints the unchanged no-profile refusal'
 [IO.File]::Delete($cliFitHardware)
 if (Test-Path -LiteralPath (Join-Path $cliFitRoot 'install')) { [IO.Directory]::Delete((Join-Path $cliFitRoot 'install'), $true) }
 [IO.Directory]::Delete($cliFitRoot, $false)
