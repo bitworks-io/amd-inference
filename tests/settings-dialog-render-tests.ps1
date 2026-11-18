@@ -4,8 +4,9 @@
 # only the application folder variable pointed at this checkout), with FitUiSettingsDialog and GetUiSettingsDialogMaxHeight. No ShowDialog, no Show().
 # PNGs are saved into FASTLLM_RENDER_DIR, else $env:RUNNER_TEMP\fastllm-settings-dialog, else the user's temp folder, for four cases: 100%, 150% with
 # the real screen's working area as the height cap, 150% with a 720 px cap and 100% with a 560 px cap (simulated small screens).
-# The first render is never shown (Control.DrawToBitmap). If that leaves the Port, Thinking or idle values blank, every case is rendered again
-# from a window shown only off every screen, without activation, and captured with PrintWindow (PW_RENDERFULLCONTENT).
+# Every case is rendered from a window shown only off every screen, without activation, and captured with PrintWindow (PW_RENDERFULLCONTENT).
+# A dialog that is never shown (Control.DrawToBitmap) leaves the Thinking and idle lists blank; the CI run that settled this printed
+# "case b", so the never-shown render is no longer used. A blank Port, Thinking or idle value fails.
 # 150% is made by Form.Scale(1.5, 1.5) plus the fonts at 1.5 times (what a DPI-aware window gets).
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -29,13 +30,14 @@ public static class FastLlmRenderNative {
     [DllImport("user32.dll", SetLastError = true)] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
 }
 '@
-# Control.Visible is the effective visibility: it is false for every control on a form that is not shown, and this dialog is never shown.
+# Control.Visible is the effective visibility: it is false for every control on a form that is not shown, and the layout checks below run on
+# dialogs that are never shown (only the pictures come from a dialog shown off-screen).
 # What the dialog shows once it is opened is each control's own visible flag, which WinForms keeps as the state bit STATE_VISIBLE (0x2)
 # behind the non-public Control.GetState. If this WinForms has no such method, the check below fails rather than skipping.
 $script:controlGetState = [Windows.Forms.Control].GetMethod('GetState', [Reflection.BindingFlags]'NonPublic, Instance', $null, [Type[]]@([int]), $null)
 Check ($null -ne $script:controlGetState) "WinForms has Control.GetState(int), which this test reads for a control's own visible flag"
 function Test-OwnVisible($Control) { return [bool]$script:controlGetState.Invoke($Control, @([int]2)) }
-# DrawToBitmap paints only child controls that have a window; on a dialog that is never shown, accessing Handle creates them.
+# The controls get their windows before the dialog is shown off-screen (a control without one is not painted); accessing Handle creates them.
 function Initialize-ControlHandles($Control) { [void]$Control.Handle; foreach ($child in @($Control.Controls)) { Initialize-ControlHandles $child } }
 Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
@@ -97,15 +99,6 @@ function Build-SettingsDialog([double]$Scale, [int]$MaxHeight, [switch]$EmptyLis
         keyBox = $keyBox; keyHelp = $keyHelp; newKeyButton = $newKeyButton; startBox = $startBox; startState = $startState; startLast = $startLast
         switchBox = $switchBox; switchHelp = $switchHelp
     }
-}
-
-# Never shown: Control.DrawToBitmap on a dialog whose handles were created.
-function Save-Render($Built, [string]$Path) {
-    $bitmap = New-Object Drawing.Bitmap($Built.dialog.Width, $Built.dialog.Height)
-    try {
-        $Built.dialog.DrawToBitmap($bitmap, (New-Object Drawing.Rectangle(0, 0, $Built.dialog.Width, $Built.dialog.Height)))
-        $bitmap.Save($Path, [Drawing.Imaging.ImageFormat]::Png)
-    } finally { $bitmap.Dispose() }
 }
 
 function Test-OnAnyScreen([Drawing.Rectangle]$Rectangle) {
@@ -198,53 +191,22 @@ try {
         @{ scale = 1.5; name = '150'; cap = $screenCap },
         @{ scale = 1.5; name = '150-small'; cap = 720 },
         @{ scale = 1.0; name = '100-small'; cap = 560 })
-    # The pictures first, so they are saved for a person to look at even when a check below fails. First pass: never shown.
-    $neverShownInk = $null
-    foreach ($case in $cases) {
-        $built = Build-SettingsDialog $case.scale $case.cap
-        try {
-            $png = Join-Path $outputFolder ('settings-dialog-' + $case.name + '.png')
-            Save-Render $built $png
-            if ($case.name -ceq '100') {
-                $neverShownInk = [ordered]@{
-                    'the Port box' = (Get-ControlInk $built $png $built.portBox -TextArea)
-                    'the Thinking list' = (Get-ControlInk $built $png $built.thinkingBox -TextArea)
-                    'the idle list' = (Get-ControlInk $built $png $built.idleBox -TextArea)
-                }
-            }
-        } finally { $built.dialog.Dispose(); $built.form.Dispose() }
-    }
-    # Self-check of the measurement: the same dialog with both lists empty must read below the threshold in their text areas.
-    $emptyPng = Join-Path $renderRoot 'self-check-empty-lists.png'
+    # Self-check of the measurement first: the same dialog with both lists empty, rendered the same way, must read below the threshold in their
+    # text areas, so a border, an arrow or a bad capture can never pass as painted text.
+    $emptyShownPng = Join-Path $renderRoot 'self-check-empty-lists-shown.png'
     $emptyBuilt = Build-SettingsDialog 1.0 0 -EmptyLists
     try {
-        Save-Render $emptyBuilt $emptyPng
-        $emptyInk = @((Get-ControlInk $emptyBuilt $emptyPng $emptyBuilt.thinkingBox -TextArea), (Get-ControlInk $emptyBuilt $emptyPng $emptyBuilt.idleBox -TextArea))
-    } finally { $emptyBuilt.dialog.Dispose(); $emptyBuilt.form.Dispose(); if (Test-Path -LiteralPath $emptyPng) { [IO.File]::Delete($emptyPng) } }
-    Check ($emptyInk[0] -lt 40 -and $emptyInk[1] -lt 40) "self-check: empty Thinking and idle lists read below the text threshold in the never-shown render ($($emptyInk -join ', ') pixels)"
-    $blankFields = @($neverShownInk.Keys | Where-Object { $neverShownInk[$_] -lt 40 })
-    $inkText = (@($neverShownInk.Keys | ForEach-Object { "$_=$($neverShownInk[$_])" }) -join ', ')
-    $shownRender = ($blankFields.Count -gt 0)
-    if (-not $shownRender) {
-        Write-Host 'INFO: never-shown render paints the Port, Thinking and idle values (case a)'
-    } else {
-        Write-Host "INFO: never-shown render leaves $($blankFields -join ', ') blank with values set (case b): ink=$inkText"
-        # The same self-check for the shown render: empty lists read below the threshold there too.
-        $emptyShownPng = Join-Path $renderRoot 'self-check-empty-lists-shown.png'
-        $emptyBuilt = Build-SettingsDialog 1.0 0 -EmptyLists
-        try {
-            Save-ShownRender $emptyBuilt $emptyShownPng 'self-check'
-            $emptyCheck = Build-SettingsDialog 1.0 0 -EmptyLists
-            try { $emptyShownInk = @((Get-ControlInk $emptyCheck $emptyShownPng $emptyCheck.thinkingBox -TextArea), (Get-ControlInk $emptyCheck $emptyShownPng $emptyCheck.idleBox -TextArea)) }
-            finally { $emptyCheck.dialog.Dispose(); $emptyCheck.form.Dispose() }
-        } finally { $emptyBuilt.dialog.Dispose(); $emptyBuilt.form.Dispose(); if (Test-Path -LiteralPath $emptyShownPng) { [IO.File]::Delete($emptyShownPng) } }
-        Check ($emptyShownInk[0] -lt 40 -and $emptyShownInk[1] -lt 40) "self-check: empty Thinking and idle lists read below the text threshold in the shown render ($($emptyShownInk -join ', ') pixels)"
-        # Second pass: every case again, from a window shown only off every screen, overwriting that case's PNG.
-        foreach ($case in $cases) {
-            $built = Build-SettingsDialog $case.scale $case.cap
-            try { Save-ShownRender $built (Join-Path $outputFolder ('settings-dialog-' + $case.name + '.png')) "$($case.name)%" }
-            finally { $built.dialog.Dispose(); $built.form.Dispose() }
-        }
+        Save-ShownRender $emptyBuilt $emptyShownPng 'self-check'
+        $emptyCheck = Build-SettingsDialog 1.0 0 -EmptyLists
+        try { $emptyShownInk = @((Get-ControlInk $emptyCheck $emptyShownPng $emptyCheck.thinkingBox -TextArea), (Get-ControlInk $emptyCheck $emptyShownPng $emptyCheck.idleBox -TextArea)) }
+        finally { $emptyCheck.dialog.Dispose(); $emptyCheck.form.Dispose() }
+    } finally { $emptyBuilt.dialog.Dispose(); $emptyBuilt.form.Dispose(); if (Test-Path -LiteralPath $emptyShownPng) { [IO.File]::Delete($emptyShownPng) } }
+    Check ($emptyShownInk[0] -lt 40 -and $emptyShownInk[1] -lt 40) "self-check: empty Thinking and idle lists read below the text threshold in the shown render ($($emptyShownInk -join ', ') pixels)"
+    # The pictures next, so they are saved for a person to look at even when a layout check below fails.
+    foreach ($case in $cases) {
+        $built = Build-SettingsDialog $case.scale $case.cap
+        try { Save-ShownRender $built (Join-Path $outputFolder ('settings-dialog-' + $case.name + '.png')) "$($case.name)%" }
+        finally { $built.dialog.Dispose(); $built.form.Dispose() }
     }
     foreach ($case in $cases) {
         $built = Build-SettingsDialog $case.scale $case.cap
@@ -307,8 +269,15 @@ try {
                 Check ($needed -le $built.switchHelp.Height) "the switching help text fits its label ($needed px needed, $($built.switchHelp.Height) px available)"
                 foreach ($other in @($built.keyHelp, $built.startState, $built.startLast)) {
                     $otherNeeded = [Windows.Forms.TextRenderer]::MeasureText([string]$other.Text, $other.Font, (New-Object Drawing.Size($other.Width, 0)), $flags).Height
-                    Write-Host "INFO: $($other.GetType().Name) at y=$($other.Top) needs $otherNeeded px of $($other.Height)"
+                    Write-Host "INFO: $($other.GetType().Name) at y=$($other.Top) needs $otherNeeded px of $($other.Height) by TextRenderer (GDI)"
                 }
+            }
+            # Each help label's text fits its box as the label itself lays it out. TextRenderer measures with GDI, but these labels draw with GDI+
+            # (the window never calls SetCompatibleTextRenderingDefault(false), so UseCompatibleTextRendering stays on), which sets text narrower;
+            # GetPreferredSize at the label's width uses the label's own engine and padding.
+            foreach ($help in @($built.keyHelp, $built.startState, $built.startLast, $built.switchHelp)) {
+                $ownNeeded = $help.GetPreferredSize((New-Object Drawing.Size($help.Width, 0))).Height
+                Check ($ownNeeded -le $help.Height) "the help text at y=$($help.Top) fits its label as the label lays it out ($label): $ownNeeded px of $($help.Height), compatible text rendering $($help.UseCompatibleTextRendering)"
             }
             $png = Join-Path $outputFolder ('settings-dialog-' + $case.name + '.png')
             Check ((Test-Path -LiteralPath $png -PathType Leaf) -and (Get-Item -LiteralPath $png).Length -gt 1000) "the render was saved: $png"
@@ -329,10 +298,8 @@ try {
                 $valueInk[$valueField.name] = @{ ink = (Get-ControlInk $built $png $valueField.control -TextArea); visible = ($valueField.control.Bottom -le $panel.ClientSize.Height) }
             }
             Write-Host ("INFO: values ($label): Port=$($built.portBox.Value) Thinking='$($built.thinkingBox.Text)' idle='$($built.idleBox.Text)'; ink " + ((@($valueInk.Keys | ForEach-Object { "$_=$($valueInk[$_].ink)" })) -join ', '))
-            if ($shownRender) {
-                foreach ($name in @($valueInk.Keys)) {
-                    if ($valueInk[$name].visible) { Check ($valueInk[$name].ink -ge 40) "the shown render paints $name ($label): $($valueInk[$name].ink) pixels in its bounds" }
-                }
+            foreach ($name in @($valueInk.Keys)) {
+                if ($valueInk[$name].visible) { Check ($valueInk[$name].ink -ge 40) "the render paints $name ($label): $($valueInk[$name].ink) text pixels" }
             }
         } finally {
             $built.dialog.Dispose()
