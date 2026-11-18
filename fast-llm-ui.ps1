@@ -989,8 +989,12 @@ function BuildUiSettingsDialog {
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,628);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
-    # The settings sit in a scrolling panel (Save and Cancel stay on the dialog, pinned to its bottom edge), so a small screen or large text never hides them.
-    $settingsPanel=New-Object Windows.Forms.Panel;$settingsPanel.Location=New-Object Drawing.Point(0,0);$settingsPanel.Size=New-Object Drawing.Size($dialog.ClientSize.Width,536);$settingsPanel.AutoScroll=$true;$settingsPanel.Anchor='Top,Bottom,Left,Right';$dialog.Controls.Add($settingsPanel)
+    # The settings sit in a scrolling panel that fills the dialog above a button row docked to its bottom edge (Save and Cancel in it, right-aligned).
+    # Docking is laid out again after every resize, so a small screen or large text never hides Save and Cancel. At 100% the panel is 536 px tall
+    # and Save and Cancel are at y=544, as before. The row gets its full width before the buttons are added, so their right anchors hold.
+    # Tab order is the settings first, then Save and Cancel, as before.
+    $buttonRow=New-Object Windows.Forms.Panel;$buttonRow.Size=New-Object Drawing.Size($dialog.ClientSize.Width,[Math]::Max(46,$dialog.ClientSize.Height-536));$buttonRow.Dock='Bottom';$buttonRow.TabIndex=1;$dialog.Controls.Add($buttonRow)
+    $settingsPanel=New-Object Windows.Forms.Panel;$settingsPanel.Dock='Fill';$settingsPanel.AutoScroll=$true;$settingsPanel.TabIndex=0;$dialog.Controls.Add($settingsPanel);$settingsPanel.BringToFront()
     $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
     $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
@@ -1045,8 +1049,8 @@ function BuildUiSettingsDialog {
     $switchBox=New-Object Windows.Forms.CheckBox;$switchBox.Text='Allow switching models while FastLLM runs';$switchBox.Location=New-Object Drawing.Point(20,458);$switchBox.Size=New-Object Drawing.Size(510,27)
     $switchBox.Checked=[bool]$script:uiSettings.allowSwitch;$settingsPanel.Controls.Add($switchBox)
     $switchHelp=New-Object Windows.Forms.Label;$switchHelp.Text='Off by default; applies from the next start. A switch checks the new model again and starts the old one if it cannot start. Stop always wins.';$switchHelp.Location=New-Object Drawing.Point(44,486);$switchHelp.Size=New-Object Drawing.Size(486,48);$switchHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($switchHelp)
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,544);$saveButton.Size=New-Object Drawing.Size(100,38);$saveButton.Anchor='Bottom,Right';$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,544);$cancelButton.Size=New-Object Drawing.Size(100,38);$cancelButton.Anchor='Bottom,Right';$dialog.Controls.Add($cancelButton)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,8);$saveButton.Size=New-Object Drawing.Size(100,38);$saveButton.Anchor='Top,Right';$buttonRow.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,8);$cancelButton.Size=New-Object Drawing.Size(100,38);$cancelButton.Anchor='Top,Right';$buttonRow.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
