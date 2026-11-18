@@ -57,7 +57,7 @@ The exact certificate pins are described in [SECURITY.md](SECURITY.md). To check
 
 FastLLM checks for a newer release at most once a day, with a single unauthenticated request to the GitHub API. You can turn this off in settings (`updateCheck`). The release channel is the `updateChannel` setting; pre-releases are offered only on the canary channel.
 
-Nothing installs without a click. `fast-llm.ps1 update-check` shows what is available and `fast-llm.ps1 update` installs it after your confirmation. Every update is verified before it runs; see "Update security" in [SECURITY.md](SECURITY.md).
+Nothing installs without a click. `fast-llm.ps1 update-check` shows what is available and `fast-llm.ps1 update` installs it after your confirmation. Every update is verified before it runs; see "Update security" in [SECURITY.md](SECURITY.md). `fast-llm.ps1 update -Previous` (or the window's Reinstall previous version button) goes back one version after a confirmation naming both versions, when it is safe to; it is never automatic.
 
 ## Privacy
 

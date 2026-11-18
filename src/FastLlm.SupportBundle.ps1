@@ -2,7 +2,7 @@
 # written only to the path the user chose. Entry-layer file: dot-sourced by fast-llm.ps1 and fast-llm-ui.ps1, never by FastLlm.psm1,
 # because it reads settings.json (the plan and run-log code must not).
 # Contents: doctor.json (the doctor report), the newest 5 run logs, settings.json (allowlisted keys only), components.json (installed rows),
-# version.json. Every entry passes through ConvertTo-FastLlmRedactedText. Prompts, completions and chat text are never in any source.
+# version.json, and reinstall-history.json when a previous version was reinstalled (versions and times only). Every entry passes through ConvertTo-FastLlmRedactedText. Prompts, completions and chat text are never in any source.
 Set-StrictMode -Version 2.0
 
 $script:FastLlmSupportBundleMaxBytes = 8388608
@@ -262,6 +262,14 @@ function New-FastLlmSupportBundle {
         os         = [string] [Environment]::OSVersion.VersionString
     }
     $raw.Add(@{ name = 'version.json'; value = $version; depth = 4 })
+    # Reinstalls of a previous version: versions and UTC times only, and only when there has been one.
+    if (Get-Command Read-FastLlmReinstallHistory -ErrorAction SilentlyContinue) {
+        try {
+            $reinstalls = @(Read-FastLlmReinstallHistory -InstallRoot $InstallRoot)
+            if ($reinstalls.Count -gt 0) { $raw.Add(@{ name = 'reinstall-history.json'; value = [ordered] @{ entries = @($reinstalls) }; depth = 4 }) }
+        }
+        catch { $null = $_ }
+    }
 
     $redactions = 0
     $encoding = New-Object Text.UTF8Encoding($false)
