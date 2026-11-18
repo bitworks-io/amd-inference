@@ -139,9 +139,18 @@ $st = New-SidecarTestState -EnginePath $enginePath -HelpersRoot $helpersRoot
 $savedControl = [Environment]::GetEnvironmentVariable('FASTLLM_TEST_SIDECAR_CONTROL')
 $suitePassed = $false
 
+# The deadline of one scenario step: its own timeoutSeconds, else the suite's step wait.
+function Get-StepTimeoutSeconds([object[]] $Steps, $Index) {
+    $step = @($Steps)[[int] $Index]
+    if ($null -ne $step -and $step.Contains('timeoutSeconds')) { return [int] $step['timeoutSeconds'] }
+    return [int] $script:StepTimeoutSeconds
+}
 # Runs one scenario: the operation lock is taken here (as the CLI does) and held until the start has returned and the client has finished.
 $script:ScenarioLoadTimeoutSeconds = 600
-$script:StepTimeoutSeconds = 240
+# The client's step wait is what the product may take for a step: the text model's load timeout, then the sidecar's load timeout (read from
+# the module) and its canary request (30 s, the timeout in FastLlm.Sidecar.ps1), and a margin for a loaded machine. A scenario that never
+# matches still fails, only later.
+$script:StepTimeoutSeconds = [int] $script:ScenarioLoadTimeoutSeconds + [int] (InModule { $script:FastLlmSidecarLoadTimeoutSeconds }) + 30 + 60
 function Invoke-SidecarScenario {
     param([string] $Label, $World, [object[]] $Steps, [hashtable] $StartOptions = @{}, [switch] $NoEmbeddings)
     $stepsPath = Join-Path $World.root 'steps.json'
@@ -186,8 +195,8 @@ function Invoke-SidecarScenario {
     if ($null -ne $record) { $outcomes = @($record.steps); $observations = @($record.observations) }
     $completed = [bool] ($null -ne $record -and $record.completed -and $clientExited)
     if (-not $completed) {
-        Write-Host ("Scenario ${Label}: client steps: " + (@($outcomes | ForEach-Object { "$($_.index):$($_.action):matched=$($_.matched):$($_.error)" }) -join ' | '))
-        Write-Host ("Scenario ${Label}: observations: " + (@($observations | ForEach-Object { "$($_.phase)/$($_.modelId)/$($_.sidecarPhase)/$($_.sidecarFailureCode)" }) -join ' | '))
+        Write-Host ("Scenario ${Label}: client steps: " + (@($outcomes | ForEach-Object { "$($_.index):$($_.action):matched=$($_.matched):ms=$($_.ms):timeout=$(Get-StepTimeoutSeconds $Steps $_.index)s:$($_.error)" }) -join ' | '))
+        Write-Host ("Scenario ${Label}: observations: " + (@($observations | ForEach-Object { "$($_.ms)ms:$($_.phase)/$($_.modelId)/$($_.sidecarPhase)/$($_.sidecarFailureCode)" }) -join ' | '))
         Write-Host ("Scenario ${Label}: events: " + ($st.events -join ','))
         Write-Host ("Scenario ${Label}: console: " + ($console -join ' || '))
     }
