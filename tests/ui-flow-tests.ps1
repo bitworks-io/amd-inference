@@ -1397,6 +1397,22 @@ Check ((SettingsTop 'switchBox') -ge ((SettingsTop 'idleHelp')+(SettingsHeight '
 $dialogHeightNow=[int][regex]::Match($uiText,"\`$dialog\.Text='FastLLM settings';\`$dialog\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)").Groups[1].Value
 Check ($dialogHeightNow -ge ((SettingsTop 'saveButton')+(SettingsHeight 'saveButton')+40)) 'allow-switch dialog: the dialog is tall enough for the buttons below the new row'
 
+# ---- the Settings dialog scrolls; Save and Cancel stay pinned and the dialog is capped to the screen's working area ----
+$settingsFnStart=$uiText.IndexOf('function BuildUiSettingsDialog {')
+$settingsFnEnd=$uiText.IndexOf('function ShowUiSettings {')
+Check ($settingsFnStart -ge 0 -and $settingsFnEnd -gt $settingsFnStart) 'settings-scroll: the dialog builder is found'
+$settingsBuild=$uiText.Substring($settingsFnStart,$settingsFnEnd-$settingsFnStart)
+$settingsShowStart=$settingsFnEnd
+$settingsShowEnd=$uiText.IndexOf('function StartUiBackground {',$settingsShowStart)
+$settingsShow=$uiText.Substring($settingsShowStart,$settingsShowEnd-$settingsShowStart)
+Check ($settingsShow.Contains('. BuildUiSettingsDialog') -and $settingsShow.IndexOf('. BuildUiSettingsDialog') -lt $settingsShow.IndexOf('FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form)') -and $settingsShow.IndexOf('FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form)') -lt $settingsShow.IndexOf('$dialog.ShowDialog($form)')) 'settings-scroll: ShowUiSettings fits the dialog to the working area between building it and showing it'
+Check ($uiText.Contains('function GetUiSettingsDialogMaxHeight($Owner){') -and $uiText.Contains('[Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height')) 'settings-scroll: the height cap is the working area of the screen the window is on'
+Check ($uiText.Contains('function FitUiSettingsDialog($Dialog,[int]$MaxHeight){') -and $uiText.Contains('if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight)}')) 'settings-scroll: FitUiSettingsDialog only ever shortens the dialog'
+Check ($settingsBuild.Contains('$settingsPanel.AutoScroll=$true') -and $settingsBuild.Contains("`$settingsPanel.Anchor='Top,Bottom,Left,Right'") -and $settingsBuild.Contains('$dialog.Controls.Add($settingsPanel)')) 'settings-scroll: the settings sit in an auto-scrolling panel that grows and shrinks with the dialog'
+Check ($settingsBuild.Contains("`$saveButton.Anchor='Bottom,Right';`$dialog.Controls.Add(`$saveButton)") -and $settingsBuild.Contains("`$cancelButton.Anchor='Bottom,Right';`$dialog.Controls.Add(`$cancelButton)")) 'settings-scroll: Save and Cancel are on the dialog, pinned to its bottom right'
+$settingsDialogAdds=@([regex]::Matches($settingsBuild,'\$dialog\.Controls\.Add\((\$\w+)\)') | ForEach-Object { $_.Groups[1].Value })
+Check ($settingsDialogAdds.Count -eq 3 -and ($settingsDialogAdds -contains '$settingsPanel') -and ($settingsDialogAdds -contains '$saveButton') -and ($settingsDialogAdds -contains '$cancelButton')) 'settings-scroll: only the panel, Save and Cancel are added to the dialog itself'
+
 # ---- N3: the gap between two runs of a switch, and the switch line under a serving status ----
 function SwStatus([string]$Phase,$Block,[bool]$SwitchAllowed=$true,[bool]$Active=$true,[string]$StopReason=''){
     $document=[ordered]@{ runId=('a'*32); phase=$Phase; active=$Active; modelId='model-a' }

@@ -374,9 +374,10 @@ jobs:
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
           .\tests\semantic-smoke-tests.ps1
-      # Builds the real Settings dialog off-screen (never shown) and saves PNGs at 100% and 150% for a person to look at.
+      # Builds the real Settings dialog (never on a screen) and saves PNGs at 100%, 150% and two small-screen caps for a person to look at.
       - name: Settings dialog render tests in Windows PowerShell 5.1 (off-screen)
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         shell: powershell
         env:
           FASTLLM_RENDER_DIR: ${{ runner.temp }}\fastllm-settings-dialog

@@ -975,30 +975,39 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
         catch{$newKeyFailureText=[string]$_.Exception.Message;$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))}
     }
 }
+# The dialog is at most as tall as the screen's working area; the anchors then shrink the scrolling panel and lift Save and Cancel with the bottom edge.
+function FitUiSettingsDialog($Dialog,[int]$MaxHeight){
+    if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight)}
+}
+function GetUiSettingsDialogMaxHeight($Owner){
+    return [int][Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height
+}
 # The Settings dialog is built here and nothing else: ShowUiSettings runs it in its OWN scope (". BuildUiSettingsDialog"), so every control and
 # handler variable lives where it always did. tests/settings-dialog-render-tests.ps1 builds the same function off-screen to render the layout.
 function BuildUiSettingsDialog {
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,628);$dialog.StartPosition='CenterParent'
     $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
-    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$dialog.Controls.Add($portLabel)
+    # The settings sit in a scrolling panel (Save and Cancel stay on the dialog, pinned to its bottom edge), so a small screen or large text never hides them.
+    $settingsPanel=New-Object Windows.Forms.Panel;$settingsPanel.Location=New-Object Drawing.Point(0,0);$settingsPanel.Size=New-Object Drawing.Size($dialog.ClientSize.Width,536);$settingsPanel.AutoScroll=$true;$settingsPanel.Anchor='Top,Bottom,Left,Right';$dialog.Controls.Add($settingsPanel)
+    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($portLabel)
     $portBox=New-Object Windows.Forms.NumericUpDown
     $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
-    $portBox.Value=[decimal][int]$current.serverPort;$dialog.Controls.Add($portBox)
-    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(95,27);$thinkingLabel.UseMnemonic=$false;$dialog.Controls.Add($thinkingLabel)
+    $portBox.Value=[decimal][int]$current.serverPort;$settingsPanel.Controls.Add($portBox)
+    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(95,27);$thinkingLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($thinkingLabel)
     $thinkingBox=New-Object Windows.Forms.ComboBox
     $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
     [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
-    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$dialog.Controls.Add($thinkingBox)
+    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$settingsPanel.Controls.Add($thinkingBox)
     $chatBox=New-Object Windows.Forms.CheckBox;$chatBox.Text='Local chat page (off by default)';$chatBox.Location=New-Object Drawing.Point(20,104);$chatBox.Size=New-Object Drawing.Size(510,27)
-    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$dialog.Controls.Add($chatBox)
-    $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$dialog.Controls.Add($chatPrivacy)
-    $idleLabel=New-Object Windows.Forms.Label;$idleLabel.Text='Stop the model when idle';$idleLabel.Location=New-Object Drawing.Point(20,168);$idleLabel.Size=New-Object Drawing.Size(200,27);$idleLabel.UseMnemonic=$false;$dialog.Controls.Add($idleLabel)
+    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$settingsPanel.Controls.Add($chatBox)
+    $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$settingsPanel.Controls.Add($chatPrivacy)
+    $idleLabel=New-Object Windows.Forms.Label;$idleLabel.Text='Stop the model when idle';$idleLabel.Location=New-Object Drawing.Point(20,168);$idleLabel.Size=New-Object Drawing.Size(200,27);$idleLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($idleLabel)
     $idleBox=New-Object Windows.Forms.ComboBox
     $idleBox.DropDownStyle='DropDownList';$idleBox.Location=New-Object Drawing.Point(230,166);$idleBox.Size=New-Object Drawing.Size(300,27)
     foreach($idleChoice in @('Never (default)','After 15 minutes','After 30 minutes','After 60 minutes')){[void]$idleBox.Items.Add($idleChoice)}
-    $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$dialog.Controls.Add($idleBox)
-    $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$dialog.Controls.Add($idleHelp)
+    $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$settingsPanel.Controls.Add($idleBox)
+    $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($idleHelp)
     # The API key (off by default). The box only sets the flag; turning it on creates a key when there is none. The key is shown in Connect an app.
     $keyBox=New-Object Windows.Forms.CheckBox;$keyBox.Text='Require an API key (off by default)';$keyBox.Location=New-Object Drawing.Point(20,232);$keyBox.Size=New-Object Drawing.Size(510,27)
     # When the setting cannot be known (a key is stored, but the saved settings do not say whether to use it) the box is neither ticked nor
@@ -1008,16 +1017,16 @@ function BuildUiSettingsDialog {
     if($keyBoxState -ceq 'indeterminate'){$keyBox.ThreeState=$true;$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate;$keyBox.Text='Require an API key (not set: tick or clear this box to choose)'}
     else{$keyBox.Checked=($keyBoxState -ceq 'checked')}
     $keyBox.Add_Click({$script:settingsKeyTouched=$true;$keyBox.ThreeState=$false})
-    $dialog.Controls.Add($keyBox)
-    $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$dialog.Controls.Add($keyHelp)
-    $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$dialog.Controls.Add($newKeyButton)
+    $settingsPanel.Controls.Add($keyBox)
+    $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($keyHelp)
+    $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$settingsPanel.Controls.Add($newKeyButton)
     $newKeyButton.Add_Click({
         try{[void](NewUiApiKey $dialog)}
         catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
     })
-    $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$dialog.Controls.Add($startBox)
-    $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$dialog.Controls.Add($startState)
-    $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$dialog.Controls.Add($startLast)
+    $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$settingsPanel.Controls.Add($startBox)
+    $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$settingsPanel.Controls.Add($startState)
+    $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$settingsPanel.Controls.Add($startLast)
     # The Run entry is the truth (never settings.json): the checkbox shows what was read back after each change.
     $showSignIn={
         param($View)
@@ -1033,10 +1042,10 @@ function BuildUiSettingsDialog {
         }
     })
     $switchBox=New-Object Windows.Forms.CheckBox;$switchBox.Text='Allow switching models while FastLLM runs';$switchBox.Location=New-Object Drawing.Point(20,458);$switchBox.Size=New-Object Drawing.Size(510,27)
-    $switchBox.Checked=[bool]$script:uiSettings.allowSwitch;$dialog.Controls.Add($switchBox)
-    $switchHelp=New-Object Windows.Forms.Label;$switchHelp.Text='Off by default; applies from the next start. A switch checks the new model again and starts the old one if it cannot start. Stop always wins.';$switchHelp.Location=New-Object Drawing.Point(44,486);$switchHelp.Size=New-Object Drawing.Size(486,48);$switchHelp.UseMnemonic=$false;$dialog.Controls.Add($switchHelp)
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,544);$saveButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,544);$cancelButton.Size=New-Object Drawing.Size(100,38);$dialog.Controls.Add($cancelButton)
+    $switchBox.Checked=[bool]$script:uiSettings.allowSwitch;$settingsPanel.Controls.Add($switchBox)
+    $switchHelp=New-Object Windows.Forms.Label;$switchHelp.Text='Off by default; applies from the next start. A switch checks the new model again and starts the old one if it cannot start. Stop always wins.';$switchHelp.Location=New-Object Drawing.Point(44,486);$switchHelp.Size=New-Object Drawing.Size(486,48);$switchHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($switchHelp)
+    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,544);$saveButton.Size=New-Object Drawing.Size(100,38);$saveButton.Anchor='Bottom,Right';$dialog.Controls.Add($saveButton)
+    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,544);$cancelButton.Size=New-Object Drawing.Size(100,38);$cancelButton.Anchor='Bottom,Right';$dialog.Controls.Add($cancelButton)
     $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
     $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
     $saveButton.Add_Click({
@@ -1079,6 +1088,7 @@ function ShowUiSettings {
     $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
     . BuildUiSettingsDialog
+    FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form)
     SetTrayMenuAvailable $false
     $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey;$script:settingsSavedSwitch=[bool]$current.allowSwitch
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
