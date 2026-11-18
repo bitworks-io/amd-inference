@@ -276,6 +276,34 @@ try {
             -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $editWave
         Check ($edited.reportStatus -ceq 'aborted' -and $edited.sourceProvenance.endStatus -ceq 'changed' -and $edited.bindingStatus -ceq 'compromised' -and $script:waveCalls -eq 1) 'an edit to the serving-profile file during the run leaves the source status not verified'
     }finally{$script:FastLlmTaskQualityToolPath=$savedToolPath}
+    # Windows PowerShell 5.1 hands back $null for @($x) when $x is an array-typed parameter holding $null, so the helpers below must never
+    # call .Count on such a value. These checks run under this suite's Set-StrictMode -Version 2.0 (a null .Count is an error there).
+    Check ((Get-TaskQualityArgumentValue $null '--cache-type-k' 'D') -ceq 'D') 'argument value: a null list gives the default'
+    Check ((Get-TaskQualityArgumentValue @() '--cache-type-k' 'D') -ceq 'D') 'argument value: an empty list gives the default'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k','q8_0') '--cache-type-k' 'D') -ceq 'q8_0') 'argument value: one name and value'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k') '--cache-type-k' 'D') -ceq 'D') 'argument value: the name as the last element has no value, so the default'
+    Check ((Get-TaskQualityArgumentValue @('--parallel','2','--cache-type-v','q8_0','--jinja') '--cache-type-v' 'D') -ceq 'q8_0') 'argument value: pairs in the middle'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k','q8_0','--cache-type-k','f16') '--cache-type-k' 'D') -ceq 'q8_0') 'argument value: a repeated name, the first wins'
+    Check ((Get-TaskQualityArgumentValue @('--parallel','2','--cache-type-k') '--cache-type-k' 'D') -ceq 'D') 'argument value: an odd count ending in the name gives the default'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k','q8_0','--jinja') '--cache-type-k' 'D') -ceq 'q8_0') 'argument value: an odd count with the name earlier'
+    Check ((Get-TaskQualityArgumentValue @('--alias','m') '--cache-type-k' 'D') -ceq 'D') 'argument value: an absent name gives the default'
+    $setupBare=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192}})
+    Check ($setupBare.profile -ceq 'default' -and $setupBare.contextTotal -eq 8192 -and $setupBare.contextPerSlot -eq 8192 -and $setupBare.slots -eq 1 -and
+        $setupBare.cacheTypeK -ceq 'f16' -and $setupBare.cacheTypeV -ceq 'f16') 'serving setup: a state with no requestedArguments reads as default, one slot, f16'
+    $setupEmpty=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;requestedArguments=@()}})
+    Check ($setupEmpty.slots -eq 1 -and $setupEmpty.cacheTypeK -ceq 'f16' -and $setupEmpty.cacheTypeV -ceq 'f16') 'serving setup: an empty requestedArguments reads as f16'
+    $setupNull=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;requestedArguments=$null}})
+    Check ($setupNull.cacheTypeK -ceq 'f16' -and $setupNull.cacheTypeV -ceq 'f16') 'serving setup: a null requestedArguments reads as f16'
+    $setupQ8=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;slots=2;contextPerSlot=4096;profile='long';
+        requestedArguments=@('--parallel','2','--cache-type-k','q8_0','--cache-type-v','q8_0','--jinja')}})
+    Check ($setupQ8.profile -ceq 'long' -and $setupQ8.contextTotal -eq 8192 -and $setupQ8.contextPerSlot -eq 4096 -and $setupQ8.slots -eq 2 -and
+        $setupQ8.cacheTypeK -ceq 'q8_0' -and $setupQ8.cacheTypeV -ceq 'q8_0') 'serving setup: q8_0 on both cache types'
+    $setupOne=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;requestedArguments=@('--cache-type-k','q8_0')}})
+    Check ($setupOne.cacheTypeK -ceq 'q8_0' -and $setupOne.cacheTypeV -ceq 'f16') 'serving setup: only the K cache type named, V is f16'
+    $nullLaneRefusal=$null
+    try{Assert-TaskQualityLanes $null @('vulkan-b10698')}catch{$nullLaneRefusal=$_.Exception}
+    Check ($null -ne $nullLaneRefusal -and $nullLaneRefusal.Data['FastLlmFailureCode'] -ceq 'task-quality-lane-unknown') 'lane check: a null lane list is the typed refusal, not a null .Count error'
+    Check (@(Expand-TaskQualityLanes $null).Count -eq 0) 'lane expand: a null list expands to nothing'
     # Every state check the tool makes carries the lane list and the switch.
     $script:assertCalls=@()
     $null=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'calls-default.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
