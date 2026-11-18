@@ -330,6 +330,40 @@ $r = Invoke-Case (New-FakeHost) $root
 $file = Read-Result $root
 Assert-True ($r.result -ceq 'host-failed' -and [string]$file.failureCode -ceq 'api-key-setting-unreadable' -and (Count-Calls 'start') -eq 0) 'unreadable settings with a key store: the typed api-key-setting-unreadable refusal, nothing started'
 
+# the sign-in path never loads window code: the opt-in reader is the shared src/FastLlm.UiSettings.ps1, and SignInStart.ps1 neither loads nor names
+# the window's files (a source scan), and the reader resolves with the window's files absent (a child process with only the two files copied)
+$signInSource = [IO.File]::ReadAllText((Join-Path $repo 'src/FastLlm.SignInStart.ps1'))
+$signInCode = (($signInSource -split "`n") | Where-Object { $_.TrimStart() -cnotlike '#*' }) -join "`n"
+Assert-True ($signInCode -cnotmatch 'FastLlm\.UiFlow|fast-llm-ui|Windows\.Forms|Add-Type|Read-FastLlmUiSettings|Write-FastLlmUiSettings') 'SignInStart.ps1 code neither loads nor references FastLlm.UiFlow.ps1, fast-llm-ui.ps1, forms or the window settings functions'
+Assert-True ($signInCode -cmatch "FastLlm\.UiSettings\.ps1") 'SignInStart.ps1 loads the shared reader file FastLlm.UiSettings.ps1'
+$sharedSource = [IO.File]::ReadAllText((Join-Path $repo 'src/FastLlm.UiSettings.ps1'))
+Assert-True ($sharedSource -cnotmatch '(?m)^\s*[^#\r\n]*(\. \(Join-Path|Add-Type|Windows\.Forms|System\.Windows|\bSet-Content\b|WriteAllText|Out-File)') 'the shared reader file loads nothing, has no forms or Add-Type and writes nothing'
+$readerDefinitions = @(Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Filter '*.ps1' | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?m)^function Get-FastLlmUiAllowSwitch\b' } | ForEach-Object Name)
+Assert-True ($readerDefinitions.Count -eq 1 -and $readerDefinitions[0] -ceq 'FastLlm.UiSettings.ps1') 'there is one copy of the reader and it lives in FastLlm.UiSettings.ps1'
+$isolated = Join-Path $work ('isolated-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $isolated | Out-Null
+foreach ($copyName in @('FastLlm.SignInStart.ps1', 'FastLlm.UiSettings.ps1')) { Copy-Item -LiteralPath (Join-Path $repo "src/$copyName") -Destination (Join-Path $isolated $copyName) }
+Assert-True (@(Get-ChildItem -LiteralPath $isolated -File).Count -eq 2 -and -not (Test-Path -LiteralPath (Join-Path $isolated 'FastLlm.UiFlow.ps1'))) 'the isolated folder holds only the sign-in file and the shared reader (no window file)'
+$isolatedInstall = New-Install
+$isolatedChild = Join-Path $work ('isolated-child-' + [guid]::NewGuid().ToString('N') + '.ps1')
+[IO.File]::WriteAllText($isolatedChild, @'
+param([string]$Folder, [string]$Root)
+$ErrorActionPreference = 'Stop'
+. (Join-Path $Folder 'FastLlm.SignInStart.ps1')
+$source = (Get-Command Get-FastLlmUiAllowSwitch).ScriptBlock.File
+$uiFlowLoaded = [bool](Get-Command Get-FastLlmUiPendingDecision -ErrorAction SilentlyContinue)
+$settingsPath = Join-Path $Root 'settings.json'
+$absent = Get-FastLlmSignInAllowSwitch -InstallRoot $Root
+[IO.File]::WriteAllText($settingsPath, '{ "allowSwitch": true }')
+$on = Get-FastLlmSignInAllowSwitch -InstallRoot $Root
+[IO.File]::WriteAllText($settingsPath, '{ not json')
+$bad = Get-FastLlmSignInAllowSwitch -InstallRoot $Root
+Write-Output ('RESULT ' + (Split-Path -Leaf $source) + ' ' + $uiFlowLoaded + ' ' + $absent + ' ' + $on + ' ' + $bad)
+'@, (New-Object Text.UTF8Encoding($false)))
+$isolatedShell = (Get-Process -Id $PID).Path
+$isolatedOutput = @(& $isolatedShell -NoLogo -NoProfile -NonInteractive -File $isolatedChild -Folder $isolated -Root $isolatedInstall 2>&1 | ForEach-Object { [string]$_ })
+Assert-True (($isolatedOutput -join "`n") -ceq 'RESULT FastLlm.UiSettings.ps1 False False True False') "with the window's files absent the sign-in reader resolves from the shared file: not loaded, absent off, true on, unreadable off (got: $($isolatedOutput -join ' | '))"
+
 # the launcher tool itself: it runs in its own process, so it must bring in the FastLlm module (the key-store pre-check of the real
 # background start lives there). The real Start-FastLlmBackgroundHost runs with its Windows-only checks and its request writer replaced
 # by a probe that records the request and stops: nothing is ever launched.

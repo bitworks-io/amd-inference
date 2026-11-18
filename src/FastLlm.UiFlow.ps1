@@ -2,6 +2,9 @@
 # its CLI child. No native process, UI, network, or filesystem work occurs here.
 Set-StrictMode -Version 2
 
+# The model-switching opt-in reader (Get-FastLlmUiAllowSwitch) is shared with the start at sign-in, which never loads this file.
+. (Join-Path $PSScriptRoot 'FastLlm.UiSettings.ps1')
+
 function Get-FastLlmUiModelProvenanceDigest {
     param([Parameter(Mandatory=$true)]$Model)
     $fields = @('id','upstreamModel','upstreamRevision','upstreamLicense',
@@ -714,8 +717,7 @@ function Read-FastLlmUiSettings {
     $path = Join-Path $InstallRoot 'settings.json'
     try {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $storedText = Get-Content -LiteralPath $path -Raw
-            $stored = $storedText | ConvertFrom-Json
+            $stored = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
             if ($stored.PSObject.Properties['vulkanBarMitigation'] -and @('auto', 'on', 'off') -contains [string] $stored.vulkanBarMitigation) {
                 $settings.vulkanBarMitigation = [string] $stored.vulkanBarMitigation
             }
@@ -725,9 +727,8 @@ function Read-FastLlmUiSettings {
             if ($stored.PSObject.Properties['lastUserStoppedBackgroundRequestId'] -and [string] $stored.lastUserStoppedBackgroundRequestId -cmatch '^[0-9a-f]{32}$') {
                 $settings.lastUserStoppedBackgroundRequestId = [string] $stored.lastUserStoppedBackgroundRequestId
             }
-            # Opt-in model switching: only a JSON true turns it on; absent or anything else is off.
-            # The text must be a JSON object: PowerShell 7 hands back the one element of a one-element array as the document, which must not turn it on; a file over the writer's 16 KiB limit counts as unreadable too (the same verdict as Write-FastLlmUiSettings).
-            if ($storedText.TrimStart().StartsWith('{', [StringComparison]::Ordinal) -and [Text.Encoding]::UTF8.GetByteCount($storedText) -le 16384 -and $stored.PSObject.Properties['allowSwitch'] -and $stored.allowSwitch -is [bool] -and $stored.allowSwitch) { $settings.allowSwitch = $true }
+            # Opt-in model switching: the one shared reader (Get-FastLlmUiAllowSwitch, src/FastLlm.UiSettings.ps1) decides.
+            if (Get-FastLlmUiAllowSwitch -InstallRoot $InstallRoot) { $settings.allowSwitch = $true }
         }
     }
     catch { }
@@ -801,12 +802,6 @@ function Write-FastLlmUiSettings {
     $temporary = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
     [IO.File]::WriteAllText($temporary, (([pscustomobject] $merged) | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $path -Force
-}
-
-# Whether the user allows switching models while FastLLM runs (settings.json under the launch root; off by default).
-function Get-FastLlmUiAllowSwitch {
-    param([Parameter(Mandatory = $true)][string] $InstallRoot)
-    try { return [bool] (Read-FastLlmUiSettings -InstallRoot $InstallRoot).allowSwitch } catch { return $false }
 }
 
 # Saves only that setting; every other key (the BAR value included) is kept as it is.

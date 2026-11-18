@@ -5,6 +5,9 @@
 # The launcher entry point is tools/signin-start.ps1, started through FastLLM.cmd /signin.
 Set-StrictMode -Version 2.0
 
+# The one reader of the model-switching opt-in, shared with the control window. This file never loads the window's code.
+. (Join-Path $PSScriptRoot 'FastLlm.UiSettings.ps1')
+
 $script:FastLlmSignInValueName = 'FastLLM'
 $script:FastLlmSignInRunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $script:FastLlmSignInApprovedKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
@@ -212,12 +215,11 @@ function Read-FastLlmSignInRequest {
     }
 }
 
-# Whether the user allows switching models while FastLLM runs: read through the window's own function (Get-FastLlmUiAllowSwitch), so a sign-in
+# Whether the user allows switching models while FastLLM runs: read through the shared reader the window uses (Get-FastLlmUiAllowSwitch, src/FastLlm.UiSettings.ps1), so a sign-in
 # start and a window start see the same answer. Fails closed: an absent, false or unreadable setting is off, and never stops a start.
 function Get-FastLlmSignInAllowSwitch {
     param([string]$InstallRoot)
     try {
-        if (-not (Get-Command Get-FastLlmUiAllowSwitch -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'FastLlm.UiFlow.ps1') }
         return [bool](Get-FastLlmUiAllowSwitch -InstallRoot $InstallRoot)
     } catch { return $false }
 }
