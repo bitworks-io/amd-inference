@@ -1023,14 +1023,29 @@ function Invoke-Cli([string[]]$Arguments) {
 }
 $cliRoot = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-cli-root-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $cliRoot -Force | Out-Null
-$run = Invoke-Cli @('update', '-Previous', '-InstallRoot', $cliRoot)
-Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*not an installed FastLLM release*') ('cli: update -Previous in an unreleased tree is refused in plain words with a non-zero exit (code ' + $run.code + ')')
-$run = Invoke-Cli @('update', '-Prev', '-InstallRoot', $cliRoot)
-Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*') 'cli: the abbreviation -Prev reaches the same refusal'
+# These three children get past fast-llm.ps1's parameter checks, so they reach its standard-user guard, which refuses every live action under
+# an Administrator token (the hosted Windows runner is elevated). Elevated, the test checks instead that the guard refuses update -Previous
+# before any reinstall step. The plain-words refusal is checked in-process above for every reason. The cases after this block are refused
+# by the parameter checks, before the guard, so they run everywhere.
+$cliChildrenElevated = $false
+if ($env:OS -eq 'Windows_NT') { $cliChildrenElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+if ($cliChildrenElevated) {
+    Write-Host 'SKIP: update -Previous CLI child cases that reach the update step (fast-llm.ps1 refuses a live operation under an elevated token; they run under a standard user)'
+    $run = Invoke-Cli @('update', '-Previous', '-InstallRoot', $cliRoot)
+    # Windows PowerShell 5.1 wraps redirected error text at the buffer width, even inside a word, so this text is compared with all whitespace removed.
+    $flat = $run.text -replace '\s', ''
+    Check ($run.code -ne 0 -and $flat -like '*mustrunasastandarduser*' -and $flat -notlike '*Reinstallrefused:*') ('cli: under an elevated token, update -Previous is refused by the standard-user guard before any reinstall step (code ' + $run.code + ')')
+}
+else {
+    $run = Invoke-Cli @('update', '-Previous', '-InstallRoot', $cliRoot)
+    Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*not an installed FastLLM release*') ('cli: update -Previous in an unreleased tree is refused in plain words with a non-zero exit (code ' + $run.code + ')')
+    $run = Invoke-Cli @('update', '-Prev', '-InstallRoot', $cliRoot)
+    Check ($run.code -eq 3 -and $run.text -like '*Reinstall refused:*') 'cli: the abbreviation -Prev reaches the same refusal'
+    $run = Invoke-Cli @('update', '-Previous', '-AsJson', '-InstallRoot', $cliRoot)
+    Check ($run.code -eq 3 -and $run.text -match '"reason":\s*"not-a-release"' -and $run.text -match '"status":\s*"refused"') 'cli: -AsJson prints the typed refusal'
+}
 $run = Invoke-Cli @('update', '-Previous', '-Yes', '-InstallRoot', $cliRoot)
 Check ($run.code -ne 0 -and $run.text -like '*cannot be combined with -Yes*' -and $run.text -notlike '*Reinstall refused:*') 'cli: update -Previous -Yes is refused, so the confirmation naming both versions always shows'
-$run = Invoke-Cli @('update', '-Previous', '-AsJson', '-InstallRoot', $cliRoot)
-Check ($run.code -eq 3 -and $run.text -match '"reason":\s*"not-a-release"' -and $run.text -match '"status":\s*"refused"') 'cli: -AsJson prints the typed refusal'
 $run = Invoke-Cli @('update', '-Previous', '-Unattended', '-Yes', '-InstallRoot', $cliRoot)
 Check ($run.code -ne 0 -and $run.text -like '*cannot run with -Unattended*') 'cli: update -Previous is refused with -Unattended, even with -Yes'
 $run = Invoke-Cli @('update', '-Previous', '-Unattended', '-InstallRoot', $cliRoot)
