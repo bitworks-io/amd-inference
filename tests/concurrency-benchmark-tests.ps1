@@ -90,6 +90,25 @@ $workerBinding=& $module {
 Check ($workerBinding -ceq $controllerBinding -and
     $collectorSource.Contains('} $PSCommandPath $semanticSource $InstallRoot $OutputPath') -and
     -not $collectorSource.Contains("Join-Path `$PSScriptRoot 'FastLlm.SemanticSmoke.ps1'")) 'worker module entry resolves the same explicit helper and mock Ready binding'
+# The concurrency benchmark measures the default one-slot run; a serving-profile state is refused by the shared state check, with no opt-in here.
+$twoSlot=$state|ConvertTo-Json -Depth 16|ConvertFrom-Json
+$twoSlot.recipe.slots=2
+$twoSlot.recipe.requestedArguments=@('--host','127.0.0.1','--port','8080','--alias','test','--parallel','2','--ctx-size','256')
+$twoSlot.canary.effectiveContext=128
+$twoSlot.recipe|Add-Member -NotePropertyName contextPerSlot -NotePropertyValue 128
+$twoSlot.recipe|Add-Member -NotePropertyName profile -NotePropertyValue 'long'
+$script:profileWaveCalls=0;$profileRefusal=$null
+$profileScratch=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-concurrency-profile-'+[Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($profileScratch)
+try{
+    try{
+        $null=Invoke-ConcurrencyBenchmarkCore -OutputPath (Join-Path $profileScratch 'two-slot.json') -PromptTokens @(16) -GenerationTokens 8 -Repetitions 1 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 30 `
+            -ReadState {$twoSlot} -CheckProcess {param($Current)} -Request {param($Path,$Body,$Timeout) $script:profileWaveCalls++;throw 'must not be reached'} `
+            -Wave {param($Base,$Path,$Body,$Clients,$Timeout) $script:profileWaveCalls++;throw 'must not be reached'}
+    }catch{$profileRefusal=[string]$_.Exception.Message}
+    Check ($profileRefusal -ceq 'The exact supervised normal inference run is not ready or its state is inconsistent.' -and $script:profileWaveCalls -eq 0 -and
+        -not (Test-Path -LiteralPath (Join-Path $profileScratch 'two-slot.json'))) 'concurrency benchmark refuses a slots-2 serving-profile state before any request'
+}finally{if(Test-Path -LiteralPath $profileScratch){Remove-Item -LiteralPath $profileScratch -Recurse -Force}}
 function New-ConcurrencyTestWave([int]$Clients){
     $out=@(for($i=1;$i -le $Clients;$i++){
         $response=[pscustomobject]@{Status=200;Events=@('{"content":"X","stop":false}',
@@ -116,6 +135,7 @@ try {
     Check ($report.reportStatus -eq 'aborted' -and $report.abortReasonCode -eq 'failed-wave' -and
         $report.failedCondition.requestedClients -eq 8 -and $report.failedCondition.warmup -eq $true -and
         $report.warmupWaves[-1].aggregateGeneratedTokensPerSecond -eq 560 -and $report.warmupWaves[-1].failedRequests -eq 1) 'failed warmup halts escalation and retains its shared wall denominator'
+    Check ($report.sourceProvenance.servingProfileHelperSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'concurrency report states the serving-profile helper hash'
     $disk=Get-Content -LiteralPath $reportPath -Raw
     Check ($disk.Contains('native-windows-api-private-concurrency-benchmark') -and -not $disk.Contains('"content":"X"')) 'private report is saved without completion text'
 

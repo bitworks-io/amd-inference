@@ -40,6 +40,7 @@ try{
             if($Path -cne '/v1/chat/completions' -or $TimeoutMs -lt 1 -or $TimeoutMs -gt 60000){throw 'Unexpected request endpoint or deadline.'}
             $script:bodies+=,$Body;$script:requests++;$script:responses[$script:requests-1]}
     Check ($report.results.Count -eq 2 -and $report.aborted -eq $false) 'The two fixed requests did not finish.'
+    Check ($report.sourceProvenance.servingProfileSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()) 'JSON-format diagnostic does not report the serving-profile source hash.'
     Check (@($report.methodology.requestVariants).Count -eq 2 -and
         $report.methodology.requestVariants[0] -ceq 'unconstrained' -and
         $report.methodology.requestVariants[1] -ceq 'json_object' -and

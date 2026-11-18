@@ -11,6 +11,7 @@ function Invoke-FastLlmHipSemanticSmokeCore {
     $paths=[ordered]@{
         hipSemantic=Join-Path $PSScriptRoot 'FastLlm.HipSemanticSmoke.ps1'
         fixedCasesAndParser=Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1'
+        servingProfile=Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1'
         hipBindingAndProcess=Join-Path $PSScriptRoot 'FastLlm.HipBenchmark.ps1'
         hipTrial=Join-Path $PSScriptRoot 'FastLlm.HipModelTrial.ps1'
     }
@@ -75,7 +76,7 @@ function Invoke-FastLlmHipSemanticSmokeCore {
         placementClassification=$first.placementClassification;placementEvidence=$first.placementEvidence
         reportedHostModelBufferMiB=if($first.allowHostModelBuffer){[double]@($first.placementEvidence.modelBuffers|Where-Object {$_.device -ceq 'CPU_Mapped'})[0].sizeMiB}else{$null}
         allWeightsOnGpuVerified=$false;allOperationsOnGpuVerified=$false;cpuInputEvidence='not-attested'
-        sourceProvenance=@{hipSemanticSha256=$hashes.hipSemanticSha256;fixedCasesAndParserSha256=$hashes.fixedCasesAndParserSha256;
+        sourceProvenance=@{hipSemanticSha256=$hashes.hipSemanticSha256;fixedCasesAndParserSha256=$hashes.fixedCasesAndParserSha256;servingProfileSha256=$hashes.servingProfileSha256;
             hipBindingAndProcessSha256=$hashes.hipBindingAndProcessSha256;hipTrialSha256=$hashes.hipTrialSha256;
             scope='trial launch-source SHA matches on-disk source; all helper hashes checked start/end; loaded-code identity is not attested'}
         methodology=@{caseSet='fastllm-fixed-semantic-smoke-v1';sampling='temperature-0-seed-42';thinkingRequested=$false

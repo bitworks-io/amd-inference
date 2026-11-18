@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.Recipes.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Preload.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.ModelStore.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.RunLog.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadLab.ps1')
@@ -997,9 +998,10 @@ function Test-FastLlmRecipeEngineRunnableNow {
 # with no row the option is refused. Nothing is derived from a formula or a file size.
 $script:FastLlmServingProfilesSchema = 'bitworks.fastllm-serving-profiles/v1'
 $script:FastLlmServingProfileNotMeasured = 'Not measured for this model and engine.'
-$script:FastLlmServingProfileIds = @('default', 'long')
-$script:FastLlmServingProfileSlots = @(1, 2)
-$script:FastLlmServingProfileCacheTypes = @('f16', 'q8_0')
+$script:FastLlmServingProfileIds = @((Get-FastLlmServingProfileVocabulary).profileIds)
+# The closed sets live in FastLlm.ServingProfileRun.ps1, where the measurement tools' state check reads them too.
+$script:FastLlmServingProfileSlots = @((Get-FastLlmServingProfileVocabulary).slots)
+$script:FastLlmServingProfileCacheTypes = @((Get-FastLlmServingProfileVocabulary).cacheTypes)
 $script:FastLlmServingProfilesMaxBytes = 1048576
 
 function New-FastLlmServingProfilesFailure {

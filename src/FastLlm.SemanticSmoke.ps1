@@ -1,5 +1,7 @@
 # Private, fixed-case semantic smoke check for a supervised normal Windows run.
 # This is deliberately separate from the benchmark and recipe qualification paths.
+# The serving-profile rules are shared with the benchmark default-setup check, so they live in one file.
+. (Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1')
 function Get-FastLlmSemanticSmokeSha256 {
     param([string]$Value)
     $sha=[Security.Cryptography.SHA256]::Create()
@@ -49,22 +51,37 @@ function Test-FastLlmSemanticSmokeLane {
     return $false
 }
 
+# The lane names come from Get-FastLlmSemanticSmokeLanes only, so an engine refresh edits one table.
 function Assert-FastLlmSemanticSmokeState {
-    param($State,[string]$ExpectedBinding,[ValidateSet('vulkan-b10698','hip-b11658')][string[]]$AcceptedLanes=@('vulkan-b10698'))
+    param($State,[string]$ExpectedBinding,[ValidateScript({@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name) -ccontains $_})][string[]]$AcceptedLanes=@('vulkan-b10698'),
+          [switch]$AllowServingProfile)
+    # A serving-profile run (an opt-in context profile, a second slot or a non-default KV cache) is never the default normal run:
+    # it is refused unless the caller opts in, and then only when its own record is consistent.
+    $profileRun=$false
+    if($State -and (Test-FastLlmServingProfileRun $State)){
+        $profileRun=$true
+        if(-not $AllowServingProfile -or -not (Test-FastLlmServingProfileState $State)){
+            throw 'The exact supervised normal inference run is not ready or its state is inconsistent.'
+        }
+    }
+    # The default run has one slot and its whole context; a planned profile run has its slots and a per-slot context.
+    $expectedSlots=1
+    $expectedEffective=$null
+    if($profileRun){$expectedSlots=[int]$State.recipe.slots;$expectedEffective=[int]$State.recipe.contextPerSlot}
     if(-not $State -or [int]$State.schemaVersion -ne 1 -or $State.active -isnot [bool] -or -not $State.active -or $State.phase -cne 'ready' -or
        $State.endpoint -cne 'http://127.0.0.1:8080/v1' -or $State.runId -cnotmatch '^[0-9a-f]{32}$' -or
        $State.modelId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$' -or
        $State.modelSha256 -cnotmatch '^[0-9a-f]{64}$' -or
        -not $State.recipe -or -not (Test-FastLlmSemanticSmokeLane $State $AcceptedLanes) -or
        $State.recipe.engineSha256 -cnotmatch '^[0-9a-f]{64}$' -or $State.recipe.catalogSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-       [int]$State.recipe.contextSize -lt 256 -or [int]$State.recipe.slots -ne 1 -or
+       [int]$State.recipe.contextSize -lt 256 -or [int]$State.recipe.slots -ne $expectedSlots -or
        [int]$State.processIdentity.pid -le 0 -or [long]$State.processIdentity.startUtcTicks -le 0 -or
        $State.canary.modelIdentity -isnot [bool] -or -not $State.canary.modelIdentity -or
        $State.canary.repeatableToken -isnot [bool] -or -not $State.canary.repeatableToken -or
        $State.canary.synchronousChat -isnot [bool] -or -not $State.canary.synchronousChat -or
        $State.canary.streaming -isnot [bool] -or -not $State.canary.streaming -or
        $State.canary.semanticCorrectnessQualified -isnot [bool] -or $State.canary.semanticCorrectnessQualified -or
-       [int]$State.canary.effectiveContext -ne [int]$State.recipe.contextSize -or
+       [int]$State.canary.effectiveContext -ne $(if($profileRun){$expectedEffective}else{[int]$State.recipe.contextSize}) -or
        $State.placement.reportedAllLayers -isnot [bool] -or -not $State.placement.reportedAllLayers -or
        [int]$State.placement.reportedLayers -le 0 -or
        [int]$State.placement.reportedLayers -ne [int]$State.placement.totalLayers -or
@@ -72,7 +89,7 @@ function Assert-FastLlmSemanticSmokeState {
        -not (Test-FastLlmSemanticSmokeArgument @($State.recipe.requestedArguments) '--host' '127.0.0.1') -or
        -not (Test-FastLlmSemanticSmokeArgument @($State.recipe.requestedArguments) '--port' '8080') -or
        -not (Test-FastLlmSemanticSmokeArgument @($State.recipe.requestedArguments) '--alias' ([string]$State.modelId)) -or
-       -not (Test-FastLlmSemanticSmokeArgument @($State.recipe.requestedArguments) '--parallel' '1') -or
+       -not (Test-FastLlmSemanticSmokeArgument @($State.recipe.requestedArguments) '--parallel' ([string]$expectedSlots)) -or
        -not (Test-FastLlmSemanticSmokeArgument @($State.recipe.requestedArguments) '--ctx-size' ([string]$State.recipe.contextSize))){
         throw 'The exact supervised normal inference run is not ready or its state is inconsistent.'
     }
@@ -177,12 +194,14 @@ function ConvertFrom-FastLlmSemanticSmokeResponse {
 
 function Invoke-FastLlmSemanticSmokeCore {
     param([string]$OutputPath,[scriptblock]$ReadState,[scriptblock]$Request,[scriptblock]$CheckProcess,[int]$DeadlineSeconds=240,
-          [ValidateSet('vulkan-b10698','hip-b11658')][string[]]$AcceptedLanes=@('vulkan-b10698'))
+          [ValidateScript({@(Get-FastLlmSemanticSmokeLanes|ForEach-Object name) -ccontains $_})][string[]]$AcceptedLanes=@('vulkan-b10698'))
     if($DeadlineSeconds -lt 1 -or $DeadlineSeconds -gt 240){throw 'Semantic smoke deadline is outside fixed bounds.'}
     if(Test-Path -LiteralPath $OutputPath){throw 'Semantic smoke output already exists.'}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     $sourcePath=Join-Path $PSScriptRoot 'FastLlm.SemanticSmoke.ps1'
     $sourceSha=(Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $profilePath=Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1'
+    $profileSha=(Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $first=& $ReadState
     $binding=Assert-FastLlmSemanticSmokeState -State $first -AcceptedLanes $AcceptedLanes
     & $CheckProcess $first
@@ -212,7 +231,8 @@ function Invoke-FastLlmSemanticSmokeCore {
     }
     try{$current=& $ReadState;$null=Assert-FastLlmSemanticSmokeState -State $current -ExpectedBinding $binding -AcceptedLanes $AcceptedLanes;& $CheckProcess $current}
     catch{$aborted=$true}
-    if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceSha){throw 'Semantic smoke source changed during evaluation.'}
+    if((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceSha -or
+       (Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $profileSha){throw 'Semantic smoke source changed during evaluation.'}
     $passed=@($cases|Where-Object outcome -eq 'pass').Count
     $failed=@($cases|Where-Object outcome -eq 'fail').Count
     $inconclusive=@($cases|Where-Object outcome -eq 'inconclusive').Count
@@ -221,7 +241,7 @@ function Invoke-FastLlmSemanticSmokeCore {
         runId=$first.runId;processIdentity=$first.processIdentity;modelId=$first.modelId;modelSha256=$first.modelSha256
         engineVersion=$first.engineVersion;backend=[string]$first.recipe.backend;engineSha256=$first.recipe.engineSha256;catalogSha256=$first.recipe.catalogSha256
         endpoint=$first.endpoint;contextSize=[int]$first.recipe.contextSize;evidenceBindingSha256=$binding
-        sourceProvenance=@{semanticSmokeSha256=$sourceSha;scope='on-disk SHA-256 checked at start/end; loaded-code identity is not attested'}
+        sourceProvenance=@{semanticSmokeSha256=$sourceSha;servingProfileSha256=$profileSha;scope='on-disk SHA-256 checked at start/end; loaded-code identity is not attested'}
         methodology=@{caseSet='fastllm-fixed-semantic-smoke-v1';sampling='temperature-0-seed-42';thinkingRequested=$false;prefixCache=$false;
             maxOutputTokens=96;concurrency=1;elapsedBudgetSeconds=$DeadlineSeconds;requestTimeoutMaximumSeconds=60;
             hardWallClockDeadline=$false;interpretation='tiny hand-authored canary; elapsed request budget does not preempt OS process or file calls'}

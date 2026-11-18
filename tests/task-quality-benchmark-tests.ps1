@@ -7,6 +7,9 @@ $concurrency=Join-Path $PSScriptRoot '../tools/concurrency-benchmark.ps1'
 . $tool -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-task-quality-test.json')
 . $workload
 . $concurrency -OutputPath (Join-Path ([IO.Path]::GetTempPath()) 'unused-concurrency-test.json')
+# The lane table is read from its one source; the state check below is replaced by a recording mock.
+. (Join-Path $PSScriptRoot '../src/FastLlm.SemanticSmoke.ps1')
+. (Join-Path $PSScriptRoot 'helpers/task-quality-masked-json.ps1')
 Set-StrictMode -Version 2.0
 $script:checks=0
 function Check($Condition,[string]$Label){if(-not $Condition){throw "FAILED: $Label"};$script:checks++}
@@ -15,7 +18,9 @@ function Test-FastLlmBenchmarkFiniteNumber($Value,[bool]$AllowZero=$false){
     try{$number=[double]$Value;return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number) -and ($number -gt 0 -or ($AllowZero -and $number -eq 0))}
     catch{return $false}
 }
-function Assert-FastLlmSemanticSmokeState($State,[string]$ExpectedBinding){
+$script:assertCalls=@()
+function Assert-FastLlmSemanticSmokeState($State,[string]$ExpectedBinding,[string[]]$AcceptedLanes=@('vulkan-b10698'),[switch]$AllowServingProfile){
+    $script:assertCalls+= [pscustomobject]@{lanes=(@($AcceptedLanes) -join ',');allow=[bool]$AllowServingProfile}
     if($State.active -ne $true -or $State.phase -cne 'ready' -or
        ($ExpectedBinding -and $State.runId -cne $ExpectedBinding)){throw 'mock-binding-change'}
     return [string]$State.runId
@@ -232,6 +237,149 @@ try {
         Check ($changedSource.reportStatus -ceq 'aborted' -and $changedSource.sourceProvenance.endStatus -ceq 'changed' -and
             $changedSource.totals.attempted -eq 1 -and $script:waveCalls -eq 1) ("changed source stops after first issued wave: $($changedSource.reportStatus)/$($changedSource.sourceProvenance.endStatus)/$($changedSource.totals.attempted)/$script:waveCalls")
     }finally{Set-Item Function:Get-TaskQualitySourceHashes -Value $savedSourceFunction}
+    # --- Serving-profile runs ---
+    # Default report: the same bytes main writes (a fixture generated from main), after masking only what differs between any two runs.
+    $defaultReportText=Get-Content -LiteralPath $reportPath -Raw
+    $fixtureText=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/task-quality-default-report.json') -Raw
+    Check ((Get-TaskQualityMaskedReportText $defaultReportText) -ceq (Get-TaskQualityMaskedReportText $fixtureText)) 'default report is identical to the report main writes for the same inputs'
+    # The compare is layout-independent but not blind: an extra key, a changed value or a changed number each make the texts differ,
+    # and the same report in another layout (indent, spacing, escaping) does not.
+    $maskedDefault=Get-TaskQualityMaskedReportText $defaultReportText
+    $extraKeyReport=$defaultReportText|ConvertFrom-Json;$extraKeyReport.methodology|Add-Member -NotePropertyName servingSetup -NotePropertyValue 'x'
+    $changedReport=$defaultReportText|ConvertFrom-Json;$changedReport.methodology.serverSlots=2
+    $changedNumber=$defaultReportText|ConvertFrom-Json;$changedNumber.waves[0].requests[0].endToEndLatencyMs=[double]$changedNumber.waves[0].requests[0].endToEndLatencyMs+0.5
+    Check ((Get-TaskQualityMaskedReportText ($extraKeyReport|ConvertTo-Json -Depth 30)) -cne $maskedDefault) 'the report compare catches one extra key'
+    Check ((Get-TaskQualityMaskedReportText ($changedReport|ConvertTo-Json -Depth 30)) -cne $maskedDefault) 'the report compare catches one changed value'
+    Check ((Get-TaskQualityMaskedReportText ($changedNumber|ConvertTo-Json -Depth 30)) -cne $maskedDefault) 'the report compare catches a changed number'
+    Check ((Get-TaskQualityMaskedReportText ($defaultReportText|ConvertFrom-Json|ConvertTo-Json -Depth 30 -Compress)) -ceq $maskedDefault -and
+        (Get-TaskQualityMaskedReportText ($defaultReportText|ConvertFrom-Json|ConvertTo-Json -Depth 30)) -ceq $maskedDefault) 'the report compare ignores the JSON layout'
+    Check (-not $defaultReportText.Contains('servingSetup') -and $report.methodology.serverSlots -eq 1 -and
+        $report.methodology.interpretation -ceq 'Single-slot queue-pressure and useful-task measurement, not parallel GPU proof or quality qualification') 'default report has no serving setup and keeps the single-slot wording'
+    # The serving-profile file is a dependency of the state check, so it is one of the reported source hashes, checked at the same points.
+    Check ((Get-TaskQualitySourceHashes).Contains('servingProfile') -and (Get-TaskQualitySourceHashes)['servingProfile'] -cmatch '^[0-9a-f]{64}$') 'source provenance covers the serving-profile file'
+    Check ((@($report.sourceProvenance.sha256.Keys|Sort-Object) -join ',') -ceq (@(((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/task-quality-default-report.json') -Raw|ConvertFrom-Json).sourceProvenance.sha256.PSObject.Properties.Name)|Sort-Object) -join ',') -and
+        $report.sourceProvenance.sha256.servingProfile -cmatch '^[0-9a-f]{64}$') 'default report source entries are the fixture entries, including the serving-profile file'
+    $copyRoot=Join-Path $root 'copy'
+    foreach($relative in @('tools','src')){$null=New-Item -ItemType Directory -Path (Join-Path $copyRoot $relative) -Force}
+    $copied=@('tools/task-quality-benchmark.ps1','tools/concurrency-benchmark.ps1','src/FastLlm.TaskWorkload.ps1','src/FastLlm.SemanticSmoke.ps1','src/ProcessHost.cs',
+        'src/FastLlm.psm1','src/FastLlm.Benchmark.ps1','src/FastLlm.Runtime.ps1','src/WindowsGpuTelemetry.cs','src/FastLlm.ServingProfileRun.ps1')
+    foreach($relative in $copied){Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('../'+$relative)) -Destination (Join-Path $copyRoot $relative)}
+    $savedToolPath=$script:FastLlmTaskQualityToolPath
+    try{
+        $script:FastLlmTaskQualityToolPath=Join-Path $copyRoot 'tools/task-quality-benchmark.ps1'
+        $script:waveCalls=0
+        $editWave={param($Base,$Path,$Bodies,$Count,$TimeoutMs)
+            if($script:waveCalls -eq 0){[IO.File]::AppendAllText((Join-Path $copyRoot 'src/FastLlm.ServingProfileRun.ps1'),"`n# edited during the run")}
+            & $goodWave $Base $Path $Bodies $Count $TimeoutMs
+        }
+        $edited=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'profile-file-edit.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+            -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $editWave
+        Check ($edited.reportStatus -ceq 'aborted' -and $edited.sourceProvenance.endStatus -ceq 'changed' -and $edited.bindingStatus -ceq 'compromised' -and $script:waveCalls -eq 1) 'an edit to the serving-profile file during the run leaves the source status not verified'
+    }finally{$script:FastLlmTaskQualityToolPath=$savedToolPath}
+    # Windows PowerShell 5.1 hands back $null for @($x) when $x is an array-typed parameter holding $null, so the helpers below must never
+    # call .Count on such a value. These checks run under this suite's Set-StrictMode -Version 2.0 (a null .Count is an error there).
+    Check ((Get-TaskQualityArgumentValue $null '--cache-type-k' 'D') -ceq 'D') 'argument value: a null list gives the default'
+    Check ((Get-TaskQualityArgumentValue @() '--cache-type-k' 'D') -ceq 'D') 'argument value: an empty list gives the default'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k','q8_0') '--cache-type-k' 'D') -ceq 'q8_0') 'argument value: one name and value'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k') '--cache-type-k' 'D') -ceq 'D') 'argument value: the name as the last element has no value, so the default'
+    Check ((Get-TaskQualityArgumentValue @('--parallel','2','--cache-type-v','q8_0','--jinja') '--cache-type-v' 'D') -ceq 'q8_0') 'argument value: pairs in the middle'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k','q8_0','--cache-type-k','f16') '--cache-type-k' 'D') -ceq 'q8_0') 'argument value: a repeated name, the first wins'
+    Check ((Get-TaskQualityArgumentValue @('--parallel','2','--cache-type-k') '--cache-type-k' 'D') -ceq 'D') 'argument value: an odd count ending in the name gives the default'
+    Check ((Get-TaskQualityArgumentValue @('--cache-type-k','q8_0','--jinja') '--cache-type-k' 'D') -ceq 'q8_0') 'argument value: an odd count with the name earlier'
+    Check ((Get-TaskQualityArgumentValue @('--alias','m') '--cache-type-k' 'D') -ceq 'D') 'argument value: an absent name gives the default'
+    $setupBare=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192}})
+    Check ($setupBare.profile -ceq 'default' -and $setupBare.contextTotal -eq 8192 -and $setupBare.contextPerSlot -eq 8192 -and $setupBare.slots -eq 1 -and
+        $setupBare.cacheTypeK -ceq 'f16' -and $setupBare.cacheTypeV -ceq 'f16') 'serving setup: a state with no requestedArguments reads as default, one slot, f16'
+    $setupEmpty=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;requestedArguments=@()}})
+    Check ($setupEmpty.slots -eq 1 -and $setupEmpty.cacheTypeK -ceq 'f16' -and $setupEmpty.cacheTypeV -ceq 'f16') 'serving setup: an empty requestedArguments reads as f16'
+    $setupNull=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;requestedArguments=$null}})
+    Check ($setupNull.cacheTypeK -ceq 'f16' -and $setupNull.cacheTypeV -ceq 'f16') 'serving setup: a null requestedArguments reads as f16'
+    $setupQ8=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;slots=2;contextPerSlot=4096;profile='long';
+        requestedArguments=@('--parallel','2','--cache-type-k','q8_0','--cache-type-v','q8_0','--jinja')}})
+    Check ($setupQ8.profile -ceq 'long' -and $setupQ8.contextTotal -eq 8192 -and $setupQ8.contextPerSlot -eq 4096 -and $setupQ8.slots -eq 2 -and
+        $setupQ8.cacheTypeK -ceq 'q8_0' -and $setupQ8.cacheTypeV -ceq 'q8_0') 'serving setup: q8_0 on both cache types'
+    $setupOne=Get-TaskQualityServingSetup ([pscustomobject]@{recipe=[pscustomobject]@{contextSize=8192;requestedArguments=@('--cache-type-k','q8_0')}})
+    Check ($setupOne.cacheTypeK -ceq 'q8_0' -and $setupOne.cacheTypeV -ceq 'f16') 'serving setup: only the K cache type named, V is f16'
+    $nullLaneRefusal=$null
+    try{Assert-TaskQualityLanes $null @('vulkan-b10698')}catch{$nullLaneRefusal=$_.Exception}
+    Check ($null -ne $nullLaneRefusal -and $nullLaneRefusal.Data['FastLlmFailureCode'] -ceq 'task-quality-lane-unknown') 'lane check: a null lane list is the typed refusal, not a null .Count error'
+    Check (@(Expand-TaskQualityLanes $null).Count -eq 0) 'lane expand: a null list expands to nothing'
+    # Every state check the tool makes carries the lane list and the switch.
+    $script:assertCalls=@()
+    $null=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'calls-default.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+        -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $goodWave
+    Check ($script:assertCalls.Count -ge 31 -and @($script:assertCalls|Where-Object {$_.lanes -cne 'vulkan-b10698' -or $_.allow}).Count -eq 0) 'default run passes the default lane and no switch to every state check'
+    $script:assertCalls=@()
+    $profileState=[pscustomobject]@{active=$true;phase='ready';runId='1234567890abcdef1234567890abcdef';
+        recipe=[pscustomobject]@{contextSize=8192;slots=2;contextPerSlot=4096;profile='long';
+            requestedArguments=@('--host','127.0.0.1','--port','8080','--ctx-size','8192','--parallel','2','--cache-type-k','q8_0','--cache-type-v','q8_0')};
+        endpoint='http://127.0.0.1:8080/v1';processIdentity=[pscustomobject]@{pid=42;startUtcTicks=123};modelId='mock-model';
+        modelSha256=('a'*64);engineVersion='b10698'}
+    $optInPath=Join-Path $root 'opt-in.json'
+    $optIn=Invoke-TaskQualityBenchmarkCore -OutputPath $optInPath -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+        -ReadState {$profileState} -CheckProcess {param($State)} -Wave $goodWave -AcceptedLanes @('vulkan-b10698','hip-b11658') -AllowServingProfile
+    Check ($optIn.reportStatus -ceq 'complete' -and $script:assertCalls.Count -ge 31 -and
+        @($script:assertCalls|Where-Object {$_.lanes -cne 'vulkan-b10698,hip-b11658' -or -not $_.allow}).Count -eq 0) 'opt-in run passes its lanes and the switch to every state check'
+    Check ($optIn.methodology.serverSlots -eq 2 -and $optIn.methodology.servingSetup.profile -ceq 'long' -and
+        $optIn.methodology.servingSetup.contextTotal -eq 8192 -and $optIn.methodology.servingSetup.contextPerSlot -eq 4096 -and
+        $optIn.methodology.servingSetup.slots -eq 2 -and $optIn.methodology.servingSetup.cacheTypeK -ceq 'q8_0' -and
+        $optIn.methodology.servingSetup.cacheTypeV -ceq 'q8_0') 'opt-in report carries the state serving setup and its slot count'
+    Check ($optIn.methodology.interpretation -cne $report.methodology.interpretation -and
+        $optIn.methodology.interpretation -clike 'Two-slot*' -and $optIn.methodology.interpretation -clike '*not parallel GPU proof or quality qualification') 'two-slot wording keeps the not-qualification disclaimer'
+    Check (Test-TaskQualityControllerReport (Get-Content -LiteralPath $optInPath -Raw|ConvertFrom-Json) $profileState $false 0 $true) 'controller accepts an opt-in report that matches the state'
+    Check (-not (Test-TaskQualityControllerReport (Get-Content -LiteralPath $optInPath -Raw|ConvertFrom-Json) $profileState $false 0)) 'controller without the switch still rejects a two-slot report'
+    foreach($tamper in @(
+        @{label='serverSlots';apply={param($r) $r.methodology.serverSlots=1}},
+        @{label='servingSetup removed';apply={param($r) $r.methodology.PSObject.Properties.Remove('servingSetup')}},
+        @{label='profile';apply={param($r) $r.methodology.servingSetup.profile='default'}},
+        @{label='contextTotal';apply={param($r) $r.methodology.servingSetup.contextTotal=4096}},
+        @{label='contextPerSlot';apply={param($r) $r.methodology.servingSetup.contextPerSlot=8192}},
+        @{label='slots';apply={param($r) $r.methodology.servingSetup.slots=1}},
+        @{label='cacheTypeK';apply={param($r) $r.methodology.servingSetup.cacheTypeK='f16'}},
+        @{label='cacheTypeV';apply={param($r) $r.methodology.servingSetup.cacheTypeV='f16'}})){
+        $copy=Get-Content -LiteralPath $optInPath -Raw|ConvertFrom-Json
+        & $tamper.apply $copy
+        Check (-not (Test-TaskQualityControllerReport $copy $profileState $false 0 $true)) "controller rejects an opt-in report whose $($tamper.label) differs from the state"
+    }
+    # A default run with the switch on still states its setup; absent cache arguments mean f16.
+    $defaultOptIn=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'default-opt-in.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+        -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave $goodWave -AllowServingProfile
+    Check ($defaultOptIn.methodology.serverSlots -eq 1 -and $defaultOptIn.methodology.servingSetup.profile -ceq 'default' -and
+        $defaultOptIn.methodology.servingSetup.contextTotal -eq 8192 -and $defaultOptIn.methodology.servingSetup.contextPerSlot -eq 8192 -and
+        $defaultOptIn.methodology.servingSetup.slots -eq 1 -and $defaultOptIn.methodology.servingSetup.cacheTypeK -ceq 'f16' -and
+        $defaultOptIn.methodology.servingSetup.cacheTypeV -ceq 'f16' -and $defaultOptIn.methodology.interpretation -ceq $report.methodology.interpretation) 'default state under the switch reads as default, one slot, f16, with the one-slot wording'
+    # The context a request may use is its slot, not the total.
+    $overflowWave={param($Base,$Path,$Bodies,$Count,$TimeoutMs)
+        $result=& $goodWave $Base $Path $Bodies $Count $TimeoutMs
+        $result.requests[0].response.Body=($result.requests[0].response.Body -replace '"prompt_tokens":100','"prompt_tokens":4090')
+        $result
+    }
+    $slotOverflow=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'slot-overflow.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+        -ReadState {$profileState} -CheckProcess {param($State)} -Wave $overflowWave -AllowServingProfile
+    Check ($slotOverflow.reportStatus -ceq 'aborted' -and $slotOverflow.waves[0].requests[0].errorCode -ceq 'observed-context-overflow') 'opt-in run guards headroom against the per-slot context'
+    # Lanes: unknown names are refused before any state check or request.
+    foreach($badLanes in @(@('nonsense'),@('vulkan-b10698','nonsense'),@('VULKAN-B10698'),@(),@('vulkan-b10698','vulkan-b10698'))){
+        $script:assertCalls=@();$script:waveCalls=0;$refusal=$null
+        try{
+            $null=Invoke-TaskQualityBenchmarkCore -OutputPath (Join-Path $root 'bad-lane.json') -DistractorCount 0 -DeadlineSeconds 60 -RequestTimeoutBaseSeconds 10 `
+                -ReadState {$script:mockState} -CheckProcess {param($State)} -Wave {$script:waveCalls++} -AcceptedLanes $badLanes
+        }catch{$refusal=$_.Exception}
+        Check ($null -ne $refusal -and $refusal.Data['FastLlmFailureCode'] -ceq 'task-quality-lane-unknown' -and $script:waveCalls -eq 0 -and
+            $script:assertCalls.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $root 'bad-lane.json'))) "unknown lane list '$($badLanes -join ',')' is refused with a typed error before any check or request"
+    }
+    Check ((@(Expand-TaskQualityLanes @('hip-b11658,vulkan-b10698')) -join '|') -ceq 'hip-b11658|vulkan-b10698' -and
+        (@(Expand-TaskQualityLanes @('vulkan-b10698','hip-b11658')) -join '|') -ceq 'vulkan-b10698|hip-b11658') 'a lane list survives the one-string form a child host receives'
+    # The tool's own surface and every state check call.
+    $toolText=Get-Content -LiteralPath $tool -Raw
+    $toolAst=[Management.Automation.Language.Parser]::ParseInput($toolText,[ref]$null,[ref]$null)
+    $toolParams=@($toolAst.ParamBlock.Parameters)
+    $lanesParam=@($toolParams|Where-Object {$_.Name.VariablePath.UserPath -ceq 'AcceptedLanes'})
+    $switchParam=@($toolParams|Where-Object {$_.Name.VariablePath.UserPath -ceq 'AllowServingProfile'})
+    Check ($lanesParam.Count -eq 1 -and $lanesParam[0].StaticType -eq [string[]] -and $lanesParam[0].DefaultValue.Extent.Text -ceq "@('vulkan-b10698')") 'tool takes -AcceptedLanes <string[]> defaulting to the Vulkan lane'
+    Check ($switchParam.Count -eq 1 -and $switchParam[0].StaticType -eq [switch]) 'tool takes the -AllowServingProfile switch (off by default)'
+    $assertCalls=@([regex]::Matches($toolText,'(?m)^[^#\r\n]*Assert-FastLlmSemanticSmokeState\b[^\r\n]*'))
+    Check ($assertCalls.Count -ge 7 -and @($assertCalls|Where-Object {$_.Value -notmatch '-AcceptedLanes \$\w+ -AllowServingProfile:\$\w+'}).Count -eq 0) 'every state check in the tool passes the lanes and the switch'
+    Check ($toolText.Contains("'-AcceptedLanes'") -and $toolText.Contains("'-AllowServingProfile'")) 'the contained worker receives both settings'
     $abortSidecar=New-TaskQualityAbortRecord -OutputPath $reportPath -State $script:mockState -ReasonCode 'mock-controller-failure'
     $abortItem=Get-Content -LiteralPath $abortSidecar -Raw|ConvertFrom-Json
     Check ($abortSidecar -cne $reportPath -and $abortItem.controllerOutcomeAuthoritative -eq $true -and
