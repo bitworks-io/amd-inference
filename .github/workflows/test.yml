@@ -387,7 +387,7 @@ jobs:
         with:
           name: settings-dialog-render
           path: ${{ runner.temp }}\fastllm-settings-dialog\*.png
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
       # These mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
