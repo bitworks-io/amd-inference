@@ -510,8 +510,9 @@ try {
     Check (([regex]::Matches($loopFunctionText,'Start-FastLlmServer ')).Count -eq 2) 'loop: the switch loop has exactly two starts per request: the target and ONE restore (never a third attempt)'
     # Default and bench starts never ask for it: only the supervisor, the start and the background host know the parameter.
     # FastLlm.UiFlow.ps1 is the control window's own logic (its Settings opt-in and its picker); the window passes the opt-in only for a start the user made there.
+    # FastLlm.UiSettings.ps1 holds the one reader of the saved opt-in, shared by the window and the sign-in start.
     # FastLlm.SignInStart.ps1 is the user's own start at sign-in: it passes the opt-in only when the user's saved setting (the one the window writes) is on.
-    $allowed=@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.BackgroundHost.ps1','FastLlm.UiFlow.ps1','FastLlm.SignInStart.ps1')
+    $allowed=@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.BackgroundHost.ps1','FastLlm.UiFlow.ps1','FastLlm.UiSettings.ps1','FastLlm.SignInStart.ps1')
     $others=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File | Where-Object { $_.Extension -in @('.ps1','.psm1') -and $allowed -cnotcontains $_.Name -and ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
     $tools=@(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -File -Filter '*.ps1' | Where-Object { ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
     Check ($others.Count -eq 0 -and $tools.Count -eq 0) ('bench path: no lab, benchmark, diagnostic or tool source passes -AllowSwitch: ['+((@($others)+@($tools) | ForEach-Object Name) -join ',')+']')
@@ -1207,6 +1208,12 @@ try {
     $pickerWorld=New-SwitchWorld 'picker' @{ 'model-a'=@('ok') }
     Add-PickerModels $pickerWorld
     Use-World $pickerWorld
+    # The experimental refusal is made by the switch's own target check, BEFORE anything is stopped (never later, by the plan after the working server
+    # was stopped). This check stands first among the picker checks, so a build that refuses it late fails here, on its own, and not at a picker row.
+    $experimentalFirst=& $module { param($C,$R) Resolve-FastLlmSwitchTarget -CatalogPath $C -InstallRoot $R -ModelId 'model-f' -CurrentModelId 'model-a' } $catalog $pickerWorld.root
+    Check ((-not $experimentalFirst.ok) -and $experimentalFirst.code -ceq 'switch-target-experimental-model' -and $experimentalFirst.modelId -ceq 'model-f') 'experimental refusal before any stop: the target check itself refuses a not-auto-eligible model (switch-target-experimental-model), so nothing is stopped for it'
+    $experimentalOkControl=& $module { param($C,$R) Resolve-FastLlmSwitchTarget -CatalogPath $C -InstallRoot $R -ModelId 'model-g' -CurrentModelId 'model-a' } $catalog $pickerWorld.root
+    Check ($experimentalOkControl.ok -eq $true) 'experimental refusal before any stop: control, an auto-eligible installed model passes the same target check'
     $st.fixedFree=20000;$st.requiredFree=@{ 'model-h'=99999 };$st.needsProbe=@('model-g')
     $pickerRunId=('a1'*16)
     function Write-BasisFor($World,$Hardware,[string]$RunId,$PlanOptions=@{ Profile='balanced' }) { return (& $module { param($I,$R,$H,$O) Write-FastLlmSwitchBasis -InstallRoot $I -RunId $R -Hardware $H -PlanOptions $O } $World.root $RunId $Hardware $PlanOptions) }
