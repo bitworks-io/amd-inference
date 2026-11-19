@@ -1770,4 +1770,178 @@ $startupBody = $ui.Substring($ui.IndexOf('function StartUiStartupChecks {'), $ui
 Check ($startupBody.Contains('Test-FastLlmUpdateMuted') -and $startupBody.Contains('updateMuted') -and $startupBody.IndexOf('$offer=Format-FastLlmUiUpdateBanner') -gt $startupBody.IndexOf('updateMuted')) 'reinstall: the update banner is not shown for the version just left'
 Check ($startupBody.Contains('if(-not $values[0].updateMuted){$offer=Format-FastLlmUiUpdateBanner') -or $startupBody.Contains('$offer=$null;if(-not $values[0].updateMuted)')) 'reinstall: the mute only hides the banner and its Update button for the muted version; the CLI update is unchanged'
 
+# ---- "Copy full output" and the cleanup of a failed action's visible text ----
+# The window keeps the raw capture of a failed child and shows it without Windows PowerShell 5.1's error-record decoration (the script path
+# prefix, the 120-column hard wrap, the At / code / CategoryInfo / FullyQualifiedErrorId lines). Fixed sample records in the 5.1 shapes; the
+# fixture paths are neutral. Lines are joined with CRLF, as the window's capture holds them.
+function Crlf([string[]]$Lines){return ($Lines -join "`r`n")}
+$recWrite=Crlf @(
+    'C:\FastLLM\app\fast-llm.ps1 : FastLLM test failure message',
+    'At C:\FastLLM\app\fast-llm.ps1:12 char:1',
+    "+ Write-Error 'FastLLM test failure message' -ErrorAction Continue",
+    '+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~',
+    '    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException',
+    '    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,fast-llm.ps1',
+    ' ',
+    '')
+$recThrow=Crlf @(
+    'The engine package could not be verified.',
+    'At C:\FastLLM\app\fast-llm.ps1:331 char:9',
+    "+         throw 'The engine package could not be verified.'",
+    '+         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~',
+    '    + CategoryInfo          : OperationStopped: (The engine ...e verified.:String) [], RuntimeException',
+    '    + FullyQualifiedErrorId : The engine package could not be verified.',
+    ' ',
+    '')
+$longMessage='Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey'.Substring(0,140)
+Check ($longMessage.Length -eq 140) 'The long fixture message is 140 characters.'
+$prefix='C:\FastLLM\app\fast-llm.ps1 : '
+$wrapFirst=($prefix+$longMessage).Substring(0,120)
+$wrapRest=($prefix+$longMessage).Substring(120)
+Check ($wrapFirst.Length -eq 120 -and $wrapRest.Length -eq ($prefix.Length+20)) 'The wrapped fixture is a 120-wide line and its rest.'
+$recWrap=Crlf @(
+    $wrapFirst,
+    $wrapRest,
+    'At C:\FastLLM\app\fast-llm.ps1:40 char:5',
+    '+     Write-Error $message',
+    '+     ~~~~~~~~~~~~~~~~~~~~',
+    '    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException',
+    '    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,fast-llm.ps1',
+    ' ',
+    '')
+$recTwoLines=Crlf @(
+    'C:\FastLLM\app\fast-llm.ps1 : First line of a message that is not wrapped',
+    'second line of the same message',
+    'At C:\FastLLM\app\fast-llm.ps1:40 char:5',
+    '+     Write-Error $message',
+    '+     ~~~~~~~~~~~~~~~~~~~~',
+    '    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException',
+    '    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,fast-llm.ps1',
+    ' ',
+    '')
+$decorationWords=@('CategoryInfo','FullyQualifiedErrorId','At C:\','~~~','.ps1 : ')
+
+$shownWrite=Format-FastLlmUiFailureDisplay -Text $recWrite
+Check ($shownWrite -ceq ('FastLLM test failure message'+"`r`n")) 'A Write-Error record shows its message only: the prefix, the At line, the code lines, CategoryInfo, FullyQualifiedErrorId and the blank line are gone.'
+$shownThrow=Format-FastLlmUiFailureDisplay -Text $recThrow
+Check ($shownThrow -ceq ('The engine package could not be verified.'+"`r`n")) 'A throw record (no prefix) shows its message only.'
+foreach($shown in @($shownWrite,$shownThrow)){foreach($word in $decorationWords){Check (-not $shown.Contains($word)) "The cleaned record has no '$word'."}}
+Check ($shownThrow.Contains('+') -eq $false) 'The throw record keeps no code excerpt line.'
+$shownWrap=Format-FastLlmUiFailureDisplay -Text $recWrap
+Check ($shownWrap -ceq ($longMessage+"`r`n")) 'A message wrapped at exactly 120 characters is joined back into the original one line (the prefix is part of the first 120).'
+$shownTwo=Format-FastLlmUiFailureDisplay -Text $recTwoLines
+Check ($shownTwo -ceq ("First line of a message that is not wrapped`r`nsecond line of the same message`r`n")) 'Message lines of which the first is not 120 wide stay as two lines.'
+$noPrefixWrap=Crlf @(('x'*120),('y'*20),'At C:\FastLLM\app\fast-llm.ps1:9 char:1','+ throw $m','+ ~~~~~~~~','    + CategoryInfo          : OperationStopped: (:) [], RuntimeException','    + FullyQualifiedErrorId : x',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $noPrefixWrap) -ceq (('x'*120)+('y'*20)+"`r`n")) 'A throw message wrapped at 120 is joined back.'
+$noPrefixShort=Crlf @('ordinary line',('m'*119),'At C:\FastLLM\app\fast-llm.ps1:9 char:1','+ throw $m','+ ~~~~~~~~','    + CategoryInfo          : OperationStopped: (:) [], RuntimeException','    + FullyQualifiedErrorId : x',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $noPrefixShort) -ceq (Crlf @('ordinary line',('m'*119),''))) 'A throw message of one line keeps the ordinary line before it and is not joined to it.'
+
+# Ordinary lines before and after a record, and the typed-failure code line.
+$around=Crlf @('Downloading the engine...','50 percent',$recWrite.TrimEnd(),'Stopped.','')
+$aroundShown=Format-FastLlmUiFailureDisplay -Text $around
+Check ($aroundShown -ceq (Crlf @('Downloading the engine...','50 percent','FastLLM test failure message','Stopped.',''))) 'Ordinary lines before and after a record are unchanged.'
+$typedRaw=Format-FastLlmUiTypedFailure -Code 'x' -Text (Format-FastLlmUiFailureDisplay -Text $recWrite)
+Check ($typedRaw -ceq ("FastLLM test failure message`r`n(failure code: x)")) 'The failure code line is kept after the cleaned message.'
+Check ((Format-FastLlmUiFailureDisplay -Text (Format-FastLlmUiTypedFailure -Code 'x' -Text $recWrite)) -ceq ("FastLLM test failure message`r`n(failure code: x)")) 'A typed failure built from a raw record is cleaned the same way and keeps its failure code line.'
+$wide=Format-FastLlmUiTypedFailure -Code 'x' -Text (Crlf @('C:\FastLLM\app\fast-llm.ps1 : '+('q'*89),'At C:\FastLLM\app\fast-llm.ps1:1 char:1','+ a','+ ~','    + CategoryInfo          : '+('c'*88),'    + FullyQualifiedErrorId : '+('e'*90)))
+Check (('    + FullyQualifiedErrorId : '+('e'*90)).Length -eq 120 -and (Format-FastLlmUiFailureDisplay -Text $wide).EndsWith("`r`n(failure code: x)")) 'The failure code line right after a record tail is never taken as a wrapped continuation.'
+Check ((Format-FastLlmUiFailureDisplay -Text (Format-FastLlmUiFailureDisplay -Text $recWrite)) -ceq (Format-FastLlmUiFailureDisplay -Text $recWrite)) 'Cleaning is idempotent.'
+Check ((Format-FastLlmUiFailureDisplay -Text ($recWrite+$recThrow)) -ceq ('FastLLM test failure message'+"`r`n"+'The engine package could not be verified.'+"`r`n")) 'Two records in one capture are each cleaned.'
+# LF-only line ends are kept as they are.
+Check ((Format-FastLlmUiFailureDisplay -Text ($recWrite -replace "`r`n","`n")) -ceq "FastLLM test failure message`n") 'A capture with LF line ends is cleaned and keeps LF.'
+
+# Text with no record comes back byte for byte.
+$plainSamples=@(
+    '',
+    'one line',
+    "line one`r`nline two`r`n",
+    "x.ps1 : looks like a prefix`r`nbut no tail follows",
+    "At C:\FastLLM\app\fast-llm.ps1:5 char:1`r`n+ code`r`n+ ~~~~",
+    "    + CategoryInfo          : lonely`r`n    + FullyQualifiedErrorId : lonely",
+    "message`r`n (failure code: x)`r`n ",
+    ('z'*120)+"`r`n"+('z'*20),
+    "Requested model 'a' does not fit the estimated current free-memory budget. No other model was substituted.`r`n(failure code: model-does-not-fit)"
+)
+foreach($plain in $plainSamples){Check ((Format-FastLlmUiFailureDisplay -Text $plain) -ceq $plain) 'A text with no complete record is returned unchanged.'}
+Check ($null -eq (Format-FastLlmUiFailureDisplay -Text $null) -or (Format-FastLlmUiFailureDisplay -Text $null) -ceq '') 'A null text is not an error.'
+
+# Mutant-style checks: small variants of the expected output that the checks above must reject.
+$expectWrite='FastLLM test failure message'+"`r`n"
+$mutantDropMessage="`r`n"
+$mutantKeepCode=$expectWrite+"+ Write-Error 'FastLLM test failure message' -ErrorAction Continue`r`n"
+$mutantDropCode=Crlf @('At C:\FastLLM\app\fast-llm.ps1:12 char:1','')
+$mutantNoJoin=Crlf @($wrapFirst.Substring($prefix.Length),$wrapRest,'')
+$mutantJoinTwo='First line of a message that is not wrappedsecond line of the same message'+"`r`n"
+foreach($mutant in @($mutantDropMessage,$mutantKeepCode,$mutantDropCode)){Check ($shownWrite -cne $mutant) 'A version that drops the message or keeps the code line is caught.'}
+Check ($shownWrap -cne $mutantNoJoin) 'A version that does not re-join the 120 wrap is caught.'
+Check ($shownTwo -cne $mutantJoinTwo) 'A version that joins lines that are not 120 wide is caught.'
+Check ($shownWrite.Contains('FastLLM test failure message') -and $shownWrap.Contains($longMessage) -and $shownTwo.Contains('second line of the same message')) 'The cleaned texts keep every message line.'
+
+# The view the window shows and the copy it keeps (the same function ShowFailure uses).
+$viewRaw=Get-FastLlmUiFailureView -Message $recWrite -Capture $recWrite
+Check ($viewRaw.capture -ceq $recWrite -and $viewRaw.text -ceq $shownWrite) 'A shown capture keeps the stored copy exactly as captured and shows the cleaned text.'
+$viewFixed=Get-FastLlmUiFailureView -Message 'Fixed window text.'
+Check ($null -eq $viewFixed.capture -and $viewFixed.text -ceq 'Fixed window text.') 'A fixed-text failure holds no capture and shows its text as is.'
+$viewFixedRecordLike=Get-FastLlmUiFailureView -Message $recWrite
+Check ($null -eq $viewFixedRecordLike.capture -and $viewFixedRecordLike.text -ceq $recWrite) 'Without a capture the text is never cleaned.'
+$viewEmpty=Get-FastLlmUiFailureView -Message 'x' -Capture ''
+Check ($null -eq $viewEmpty.capture) 'An empty capture holds nothing to copy.'
+
+# The window's path: a child that writes a PowerShell error record and exits 1, through the real ProcessHost, started the way LaunchStep starts a child.
+$copyTemp=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-copyfull-'+[guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $copyTemp)
+$copyScript=Join-Path $copyTemp 'fail-child.ps1'
+try {
+    [IO.File]::WriteAllText($copyScript,"Write-Error 'FastLLM test failure message' -ErrorAction Continue`r`nexit 1`r`n")
+    & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
+    $copyInfo=New-Object Diagnostics.ProcessStartInfo
+    $copyInfo.FileName=(Get-Process -Id $PID).Path
+    $copyInfo.Arguments=& (Get-Module FastLlm) {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-File',$copyScript)
+    $copyInfo.UseShellExecute=$false
+    $copyInfo.CreateNoWindow=$true
+    $copyChild=New-Object Bitworks.FastLlm.ProcessHost
+    try {
+        $copyChild.Start($copyInfo)
+        if (-not $copyChild.Process.WaitForExit(120000)) { throw 'The failing child did not exit in time.' }
+        $copyWaited=[Diagnostics.Stopwatch]::StartNew()
+        while (-not $copyChild.OutputCompleted -and $copyWaited.ElapsedMilliseconds -lt 30000) { Start-Sleep -Milliseconds 20 }
+        if (-not $copyChild.OutputCompleted -or $copyChild.OutputTruncated) { throw 'The failing child output was incomplete.' }
+        $copyCapture=$copyChild.Snapshot();$copyExit=$copyChild.Process.ExitCode
+    } finally { $copyChild.Dispose(); $global:LASTEXITCODE=0 }
+    Check ($copyExit -eq 1) 'The failing test child exits 1 through the ProcessHost.'
+    Check ($copyCapture.Contains('FastLLM test failure message')) 'The raw capture of the failing child holds the message.'
+    $copyView=Get-FastLlmUiFailureView -Message $copyCapture -Capture $copyCapture
+    Check ($copyView.capture -ceq $copyCapture) 'The stored copy equals the child capture exactly.'
+    Check ($copyView.text.Contains('FastLLM test failure message')) 'The shown text keeps the message line.'
+    if ($PSVersionTable.PSVersion.Major -eq 5) {
+        Check ($copyCapture.Contains('CategoryInfo') -and $copyCapture.Contains('FullyQualifiedErrorId')) 'Windows PowerShell 5.1: the raw capture holds the error record details.'
+        foreach($word in @('CategoryInfo','FullyQualifiedErrorId','.ps1 : ')){Check (-not $copyView.text.Contains($word)) "Windows PowerShell 5.1: the shown text of the real capture has no '$word'."}
+    } else {
+        Write-Output 'SKIP: the Windows PowerShell 5.1 error record checks of the real child run only on Windows PowerShell 5.1.'
+    }
+} finally {
+    if (Test-Path -LiteralPath $copyScript) { Remove-Item -LiteralPath $copyScript -Force }
+    if (Test-Path -LiteralPath $copyTemp) { Remove-Item -LiteralPath $copyTemp -Force }
+}
+
+# Source pins in the window.
+Check ($ui.Contains("`$failureCopyLink.Text='Copy full output'") -and $ui.Contains('$failureCopyLink.AutoSize=$true') -and $ui.Contains('$failureCopyLink.Visible=$false') -and $ui.Contains('$form.Controls.Add($failureCopyLink)')) 'The link "Copy full output" exists, sizes itself and starts hidden.'
+Check ($ui.Contains('$failureCopyLink.TabStop=$true') -and $ui.Contains('$failureCopyLink.TabIndex=$output.TabIndex+1') -and $ui.Contains("`$failureCopyLink.AccessibleName='Copy full output'")) 'The link is a tab stop right after the output box and has an accessible name.'
+Check ($ui.Contains('(820-$failureCopyLink.PreferredWidth),652') -and $ui.IndexOf('$failureCopyLink=New-Object') -gt $ui.IndexOf('$resultsLink=New-Object') -and $ui.Contains('$resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text=''See results'';$resultsLink.Location=New-Object Drawing.Point(24,652)')) 'The link is right-aligned to the output box edge (x 820) on the line of See results (y 652), which does not move.'
+Check ($ui.Contains('$failureCopyLink.Add_LinkClicked({try{[Windows.Forms.Clipboard]::SetText([string]$script:failureCapture)}catch{$statusLabel.Text=''Could not copy: ''+$_.Exception.Message}})')) 'The link copies the stored capture unchanged and says so when the copy fails.'
+$stepBody=$ui.Substring($ui.IndexOf('function LaunchStep('),$ui.IndexOf('function LaunchSideStep(')-$ui.IndexOf('function LaunchStep('))
+$sideBody=$ui.Substring($ui.IndexOf('function LaunchSideStep('),$ui.IndexOf('function ShowUiSideResult(')-$ui.IndexOf('function LaunchSideStep('))
+Check ($stepBody.Contains('ClearFailureCapture') -and $stepBody.IndexOf('ClearFailureCapture') -lt $stepBody.IndexOf("throw 'A child operation is already active.'") -and $sideBody.Contains('ClearFailureCapture') -and $sideBody.IndexOf('ClearFailureCapture') -lt $sideBody.IndexOf("throw 'That step cannot run beside a server.'")) 'The stored capture is cleared and the link hidden when a step or a side step starts, before anything else.'
+Check ($ui.Contains('function ClearFailureCapture {$script:failureCapture=$null;$failureCopyLink.Visible=$false}') -and $ui.Contains('$script:failureCapture=$null')) 'The store starts empty and clearing hides the link.'
+$showFailureBody=$ui.Substring($ui.IndexOf('function ShowFailure('),$ui.IndexOf('function DisposeTrayControls')-$ui.IndexOf('function ShowFailure('))
+Check ($ui.Contains('function ShowFailure($Message,[string]$Capture){') -and $showFailureBody.Contains('Get-FastLlmUiFailureView') -and $showFailureBody.Contains('$PSBoundParameters.ContainsKey(''Capture'')')) 'ShowFailure takes an optional capture and shows the view of the pure helper.'
+$uiFlowText=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFlow.ps1') -Raw
+$viewBody=$uiFlowText.Substring($uiFlowText.IndexOf('function Get-FastLlmUiFailureView'))
+Check ($viewBody.Contains('Format-FastLlmUiFailureDisplay -Text')) 'The view cleans the shown text of a capture with the formatter.'
+$failureCalls=@([regex]::Matches($ui,'ShowFailure[ (][^\r\n]*'))
+$captureCalls=@($failureCalls|Where-Object{$_.Value.Contains('-Capture')})
+Check ($captureCalls.Count -eq 2 -and $ui.Contains('ShowFailure $text -Capture $text;return') -and $ui.Contains('ShowFailure (Format-FastLlmUiTypedFailure -Code $failureCode -Text (Format-FastLlmUiFailureDisplay -Text $text)) -Capture $text;return')) 'Only the two captured-text failures (generic and typed) pass a capture, the raw child text.'
+Check (-not $ui.Contains('ShowFailure $script:flow.lastStartError -Capture') -and -not $ui.Contains('ShowFailure ($message+"`r`n"+(Get-FastLlmUiBackgroundFailureHint -Message $message)) -Capture')) 'Fixed-text failures and the flow messages pass no capture.'
+Check ($ui.Contains('SetFailureCapture $text') -and $ui.Contains('function SetFailureCapture')) 'The component install failure shown beside the next preview stores its capture too.'
+
 Write-Output "UI flow tests passed: $checks"
