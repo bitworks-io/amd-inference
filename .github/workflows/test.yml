@@ -128,6 +128,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: .\tests\spill-check-tests.ps1
+      - name: spill-luid-cache-tests in Windows PowerShell 5.1 (mock only)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: .\tests\spill-luid-cache-tests.ps1
+      - name: spill-luid-cache-tests in PowerShell 7 (mock only)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: .\tests\spill-luid-cache-tests.ps1
       - name: json-format-diagnostic-tests in Windows PowerShell 5.1 (mock only)
         if: ${{ !cancelled() }}
         shell: powershell
