@@ -707,13 +707,22 @@ function Format-FastLlmUiFailureDisplay {
         while (& $isContinuation $next) { $next++ }
         $tailEnd = $next - 1
         if ($next -lt $count -and $lines[$next] -ceq ' ') { $tailEnd = $next }
-        # Backward: the code lines (and the underline), then the "At" line. Without them the record is not proven.
+        # Backward from the CategoryInfo line. A terminating error (a throw, a cmdlet error) has a position block first: an "At <path>:<n> char:<n>"
+        # line and its "+ " code lines. A Write-Error record from a script run with -File has none: its message lines come right before the tail.
+        $tailStart = $index
         $back = $index - 1
         $codeLines = 0
         while ($back -ge $position -and $lines[$back] -cmatch $codeRx) { $back--; $codeLines++ }
-        if ($codeLines -lt 1 -or $back -lt $position -or $lines[$back] -cnotmatch $atRx) { $index++; continue }
-        $tailStart = $back
-        # The message: a prefixed first line, or the line right before the tail and the 120-wide lines before it.
+        $hasPosition = $false
+        if ($codeLines -ge 1) {
+            if ($back -lt $position -or $lines[$back] -cnotmatch $atRx) { $index++; continue }
+            $tailStart = $back
+            $hasPosition = $true
+        }
+        # The message: the lines between its first line and the tail. Its first line is proven only by a script or host prefix (the nearest one
+        # after the previous record); only that prefix is removed. The lines are joined only where every one but the last is exactly 120 wide
+        # (the 5.1 hard wrap). Without a prefix, a record is proven only by its position block, and its message lines stay exactly as they are,
+        # never joined: where such a message starts cannot be proven. A record with neither a prefix nor a position block is not touched.
         $messageStart = -1
         $strippedFirst = $null
         for ($k = $tailStart - 1; $k -ge $position; $k--) {
@@ -721,12 +730,10 @@ function Format-FastLlmUiFailureDisplay {
             if ($found.Success) { $messageStart = $k; $strippedFirst = $found.Groups['message'].Value; break }
         }
         if ($messageStart -lt 0) {
+            if (-not $hasPosition) { $index++; continue }
             $messageStart = $tailStart
-            if ($tailStart - 1 -ge $position) {
-                $messageStart = $tailStart - 1
-                while ($messageStart - 1 -ge $position -and $lines[$messageStart - 1].Length -eq $wrapWidth) { $messageStart-- }
-            }
         }
+        # Every line before the message (and, without a prefix, the message lines themselves) is kept exactly as it is.
         for ($k = $position; $k -lt $messageStart; $k++) { $outLines.Add($lines[$k]); $outSeps.Add($seps[$k]) }
         $messageCount = $tailStart - $messageStart
         if ($messageCount -gt 0) {

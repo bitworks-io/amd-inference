@@ -1832,7 +1832,17 @@ Check ($shownWrap -ceq ($longMessage+"`r`n")) 'A message wrapped at exactly 120 
 $shownTwo=Format-FastLlmUiFailureDisplay -Text $recTwoLines
 Check ($shownTwo -ceq ("First line of a message that is not wrapped`r`nsecond line of the same message`r`n")) 'Message lines of which the first is not 120 wide stay as two lines.'
 $noPrefixWrap=Crlf @(('x'*120),('y'*20),'At C:\FastLLM\app\fast-llm.ps1:9 char:1','+ throw $m','+ ~~~~~~~~','    + CategoryInfo          : OperationStopped: (:) [], RuntimeException','    + FullyQualifiedErrorId : x',' ','')
-Check ((Format-FastLlmUiFailureDisplay -Text $noPrefixWrap) -ceq (('x'*120)+('y'*20)+"`r`n")) 'A throw message wrapped at 120 is joined back.'
+# A record without a prefix is proven only by its position block. Where its message starts cannot be proven, so its lines are never joined:
+# only the tail goes. An ordinary 120-wide output line right before a throw therefore stays its own line.
+Check ((Format-FastLlmUiFailureDisplay -Text $noPrefixWrap) -ceq (('x'*120)+"`r`n"+('y'*20)+"`r`n")) 'A throw message without a prefix keeps its lines as they are (its start cannot be proven); only the tail is removed.'
+$outputThenThrow=Crlf @(('o'*120),'The throw message','At C:\FastLLM\app\fast-llm.ps1:9 char:1','+ throw $m','+ ~~~~~~~~','    + CategoryInfo          : OperationStopped: (:) [], RuntimeException','    + FullyQualifiedErrorId : The throw message',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $outputThenThrow) -ceq (('o'*120)+"`r`nThe throw message`r`n")) 'An ordinary 120-wide output line right before a throw is never merged into its message.'
+# The 5.1 shape of a Write-Error record from a script run with -File (as in CI logs): the prefixed message, its 120-column wrap, then CategoryInfo
+# and FullyQualifiedErrorId with no At or code lines. Proven by its prefix: the prefix goes, the wrap is joined, the tail goes.
+$fileWriteError=Crlf @(('C:\FastLLM\app\fast-llm.ps1 : '+$longMessage).Substring(0,120),('C:\FastLLM\app\fast-llm.ps1 : '+$longMessage).Substring(120),'    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException','    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,fast-llm.ps1',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $fileWriteError) -ceq ($longMessage+"`r`n")) 'A Write-Error record from a -File script (no At line) loses its prefix and tail, and its 120 wrap is joined.'
+$loneTailNoPrefix=Crlf @('ordinary output','    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException','    + FullyQualifiedErrorId : x',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $loneTailNoPrefix) -ceq $loneTailNoPrefix) 'A CategoryInfo and FullyQualifiedErrorId pair with neither a prefix nor an At line is left untouched.'
 $noPrefixShort=Crlf @('ordinary line',('m'*119),'At C:\FastLLM\app\fast-llm.ps1:9 char:1','+ throw $m','+ ~~~~~~~~','    + CategoryInfo          : OperationStopped: (:) [], RuntimeException','    + FullyQualifiedErrorId : x',' ','')
 Check ((Format-FastLlmUiFailureDisplay -Text $noPrefixShort) -ceq (Crlf @('ordinary line',('m'*119),''))) 'A throw message of one line keeps the ordinary line before it and is not joined to it.'
 
