@@ -474,6 +474,11 @@ try {
         $command='try { & '''+$cli+''' '+$CliArguments+'; exit $LASTEXITCODE } catch { [Console]::Out.WriteLine($_.Exception.Message); exit 1 }'
         Invoke-PwshChild @('-NoProfile','-Command',$command)
     }
+    # A child's exit code is read from the child, never from a caller's own $LASTEXITCODE. Run from another script (the Actions step wrapper, a
+    # runner script), this suite has its own scope, and an assignment to $LASTEXITCODE there made a copy that the read below found first. The script
+    # block reproduces that scope under any host, -File included: it holds its own $LASTEXITCODE of 7, and the child exits 3.
+    $shadowRead = & { $LASTEXITCODE = 7; Invoke-PwshChild @('-NoProfile','-Command','exit 3') }
+    Check ($shadowRead.Code -eq 3) "a child's exit code is read from the child, not from a caller's own `$LASTEXITCODE (read $($shadowRead.Code))"
     $g=Get-CliGuard 'models -Preload'
     $out=$g.Text; $LASTEXITCODE=$g.Code
     Check ($LASTEXITCODE -ne 0 -and $out -match [regex]::Escape('-Preload requires -ApprovedModelsPath; no licence is accepted without an approved list.')) 'cli guard: -Preload without -ApprovedModelsPath refuses'
