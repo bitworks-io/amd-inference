@@ -1919,7 +1919,17 @@ try {
         $copyCapture=$copyChild.Snapshot();$copyExit=$copyChild.Process.ExitCode
     } finally { $copyChild.Dispose(); $global:LASTEXITCODE=0 }
     Check ($copyExit -eq 1) 'The failing test child exits 1 through the ProcessHost.'
-    Check ($copyCapture.Contains('FastLLM test failure message')) 'The raw capture of the failing child holds the message.'
+    $copyHasMessage=$copyCapture.Contains('FastLLM test failure message')
+    if (-not $copyHasMessage) {
+        # Evidence on failure only (the paths are this test's own temp folder): the capture's length and lines, each line with its length and every
+        # character outside printable ASCII as \uXXXX, so the cause can be read rather than inferred.
+        $escapeCopy={ param([string]$Text) (@($Text.ToCharArray() | ForEach-Object { $code=[int]$_; if ($code -ge 0x20 -and $code -lt 0x7F) { [string]$_ } else { '\u{0:x4}' -f $code } }) -join '') }
+        $copyLines=@($copyCapture -split "`r?`n")
+        Write-Host ('INFO: failing-child capture: exit={0} length={1} lines={2}' -f $copyExit, $copyCapture.Length, $copyLines.Count)
+        Write-Host ('INFO: expected: ' + (& $escapeCopy 'FastLLM test failure message'))
+        for ($copyIndex=0; $copyIndex -lt $copyLines.Count; $copyIndex++) { Write-Host ('INFO: line ' + $copyIndex + ' (' + $copyLines[$copyIndex].Length + ' chars): ' + (& $escapeCopy $copyLines[$copyIndex])) }
+    }
+    Check $copyHasMessage 'The raw capture of the failing child holds the message.'
     $copyView=Get-FastLlmUiFailureView -Message $copyCapture -Capture $copyCapture
     Check ($copyView.capture -ceq $copyCapture) 'The stored copy equals the child capture exactly.'
     Check ($copyView.text.Contains('FastLLM test failure message')) 'The shown text keeps the message line.'
