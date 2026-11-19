@@ -1093,6 +1093,20 @@ function Find-FastLlmServingProfileRow {
     }
 }
 
+# The validated entries of the components.json next to the catalog, exactly as Get-FastLlmPlan reads them: no file or any failure is an empty list.
+# Validating the whole components catalog is slow (it grew, and Windows PowerShell 5.1 pays most), so a command that plans more than once loads it
+# here once and hands the result to every plan through -EngineComponents instead of letting each plan validate it again.
+function Get-FastLlmPlanComponents {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $CatalogPath)
+    try {
+        $componentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
+        if (Test-Path -LiteralPath $componentsFile -PathType Leaf) { return @(Get-FastLlmComponents -ComponentsPath $componentsFile) }
+        return @()
+    }
+    catch { return @() }
+}
+
 function Get-FastLlmPlan {
     [CmdletBinding()]
     param(
@@ -1163,7 +1177,15 @@ function Get-FastLlmPlan {
 
         # Bench-only: when the planner's top pick is not installed (file of the catalog size plus a consent receipt), the best fitting model
         # that is installed is planned instead, so a bench never waits for a download. Off by default; never applies to -ModelId or -RecipeId.
-        [switch] $PreferInstalledModels
+        [switch] $PreferInstalledModels,
+
+        # The validated entries of the components.json next to the catalog (Get-FastLlmPlanComponents -CatalogPath <the same catalog>), loaded by a caller
+        # that plans more than once so the slow validation runs once per command. Bound (even as @()): used as given and nothing is loaded.
+        # Not bound: the plan loads them itself, exactly where it always did, so a plan that never needs them never loads them.
+        # The plan's own list is $planComponentList. PowerShell variable names ignore case, so a local named $engineComponents would BE this
+        # parameter; resetting it would silently empty the list a caller passed.
+        [AllowEmptyCollection()]
+        [object[]] $EngineComponents
     )
 
     if ($PreferInstalledModels -and -not $InstallRoot) { throw '-PreferInstalledModels requires -InstallRoot.' }
@@ -1246,7 +1268,8 @@ function Get-FastLlmPlan {
     }
 
     $recipePick = $null
-    $engineComponents = @()
+    $planComponentList = @()
+    $componentsResolved = $false
     $recipeSkippedSink = New-Object System.Collections.Generic.List[string]
     # Recipes auto-apply only under the default balanced profile (the UI's fixed profile) or when -Recipe names one; an explicit fast or quality
     # profile keeps the estimated planner exactly as before recipes existed (spec 4.2: the profiles keep working as today).
@@ -1264,19 +1287,17 @@ function Get-FastLlmPlan {
             $dxgi = @()
             if ($Hardware.PSObject.Properties['dxgiAdapters']) { $dxgi = @($Hardware.dxgiAdapters) }
             # The signed component list sits next to the catalog. Without it only the built-in engine id can match a recipe.
-            try {
-                $componentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
-                if (Test-Path -LiteralPath $componentsFile -PathType Leaf) { $engineComponents = @(Get-FastLlmComponents -ComponentsPath $componentsFile) }
-            }
-            catch { $engineComponents = @() }
+            if ($PSBoundParameters.ContainsKey('EngineComponents')) { $planComponentList = @($EngineComponents) }
+            else { $planComponentList = @(Get-FastLlmPlanComponents -CatalogPath $CatalogPath) }
+            $componentsResolved = $true
             # In the fallback pass the recipe that fell back is never its own fallback, and a recipe on an engine component that is not installed and
             # verified is out too (it could not run now). What is left is runnable; with nothing left the estimated plan is used.
             $candidateRecipes = @(Read-FastLlmRecipes -Path $RecipesPath | Where-Object {
-                    -not $isFallbackPass -or ([string] $_.id -cne $FallbackFromRecipe -and (Test-FastLlmRecipeEngineRunnableNow -Recipe $_ -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot))
+                    -not $isFallbackPass -or ([string] $_.id -cne $FallbackFromRecipe -and (Test-FastLlmRecipeEngineRunnableNow -Recipe $_ -Catalog $catalog -Components $planComponentList -InstallRoot $InstallRoot))
                 })
             $recipePick = Select-FastLlmRecipeForPlacements -Recipes $candidateRecipes `
                 -Variants (Get-FastLlmGpuVariants -Path $GpuVariantsPath) -Placements $placements -DxgiAdapters $dxgi `
-                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -Components $engineComponents -ExcludeLicenseRecipes:$isFallbackPass -SkippedSink $recipeSkippedSink
+                -Catalog $catalog -Profile $Profile -RecipeId $RecipeId -EligibleAdapters $allEligible -Components $planComponentList -ExcludeLicenseRecipes:$isFallbackPass -SkippedSink $recipeSkippedSink
         }
         catch {
             if ($RecipeId) { throw }
@@ -1485,14 +1506,14 @@ function Get-FastLlmPlan {
             throw (New-FastLlmEngineFailure -Code 'recipe-engine-needs-install-root' -Message "Recipe '$($recipePick.recipe.id)' runs on an engine component, which cannot be resolved without an install root. The built-in engine is not used instead.")
         }
         if ($recipePick -and $InstallRoot -and (Get-FastLlmRecipeEngineId -Recipe $recipePick.recipe -Catalog $catalog) -cne (Get-FastLlmBuiltInEngineId -Catalog $catalog)) {
-            $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $engineComponents -InstallRoot $InstallRoot
+            $resolvedEngine = Resolve-FastLlmRecipeEngine -Recipe $recipePick.recipe -Catalog $catalog -Components $planComponentList -InstallRoot $InstallRoot
             if (-not $resolvedEngine.builtIn) {
                 if ($NoEngineExecution -and [string] $resolvedEngine.backend -ceq 'hip') {
                     throw (New-FastLlmEngineFailure -Code 'fixture-plan-cannot-probe-engine' -ComponentId ([string] $resolvedEngine.id) -Message "Recipe '$($recipePick.recipe.id)' runs on the HIP engine, whose devices can only be listed by running it. A fixture plan (-HardwareFile) never runs an engine, so this plan was not made. Plan without -HardwareFile on the real PC instead.")
                 }
                 if ($autoFallbackEligible) {
                     # Components missing or failing their file check are listed instead of failing; the Full hash runs only when every member is present.
-                    $pendingState = Get-FastLlmPendingComponentState -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -CheckFull:([string] $resolvedEngine.backend -ceq 'hip')
+                    $pendingState = Get-FastLlmPendingComponentState -Components $planComponentList -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -CheckFull:([string] $resolvedEngine.backend -ceq 'hip')
                 }
                 if ($pendingState) {
                     $planEnginePath = $null
@@ -1507,7 +1528,7 @@ function Get-FastLlmPlan {
                 else {
                     if (-not $resolvedEngine.installed) {
                         # The first component of the chain that fails, so a missing runtime is named as the runtime.
-                        $unavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Presence
+                        $unavailableId = Get-FastLlmFirstUnavailableComponent -Components $planComponentList -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Presence
                         if (-not $unavailableId) { $unavailableId = [string] $resolvedEngine.id }
                         if ($unavailableId -ceq [string] $resolvedEngine.id) {
                             $unavailableMessage = "The engine component '$($resolvedEngine.id)' is not installed, so recipe '$($recipePick.recipe.id)' cannot start. The built-in engine is not used instead. Install the component first."
@@ -1525,7 +1546,7 @@ function Get-FastLlmPlan {
                         $planBackend = 'hip'
                         $planRuntimeRoots = @($resolvedEngine.runtimeRoots)
                         # Verify before execute: the probe runs the engine and loads every AMD DLL, so the whole chain is hashed (Full, memoised in-process) first.
-                        $fullUnavailableId = Get-FastLlmFirstUnavailableComponent -Components $engineComponents -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Full
+                        $fullUnavailableId = Get-FastLlmFirstUnavailableComponent -Components $planComponentList -EngineId ([string] $resolvedEngine.id) -InstallRoot $InstallRoot -Depth Full
                         if ($fullUnavailableId) {
                             throw (New-FastLlmComponentUnavailableFailure -EngineId ([string] $resolvedEngine.id) -UnavailableId $fullUnavailableId `
                                 -Message "The component '${fullUnavailableId}' (for the engine component '$($resolvedEngine.id)') failed its file check, so recipe '$($recipePick.recipe.id)' was not started and nothing was run. The built-in engine is not used instead. Reinstall the component.")
@@ -1559,6 +1580,8 @@ function Get-FastLlmPlan {
         if (-not $triggerReason) { $triggerReason = [string] $pendingState.reason }
         $fallbackParams = @{}
         foreach ($boundName in @($PSBoundParameters.Keys)) { if ($boundName -cne 'ResolveFallback') { $fallbackParams[$boundName] = $PSBoundParameters[$boundName] } }
+        # The fallback plan reads the same file next to the same catalog, so it reuses what this plan resolved instead of validating it again.
+        if ($componentsResolved) { $fallbackParams['EngineComponents'] = $planComponentList }
         $fallbackParams['FallbackFromRecipe'] = [string] $recipePick.recipe.id
         $fallbackParams['FallbackReason'] = $triggerReason
         $fallbackPlan = $null
@@ -3950,13 +3973,13 @@ function Start-FastLlmServer {
 
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     $backendKey = ([string] $Plan.backend).ToLowerInvariant()
+    $startComponents = @()
+    $startComponent = $null
     if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) {
         # A plan on an engine component never consults the catalog backend asset or the built-in engine installation: it runs the component's
         # verified executable. Every required component is verified in full first, naming the first one that fails; nothing falls back or installs.
         $planComponentId = [string] $Plan.engineComponentId
         $startComponentsFile = Join-Path (Split-Path -Parent $CatalogPath) 'components.json'
-        $startComponents = @()
-        $startComponent = $null
         if (Test-Path -LiteralPath $startComponentsFile -PathType Leaf) {
             $startComponents = @(Get-FastLlmComponents -ComponentsPath $startComponentsFile)
             $startComponent = Find-FastLlmEngineComponent -Components $startComponents -EngineId $planComponentId
@@ -4049,6 +4072,9 @@ function Start-FastLlmServer {
         if ([int] $planProfileSlots -ne 1) { $freshRecipeOptions.KvSlots = [int] $planProfileSlots }
         if ($freshRecipeOptions.ContainsKey('KvContextProfile') -or $freshRecipeOptions.ContainsKey('KvSlots')) { $freshRecipeOptions.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     }
+    # An engine-component plan already validated the components catalog above (same file, same catalog); the re-plan reuses it. Only added then, so the
+    # default call keeps the exact parameter set it always had.
+    if ($null -ne $startComponent) { $freshRecipeOptions.EngineComponents = $startComponents }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
@@ -4158,6 +4184,7 @@ function Start-FastLlmServer {
         $fallbackPlanOptions = @{ CatalogPath = $CatalogPath; Profile = ([string] $Plan.profile); InstallRoot = $InstallRoot
             ModelId = $Plan.requestedModelId; ContextSize = $Plan.requestedContextSize; FallbackFromRecipe = $fromRecipeId; FallbackReason = $fallbackReasonCode
             RecipesPath = (Join-Path $configRoot 'recipes.json'); GpuVariantsPath = (Join-Path $configRoot 'gpu-variants.json') }
+        if ($null -ne $startComponent) { $fallbackPlanOptions.EngineComponents = $startComponents }
         if ($Plan.PSObject.Properties['allowExperimentalModel'] -and $Plan.allowExperimentalModel) { $fallbackPlanOptions.AllowExperimentalModel = $true }
         if ($Plan.PSObject.Properties['requestedServerPort'] -and $null -ne $Plan.requestedServerPort -and [int] $Plan.requestedServerPort -gt 0) { $fallbackPlanOptions.ServerPort = [int] $Plan.requestedServerPort }
         if ($Plan.PSObject.Properties['requestedThinking'] -and [string] $Plan.requestedThinking -ceq 'off') { $fallbackPlanOptions.Thinking = 'off' }
@@ -4429,6 +4456,7 @@ Export-ModuleMember -Function @(
     'Get-FastLlmEngineExecutable',
     'Get-FastLlmHardware',
     'Get-FastLlmPlan',
+    'Get-FastLlmPlanComponents',
     'Get-FastLlmPreloadSet',
     'Get-FastLlmInstalledModels',
     'Get-FastLlmModelLeftovers',
