@@ -4,6 +4,9 @@ Set-StrictMode -Version 2
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'src/FastLlm.Update.ps1')
 function Check([bool]$Condition, [string]$Message) { if (-not $Condition) { throw "FAIL: $Message" }; Write-Host "PASS: $Message" }
+# Every temp folder this suite creates is recorded here and removed in the final finally, pass or fail.
+$script:createdTemp = New-Object 'System.Collections.Generic.List[string]'
+function Add-TempPath([string]$Path) { $script:createdTemp.Add($Path); $Path }
 
 $stableApi = 'https://api.github.com/repos/bitworks-io/amd-inference/releases/latest'
 $canaryApi = 'https://api.github.com/repos/bitworks-io/amd-inference/releases?per_page=10'
@@ -30,8 +33,9 @@ Check ((Compare-FastLlmVersion '2026.10.15.1' '2026.10.15.1') -eq 0) 'equal vers
 Check ((Compare-FastLlmVersion '2026.10.15.10' '2026.10.15.9') -eq 1) 'versions compare numerically, not as text'
 
 # --- fixtures ---
+try {
 function New-Env([string]$Version = '2026.10.15.1', [string]$Channel = 'stable', [bool]$WithRelease = $true) {
-    $base = Join-Path ([IO.Path]::GetTempPath()) ("fastllm-update-" + [guid]::NewGuid().ToString('N'))
+    $base = Add-TempPath (Join-Path ([IO.Path]::GetTempPath()) ("fastllm-update-" + [guid]::NewGuid().ToString('N')))
     $e = [pscustomobject]@{ Install = (Join-Path $base 'install'); App = (Join-Path $base 'app') }
     New-Item -ItemType Directory -Path $e.Install, $e.App -Force | Out-Null
     if ($WithRelease) { Set-Content -LiteralPath (Join-Path $e.App 'RELEASE.json') -Value (@{ version = $Version; channel = $Channel } | ConvertTo-Json) }
@@ -319,7 +323,7 @@ Check ($dirs.Count -eq 1 -and $dirs[0].Name -match '^2026\.10\.16\.1-[0-9a-f]{8}
 Check (@(Get-ChildItem -LiteralPath $e.App -Force).Count -eq 1) 'the app folder is untouched'
 
 # --- the cached notice (start and status): cache only, no network ---
-$nRoot = Join-Path ([IO.Path]::GetTempPath()) ('fast-llm-notice-' + [guid]::NewGuid().ToString('N'))
+$nRoot = Add-TempPath (Join-Path ([IO.Path]::GetTempPath()) ('fast-llm-notice-' + [guid]::NewGuid().ToString('N')))
 try {
     $nInstall = Join-Path $nRoot 'install'; $nApp = Join-Path $nRoot 'app'
     New-Item -ItemType Directory -Path (Join-Path $nInstall 'state') -Force | Out-Null
@@ -782,7 +786,7 @@ Check (@(Read-FastLlmReinstallHistory -InstallRoot $e4.Install).Count -eq 0) 'hi
 
 # The support bundle carries the history: versions and times only, and only when there is one.
 . (Join-Path $root 'src/FastLlm.SupportBundle.ps1')
-$bundleDir = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-bundle-' + [guid]::NewGuid().ToString('N'))
+$bundleDir = Add-TempPath (Join-Path ([IO.Path]::GetTempPath()) ('fastllm-bundle-' + [guid]::NewGuid().ToString('N')))
 New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 $listing = New-FastLlmSupportBundle -InstallRoot $e4.Install -AppRoot $e4.App -OutputPath (Join-Path $bundleDir 'none.zip') -Doctor ([pscustomobject]@{ note = 'x' }) -ListOnly
 Check (@($listing.entries | Where-Object { $_.name -ceq 'reinstall-history.json' }).Count -eq 0) 'bundle: no history entry when there is no history'
@@ -1021,7 +1025,7 @@ function Invoke-Cli([string[]]$Arguments) {
     }
     finally { $ErrorActionPreference = $savedPreference }
 }
-$cliRoot = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-cli-root-' + [guid]::NewGuid().ToString('N'))
+$cliRoot = Add-TempPath (Join-Path ([IO.Path]::GetTempPath()) ('fastllm-cli-root-' + [guid]::NewGuid().ToString('N')))
 New-Item -ItemType Directory -Path $cliRoot -Force | Out-Null
 # These three children get past fast-llm.ps1's parameter checks, so they reach its standard-user guard, which refuses every live action under
 # an Administrator token (the hosted Windows runner is elevated). Elevated, the test checks instead that the guard refuses update -Previous
@@ -1062,6 +1066,12 @@ Remove-Item -LiteralPath $cliRoot -Recurse -Force -ErrorAction SilentlyContinue
 $reinstallSource = $updateSource.Substring($reinstallStart)
 Check (-not ($reinstallSource -match 'Write-Host|Write-Output|Add-Content|Out-File|Write-Verbose')) 'reinstall: the reinstall code writes no log or console text of its own'
 
+}
+finally {
+    foreach ($p in @($script:createdTemp)) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
+}
+$leftTemp = @($script:createdTemp | Where-Object { Test-Path -LiteralPath $_ })
+Check ($script:createdTemp.Count -ge 1 -and $leftTemp.Count -eq 0) "update-tests: every temp folder it created is removed ($($script:createdTemp.Count) created)"
 Write-Host 'update-tests: PASS'
 # The CLI refusal cases leave a child's non-zero exit code in $LASTEXITCODE. CI runs the suites in one session and fails the step
 # when the final value is non-zero, so reset it once every check has passed.
