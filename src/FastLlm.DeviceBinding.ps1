@@ -431,7 +431,8 @@ function Invoke-FastLlmDeviceBinding {
         mode = $Mode; status = 'unavailable'; reason = $null; rawDeviceCount = 0; distinctAdapterCount = 0; duplicateLuidEntries = 0
         device = $null; planMatch = $null; barSnapshot = 'not-applicable'; collector = $collector
     }
-    # luid: the adapter LUID of the bound device, kept in memory only (never in the record or status) for the GPU memory check.
+    # luid: the adapter LUID of the bound device, kept in memory, or in a private boot-scoped cache (state\spill-luid-boot-cache.json)
+    # that is never shown, logged, put in status or exported; never in the record or status. Used by the GPU memory check.
     $outcome = [pscustomobject]@{ record = $null; identity = $null; change = $null; lines = @(); luid = $null }
     try {
         if ($env:OS -ne 'Windows_NT') { $record.reason = 'unsupported-platform' }
