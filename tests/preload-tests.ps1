@@ -465,7 +465,8 @@ try {
         $ErrorActionPreference='Continue'
         try {
             $text=(& $pwshPath @ChildArgs 2>&1 | ForEach-Object { if($_ -is [Management.Automation.ErrorRecord]){ $_.ToString() } else { [string]$_ } } | Out-String)
-            $code=$LASTEXITCODE
+            # The native child sets the global exit code; a caller's own $LASTEXITCODE (see the check below) must never be read instead.
+            $code=$global:LASTEXITCODE
         } finally { $ErrorActionPreference=$previous }
         [pscustomobject]@{Text=$text;Code=$code}
     }
@@ -480,12 +481,12 @@ try {
     $shadowRead = & { $LASTEXITCODE = 7; Invoke-PwshChild @('-NoProfile','-Command','exit 3') }
     Check ($shadowRead.Code -eq 3) "a child's exit code is read from the child, not from a caller's own `$LASTEXITCODE (read $($shadowRead.Code))"
     $g=Get-CliGuard 'models -Preload'
-    $out=$g.Text; $LASTEXITCODE=$g.Code
-    Check ($LASTEXITCODE -ne 0 -and $out -match [regex]::Escape('-Preload requires -ApprovedModelsPath; no licence is accepted without an approved list.')) 'cli guard: -Preload without -ApprovedModelsPath refuses'
-    $g=Get-CliGuard 'plan -Preload'; $out=$g.Text; $LASTEXITCODE=$g.Code
-    Check ($LASTEXITCODE -ne 0 -and $out -match 'only valid with the models action') 'cli guard: -Preload only with models'
-    $g=Get-CliGuard 'doctor -Next'; $out=$g.Text; $LASTEXITCODE=$g.Code
-    Check ($LASTEXITCODE -ne 0 -and $out -match 'only valid with the models action') 'cli guard: -Next only with models'
+    $out=$g.Text; $exitCode=$g.Code
+    Check ($exitCode -ne 0 -and $out -match [regex]::Escape('-Preload requires -ApprovedModelsPath; no licence is accepted without an approved list.')) 'cli guard: -Preload without -ApprovedModelsPath refuses'
+    $g=Get-CliGuard 'plan -Preload'; $out=$g.Text; $exitCode=$g.Code
+    Check ($exitCode -ne 0 -and $out -match 'only valid with the models action') 'cli guard: -Preload only with models'
+    $g=Get-CliGuard 'doctor -Next'; $out=$g.Text; $exitCode=$g.Code
+    Check ($exitCode -ne 0 -and $out -match 'only valid with the models action') 'cli guard: -Next only with models'
     # The -File children below run fast-llm.ps1 past its parameter checks, so they reach the standard-user guard, which refuses every live action
     # under an Administrator token (the hosted Windows runner is elevated) before the output path is touched. They run as a standard user in the
     # bench native gate; the in-process guard checks above and the module-level checks below stay on every runner.
@@ -496,48 +497,48 @@ try {
         $cliRoot=Join-Path $work 'cli-root'
         $cliOut=Join-Path $work 'cli-run.json'
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-Preload', '-DryRun', '-ApprovedModelsPath', $partialApproved, '-InstallRoot', $cliRoot, '-OutputPath', $cliOut, '-AsJson')
-        $out=$g.Text; $LASTEXITCODE=$g.Code
-        $cliCode=$LASTEXITCODE
+        $out=$g.Text; $exitCode=$g.Code
+        $cliCode=$exitCode
         $envelope=Get-Content -LiteralPath $cliOut -Raw | ConvertFrom-Json
         Check ($cliCode -eq 2 -and $envelope.schema -eq 'fastllm.preload-run.v1' -and $envelope.exitCode -eq 2 -and @($envelope.rows).Count -ge 6) "cli: -Preload -DryRun with an unlisted model exits 2 and writes the envelope (exit $cliCode)"
         Check (-not (Test-Path -LiteralPath $cliRoot)) 'cli: dry run creates no install root'
         $statusOut=Join-Path $work 'cli-status.json'
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-PreloadStatus', '-AsJson', '-InstallRoot', $cliRoot, '-OutputPath', $statusOut)
-        $out=$g.Text; $LASTEXITCODE=$g.Code
+        $out=$g.Text; $exitCode=$g.Code
         $cliStatus=Get-Content -LiteralPath $statusOut -Raw | ConvertFrom-Json
-        Check ($LASTEXITCODE -eq 0 -and $cliStatus.schema -eq 'fastllm.preload-status.v1' -and @($cliStatus.models).Count -eq 7) 'cli: -PreloadStatus -AsJson -OutputPath writes the status contract'
+        Check ($exitCode -eq 0 -and $cliStatus.schema -eq 'fastllm.preload-status.v1' -and @($cliStatus.models).Count -eq 7) 'cli: -PreloadStatus -AsJson -OutputPath writes the status contract'
 
         # ---- error path: no stale report, fail fast on a bad output path, envelope on an unexpected exception
         $staleOut=Join-Path $work 'stale.json'
         Write-Utf8 $staleOut '{"schema":"fastllm.preload-run.v1","exitCode":0,"rows":[]}'
         $badApprovedPath=Join-Path $work 'does-not-exist.json'
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-Preload', '-DryRun', '-ApprovedModelsPath', $badApprovedPath, '-InstallRoot', (Join-Path $work 'stale-root'), '-OutputPath', $staleOut, '-AsJson')
-        $out=$g.Text; $LASTEXITCODE=$g.Code
-        $staleCode=$LASTEXITCODE
+        $out=$g.Text; $exitCode=$g.Code
+        $staleCode=$exitCode
         $afterStale=$null
         if(Test-Path -LiteralPath $staleOut){ $afterStale=Get-Content -LiteralPath $staleOut -Raw | ConvertFrom-Json }
         Check ($staleCode -eq 1 -and $null -ne $afterStale -and $afterStale.exitCode -eq 1 -and $afterStale.error -ne $null) 'a failing early run replaces the stale report with an exitCode 1 envelope'
         Write-Utf8 $staleOut 'old'
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-PreloadStatus', '-AsJson', '-ApprovedModelsPath', $badApprovedPath, '-InstallRoot', (Join-Path $work 'stale-root'), '-OutputPath', $staleOut)
-        $out=$g.Text; $LASTEXITCODE=$g.Code
-        Check ($LASTEXITCODE -eq 1 -and -not (Test-Path -LiteralPath $staleOut)) '-PreloadStatus failure: exit 1 and no file'
+        $out=$g.Text; $exitCode=$g.Code
+        Check ($exitCode -eq 1 -and -not (Test-Path -LiteralPath $staleOut)) '-PreloadStatus failure: exit 1 and no file'
         $missingDirOut=Join-Path (Join-Path $work 'no-such-dir') 'out.json'
         $failRoot=Join-Path $work 'failfast-root'
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-Preload', '-DryRun', '-ApprovedModelsPath', $approved, '-InstallRoot', $failRoot, '-OutputPath', $missingDirOut)
-        $out=$g.Text; $LASTEXITCODE=$g.Code
-        Check ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $failRoot)) 'a missing -OutputPath directory fails fast, nothing installed'
+        $out=$g.Text; $exitCode=$g.Code
+        Check ($exitCode -ne 0 -and -not (Test-Path -LiteralPath $failRoot)) 'a missing -OutputPath directory fails fast, nothing installed'
         $dirAsOut=Join-Path $work 'out-is-a-dir'
         New-Item -ItemType Directory -Path $dirAsOut -Force | Out-Null
         $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-Preload', '-DryRun', '-ApprovedModelsPath', $approved, '-InstallRoot', $failRoot, '-OutputPath', $dirAsOut)
-        $out=$g.Text; $LASTEXITCODE=$g.Code
-        Check ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $failRoot)) 'an -OutputPath that is a directory fails fast'
+        $out=$g.Text; $exitCode=$g.Code
+        Check ($exitCode -ne 0 -and -not (Test-Path -LiteralPath $failRoot)) 'an -OutputPath that is a directory fails fast'
         if($env:OS -ne 'Windows_NT' -and (id -u) -ne '0'){
             $roDir=Join-Path $work 'readonly'
             New-Item -ItemType Directory -Path $roDir -Force | Out-Null
             chmod 555 $roDir
             $g=Invoke-PwshChild @('-NoProfile', '-File', $cli, 'models', '-Preload', '-DryRun', '-ApprovedModelsPath', $approved, '-InstallRoot', $failRoot, '-OutputPath', (Join-Path $roDir 'out.json'))
-            $out=$g.Text; $LASTEXITCODE=$g.Code
-            Check ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $failRoot)) 'an unwritable -OutputPath directory fails fast'
+            $out=$g.Text; $exitCode=$g.Code
+            Check ($exitCode -ne 0 -and -not (Test-Path -LiteralPath $failRoot)) 'an unwritable -OutputPath directory fails fast'
             chmod 755 $roDir
         }
     }
