@@ -930,39 +930,80 @@ try {
         # $failure is bound to an ErrorRecord as in the CLI, StrictMode 2.0 is on, and the error stream is captured.
         $cliPostStatements=@($cliCatches[0].Body.Statements | Select-Object -Skip ($cliLockIndex+1) | Where-Object { $_ -isnot [Management.Automation.Language.ExitStatementAst] })
         $cliPrintStatements=@($cliPreStatements)+@($cliPostStatements)
-        Check ((@($cliPrintStatements | Where-Object { $_.Extent.Text.StartsWith('Write-Error') }).Count -eq 1) -and (@($cliPrintStatements | Where-Object { $_.Extent.Text.Contains("'DeviceBindingFailed'") }).Count -eq 1) -and $cliPostStatements.Count -ge 2) 'item 1 (b): the real console print path is extracted from the fast-llm.ps1 outer catch (one Write-Error, one DeviceBindingFailed test)'
-        $cliPrintBlock=[scriptblock]::Create((($cliPrintStatements | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine))
+        $cliPrintNodes=@($cliPrintStatements | ForEach-Object { $_.FindAll({param($n) $true},$true) })
+        $cliWriteErrors=@($cliPrintNodes | Where-Object { $_ -is [Management.Automation.Language.CommandAst] -and $_.GetCommandName() -ceq 'Write-Error' })
+        $cliRedirectIfs=@($cliPrintNodes | Where-Object { $_ -is [Management.Automation.Language.IfStatementAst] -and ($_.Clauses[0].Item1.Extent.Text -replace '\s','') -ceq '[Console]::IsErrorRedirected' })
+        $cliUtf8Branches=@($cliPrintNodes | Where-Object { $_ -is [Management.Automation.Language.StringConstantExpressionAst] -and $_.Value -ceq 'utf-8' })
+        Check (($cliWriteErrors.Count -eq 1) -and ($cliRedirectIfs.Count -eq 1) -and (@($cliPrintStatements | Where-Object { $_.Extent.Text.Contains("'DeviceBindingFailed'") }).Count -eq 1) -and $cliUtf8Branches.Count -ge 1 -and $cliPostStatements.Count -ge 2) 'item 1 (b): the real console print path is extracted from the fast-llm.ps1 outer catch (exactly one Write-Error branch, exactly one [Console]::IsErrorRedirected branch, one DeviceBindingFailed test, the utf-8 sub-branch exists)'
+        $cliPrintText=(($cliPrintStatements | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine)
+        # Both stderr branches run deterministically: the redirection test is replaced by a plain variable the runner sets.
+        $cliPrintBlockNotRedirected=[scriptblock]::Create($cliPrintText.Replace('[Console]::IsErrorRedirected','$testErrorRedirected'))
+        $cliPrintBlockRedirected=$cliPrintBlockNotRedirected
+        Check (-not $cliPrintText.Replace('[Console]::IsErrorRedirected','$testErrorRedirected').Contains('IsErrorRedirected')) 'item 1 (b): the extracted print path no longer reads the real stderr redirection state (replaced by the runner variable)'
+        # Not redirected: Write-Error, captured with 2>&1. Redirected (utf-8 variable unset): [Console]::Error.WriteLine, captured through a StringWriter set as the console error writer.
+        $runCliPrintBranch={
+            param($Failure,[bool]$Redirected)
+            if (-not $Redirected) {
+                $lines=& {
+                    param($failure,$Block,$testErrorRedirected)
+                    Set-StrictMode -Version 2
+                    $ErrorActionPreference='Stop'
+                    $operationLock=$null
+                    @(& $Block 2>&1 | ForEach-Object { [string]$_ })
+                } $Failure $cliPrintBlockNotRedirected $false
+                return [pscustomobject]@{lines=@($lines);stray=@()}
+            }
+            $savedEncoding=$env:FASTLLM_STDERR_ENCODING
+            $savedError=[Console]::Error
+            $sw=New-Object System.IO.StringWriter
+            try {
+                Remove-Item -Path Env:FASTLLM_STDERR_ENCODING -ErrorAction SilentlyContinue
+                [Console]::SetError($sw)
+                $stray=& {
+                    param($failure,$Block,$testErrorRedirected)
+                    Set-StrictMode -Version 2
+                    $ErrorActionPreference='Stop'
+                    $operationLock=$null
+                    @(& $Block 2>&1 | ForEach-Object { [string]$_ })
+                } $Failure $cliPrintBlockRedirected $true
+            } finally {
+                [Console]::SetError($savedError)
+                if ($null -ne $savedEncoding) { $env:FASTLLM_STDERR_ENCODING=$savedEncoding }
+            }
+            $written=@($sw.ToString() -split "`r?`n" | Where-Object { $_ -ne '' })
+            [pscustomobject]@{lines=$written;stray=@($stray)}
+        }
+        # Runs both branches. The redirected branch must put exactly its lines on the console error writer and nothing on the error stream.
         $runCliPrint={
             param($Failure)
-            & {
-                param($failure,$Block)
-                Set-StrictMode -Version 2
-                $ErrorActionPreference='Stop'
-                $operationLock=$null
-                @(& $Block 2>&1 | ForEach-Object { [string]$_ })
-            } $Failure $cliPrintBlock
+            $nr=& $runCliPrintBranch $Failure $false
+            $rd=& $runCliPrintBranch $Failure $true
+            [pscustomobject]@{notRedirected=@($nr.lines);redirected=@($rd.lines);redirectedStray=@($rd.stray)}
         }
-        $printed=@(& $runCliPrint $cliRecord)
-        Check ($printed.Count -eq 1 -and $printed[0].StartsWith('device-binding-unavailable: ',[StringComparison]::Ordinal) -and $printed[0] -notmatch 'rawtoken-zq7' -and $printed[0] -notmatch 'bad code' -and $printed[0] -notmatch 'secret\.txt') 'item 1 (b): the CLI prints the sanitised code and none of the raw token for a device-binding failure whose message carries a raw code'
+        # Applies one expectation (a script block over the printed lines) to both branches, with the suffix on the message.
+        $checkPrintBoth={
+            param($Result,[scriptblock]$Expect,[string]$Message)
+            Check (& $Expect $Result.notRedirected) ($Message+' (not redirected)')
+            Check ((& $Expect $Result.redirected) -and $Result.redirectedStray.Count -eq 0) ($Message+' (redirected)')
+        }
+        $printResult=& $runCliPrint $cliRecord
+        & $checkPrintBoth $printResult {param($p) $p.Count -eq 1 -and $p[0].StartsWith('device-binding-unavailable: ',[StringComparison]::Ordinal) -and $p[0] -notmatch 'rawtoken-zq7' -and $p[0] -notmatch 'bad code' -and $p[0] -notmatch 'secret\.txt'},'item 1 (b): the CLI prints the sanitised code and none of the raw token for a device-binding failure whose message carries a raw code'
         # Discrimination: the same message and Data code without FastLlmReason prints unchanged (the raw prefix is not touched).
         $plainFailure=New-Object System.InvalidOperationException -ArgumentList $rawRun.failure.Message
         $plainFailure.Data['FastLlmFailureCode']='device-binding-unavailable'
         $plainRecord=New-Object System.Management.Automation.ErrorRecord($plainFailure,'FastLlmTest','NotSpecified',$null)
-        $printedPlain=@(& $runCliPrint $plainRecord)
-        Check ($printedPlain.Count -eq 1 -and $printedPlain[0] -ceq $rawRun.failure.Message -and $printedPlain[0] -match 'rawtoken-zq7') 'item 1 (b) discrimination: the same failure without FastLlmReason prints exactly as before (message unchanged)'
+        & $checkPrintBoth (& $runCliPrint $plainRecord) {param($p) $p.Count -eq 1 -and $p[0] -ceq $rawRun.failure.Message -and $p[0] -match 'rawtoken-zq7'} 'item 1 (b) discrimination: the same failure without FastLlmReason prints exactly as before (message unchanged)'
         # A conforming code already carries the sanitised prefix: printed unchanged.
         $okFailure=New-Object System.InvalidOperationException -ArgumentList 'device-binding-ambiguous: two candidates'
         $okFailure.Data['FastLlmFailureCode']='device-binding-ambiguous';$okFailure.Data['FastLlmReason']='DeviceBindingFailed'
-        $printedOk=@(& $runCliPrint (New-Object System.Management.Automation.ErrorRecord($okFailure,'FastLlmTest','NotSpecified',$null)))
-        Check ($printedOk.Count -eq 1 -and $printedOk[0] -ceq 'device-binding-ambiguous: two candidates') 'item 1 (b): a conforming device-binding failure prints exactly as before'
+        & $checkPrintBoth (& $runCliPrint (New-Object System.Management.Automation.ErrorRecord($okFailure,'FastLlmTest','NotSpecified',$null))) {param($p) $p.Count -eq 1 -and $p[0] -ceq 'device-binding-ambiguous: two candidates'} 'item 1 (b): a conforming device-binding failure prints exactly as before'
         # Round 9b: the CLI does not trust the Data code to be clean. A RAW Data code and a message '<raw code with a ": " inside>: detail' print the fixed withheld text,
         # status.json gets device-binding-unavailable, and no part of the raw token appears in either. (Real catch, $failure bound to an ErrorRecord.)
         $rawCode='bad: code C:\Users\rawtoken-zq7\secret.txt'
         $rawFailure=New-Object System.InvalidOperationException -ArgumentList ($rawCode+': detail-qq9')
         $rawFailure.Data['FastLlmFailureCode']=$rawCode;$rawFailure.Data['FastLlmReason']='DeviceBindingFailed'
         $rawFailRecord=New-Object System.Management.Automation.ErrorRecord($rawFailure,'FastLlmTest','NotSpecified',$null)
-        $printedRaw=@(& $runCliPrint $rawFailRecord)
-        Check ($printedRaw.Count -eq 1 -and $printedRaw[0] -ceq 'device-binding-unavailable: device binding failed (details withheld; see status)' -and $printedRaw[0] -notmatch 'rawtoken-zq7' -and $printedRaw[0] -notmatch 'bad' -and $printedRaw[0] -notmatch 'detail-qq9' -and $printedRaw[0] -notmatch 'secret') 'item 1 (b): a raw Data code with a ": " inside prints exactly the fixed withheld text (no part of the raw code or the detail)'
+        & $checkPrintBoth (& $runCliPrint $rawFailRecord) {param($p) $p.Count -eq 1 -and $p[0] -ceq 'device-binding-unavailable: device binding failed (details withheld; see status)' -and $p[0] -notmatch 'rawtoken-zq7' -and $p[0] -notmatch 'bad' -and $p[0] -notmatch 'detail-qq9' -and $p[0] -notmatch 'secret'} 'item 1 (b): a raw Data code with a ": " inside prints exactly the fixed withheld text (no part of the raw code or the detail)'
         $rawStatusRun=& $runCliCatch $rawFailRecord
         $rawStatus=$rawStatusRun.text | ConvertFrom-Json
         Check ($rawStatus.phase -ceq 'failed' -and $rawStatus.failureCode -ceq 'device-binding-unavailable' -and $rawStatusRun.text -notmatch 'rawtoken-zq7' -and $rawStatusRun.text -notmatch 'secret' -and $rawStatusRun.text -notmatch 'detail-qq9' -and $rawStatusRun.warnings.Count -eq 0) 'item 1 (b): the CLI catch records device-binding-unavailable in status.json for a raw Data code, with no part of the raw token in the file'
@@ -970,7 +1011,8 @@ try {
         $emptyFailure.Data['FastLlmReason']='DeviceBindingFailed'
         $emptyRecord=New-Object System.Management.Automation.ErrorRecord($emptyFailure,'FastLlmTest','NotSpecified',$null)
         $emptyStatus=(& $runCliCatch $emptyRecord).text | ConvertFrom-Json
-        Check ($emptyStatus.failureCode -ceq 'device-binding-unavailable' -and @(& $runCliPrint $emptyRecord)[0] -ceq 'device-binding-unavailable: device binding failed (details withheld; see status)') 'item 1 (b): an empty Data code on a DeviceBindingFailed failure becomes device-binding-unavailable in status.json and on the console'
+        Check ($emptyStatus.failureCode -ceq 'device-binding-unavailable') 'item 1 (b): an empty Data code on a DeviceBindingFailed failure becomes device-binding-unavailable in status.json'
+        & $checkPrintBoth (& $runCliPrint $emptyRecord) {param($p) $p.Count -eq 1 -and $p[0] -ceq 'device-binding-unavailable: device binding failed (details withheld; see status)'} 'item 1 (b): an empty Data code on a DeviceBindingFailed failure becomes device-binding-unavailable in status.json and on the console'
         # (ii) conforming code and message: console and status.json unchanged
         $okStatus=(& $runCliCatch (New-Object System.Management.Automation.ErrorRecord($okFailure,'FastLlmTest','NotSpecified',$null))).text | ConvertFrom-Json
         Check ($okStatus.failureCode -ceq 'device-binding-ambiguous') 'item 1 (b): a conforming code is recorded unchanged in status.json'
@@ -979,7 +1021,8 @@ try {
         $plain2.Data['FastLlmFailureCode']='plain code X'
         $plain2Record=New-Object System.Management.Automation.ErrorRecord($plain2,'FastLlmTest','NotSpecified',$null)
         $plain2Status=(& $runCliCatch $plain2Record).text | ConvertFrom-Json
-        Check (@(& $runCliPrint $plain2Record)[0] -ceq 'plain code X: plain detail' -and $plain2Status.failureCode -ceq 'plain code X') 'item 1 (b) discrimination: without FastLlmReason the console prints and status.json records exactly as before'
+        Check ($plain2Status.failureCode -ceq 'plain code X') 'item 1 (b) discrimination: without FastLlmReason status.json records exactly as before'
+        & $checkPrintBoth (& $runCliPrint $plain2Record) {param($p) $p.Count -eq 1 -and $p[0] -ceq 'plain code X: plain detail'} 'item 1 (b) discrimination: without FastLlmReason the console prints exactly as before'
         # The inline pattern in fast-llm.ps1 and the shared pattern in src/FastLlm.Runtime.ps1 are the same string (they cannot drift).
         $patternRx='''(\^device-binding-\[a-z-\]\{1,40\}\$)'''
         $cliPatterns=@([regex]::Matches([IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1')),$patternRx)|ForEach-Object { $_.Groups[1].Value })
