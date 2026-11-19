@@ -470,7 +470,11 @@ Check (-not $ui.Contains("'-AcceptExperimental'") -and [regex]::Matches($flowSou
 $chooserCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
 $chooserComponents = @(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
 $chooserRecipes = @(Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.json'))
+# Every temp folder this suite keeps in this block is removed in the final finally, pass or fail.
+$createdTemp = New-Object 'System.Collections.Generic.List[string]'
 $chooserRoot = Join-Path ([IO.Path]::GetTempPath()) ('ui-chooser-' + [guid]::NewGuid().ToString('N'))
+$createdTemp.Add($chooserRoot)
+try {
 New-Item -ItemType Directory -Path $chooserRoot | Out-Null
 function New-ChooserDetailRows([object[]]$Inventory = @(), [string]$Root = $chooserRoot) {
     # What `recipes -Detail -AsJson` prints, through the same JSON round trip the window reads.
@@ -1979,4 +1983,8 @@ Check ($captureCalls.Count -eq 2 -and $ui.Contains('ShowFailure $text -Capture $
 Check (-not $ui.Contains('ShowFailure $script:flow.lastStartError -Capture') -and -not $ui.Contains('ShowFailure ($message+"`r`n"+(Get-FastLlmUiBackgroundFailureHint -Message $message)) -Capture')) 'Fixed-text failures and the flow messages pass no capture.'
 Check ($ui.Contains('SetFailureCapture $text') -and $ui.Contains('function SetFailureCapture')) 'The component install failure shown beside the next preview stores its capture too.'
 
+}
+finally { foreach ($p in @($createdTemp)) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue } }
+$leftTemp = @($createdTemp | Where-Object { Test-Path -LiteralPath $_ })
+Check ($createdTemp.Count -ge 1 -and $leftTemp.Count -eq 0) "ui-flow-tests: every temp folder it created is removed ($($createdTemp.Count) created)"
 Write-Output "UI flow tests passed: $checks"
