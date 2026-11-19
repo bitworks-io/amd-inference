@@ -17,12 +17,15 @@ function Throws([scriptblock]$Action,[string]$Pattern) {
     if(-not $caught){throw "FAIL: rejects $Pattern (observed: $observed)"}
     Check $true "rejects $Pattern"
 }
+$script:createdTemp=New-Object 'System.Collections.Generic.List[string]'
 function Write-Utf8([string]$Path,[string]$Text){[IO.File]::WriteAllText($Path,$Text,(New-Object Text.UTF8Encoding($false)))}
 function New-Root {
     $path=Join-Path ([IO.Path]::GetTempPath()) ('serving-settings-tests-'+[Guid]::NewGuid().ToString('N'))
+    $script:createdTemp.Add($path)
     New-Item -ItemType Directory -Path $path -Force | Out-Null
     return $path
 }
+try {
 $work=New-Root
 try {
     # absent-file-defaults
@@ -351,4 +354,8 @@ foreach($case in 1){
     Write-Utf8 (Join-Path $r 'settings.json') '{"embeddings":"on","embeddingPort":18282}'
     Check ((@((Get-FastLlmServingHostArguments -InstallRoot $r).Keys | Sort-Object) -join ',') -ceq 'ChatPage,IdleStopMinutes,ServerPort,Thinking') 'embeddings-host-arguments: the background start arguments carry no embeddings option'
 }
+}
+finally { foreach($p in @($script:createdTemp)){ Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue } }
+$leftTemp=@($script:createdTemp|Where-Object{Test-Path -LiteralPath $_})
+Check ($script:createdTemp.Count -ge 1 -and $leftTemp.Count -eq 0) "serving-settings-tests: every temp folder it created is removed ($($script:createdTemp.Count) created)"
 Write-Host "serving-settings-tests: $script:count checks passed"
