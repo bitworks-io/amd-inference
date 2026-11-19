@@ -32,6 +32,10 @@ $originals = InModule {
     $names = @('Test-FastLlmSpillIsWindows', 'Get-FastLlmSpillBootIdentity', 'Get-FastLlmSpillSleepDelta', 'Get-FastLlmSpillLuidSourceHashes', 'Invoke-FastLlmSpillLuidCollection')
     $saved = @{}
     foreach ($n in $names) { $saved[$n] = (Get-Command $n).ScriptBlock }
+    # The mocks run later, from module functions: they may only read module-scope state. A parameter of THIS block ($shaA) is gone by then,
+    # and it only seemed to resolve when the suite ran with -File (whose top level is the global scope); run from another script (the CI
+    # step wrapper) the read failed under StrictMode and the product's catch returned no LUID.
+    $script:LuidCacheTestDefaultSha = $shaA
     function script:Test-FastLlmSpillIsWindows { return [bool] $script:T.windows }
     function script:Get-FastLlmSpillBootIdentity { return $script:T.boot }
     function script:Get-FastLlmSpillSleepDelta { return $script:T.sleep }
@@ -43,7 +47,7 @@ $originals = InModule {
         $next = $null
         if ($script:T.luids.Count -gt 0) { $next = $script:T.luids[0]; $script:T.luids = @($script:T.luids | Select-Object -Skip 1) }
         $h = $script:T.hashes
-        $hs = $shaA; $hj = $shaA
+        $hs = $script:LuidCacheTestDefaultSha; $hj = $script:LuidCacheTestDefaultSha
         if ($h) { $hs = $h.script; $hj = $h.join }
         return [pscustomobject]@{ luid = $next; record = [pscustomobject]@{ collector = [pscustomobject]@{ scriptSha256 = $hs; joinSourceSha256 = $hj } } }
     }
@@ -74,7 +78,8 @@ try {
     $r1 = New-Root
     Set-Mock
     $first = Get-Source $r1
-    Check ($first.luid -ceq $fakeLuid -and $first.source -ceq 'collected' -and (Collections) -eq 1) 'a cache miss collects once and reports the source as collected'
+    $firstCollections = Collections
+    Check ($first.luid -ceq $fakeLuid -and $first.source -ceq 'collected' -and $firstCollections -eq 1) ("a cache miss collects once and reports the source as collected (observed: luid=$($first.luid) source=$($first.source) collections=$firstCollections cacheFile=$(Test-Path -LiteralPath (CachePath $r1)))")
     Check (Test-Path -LiteralPath (CachePath $r1) -PathType Leaf) 'the first collection writes the cache file'
     $entry = Get-Content -LiteralPath (CachePath $r1) -Raw | ConvertFrom-Json
     Check ((($entry.PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'adapterKey,bootTimeSource,bootUtc,collectorSha256,joinSourceSha256,kind,luid,schemaVersion,sleepDeltaMs' -and $entry.kind -ceq 'fastllm-spill-luid' -and $entry.schemaVersion -eq 1 -and $entry.bootTimeSource -ceq 'native' -and $entry.luid -ceq $fakeLuid) 'the entry has exactly the specified fields'
