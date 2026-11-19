@@ -18,10 +18,40 @@ $script:FastLlmHipAdapterMinBytes = [uint64] 1073741824
 $script:FastLlmSpillOkText = 'GPU memory check: no spill to system memory detected.'
 $script:FastLlmSpillUnknownText = 'GPU memory check unavailable on this system.'
 
+# The native sources of the GPU memory check and of its private LUID cache are compiled in ONE Add-Type call (one csc run instead of
+# two), only for the types that are missing. WindowsGpuIdentity.cs is deliberately NOT part of it: nothing on this path needs it.
+function Initialize-FastLlmSpillNativeTypes {
+    $sources = @()
+    if (-not ('Bitworks.FastLlm.WindowsGpuProcessMemory' -as [type])) { $sources += (Join-Path $PSScriptRoot 'WindowsGpuProcessMemory.cs') }
+    if (-not ('Bitworks.FastLlm.WindowsBootTime' -as [type])) { $sources += (Join-Path $PSScriptRoot 'WindowsBootTime.cs') }
+    if ($sources.Count -gt 0) { Add-Type -Path @($sources) -ErrorAction Stop }
+}
+
 function Initialize-FastLlmGpuProcessMemory {
-    if (-not ('Bitworks.FastLlm.WindowsGpuProcessMemory' -as [type])) {
-        Add-Type -Path (Join-Path $PSScriptRoot 'WindowsGpuProcessMemory.cs') -ErrorAction Stop
+    Initialize-FastLlmSpillNativeTypes
+}
+
+# Replaceable by tests: native boot instant (UTC round-trip text, whole seconds) for the LUID cache, or $null. Needs only WindowsBootTime.
+function Get-FastLlmSpillBootIdentity {
+    if ($env:OS -ne 'Windows_NT') { return $null }
+    try {
+        Initialize-FastLlmSpillNativeTypes
+        $ticks = [long][Bitworks.FastLlm.WindowsBootTime]::BootUtcTicksTruncated()
+        $ticks = $ticks - ($ticks % 10000000L)
+        if ($ticks -le 0) { return $null }
+        return ([datetime]::new($ticks, [DateTimeKind]::Utc)).ToString('o')
     }
+    catch { return $null }
+}
+
+# Replaceable by tests: native sleep delta in milliseconds for the LUID cache, or $null.
+function Get-FastLlmSpillSleepDelta {
+    if ($env:OS -ne 'Windows_NT') { return $null }
+    try {
+        Initialize-FastLlmSpillNativeTypes
+        return [long][Bitworks.FastLlm.WindowsBootTime]::SleepDeltaMilliseconds()
+    }
+    catch { return $null }
 }
 
 function Get-FastLlmSpillValue {
@@ -402,9 +432,9 @@ function Get-FastLlmSpillLuidCacheContext {
         if ([string]::IsNullOrWhiteSpace($InstallRoot)) { return $null }
         $key = Get-FastLlmSpillLuidAdapterKey -Plan $Plan
         if ($null -eq $key) { return $null }
-        $boot = Get-FastLlmNativeBootIdentity
+        $boot = Get-FastLlmSpillBootIdentity
         if ([string]::IsNullOrWhiteSpace([string] $boot)) { return $null }
-        $sleep = Get-FastLlmVulkanBarSleepDelta
+        $sleep = Get-FastLlmSpillSleepDelta
         if ($null -eq $sleep -or ($sleep -isnot [int] -and $sleep -isnot [long]) -or $sleep -lt 0) { return $null }
         $hashes = Get-FastLlmSpillLuidSourceHashes
         if ($null -eq $hashes) { return $null }

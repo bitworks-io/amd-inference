@@ -29,12 +29,12 @@ function CachePath($Root) { Join-Path (Join-Path $Root 'state') $cacheName }
 # Install the seams once (module scope); every test sets the mock state in $script:T and restores nothing until the end.
 $originals = InModule {
     param($shaA)
-    $names = @('Test-FastLlmSpillIsWindows', 'Get-FastLlmNativeBootIdentity', 'Get-FastLlmVulkanBarSleepDelta', 'Get-FastLlmSpillLuidSourceHashes', 'Invoke-FastLlmSpillLuidCollection')
+    $names = @('Test-FastLlmSpillIsWindows', 'Get-FastLlmSpillBootIdentity', 'Get-FastLlmSpillSleepDelta', 'Get-FastLlmSpillLuidSourceHashes', 'Invoke-FastLlmSpillLuidCollection')
     $saved = @{}
     foreach ($n in $names) { $saved[$n] = (Get-Command $n).ScriptBlock }
     function script:Test-FastLlmSpillIsWindows { return [bool] $script:T.windows }
-    function script:Get-FastLlmNativeBootIdentity { return $script:T.boot }
-    function script:Get-FastLlmVulkanBarSleepDelta { return $script:T.sleep }
+    function script:Get-FastLlmSpillBootIdentity { return $script:T.boot }
+    function script:Get-FastLlmSpillSleepDelta { return $script:T.sleep }
     function script:Get-FastLlmSpillLuidSourceHashes { return $script:T.hashes }
     function script:Invoke-FastLlmSpillLuidCollection {
         param($Plan, [string] $InstallRoot, $BarDecision)
@@ -312,5 +312,27 @@ finally {
     InModule { param($saved) foreach ($n in $saved.Keys) { Set-Item -Path ("Function:\script:" + $n) -Value $saved[$n] } } @($originals)
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# ---- the cache's native reads must not add the BAR cache's compile (static, by AST command names) ----
+$spillPath = Join-Path $root 'src/FastLlm.SpillCheck.ps1'
+$tokens = $null; $errs = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($spillPath, [ref]$tokens, [ref]$errs)
+Check ($errs.Count -eq 0) 'FastLlm.SpillCheck.ps1 parses'
+function Get-FuncAst($Name) { $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name }, $true) }
+$banned = @('Initialize-FastLlmVulkanBarNativeTypes', 'Get-FastLlmNativeBootIdentity', 'Get-FastLlmVulkanBarSleepDelta', 'Get-FastLlmVulkanBarBootIdentity', 'Initialize-FastLlmGpuIdentity')
+foreach ($fn in @('Get-FastLlmSpillLuidCacheContext', 'Get-FastLlmSpillBootIdentity', 'Get-FastLlmSpillSleepDelta', 'Initialize-FastLlmSpillNativeTypes')) {
+    $f = Get-FuncAst $fn
+    Check ($null -ne $f) "$fn exists"
+    $cmds = @($f.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
+    Check (@($cmds | Where-Object { $banned -contains $_ }).Count -eq 0) "$fn calls no BAR-cache native helper"
+    $strings = @($f.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+    Check (@($strings | Where-Object { $_ -like '*WindowsGpuIdentity*' }).Count -eq 0) "$fn never names WindowsGpuIdentity"
+}
+$init = Get-FuncAst 'Initialize-FastLlmSpillNativeTypes'
+$initStrings = @($init.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+Check (@($initStrings | Where-Object { $_ -ceq 'WindowsBootTime.cs' }).Count -eq 1 -and @($initStrings | Where-Object { $_ -ceq 'WindowsGpuProcessMemory.cs' }).Count -eq 1 -and @($initStrings | Where-Object { $_ -like '*WindowsGpuIdentity*' }).Count -eq 0) 'the spill native compile lists WindowsBootTime.cs and WindowsGpuProcessMemory.cs, never WindowsGpuIdentity.cs'
+$initCmds = @($init.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Add-Type' }, $true))
+Check ($initCmds.Count -eq 1) 'the spill native compile is ONE Add-Type call'
+Check ((Get-FuncAst 'Initialize-FastLlmGpuProcessMemory').Extent.Text -match 'Initialize-FastLlmSpillNativeTypes') 'the process-memory initializer shares the one compile'
 
 Write-Host "$script:count spill-luid-cache checks passed."
