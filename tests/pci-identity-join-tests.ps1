@@ -51,6 +51,36 @@ Check ((@(Join-FastLlmPciAddressScope $dxgi $pnp $kmt)[0]).status -eq 'ambiguous
 $kmt=@($kmt[0]);$dxgi+=($dxgi[0] | Select-Object *)
 Check ((@(Join-FastLlmPciAddressScope $dxgi $pnp $kmt)[0]).status -eq 'ambiguous-dxgi-luid') 'Duplicate DXGI LUID was accepted.'
 Reject {Join-FastLlmPciAddressScope -Dxgi @(1..65) -Pnp @() -Kmt @()} 'Oversized DXGI inventory was not rejected.'
+# The collector's report must carry matches as a real JSON array: [] when empty, never null.
+function Get-ReportMatches($stable,$d,$p,$k){
+    $report=New-FastLlmPciIdentityResult -Stable $stable -Dxgi $d -Pnp $p -Kmt $k -GgmlStatus 'unavailable' -GgmlDeviceCount $null
+    $text=$report | ConvertTo-Json -Depth 8 -Compress
+    return [pscustomobject]@{Text=$text;Parsed=(ConvertFrom-Json $text)}
+}
+$reportPnp=@([pscustomobject]@{InstanceId='PCI\VEN_1002&DEV_744C&SUBSYS_00000000\1';LocationInfo='PCI bus 3, device 0, function 0';
+    DriverVersion='32.0.31041.1004';LocationError=$null;DriverVersionError=$null})
+$reportKmt=@([pscustomobject]@{Luid='00000001000000ab';Bus=3;Device=0;Function=0;Error=$null})
+$reportDxgi=@([pscustomobject]@{Luid='00000001000000ab';VendorId=0x1002;DeviceId=0x744c})
+$unstable=Get-ReportMatches $false $reportDxgi $reportPnp $reportKmt
+Check ($unstable.Text -cmatch '"matches":\[\]') 'Unstable collection did not serialise matches as [].'
+Check ($unstable.Parsed.matches -is [array] -and $unstable.Parsed.matches.Count -eq 0) 'Unstable collection matches did not parse as an empty array.'
+$none=Get-ReportMatches $true @() @() @()
+Check ($none.Text -cmatch '"matches":\[\]') 'No-match report did not serialise matches as [].'
+Check ($none.Text -cnotmatch '"matches":null') 'No-match report serialised matches as null.'
+Check ($none.Parsed.matches -is [array] -and $none.Parsed.matches.Count -eq 0) 'No-match report matches did not parse as an empty array.'
+Assert-FastLlmPciIdentityDocument $none.Parsed
+$one=Get-ReportMatches $true $reportDxgi $reportPnp $reportKmt
+Check ($one.Parsed.matches -is [array] -and $one.Parsed.matches.Count -eq 1 -and $one.Parsed.matches[0].status -eq 'address-scope-dxgi-pnp') 'One-match report did not carry a one-element matches array.'
+$twoDxgi=@($reportDxgi[0],[pscustomobject]@{Luid='00000002000000cd';VendorId=0x1002;DeviceId=0x744c})
+$twoKmt=@($reportKmt[0],[pscustomobject]@{Luid='00000002000000cd';Bus=4;Device=0;Function=0;Error=$null})
+$twoPnp=@($reportPnp[0],[pscustomobject]@{InstanceId='PCI\VEN_1002&DEV_744C&SUBSYS_00000000\2';LocationInfo='PCI bus 4, device 0, function 0';
+    DriverVersion='32.0.31041.1004';LocationError=$null;DriverVersionError=$null})
+$two=Get-ReportMatches $true $twoDxgi $twoPnp $twoKmt
+Check ($two.Parsed.matches -is [array] -and $two.Parsed.matches.Count -eq 2) 'Two-match report did not carry a two-element matches array.'
+$toolText=Get-Content -LiteralPath (Join-Path $repo 'tools/collect-pci-identity-join.ps1') -Raw
+Check ($toolText.Contains('New-FastLlmPciIdentityResult') -and $toolText -cnotmatch '\$matches\s*=') 'Collector must build its report through the shared builder and never assign the automatic $matches variable.'
+$joinSource=Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.PciIdentityJoin.ps1') -Raw
+Check ($joinSource -cnotmatch '(?<![A-Za-z])\$matches\s*=(?!=)') 'Report builder must not assign the automatic $matches variable.'
 $tool=Get-Content -LiteralPath (Join-Path $repo 'tools/collect-pci-identity-join.ps1') -Raw
 $native=Get-Content -LiteralPath (Join-Path $repo 'src/WindowsPciAddress.cs') -Raw
 Check ($tool.Contains('WaitForExit(60000)') -and $tool.Contains('$child.OutputTruncated') -and

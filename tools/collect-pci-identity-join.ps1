@@ -61,16 +61,8 @@ $after=Read-AddressSnapshot
 $beforeJson=ConvertTo-Json -InputObject $before -Depth 8 -Compress
 $afterJson=ConvertTo-Json -InputObject $after -Depth 8 -Compress
 $stable=$beforeJson -ceq $afterJson
-$matches=if($stable){@(Join-FastLlmPciAddressScope -Dxgi $after.dxgi -Pnp $after.pnp -Kmt $after.kmt)}else{@()}
-$result=[ordered]@{
-    schemaVersion=1;applicable=$true;qualified=$false;stableAcrossCollection=$stable
-    identityScope='independent-process-address-scope-advisory'
-    source='DXGI-LUID + D3DKMT_ADAPTERADDRESS + exact SetupAPI PCI location and VEN/DEV'
-    pciSegmentKnown=$false;ggmlJoin=$null;ggmlJoinReason='unknown-pci-segment'
-    ggmlEvidenceStatus=$ggmlStatus;ggmlDeviceCount=if($ggml){@($ggml.devices).Count}else{$null}
-    matches=$matches
-    note='Only unique bus/device/function plus PCI VEN/DEV identify an address-scope PnP record. KMT supplies no PCI segment; no full BDF, GGML adapter, serving-process, or benchmark adapter binding is claimed.'
-}
+$ggmlCount=if($ggml){@($ggml.devices).Count}else{$null}
+$result=New-FastLlmPciIdentityResult -Stable $stable -Dxgi $after.dxgi -Pnp $after.pnp -Kmt $after.kmt -GgmlStatus $ggmlStatus -GgmlDeviceCount $ggmlCount
 $record='FASTLLM_PCI_IDENTITY_JSON:'+($result|ConvertTo-Json -Depth 8 -Compress)
 if($record.Length -gt 7800){throw 'PCI advisory result exceeds the 7800-character transport limit; no partial identity evidence is emitted.'}
 Write-Output $record
