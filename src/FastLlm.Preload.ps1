@@ -100,6 +100,8 @@ function Get-FastLlmPreloadSet {
         }
     }
 
+    # Every tier and budget plans against the same components catalog; validating it is slow, so it is loaded once here, not once per plan.
+    $planComponents = @(Get-FastLlmPlanComponents -CatalogPath $CatalogPath)
     $emptyTiers = @()
     foreach ($tier in $tiers) {
         foreach ($budget in @('idle', 'conservative')) {
@@ -122,7 +124,7 @@ function Get-FastLlmPreloadSet {
                     })
             }
             try {
-                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $CatalogPath -Profile balanced -RecipesPath $RecipesPath -GpuVariantsPath $GpuVariantsPath -NoEngineExecution
+                $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $CatalogPath -Profile balanced -RecipesPath $RecipesPath -GpuVariantsPath $GpuVariantsPath -NoEngineExecution -EngineComponents $planComponents
             } catch {
                 if ([string] $_.Exception.Data['FastLlmFailureCode'] -ceq 'no-profile-fits') {
                     $emptyTiers += [pscustomobject]@{ tier = $tier.id; budget = $budget }

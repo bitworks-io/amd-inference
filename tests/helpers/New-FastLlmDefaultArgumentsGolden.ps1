@@ -21,6 +21,8 @@ function Get-FastLlmDefaultArgumentsMatrix {
         InstallRoot       = $InstallRoot
     }
     foreach ($key in @($PlanParameters.Keys)) { $common[$key] = $PlanParameters[$key] }
+    # The matrix plans many times against one components catalog; it is validated once here, not once per plan.
+    if (-not $common.ContainsKey('EngineComponents')) { $common['EngineComponents'] = @(Get-FastLlmPlanComponents -CatalogPath ([string] $common['CatalogPath'])) }
 
     $normalise = {
         param([string] $Text)

@@ -77,6 +77,62 @@ try {
     Check ((@($q6.tiers) -join ',') -eq '32gb') 'preload set golden: q6-k-m tiers'
     Check ($null -eq $iq4.approved) 'preload set golden: approved is null without a list'
 
+    # ---- load count: one preload-set call validates the components catalog once, not once per tier and budget plan
+    # The wrapper replaces Get-FastLlmComponents in the module's own scope (where the planner and the preload code resolve it), counts every
+    # call and forwards to the original with the same parameter; the finally restores the original.
+    function Measure-ComponentLoads([scriptblock]$Action) {
+        & $module {
+            param($Run)
+            $script:preloadTestLoadCount = 0
+            $script:preloadTestOriginal = ${function:script:Get-FastLlmComponents}
+            ${function:script:Get-FastLlmComponents} = { param([string] $ComponentsPath) $script:preloadTestLoadCount++; & $script:preloadTestOriginal -ComponentsPath $ComponentsPath }
+            try { $null = & $Run }
+            finally { ${function:script:Get-FastLlmComponents} = $script:preloadTestOriginal }
+            return $script:preloadTestLoadCount
+        } $Action
+    }
+    $setLoads=Measure-ComponentLoads { Get-FastLlmPreloadSet -CatalogPath $catalog -RecipesPath $recipes -GpuVariantsPath $variants -TiersPath $tiersPath }
+    Check ($setLoads -eq 1) "one Get-FastLlmPreloadSet call loads the components catalog once (observed: $setLoads)"
+
+    # ---- plan equivalence: a plan given the loaded components is the same plan as one that loads them itself
+    $planTiers=@((Get-Content -LiteralPath $tiersPath -Raw | ConvertFrom-Json).tiers)
+    $planComponents=& $module { param($c) Get-FastLlmPlanComponents -CatalogPath $c } $catalog
+    Check (@($planComponents).Count -gt 0) 'plan components: the shipped components catalog loads next to the catalog'
+    $planWith=0
+    foreach($tier in $planTiers){
+        foreach($budget in @('idle','conservative')){
+            $free=if($budget -eq 'idle'){$tier.idleFreeVramMiB}else{$tier.conservativeFreeVramMiB}
+            $hw=[pscustomobject]@{schemaVersion=1;source='preload-tier';backend='Vulkan';enginePath='C:\FastLLM\vulkan\llama-server.exe'
+                adapters=@([pscustomobject]@{device='Vulkan0';name="Preload tier $($tier.id)";vendorId='1002';vramMiB=$tier.vramMiB;freeVramMiB=$free;isAmd=$true;isIntegrated=$false;backend='Vulkan';driverVersion='preload-tier'})}
+            $same=& $module { param($h,$c,$r,$g,$comp)
+                $base=@{Hardware=$h;CatalogPath=$c;Profile='balanced';RecipesPath=$r;GpuVariantsPath=$g;NoEngineExecution=$true}
+                $one=''; $two=''
+                try { $one=(Get-FastLlmPlan @base | ConvertTo-Json -Depth 30 -Compress) } catch { $one='refused: '+[string]$_.Exception.Message }
+                try { $two=(Get-FastLlmPlan @base -EngineComponents $comp | ConvertTo-Json -Depth 30 -Compress) } catch { $two='refused: '+[string]$_.Exception.Message }
+                return [pscustomobject]@{equal=($one -ceq $two);length=$one.Length}
+            } $hw $catalog $recipes $variants $planComponents
+            Check ($same.equal -and $same.length -gt 0) "plan equivalence: tier $($tier.id) $budget plans identically with and without -EngineComponents"
+            $planWith++
+        }
+    }
+    Check ($planWith -ge 4) 'plan equivalence: at least four tier and budget fixtures compared'
+    # -EngineComponents @() behaves like a catalog with no components.json next to it
+    $noCompDir=Join-Path $work 'catalog-without-components'
+    New-Item -ItemType Directory -Path $noCompDir -Force | Out-Null
+    $noCompCatalog=Join-Path $noCompDir 'catalog.json'
+    Copy-Item -LiteralPath $catalog -Destination $noCompCatalog
+    $emptyCheck=& $module { param($c,$nc,$r,$g,$t)
+        $tier=@((Get-Content -LiteralPath $t -Raw | ConvertFrom-Json).tiers)[-1]
+        $hw=[pscustomobject]@{schemaVersion=1;source='preload-tier';backend='Vulkan';enginePath='C:\FastLLM\vulkan\llama-server.exe'
+            adapters=@([pscustomobject]@{device='Vulkan0';name='Preload tier';vendorId='1002';vramMiB=$tier.vramMiB;freeVramMiB=$tier.idleFreeVramMiB;isAmd=$true;isIntegrated=$false;backend='Vulkan';driverVersion='preload-tier'})}
+        $noFile=@(Get-FastLlmPlanComponents -CatalogPath $nc)
+        $a=Get-FastLlmPlan -Hardware $hw -CatalogPath $nc -Profile balanced -RecipesPath $r -GpuVariantsPath $g -NoEngineExecution | ConvertTo-Json -Depth 30 -Compress
+        $b=Get-FastLlmPlan -Hardware $hw -CatalogPath $c -Profile balanced -RecipesPath $r -GpuVariantsPath $g -NoEngineExecution -EngineComponents @() | ConvertTo-Json -Depth 30 -Compress
+        return [pscustomobject]@{noFileCount=$noFile.Count;equal=($a -ceq $b)}
+    } $catalog $noCompCatalog $recipes $variants $tiersPath
+    Check ($emptyCheck.noFileCount -eq 0) 'plan components: a catalog with no components.json beside it yields no components'
+    Check ($emptyCheck.equal) '-EngineComponents @() plans like a catalog with no components.json beside it'
+
     # ---- subset of approved (CI guard)
     $checked=& $module { param($c,$r,$g,$t,$a) Get-FastLlmPreloadSet -CatalogPath $c -RecipesPath $r -GpuVariantsPath $g -TiersPath $t -ApprovedModelsPath $a } $catalog $recipes $variants $tiersPath $approved
     foreach ($model in @($checked.models)) {
@@ -416,6 +472,10 @@ try {
     }
     $sr=New-InstallRoot @('qwen3.5-4b-iq4-xs') -NoReceipt
     $status=Get-Status $sr @{ApprovedModelsPath=$approved}
+    $statusArgs=@{CatalogPath=$smallCatalog;RecipesPath=$recipes;GpuVariantsPath=$variants;TiersPath=$tiersPath;InstallRoot=$sr;MinFreeGB=1;FreeBytesProvider={param($p) [int64]5368709120};ApprovedModelsPath=$approved}
+    $statusLoads=Measure-ComponentLoads { Get-FastLlmPreloadStatus @statusArgs }
+    # Two loads: one for the preload set (shared by all of its plans) and one for the recommended engine chains (Get-FastLlmPreloadComponents reads its own file).
+    Check ($statusLoads -eq 2) "one Get-FastLlmPreloadStatus call loads the components catalog twice (observed: $statusLoads)"
     Check ((@($status.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'components,emptyTiers,freeBytes,installRoot,minFreeBytes,models,release,schema') 'status contract: top-level property names'
     Check ((@($status.models[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq 'approved,consent,file,modelId,present,reason,revision,sizeBytes,sizeOk,tiers') 'status contract: models[0] property names'
     Check (@($status.emptyTiers).Count -eq 0) 'status: the measured 4gb row leaves no empty tier'
