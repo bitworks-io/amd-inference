@@ -263,7 +263,7 @@ Check ($ui.Contains('if($script:child){') -and
 Check ($ui.Contains('function RevealUiForAction') -and
     $ui.Contains('function ShowSetupAttention($Decision,$Diagnostic) {') -and
     $ui.Contains('function ShowExactModelConsent($Plan) {') -and
-    $ui.Contains('function ShowFailure($Message){') -and
+    $ui.Contains('function ShowFailure($Message,[string]$Capture){') -and
     @([regex]::Matches($ui,'RevealUiForAction')).Count -ge 4) 'Actionable setup, consent, and failure paths can restore a hidden window.'
 Check (@([regex]::Matches($ui,'SetTrayMenuAvailable \$false')).Count -ge 3 -and
     @([regex]::Matches($ui,'SetTrayMenuAvailable \$true')).Count -ge 3) 'Tray menu actions are disabled during modal user decisions and restored afterward.'

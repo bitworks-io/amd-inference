@@ -139,6 +139,13 @@ $switchButton.Enabled=$false
 $script:switchGap=$false
 $script:evidenceUrl=$null
 $resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
+# "Copy full output": shown only while a failure from a child's capture is held; the copy is the raw capture, unchanged.
+$script:failureCapture=$null
+$failureCopyLink=New-Object Windows.Forms.LinkLabel;$failureCopyLink.Text='Copy full output';$failureCopyLink.AutoSize=$true;$failureCopyLink.Visible=$false
+$failureCopyLink.Location=New-Object Drawing.Point((820-$failureCopyLink.PreferredWidth),652)
+$failureCopyLink.TabStop=$true;$failureCopyLink.TabIndex=$output.TabIndex+1;$failureCopyLink.AccessibleName='Copy full output';$form.Controls.Add($failureCopyLink)
+function ClearFailureCapture {$script:failureCapture=$null;$failureCopyLink.Visible=$false}
+function SetFailureCapture([string]$Capture) {$script:failureCapture=$Capture;$failureCopyLink.Visible=-not [string]::IsNullOrEmpty($Capture)}
 $notesLabel=New-Object Windows.Forms.Label
 $notesLabel.Location=New-Object Drawing.Point(24,676);$notesLabel.Size=New-Object Drawing.Size(796,80);$notesLabel.Text='';$form.Controls.Add($notesLabel)
 $barLink=New-Object Windows.Forms.LinkLabel;$barLink.Text='How to turn it on';$barLink.Location=New-Object Drawing.Point(24,758);$barLink.AutoSize=$true;$barLink.Visible=$false;$form.Controls.Add($barLink)
@@ -190,6 +197,7 @@ function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate)
 }
 $vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
 $amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
+$failureCopyLink.Add_LinkClicked({try{[Windows.Forms.Clipboard]::SetText([string]$script:failureCapture)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
 $resultsLink.Add_LinkClicked({
     try{
         $checked=Get-FastLlmUiEvidenceUrl -Plan ([pscustomobject]@{recipe=[pscustomobject]@{evidenceUrl=$script:evidenceUrl}})
@@ -471,6 +479,7 @@ function ReadSelection {
 }
 function LaunchStep([string]$Step,[object[]]$Arguments) {
     if(Test-FastLlmUiStepStartsRun -Step $Step){$script:bgEndedByUserStop=$false}
+    ClearFailureCapture
     $script:updateOutcome=$false
     if($script:child){throw 'A child operation is already active.'}
     if($script:vcBroker){throw 'Microsoft prerequisite setup is still running.'}
@@ -510,6 +519,7 @@ function LaunchStep([string]$Step,[object[]]$Arguments) {
 # A read-only doctor step (API check, support bundle list and save) in its own process slot, so it never touches the serving child, its step
 # or its output. One at a time. Results are shown in a dialog because the serving output box and status line are rewritten by the timer.
 function LaunchSideStep([string]$Step,[object[]]$Arguments) {
+    ClearFailureCapture
     if($Step -cnotin @('api check','bundle list','bundle save')){throw 'That step cannot run beside a server.'}
     if($script:sideChild){throw 'Another check is still running. Wait for it to finish.'}
     $info=New-FastLlmUiCliStartInfo -AppRoot $PSScriptRoot -Arguments $Arguments
@@ -566,9 +576,13 @@ function SetTrayMenuAvailable([bool]$Available) {
         }
     }
 }
-function ShowFailure($Message){
+function ShowFailure($Message,[string]$Capture){
     try{RevealUiForAction}catch{[void][Windows.Forms.MessageBox]::Show('FastLLM needs attention, but the control window could not be restored.','FastLLM','OK','Warning')}
-    $output.Text=[string]$Message
+    # A failure from a child's capture shows the capture without PowerShell's error-record details and keeps it whole for "Copy full output";
+    # fixed window text shows as is and holds nothing.
+    if($PSBoundParameters.ContainsKey('Capture')){$view=Get-FastLlmUiFailureView -Message ([string]$Message) -Capture $Capture}else{$view=Get-FastLlmUiFailureView -Message ([string]$Message)}
+    $output.Text=[string]$view.text
+    SetFailureCapture ([string]$view.capture)
     if($script:child -or $script:vcBroker){
         $statusLabel.Text=if($script:vcBroker){'Microsoft setup is still running. Complete or cancel it in the Microsoft window.'}
             else{'Action needs attention. The active operation remains supervised; use Stop if needed.'}
@@ -1945,7 +1959,7 @@ $timer.Add_Tick({
                     # The install the window started from its own plan failed: no decline is recorded; the Vulkan setup runs and the next Start tries again.
                     $script:setupNotice=Get-FastLlmUiInstallFailedLine
                     RepreviewForPendingSetup 'install-failed'
-                    if($script:child){$output.Text=$text}
+                    if($script:child){$output.Text=Format-FastLlmUiFailureDisplay -Text $text;SetFailureCapture $text}
                     return
                 }
             }
@@ -1956,7 +1970,7 @@ $timer.Add_Tick({
                 try{$failureCode=Get-FastLlmUiFailureCode -Status (Get-FastLlmStatus $script:installPath) -PreviousRunId ([string]$script:servingPreviousRunId)}catch{}
                 if(Test-FastLlmUiTypedHipFailure -Code $failureCode){
                     $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'error' -ErrorMessage $text
-                    ShowFailure (Format-FastLlmUiTypedFailure -Code $failureCode -Text $text);return
+                    ShowFailure (Format-FastLlmUiTypedFailure -Code $failureCode -Text (Format-FastLlmUiFailureDisplay -Text $text)) -Capture $text;return
                 }
                 # An API key failure is shown as its own message and is never retried: a second start must not run without the key.
                 if(Test-FastLlmUiApiKeyFailure -Code $failureCode){
@@ -1966,7 +1980,7 @@ $timer.Add_Tick({
                 $script:flow=Move-FastLlmUiFlow -Flow $script:flow -Event 'serving-failed' -ErrorMessage $text
                 if($script:flow.phase -eq 'preview'){LaunchUiPhase;return}
             }
-            ShowFailure $text;return
+            ShowFailure $text -Capture $text;return
         }
         switch($step){
             'vc prepare'{
