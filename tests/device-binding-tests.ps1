@@ -606,9 +606,15 @@ try {
     $directOff=((Get-FastLlmStatus $off.runRoot) | ConvertTo-Json -Depth 12)
     # The status action adds one additive `connection` object (how to connect an app). With it removed, the output is exactly the plain status document.
     $offView=$null;try{$offView=$cliOff.text | ConvertFrom-Json}catch{}
-    $connectionKeys=@('state','baseUrl','anthropicBaseUrl','modelName','contextTokens','agentWarning','endpoints','clients')
+    # The expected key set comes from the producer itself (the same function the status action calls, as tests/connect-info-tests.ps1 does), for a stopped
+    # root with the API key setting off, so a field added to the connection object later never leaves this check stale. The check stays an exact match.
+    . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+    . (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
+    $connectionKeys=@((Get-FastLlmConnectionInfo -Status ([pscustomobject]@{phase='stopped';active=$false}) -Settings ([pscustomobject]@{apiKey='off'})).PSObject.Properties.Name)
+    Check (@($connectionKeys).Count -ge 8 -and @('state','baseUrl','anthropicBaseUrl','modelName','contextTokens','agentWarning','endpoints','clients','apiKeyRequired','apiKey','apiKeyId'|Where-Object {$connectionKeys -cnotcontains $_}).Count -eq 0) 'the derived connection-info key set includes the base keys and the API key fields'
     Check ($cliOff.exited -and $cliOff.exit -eq 0 -and $null -ne $offView) 'the status action output for an off root is one JSON document'
     $offConnection=$null;if($null -ne $offView -and $null -ne $offView.PSObject.Properties['connection']){$offConnection=$offView.connection}
+    Check ($null -ne $offConnection -and [string]$offConnection.apiKey -ceq 'off' -and $offConnection.apiKeyRequired -eq $false) 'the status action output for an off root reports the API key as off'
     Check ($null -ne $offConnection -and ((@($offConnection.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ((@($connectionKeys) | Sort-Object) -join ','))) 'the status action output for an off root carries a connection object with exactly the connection-info keys'
     $offRest=$null
     if($null -ne $offView){$offRest=$offView | Select-Object -Property * -ExcludeProperty connection}

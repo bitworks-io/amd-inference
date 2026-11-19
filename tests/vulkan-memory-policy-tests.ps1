@@ -172,12 +172,14 @@ $sleepBox=@{delta=[long]1000;source='interrupt-time'}
 }
 $policyRoots=New-Object 'Collections.Generic.List[string]'
 $saved=& $module {(Get-Command Invoke-FastLlmVulkanHeapProbe).ScriptBlock}
-$probe=@{calls=0;report=$null;fail=$false;category=$null}
+$probe=@{calls=0;gpuMemCalls=0;report=$null;fail=$false;category=$null}
 & $module {
     param($P)
     $script:policyProbe=$P
     function script:Invoke-FastLlmVulkanHeapProbe {
         param($TimeoutSeconds,$CollectorPath)
+        # A call made through the device-binding collector is the GPU memory check's own collection; any other call is the BAR policy's probe.
+        if(@(Get-PSCallStack | Where-Object {$_.FunctionName -ceq 'Invoke-FastLlmDeviceBindingCollector'}).Count -gt 0){$script:policyProbe.gpuMemCalls++;return $script:policyProbe.report}
         $script:policyProbe.calls++
         if($script:policyProbe.category){$e=New-Object InvalidOperationException 'synthetic probe failure';$e.Data['FastLlmProbeCategory']=$script:policyProbe.category;throw $e}
         if($script:policyProbe.fail){throw 'synthetic probe failure'}
@@ -835,19 +837,28 @@ try {
         param($P)
         function script:Invoke-FastLlmVulkanHeapProbe {
             param($TimeoutSeconds,$CollectorPath)
+            # A call made through the device-binding collector is the GPU memory check's own collection; any other call is the BAR policy's probe.
+            if(@(Get-PSCallStack | Where-Object {$_.FunctionName -ceq 'Invoke-FastLlmDeviceBindingCollector'}).Count -gt 0){$script:policyProbe.gpuMemCalls++;return $script:policyProbe.report}
             $script:policyProbe.calls++
             if($script:policyProbe.fail){throw 'synthetic probe failure'}
             return $script:policyProbe.report
         }
     } $probe
-    $probe.calls=0
+    # Pure check of the classifier (any OS): a call through the device-binding collector is a GPU memory check collection, a direct call is a BAR probe.
+    $probe.calls=0;$probe.gpuMemCalls=0
+    $null=& $module {Invoke-FastLlmDeviceBindingCollector}
+    $null=& $module {Invoke-FastLlmVulkanHeapProbe}
+    Check ($probe.gpuMemCalls -eq 1 -and $probe.calls -eq 1) 'the heap-probe mock counts a collector call as a GPU memory check collection and a direct call as a BAR probe'
+    $probe.calls=0;$probe.gpuMemCalls=0
     $run=Invoke-PolicyRun -Name 'default-off' -Expect 'absent'
     Check ($run.exit -eq 0 -and $run.stopperOk -and $run.state.phase -eq 'stopped' -and $run.diag -notmatch 'unexpected|extra-ggml') 'default policy: the child sees neither mitigation variable and no other GGML_* (hostile 0 and PREFER_HOST_MEMORY cleared)'
     Check ($run.state.vulkanMemoryPolicy.requested -eq 'off' -and $run.state.vulkanMemoryPolicy.effective -eq 'off' -and $run.state.vulkanMemoryPolicy.reason -eq 'policy-off' -and $run.state.vulkanMemoryPolicy.rebarDetected -eq 'not-probed') 'default policy is recorded in run state as off / not-probed'
-    Check ($probe.calls -eq 0) 'the default start runs no heap probe'
+    # On Windows the default start runs the GPU memory check at Ready, which collects through the same heap-probe seam once; the spill path returns early elsewhere.
+    $expectedGpuMem=$(if($env:OS -eq 'Windows_NT'){1}else{0})
+    Check ($probe.calls -eq 0 -and $probe.gpuMemCalls -eq $expectedGpuMem) 'the default start runs no BAR probe and exactly one GPU memory check collection (Windows)'
     Check (-not $run.state.PSObject.Properties['throughputCanary']) 'the default start records no canary field and runs no canary'
     $run=Invoke-PolicyRun -Name 'on' -Policy 'on' -Expect '1'
-    Check ($probe.calls -eq 0) 'an explicit on never runs the heap probe'
+    Check ($probe.calls -eq 0) 'an explicit on never runs the BAR heap probe'
     Check ($run.exit -eq 0 -and $run.stopperOk -and $run.diag -notmatch 'unexpected|extra-ggml') 'on: the child environment has exactly GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 set after sanitisation and no other GGML_*'
     Check ($run.state.vulkanMemoryPolicy.requested -eq 'on' -and $run.state.vulkanMemoryPolicy.effective -eq 'on' -and $run.state.vulkanMemoryPolicy.reason -eq 'explicit-on' -and $run.state.vulkanMemoryPolicy.rebarDetected -eq 'not-probed-explicit-on') 'on is recorded with its reason and no detector result'
     $run=Invoke-PolicyRun -Name 'auto-off' -Policy 'auto' -Expect '1'
