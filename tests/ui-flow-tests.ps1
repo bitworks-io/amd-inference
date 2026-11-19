@@ -1830,7 +1830,17 @@ Check ($shownThrow.Contains('+') -eq $false) 'The throw record keeps no code exc
 $shownWrap=Format-FastLlmUiFailureDisplay -Text $recWrap
 Check ($shownWrap -ceq ($longMessage+"`r`n")) 'A message wrapped at exactly 120 characters is joined back into the original one line (the prefix is part of the first 120).'
 $shownTwo=Format-FastLlmUiFailureDisplay -Text $recTwoLines
-Check ($shownTwo -ceq ("First line of a message that is not wrapped`r`nsecond line of the same message`r`n")) 'Message lines of which the first is not 120 wide stay as two lines.'
+Check ($shownTwo -ceq ("First line of a message that is not wrapped second line of the same message`r`n")) 'Inside a proven record, a message line shorter than the host width ends at a word wrap and is joined with one space.'
+# The shape Windows PowerShell 5.1 printed in CI for a -File script's Write-Error (a long temp path): the record word-wraps at the host width,
+# breaking inside the message at 115 characters. It is shown as the message on one line.
+$wordWrapped=Crlf @(('C:\FastLLM\Temp\fastllm-copyfull-0123456789abcdef0123456789abcdef\fail-child.ps1 : FastLLM ').PadRight(115),'test failure message','    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException','    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,fail-child.ps1',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $wordWrapped) -ceq "FastLLM test failure message`r`n") 'The 5.1 word-wrapped Write-Error record from CI shows its message on one line, with one space at the wrap.'
+$threeLines=Crlf @('C:\FastLLM\app\fast-llm.ps1 : Alpha bravo','charlie delta','echo foxtrot','    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException','    + FullyQualifiedErrorId : x',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $threeLines) -ceq "Alpha bravo charlie delta echo foxtrot`r`n") 'A message word-wrapped over three lines is joined with one space at each wrap.'
+$hardThenWord=Crlf @(('C:\FastLLM\app\fast-llm.ps1 : '+('m'*200)).Substring(0,120),(('m'*200).Substring(90)+' end of'),'the message','    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException','    + FullyQualifiedErrorId : x',' ','')
+Check ((Format-FastLlmUiFailureDisplay -Text $hardThenWord) -ceq (('m'*200)+" end of the message`r`n")) 'A 120-wide line is joined with no space (a hard wrap) and a shorter one with one space (a word wrap).'
+$plainLines="line one`r`nline two`r`n  indented line three`r`n"
+Check ((Format-FastLlmUiFailureDisplay -Text $plainLines) -ceq $plainLines) 'Multi-line output outside a proven record is never joined or changed.'
 $noPrefixWrap=Crlf @(('x'*120),('y'*20),'At C:\FastLLM\app\fast-llm.ps1:9 char:1','+ throw $m','+ ~~~~~~~~','    + CategoryInfo          : OperationStopped: (:) [], RuntimeException','    + FullyQualifiedErrorId : x',' ','')
 # A record without a prefix is proven only by its position block. Where its message starts cannot be proven, so its lines are never joined:
 # only the tail goes. An ordinary 120-wide output line right before a throw therefore stays its own line.
@@ -1884,7 +1894,9 @@ $mutantNoJoin=Crlf @($wrapFirst.Substring($prefix.Length),$wrapRest,'')
 $mutantJoinTwo='First line of a message that is not wrappedsecond line of the same message'+"`r`n"
 foreach($mutant in @($mutantDropMessage,$mutantKeepCode,$mutantDropCode)){Check ($shownWrite -cne $mutant) 'A version that drops the message or keeps the code line is caught.'}
 Check ($shownWrap -cne $mutantNoJoin) 'A version that does not re-join the 120 wrap is caught.'
-Check ($shownTwo -cne $mutantJoinTwo) 'A version that joins lines that are not 120 wide is caught.'
+Check ($shownTwo -cne $mutantJoinTwo) 'A version that joins a word-wrapped line with no space is caught.'
+$mutantKeepSplit="First line of a message that is not wrapped`r`nsecond line of the same message`r`n"
+Check ($shownTwo -cne $mutantKeepSplit) 'A version that leaves a word-wrapped message split over two lines is caught.'
 Check ($shownWrite.Contains('FastLLM test failure message') -and $shownWrap.Contains($longMessage) -and $shownTwo.Contains('second line of the same message')) 'The cleaned texts keep every message line.'
 
 # The view the window shows and the copy it keeps (the same function ShowFailure uses).
@@ -1919,7 +1931,9 @@ try {
         $copyCapture=$copyChild.Snapshot();$copyExit=$copyChild.Process.ExitCode
     } finally { $copyChild.Dispose(); $global:LASTEXITCODE=0 }
     Check ($copyExit -eq 1) 'The failing test child exits 1 through the ProcessHost.'
-    $copyHasMessage=$copyCapture.Contains('FastLLM test failure message')
+    # Windows PowerShell 5.1 word-wraps the record at the host width (the long temp path puts the break inside the message), so the raw capture
+    # holds the message split across lines: it is found with the whitespace collapsed. The stored copy is still checked byte for byte below.
+    $copyHasMessage=([regex]::Replace($copyCapture,'\s+',' ')).Contains('FastLLM test failure message')
     if (-not $copyHasMessage) {
         # Evidence on failure only (the paths are this test's own temp folder): the capture's length and lines, each line with its length and every
         # character outside printable ASCII as \uXXXX, so the cause can be read rather than inferred.
@@ -1929,12 +1943,13 @@ try {
         Write-Host ('INFO: expected: ' + (& $escapeCopy 'FastLLM test failure message'))
         for ($copyIndex=0; $copyIndex -lt $copyLines.Count; $copyIndex++) { Write-Host ('INFO: line ' + $copyIndex + ' (' + $copyLines[$copyIndex].Length + ' chars): ' + (& $escapeCopy $copyLines[$copyIndex])) }
     }
-    Check $copyHasMessage 'The raw capture of the failing child holds the message.'
+    Check $copyHasMessage 'The raw capture of the failing child holds the message (with its wrap collapsed).'
     $copyView=Get-FastLlmUiFailureView -Message $copyCapture -Capture $copyCapture
     Check ($copyView.capture -ceq $copyCapture) 'The stored copy equals the child capture exactly.'
     Check ($copyView.text.Contains('FastLLM test failure message')) 'The shown text keeps the message line.'
     if ($PSVersionTable.PSVersion.Major -eq 5) {
         Check ($copyCapture.Contains('CategoryInfo') -and $copyCapture.Contains('FullyQualifiedErrorId')) 'Windows PowerShell 5.1: the raw capture holds the error record details.'
+        Check (@($copyView.text -split "`r?`n" | Where-Object { $_ -ceq 'FastLLM test failure message' }).Count -eq 1) 'Windows PowerShell 5.1: the shown text holds the message whole, on one line.'
         foreach($word in @('CategoryInfo','FullyQualifiedErrorId','.ps1 : ')){Check (-not $copyView.text.Contains($word)) "Windows PowerShell 5.1: the shown text of the real capture has no '$word'."}
     } else {
         Write-Output 'SKIP: the Windows PowerShell 5.1 error record checks of the real child run only on Windows PowerShell 5.1.'

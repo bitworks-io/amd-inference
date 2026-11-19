@@ -720,8 +720,8 @@ function Format-FastLlmUiFailureDisplay {
             $hasPosition = $true
         }
         # The message: the lines between its first line and the tail. Its first line is proven only by a script or host prefix (the nearest one
-        # after the previous record); only that prefix is removed. The lines are joined only where every one but the last is exactly 120 wide
-        # (the 5.1 hard wrap). Without a prefix, a record is proven only by its position block, and its message lines stay exactly as they are,
+        # after the previous record); only that prefix is removed, and the message lines are joined into one (a 120-wide line with no space, any
+        # other line with one space). Without a prefix, a record is proven only by its position block, and its message lines stay exactly as they are,
         # never joined: where such a message starts cannot be proven. A record with neither a prefix nor a position block is not touched.
         $messageStart = -1
         $strippedFirst = $null
@@ -737,20 +737,16 @@ function Format-FastLlmUiFailureDisplay {
         for ($k = $position; $k -lt $messageStart; $k++) { $outLines.Add($lines[$k]); $outSeps.Add($seps[$k]) }
         $messageCount = $tailStart - $messageStart
         if ($messageCount -gt 0) {
-            $messageLines = New-Object System.Collections.Generic.List[string]
-            $joinable = $true
+            # A proven record (a prefix line and its tail): every line from the prefix line to the tail is the message, wrapped by the host. A line of
+            # exactly the host width ends at a hard wrap and is joined with no space; any other line ends at a word wrap and is joined with one space.
+            $messageText = $null
             for ($k = $messageStart; $k -lt $tailStart; $k++) {
-                if ($k -lt $tailStart - 1 -and $lines[$k].Length -ne $wrapWidth) { $joinable = $false }
-                $messageLines.Add($(if ($k -eq $messageStart -and $null -ne $strippedFirst) { $strippedFirst } else { $lines[$k] }))
+                $piece = $(if ($k -eq $messageStart) { $strippedFirst } else { $lines[$k] })
+                if ($null -eq $messageText) { $messageText = $piece }
+                elseif ($lines[$k - 1].Length -eq $wrapWidth) { $messageText = $messageText + $piece }
+                else { $messageText = $messageText.TrimEnd() + ' ' + $piece }
             }
-            if ($joinable) {
-                $outLines.Add(($messageLines -join '')); $outSeps.Add($seps[$tailEnd])
-            } else {
-                for ($k = 0; $k -lt $messageLines.Count; $k++) {
-                    $outLines.Add($messageLines[$k])
-                    $outSeps.Add($(if ($k -eq $messageLines.Count - 1) { $seps[$tailEnd] } else { $seps[$messageStart + $k] }))
-                }
-            }
+            $outLines.Add($messageText); $outSeps.Add($seps[$tailEnd])
         }
         $changed = $true
         $position = $tailEnd + 1
