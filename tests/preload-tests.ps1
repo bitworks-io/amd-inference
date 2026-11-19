@@ -132,6 +132,31 @@ try {
     } $catalog $noCompCatalog $recipes $variants $tiersPath
     Check ($emptyCheck.noFileCount -eq 0) 'plan components: a catalog with no components.json beside it yields no components'
     Check ($emptyCheck.equal) '-EngineComponents @() plans like a catalog with no components.json beside it'
+    # The tier fixtures above never pick a recipe that needs a component, so they cannot tell a passed list from an empty one. An RX 7900 XTX with
+    # the shipped config picks the recommended HIP recipe on an engine component. With nothing installed, the plan is the pending form, and its
+    # fallback re-plan runs too. A passed list must give exactly that plan; an empty list must not (it proves the passed list is really used).
+    $hipRoot=Join-Path $work 'hip-components-root'
+    New-Item -ItemType Directory -Path $hipRoot -Force | Out-Null
+    $hipCheck=& $module { param($c,$r,$g,$fixture,$installRoot)
+        $hw=Read-FastLlmJson -Path $fixture
+        $hw | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @([pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 200; dedicatedVideoMiB = 24534 })
+        $base=@{Hardware=$hw;CatalogPath=$c;Profile='balanced';RecipesPath=$r;GpuVariantsPath=$g;InstallRoot=$installRoot}
+        $loaded=@(Get-FastLlmPlanComponents -CatalogPath $c)
+        $own=Get-FastLlmPlan @base
+        $passed=Get-FastLlmPlan @base -EngineComponents $loaded
+        $none=$null; $noneText=''
+        try { $none=Get-FastLlmPlan @base -EngineComponents @(); $noneText=($none | ConvertTo-Json -Depth 30 -Compress) } catch { $noneText='refused: '+[string]$_.Exception.Message }
+        $ownText=$own | ConvertTo-Json -Depth 30 -Compress
+        return [pscustomobject]@{
+            usesComponent=[bool]($own.PSObject.Properties['engineComponentId'] -and $own.engineComponentId)
+            hasFallback=[bool]($own.PSObject.Properties['fallback'] -and $null -ne $own.fallback)
+            equal=($ownText -ceq ($passed | ConvertTo-Json -Depth 30 -Compress))
+            emptyDiffers=($ownText -cne $noneText)
+        }
+    } $catalog $recipes $variants (Join-Path $root 'tests/fixtures/rx-7900-xtx-24gb.json') $hipRoot
+    Check ($hipCheck.usesComponent -and $hipCheck.hasFallback) 'plan equivalence (components matter): the RX 7900 XTX plan is on an engine component, with its fallback planned'
+    Check ($hipCheck.equal) 'plan equivalence (components matter): a passed components list plans exactly like the plan loading it, fallback included'
+    Check ($hipCheck.emptyDiffers) 'plan equivalence (components matter): an empty passed list plans differently, so the passed list is really used'
 
     # ---- subset of approved (CI guard)
     $checked=& $module { param($c,$r,$g,$t,$a) Get-FastLlmPreloadSet -CatalogPath $c -RecipesPath $r -GpuVariantsPath $g -TiersPath $t -ApprovedModelsPath $a } $catalog $recipes $variants $tiersPath $approved
