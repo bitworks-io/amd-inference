@@ -302,6 +302,81 @@ $rewritten=Load-Ident $corrupt
 Check ($null -ne $rewritten -and $rewritten.adapters[0].name -ceq $xt) 'the file is rewritten clean by the next Ready write'
 Set-Content -LiteralPath $identFile -Value 'not json'
 
+# ---------- the LUID scan used by the privacy checks below (pure, so its RED cases run on every platform before any Windows-only part) ----------
+# Every file under a run's install root (recursive, hidden included, shared read) searched for the bound device's LUID in the forms the code could
+# render it: the 16-hex string in either case (a 0x prefix contains it) and the low half on its own (a split high/low rendering). ASCII and UTF-16 text.
+# The approved rule: the LUID may appear in exactly one place, the value of the luid field of state\spill-luid-boot-cache.json under the root (the
+# private per-boot cache). That file is allowed (counted in allowedCache, not in hits) only if it parses as JSON, its luid value equals the LUID, and
+# the LUID text occurs nowhere else in it (not in another field, not twice). Any other file, any other path for that name, any malformed or
+# otherwise unexpected cache content is a hit.
+function Test-LuidCacheFile([string]$Path,[byte[]]$Bytes,[string]$Luid,[string[]]$Needles){
+    try{
+        $text=[Text.Encoding]::UTF8.GetString($Bytes).TrimStart([char]0xFEFF)
+        $doc=$text | ConvertFrom-Json
+        if($null -eq $doc -or $doc -isnot [pscustomobject]){return $false}
+        $prop=$doc.PSObject.Properties['luid']
+        if($null -eq $prop -or $prop.Value -isnot [string] -or $prop.Value -ine $Luid){return $false}
+        if(([regex]::Matches($text,[regex]::Escape($Luid),'IgnoreCase')).Count -ne 1){return $false}
+        $rest=[ordered]@{}
+        foreach($p in $doc.PSObject.Properties){if($p.Name -cne 'luid'){$rest[$p.Name]=$p.Value}}
+        $restText=($rest | ConvertTo-Json -Depth 8 -Compress)
+        foreach($n in $Needles){if($restText.IndexOf($n,[StringComparison]::Ordinal) -ge 0){return $false}}
+        return $true
+    }catch{return $false}
+}
+function Find-LuidInTree([string]$Root,[string]$Luid){
+    $needles=@($Luid.ToLowerInvariant(),$Luid.ToUpperInvariant(),$Luid.Substring(8).ToLowerInvariant(),$Luid.Substring(8).ToUpperInvariant())
+    $rootFull=([IO.Path]::GetFullPath($Root)).TrimEnd([char]'\',[char]'/')
+    $hits=@();$scanned=0;$unreadable=0;$allowedCache=0
+    foreach($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue)){
+        try{
+            $stream=[IO.File]::Open($file.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            try{$bytes=New-Object byte[] ([int]$stream.Length);$null=$stream.Read($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
+        }catch{$unreadable++;continue}
+        $scanned++
+        $texts=@([Text.Encoding]::GetEncoding(28591).GetString($bytes),[Text.Encoding]::Unicode.GetString($bytes))
+        if($bytes.Length -gt 1){$texts+=[Text.Encoding]::Unicode.GetString($bytes,1,$bytes.Length-1)}
+        $found=$false
+        foreach($text in $texts){foreach($n in $needles){if($text.IndexOf($n,[StringComparison]::Ordinal) -ge 0){$found=$true;break}};if($found){break}}
+        if(-not $found){continue}
+        $full=[IO.Path]::GetFullPath($file.FullName)
+        $relative=''
+        if($full.Length -gt $rootFull.Length+1 -and $full.StartsWith($rootFull,[StringComparison]::OrdinalIgnoreCase)){$relative=$full.Substring($rootFull.Length+1).Replace('/','\')}
+        if($relative -ieq 'state\spill-luid-boot-cache.json' -and (Test-LuidCacheFile $file.FullName $bytes $Luid $needles)){$allowedCache++}
+        else{$hits+=$file.Name}
+    }
+    [pscustomobject]@{scanned=$scanned;unreadable=$unreadable;allowedCache=$allowedCache;hits=@($hits | Select-Object -Unique)}
+}
+# RED and positive cases of the scan itself (pure: a scratch root, no Windows-only part).
+$luidScratch=Join-Path ([IO.Path]::GetTempPath()) ('luid-scan-'+[Guid]::NewGuid().ToString('N'))
+try{
+    $cacheName='spill-luid-boot-cache.json'
+    function New-LuidScratch([string]$Name){$d=Join-Path $luidScratch $Name;New-Item -ItemType Directory -Path (Join-Path $d 'state') -Force|Out-Null;$d}
+    $cacheOk=([ordered]@{schemaVersion=1;kind='fastllm-spill-luid';luid=$luidA;adapterKey='synthetic adapter|vulkan0|24560';bootUtc='2026-01-01T00:00:00Z';sleepDeltaMs=0} | ConvertTo-Json)
+    $cacheOtherField=([ordered]@{schemaVersion=1;kind='fastllm-spill-luid';luid=$luidA;adapterKey="synthetic $luidA";bootUtc='2026-01-01T00:00:00Z';sleepDeltaMs=0} | ConvertTo-Json)
+    $d=New-LuidScratch 'c';Set-Content -LiteralPath (Join-Path $d "state\$cacheName") -Value $cacheOk -Encoding UTF8
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits.Count -eq 0 -and $f.allowedCache -eq 1 -and $f.scanned -eq 1) 'LUID scan: a cache file with the LUID only in its luid field is allowed (allowedCache 1, no hit)'
+    $d=New-LuidScratch 'a';Set-Content -LiteralPath (Join-Path $d "state\$cacheName") -Value $cacheOk -Encoding UTF8;Set-Content -LiteralPath (Join-Path $d 'state\other.json') -Value "{`"x`":`"$luidA`"}"
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits -contains 'other.json' -and $f.hits.Count -eq 1 -and $f.allowedCache -eq 1) 'LUID scan RED: a LUID in another state file is a hit (the cache stays allowed)'
+    $d=New-LuidScratch 'b';Set-Content -LiteralPath (Join-Path $d "state\$cacheName") -Value $cacheOtherField -Encoding UTF8
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits -contains $cacheName -and $f.allowedCache -eq 0) 'LUID scan RED: the LUID in the cache file besides the luid field (adapterKey) is a hit'
+    $d=New-LuidScratch 'd1';New-Item -ItemType Directory -Path (Join-Path $d 'state\sub') -Force|Out-Null;Set-Content -LiteralPath (Join-Path $d "state\sub\$cacheName") -Value $cacheOk -Encoding UTF8
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits -contains $cacheName -and $f.allowedCache -eq 0) 'LUID scan RED: the same cache content at state\sub\ is a hit'
+    $d=New-LuidScratch 'd2';Set-Content -LiteralPath (Join-Path $d $cacheName) -Value $cacheOk -Encoding UTF8
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits -contains $cacheName -and $f.allowedCache -eq 0) 'LUID scan RED: the same cache content at the root is a hit'
+    $d=New-LuidScratch 'e';Set-Content -LiteralPath (Join-Path $d "state\$cacheName") -Value "{ `"luid`": `"$luidA`", " -Encoding UTF8
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits -contains $cacheName -and $f.allowedCache -eq 0) 'LUID scan RED: a malformed cache file containing the LUID is a hit'
+    $d=New-LuidScratch 'f';Set-Content -LiteralPath (Join-Path $d "state\$cacheName") -Value ($cacheOk -replace '"luid"','"luidx"') -Encoding UTF8
+    $f=Find-LuidInTree $d $luidA
+    Check ($f.hits -contains $cacheName -and $f.allowedCache -eq 0) 'LUID scan RED: a cache file whose luid-bearing field is not named luid is a hit'
+}finally{if(Test-Path -LiteralPath $luidScratch){Remove-Item -LiteralPath $luidScratch -Recurse -Force -ErrorAction SilentlyContinue}}
+
 # ---------- the bounded collector wrapper and the orchestrator (module seams replaced by mocks) ----------
 $bt=@{collectorCalls=0;probeCalls=0;report=$null;failure=$null;probeThrow=$null;order=(New-Object 'Collections.Generic.List[string]');origs=@{}}
 $saved=@{}
@@ -532,23 +607,6 @@ function Get-ProbeOrder($Run){
     $afterPost=($spill -ge 0 -and $probes.Count -gt 0 -and $probes[$probes.Count-1] -gt $spill -and ($selfTest -lt 0 -or $probes[$probes.Count-1] -gt $selfTest))
     [pscustomobject]@{count=$probes.Count;launched=($launch -ge 0);before=@($probes | Where-Object { $launch -lt 0 -or $_ -lt $launch }).Count;afterLaunch=$afterLaunch;afterPost=$afterPost;text=($o -join '>')}
 }
-# Every file under a run's install root (recursive, hidden included, shared read) searched for the bound device's LUID in the forms the code could
-# render it: the 16-hex string in either case (a 0x prefix contains it) and the low half on its own (a split high/low rendering). ASCII and UTF-16 text.
-function Find-LuidInTree([string]$Root,[string]$Luid){
-    $needles=@($Luid.ToLowerInvariant(),$Luid.ToUpperInvariant(),$Luid.Substring(8).ToLowerInvariant(),$Luid.Substring(8).ToUpperInvariant())
-    $hits=@();$scanned=0;$unreadable=0
-    foreach($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue)){
-        try{
-            $stream=[IO.File]::Open($file.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
-            try{$bytes=New-Object byte[] ([int]$stream.Length);$null=$stream.Read($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
-        }catch{$unreadable++;continue}
-        $scanned++
-        $texts=@([Text.Encoding]::GetEncoding(28591).GetString($bytes),[Text.Encoding]::Unicode.GetString($bytes))
-        if($bytes.Length -gt 1){$texts+=[Text.Encoding]::Unicode.GetString($bytes,1,$bytes.Length-1)}
-        foreach($text in $texts){foreach($n in $needles){if($text.IndexOf($n,[StringComparison]::Ordinal) -ge 0){$hits+=$file.Name;break}}}
-    }
-    [pscustomobject]@{scanned=$scanned;unreadable=$unreadable;hits=@($hits | Select-Object -Unique)}
-}
 function Set-RealProbe($Report){$bt.report=$Report;$bt.probeCalls=0;$bt.probeThrow=$null}
 try {
     $bt.collectorCalls=0
@@ -563,13 +621,13 @@ try {
     Check ($null -eq $off.state.PSObject.Properties['deviceBinding'] -and $null -eq $off.state.PSObject.Properties['identityFingerprint'] -and $null -eq $off.state.PSObject.Properties['identityFingerprintKind'] -and $null -eq $off.state.PSObject.Properties['identityChange'] -and $null -eq $off.state.PSObject.Properties['identityRecord']) 'off: status.json has no deviceBinding, identityFingerprint, identityChange or identityRecord field'
     Check (-not (Test-Path -LiteralPath (Join-Path (Join-Path $off.runRoot 'state') 'device-identity.json'))) 'off: device-identity.json is neither read nor written'
     $offLuid=Find-LuidInTree $off.runRoot $luidA
-    Check ($offLuid.scanned -gt 0 -and $offLuid.unreadable -eq 0 -and $offLuid.hits.Count -eq 0) ("off: the GPU-memory-check LUID never reaches status, records, run log or any file under the install root (scanned $($offLuid.scanned), unreadable $($offLuid.unreadable), hits: $($offLuid.hits -join ','))")
+    Check ($offLuid.scanned -gt 0 -and $offLuid.unreadable -eq 0 -and $offLuid.hits.Count -eq 0 -and $offLuid.allowedCache -eq 1) ("off: the GPU-memory-check LUID never reaches status, records, run log or any file under the install root except the private boot cache's luid field, which was written once (scanned $($offLuid.scanned), unreadable $($offLuid.unreadable), allowedCache $($offLuid.allowedCache), hits: $($offLuid.hits -join ','))")
     Check ((Get-Content -LiteralPath (Join-Path (Join-Path $off.runRoot 'state') 'status.json') -Raw) -notmatch "(?i)$luidA" -and @($off.console | Where-Object { $_ -match "(?i)$luidA" }).Count -eq 0) 'off: the LUID is in neither status.json nor the console'
     $offDefault=Invoke-BindRun -Name 'off-default' -Binding 'off'
     $offDefaultOrder=Get-ProbeOrder $offDefault
     Check ($offDefaultOrder.launched -and $offDefaultOrder.before -eq 0 -and $offDefaultOrder.count -eq 1 -and $offDefaultOrder.afterLaunch -and $offDefaultOrder.afterPost) "off-default: no collector child before the launch, exactly one after it for the GPU memory check (order: $($offDefaultOrder.text))"
     $offDefaultLuid=Find-LuidInTree $offDefault.runRoot $luidA
-    Check ($offDefaultLuid.scanned -gt 0 -and $offDefaultLuid.unreadable -eq 0 -and $offDefaultLuid.hits.Count -eq 0) 'off-default: the GPU-memory-check LUID never reaches status, records, run log or any file under the install root'
+    Check ($offDefaultLuid.scanned -gt 0 -and $offDefaultLuid.unreadable -eq 0 -and $offDefaultLuid.hits.Count -eq 0 -and $offDefaultLuid.allowedCache -le 1) 'off-default: the GPU-memory-check LUID never reaches status, records, run log or any file under the install root except the private boot cache luid field'
     Set-RealProbe $xtxReport
     $offRocm=Invoke-BindRun -Name 'off-rocm' -Binding 'off' -Backend 'ROCm'
     $offRocmOrder=Get-ProbeOrder $offRocm
