@@ -656,6 +656,119 @@ function Format-FastLlmUiTypedFailure {
     return ([string] $Text).TrimEnd() + "`r`n(failure code: $Code)"
 }
 
+# The visible text of a failed child's capture, without Windows PowerShell 5.1's error-record decoration. The capture itself is kept elsewhere
+# and copied unchanged ("Copy full output"); this only chooses what the output box shows. It removes ONLY what it can prove belongs to an error
+# record, which is a complete tail: an "At <path>:<n> char:<n>" line, one or more "+ ..." code lines (the last is the "+ ~~~" underline), a
+# "    + CategoryInfo   : ..." line and a "    + FullyQualifiedErrorId : ..." line (each with its wrapped continuation), and the single-space line
+# 5.1 prints after a record. A continuation is a line after a line of exactly 120 characters (the 5.1 hard wrap width) or one indented to the
+# value column; a "(failure code: ...)" line is never one. The record's message is the text before the tail:
+#  a) a line starting with "<path>.ps1 : ", "<path>.psm1 : " or "powershell.exe : " (any case, the path holds no " : ") and the lines
+#     after it; only that prefix is removed from the line;
+#  b) with no such prefix (a throw), the line right before the tail and the lines before it that are exactly 120 wide.
+# The message lines are joined into one line only when every one of them except the last is exactly 120 characters long (measured as printed,
+# prefix included); otherwise they stay as they are. Every other line, every message text and the line ends are kept, and a text with no
+# complete record is returned unchanged, byte for byte.
+function Format-FastLlmUiFailureDisplay {
+    param([string] $Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $parts = [regex]::Split($Text, '(\r\n|\n)')
+    $lines = New-Object System.Collections.Generic.List[string]
+    $seps = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $parts.Count; $i += 2) {
+        $lines.Add([string] $parts[$i])
+        $seps.Add($(if ($i + 1 -lt $parts.Count) { [string] $parts[$i + 1] } else { '' }))
+    }
+    $count = $lines.Count
+    $wrapWidth = 120
+    $categoryRx = '^    \+ CategoryInfo +: '
+    $errorIdRx = '^    \+ FullyQualifiedErrorId +: '
+    $atRx = '^At .+:\d+ char:\d+\s*$'
+    $codeRx = '^\+ '
+    $prefixRx = '(?i)^(?<path>(?:(?! : ).)*?(?:\.ps1|\.psm1|powershell\.exe)) : (?<message>.*)$'
+    $isContinuation = {
+        param([int] $Index)
+        if ($Index -ge $count) { return $false }
+        $line = $lines[$Index]
+        if ($line.Length -eq 0 -or $line -cmatch '^\(failure code: ' -or $line -match $categoryRx -or $line -match $errorIdRx -or $line -cmatch $atRx -or $line -cmatch $codeRx) { return $false }
+        return ($lines[$Index - 1].Length -eq $wrapWidth -or $line -cmatch '^ {30}\S')
+    }
+    $outLines = New-Object System.Collections.Generic.List[string]
+    $outSeps = New-Object System.Collections.Generic.List[string]
+    $position = 0
+    $changed = $false
+    $index = 0
+    while ($index -lt $count) {
+        if ($lines[$index] -notmatch $categoryRx) { $index++; continue }
+        # Forward: the CategoryInfo line, its continuations, the FullyQualifiedErrorId line, its continuations, the single-space line.
+        $next = $index + 1
+        while (& $isContinuation $next) { $next++ }
+        if ($next -ge $count -or $lines[$next] -notmatch $errorIdRx) { $index++; continue }
+        $next++
+        while (& $isContinuation $next) { $next++ }
+        $tailEnd = $next - 1
+        if ($next -lt $count -and $lines[$next] -ceq ' ') { $tailEnd = $next }
+        # Backward from the CategoryInfo line. A terminating error (a throw, a cmdlet error) has a position block first: an "At <path>:<n> char:<n>"
+        # line and its "+ " code lines. A Write-Error record from a script run with -File has none: its message lines come right before the tail.
+        $tailStart = $index
+        $back = $index - 1
+        $codeLines = 0
+        while ($back -ge $position -and $lines[$back] -cmatch $codeRx) { $back--; $codeLines++ }
+        $hasPosition = $false
+        if ($codeLines -ge 1) {
+            if ($back -lt $position -or $lines[$back] -cnotmatch $atRx) { $index++; continue }
+            $tailStart = $back
+            $hasPosition = $true
+        }
+        # The message: the lines between its first line and the tail. Its first line is proven only by a script or host prefix (the nearest one
+        # after the previous record); only that prefix is removed, and the message lines are joined into one (a 120-wide line with no space, any
+        # other line with one space). Without a prefix, a record is proven only by its position block, and its message lines stay exactly as they are,
+        # never joined: where such a message starts cannot be proven. A record with neither a prefix nor a position block is not touched.
+        $messageStart = -1
+        $strippedFirst = $null
+        for ($k = $tailStart - 1; $k -ge $position; $k--) {
+            $found = [regex]::Match($lines[$k], $prefixRx)
+            if ($found.Success) { $messageStart = $k; $strippedFirst = $found.Groups['message'].Value; break }
+        }
+        if ($messageStart -lt 0) {
+            if (-not $hasPosition) { $index++; continue }
+            $messageStart = $tailStart
+        }
+        # Every line before the message (and, without a prefix, the message lines themselves) is kept exactly as it is.
+        for ($k = $position; $k -lt $messageStart; $k++) { $outLines.Add($lines[$k]); $outSeps.Add($seps[$k]) }
+        $messageCount = $tailStart - $messageStart
+        if ($messageCount -gt 0) {
+            # A proven record (a prefix line and its tail): every line from the prefix line to the tail is the message, wrapped by the host. A line of
+            # exactly the host width ends at a hard wrap and is joined with no space; any other line ends at a word wrap and is joined with one space.
+            $messageText = $null
+            for ($k = $messageStart; $k -lt $tailStart; $k++) {
+                $piece = $(if ($k -eq $messageStart) { $strippedFirst } else { $lines[$k] })
+                if ($null -eq $messageText) { $messageText = $piece }
+                elseif ($lines[$k - 1].Length -eq $wrapWidth) { $messageText = $messageText + $piece }
+                else { $messageText = $messageText.TrimEnd() + ' ' + $piece }
+            }
+            $outLines.Add($messageText); $outSeps.Add($seps[$tailEnd])
+        }
+        $changed = $true
+        $position = $tailEnd + 1
+        $index = $position
+    }
+    if (-not $changed) { return $Text }
+    for ($k = $position; $k -lt $count; $k++) { $outLines.Add($lines[$k]); $outSeps.Add($seps[$k]) }
+    $builder = New-Object System.Text.StringBuilder
+    for ($k = 0; $k -lt $outLines.Count; $k++) { [void] $builder.Append($outLines[$k]).Append($outSeps[$k]) }
+    return $builder.ToString()
+}
+
+# What the window shows and keeps for a failure. A failure shown from a child's capture passes the capture: the box shows its cleaned text
+# and the capture is kept exactly as captured for "Copy full output". Fixed window text passes none: the text is shown as is and nothing is kept.
+function Get-FastLlmUiFailureView {
+    param([string] $Message, [string] $Capture)
+    if ($PSBoundParameters.ContainsKey('Capture') -and -not [string]::IsNullOrEmpty($Capture)) {
+        return [pscustomobject] @{ text = (Format-FastLlmUiFailureDisplay -Text $Message); capture = $Capture }
+    }
+    return [pscustomobject] @{ text = [string] $Message; capture = $null }
+}
+
 # What the RUNNING server's plan said about its recipe (status.json planRecipe), never the preview's.
 function Get-FastLlmUiRunEvidenceUrl {
     param($State)
