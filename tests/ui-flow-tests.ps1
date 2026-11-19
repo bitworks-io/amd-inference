@@ -943,7 +943,17 @@ try {
         $wideResult=CaptureRefusal @('plan','-HardwareFile',$missingFile,'-InstallRoot',(Join-Path $refusalTemp 'install-wide'))
         $wideLines=@($wideResult.text -split "`r?`n")
         Check ($wideResult.exitCode -eq 1) 'A refusal that echoes a path with non-ASCII characters exits 1 through the window ProcessHost child.'
-        Check (@($wideLines|Where-Object{$_ -ceq ('JSON file was not found: '+$missingFile)}).Count -eq 1) 'The window capture of a refusal that echoes a path with non-ASCII characters holds the message whole and unchanged on one line.'
+        $wideExpected='JSON file was not found: '+$missingFile
+        $wideOneLine=(@($wideLines|Where-Object{$_ -ceq $wideExpected}).Count -eq 1)
+        if (-not $wideOneLine) {
+            # Evidence on failure only (the path is this test's fixture folder): every captured line and the expected message with each character
+            # outside printable ASCII written as \uXXXX, so the cause can be read rather than inferred.
+            $escapeText={ param([string]$Text) (@($Text.ToCharArray() | ForEach-Object { $code=[int]$_; if ($code -ge 0x20 -and $code -lt 0x7F) { [string]$_ } else { '\u{0:x4}' -f $code } }) -join '') }
+            Write-Host ('INFO: non-ASCII refusal capture: exit={0} lines={1} U+FFFD={2} script-path-prefix={3}' -f $wideResult.exitCode, $wideLines.Count, $wideResult.text.Contains([string][char]0xFFFD), $wideResult.text.Contains('fast-llm.ps1 :'))
+            Write-Host ('INFO: expected: ' + (& $escapeText $wideExpected))
+            for ($lineIndex=0; $lineIndex -lt $wideLines.Count; $lineIndex++) { Write-Host ('INFO: line ' + $lineIndex + ': ' + (& $escapeText $wideLines[$lineIndex])) }
+        }
+        Check $wideOneLine 'The window capture of a refusal that echoes a path with non-ASCII characters holds the message whole and unchanged on one line.'
         Check ($wideResult.text -cnotmatch '\x1b\[' -and -not $wideResult.text.Contains([string][char]0xFFFD)) 'The capture of the non-ASCII refusal has no ANSI escape and no replacement character.'
         # Without the variable (or with any value but exactly 'utf-8') the child writes as before, in its console code page. The same child is run with
         # System.Diagnostics.Process and its stderr is read as raw bytes. The console code page of a child under these launch settings is measured by
