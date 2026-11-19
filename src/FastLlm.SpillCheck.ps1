@@ -18,10 +18,40 @@ $script:FastLlmHipAdapterMinBytes = [uint64] 1073741824
 $script:FastLlmSpillOkText = 'GPU memory check: no spill to system memory detected.'
 $script:FastLlmSpillUnknownText = 'GPU memory check unavailable on this system.'
 
+# The native sources of the GPU memory check and of its private LUID cache are compiled in ONE Add-Type call (one csc run instead of
+# two), only for the types that are missing. WindowsGpuIdentity.cs is deliberately NOT part of it: nothing on this path needs it.
+function Initialize-FastLlmSpillNativeTypes {
+    $sources = @()
+    if (-not ('Bitworks.FastLlm.WindowsGpuProcessMemory' -as [type])) { $sources += (Join-Path $PSScriptRoot 'WindowsGpuProcessMemory.cs') }
+    if (-not ('Bitworks.FastLlm.WindowsBootTime' -as [type])) { $sources += (Join-Path $PSScriptRoot 'WindowsBootTime.cs') }
+    if ($sources.Count -gt 0) { Add-Type -Path @($sources) -ErrorAction Stop }
+}
+
 function Initialize-FastLlmGpuProcessMemory {
-    if (-not ('Bitworks.FastLlm.WindowsGpuProcessMemory' -as [type])) {
-        Add-Type -Path (Join-Path $PSScriptRoot 'WindowsGpuProcessMemory.cs') -ErrorAction Stop
+    Initialize-FastLlmSpillNativeTypes
+}
+
+# Replaceable by tests: native boot instant (UTC round-trip text, whole seconds) for the LUID cache, or $null. Needs only WindowsBootTime.
+function Get-FastLlmSpillBootIdentity {
+    if ($env:OS -ne 'Windows_NT') { return $null }
+    try {
+        Initialize-FastLlmSpillNativeTypes
+        $ticks = [long][Bitworks.FastLlm.WindowsBootTime]::BootUtcTicksTruncated()
+        $ticks = $ticks - ($ticks % 10000000L)
+        if ($ticks -le 0) { return $null }
+        return ([datetime]::new($ticks, [DateTimeKind]::Utc)).ToString('o')
     }
+    catch { return $null }
+}
+
+# Replaceable by tests: native sleep delta in milliseconds for the LUID cache, or $null.
+function Get-FastLlmSpillSleepDelta {
+    if ($env:OS -ne 'Windows_NT') { return $null }
+    try {
+        Initialize-FastLlmSpillNativeTypes
+        return [long][Bitworks.FastLlm.WindowsBootTime]::SleepDeltaMilliseconds()
+    }
+    catch { return $null }
 }
 
 function Get-FastLlmSpillValue {
@@ -232,6 +262,14 @@ function Invoke-FastLlmSpillCheckAtReady {
         $step = Step-FastLlmSpillCheck -Previous $null -Sample $found['sample'] -Now (Get-Date).ToUniversalTime()
     }
     else { $step = Invoke-FastLlmSpillCheckInitial -Luid ([string] $luid) -Process $Process -Reader $Reader }
+    # A LUID that came from the private cache and whose first read failed may be stale: drop the cache, collect once (fresh), read once
+    # more. Never more than one retry.
+    if ($found['luidSource'] -ceq 'cache' -and $null -ne $step.spillCheck.error) {
+        Remove-FastLlmSpillLuidCache -InstallRoot $InstallRoot
+        $retry = @{}
+        $luid = Get-FastLlmSpillCheckLuid -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $KnownLuid -BarDecision $BarDecision -Process $Process -Reader $Reader -Enumerator $Enumerator -Clock $Clock -Found $retry -NoCache
+        $step = Invoke-FastLlmSpillCheckInitial -Luid ([string] $luid) -Process $Process -Reader $Reader
+    }
     $step | Add-Member -NotePropertyName luid -NotePropertyValue ([string] $luid)
     return $step
 }
@@ -326,19 +364,197 @@ function Get-FastLlmDeviceBindingLuid {
     return $null
 }
 
+# ---- Private per-boot LUID cache (Vulkan on Windows) ----
+# The Vulkan to DXGI join that identifies the card's adapter LUID costs about 1.3 s cold and about 1.0 s warm on every start (measured
+# on a real AMD host as a standard user). The LUID only changes across a reboot (or a driver or adapter change), so it is kept in
+# <state>\spill-luid-boot-cache.json, a private file: the LUID is never shown, logged, put in status or exported, and the support
+# bundle (an allowlist) does not include the file. Modelled on the Resizable BAR detection cache (FastLlm.VulkanMemoryPolicy.ps1):
+# same native boot identity (60 s tolerance), same sleep-delta growth rule, strict shape, reparse-point refusal, never creates a
+# directory on read. Any entry that is not valid is ignored AND deleted. Nothing here throws: the worst case is "no cache".
+$script:FastLlmSpillLuidCacheFileName = 'spill-luid-boot-cache.json'
+$script:FastLlmSpillLuidCacheSchemaVersion = 1
+$script:FastLlmSpillLuidCacheKind = 'fastllm-spill-luid'
+$script:FastLlmSpillLuidCacheMaxBytes = 4096
+$script:FastLlmSpillLuidCacheFields = @('adapterKey', 'bootTimeSource', 'bootUtc', 'collectorSha256', 'joinSourceSha256', 'kind', 'luid', 'schemaVersion', 'sleepDeltaMs')
+
+# Replaceable by tests: is this a Windows host (the only place the Vulkan join and the cache apply)?
+function Test-FastLlmSpillIsWindows {
+    return ($env:OS -eq 'Windows_NT')
+}
+
+# Replaceable by tests: the one collection (the bounded collector child through the device binding, record mode). Returns the outcome.
+function Invoke-FastLlmSpillLuidCollection {
+    param($Plan, [string] $InstallRoot, $BarDecision)
+    return (Invoke-FastLlmDeviceBinding -Plan $Plan -InstallRoot $InstallRoot -BarDecision $BarDecision -Mode record)
+}
+
+# Replaceable by tests: SHA-256 (lowercase hex) of the two files the collector hashes into its report, as { script; join }, or $null.
+function Get-FastLlmSpillLuidSourceHashes {
+    try {
+        $projectRoot = Split-Path -Parent $PSScriptRoot
+        $result = [ordered]@{}
+        foreach ($pair in @(@('script', 'tools/collect-vulkan-luid-join.ps1'), @('join', 'src/WindowsVulkanLuidJoin.cs'))) {
+            $file = Join-Path $projectRoot $pair[1]
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $hash = $sha.ComputeHash([IO.File]::ReadAllBytes($file)) } finally { $sha.Dispose() }
+            $result[$pair[0]] = (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+        }
+        return [pscustomobject]$result
+    }
+    catch { return $null }
+}
+
+# Deterministic key of the plan's selected adapter(s): name (trimmed, lower case), Vulkan device id and VRAM, sorted, joined. $null
+# (no caching) when the plan has no selected adapter or one without a name.
+function Get-FastLlmSpillLuidAdapterKey {
+    param($Plan)
+    $parts = @()
+    foreach ($adapter in @(Get-FastLlmSpillValue $Plan 'selectedAdapters')) {
+        if ($null -eq $adapter) { continue }
+        $name = ([string] (Get-FastLlmSpillValue $adapter 'name')).Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+        $device = ([string] (Get-FastLlmSpillValue $adapter 'device')).Trim().ToLowerInvariant()
+        $parts += ($name + '|' + $device + '|' + [string] (Get-FastLlmSpillValue $adapter 'vramMiB'))
+    }
+    if ($parts.Count -eq 0) { return $null }
+    $ordered = [string[]] @($parts)
+    [Array]::Sort($ordered, [StringComparer]::Ordinal)
+    $text = ($ordered -join ';')
+    if ($text.Length -gt 1024) { return $null }
+    return $text
+}
+
+# What a start needs to use the cache: { path; bootUtc; sleepDeltaMs; adapterKey; hashes }, or $null (no cache this start).
+function Get-FastLlmSpillLuidCacheContext {
+    param($Plan, [string] $InstallRoot)
+    try {
+        if ([string]::IsNullOrWhiteSpace($InstallRoot)) { return $null }
+        $key = Get-FastLlmSpillLuidAdapterKey -Plan $Plan
+        if ($null -eq $key) { return $null }
+        $boot = Get-FastLlmSpillBootIdentity
+        if ([string]::IsNullOrWhiteSpace([string] $boot)) { return $null }
+        $sleep = Get-FastLlmSpillSleepDelta
+        if ($null -eq $sleep -or ($sleep -isnot [int] -and $sleep -isnot [long]) -or $sleep -lt 0) { return $null }
+        $hashes = Get-FastLlmSpillLuidSourceHashes
+        if ($null -eq $hashes) { return $null }
+        $path = Join-Path (Get-FastLlmStateRoot -InstallRoot $InstallRoot) $script:FastLlmSpillLuidCacheFileName
+        return [pscustomobject]@{ path = $path; bootUtc = [string] $boot; sleepDeltaMs = [long] $sleep; adapterKey = $key; hashes = $hashes }
+    }
+    catch { return $null }
+}
+
+# Deletes the cache file (exact path). Never throws.
+function Remove-FastLlmSpillLuidCache {
+    param([string] $InstallRoot)
+    try {
+        $path = Join-Path (Get-FastLlmStateRoot -InstallRoot $InstallRoot) $script:FastLlmSpillLuidCacheFileName
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+    }
+    catch { $null = $_ }
+}
+
+function Test-FastLlmSpillLuidInteger {
+    param($Value, [long] $Minimum, [long] $Maximum)
+    if ($null -eq $Value -or ($Value -isnot [int] -and $Value -isnot [long])) { return $false }
+    return ([long] $Value -ge $Minimum -and [long] $Value -le $Maximum)
+}
+
+# Strict shape and freshness check of one cache entry. Pure given the context.
+function Test-FastLlmSpillLuidCacheEntry {
+    param($Entry, $Context)
+    if ($null -eq $Entry -or $Entry.GetType().FullName -cne 'System.Management.Automation.PSCustomObject') { return $false }
+    $names = [string[]] @($Entry.PSObject.Properties | ForEach-Object { $_.Name })
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    if (($names -join ',') -cne ($script:FastLlmSpillLuidCacheFields -join ',')) { return $false }
+    if (-not (Test-FastLlmSpillLuidInteger $Entry.schemaVersion $script:FastLlmSpillLuidCacheSchemaVersion $script:FastLlmSpillLuidCacheSchemaVersion)) { return $false }
+    if ($Entry.kind -isnot [string] -or $Entry.kind -cne $script:FastLlmSpillLuidCacheKind) { return $false }
+    if ($Entry.bootTimeSource -isnot [string] -or $Entry.bootTimeSource -cne 'native') { return $false }
+    $entryBoot = $Entry.bootUtc
+    $entryBootTime = [datetime]::MinValue
+    if ($entryBoot -is [datetime]) { $entryBootTime = $entryBoot.ToUniversalTime() }
+    elseif ($entryBoot -isnot [string] -or $entryBoot.Length -gt 40 -or -not [datetime]::TryParseExact($entryBoot, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref] $entryBootTime)) { return $false }
+    $currentBootTime = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact([string] $Context.bootUtc, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref] $currentBootTime)) { return $false }
+    if ([math]::Abs(($entryBootTime.ToUniversalTime() - $currentBootTime.ToUniversalTime()).TotalSeconds) -gt $script:FastLlmVulkanBarBootToleranceSeconds) { return $false }
+    if (-not (Test-FastLlmSpillLuidInteger $Entry.sleepDeltaMs 0 $script:FastLlmVulkanBarSleepDeltaMaxMs)) { return $false }
+    $growth = [long] $Context.sleepDeltaMs - [long] $Entry.sleepDeltaMs
+    if ($growth -lt (-1 * $script:FastLlmVulkanBarSleepDeltaJitterMs) -or $growth -gt $script:FastLlmVulkanBarSleepDeltaToleranceMs) { return $false }
+    if ($Entry.adapterKey -isnot [string] -or $Entry.adapterKey -cne [string] $Context.adapterKey) { return $false }
+    if ($Entry.luid -isnot [string] -or $Entry.luid -cnotmatch '^[0-9a-f]{16}$') { return $false }
+    if ($Entry.collectorSha256 -isnot [string] -or $Entry.collectorSha256 -cnotmatch '^[0-9a-f]{64}$' -or $Entry.collectorSha256 -cne [string] $Context.hashes.script) { return $false }
+    if ($Entry.joinSourceSha256 -isnot [string] -or $Entry.joinSourceSha256 -cnotmatch '^[0-9a-f]{64}$' -or $Entry.joinSourceSha256 -cne [string] $Context.hashes.join) { return $false }
+    return $true
+}
+
+# The cached LUID for this boot and adapter, or $null. Read-only except that an entry that is not valid is deleted; never creates a
+# directory; a file that is a reparse point, too large, unreadable or malformed is ignored and deleted. Never throws.
+function Read-FastLlmSpillLuidCache {
+    param([string] $InstallRoot, $Context)
+    try {
+        $path = [string] $Context.path
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+        $item = Get-Item -LiteralPath $path -Force
+        # Attributes -1 (every bit set) is the vanished-name transient: missing, not a reparse point.
+        if ([int] $item.Attributes -eq -1) { return $null }
+        $valid = $false
+        $entry = $null
+        if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $item.Length -le $script:FastLlmSpillLuidCacheMaxBytes) {
+            try { $entry = Read-FastLlmJson -Path $path -MaxBytes $script:FastLlmSpillLuidCacheMaxBytes } catch { $entry = $null }
+            $valid = (Test-FastLlmSpillLuidCacheEntry -Entry $entry -Context $Context)
+        }
+        if ($valid) { return [string] $entry.luid }
+        Remove-FastLlmSpillLuidCache -InstallRoot $InstallRoot
+    }
+    catch { Remove-FastLlmSpillLuidCache -InstallRoot $InstallRoot }
+    return $null
+}
+
+# Writes the entry after a fresh, valid collection. Advisory: any failure is silent. Without both source hashes from the collector
+# nothing is written (an entry without them could never be reused).
+function Write-FastLlmSpillLuidCache {
+    param([string] $InstallRoot, $Context, [string] $Luid, $Outcome)
+    try {
+        if ($Luid -cnotmatch '^[0-9a-f]{16}$') { return }
+        $collector = Get-FastLlmSpillValue (Get-FastLlmSpillValue $Outcome 'record') 'collector'
+        $scriptSha = [string] (Get-FastLlmSpillValue $collector 'scriptSha256')
+        $joinSha = [string] (Get-FastLlmSpillValue $collector 'joinSourceSha256')
+        if ($scriptSha -cnotmatch '^[0-9a-f]{64}$' -or $joinSha -cnotmatch '^[0-9a-f]{64}$') { return }
+        Write-FastLlmState -InstallRoot $InstallRoot -FileName $script:FastLlmSpillLuidCacheFileName -State ([ordered]@{
+                schemaVersion = $script:FastLlmSpillLuidCacheSchemaVersion; kind = $script:FastLlmSpillLuidCacheKind
+                bootUtc = [string] $Context.bootUtc; bootTimeSource = 'native'; sleepDeltaMs = [long] $Context.sleepDeltaMs
+                adapterKey = [string] $Context.adapterKey; luid = $Luid; collectorSha256 = $scriptSha; joinSourceSha256 = $joinSha
+            })
+    }
+    catch { $null = $_ }
+}
+
 # The LUID for this run: the one the device binding already produced, else for Vulkan the same Vulkan to DXGI join once (the bounded
 # collector child the Resizable BAR check uses), else (any other engine, such as HIP) the adapter that holds the server process's own
 # memory (Find-FastLlmProcessAdapter, inside the first-read budget). Never throws; $null means the check reports unknown. $Found, when given,
 # receives { reason; sample } from the process-memory rule so the caller can reuse the identifying read.
 function Get-FastLlmSpillCheckLuid {
-    param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision, $Process, [scriptblock] $Reader, [scriptblock] $Enumerator, [scriptblock] $Clock, [hashtable] $Found)
+    param($Plan, [string] $InstallRoot, $KnownLuid, $BarDecision, $Process, [scriptblock] $Reader, [scriptblock] $Enumerator, [scriptblock] $Clock, [hashtable] $Found, [switch] $NoCache)
     try {
         if ($KnownLuid -and ([string] $KnownLuid) -cmatch '^[0-9a-fA-F]{16}$') { return ([string] $KnownLuid).ToLowerInvariant() }
         if (([string] (Get-FastLlmSpillValue $Plan 'backend')) -ieq 'vulkan') {
-            if ($env:OS -ne 'Windows_NT') { return $null }
-            $outcome = Invoke-FastLlmDeviceBinding -Plan $Plan -InstallRoot $InstallRoot -BarDecision $BarDecision -Mode record
+            if (-not (Test-FastLlmSpillIsWindows)) { return $null }
+            # The private per-boot cache (see above). The Found table only carries where the LUID came from, never the LUID itself.
+            $context = Get-FastLlmSpillLuidCacheContext -Plan $Plan -InstallRoot $InstallRoot
+            if ($null -ne $context -and -not $NoCache) {
+                $cached = Read-FastLlmSpillLuidCache -InstallRoot $InstallRoot -Context $context
+                if ($null -ne $cached) {
+                    if ($null -ne $Found) { $Found['luidSource'] = 'cache' }
+                    return [string] $cached
+                }
+            }
+            $outcome = Invoke-FastLlmSpillLuidCollection -Plan $Plan -InstallRoot $InstallRoot -BarDecision $BarDecision
             $luid = Get-FastLlmSpillValue $outcome 'luid'
-            if ($luid -and ([string] $luid) -cmatch '^[0-9a-f]{16}$') { return [string] $luid }
+            if ($luid -and ([string] $luid) -cmatch '^[0-9a-f]{16}$') {
+                if ($null -ne $Found) { $Found['luidSource'] = 'collected' }
+                if ($null -ne $context) { Write-FastLlmSpillLuidCache -InstallRoot $InstallRoot -Context $context -Luid ([string] $luid) -Outcome $outcome }
+                return [string] $luid
+            }
             return $null
         }
         if ($null -eq $Process) { return $null }
