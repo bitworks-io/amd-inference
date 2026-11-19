@@ -372,6 +372,11 @@
       "reason": "GPU memory (spill) check state machine, texts, self-test marking, benchmark refusal and loop schedule against an injected reader and fake clock; no adapter or live query; wired in test.yml."
     },
     {
+      "suite": "spill-luid-cache-tests",
+      "class": "ci",
+      "reason": "Private per-boot LUID cache of the GPU memory check (validity, delete-on-invalid, re-collect once, privacy) against replaced OS, boot, sleep, collection and hash seams; no adapter, collector or live query; wired in test.yml under Windows PowerShell 5.1 and PowerShell 7."
+    },
+    {
       "suite": "start-tests",
       "class": "ci",
       "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
