@@ -635,6 +635,22 @@ function Test-FastLlmUiTypedHipFailure {
     return [bool] ($Code -cmatch '^(hip-backend-unavailable|hip-dll-blocked|hip-dll-missing|hip-device-[a-z\-]{1,40}|needs-setup-component-missing)$')
 }
 
+# The start information for one of the window's fast-llm.ps1 children (LaunchStep and LaunchSideStep; not the VC++ preparation child).
+# Contract with fast-llm.ps1's failure catch: the child is given FASTLLM_STDERR_ENCODING=utf-8 in its own environment, so it writes a failure
+# message to a redirected stderr as UTF-8 (no byte order mark), and the window decodes that stderr as UTF-8. Only the exact value 'utf-8' enables
+# it; any other caller of fast-llm.ps1 keeps its console encoding. The variable is set on this child's start information only, never in the
+# window's own environment (that would reach every child, the engines included), and stdout is not changed.
+function New-FastLlmUiCliStartInfo {
+    param([Parameter(Mandatory = $true)][string] $AppRoot, [object[]] $Arguments = @())
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = (Get-Process -Id $PID).Path
+    $argsList = @('-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-File', (Join-Path $AppRoot 'fast-llm.ps1')) + @($Arguments)
+    $info.Arguments = & (Get-Module FastLlm) { param($A) Join-FastLlmProcessArguments $A } $argsList
+    $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    $info.EnvironmentVariables['FASTLLM_STDERR_ENCODING'] = 'utf-8'
+    return $info
+}
+
 function Format-FastLlmUiTypedFailure {
     param([string] $Code, [string] $Text)
     return ([string] $Text).TrimEnd() + "`r`n(failure code: $Code)"

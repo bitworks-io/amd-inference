@@ -1257,7 +1257,20 @@ catch {
     if ($isBindingFailure -and -not $failureMessage.StartsWith($bindingCode + ': ', [StringComparison]::Ordinal)) {
         $failureMessage = $bindingCode + ': device binding failed (details withheld; see status)'
     }
-    Write-Error $failureMessage -ErrorAction Continue
+    # A caller that captures stderr (the window's ProcessHost) gets the message whole on one line; Windows PowerShell 5.1 would add the script path,
+    # wrap at 120 columns and add record lines. An interactive console keeps Write-Error.
+    # Encoding contract with the window (New-FastLlmUiCliStartInfo in src/FastLlm.UiFlow.ps1): only when FASTLLM_STDERR_ENCODING is exactly 'utf-8'
+    # (the window sets it on its own children) the message is written as UTF-8 without a byte order mark, which the window decodes; the writer is
+    # flushed, not disposed, so the process's own standard error handle stays open. Any other value, or none, writes it as before (console encoding).
+    if ([Console]::IsErrorRedirected) {
+        if ([string] $env:FASTLLM_STDERR_ENCODING -ceq 'utf-8') {
+            $errorWriter = New-Object IO.StreamWriter([Console]::OpenStandardError(), (New-Object Text.UTF8Encoding($false)))
+            $errorWriter.WriteLine($failureMessage)
+            $errorWriter.Flush()
+        }
+        else { [Console]::Error.WriteLine($failureMessage) }
+    }
+    else { Write-Error $failureMessage -ErrorAction Continue }
     exit 1
 }
 finally { if ($operationLock) { $operationLock.Dispose() }; if ($componentsLock) { $componentsLock.Dispose() } }
