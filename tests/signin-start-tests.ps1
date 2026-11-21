@@ -112,6 +112,12 @@ function New-FakeHost([bool]$Elevated = $false, [bool]$Occupied = $false, $Start
             if ($StartBehavior -eq 'throw') { throw 'secret-looking message must never be recorded' }
             if ($StartBehavior -eq 'busy') { throw 'This installation already has an active serving operation.' }
             if ($StartBehavior -eq 'job') { throw 'The current process is contained in a Windows job; a persistent host cannot be launched from it.' }
+            if ($StartBehavior -eq 'embeddings-refused' -or $StartBehavior -eq 'embeddings-odd-code') {
+                # What the background start throws when embeddings are on and no embedding model is installed: a typed failure whose data carries the code.
+                $typed = New-Object -TypeName System.InvalidOperationException -ArgumentList 'embeddings-no-model: secret-looking message must never be recorded'
+                $typed.Data['FastLlmFailureCode'] = $(if ($StartBehavior -eq 'embeddings-odd-code') { 'embeddings-secret-looking fl-TEXT' } else { 'embeddings-no-model' })
+                throw $typed
+            }
             if ($StartBehavior -eq 'key-unavailable' -or $StartBehavior -eq 'key-odd-code') {
                 # What the background start throws when the key is on and the store cannot be read: a typed failure whose data carries the code.
                 $typed = New-Object -TypeName System.InvalidOperationException -ArgumentList 'api-key-unavailable: secret-looking message must never be recorded'
@@ -204,6 +210,34 @@ Assert-Equal ([int]$a.ServerPort) 0 'a port in the request file is ignored'
 Assert-Equal $a.Thinking 'auto' 'thinking in the request file is ignored'
 Assert-Equal $a.ChatPage 'off' 'chat page in the request file is ignored'
 Assert-Equal ([int]$a['Idle' + 'StopMinutes']) 0 'idle stop in the request file is ignored'
+
+# DELIBERATE CHANGE: the sign-in start applies the saved context profile, requests at once and embeddings exactly as start does (they used to be
+# left out of the arguments, so a saved setup silently became the default one).
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{"contextProfile":"long"}', (New-Object Text.UTF8Encoding($false)))
+$null = Invoke-Case (New-FakeHost) $root
+$a = $script:Captured['arguments']
+Assert-Equal $a.KvContextProfile 'long' 'a saved long context profile reaches the host'
+Assert-True (-not $a.ContainsKey('KvSlots') -and -not $a.ContainsKey('Embeddings') -and -not $a.ContainsKey('EmbeddingPort')) 'only the saved context profile is added'
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{"slots":2,"embeddings":"on","embeddingPort":8091}', (New-Object Text.UTF8Encoding($false)))
+$null = Invoke-Case (New-FakeHost) $root
+$a = $script:Captured['arguments']
+Assert-True ([int]$a.KvSlots -eq 2 -and -not $a.ContainsKey('KvContextProfile')) 'saved 2 requests at once reach the host'
+Assert-True ($a.Embeddings -ceq 'on' -and [int]$a.EmbeddingPort -eq 8091) 'saved embeddings on and their port reach the host'
+$root = New-Install
+$null = Invoke-Case (New-FakeHost) $root
+$a = $script:Captured['arguments']
+Assert-Equal (@($a.Keys | Sort-Object) -join ',') 'ChatPage,ContextSize,IdleStopMinutes,InstallRoot,ModelId,NoWait,Profile,ServerPort,SourceRoot,Thinking' 'with the three settings at their defaults the arguments are the ones they always were'
+# the embeddings refusal of the background start is recorded by its own code; only a code of the fixed form, never message text
+$root = New-Install
+[IO.File]::WriteAllText((Join-Path $root 'settings.json'), '{"embeddings":"on"}', (New-Object Text.UTF8Encoding($false)))
+$r = Invoke-Case (New-FakeHost -StartBehavior 'embeddings-refused') $root
+$file = Read-Result $root
+Assert-Equal $r.result 'host-failed' 'an embeddings refusal is a failed start'
+Assert-Equal ([string]$file.failureCode) 'embeddings-no-model' 'the embeddings refusal is recorded by its own code'
+Assert-True ((Get-Content -LiteralPath (Join-Path $root 'state/signin-start.json') -Raw) -notmatch 'secret-looking') 'the embeddings refusal never records message text'
+$r = Invoke-Case (New-FakeHost -StartBehavior 'embeddings-odd-code') $root
+Assert-Equal ([string](Read-Result $root).failureCode) 'host-start-failed' 'an embeddings code that is not of the fixed form is recorded as host-start-failed'
 
 # skipped-occupied (lock held before the start)
 $root = New-Install

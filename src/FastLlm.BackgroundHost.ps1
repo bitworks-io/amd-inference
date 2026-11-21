@@ -2,6 +2,8 @@
 # not change the foreground CLI or grant a model license.
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.FileReplace.ps1')
+# The closed sets of the serving profiles and the option builders shared with the command line's start (pinned like the other source files).
+. (Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1')
 
 function Assert-FastLlmBackgroundNativeHost {
     if ($env:OS -cne 'Windows_NT' -or -not [Environment]::Is64BitProcess) {
@@ -38,7 +40,9 @@ namespace Bitworks.FastLlm {
 }
 
 function Get-FastLlmBackgroundSourcePins {
-    param([Parameter(Mandatory=$true)][string]$SourceRoot)
+    # -IncludeServingProfiles: a request that uses the saved context profile or requests at once also pins config/serving-profiles.json, the one
+    # config file the host's planner reads only then. A default request keeps the pin set it always had.
+    param([Parameter(Mandatory=$true)][string]$SourceRoot,[switch]$IncludeServingProfiles)
     $root = [IO.Path]::GetFullPath($SourceRoot)
     foreach ($folder in @($root,(Join-Path $root 'src'),(Join-Path $root 'tools'),(Join-Path $root 'config'))) {
         $item = Get-Item -LiteralPath $folder -Force -ErrorAction Stop
@@ -62,6 +66,7 @@ function Get-FastLlmBackgroundSourcePins {
         'src/FastLlm.ModelStore.ps1','src/FastLlm.RunLog.ps1','src/FastLlm.ServingProfileRun.ps1',
         'config/catalog.json','config/recipes.json','config/gpu-variants.json'
     )
+    if ($IncludeServingProfiles) { $names += 'config/serving-profiles.json' }
     $pins = [ordered]@{}
     foreach ($name in $names) {
         $path = [IO.Path]::GetFullPath((Join-Path $root $name))
@@ -139,8 +144,12 @@ function Assert-FastLlmBackgroundPrivateState {
 }
 
 function Assert-FastLlmBackgroundPins {
-    param([string]$SourceRoot,$Expected)
-    $actual = Get-FastLlmBackgroundSourcePins -SourceRoot $SourceRoot
+    param([string]$SourceRoot,$Expected,[switch]$RequireServingProfiles)
+    # The profiles file is pinned when the request pinned it, and always when the request uses it (a request that uses it without pinning it
+    # has the wrong pin set and is refused below).
+    $pinOptions = @{}
+    if ($RequireServingProfiles -or ($Expected -and $Expected.PSObject.Properties['config/serving-profiles.json'])) { $pinOptions.IncludeServingProfiles = $true }
+    $actual = Get-FastLlmBackgroundSourcePins -SourceRoot $SourceRoot @pinOptions
     if (-not $Expected -or @($Expected.PSObject.Properties).Count -ne $actual.Count) {
         throw 'Background source pin set changed during handoff.'
     }
@@ -473,6 +482,12 @@ function Start-FastLlmBackgroundHost {
           # on = the server requires the user's API key. Only this flag is passed and written to the request; the host reads the key store itself.
           # (Named -UseApiKey so that -A stays the abbreviation of -AllowExperimentalModel on this command.)
           [ValidateSet('off','on')][string]$UseApiKey='off',
+          # The saved context profile, requests at once and embeddings, exactly as the command line's start applies them. Each is written to the
+          # request only when it is not the default; the host refuses (typed) when no measured setup exists.
+          [ValidateScript({ @((Get-FastLlmServingProfileVocabulary).profileIds) -ccontains $_ })][string]$KvContextProfile='default',
+          [ValidateScript({ @((Get-FastLlmServingProfileVocabulary).slots) -contains $_ })][int]$KvSlots=1,
+          [ValidateSet('off','on')][string]$Embeddings='off',
+          [ValidateRange(1024,65535)][int]$EmbeddingPort=8081,
           [switch]$NoWait)
     Assert-FastLlmBackgroundNativeHost
     if ($ServerPort -ne 0 -and ($ServerPort -lt 1024 -or $ServerPort -gt 65535)) { throw 'ServerPort must be 0 (catalog port) or 1024-65535.' }
@@ -483,6 +498,15 @@ function Start-FastLlmBackgroundHost {
     # (The host checks again when it reads the key for real.)
     $UseApiKey = $UseApiKey.ToLowerInvariant()
     if ($UseApiKey -ceq 'on') { Assert-FastLlmApiKeyStore -InstallRoot $install }
+    # Embeddings, when on: refused here, typed, before anything is requested or started, when no approved embedding model is installed
+    # (the same check the command line's start makes). The host's server start checks again.
+    $Embeddings = $Embeddings.ToLowerInvariant()
+    if ($Embeddings -ceq 'on') { Assert-FastLlmEmbeddingsAvailable -CatalogPath (Join-Path (Join-Path $source 'config') 'catalog.json') -InstallRoot $install -Port $EmbeddingPort }
+    $servingValues = [pscustomobject]@{ contextProfile = $KvContextProfile; slots = $KvSlots; embeddings = $Embeddings; embeddingPort = $EmbeddingPort }
+    $servingPlan = Get-FastLlmServingPlanOptions -Options $servingValues -ConfigRoot (Join-Path $source 'config')
+    $servingServer = Get-FastLlmServingServerOptions -Options $servingValues
+    $pinOptions = @{}
+    if ($servingPlan.Count -gt 0) { $pinOptions.IncludeServingProfiles = $true }
     $existing = Get-FastLlmBackgroundHostStatus -InstallRoot $install -SourceRoot $source
     if ($existing.occupied) { throw 'This installation already has an active serving operation.' }
     $lock = Enter-FastLlmOperation -InstallRoot $install
@@ -492,12 +516,16 @@ function Start-FastLlmBackgroundHost {
         schemaVersion=1;kind='fastllm-private-background-request';requestId=$requestId
         sourceRoot=$source;installRoot=$install;profile=$Profile;modelId=$ModelId
         contextSize=$ContextSize;allowExperimentalModel=[bool]$AllowExperimentalModel
-        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant();idleStopMinutes=$IdleStopMinutes;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source)
+        loadTimeoutSeconds=$LoadTimeoutSeconds;vulkanBarMitigation=$VulkanBarMitigation.ToLowerInvariant();serverPort=$ServerPort;thinking=$Thinking.ToLowerInvariant();chatPage=$ChatPage.ToLowerInvariant();idleStopMinutes=$IdleStopMinutes;sourcePins=(Get-FastLlmBackgroundSourcePins -SourceRoot $source @pinOptions)
     }
     # Present only when asked for, so a default request is the document it always was.
     if ($SwitchAllowed) { $request.allowSwitch = $true }
     # Present only when the key is on, and only ever the flag: a request without a key is the document it always was.
     if ($UseApiKey -ceq 'on') { $request.apiKey = 'on' }
+    # Present only when not the default, so a default request is the document it always was.
+    if ($servingPlan.ContainsKey('KvContextProfile')) { $request.contextProfile = [string]$servingPlan.KvContextProfile }
+    if ($servingPlan.ContainsKey('KvSlots')) { $request.slots = [int]$servingPlan.KvSlots }
+    if ($servingServer.ContainsKey('Embeddings')) { $request.embeddings = 'on'; $request.embeddingPort = [int]$servingServer.EmbeddingPort }
     $requestPath = Get-FastLlmBackgroundPath -InstallRoot $install -Leaf ('background-request-' + $requestId + '.json')
     Write-FastLlmBackgroundDocument -Path $requestPath -Value $request -CreateNew
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -554,6 +582,42 @@ function Get-FastLlmBackgroundRequestApiKey {
     throw 'Background request apiKey is invalid.'
 }
 
+# The saved serving setup of a background request: context profile, slots, embeddings and the embeddings port. Like apiKey, NOT read
+# tolerantly: a field that is absent means the default, an exact valid value is used, and any other value or type is refused here, before
+# anything is started. A request that asked for a setup this host cannot read must never become a default start.
+function Get-FastLlmBackgroundRequestServing {
+    param($Request)
+    $vocabulary = Get-FastLlmServingProfileVocabulary
+    $contextProfile = 'default'
+    $slots = 1
+    $embeddings = 'off'
+    $embeddingPort = 0
+    if ($Request.PSObject.Properties['contextProfile']) {
+        $value = $Request.contextProfile
+        if ($value -isnot [string] -or @($vocabulary.profileIds) -cnotcontains $value) { throw 'Background request contextProfile is invalid.' }
+        $contextProfile = [string]$value
+    }
+    if ($Request.PSObject.Properties['slots']) {
+        $value = $Request.slots
+        if (($value -isnot [int] -and $value -isnot [long]) -or @($vocabulary.slots) -notcontains [long]$value) { throw 'Background request slots is invalid.' }
+        $slots = [int]$value
+    }
+    if ($Request.PSObject.Properties['embeddings']) {
+        $value = $Request.embeddings
+        if ($value -isnot [string] -or ($value -cne 'on' -and $value -cne 'off')) { throw 'Background request embeddings is invalid.' }
+        $embeddings = [string]$value
+    }
+    # The embeddings and their port go together: the writer writes both or neither, so one without the other is an inconsistent request.
+    if ($embeddings -ceq 'on' -and -not $Request.PSObject.Properties['embeddingPort']) { throw 'Background request embeddingPort is invalid.' }
+    if ($embeddings -cne 'on' -and $Request.PSObject.Properties['embeddingPort']) { throw 'Background request embeddingPort is invalid.' }
+    if ($Request.PSObject.Properties['embeddingPort']) {
+        $value = $Request.embeddingPort
+        if (($value -isnot [int] -and $value -isnot [long]) -or [long]$value -lt 1024 -or [long]$value -gt 65535) { throw 'Background request embeddingPort is invalid.' }
+        $embeddingPort = [int]$value
+    }
+    return [pscustomobject]@{ contextProfile = $contextProfile; slots = $slots; embeddings = $embeddings; embeddingPort = $embeddingPort }
+}
+
 function Invoke-FastLlmBackgroundServe {
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{32}$')][string]$RequestId,
@@ -594,7 +658,13 @@ function Invoke-FastLlmBackgroundServe {
     $requestedAllowSwitch = [bool]($request.PSObject.Properties['allowSwitch'] -and $request.allowSwitch -is [bool] -and $request.allowSwitch)
     # apiKey is NOT read tolerantly (see the function): any value but the exact on or off is refused here, before anything is started.
     $requestedApiKey = Get-FastLlmBackgroundRequestApiKey -Request $request
-    Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
+    # The saved context profile, slots and embeddings are read strictly too, and turned into planner and server options by the same builders the
+    # command line's start uses. A request that uses the profiles file must pin it.
+    $requestedServing = Get-FastLlmBackgroundRequestServing -Request $request
+    $servingPlanOptions = Get-FastLlmServingPlanOptions -Options $requestedServing -ConfigRoot (Join-Path $source 'config')
+    $servingServerOptions = Get-FastLlmServingServerOptions -Options $requestedServing
+    $requireProfilesPin = [bool]($servingPlanOptions.Count -gt 0)
+    Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins -RequireServingProfiles:$requireProfilesPin
     $lease = $null
     $operation = $null
     $record = $null
@@ -619,6 +689,8 @@ function Invoke-FastLlmBackgroundServe {
         $planOptions = @{}
         if ($requestedThinking -ceq 'off') { $planOptions.Thinking = 'off' }
         if ($requestedChatPage -ceq 'on') { $planOptions.ChatPage = 'on' }
+        # With a saved context profile or slots the planner is asked exactly as start asks it, and refuses (typed) when nothing is measured.
+        foreach ($servingPlanKey in @($servingPlanOptions.Keys)) { $planOptions[$servingPlanKey] = $servingPlanOptions[$servingPlanKey] }
         $plan = Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -Profile ([string]$request.profile) `
             -InstallRoot $install -ModelId ([string]$request.modelId) -ContextSize ([int]$request.contextSize) `
             -AllowExperimentalModel:([bool]$request.allowExperimentalModel) -ServerPort $requestedPort `
@@ -632,7 +704,7 @@ function Invoke-FastLlmBackgroundServe {
         }
         $record.phase = 'loading'
         Write-FastLlmBackgroundDocument -Path $recordPath -Value $record
-        Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins
+        Assert-FastLlmBackgroundPins -SourceRoot $source -Expected $request.sourcePins -RequireServingProfiles:$requireProfilesPin
         # This validates the installed engine, full model hash, exact consent,
         # then re-probes before using the normal supervised server. No install,
         # download, quarantine, or consent path is reachable here.
@@ -647,6 +719,8 @@ function Invoke-FastLlmBackgroundServe {
         # The request carries only the flag. Start-FastLlmServer reads and unprotects the key store itself, in this process, and refuses
         # (api-key-unavailable) when it cannot.
         if ($requestedApiKey -ceq 'on') { $serverOptions.ApiKey = 'on' }
+        # The embedding sidecar, only when the request asked for it; the server start refuses (typed) when no approved embedding model is installed.
+        foreach ($servingServerKey in @($servingServerOptions.Keys)) { $serverOptions[$servingServerKey] = $servingServerOptions[$servingServerKey] }
         $exit = Start-FastLlmServer -Plan $plan -CatalogPath $catalog -InstallRoot $install `
             -LoadTimeoutSeconds ([int]$request.loadTimeoutSeconds) -VulkanBarMitigation $barMitigation -SelfTest @serverOptions
         $record.phase = 'stopped'

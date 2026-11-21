@@ -1390,7 +1390,12 @@ function Get-FastLlmPlan {
 
     if (-not $selected) {
         # No candidate had a measured row at all: the option is refused with the one plain reason. A row that exists but does not fit is a fit refusal below.
-        if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) { throw $script:FastLlmServingProfileNotMeasured }
+        # Plain reason, exactly as before; the code travels in Data so a background run and a switch can record why they refused.
+        if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) {
+            $notMeasured = New-Object -TypeName System.InvalidOperationException -ArgumentList $script:FastLlmServingProfileNotMeasured
+            $notMeasured.Data['FastLlmFailureCode'] = 'serving-profile-not-measured'
+            throw $notMeasured
+        }
         # The two refusals keep their text exactly (a typed failure would put the code in front of it); the code travels in Data['FastLlmFailureCode'].
         if ($ModelId) {
             $doesNotFit = New-Object -TypeName System.InvalidOperationException -ArgumentList "Requested model '$ModelId' does not fit the estimated current free-memory budget. No other model was substituted."

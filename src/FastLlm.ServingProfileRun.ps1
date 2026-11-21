@@ -7,6 +7,25 @@ function Get-FastLlmServingProfileVocabulary {
     return [pscustomobject]@{ slots = @(1, 2); cacheTypes = @('f16', 'q8_0'); defaultCacheType = 'f16'; profileIds = @('default', 'long') }
 }
 
+# What a resolved serving setup (contextProfile, slots, embeddings, embeddingPort) adds to the planner and to the server start. The command line's
+# start, the window's background start and the sign-in start all build their options here (the background host from the values of its request),
+# so there is one definition and no second copy. A default setup adds nothing, so a default call keeps the exact parameter set it always had.
+function Get-FastLlmServingPlanOptions {
+    param([Parameter(Mandatory = $true)] $Options, [AllowEmptyString()][string] $ConfigRoot = '')
+    $planOptions = @{}
+    if ([string] $Options.contextProfile -cne 'default') { $planOptions.KvContextProfile = [string] $Options.contextProfile }
+    if ([int] $Options.slots -ne 1) { $planOptions.KvSlots = [int] $Options.slots }
+    if ($planOptions.ContainsKey('KvContextProfile') -or $planOptions.ContainsKey('KvSlots')) { $planOptions.KvProfilesPath = Join-Path $ConfigRoot 'serving-profiles.json' }
+    return $planOptions
+}
+
+function Get-FastLlmServingServerOptions {
+    param([Parameter(Mandatory = $true)] $Options)
+    $serverOptions = @{}
+    if ([string] $Options.embeddings -ceq 'on') { $serverOptions.Embeddings = 'on'; $serverOptions.EmbeddingPort = [int] $Options.embeddingPort }
+    return $serverOptions
+}
+
 # llama-server also accepts -np (--parallel), -ctk / -ctv (--cache-type-k / -v) and -c (--ctx-size). The product writes only the long forms
 # (the default argument goldens pin them), so a short form, with a space or an equals sign, is never the default run.
 function Test-FastLlmServingProfileShortForm {

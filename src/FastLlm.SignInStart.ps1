@@ -258,11 +258,12 @@ function Invoke-FastLlmSignInLaunch {
         $message = [string]$_.Exception.Message
         if ($message -match 'active serving operation') { return (Write-FastLlmSignInResult -InstallRoot $InstallRoot -Result 'skipped-occupied' -FailureCode $null) }
         $code = 'host-start-failed'
-        # A typed API key refusal (the key is on and cannot be read, or whether it is required cannot be known) is recorded by its own
-        # code, so the result says why nothing was started. Only a code of the fixed api-key form is taken; never any message text.
+        # A typed refusal (the API key is on and cannot be read, or whether it is required cannot be known; embeddings are on and no approved
+        # embedding model can start) is recorded by its own code, so the result says why nothing was started. Only a code of the fixed
+        # api-key or embeddings form is taken; never any message text.
         $typedCode = $null
         if ($null -ne $_.Exception.Data) { $typedCode = $_.Exception.Data['FastLlmFailureCode'] }
-        if ($typedCode -is [string] -and $typedCode -cmatch '^api-key-[a-z-]{1,40}$') { $code = $typedCode }
+        if ($typedCode -is [string] -and ($typedCode -cmatch '^api-key-[a-z-]{1,40}$' -or $typedCode -cmatch '^embeddings-[a-z-]{1,40}$')) { $code = $typedCode }
         elseif ($message -match 'Windows job') { $code = 'job-contained' }
         elseif ($message -match 'standard-user') { $code = 'elevated-session' }
         return (Write-FastLlmSignInResult -InstallRoot $InstallRoot -Result 'host-failed' -FailureCode $code)
@@ -317,10 +318,29 @@ function Get-FastLlmSignInResultText {
         'host-failed' {
             $code = [string]$Result.failureCode
             if ([string]::IsNullOrWhiteSpace($code)) { $code = 'host-start-failed' }
+            # Embeddings are on and the start was refused for them: say it was not started, why, and the two ways to fix it (fixed wording).
+            if ($code -ceq 'embeddings-no-model') {
+                return 'FastLLM did not start at sign-in' + $when + ': embeddings are on, but no embedding model is installed. Install an approved embedding model, or turn embeddings off (Settings, or fast-llm.ps1 settings -Embeddings off).'
+            }
+            if ($code -cmatch '^embeddings-[a-z-]{1,40}$') {
+                return 'FastLLM did not start at sign-in' + $when + ': embeddings are on, but they cannot start (' + $code + '). Turn embeddings off (Settings, or fast-llm.ps1 settings -Embeddings off), or fix the embedding setup.'
+            }
             return 'Start at sign-in failed: ' + $code + $when + '.'
         }
         default { return 'The last start at sign-in recorded an unknown result' + $when + '.' }
     }
+}
+
+# The line the window shows when it opens, and `status` prints, when the last start at sign-in was refused for the saved embeddings: the same
+# fixed text Settings shows. $null when the last attempt was anything else, when none was recorded, or when embeddings are no longer on
+# (the user already fixed it). Never an exception message.
+function Get-FastLlmSignInAttentionText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][string]$InstallRoot)
+    $result = Read-FastLlmSignInResult -InstallRoot $InstallRoot
+    if ($null -eq $result -or [string]$result.result -cne 'host-failed' -or [string]$result.failureCode -cnotmatch '^embeddings-[a-z-]{1,40}$') { return $null }
+    if ([string](Resolve-FastLlmServingOptions -InstallRoot $InstallRoot -Bound @{}).embeddings -cne 'on') { return $null }
+    return (Get-FastLlmSignInResultText -Result $result)
 }
 
 # What Settings shows for the switch. checked is true only for state 'on'.
