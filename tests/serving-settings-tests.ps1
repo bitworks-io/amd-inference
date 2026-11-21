@@ -4,6 +4,7 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2.0
 $root=Split-Path $PSScriptRoot -Parent
+. (Join-Path $root 'src/FastLlm.ServingProfileRun.ps1')
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
 $script:count=0
 function Check($Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:count++;Write-Host "PASS: $Message"}
@@ -350,9 +351,36 @@ foreach($case in 1){
     $x=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
     Check ($s.malformed -and $s.embeddings -ceq 'off' -and $s.embeddingPort -eq 8081 -and $x.settingsMalformed -and $x.embeddings -ceq 'off') 'embeddings-malformed: a malformed file reads off and 8081'
     Throws { Set-FastLlmServingSettings -InstallRoot $r -Embeddings 'on' } 'serving-settings-malformed'
-    # The window and the sign-in start do not start embeddings yet: their host arguments are the ones they always were.
+    # DELIBERATE CHANGE: the window and the sign-in start now apply the saved embeddings exactly as start does (they used to carry no embeddings option).
     Write-Utf8 (Join-Path $r 'settings.json') '{"embeddings":"on","embeddingPort":18282}'
-    Check ((@((Get-FastLlmServingHostArguments -InstallRoot $r).Keys | Sort-Object) -join ',') -ceq 'ChatPage,IdleStopMinutes,ServerPort,Thinking') 'embeddings-host-arguments: the background start arguments carry no embeddings option'
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ((@($h.Keys | Sort-Object) -join ',') -ceq 'ChatPage,EmbeddingPort,Embeddings,IdleStopMinutes,ServerPort,Thinking' -and $h.Embeddings -ceq 'on' -and $h.EmbeddingPort -eq 18282) 'embeddings-host-arguments: the background start arguments carry the saved embeddings and port (as start does)'
+    # background-parity: for each saved state the host arguments carry exactly what start gives the planner and the server for the same settings.
+    $configRoot=Join-Path $root 'config'
+    $states=[ordered]@{'default'='{}';'long'='{"contextProfile":"long"}';'slots-2'='{"slots":2}';'long-and-2'='{"contextProfile":"long","slots":2}';'embeddings-on-8091'='{"embeddings":"on","embeddingPort":8091}'}
+    foreach($name in $states.Keys){
+        $r=New-Root; Write-Utf8 (Join-Path $r 'settings.json') $states[$name]
+        $o=Resolve-FastLlmServingOptions -InstallRoot $r -Bound @{}
+        $planOptions=Get-FastLlmServingPlanOptions -Options $o -ConfigRoot $configRoot
+        $serverOptions=Get-FastLlmServingServerOptions -Options $o
+        $h=Get-FastLlmServingHostArguments -InstallRoot $r
+        $expectedKeys=@('ChatPage','IdleStopMinutes','ServerPort','Thinking')+@($planOptions.Keys | Where-Object { $_ -cne 'KvProfilesPath' })+@($serverOptions.Keys)
+        Check ((@($h.Keys | Sort-Object) -join ',') -ceq ((@($expectedKeys | Sort-Object)) -join ',')) "background-parity [$name]: the host arguments are the base four plus exactly the options start adds"
+        $same=$true
+        foreach($k in @($planOptions.Keys | Where-Object { $_ -cne 'KvProfilesPath' })){ if([string]$h[$k] -cne [string]$planOptions[$k]){$same=$false} }
+        foreach($k in @($serverOptions.Keys)){ if([string]$h[$k] -cne [string]$serverOptions[$k]){$same=$false} }
+        Check ($same -and -not $h.ContainsKey('KvProfilesPath')) "background-parity [$name]: the values equal start's (the profiles file is added by the host from its own source root)"
+    }
+    $r=New-Root; Write-Utf8 (Join-Path $r 'settings.json') '{"contextProfile":"long"}'
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ($h.KvContextProfile -ceq 'long' -and -not $h.ContainsKey('KvSlots') -and -not $h.ContainsKey('Embeddings') -and -not $h.ContainsKey('EmbeddingPort')) 'background-parity: saved long gives KvContextProfile long and nothing else new'
+    $r=New-Root; Write-Utf8 (Join-Path $r 'settings.json') '{"slots":2,"embeddings":"on","embeddingPort":8091}'
+    $h=Get-FastLlmServingHostArguments -InstallRoot $r
+    Check ($h.KvSlots -eq 2 -and -not $h.ContainsKey('KvContextProfile') -and $h.Embeddings -ceq 'on' -and $h.EmbeddingPort -eq 8091) 'background-parity: saved 2 slots and embeddings on 8091 give KvSlots 2, Embeddings on and the port'
+    foreach($bogus in '{"contextProfile":"LONG","slots":3,"embeddings":"ON","embeddingPort":80}','{ broken'){
+        $r=New-Root; Write-Utf8 (Join-Path $r 'settings.json') $bogus
+        Check ((@((Get-FastLlmServingHostArguments -InstallRoot $r).Keys | Sort-Object) -join ',') -ceq 'ChatPage,IdleStopMinutes,ServerPort,Thinking') 'background-parity: malformed or invalid saved values keep their current behaviour (the defaults)'
+    }
 }
 }
 finally { foreach($p in @($script:createdTemp)){ Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue } }

@@ -32,6 +32,11 @@
       "reason": "Mock fixtures and disposable children; no Radeon adapter or inference engine required; wired in test.yml."
     },
     {
+      "suite": "background-saved-serving-tests",
+      "class": "ci",
+      "reason": "The window's and the sign-in background starts apply the saved context profile, requests at once and embeddings as start does and refuse visibly: stand-ins for the host, the planner and the server, a request recorder that launches nothing, the real planner on a fixture card; no network, model, GPU or admin; wired in test.yml."
+    },
+    {
       "suite": "background-host-tests",
       "class": "bench-native",
       "reason": "The background host refuses state owned by Administrators, and files an elevated runner creates belong to Administrators."
