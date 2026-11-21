@@ -246,7 +246,7 @@ try {
     $run = Invoke-Host (New-HostRequestFile ([ordered]@{ slots = 3 }) $null)
     Check ($null -ne $run.failure -and $run.starts -eq 0 -and $run.plan.Count -eq 0) 'strict: an invalid slots value never falls back to one slot (nothing is planned or started)'
     $run = Invoke-Host (New-HostRequestFile ([ordered]@{ contextProfile = 'long' }) (Get-FastLlmBackgroundSourcePins -SourceRoot $source))
-    Check ($null -ne $run.failure -and [string]$run.failure.Exception.Message -ceq 'Background source pin set changed during handoff.' -and $run.starts -eq 0) 'pins: a request for a profile whose pins do not name the profiles file is refused by the host'
+    Check ($null -ne $run.failure -and [string]$run.failure.Exception.Message -ceq 'Background source pin set changed during handoff.' -and $run.starts -eq 0 -and $run.order -cnotcontains 'lock' -and $run.order -cnotcontains 'hardware' -and $run.plan.Count -eq 0) 'pins: a request for a profile whose pins do not name the profiles file is refused by the host before the lock, the module import and the plan'
     $hostSource = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.BackgroundHost.ps1'))
     $serveStart = $hostSource.IndexOf('function Invoke-FastLlmBackgroundServe')
     $serveText = $hostSource.Substring($serveStart)
@@ -348,18 +348,45 @@ try {
     $statusBlock = $statusBlock.Substring(0, $statusBlock.IndexOf("        'update-check' {"))
     Check ($statusBlock.Contains('Get-FastLlmSignInAttentionText -InstallRoot $InstallRoot') -and $statusBlock.Contains('Get-FastLlmSavedServingFailureText')) 'visible: status prints the sign-in line and the profile line (source)'
     Check ($uiText.Contains('Get-FastLlmSignInAttentionText -InstallRoot (Get-FastLlmSignInDefaultInstallRoot)') -and $uiText.LastIndexOf('Get-FastLlmSignInAttentionText') -gt $uiText.LastIndexOf('RefreshUiSwitchState') -and $uiText.LastIndexOf('Get-FastLlmSignInAttentionText') -lt $uiText.LastIndexOf('StartUiBackgroundPoll')) 'visible: the window reads the sign-in line when it opens (source)'
-    # The real status command, in its own process: the exact lines it prints.
+    # The real status command, in its own process. fast-llm.ps1 refuses every live operation under an elevated Windows token (the CI runner is
+    # elevated), so there the real run is asserted to REFUSE and the two lines are checked through the functions the status block calls.
     $shell = (Get-Process -Id $PID).Path
+    $statusChildrenElevated = $false
+    if ($env:OS -ceq 'Windows_NT') { $statusChildrenElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+    function Invoke-StatusChild([string]$InstallRoot) {
+        # Output and errors are captured through the process object, so an error line of the child can never end this suite (Windows PowerShell 5.1).
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $shell
+        $info.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $root 'fast-llm.ps1') + '" status -InstallRoot "' + $InstallRoot + '"'
+        $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true; $info.CreateNoWindow = $true
+        $child = [Diagnostics.Process]::Start($info)
+        try {
+            $stdout = $child.StandardOutput.ReadToEnd(); $stderr = $child.StandardError.ReadToEnd(); $child.WaitForExit()
+            return [pscustomobject]@{ exit = $child.ExitCode; lines = @($stdout -split "\r?\n"); errorText = $stderr }
+        } finally { $child.Dispose() }
+    }
     $statusProfileRoot = New-Root '{"embeddings":"on"}'
     New-Item -ItemType Directory -Path (Join-Path $statusProfileRoot 'state') -Force | Out-Null
     Write-Utf8 (Join-Path $statusProfileRoot 'state/signin-start.json') '{"time":"2026-11-21T08:00:00Z","result":"host-failed","failureCode":"embeddings-no-model"}'
-    $statusOut = @(& $shell -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') status -InstallRoot $statusProfileRoot 2>&1 | ForEach-Object { [string]$_ })
-    Check ($statusOut -ccontains $embeddingsLine) 'visible: fast-llm.ps1 status prints the exact sign-in line'
     $statusFailedRoot = New-Root ''
     New-Item -ItemType Directory -Path (Join-Path $statusFailedRoot 'state') -Force | Out-Null
     Write-Utf8 (Join-Path $statusFailedRoot 'state/status.json') ('{"schemaVersion":1,"runId":"' + ('b' * 32) + '","phase":"failed","action":"start","failureCode":"serving-profile-not-measured"}')
-    $statusFailedOut = @(& $shell -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') status -InstallRoot $statusFailedRoot 2>&1 | ForEach-Object { [string]$_ })
-    Check ($statusFailedOut -ccontains $profileLine) 'visible: fast-llm.ps1 status prints the exact profile line for a run that failed for a missing measured setup'
+    if (-not $statusChildrenElevated) {
+        Write-Host 'INFO: status child cases: real process (standard user)'
+        $statusOut = @((Invoke-StatusChild $statusProfileRoot).lines)
+        Check ($statusOut -ccontains $embeddingsLine) 'visible: fast-llm.ps1 status prints the exact sign-in line'
+        $statusFailedOut = @((Invoke-StatusChild $statusFailedRoot).lines)
+        Check ($statusFailedOut -ccontains $profileLine) 'visible: fast-llm.ps1 status prints the exact profile line for a run that failed for a missing measured setup'
+    } else {
+        Write-Host 'INFO: status child cases: elevated runner: refusal asserted, lines checked in-process'
+        $refused = Invoke-StatusChild $statusProfileRoot
+        Check ($refused.exit -ne 0 -and (($refused.errorText + ($refused.lines -join "`n")) -clike '*must run as a standard user*') -and @($refused.lines | Where-Object { $_ -ceq $embeddingsLine }).Count -eq 0) 'visible: under an elevated token the real fast-llm.ps1 status refuses (the standard-user guard is unchanged) and the suite carries on'
+        $statusOut = @(Get-FastLlmSignInAttentionText -InstallRoot $statusProfileRoot)
+        Check ($statusOut -ccontains $embeddingsLine) 'visible: the sign-in line the status block prints (Get-FastLlmSignInAttentionText on the prepared root) is the exact text'
+        $preparedStatus = Get-Content -LiteralPath (Join-Path $statusFailedRoot 'state/status.json') -Raw | ConvertFrom-Json
+        $statusFailedOut = @(Get-FastLlmSavedServingFailureText -Code ([string]$preparedStatus.failureCode))
+        Check ($statusFailedOut -ccontains $profileLine) 'visible: the profile line the status block prints (Get-FastLlmSavedServingFailureText on the prepared status document) is the exact text'
+    }
     Check ($profileLine -cnotmatch 'background|saved' -and (Get-FastLlmUiBackgroundText -State $profileState) -ceq @($statusFailedOut | Where-Object { $_ -clike 'The last start did not run*' })[0]) 'visible: a failed command-line start (status.json only, no background host record) gets the same neutral line the window shows, which claims neither a background run nor a saved setting'
     Check (@($statusOut | Where-Object { $_ -clike 'FastLLM did not start at sign-in*' }).Count -eq 1 -and @($statusFailedOut | Where-Object { $_ -clike 'FastLLM did not start at sign-in*' }).Count -eq 0) 'visible: the sign-in line appears once, and only when the last sign-in was refused'
 }
