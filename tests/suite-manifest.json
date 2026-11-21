@@ -427,6 +427,11 @@
       "reason": "Standard-user native CLI consent boundary; Windows PowerShell 5.1 only; refuses elevation; no acquisition or GPU."
     },
     {
+      "suite": "ui-control-states-tests",
+      "class": "ci",
+      "reason": "Characterization of the window's enable rules against a golden table; pure, no GPU or bench."
+    },
+    {
       "suite": "ui-flow-tests",
       "class": "ci",
       "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."

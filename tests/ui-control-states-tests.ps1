@@ -1,0 +1,61 @@
+#requires -Version 5.1
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version 2
+$root=Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot 'helpers/UiControlStatesMatrix.ps1')
+$checks=0
+function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
+
+# The golden, generated once from the released window (fast-llm-ui.ps1 at 646ccb05).
+$golden=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/ui-control-states-golden.json') -Raw|ConvertFrom-Json
+$goldenRows=@{};foreach($p in $golden.rows.PSObject.Properties){$goldenRows[$p.Name]=[string]$p.Value}
+$goldenTray=@{};foreach($p in $golden.tray.PSObject.Properties){$goldenTray[$p.Name]=[string]$p.Value}
+Check ($golden.schema -ceq 'fastllm.ui-control-states-golden/v1') 'the golden has the expected schema'
+Check ($golden.source -ceq 'fast-llm-ui.ps1@646ccb05') 'the golden was generated from the released window'
+Check ((@($golden.columns) -join ',') -ceq ((Get-UiControlStatesColumns) -join ',')) 'golden columns are the 19 window actions in order'
+$matrix=@(Get-UiControlStatesMatrix)
+$matrixKeys=@($matrix|ForEach-Object{$_.key})
+Check ($matrixKeys.Count -eq 2230 -and @($matrixKeys|Select-Object -Unique).Count -eq 2230) 'the matrix has 2,230 unique rows'
+Check ($goldenRows.Count -eq 2230 -and @($matrixKeys|Where-Object{-not $goldenRows.ContainsKey($_)}).Count -eq 0) 'the matrix and the golden cover the same 2,230 rows'
+$trayMatrix=@(Get-UiTrayMatrix)
+Check ($trayMatrix.Count -eq 12 -and $goldenTray.Count -eq 12 -and @($trayMatrix|Where-Object{-not $goldenTray.ContainsKey($_.key)}).Count -eq 0) 'the tray matrix and the golden cover the same 12 rows'
+
+$windowText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
+function Get-Mismatches([string]$SourceText){
+    $bad=New-Object System.Collections.ArrayList
+    foreach($r in $matrix){
+        $got=Invoke-UiWindowEnableRules -SourceText $SourceText -Row $r
+        if(-not ($got -ceq $goldenRows[$r.key])){[void]$bad.Add($r.key+' got '+$got+' want '+$goldenRows[$r.key])}
+    }
+    foreach($r in $trayMatrix){
+        $got=Invoke-UiWindowTrayRule -SourceText $SourceText -Row $r
+        if(-not ($got -ceq $goldenTray[$r.key])){[void]$bad.Add($r.key+' got '+$got+' want '+$goldenTray[$r.key])}
+    }
+    return ,@($bad.ToArray())
+}
+$mismatches=Get-Mismatches $windowText
+Check ($mismatches.Count -eq 0) ("the window's enable rules match 646ccb05 on every row (first mismatches: "+((@($mismatches)|Select-Object -First 3) -join ' | ')+')')
+
+# Readable anchors, hand-checked against the released code.
+function Row([string]$Key){$m=@($matrix|Where-Object{$_.key -ceq $Key});if($m.Count -ne 1){throw "FAIL: no row $Key"};return $m[0]}
+function Bit([string]$Bits,[string]$Column){return $Bits[[array]::IndexOf((Get-UiControlStatesColumns),$Column)]}
+$idle=Invoke-UiWindowEnableRules -SourceText $windowText -Row (Row 'f=00000000000;b=absent')
+Check ($idle -ceq '1111111111010111000') 'idle: every setup action, Stop and the tray are enabled; Choose another setup, Attach, Open chat, progress and API check are not'
+$update=Invoke-UiWindowEnableRules -SourceText $windowText -Row (Row 'f=01000000000;b=absent')
+Check ((Bit $update 'progressVisible') -ceq '1' -and (Bit $update 'install') -ceq '0' -and (Bit $update 'settings') -ceq '0' -and (Bit $update 'saveBundle') -ceq '0' -and (Bit $update 'stop') -ceq '1' -and (Bit $update 'apiCheck') -ceq '0') 'an update run makes the window busy but leaves Stop'
+$gap=Invoke-UiWindowEnableRules -SourceText $windowText -Row (Row 'f=00000000100;b=unverified')
+$noGap=Invoke-UiWindowEnableRules -SourceText $windowText -Row (Row 'f=00000000000;b=unverified')
+Check ((Bit $gap 'stop') -ceq '1' -and (Bit $noGap 'stop') -ceq '0') 'the switch gap keeps Stop enabled while the background is unverified'
+$trayOk=$true
+foreach($r in $trayMatrix|Where-Object{$_.vcBroker}){$want=if($r.text -ceq 'Restore FastLLM'){'1'}else{'0'};if((Invoke-UiWindowTrayRule -SourceText $windowText -Row $r) -cne $want){$trayOk=$false}}
+Check $trayOk 'Microsoft setup leaves only Restore in the tray'
+
+# Self-check: the comparison is not vacuous.
+$chooseLine='$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)'
+Check ($windowText.Contains($chooseLine)) 'the self-check finds the Choose another setup rule'
+$changed=$windowText.Replace($chooseLine,'$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker)')
+$caught=Get-Mismatches $changed
+Check ($caught.Count -gt 0) 'a changed rule is caught'
+
+Write-Host "UI control states tests passed: $checks"
+exit 0
