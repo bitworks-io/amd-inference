@@ -57,5 +57,36 @@ $changed=$windowText.Replace($chooseLine,'$chooseButton.Enabled=[bool](-not $Bus
 $caught=Get-Mismatches $changed
 Check ($caught.Count -gt 0) 'a changed rule is caught'
 
+# Part B: the pure functions in src/FastLlm.UiState.ps1 reproduce the golden on every row.
+$bareReadyBackground=Get-UiBackgroundFixture -Name 'bare-ready'
+function New-RowSnapshot($Row){
+    return New-FastLlmUiStateSnapshot -Busy ([bool]$Row.busy) -UpdateKind ([string]$Row.updateKind) -ChildActive ([bool]$Row.child) -Step ([string]$Row.step) `
+        -RunReady ([bool]$Row.runReady) -SideChildActive ([bool]$Row.sideChild) -VcBrokerActive ($null -ne $Row.vcBroker) -PreviewReady ([bool]$Row.previewReady) `
+        -SwitchGap ([bool]$Row.switchGap) -ChatUrlSet ([bool]$Row.chatUrl) -BackgroundStopRequested ([bool]$Row.bgStopRequested) `
+        -Background (Get-UiBackgroundFixture -Name $Row.background)
+}
+$fnMismatches=New-Object System.Collections.ArrayList
+foreach($r in $matrix){
+    $snap=New-RowSnapshot $r
+    $states=Get-FastLlmUiControlStates -Snapshot $snap
+    $availability=Get-FastLlmUiSnapshotAvailability -Snapshot $snap
+    $got=(@($states.PSObject.Properties|ForEach-Object{if($_.Value){'1'}else{'0'}}) -join '')+$(if($availability.apiCheck){'1'}else{'0'})
+    if(-not ($got -ceq $goldenRows[$r.key])){[void]$fnMismatches.Add($r.key+' got '+$got+' want '+$goldenRows[$r.key])}
+}
+Check ($fnMismatches.Count -eq 0) ('Get-FastLlmUiControlStates matches 646ccb05 on every row (first mismatches: '+((@($fnMismatches)|Select-Object -First 3) -join ' | ')+')')
+$trayMismatches=New-Object System.Collections.ArrayList
+foreach($r in $trayMatrix){
+    $got=$(if(Get-FastLlmUiTrayItemEnabled -ItemText ([string]$r.text) -Available ([bool]$r.available) -VcBrokerActive ($null -ne $r.vcBroker)){'1'}else{'0'})
+    if(-not ($got -ceq $goldenTray[$r.key])){[void]$trayMismatches.Add($r.key+' got '+$got+' want '+$goldenTray[$r.key])}
+}
+Check ($trayMismatches.Count -eq 0) 'Get-FastLlmUiTrayItemEnabled matches 646ccb05 on every tray row'
+$bare=New-FastLlmUiStateSnapshot -Busy $false -UpdateKind '' -ChildActive $false -Step '' -RunReady $false -SideChildActive $false -VcBrokerActive $false `
+    -PreviewReady $false -SwitchGap $false -ChatUrlSet $false -BackgroundStopRequested $false -Background $bareReadyBackground
+Check ((Get-FastLlmUiControlStates -Snapshot $bare) -is [pscustomobject]) 'an observation missing optional properties does not throw under StrictMode 2'
+Check ((@((Get-FastLlmUiControlStates -Snapshot $bare).PSObject.Properties.Name) -join ',') -ceq ((Get-UiControlStatesColumns)[0..17] -join ',')) 'the control states carry the first 18 columns in order'
+Check ($bare.FlowPhase -ceq '' -and $bare.FailureHeld -eq $false) 'the snapshot carries FlowPhase and FailureHeld defaults'
+$threw=$false;try{[void](New-FastLlmUiStateSnapshot -Busy $false -UpdateKind 'bogus' -ChildActive $false -Step '' -RunReady $false -SideChildActive $false -VcBrokerActive $false -PreviewReady $false -SwitchGap $false -ChatUrlSet $false -BackgroundStopRequested $false -Background $bareReadyBackground)}catch{$threw=$true}
+Check $threw 'an unknown UpdateKind is refused'
+
 Write-Host "UI control states tests passed: $checks"
 exit 0
