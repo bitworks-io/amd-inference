@@ -435,11 +435,9 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     if ($servingOptions.chatPage -ceq 'on') { $selectionOptions.ChatPage = 'on' }
     # Context profile and slots reach the planner only when one is not its default, so the default plan call keeps the exact parameter set it
     # always had and never opens the serving profiles file. With no measured row for the model and engine the planner refuses the option.
-    if ($servingOptions.contextProfile -cne 'default') { $selectionOptions.KvContextProfile = [string] $servingOptions.contextProfile }
-    if ([int] $servingOptions.slots -ne 1) { $selectionOptions.KvSlots = [int] $servingOptions.slots }
-    if ($selectionOptions.ContainsKey('KvContextProfile') -or $selectionOptions.ContainsKey('KvSlots')) {
-        $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json'
-    }
+    # The background starts (window, sign-in) build the same options from the same function.
+    $servingPlanOptions = Get-FastLlmServingPlanOptions -Options $servingOptions -ConfigRoot $(if ($PSScriptRoot) { Join-Path $PSScriptRoot 'config' } else { '' })
+    foreach ($servingPlanKey in @($servingPlanOptions.Keys)) { $selectionOptions[$servingPlanKey] = $servingPlanOptions[$servingPlanKey] }
     # The idle stop never reaches the planner: it changes no server argument. It is handed to the start only.
     $effectiveIdleStopMinutes = [int] $servingOptions.idleStopMinutes
     # The API key never reaches the planner either, and no plan or dry run mentions it. A live start gets the flag from the saved setting
@@ -783,6 +781,15 @@ try {
                 try { $switchLine = Get-FastLlmUiSwitchStatusText -Status $statusDocument; if ($switchLine) { Write-Host $switchLine } } catch { $null = $_ }
                 # The embedding sidecar is in the document as its sidecars block; here it is also said in one plain line.
                 try { $embeddingsLine = Get-FastLlmEmbeddingsStatusText -Status $statusDocument; if ($embeddingsLine) { Write-Host $embeddingsLine } } catch { $null = $_ }
+                # A run that failed because the saved context profile or requests at once has no measured setup says so, with the fix.
+                try {
+                    if ($statusDocument.PSObject.Properties['failureCode'] -and [string] $statusDocument.phase -ceq 'failed') {
+                        $savedServingLine = Get-FastLlmSavedServingFailureText -Code ([string] $statusDocument.failureCode)
+                        if ($savedServingLine) { Write-Host $savedServingLine }
+                    }
+                } catch { $null = $_ }
+                # A start at sign-in that was refused for the saved embeddings says so, until embeddings are turned off.
+                try { $signInLine = Get-FastLlmSignInAttentionText -InstallRoot $InstallRoot; if ($signInLine) { Write-Host $signInLine } } catch { $null = $_ }
                 try {
                     if (Get-Command -Name Get-FastLlmCachedUpdateNotice -ErrorAction SilentlyContinue) {
                         $cachedNotice = Get-FastLlmCachedUpdateNotice -InstallRoot $InstallRoot -AppRoot $PSScriptRoot

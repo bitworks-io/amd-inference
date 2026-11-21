@@ -143,7 +143,7 @@ try {
     $defaultProbe = Invoke-StartProbe (New-Root '') @{}
     Check ($defaultProbe.requests.Count -eq 1 -and (@($defaultProbe.requests[0].Keys) -join ',') -ceq $mainFields) 'default request: exactly the fields (and order) the document has on main, with none of the four new ones'
     $dr = $defaultProbe.requests[0]
-    Check ($dr.profile -ceq 'balanced' -and $null -eq $dr.modelId -and $dr.contextSize -eq 0 -and $dr.allowExperimentalModel -eq $false -and $dr.loadTimeoutSeconds -eq 300 -and $dr.vulkanBarMitigation -ceq 'auto' -and $dr.serverPort -eq 0 -and $dr.thinking -ceq 'auto' -and $dr.chatPage -ceq 'off' -and $dr.idleStopMinutes -eq 0 -and (@($dr.sourcePins.Keys) -join ',') -ceq (@($defaultPins.Keys) -join ',')) 'default request: every value is the one main writes, and the pin set is the default one'
+    Check ($dr.profile -ceq 'balanced' -and [string]$dr.modelId -ceq '' -and $dr.contextSize -eq 0 -and $dr.allowExperimentalModel -eq $false -and $dr.loadTimeoutSeconds -eq 300 -and $dr.vulkanBarMitigation -ceq 'auto' -and $dr.serverPort -eq 0 -and $dr.thinking -ceq 'auto' -and $dr.chatPage -ceq 'off' -and $dr.idleStopMinutes -eq 0 -and (@($dr.sourcePins.Keys) -join ',') -ceq (@($defaultPins.Keys) -join ',')) 'default request: every value is the one main writes, and the pin set is the default one'
     $explicitDefault = Invoke-StartProbe (New-Root '') @{ KvContextProfile = 'default'; KvSlots = 1; Embeddings = 'off' }
     Check ($explicitDefault.requests.Count -eq 1 -and (@($explicitDefault.requests[0].Keys) -join ',') -ceq $mainFields) 'default request: the defaults spelled out give the same document'
     $longProbe = Invoke-StartProbe (New-Root '') @{ KvContextProfile = 'long' }
@@ -155,7 +155,7 @@ try {
     $embeddingProbe = Invoke-StartProbe (New-Root '') @{ Embeddings = 'on'; EmbeddingPort = 8091 }
     $er = $embeddingProbe.requests[0]
     Check ($embeddingProbe.requests.Count -eq 1 -and (@($er.Keys) -join ',') -ceq ($mainFields + ',embeddings,embeddingPort') -and $er.embeddings -ceq 'on' -and $er.embeddingPort -eq 8091 -and -not (@($er.sourcePins.Keys) -ccontains 'config/serving-profiles.json')) 'embeddings request: embeddings and the port are added, and the profiles file is not pinned'
-    Check ($embeddingProbe.order -join ',' -ceq 'embeddings-check:8091,write-request') 'embeddings request: the availability check runs once, with the port, before the request is written'
+    Check ((@($embeddingProbe.order) -join ',') -ceq 'embeddings-check:8091,lock,write-request') 'embeddings request: the availability check runs once, with the port, before the lock and before the request is written'
     $script:embeddingsStub = $false
     $noModelRoot = New-Root ''
     $noModel = Invoke-StartProbe $noModelRoot @{ Embeddings = 'on' }
@@ -343,7 +343,7 @@ try {
     $statusBlock = $cliText.Substring($cliText.IndexOf("        'status' {"))
     $statusBlock = $statusBlock.Substring(0, $statusBlock.IndexOf("        'update-check' {"))
     Check ($statusBlock.Contains('Get-FastLlmSignInAttentionText -InstallRoot $InstallRoot') -and $statusBlock.Contains('Get-FastLlmSavedServingFailureText')) 'visible: status prints the sign-in line and the profile line (source)'
-    Check ($uiText.Contains('Get-FastLlmSignInAttentionText -InstallRoot (Get-FastLlmSignInDefaultInstallRoot)') -and $uiText.IndexOf('Get-FastLlmSignInAttentionText') -lt $uiText.IndexOf('StartUiBackgroundPoll' , $uiText.IndexOf('RefreshUiSwitchState'))) 'visible: the window reads the sign-in line when it opens (source)'
+    Check ($uiText.Contains('Get-FastLlmSignInAttentionText -InstallRoot (Get-FastLlmSignInDefaultInstallRoot)') -and $uiText.LastIndexOf('Get-FastLlmSignInAttentionText') -gt $uiText.LastIndexOf('RefreshUiSwitchState') -and $uiText.LastIndexOf('Get-FastLlmSignInAttentionText') -lt $uiText.LastIndexOf('StartUiBackgroundPoll')) 'visible: the window reads the sign-in line when it opens (source)'
     # The real status command, in its own process: the exact lines it prints.
     $shell = (Get-Process -Id $PID).Path
     $statusProfileRoot = New-Root '{"embeddings":"on"}'

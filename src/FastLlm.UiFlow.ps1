@@ -1542,7 +1542,10 @@ function Get-FastLlmUiChatPageOffNote {
 # The background start request. A malformed settings file reads as defaults (the caller shows the notice); start still works.
 function New-FastLlmUiBackgroundRequest {
     param([Parameter(Mandatory=$true)][string]$SourceRoot,[Parameter(Mandatory=$true)][string]$InstallRoot,
-          $ModelId,[int]$ContextSize,[string]$BarMitigation,[Parameter(Mandatory=$true)]$Settings,[bool]$AllowSwitch=$false)
+          $ModelId,[int]$ContextSize,[string]$BarMitigation,[Parameter(Mandatory=$true)]$Settings,[bool]$AllowSwitch=$false,
+          # The saved context profile, requests at once and embeddings, as Get-FastLlmServingHostArguments resolves them (the one resolution,
+          # shared with the sign-in start). Only a non-default value is in it, and only a non-default value reaches the request.
+          [System.Collections.IDictionary]$ServingArguments=$null)
     $port = 8080
     if ($Settings -and $Settings.PSObject.Properties['serverPort']) {
         $parsed = 0
@@ -1567,9 +1570,31 @@ function New-FastLlmUiBackgroundRequest {
     if ($Settings -and $Settings.PSObject.Properties['apiKey'] -and [string]$Settings.apiKey -ceq 'on') { $apiKey = 'on' }
     $request = [pscustomobject]@{sourceRoot=$SourceRoot;installRoot=$InstallRoot;profile='balanced';
         modelId=$ModelId;contextSize=$ContextSize;vulkanBarMitigation=$BarMitigation;serverPort=$port;thinking=$thinking;chatPage=$chatPage;idleStopMinutes=$idleStop;apiKey=$apiKey}
+    # Present only when not the default, so a default request is the object it always was.
+    if ($null -ne $ServingArguments) {
+        if ($ServingArguments.Contains('KvContextProfile')) { $request | Add-Member -NotePropertyName contextProfile -NotePropertyValue ([string]$ServingArguments['KvContextProfile']) }
+        if ($ServingArguments.Contains('KvSlots')) { $request | Add-Member -NotePropertyName slots -NotePropertyValue ([int]$ServingArguments['KvSlots']) }
+        if ($ServingArguments.Contains('Embeddings')) {
+            $request | Add-Member -NotePropertyName embeddings -NotePropertyValue ([string]$ServingArguments['Embeddings'])
+            $request | Add-Member -NotePropertyName embeddingPort -NotePropertyValue ([int]$ServingArguments['EmbeddingPort'])
+        }
+    }
     # Opt-in model switching: the field exists only when the setting is on, so a default request is the object it always was.
     if ($AllowSwitch) { $request | Add-Member -NotePropertyName allowSwitch -NotePropertyValue $true }
     return $request
+}
+
+# The parameters of Start-FastLlmBackgroundHost that the saved context profile, slots and embeddings in a window request stand for (none for a default request).
+function Get-FastLlmUiBackgroundServingArguments {
+    param([Parameter(Mandatory=$true)]$Request)
+    $arguments=@{}
+    if ($Request.PSObject.Properties['contextProfile']) { $arguments.KvContextProfile=[string]$Request.contextProfile }
+    if ($Request.PSObject.Properties['slots']) { $arguments.KvSlots=[int]$Request.slots }
+    if ($Request.PSObject.Properties['embeddings']) {
+        $arguments.Embeddings=[string]$Request.embeddings
+        if ($Request.PSObject.Properties['embeddingPort']) { $arguments.EmbeddingPort=[int]$Request.embeddingPort }
+    }
+    return $arguments
 }
 
 function Get-FastLlmUiMalformedSettingsNotice {

@@ -1131,17 +1131,23 @@ function StartUiBackground {
     $selectedModel=if($modelBox.SelectedIndex -gt 0){[string]$modelBox.SelectedItem}else{$null}
     $serving=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $settingsNotice=Get-FastLlmUiMalformedSettingsNotice -Settings $serving
+    # The saved context profile, requests at once and embeddings come from the one resolution the sign-in start uses (as start applies them).
+    # An unreadable key flag keeps its own refusal inside the request builder.
+    $servingArguments=$null
+    if(-not [bool]$serving.apiKeyUndetermined){$servingArguments=Get-FastLlmServingHostArguments -InstallRoot $script:installPath}
     $request=New-FastLlmUiBackgroundRequest -SourceRoot $PSScriptRoot -InstallRoot $script:installPath -ModelId $selectedModel `
-        -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving -AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot)
+        -ContextSize ([int]$contextBox.Value) -BarMitigation (GetBarValue) -Settings $serving -AllowSwitch (Get-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot) -ServingArguments $servingArguments
     $launched=Invoke-FastLlmUiBackgroundStart -State $script:bgState -Request $request -Start {
         param($Request)
         # Only the flag (on or off) is passed; the background host reads the key store itself.
-        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop,$KeyFlag,$SwitchAllowed)
+        # The saved context profile, requests at once and embeddings go along only when they are not the default.
+        $servingParameters=Get-FastLlmUiBackgroundServingArguments -Request $Request
+        & (Get-Module FastLlm) {param($Source,$Project,$Install,$Profile,$Model,$Context,$BarMitigation,$Port,$Thinking,$ChatPage,$IdleStop,$KeyFlag,$SwitchAllowed,$ServingParameters)
             . $Source
             Start-FastLlmBackgroundHost -SourceRoot $Project -InstallRoot $Install -Profile $Profile `
-                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -SwitchAllowed:$SwitchAllowed -NoWait
+                -ModelId $Model -ContextSize $Context -VulkanBarMitigation $BarMitigation -ServerPort $Port -Thinking $Thinking -ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -SwitchAllowed:$SwitchAllowed -NoWait @ServingParameters
         } (Join-Path $PSScriptRoot 'src/FastLlm.BackgroundHost.ps1') $Request.sourceRoot $Request.installRoot `
-            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes $Request.apiKey ([bool]($Request.PSObject.Properties['allowSwitch'] -and $Request.allowSwitch))
+            $Request.profile $Request.modelId $Request.contextSize $Request.vulkanBarMitigation $Request.serverPort $Request.thinking $Request.chatPage $Request.idleStopMinutes $Request.apiKey ([bool]($Request.PSObject.Properties['allowSwitch'] -and $Request.allowSwitch)) $servingParameters
     }
     $backgroundLabel.Text=Get-FastLlmUiBackgroundText -State $script:bgState -LastUserStoppedRequestId $script:lastUserStoppedRequestId
     $statusLabel.Text='Background host requested. It uses only a prepared, consented model and serves in this Windows user session.'
@@ -2024,6 +2030,8 @@ $timer.Add_Tick({
 })
 $script:bgNextPollUtc=[DateTime]::UtcNow.AddSeconds(2)
 RefreshUiSwitchState
+# A start at sign-in that was refused for the saved embeddings (no approved embedding model) is said plainly when the window opens.
+try{$signInAttention=Get-FastLlmSignInAttentionText -InstallRoot (Get-FastLlmSignInDefaultInstallRoot);if($signInAttention){$output.Text=$signInAttention;$statusLabel.Text=$signInAttention}}catch{$null=$_}
 StartUiBackgroundPoll
 $form.Add_FormClosing({param($sender,$event)
     SetTrayMenuAvailable $false

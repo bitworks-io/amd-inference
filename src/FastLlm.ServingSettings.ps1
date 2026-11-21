@@ -7,6 +7,8 @@ Set-StrictMode -Version 2
 if (-not (Get-Command -Name Move-FastLlmFileReplacing -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'FastLlm.FileReplace.ps1')
 }
+# The option builders shared with the command line's start and the background host (one definition of what a saved setup adds).
+. (Join-Path $PSScriptRoot 'FastLlm.ServingProfileRun.ps1')
 
 $script:FastLlmServingDefaultPort = 8080
 $script:FastLlmServingDefaultThinking = 'auto'
@@ -437,7 +439,24 @@ function Get-FastLlmServingHostArguments {
         IdleStopMinutes = [int] $resolved.idleStopMinutes
     }
     if ([string] $resolved.apiKey -ceq 'on') { $arguments.UseApiKey = 'on' }
+    # The saved context profile, requests at once and embeddings, exactly as start gives them (Get-FastLlmServingPlanOptions and
+    # Get-FastLlmServingServerOptions): added only when not the default, so a default start's arguments are the ones they always were.
+    # The profiles file is not named here: the host adds it from its own source root.
+    $planOptions = Get-FastLlmServingPlanOptions -Options $resolved -ConfigRoot (Join-Path (Split-Path -Parent $PSScriptRoot) 'config')
+    foreach ($name in @('KvContextProfile', 'KvSlots')) { if ($planOptions.ContainsKey($name)) { $arguments[$name] = $planOptions[$name] } }
+    $serverOptions = Get-FastLlmServingServerOptions -Options $resolved
+    foreach ($name in @($serverOptions.Keys)) { $arguments[$name] = $serverOptions[$name] }
     return $arguments
+}
+
+# The one plain line for a start that was refused because the saved context profile or requests at once has no measured setup (the planner's
+# typed code serving-profile-not-measured), or $null for any other code. Fixed wording: no message text of an exception.
+function Get-FastLlmSavedServingFailureText {
+    param([string] $Code)
+    if ($Code -ceq 'serving-profile-not-measured') {
+        return 'The last background run did not start: the saved context profile or requests-at-once setting has no measured setup for this model and engine. Set the context profile to default and requests at once to 1 (Settings, or fast-llm.ps1 settings -KvContextProfile default -KvSlots 1), or wait for a measured setup.'
+    }
+    return $null
 }
 
 # settings -ApiKey on|off|rotate|show, and the same four actions for the window. The store functions come from the FastLlm module (the caller
