@@ -225,16 +225,20 @@ try {
         @{ Field = 'contextProfile'; Value = 'LONG' }, @{ Field = 'contextProfile'; Value = 'short' }, @{ Field = 'contextProfile'; Value = 5 }, @{ Field = 'contextProfile'; Value = $true }, @{ Field = 'contextProfile'; Value = $null }, @{ Field = 'contextProfile'; Value = '' },
         @{ Field = 'slots'; Value = 3 }, @{ Field = 'slots'; Value = 0 }, @{ Field = 'slots'; Value = '2' }, @{ Field = 'slots'; Value = 2.5 }, @{ Field = 'slots'; Value = $true }, @{ Field = 'slots'; Value = $null },
         @{ Field = 'embeddings'; Value = 'ON' }, @{ Field = 'embeddings'; Value = 'yes' }, @{ Field = 'embeddings'; Value = $true }, @{ Field = 'embeddings'; Value = 1 }, @{ Field = 'embeddings'; Value = $null },
-        @{ Field = 'embeddingPort'; Value = 80 }, @{ Field = 'embeddingPort'; Value = 70000 }, @{ Field = 'embeddingPort'; Value = '8091' }, @{ Field = 'embeddingPort'; Value = $true }, @{ Field = 'embeddingPort'; Value = 8091.5 }, @{ Field = 'embeddingPort'; Value = $null }
+        @{ Field = 'embeddingPort'; Value = 80 }, @{ Field = 'embeddingPort'; Value = 70000 }, @{ Field = 'embeddingPort'; Value = '8091' }, @{ Field = 'embeddingPort'; Value = $true }, @{ Field = 'embeddingPort'; Value = 8091.5 }, @{ Field = 'embeddingPort'; Value = $null },
+        @{ Field = 'embeddingPort'; Value = 8091; Alone = $true }, @{ Field = 'embeddingPort'; Value = 8091; Alone = $true; Off = $true }
     )
     foreach ($case in $cases) {
         $fields = [ordered]@{}
-        if ($case.Field -ceq 'embeddingPort') { $fields.embeddings = 'on' }
+        if ($case.Field -ceq 'embeddingPort' -and -not $case.ContainsKey('Alone')) { $fields.embeddings = 'on' }
+        if ($case.ContainsKey('Off')) { $fields.embeddings = 'off' }
         $fields[$case.Field] = $case.Value
         $run = Invoke-Host (New-HostRequestFile $fields $null)
         $shown = if ($null -eq $case.Value) { 'null' } else { [string]$case.Value + ' (' + $case.Value.GetType().Name + ')' }
         Check ($null -ne $run.failure -and [string]$run.failure.Exception.Message -ceq ('Background request ' + $case.Field + ' is invalid.') -and $run.starts -eq 0 -and $run.order -cnotcontains 'lock' -and $run.order -cnotcontains 'hardware') "strict: $($case.Field) = $shown is refused before the lock and the plan, and nothing is started"
     }
+    $run = Invoke-Host (New-HostRequestFile ([ordered]@{ embeddings = 'on' }) $null)
+    Check ($null -ne $run.failure -and [string]$run.failure.Exception.Message -ceq 'Background request embeddingPort is invalid.' -and $run.starts -eq 0 -and $run.order -cnotcontains 'lock') 'strict: embeddings on with no embeddingPort is refused before the lock (never port 0)'
     foreach ($ok in @(@{ contextProfile = 'default' }, @{ contextProfile = 'long' }, @{ slots = 1 }, @{ slots = 2 }, @{ embeddings = 'off' })) {
         $run = Invoke-Host (New-HostRequestFile ([ordered]@{} + $ok) $null)
         Check ($null -eq $run.failure -and $run.starts -eq 1) "strict: the exact value $((@($ok.Keys)[0]))=$($ok[@($ok.Keys)[0]]) is accepted"
@@ -318,7 +322,7 @@ try {
     # ================= 10. the refusals are visible =================
     $embeddingsLine = 'FastLLM did not start at sign-in (2026-11-21T08:00:00Z): embeddings are on, but no embedding model is installed. Install an approved embedding model, or turn embeddings off (Settings, or fast-llm.ps1 settings -Embeddings off).'
     $otherEmbeddingsLine = 'FastLLM did not start at sign-in (2026-11-21T08:00:00Z): embeddings are on, but they cannot start (embeddings-not-measured). Turn embeddings off (Settings, or fast-llm.ps1 settings -Embeddings off), or fix the embedding setup.'
-    $profileLine = 'The last background run did not start: the saved context profile or requests-at-once setting has no measured setup for this model and engine. Set the context profile to default and requests at once to 1 (Settings, or fast-llm.ps1 settings -KvContextProfile default -KvSlots 1), or wait for a measured setup.'
+    $profileLine = 'The last start did not run: the context profile or requests-at-once setting it used has no measured setup for this model and engine. Set the context profile to default and requests at once to 1 (Settings, or fast-llm.ps1 settings -KvContextProfile default -KvSlots 1), or wait for a measured setup.'
     $resultNoModel = [pscustomobject]@{ time = '2026-11-21T08:00:00Z'; result = 'host-failed'; failureCode = 'embeddings-no-model' }
     Check ((Get-FastLlmSignInResultText -Result $resultNoModel) -ceq $embeddingsLine) 'visible: the Settings line for a sign-in refused for the embeddings (no model) says it did not start, why, and the two fixes'
     Check ((Get-FastLlmSignInResultText -Result ([pscustomobject]@{ time = '2026-11-21T08:00:00Z'; result = 'host-failed'; failureCode = 'embeddings-not-measured' })) -ceq $otherEmbeddingsLine) 'visible: another embeddings refusal has its own fixed line, with its code'
@@ -356,6 +360,7 @@ try {
     Write-Utf8 (Join-Path $statusFailedRoot 'state/status.json') ('{"schemaVersion":1,"runId":"' + ('b' * 32) + '","phase":"failed","action":"start","failureCode":"serving-profile-not-measured"}')
     $statusFailedOut = @(& $shell -NoLogo -NoProfile -NonInteractive -File (Join-Path $root 'fast-llm.ps1') status -InstallRoot $statusFailedRoot 2>&1 | ForEach-Object { [string]$_ })
     Check ($statusFailedOut -ccontains $profileLine) 'visible: fast-llm.ps1 status prints the exact profile line for a run that failed for a missing measured setup'
+    Check ($profileLine -cnotmatch 'background|saved' -and (Get-FastLlmUiBackgroundText -State $profileState) -ceq @($statusFailedOut | Where-Object { $_ -clike 'The last start did not run*' })[0]) 'visible: a failed command-line start (status.json only, no background host record) gets the same neutral line the window shows, which claims neither a background run nor a saved setting'
     Check (@($statusOut | Where-Object { $_ -clike 'FastLLM did not start at sign-in*' }).Count -eq 1 -and @($statusFailedOut | Where-Object { $_ -clike 'FastLLM did not start at sign-in*' }).Count -eq 0) 'visible: the sign-in line appears once, and only when the last sign-in was refused'
 }
 finally {

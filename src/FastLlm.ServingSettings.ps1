@@ -454,7 +454,7 @@ function Get-FastLlmServingHostArguments {
 function Get-FastLlmSavedServingFailureText {
     param([string] $Code)
     if ($Code -ceq 'serving-profile-not-measured') {
-        return 'The last background run did not start: the saved context profile or requests-at-once setting has no measured setup for this model and engine. Set the context profile to default and requests at once to 1 (Settings, or fast-llm.ps1 settings -KvContextProfile default -KvSlots 1), or wait for a measured setup.'
+        return 'The last start did not run: the context profile or requests-at-once setting it used has no measured setup for this model and engine. Set the context profile to default and requests at once to 1 (Settings, or fast-llm.ps1 settings -KvContextProfile default -KvSlots 1), or wait for a measured setup.'
     }
     return $null
 }

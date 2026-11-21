@@ -607,6 +607,9 @@ function Get-FastLlmBackgroundRequestServing {
         if ($value -isnot [string] -or ($value -cne 'on' -and $value -cne 'off')) { throw 'Background request embeddings is invalid.' }
         $embeddings = [string]$value
     }
+    # The embeddings and their port go together: the writer writes both or neither, so one without the other is an inconsistent request.
+    if ($embeddings -ceq 'on' -and -not $Request.PSObject.Properties['embeddingPort']) { throw 'Background request embeddingPort is invalid.' }
+    if ($embeddings -cne 'on' -and $Request.PSObject.Properties['embeddingPort']) { throw 'Background request embeddingPort is invalid.' }
     if ($Request.PSObject.Properties['embeddingPort']) {
         $value = $Request.embeddingPort
         if (($value -isnot [int] -and $value -isnot [long]) -or [long]$value -lt 1024 -or [long]$value -gt 65535) { throw 'Background request embeddingPort is invalid.' }
