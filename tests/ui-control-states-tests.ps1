@@ -51,9 +51,9 @@ foreach($r in $trayMatrix|Where-Object{$_.vcBroker}){$want=if($r.text -ceq 'Rest
 Check $trayOk 'Microsoft setup leaves only Restore in the tray'
 
 # Self-check: the comparison is not vacuous.
-$chooseLine='$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)'
+$chooseLine='$chooseButton.Enabled=$states.chooseSetup'
 Check ($windowText.Contains($chooseLine)) 'the self-check finds the Choose another setup rule'
-$changed=$windowText.Replace($chooseLine,'$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker)')
+$changed=$windowText.Replace($chooseLine,'$chooseButton.Enabled=$true')
 $caught=Get-Mismatches $changed
 Check ($caught.Count -gt 0) 'a changed rule is caught'
 

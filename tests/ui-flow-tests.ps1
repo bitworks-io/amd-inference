@@ -5,6 +5,7 @@ $root=Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $root 'src/FastLlm.Update.ps1')
 . (Join-Path $root 'src/FastLlm.Components.ps1')
+. (Join-Path $PSScriptRoot 'helpers/UiControlStatesMatrix.ps1')
 Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 $checks=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
@@ -689,7 +690,17 @@ $continueText = (Get-UiFunctionText 'ContinueWithChosenRecipe').Extent.Text
 Check ($continueText.Contains('Get-FastLlmUiComponentInstallArguments') -and $continueText.Contains("LaunchStep 'component install' `$installArgs") -and $continueText.Contains('$Row.experimental -and -not $experimentalBox.Checked')) 'choosing a recipe installs through the argument builder and refuses an experimental row while the switch is off'
 Check (-not $ui.Contains("'-Install'") -and -not $ui.Contains("'-AcceptLicense'")) 'the window builds no install or license-acceptance argument itself'
 Check ($ui.Contains("'recipes','-Detail','-AsJson'") -and $ui.Contains('$chooseButton.Add_Click') -and $ui.Contains("ButtonAt 'Choose another setup'") -and $ui.Contains('$script:previewReady')) 'a Choose another setup button asks the CLI for the recipe list and is tied to a preview'
-Check ($ui.Contains('$chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)')) 'the button is enabled only when a preview exists and nothing else is running'
+function New-UiChooseSnapshot([bool]$Busy,[bool]$PreviewReady,[bool]$VcBroker,[string]$Background){
+    return New-FastLlmUiStateSnapshot -Busy $Busy -UpdateKind '' -ChildActive $false -Step 'idle' -RunReady $false -SideChildActive $false -VcBrokerActive $VcBroker `
+        -PreviewReady $PreviewReady -SwitchGap $false -ChatUrlSet $false -BackgroundStopRequested $false -Background (Get-UiBackgroundFixture -Name $Background)
+}
+$chooseOn=(Get-FastLlmUiControlStates -Snapshot (New-UiChooseSnapshot $false $true $false 'absent')).chooseSetup
+$chooseNoPreview=(Get-FastLlmUiControlStates -Snapshot (New-UiChooseSnapshot $false $false $false 'absent')).chooseSetup
+$chooseBroker=(Get-FastLlmUiControlStates -Snapshot (New-UiChooseSnapshot $false $true $true 'absent')).chooseSetup
+$chooseOccupied=(Get-FastLlmUiControlStates -Snapshot (New-UiChooseSnapshot $false $true $false 'unverified')).chooseSetup
+$chooseBusy=(Get-FastLlmUiControlStates -Snapshot (New-UiChooseSnapshot $true $true $false 'absent')).chooseSetup
+$setBusyChoose=@((Get-UiFunctionText 'SetBusy').FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$chooseButton.Enabled' -and $n.Right.Extent.Text -ceq '$states.chooseSetup'},$true))
+Check ($chooseOn -eq $true -and $chooseNoPreview -eq $false -and $chooseBroker -eq $false -and $chooseOccupied -eq $false -and $chooseBusy -eq $false -and $setBusyChoose.Count -eq 1) 'the button is enabled only when a preview exists and nothing else is running'
 Check ($ui.Contains("'component install'{") -and $ui.Contains('Test-FastLlmUiTypedHipFailure -Code $failureCode') -and $ui.Contains('Format-FastLlmUiTypedFailure')) 'a finished component install starts the chosen recipe, and a typed start failure is shown as its message'
 Check ($ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe')) 'the chosen recipe is pinned for the preview'
 
@@ -1730,7 +1741,10 @@ Check ($uiText.Contains('Get-FastLlmUiSwitchWindowState') -and $uiText.Contains(
 $stopFn=Get-UiFunctionText 'StopUiOperation'
 Check ($stopFn.Extent.Text.Contains('$script:switchGap') -and $stopFn.Extent.Text.Contains('Request-FastLlmStop')) 'switch window: Stop in the gap asks the supervisor to stop (stop always wins)'
 $setBusyFn=Get-UiFunctionText 'SetBusy'
-Check ($setBusyFn.Extent.Text.Contains('$script:switchGap')) 'switch window: the gap keeps Stop enabled in SetBusy'
+$gapSnap=New-FastLlmUiStateSnapshot -Busy $false -UpdateKind '' -ChildActive $false -Step 'idle' -RunReady $false -SideChildActive $false -VcBrokerActive $false -PreviewReady $false -SwitchGap $true -ChatUrlSet $false -BackgroundStopRequested $false -Background (Get-UiBackgroundFixture -Name 'unverified')
+$noGapSnap=New-FastLlmUiStateSnapshot -Busy $false -UpdateKind '' -ChildActive $false -Step 'idle' -RunReady $false -SideChildActive $false -VcBrokerActive $false -PreviewReady $false -SwitchGap $false -ChatUrlSet $false -BackgroundStopRequested $false -Background (Get-UiBackgroundFixture -Name 'unverified')
+$setBusyCallsSnapshot=@($setBusyFn.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'GetUiStateSnapshot'},$true)).Count -ge 1
+Check ((Get-UiFunctionText 'GetUiStateSnapshot').Extent.Text.Contains('$script:switchGap') -and $setBusyCallsSnapshot -and (Get-FastLlmUiControlStates -Snapshot $gapSnap).stop -eq $true -and (Get-FastLlmUiControlStates -Snapshot $noGapSnap).stop -eq $false) 'switch window: the gap keeps Stop enabled in SetBusy'
 
 # Reinstall previous version: the button exists only while the decision allows it, and the confirmation names both versions.
 $eligibleDecision = [pscustomobject]@{ decision = 'eligible'; reason = 'eligible'; target = '2026.10.15.1'; installed = '2026.10.16.1'; latest = @{ version = '2026.10.15.1' } }
