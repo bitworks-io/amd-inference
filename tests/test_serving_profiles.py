@@ -83,11 +83,10 @@ class ServingProfilesTests(unittest.TestCase):
         self.assertRefused([], "must be an object")
         self.assertRefused("x", "must be an object")
 
-    def test_add_ons_must_stay_empty_and_sidecars_must_be_a_list(self):
-        add_on = {"kind": "vision", "modelId": "m", "modelSha256": "0" * 64, "engineId": "llama.cpp-b10698-vulkan", "backend": "vulkan",
-                  "extraFreeVramMiB": {"default": 1}, "evidence": {}}
-        self.assertRefused(top(lambda d: d.update(addOns=[add_on])), "addOns must be an empty list")
-        self.assertRefused(top(lambda d: d.update(addOns={})), "addOns must be an empty list")
+    def test_add_ons_and_sidecars_must_be_lists(self):
+        # CHANGED EXPECTATION: this test used to pin "addOns must be an empty list". Vision add-on rows are accepted now (VisionAddOnRowTests).
+        self.assertRefused(top(lambda d: d.update(addOns={})), "addOns must be a list")
+        self.assertRefused(top(lambda d: d.update(addOns=None)), "addOns must be a list")
         self.assertRefused(top(lambda d: d.update(sidecars=None)), "sidecars must be a list")
         self.assertRefused(top(lambda d: d.update(sidecars={})), "sidecars must be a list")
         # A sidecar row is checked like a profile row: a row that is only a role is refused for its missing keys.
@@ -363,6 +362,137 @@ class SidecarRowTests(unittest.TestCase):
         (root / "config" / "serving-profiles.sha256").write_bytes((hashlib.sha256(raw.encode("utf-8")).hexdigest() + "  serving-profiles.json\n").encode("ascii"))
         self.assertEqual(sp.main(["--root", str(root)]), 0)
         (root / "config" / "serving-profiles.json").write_bytes(raw.replace('"cpu"', '"gpu"').encode("utf-8"))
+        self.assertEqual(sp.main(["--root", str(root)]), 1)
+
+
+# ---- addOns[]: the measured extra memory of the vision option (a projector beside the text model) ----
+# Test rows and a test component only: config/serving-profiles.json ships no add-on row and config/components.json no projector.
+VISION_COMPONENTS = json.loads((ROOT / "tests" / "fixtures" / "vision-components-test.json").read_text(encoding="utf-8"))
+VISION_GOOD = json.loads((ROOT / "tests" / "fixtures" / "vision-profiles-test.json").read_text(encoding="utf-8"))
+VISION_PARITY = json.loads((ROOT / "tests" / "fixtures" / "vision-addon-parity-cases.json").read_text(encoding="utf-8"))
+VISION_KEYS = ["kind", "modelId", "modelSha256", "engineId", "backend", "componentId", "extraFreeVramMiB", "evidence"]
+
+
+def vision(fn, index=0):
+    doc = copy.deepcopy(VISION_GOOD)
+    fn(doc["addOns"][index])
+    return doc
+
+
+class VisionAddOnRowTests(unittest.TestCase):
+    def errors(self, doc, components=None):
+        return sp.validate(doc, CATALOG, VISION_COMPONENTS if components is None else components)
+
+    def assertRefused(self, doc, text, components=None):
+        errors = self.errors(doc, components)
+        self.assertTrue(errors, "expected a refusal")
+        self.assertTrue(any(text in e for e in errors), errors)
+
+    def test_shipped_file_has_no_add_on_row_and_no_projector_component(self):
+        self.assertEqual(SHIPPED["addOns"], [])
+        self.assertEqual([c["id"] for c in COMPONENTS["components"] if c.get("kind") == "projector"], [])
+        self.assertEqual(self.errors(SHIPPED, COMPONENTS), [])
+        # Byte-identical to main (6436d2c): this PR adds no real row.
+        self.assertEqual(hashlib.sha256(SHIPPED_PATH.read_bytes()).hexdigest(), "927651eabb7fd2ab3c1ffb99e742cdfa2dcd06b891aa329ed6fc48a8117f2160")
+
+    def test_valid_rows_pass_and_use_exactly_the_row_keys(self):
+        self.assertEqual(self.errors(VISION_GOOD), [])
+        self.assertEqual(len(VISION_GOOD["addOns"]), 2)
+        for row in VISION_GOOD["addOns"]:
+            self.assertEqual(list(row), VISION_KEYS)
+            self.assertEqual(list(row["evidence"]), ["resultId", "measuredAt", "gpuClasses"])
+
+    def test_test_rows_never_ship(self):
+        self.assertNotEqual(SHIPPED_PATH.read_bytes(), (ROOT / "tests" / "fixtures" / "vision-profiles-test.json").read_bytes())
+
+    def test_test_row_is_refused_against_the_shipped_components(self):
+        # The fixture projector is not a shipped component: the same row against config/components.json names an unknown component.
+        self.assertRefused(VISION_GOOD, "is not a listed projector component", components=COMPONENTS)
+
+    def test_mtp_and_ngram_rows_are_still_refused(self):
+        for kind in ("mtp", "ngram", "audio", "", None, 1, "Vision"):
+            self.assertRefused(vision(lambda r, k=kind: r.update(kind=k)), "kind must be 'vision'")
+
+    def test_row_keys_are_closed(self):
+        self.assertRefused(vision(lambda r: r.update(bogus=1)), "unexpected keys")
+        self.assertRefused(vision(lambda r: r.update(requiredFreeVramMiB=512)), "unexpected keys")
+        for key in VISION_KEYS:
+            self.assertRefused(vision(lambda r, k=key: r.pop(k)), "missing keys")
+        self.assertRefused(top(lambda d: d.update(addOns=["row"])), "must be an object")
+        self.assertRefused(vision(lambda r: r["evidence"].update(url="https://example.invalid/")), "unexpected keys")
+
+    def test_add_ons_must_be_a_list(self):
+        self.assertRefused(top(lambda d: d.update(addOns={})), "addOns must be a list")
+
+    def test_extra_memory_is_a_positive_whole_number_per_known_profile_id(self):
+        for bad in (0, -5, 1.5, "900", True, None, [900]):
+            self.assertRefused(vision(lambda r, b=bad: r["extraFreeVramMiB"].update(default=b)), "extraFreeVramMiB['default'] must be a positive whole number")
+        self.assertRefused(vision(lambda r: r["extraFreeVramMiB"].update(huge=100)), "unknown profile id")
+        self.assertRefused(vision(lambda r: r.update(extraFreeVramMiB={})), "extraFreeVramMiB must be a non-empty object")
+        self.assertRefused(vision(lambda r: r.update(extraFreeVramMiB=[900])), "extraFreeVramMiB must be a non-empty object")
+        self.assertRefused(vision(lambda r: r.update(extraFreeVramMiB=900)), "extraFreeVramMiB must be a non-empty object")
+        # A row may cover one profile id only.
+        self.assertEqual(self.errors(vision(lambda r: r.update(extraFreeVramMiB={"long": 1}))), [])
+
+    def test_model_and_engine_binding(self):
+        for bad in ("0" * 63, "G" * 64, "", None, 5, VISION_GOOD["addOns"][0]["modelSha256"].upper()):
+            self.assertRefused(vision(lambda r, b=bad: r.update(modelSha256=b)), "modelSha256 must be 64 lowercase hex characters")
+        self.assertRefused(vision(lambda r: r.update(modelSha256="0" * 64)), "does not equal the catalog sha256")
+        self.assertRefused(vision(lambda r: r.update(modelId="no-such-model")), "is not a catalog model")
+        self.assertRefused(vision(lambda r: r.update(engineId="llama.cpp-b1-vulkan")), "is not the built-in engine or a listed llama.cpp engine component")
+        self.assertRefused(vision(lambda r: r.update(backend="hip")), "backend must be 'vulkan'")
+        self.assertRefused(vision(lambda r: r.update(backend="cpu")), "backend must be 'vulkan'")
+
+    def test_projector_component_binding(self):
+        self.assertRefused(vision(lambda r: r.update(componentId="other-projector")), "is not a listed projector component")
+        self.assertRefused(vision(lambda r: r.update(componentId=7)), "is not a listed projector component")
+        other = copy.deepcopy(VISION_COMPONENTS)
+        other["components"][0]["kind"] = "embedding-model"
+        self.assertRefused(VISION_GOOD, "is not a listed projector component", components=other)
+
+    def test_evidence(self):
+        self.assertRefused(vision(lambda r: r["evidence"].update(resultId="")), "evidence.resultId")
+        self.assertRefused(vision(lambda r: r["evidence"].update(measuredAt="yesterday")), "evidence.measuredAt")
+        self.assertRefused(vision(lambda r: r["evidence"].update(gpuClasses=[])), "evidence.gpuClasses")
+        self.assertRefused(vision(lambda r: r.update(evidence="measured")), "must be an object")
+
+    def test_duplicate_rows(self):
+        doc = copy.deepcopy(VISION_GOOD)
+        doc["addOns"].append(copy.deepcopy(doc["addOns"][0]))
+        self.assertRefused(doc, "duplicate add-on row")
+        # The same key with other values is still a duplicate; the key is kind + model sha256 + engine + backend.
+        doc = copy.deepcopy(VISION_GOOD)
+        doc["addOns"].append(copy.deepcopy(doc["addOns"][0]))
+        doc["addOns"][2]["extraFreeVramMiB"] = {"long": 1}
+        self.assertRefused(doc, "duplicate add-on row")
+
+    def test_profiles_sidecars_and_add_ons_are_checked_together(self):
+        doc = copy.deepcopy(VISION_GOOD)
+        doc["profiles"][0]["contextTotal"] = 0
+        doc["addOns"][0]["kind"] = "mtp"
+        errors = self.errors(doc)
+        self.assertTrue(any("contextTotal" in e for e in errors) and any("kind must be 'vision'" in e for e in errors), errors)
+
+    def test_parity_cases_with_the_powershell_loader(self):
+        # tests/optin-arguments-tests.ps1 reads the same table and requires the same verdict from the loader. These are shape checks only: the
+        # checks that need the catalog or the component list (model, engine, component) are checker-only, because the loader binds a row to the
+        # plan's exact model sha256, engine id and backend.
+        self.assertGreaterEqual(len(VISION_PARITY["cases"]), 20)
+        for case in VISION_PARITY["cases"]:
+            doc = copy.deepcopy(VISION_GOOD)
+            doc["addOns"] = copy.deepcopy(case["addOns"])
+            self.assertEqual(bool(self.errors(doc)), case["refuse"], case["name"])
+
+    def test_cli_counts_add_on_rows(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "config").mkdir()
+        shutil.copyfile(str(ROOT / "config" / "catalog.json"), str(root / "config" / "catalog.json"))
+        (root / "config" / "components.json").write_text(json.dumps(VISION_COMPONENTS), encoding="utf-8")
+        raw = json.dumps(VISION_GOOD, indent=2) + "\n"
+        (root / "config" / "serving-profiles.json").write_bytes(raw.encode("utf-8"))
+        (root / "config" / "serving-profiles.sha256").write_bytes((hashlib.sha256(raw.encode("utf-8")).hexdigest() + "  serving-profiles.json\n").encode("ascii"))
+        self.assertEqual(sp.main(["--root", str(root)]), 0)
+        (root / "config" / "serving-profiles.json").write_bytes(raw.replace('"vision"', '"mtp"').encode("utf-8"))
         self.assertEqual(sp.main(["--root", str(root)]), 1)
 
 

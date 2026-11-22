@@ -338,6 +338,23 @@ try {
         Check (-not ($clearedNames -contains 'contextProfile') -and -not ($clearedNames -contains 'slots')) 'serving-profile-cli: the default values remove both keys'
         $settingsDefault=(Invoke-StartTestCli @('settings','-AsJson','-InstallRoot',$profileRoot)).text | ConvertFrom-Json
         Check ($settingsDefault.contextProfile -ceq 'default' -and $settingsDefault.slots -eq 1) 'serving-profile-cli: settings -AsJson shows default and 1 when nothing is saved'
+        # The vision option (-Vision off|on): plan and start only, never saved. Every vision start is refused (nothing here ships a measured row).
+        $visionOff=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-Vision','off','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+        $visionNone=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+        Check ($visionOff.exit -eq 0 -and $visionOff.text -ceq $visionNone.text -and -not (($visionOff.text | ConvertFrom-Json).PSObject.Properties.Name -contains 'vision') -and (($visionOff.text | ConvertFrom-Json).serverArguments -ccontains '--no-mmproj')) 'vision-cli: plan -Vision off is byte-identical to a plan without it and keeps --no-mmproj'
+        $visionOn=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Vision','on','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+        Check ($visionOn.exit -ne 0 -and $visionOn.text -like '*vision-not-measured*' -and $visionOn.text -like '*Nothing was started*') 'vision-cli: plan -Vision on is refused with vision-not-measured (no measured vision row ships)'
+        $visionOnLong=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Vision','on','-KvContextProfile','long','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+        Check ($visionOnLong.exit -ne 0 -and $visionOnLong.text -like '*vision-not-measured*') 'vision-cli: plan -Vision on with a context profile is refused the same way'
+        $visionWrongAction=Invoke-StartTestCli @('status','-Vision','on','-InstallRoot',$profileRoot)
+        Check ($visionWrongAction.exit -ne 0 -and $visionWrongAction.text -like '*-Vision is supported only by plan and start*') 'vision-cli: -Vision on another action is refused'
+        $visionSettings=Invoke-StartTestCli @('settings','-Vision','on','-InstallRoot',$profileRoot)
+        Check ($visionSettings.exit -ne 0 -and $visionSettings.text -like '*-Vision is supported only by plan and start*') 'vision-cli: settings -Vision is refused: there is no saved vision setting'
+        $visionInstall=Invoke-StartTestCli @('install','-Vision','on','-DryRun','-HardwareFile',$fixture,'-InstallRoot',$profileRoot)
+        Check ($visionInstall.exit -ne 0 -and $visionInstall.text -like '*-Vision is supported only by plan and start*') 'vision-cli: install -Vision is refused'
+        $visionBad=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Vision','maybe','-InstallRoot',$profileRoot)
+        Check ($visionBad.exit -ne 0) 'vision-cli: -Vision maybe is refused (a closed set)'
+        Check (-not (Test-Path -LiteralPath (Join-Path $profileRoot 'settings.json') -PathType Leaf) -or -not ((Get-Content -LiteralPath (Join-Path $profileRoot 'settings.json') -Raw) -match 'vision')) 'vision-cli: nothing about vision is ever written to settings.json'
     }
     # M11: a malformed settings.json is said out loud by a live start, and only there. The decision is a pure function, tested in-process;
     # a real 'start' child is never run by a mock suite (it would take the lock, write status and probe hardware).

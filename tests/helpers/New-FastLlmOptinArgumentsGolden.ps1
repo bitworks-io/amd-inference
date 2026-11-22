@@ -41,6 +41,7 @@ function Get-FastLlmOptinArgumentsMatrix {
         $adapters = switch ($Name) {
             'test-24gb' { @((& $adapter 'Vulkan0' 24576 23552)) }
             'test-24gb-tight' { @((& $adapter 'Vulkan0' 24576 21000)) }
+            'test-24gb-22000' { @((& $adapter 'Vulkan0' 24576 22000)) }
             'test-12gb' { @((& $adapter 'Vulkan0' 12272 11474)) }
             'test-dual-24gb' { @((& $adapter 'Vulkan0' 24576 23552), (& $adapter 'Vulkan1' 24576 23552)) }
             default { throw "Unknown opt-in test hardware '$Name'." }
@@ -94,6 +95,89 @@ function Get-FastLlmOptinArgumentsMatrix {
     return $rows.ToArray()
 }
 
+# The vision option's rows (-Vision on), planned from the TEST rows in tests/fixtures/vision-profiles-test.json (the serving profile rows of the
+# opt-in matrix plus two vision add-on rows). Each plan row also carries argumentsWithProjector: the arguments of the same plan WITHOUT vision, with
+# the --no-mmproj element replaced in place by --mmproj and a projector path that contains a space (the one helper that builds it). Pure planner work.
+function Get-FastLlmVisionArgumentsMatrix {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Root,
+        [Parameter(Mandatory = $true)][string] $InstallRoot
+    )
+    $module = Import-Module (Join-Path $Root 'src/FastLlm.psm1') -Force -PassThru -ErrorAction Stop
+    $visionProfiles = Join-Path $Root 'tests/fixtures/vision-profiles-test.json'
+    $adapter = {
+        param([string] $Device, [int] $Vram, [int] $Free)
+        return [pscustomobject]@{
+            device = $Device; name = 'Opt-in test card'; vendorId = '1002'; vramMiB = $Vram; freeVramMiB = $Free
+            isAmd = $true; isIntegrated = $false; backend = 'Vulkan'; driverVersion = 'optin-test'
+        }
+    }
+    $hardwareFor = {
+        param([string] $Name)
+        $adapters = switch ($Name) {
+            'test-24gb' { @((& $adapter 'Vulkan0' 24576 23552)) }
+            'test-24gb-22000' { @((& $adapter 'Vulkan0' 24576 22000)) }
+            'test-12gb' { @((& $adapter 'Vulkan0' 12272 11474)) }
+            default { throw "Unknown vision test hardware '$Name'." }
+        }
+        return [pscustomobject]@{
+            schemaVersion = 1; source = 'optin-test'; backend = 'Vulkan'; enginePath = 'C:\FastLLM\vulkan\llama-server.exe'; adapters = @($adapters)
+        }
+    }
+    $normalise = {
+        param([string] $Text)
+        $value = $Text
+        foreach ($variant in @($InstallRoot, $InstallRoot.Replace('\', '/'), $InstallRoot.Replace('/', '\'))) {
+            if ($variant) { $value = $value.Replace($variant, '<install-root>') }
+        }
+        return $value.Replace('\', '/')
+    }
+    $projectorPath = 'C:\Users\Test User\FastLLM\components\projector\test-vision-projector-q8\test-vision-projector-q8.gguf'
+    # name, hardware, request (auto or a model id), contextProfile, slots
+    $cases = @(
+        @('vision-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'long', 1),
+        @('vision-long-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'long', 2),
+        @('vision-default-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'default', 2),
+        @('vision-smaller-model-long', 'test-12gb', 'qwen3.5-9b-q6-k', 'long', 1),
+        @('vision-default-context-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'default', 1),
+        @('vision-row-has-no-value-for-the-profile', 'test-12gb', 'qwen3.5-9b-q6-k', 'default', 1),
+        @('vision-no-row-for-the-model', 'test-24gb', 'qwen3.8-27b-q8-0', 'long', 1),
+        @('vision-fit-adds-the-extra-memory', 'test-24gb-22000', 'qwen3.8-27b-ud-q4-k-m', 'long', 1)
+    )
+    $rows = New-Object System.Collections.ArrayList
+    foreach ($case in $cases) {
+        $parameters = @{
+            CatalogPath = Join-Path $Root 'config/catalog.json'; Profile = 'balanced'; NoEngineExecution = $true; InstallRoot = $InstallRoot
+            KvProfilesPath = $visionProfiles; Hardware = (& $hardwareFor ([string] $case[1])); ModelId = [string] $case[2]
+            KvContextProfile = [string] $case[3]; KvSlots = [int] $case[4]
+        }
+        $outcome = 'plan'; $refusal = ''; $refusalCode = ''; $arguments = @(); $withProjector = @(); $requiredFree = 0; $extra = 0; $profileId = ''
+        try {
+            $plan = Get-FastLlmPlan @parameters -Vision 'on'
+            $arguments = @($plan.serverArguments | ForEach-Object { & $normalise ([string] $_) })
+            $requiredFree = [int64] $plan.vision.requiredFreeVramMiB; $extra = [int] $plan.vision.extraFreeVramMiB; $profileId = [string] $plan.vision.profileId
+            # The same plan without vision (a default-context row has no vision plan to compare, so it is planned only when the plan above exists).
+            $basePlan = Get-FastLlmPlan @parameters
+            $baseArguments = @($basePlan.serverArguments | ForEach-Object { [string] $_ })
+            $built = @(& $module { param($A, $P) Get-FastLlmVisionArguments -Arguments $A -ProjectorPath $P } $baseArguments $projectorPath)
+            # The projector path is not an install-root path: keep it as it is (the normaliser would turn its backslashes into slashes).
+            $withProjector = @($built | ForEach-Object { if ([string] $_ -ceq $projectorPath) { [string] $_ } else { & $normalise ([string] $_) } })
+        }
+        catch {
+            $outcome = 'refused'; $refusal = (& $normalise ([string] $_.Exception.Message)); $refusalCode = [string] $_.Exception.Data['FastLlmFailureCode']
+        }
+        [void] $rows.Add([pscustomobject] [ordered] @{
+                name = [string] $case[0]; hardware = [string] $case[1]; request = [string] $case[2]
+                contextProfile = [string] $case[3]; slots = [int] $case[4]
+                outcome = $outcome; refusalCode = $refusalCode; refusal = $refusal; visionProfileId = $profileId
+                extraFreeVramMiB = $extra; requiredFreeVramMiB = $requiredFree
+                arguments = [string[]] $arguments; argumentsWithProjector = [string[]] $withProjector
+            })
+    }
+    return $rows.ToArray()
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
     Set-StrictMode -Version 2.0
@@ -103,11 +187,14 @@ if ($MyInvocation.InvocationName -ne '.') {
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
     try {
         $rows = @(Get-FastLlmOptinArgumentsMatrix -Root $root -InstallRoot $installRoot)
+        $visionRows = @(Get-FastLlmVisionArgumentsMatrix -Root $root -InstallRoot $installRoot)
         $document = [ordered] @{
             schema                = 'fastllm.optin-arguments-golden.v1'
             catalogSha256         = ((Get-Content -LiteralPath (Join-Path $root 'config/catalog.sha256') -Raw).Trim() -split '\s+')[0]
             servingProfilesSha256 = (Get-FileHash -LiteralPath (Join-Path $root 'tests/fixtures/serving-profiles-test.json') -Algorithm SHA256).Hash.ToLowerInvariant()
             rows                  = $rows
+            visionProfilesSha256  = (Get-FileHash -LiteralPath (Join-Path $root 'tests/fixtures/vision-profiles-test.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+            visionRows            = $visionRows
         }
         $json = ($document | ConvertTo-Json -Depth 8) + "`n"
         [IO.File]::WriteAllText($OutputPath, $json, (New-Object Text.UTF8Encoding($false)))

@@ -361,7 +361,8 @@ class EmbeddingModelKindTests(unittest.TestCase):
 
     def test_kind_is_listed(self):
         self.assertIn("embedding-model", cc.KINDS)
-        self.assertEqual(cc.KINDS, ("engine", "runtime", "model", "draft", "tool", "embedding-model"))
+        # CHANGED EXPECTATION: the list of kinds gains "projector" (ProjectorKindTests).
+        self.assertEqual(cc.KINDS, ("engine", "runtime", "model", "draft", "tool", "embedding-model", "projector"))
 
     def test_valid_embedding_model(self):
         self.assertEqual(self.errors(embedding_model()), [])
@@ -394,6 +395,55 @@ class EmbeddingModelKindTests(unittest.TestCase):
         bad = embedding_model()
         bad["sources"][0]["fileManifest"][0]["sha256"] = "xyz"
         self.assertTrue(any("sha256 must be 64 lowercase hex" in e for e in self.errors(bad)))
+
+
+# ---- kind "projector": the vision projector file (--mmproj) of a model; the model binding lives in a serving-profiles add-on row ----
+def projector(**over):
+    out = comp("test-vision-projector", [part(["test-projector.gguf", "LICENSE.txt"], fmt="zip", prefix=None)], kind="projector")
+    out["entryPoint"] = "test-projector.gguf"
+    out["requires"] = []
+    out.update(over)
+    return out
+
+
+class ProjectorKindTests(unittest.TestCase):
+    def errors(self, *components):
+        return cc.validate(with_base(*components), CATALOG)
+
+    def test_kind_is_listed(self):
+        self.assertIn("projector", cc.KINDS)
+
+    def test_valid_projector(self):
+        self.assertEqual(self.errors(projector()), [])
+
+    def test_the_shipped_list_has_none(self):
+        self.assertEqual([c["id"] for c in GOOD["components"] if c["kind"] == "projector"], [])
+
+    def test_the_fixture_component_passes(self):
+        fixture = json.loads((ROOT / "tests" / "fixtures" / "vision-components-test.json").read_text(encoding="utf-8"))
+        self.assertEqual(cc.validate(fixture, None), [])
+        self.assertEqual([c["kind"] for c in fixture["components"]], ["projector"])
+
+    def test_needs_an_entry_point_that_is_a_gguf_file_of_the_manifest(self):
+        bad = projector(); del bad["entryPoint"]
+        self.assertTrue(any("projector needs an entryPoint" in e for e in self.errors(bad)))
+        self.assertTrue(any("not in the fileManifest" in e for e in self.errors(projector(entryPoint="other.gguf"))))
+        self.assertTrue(any("must be a .gguf file" in e for e in self.errors(projector(entryPoint="LICENSE.txt"))))
+        nested = comp("test-vision-projector", [part(["models/test-projector.gguf"])], kind="projector")
+        nested["entryPoint"] = "models/test-projector.gguf"
+        self.assertTrue(any("must be a .gguf file at the top of the component" in e for e in self.errors(nested)))
+
+    def test_has_no_adapter_runtime_path_dirs_or_requires(self):
+        self.assertTrue(any("projector has no adapter" in e for e in self.errors(projector(adapter="llama.cpp"))))
+        self.assertTrue(any("only for runtime" in e for e in self.errors(projector(runtimePathDirs=["bin"]))))
+        runtime = comp("some-runtime", [part(["bin/a.dll"])], path_dirs=["bin"])
+        self.assertTrue(any("projector requires no other component" in e for e in self.errors(runtime, projector(requires=["some-runtime"]))))
+
+    def test_pins_are_checked_like_any_component(self):
+        bad = projector()
+        bad["sources"][0]["fileManifest"][0]["sha256"] = "xyz"
+        self.assertTrue(any("sha256 must be 64 lowercase hex" in e for e in self.errors(bad)))
+        self.assertTrue(any("license.consent" in e for e in self.errors(projector(license={"spdx": "Apache-2.0", "url": "https://example.com/l", "consent": "none"}))))
 
 
 if __name__ == "__main__":
