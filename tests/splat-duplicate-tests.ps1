@@ -132,6 +132,7 @@ $expected=[ordered]@{
     'bad-case-differs.ps1'=@('7: @common + -profilepath')
     'bad-later-key.ps1'=@('7: @opts + -ProfilePath','7: @opts + -Mode','7: @opts + -Extra')
     'bad-script-block.ps1'=@('4: @base + -ProfilePath')
+    'bad-reassigned.ps1'=@('5: @common + -ProfilePath')
     'good-here-string.ps1'=@()
     'good-comment.ps1'=@()
     'good-function-result.ps1'=@()
@@ -139,6 +140,8 @@ $expected=[ordered]@{
     'good-clone-helper.ps1'=@()
     'good-prefix-only.ps1'=@()
     'good-key-removed.ps1'=@()
+    'good-parameter-shadow.ps1'=@()
+    'good-reassigned.ps1'=@()
 }
 foreach ($name in $expected.Keys) {
     $rel="$fixtureFolder/$name"
