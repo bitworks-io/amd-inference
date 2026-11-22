@@ -191,6 +191,36 @@ Check ($threw -and $msg -ceq 'Unsafe XAML: DTD') 'refuses a DTD'
 $threw=$false;$msg=''
 try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid '+$ns+'>')}catch{$threw=$true;$msg=$_.Exception.Message}
 Check ($threw -and $msg -ceq 'Unsafe XAML: not well-formed XML') 'refuses markup that is not well-formed'
+# Namespace allowlist and the denylist over decoded content. The designer-namespace markup (xmlns:d, xmlns:mc, mc:Ignorable)
+# was allowed by a pin added earlier in this same PR; it is now refused, so no pre-existing expectation changes.
+$nsPresentation='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+$unsafeCases=[ordered]@{
+    'entity-encoded clr-namespace (decimal)'='<Grid '+$ns+' xmlns:l="clr-namespace&#58;System;assembly=mscorlib"/>'
+    'entity-encoded clr-namespace (hex)'='<Grid '+$ns+' xmlns:l="clr-namespace&#x3A;System;assembly=mscorlib"/>'
+    'entity-encoded clr-namespace (mixed case)'='<Grid '+$ns+' xmlns:l="CLR-Namespace&#58;System;assembly=mscorlib"/>'
+    'unknown prefixed namespace'='<Grid '+$ns+' xmlns:z="http://example.invalid/evil"/>'
+    'unknown default namespace'='<Grid xmlns="http://example.invalid/x"/>'
+    'designer namespaces'='<Grid '+$ns+' xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d"/>'
+    'entity-encoded x:Code in text'='<TextBlock '+$ns+'>x&#58;Code</TextBlock>'
+    'entity-encoded ObjectDataProvider in an attribute'='<Grid '+$ns+' Tag="Object&#68;ataProvider"/>'
+}
+foreach($k in $unsafeCases.Keys){
+    $threw=$false;$msg=''
+    try{Assert-FastLlmUiXamlSafe -Xaml $unsafeCases[$k]}catch{$threw=$true;$msg=$_.Exception.Message}
+    Check ($threw -and $msg.StartsWith('Unsafe XAML:')) "refuses $k"
+}
+$threw=$false;$msg=''
+try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid '+$ns+' xmlns:z="http://example.invalid/evil"/>')}catch{$threw=$true;$msg=$_.Exception.Message}
+Check ($threw -and $msg -ceq "Unsafe XAML: namespace 'http://example.invalid/evil'") 'an unknown namespace is named in the message'
+$threw=$false;$msg=''
+try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid xmlns="'+$nsPresentation+'/"/>')}catch{$threw=$true;$msg=$_.Exception.Message}
+Check ($threw -and $msg.StartsWith('Unsafe XAML: namespace')) 'a namespace that differs by a trailing slash is refused'
+$threw=$false;$msg=''
+try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid xmlns="'+$nsPresentation.ToUpperInvariant()+'"/>')}catch{$threw=$true;$msg=$_.Exception.Message}
+Check ($threw -and $msg.StartsWith('Unsafe XAML: namespace')) 'a namespace that differs by case is refused'
+$threw=$false;$msg=''
+try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid '+$ns+'><x:Code xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"/></Grid>')}catch{$threw=$true;$msg=$_.Exception.Message}
+Check ($threw -and $msg -ceq 'Unsafe XAML: x:Code') 'a decoded element name carrying a token is refused'
 $allowed=[ordered]@{
     'pack application source'='<Image '+$ns+' Source="pack://application:,,,/FastLlm;component/x.png"/>'
     'dynamic resource source'='<Image '+$ns+' Source="{DynamicResource X}"/>'
@@ -202,7 +232,7 @@ $allowed=[ordered]@{
     'exact label File:'='<Button '+$ns+' Content="File:"/>'
     'exact label HTTP:'='<Button '+$ns+' Content="HTTP:"/>'
     'label starting with slashes'='<Button '+$ns+' Content="// note"/>'
-    'designer namespaces'='<Grid '+$ns+' xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d"/>'
+    'x namespace'='<Grid '+$ns+' xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"/>'
     'property element binding'='<Image '+$ns+'><Image.Source>{DynamicResource X}</Image.Source></Image>'
 }
 foreach($k in $allowed.Keys){
