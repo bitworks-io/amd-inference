@@ -302,6 +302,11 @@
       "reason": "Pins that no unique parameter-name prefix of an existing command becomes ambiguous (embedded old names against the parsed current names, plus binder resolution); parsing and command metadata only; no engine, GPU or network. Wired in test.yml."
     },
     {
+      "suite": "splat-duplicate-tests",
+      "class": "ci",
+      "reason": "Parses every tracked PowerShell file with the language parser and fails on a call that splats a literal hashtable and also names one of its keys (a ParameterAlreadyBound error on Windows PowerShell 5.1 that PowerShell 7 hides), after self-tests over fixture files; parsing only; no engine, GPU or network. Wired in test.yml."
+    },
+    {
       "suite": "model-switch-tests",
       "class": "ci",
       "reason": "Supervised model switch (request file, in-supervisor restart, restore-once, status block) through the real start and supervisor against the native mock server, with the catalog, planner, inventory, hash and consent boundaries replaced; no Radeon adapter, engine or network required. Wired in test.yml."
