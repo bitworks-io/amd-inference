@@ -455,7 +455,8 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     foreach ($servingPlanKey in @($servingPlanOptions.Keys)) { $selectionOptions[$servingPlanKey] = $servingPlanOptions[$servingPlanKey] }
     # Vision reaches the planner only when it is on (so the default plan call keeps the exact parameter set it always had), with the profile rows
     # file its add-on rows are read from. The saved settings have no vision key: -IgnoreUserSettings and the background starts are unaffected.
-    if ($requestedVision -ceq 'on') {
+    # (Guarded by the bound parameter like the options above, so a harness that runs only this block never reads a variable it did not set.)
+    if ($PSBoundParameters.ContainsKey('ImageMode') -and $requestedVision -ceq 'on') {
         $selectionOptions.Vision = 'on'
         if (-not $selectionOptions.ContainsKey('KvProfilesPath')) { $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json' }
     }

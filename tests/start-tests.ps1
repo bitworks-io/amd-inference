@@ -350,7 +350,7 @@ try {
         Check ($visionWrongAction.exit -ne 0 -and $visionWrongAction.text -like '*-Vision is supported only by plan and start*') 'vision-cli: -Vision on another action is refused'
         $visionSettings=Invoke-StartTestCli @('settings','-Vision','on','-InstallRoot',$profileRoot)
         Check ($visionSettings.exit -ne 0 -and $visionSettings.text -like '*-Vision is supported only by plan and start*') 'vision-cli: settings -Vision is refused: there is no saved vision setting'
-        $visionInstall=Invoke-StartTestCli @('install','-Vision','on','-DryRun','-HardwareFile',$fixture,'-InstallRoot',$profileRoot)
+        $visionInstall=Invoke-StartTestCli @('install','-Vision','on','-InstallRoot',$profileRoot)
         Check ($visionInstall.exit -ne 0 -and $visionInstall.text -like '*-Vision is supported only by plan and start*') 'vision-cli: install -Vision is refused'
         $visionBad=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Vision','maybe','-InstallRoot',$profileRoot)
         Check ($visionBad.exit -ne 0) 'vision-cli: -Vision maybe is refused (a closed set)'
