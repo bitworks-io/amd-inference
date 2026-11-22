@@ -115,7 +115,7 @@ foreach($f in $files){
     if($rel -ceq $ownName){continue}
     foreach($b in (Get-ParserUseOutside (Read-Utf8 $f) $rel)){[void]$parserBad.Add($b)}
 }
-Check ($parserBad.Count -eq 0) ('XAML is parsed in one place only ('+($parserBad|Select-Object -First 3) -join ' | '+')')
+Check ($parserBad.Count -eq 0) ('XAML is parsed in one place only ('+(($parserBad|Select-Object -First 3) -join ' | ')+')')
 $loaderText=Read-Utf8 (Join-Path $root $loaderName)
 Check ($loaderText -match 'Windows\.Markup\.XamlReader\]::Parse') 'the loader function does parse'
 

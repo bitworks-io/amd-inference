@@ -20,17 +20,47 @@ Check ($dword -is [int] -and $dword -eq 0) 'a DWORD stays an Int32'
 Check ($null -eq (Get-FastLlmUiPropertyValue $fakeKey 'Missing')) 'a missing value is null'
 Check ($null -eq (Get-FastLlmUiPropertyValue $null 'AccentPalette')) 'a missing key is null'
 
+# Pure, any OS: the registry reader keeps a REG_BINARY byte[] intact, proven with a local Get-ItemProperty stand-in (removed right after).
+function Get-ItemProperty{
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    if($LiteralPath -ceq 'HKCU:\Mock\Present'){return [pscustomobject]@{AccentPalette=[byte[]](1..32)}}
+    return [pscustomobject]@{Other=1}
+}
+try{
+    $direct=Get-FastLlmUiRegistryValue 'HKCU:\Mock\Present' 'AccentPalette'
+    Check ($direct -is [byte[]] -and $direct.Length -eq 32) 'the registry reader returns a 32-byte palette as a byte[]'
+    $wrapped=[pscustomobject]@{v=(Get-FastLlmUiRegistryValue 'HKCU:\Mock\Present' 'AccentPalette')}
+    Check ($wrapped.v -is [byte[]] -and $wrapped.v.Length -eq 32) 'the registry reader keeps the byte[] inside a theme object'
+    Check ($null -eq (Get-FastLlmUiRegistryValue 'HKCU:\Mock\Present' 'NoSuchName')) 'the registry reader gives null for a missing name'
+}finally{Remove-Item function:Get-ItemProperty -ErrorAction SilentlyContinue}
+Check ((Get-Command Get-ItemProperty).CommandType -eq 'Cmdlet') 'the Get-ItemProperty stand-in is gone before the Windows part'
+
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
 
 Check ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') 'runs on an STA thread'
-Check (Initialize-FastLlmUiWindowInterop -SourceRoot $root) 'the interop compiles'
+$interop=[bool](Initialize-FastLlmUiWindowInterop -SourceRoot $root)
+if(-not $interop){
+    try{Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase -ErrorAction Stop}catch{Write-Host ('INFO: interop load error: '+$_.Exception.ToString())}
+    try{Add-Type -Path (Join-Path $root 'src/WindowsFluentWindow.cs') -ErrorAction Stop}catch{Write-Host ('INFO: interop load error: '+$_.Exception.ToString())}
+}
+Check $interop 'the interop compiles'
 Check (Initialize-FastLlmUiWindowInterop -SourceRoot $root) 'a second load is a no-op'
 Check ([Bitworks.FastLlm.FluentWindowNative]::GetOsBuild() -ge 10240) 'the OS build is read'
 Check ([Bitworks.FastLlm.FluentWindowNative]::SetDarkTitleBar([IntPtr]::Zero,$true) -ne 0) 'a zero window fails with an HRESULT, not an exception'
 Check ([Bitworks.FastLlm.FluentWindowNative]::SetSystemBackdrop([IntPtr]::Zero,2) -ne 0) 'backdrop on a zero window fails softly'
 Check (-not [Bitworks.FastLlm.FluentWindowNative]::DestroyIconHandle([IntPtr]::Zero)) 'destroying no icon is false'
-Check ([Bitworks.FastLlm.FluentWindowNative]::GetGdiObjectCount() -gt 0) 'GDI objects are counted'
+Check ([Bitworks.FastLlm.FluentWindowNative]::ExtendFrameIntoClientArea([IntPtr]::Zero) -ne 0) 'frame extension on a zero window fails softly'
+Add-Type -AssemblyName System.Drawing
+$gdiBefore=[Bitworks.FastLlm.FluentWindowNative]::GetGdiObjectCount()
+$bmp=New-Object System.Drawing.Bitmap 16,16
+try{
+    $hIcon=$bmp.GetHicon()
+    $gdiAfter=[Bitworks.FastLlm.FluentWindowNative]::GetGdiObjectCount()
+    Check ($gdiAfter -gt $gdiBefore) 'creating an icon adds GDI objects'
+    Check ([Bitworks.FastLlm.FluentWindowNative]::DestroyIconHandle($hIcon)) 'a real icon handle is destroyed'
+}finally{$bmp.Dispose()}
 
 # A real WPF window, far off screen, to prove the calls return an int on a live handle.
 $win=New-Object System.Windows.Window
@@ -52,29 +82,39 @@ Check ($null -eq $theme.accentPalette -or $theme.accentPalette -is [byte[]]) 'th
 if($null -ne $theme.accentPalette){Check ($theme.accentPalette -is [byte[]] -and $theme.accentPalette.Length -eq 32) 'a present accent palette is 32 bytes'}
 Check ($theme.build -gt 0 -and $theme.highContrast -is [bool]) 'the system theme is read without throwing'
 
-# Cross-check the accent palette indexes against the WinRT UISettings (Windows PowerShell 5.1 only).
-if($PSVersionTable.PSVersion.Major -le 5){
+# Cross-check the accent palette indexes against the WinRT UISettings (Windows PowerShell 5.1 only). One greppable CROSSCHECK line says what happened.
+$crossSkip=''
+if($PSVersionTable.PSVersion.Major -gt 5){$crossSkip='runs on Windows PowerShell 5.1 only'}
+else{
     $ui=$null
     try{
-        [void][Windows.UI.ViewManagement.UISettings,Windows.UI.ViewManagement,ContentType=WindowsRuntime]
-        $ui=New-Object Windows.UI.ViewManagement.UISettings
-    }catch{Write-Host ('INFO: UISettings not available: '+$_.Exception.Message)}
+        $uiType='Windows.UI.ViewManagement.UISettings,Windows.UI.ViewManagement,ContentType=WindowsRuntime' -as [type]
+        if($null -eq $uiType){$crossSkip='UISettings type not available'}
+        else{$ui=[Activator]::CreateInstance($uiType)}
+    }catch{$crossSkip='UISettings not available: '+$_.Exception.Message}
     $pal=$theme.accentPalette
-    if($null -eq $ui){Write-Host 'INFO: accent palette cross-check skipped (no UISettings)'}
-    elseif($null -eq $pal){Write-Host 'INFO: accent palette cross-check skipped (no AccentPalette value)'}
+    if($crossSkip -cne ''){}
+    elseif($null -eq $pal){$crossSkip='no AccentPalette value'}
     elseif($pal -isnot [byte[]]){Check $false 'a present AccentPalette is a byte[]'}
     else{
         $conv=ConvertFrom-FastLlmUiAccentPalette $pal
-        if($null -eq $conv){Write-Host 'INFO: accent palette cross-check skipped (AccentPalette is not 32 bytes)'}
+        if($null -eq $conv){$crossSkip='AccentPalette is not 32 bytes'}
         else{
             $argb={param($c) '#FF{0:X2}{1:X2}{2:X2}' -f $c.R,$c.G,$c.B}
-            $ud1=& $argb ($ui.GetColorValue([Windows.UI.ViewManagement.UIColorType]::AccentDark1))
-            $ul2=& $argb ($ui.GetColorValue([Windows.UI.ViewManagement.UIColorType]::AccentLight2))
-            Check ($conv.dark1 -ceq $ud1) ('dark1 matches UISettings AccentDark1 ('+$conv.dark1+' vs '+$ud1+')')
-            Check ($conv.light2 -ceq $ul2) ('light2 matches UISettings AccentLight2 ('+$conv.light2+' vs '+$ul2+')')
+            $ud1=''
+            $ul2=''
+            try{
+                $ud1=& $argb ($ui.GetColorValue('AccentDark1'))
+                $ul2=& $argb ($ui.GetColorValue('AccentLight2'))
+            }catch{$crossSkip='UISettings colour read failed: '+$_.Exception.Message}
+            if($crossSkip -ceq ''){
+                Check ($conv.dark1 -ceq $ud1) ('dark1 matches UISettings AccentDark1 ('+$conv.dark1+' vs '+$ud1+')')
+                Check ($conv.light2 -ceq $ul2) ('light2 matches UISettings AccentLight2 ('+$conv.light2+' vs '+$ul2+')')
+            }
         }
     }
-}else{Write-Host 'INFO: accent palette cross-check runs on Windows PowerShell 5.1 only'}
+}
+if($crossSkip -ceq ''){Write-Host 'CROSSCHECK: ran'}else{Write-Host ('CROSSCHECK: skipped ('+$crossSkip+')')}
 
 # The dictionary.
 $pair=Get-FastLlmUiAccentPair $null
@@ -91,10 +131,11 @@ foreach($theme in 'light','dark'){
     Check ($d['FastLlm.BodySize'] -is [double] -and $d['FastLlm.BodySize'] -eq 14.0) ($theme+' body size is a double 14')
     Check ($d['FastLlm.TitleWeight'] -eq [System.Windows.FontWeights]::SemiBold -and $d['FastLlm.BodyWeight'] -eq [System.Windows.FontWeights]::Regular) ($theme+' weights map')
 }
-$dl=New-FastLlmUiThemeDictionary -Theme light -AccentPair $pair -TextScale 1.0
-$dd=New-FastLlmUiThemeDictionary -Theme dark -AccentPair $pair -TextScale 1.0
-Check ($dl['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF005FB8') 'light uses the light accent fill'
-Check ($dd['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF60CDFF') 'dark uses the dark accent fill'
+$custom=@{lightFill='#FF123456';darkFill='#FF654321';lightSource='system';darkSource='system'}
+$dl=New-FastLlmUiThemeDictionary -Theme light -AccentPair $custom -TextScale 1.0
+$dd=New-FastLlmUiThemeDictionary -Theme dark -AccentPair $custom -TextScale 1.0
+Check ($dl['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF123456') 'light uses the light accent fill from the pair'
+Check ($dd['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF654321') 'dark uses the dark accent fill from the pair'
 $d225=New-FastLlmUiThemeDictionary -Theme light -AccentPair $pair -TextScale 2.25
 Check ($d225['FastLlm.BodySize'] -eq 31.5) 'the text scale reaches the dictionary'
 
@@ -109,6 +150,8 @@ $hp=New-FastLlmUiThemeDictionary -Theme high-contrast -AccentPair $pair -TextSca
 Check ($hp['FastLlm.LayerBrush'].Color.ToString() -ceq '#FF000000') 'the palette Window colour reaches the layer brush'
 Check ($hp['FastLlm.TextPrimaryBrush'].Color.ToString() -ceq '#FFFFFF00') 'the palette WindowText colour reaches the text brush'
 Check ($hp['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF1AEBFF') 'the palette Highlight colour reaches the accent brush'
+Check ($hp['FastLlm.TextOnAccentBrush'].Color.ToString() -ceq '#FF000000') 'the palette HighlightText colour reaches the text-on-accent brush'
 Check ($hp['FastLlm.LayerBrush'].IsFrozen -and $hp['FastLlm.TextPrimaryBrush'].IsFrozen) 'palette brushes are frozen'
 
 Write-Host "UI window tests passed: $checks"
+exit 0

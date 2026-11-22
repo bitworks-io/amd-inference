@@ -207,6 +207,10 @@ function Invoke-UiRenderCase {
     # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
     $bottomLimit = [Math]::Max([double]$sv.ExtentHeight, [double]$sv.ViewportHeight)
     $presenter = [System.Windows.Media.VisualTreeHelper]::GetParent($page)
+    if ($presenter -isnot [System.Windows.Controls.ScrollContentPresenter]) {
+        $got = if ($null -eq $presenter) { 'null' } else { $presenter.GetType().FullName }
+        throw ('Harness: the page visual parent must be a ScrollContentPresenter, got ' + $got)
+    }
     $all = Get-UiVisualElements $page
     $authored = @($all | Where-Object { (Test-UiAuthored $_) -and (Test-UiShown $_ $page) })
 
@@ -230,11 +234,15 @@ function Invoke-UiRenderCase {
         }
     }
 
+    $textBlocksSeen = 0
+    $namedControlsSeen = 0
+    $unmappedRects = 0
     # clipped: every shown TextBlock, including a button's content
     foreach ($text in @($all | Where-Object { $_ -is [System.Windows.Controls.TextBlock] -and (Test-UiShown $_ $page) })) {
         $aw = [double]$text.ActualWidth
         $ah = [double]$text.ActualHeight
         if ($aw -le 0 -and $ah -le 0) { continue }
+        $textBlocksSeen++
         $natural = Get-UiTextNaturalSize $text $scale $aw
         # Signal 1: Measure clamps DesiredSize to the constraint (Width, MaxWidth, a button's content area), so the live desired size minus margin
         # falls below the natural size. Signal 2: the visible rectangle (layout clip, ClipToBounds) is smaller than the natural size.
@@ -256,7 +264,7 @@ function Invoke-UiRenderCase {
     # outside: authored elements beyond the page's extent
     foreach ($el in $authored) {
         $r = Get-UiRelativeRect $el $presenter
-        if ($null -eq $r) { continue }
+        if ($null -eq $r) { $unmappedRects++; continue }
         if ($r.Left -lt -0.5 -or $r.Right -gt ($viewportWidth + 0.5) -or $r.Bottom -gt ($bottomLimit + 0.5)) {
             [void]$problems.Add('outside:' + (Get-UiElementLabel $el))
         }
@@ -267,6 +275,7 @@ function Invoke-UiRenderCase {
         $isNamed = $el -is [System.Windows.Controls.Button] -or $el -is [System.Windows.Controls.CheckBox] -or $el -is [System.Windows.Controls.ComboBox] -or
             $el -is [System.Windows.Controls.TextBox] -or $el -is [System.Windows.Controls.ListBoxItem] -or $el -is [System.Windows.Controls.RadioButton]
         if (-not $isNamed) { continue }
+        $namedControlsSeen++
         $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($el)
         $name = ''
         if ($null -ne $peer) { $name = [string]$peer.GetName() }
@@ -302,5 +311,21 @@ function Invoke-UiRenderCase {
         if (-not $same) { [void]$problems.Add('tab-order') }
     }
 
-    return @{ problems = [string[]]@($problems.ToArray()); png = $png }
+    # Probes: proof that the theme and the checks really reached the page. They never add a problem.
+    $titleFontSize = $null
+    $bodyFontSize = $null
+    $titleForeground = ''
+    foreach ($el in $all) {
+        if ($el -is [System.Windows.FrameworkElement] -and $el -is [System.Windows.Controls.TextBlock]) {
+            if ($el.Name -ceq 'TitleText') {
+                $titleFontSize = [double]$el.FontSize
+                if ($el.Foreground -is [System.Windows.Media.SolidColorBrush]) { $titleForeground = $el.Foreground.Color.ToString() }
+            } elseif ($el.Name -ceq 'BodyText') { $bodyFontSize = [double]$el.FontSize }
+        }
+    }
+    return @{
+        problems = [string[]]@($problems.ToArray()); png = $png
+        titleFontSize = $titleFontSize; bodyFontSize = $bodyFontSize; titleForeground = $titleForeground
+        textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
+    }
 }

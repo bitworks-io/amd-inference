@@ -28,7 +28,8 @@ $c=Expect '1 base' @{} 'not-running' 'neutral' '' 'start'
 Check ($null -eq $c.steps -and $c.stepsText -ceq '' -and $c.headline -ceq 'Not running') '1 no steps, headline'
 [void](Expect '2 vc broker' @{VcBrokerActive=$true;ChildActive=$true;Step='serving';RunReady=$true} 'waiting-microsoft' 'caution' '' 'none')
 [void](Expect '3 update' @{UpdateKind='update';RunReady=$true} 'updating' 'accent' '' 'none')
-[void](Expect '3 reinstall' @{UpdateKind='reinstall';RunReady=$true} 'reinstalling' 'accent' '' 'none')
+$c=Expect '3 reinstall' @{UpdateKind='reinstall';RunReady=$true} 'reinstalling' 'accent' '' 'none'
+Check ($c.headline -ceq 'Reinstalling') '3 reinstall headline'
 [void](Expect '4 stop requested' @{BackgroundStopRequested=$true;Background='ready-attached'} 'stopping' 'neutral' '' 'stop')
 [void](Expect '5 switch gap' @{SwitchGap=$true;RunReady=$true} 'switching' 'accent' '' 'stop')
 $c=Expect '6 model download' @{ChildActive=$true;Step='model download'} 'starting' 'accent' '' 'stop'

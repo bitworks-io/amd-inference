@@ -113,7 +113,7 @@ function Get-FastLlmUiControlStates {
 
 # Whether one tray menu item is enabled. During Microsoft setup only Restore stays usable; otherwise every item follows Available.
 function Get-FastLlmUiTrayItemEnabled {
-    param([Parameter(Mandatory=$true)][string]$ItemText,[Parameter(Mandatory=$true)][bool]$Available,[Parameter(Mandatory=$true)][bool]$VcBrokerActive)
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$ItemText,[Parameter(Mandatory=$true)][bool]$Available,[Parameter(Mandatory=$true)][bool]$VcBrokerActive)
     if ($VcBrokerActive) { return [bool]($ItemText -ceq 'Restore FastLLM') }
     return [bool]$Available
 }

@@ -21,15 +21,15 @@ $trayMatrix=@(Get-UiTrayMatrix)
 Check ($trayMatrix.Count -eq 12 -and $goldenTray.Count -eq 12 -and @($trayMatrix|Where-Object{-not $goldenTray.ContainsKey($_.key)}).Count -eq 0) 'the tray matrix and the golden cover the same 12 rows'
 
 $windowText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
-function Get-Mismatches([string]$SourceText){
+function Get-Mismatches([string]$SourceText,[switch]$First){
     $bad=New-Object System.Collections.ArrayList
     foreach($r in $matrix){
         $got=Invoke-UiWindowEnableRules -SourceText $SourceText -Row $r
-        if(-not ($got -ceq $goldenRows[$r.key])){[void]$bad.Add($r.key+' got '+$got+' want '+$goldenRows[$r.key])}
+        if(-not ($got -ceq $goldenRows[$r.key])){[void]$bad.Add($r.key+' got '+$got+' want '+$goldenRows[$r.key]);if($First){return ,@($bad.ToArray())}}
     }
     foreach($r in $trayMatrix){
         $got=Invoke-UiWindowTrayRule -SourceText $SourceText -Row $r
-        if(-not ($got -ceq $goldenTray[$r.key])){[void]$bad.Add($r.key+' got '+$got+' want '+$goldenTray[$r.key])}
+        if(-not ($got -ceq $goldenTray[$r.key])){[void]$bad.Add($r.key+' got '+$got+' want '+$goldenTray[$r.key]);if($First){return ,@($bad.ToArray())}}
     }
     return ,@($bad.ToArray())
 }
@@ -54,7 +54,7 @@ Check $trayOk 'Microsoft setup leaves only Restore in the tray'
 $chooseLine='$chooseButton.Enabled=$states.chooseSetup'
 Check ($windowText.Contains($chooseLine)) 'the self-check finds the Choose another setup rule'
 $changed=$windowText.Replace($chooseLine,'$chooseButton.Enabled=$true')
-$caught=Get-Mismatches $changed
+$caught=Get-Mismatches $changed -First
 Check ($caught.Count -gt 0) 'a changed rule is caught'
 
 # Part B: the pure functions in src/FastLlm.UiState.ps1 reproduce the golden on every row.
@@ -80,6 +80,9 @@ foreach($r in $trayMatrix){
     if(-not ($got -ceq $goldenTray[$r.key])){[void]$trayMismatches.Add($r.key+' got '+$got+' want '+$goldenTray[$r.key])}
 }
 Check ($trayMismatches.Count -eq 0) 'Get-FastLlmUiTrayItemEnabled matches 646ccb05 on every tray row'
+$emptyTray=$null;$emptyThrew=$false
+try{$emptyTray=Get-FastLlmUiTrayItemEnabled -ItemText '' -Available $true -VcBrokerActive $false}catch{$emptyThrew=$true}
+Check (-not $emptyThrew -and $emptyTray -eq $true) 'a tray item with empty text follows Available, like the old inline rule'
 $bare=New-FastLlmUiStateSnapshot -Busy $false -UpdateKind '' -ChildActive $false -Step '' -RunReady $false -SideChildActive $false -VcBrokerActive $false `
     -PreviewReady $false -SwitchGap $false -ChatUrlSet $false -BackgroundStopRequested $false -Background $bareReadyBackground
 Check ((Get-FastLlmUiControlStates -Snapshot $bare) -is [pscustomobject]) 'an observation missing optional properties does not throw under StrictMode 2'

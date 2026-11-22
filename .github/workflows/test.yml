@@ -452,10 +452,12 @@ jobs:
           .\tests\ui-background-tests.ps1
       - name: UI window tests in Windows PowerShell 5.1 (STA)
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         shell: powershell
         run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-window-tests.ps1
       - name: UI window tests in PowerShell 7 (STA)
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         shell: pwsh
         run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-window-tests.ps1
 
