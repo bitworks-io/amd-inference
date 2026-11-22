@@ -19,6 +19,7 @@ function Check([bool]$Condition,[string]$Message){
 
 # Pure checks, any OS: they catch a matrix that is wrapped or shaped wrongly before the Windows-only part.
 $matrix=@(Get-UiRenderMatrix)
+$runStart=[DateTime]::UtcNow.AddSeconds(-2)
 Check ($matrix.Count -eq 40) 'the matrix has 40 cases'
 Check (@($matrix|Where-Object{$_ -is [hashtable]}).Count -eq 40) 'every matrix case is one hashtable'
 Check (@($matrix|Where-Object{$_.theme -is [string] -and $_.scale -is [double] -and $_.textScale -is [double]}).Count -eq 40) 'every case has a single theme, scale and text scale'
@@ -106,7 +107,7 @@ $neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='
 $base=@{theme='light';scale=[double]1.0;textScale=[double]1.0;width=640;height=480}
 foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside'){
     $found=@()
-    try{$found=@((Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base).problems)}catch{$found=@('threw: '+$_.Exception.Message)}
+    try{$found=@((Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out).problems)}catch{$found=@('threw: '+$_.Exception.Message)}
     Check ($found.Count -eq 1 -and $found[0] -ceq $neg[$n]) ("the harness catches $n (expected '"+$neg[$n]+"', got '"+($found -join '; ')+"')")
 }
 
@@ -137,6 +138,10 @@ foreach($case in $matrix){
     Check ($r.unmappedRects -eq 0) "no authored element was left unmapped at ${label} (got $($r.unmappedRects))"
 }
 Write-Host ('INFO: render matrix of {0} cases took {1:N1} s' -f $matrix.Count,$sw.Elapsed.TotalSeconds)
+
+# 46 PNGs per run: 40 sample cases plus 6 negative pages. Only files written during this run count, so leftovers cannot inflate the number.
+$written=@(Get-ChildItem -LiteralPath $out -Filter 'Test.*.png' -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart })
+Check ($written.Count -eq 46) ("the render folder holds 46 PNGs written by this run (got $($written.Count))")
 
 if($script:failures.Count -gt 0){throw ("FAIL: $($script:failures.Count) check(s) failed: "+($script:failures -join ' | '))}
 Write-Host "PASS: ui render tests ($($script:checks) checks)"

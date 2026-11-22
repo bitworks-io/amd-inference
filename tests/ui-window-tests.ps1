@@ -188,5 +188,38 @@ foreach($case in $applyCases){
     Check ($border.Background -is [System.Windows.Media.SolidColorBrush]) ($case.name+' resolved Background is a SolidColorBrush')
 }
 
+# RED self-check: a dictionary built the OLD way (a New-Object brush returned through a scriptblock and stored through the indexer, which keeps
+# the PSObject wrapper) must fail to apply, so the apply test above can catch that bug. The same brush stored as its raw object must resolve.
+function Test-FastLlmApplyBrush($Dict){
+    $r=@{err=$null;fg=$null}
+    try{
+        $tb=[System.Windows.Controls.TextBlock]::new()
+        $border=[System.Windows.Controls.Border]::new()
+        $border.Child=$tb
+        $border.Resources=$Dict
+        $tb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'FastLlm.TextPrimaryBrush')
+        $border.Measure([System.Windows.Size]::new(200,100))
+        $border.Arrange([System.Windows.Rect]::new(0,0,200,100))
+        $r.fg=$tb.Foreground
+    }catch{$r.err=$_.Exception.Message}
+    return $r
+}
+$oldNewBrush={
+    param([string]$Argb)
+    $b=New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($Argb))
+    $b.Freeze()
+    return $b
+}
+$wrapped=& $oldNewBrush '#FF112233'
+$dOld=New-Object System.Windows.ResourceDictionary
+$dOld['FastLlm.TextPrimaryBrush']=$wrapped
+$rOld=Test-FastLlmApplyBrush $dOld
+$oldResolves=($null -eq $rOld.err) -and ($rOld.fg -is [System.Windows.Media.SolidColorBrush]) -and ($rOld.fg.Color.ToString() -ceq '#FF112233')
+Check (-not $oldResolves) 'a wrapped resource value fails to resolve (the old bug is caught)'
+$dNew=New-Object System.Windows.ResourceDictionary
+$dNew['FastLlm.TextPrimaryBrush']=[System.Management.Automation.PSObject]::AsPSObject($wrapped).BaseObject
+$rNew=Test-FastLlmApplyBrush $dNew
+Check (($null -eq $rNew.err) -and ($rNew.fg -is [System.Windows.Media.SolidColorBrush]) -and ($rNew.fg.Color.ToString() -ceq '#FF112233')) ('the same brush stored as its raw object resolves: '+$rNew.err)
+
 Write-Host "UI window tests passed: $checks"
 exit 0
