@@ -162,5 +162,13 @@ Check ((ConvertTo-FastLlmUiAccessText -Text 'a_b' -UseMnemonic $true) -ceq 'a__b
 $t='Not running. Install & start '+[char]0x2026
 Check ((ConvertTo-FastLlmUiAccessText -Text $t -UseMnemonic $false) -ceq $t) 'access: no mnemonic unchanged'
 Check ((ConvertTo-FastLlmUiAccessText -Text '' -UseMnemonic $true) -ceq '') 'access: empty'
+Check ((ConvertTo-FastLlmUiAccessText -Text 'a_b' -UseMnemonic $false) -ceq 'a__b') 'access: no mnemonic escapes underscore'
+Check ((ConvertTo-FastLlmUiAccessText -Text 'a & b' -UseMnemonic $false) -ceq 'a & b') 'access: no mnemonic keeps ampersand'
+Check ((ConvertTo-FastLlmUiAccessText -Text 'a && b_c' -UseMnemonic $false) -ceq 'a && b__c') 'access: no mnemonic keeps double ampersand'
+Check ((ConvertTo-FastLlmUiDisplayText -Text 'Install && start' -UseMnemonic $true) -ceq 'Install & start') 'display: &&'
+Check ((ConvertTo-FastLlmUiDisplayText -Text '&Save a_b' -UseMnemonic $true) -ceq 'Save a_b') 'display: &S and underscore kept'
+Check ((ConvertTo-FastLlmUiDisplayText -Text 'Tail &' -UseMnemonic $true) -ceq 'Tail ') 'display: lone trailing ampersand dropped'
+Check ((ConvertTo-FastLlmUiDisplayText -Text 'a && b_c &x' -UseMnemonic $false) -ceq 'a && b_c &x') 'display: no mnemonic unchanged'
+Check ((ConvertTo-FastLlmUiDisplayText -Text '' -UseMnemonic $true) -ceq '') 'display: empty'
 
 Write-Host "UI fluent adapter tests passed: $checks"

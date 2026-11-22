@@ -33,7 +33,8 @@ function Get-FastLlmUiAdapterMemberTable {
 function ConvertTo-FastLlmUiAccessText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text,[Parameter(Mandatory)][bool]$UseMnemonic)
-    if(-not $UseMnemonic){return $Text}
+    # No mnemonic: WinForms shows the text as is, so every underscore is escaped for WPF access text and the ampersand stays literal.
+    if(-not $UseMnemonic){return $Text.Replace('_','__')}
     $sb=New-Object System.Text.StringBuilder
     for($i=0;$i -lt $Text.Length;$i++){
         $c=$Text[$i]
@@ -45,6 +46,25 @@ function ConvertTo-FastLlmUiAccessText {
             else{[void]$sb.Append('_').Append($n)}
         }
         elseif($c -ceq '_'){[void]$sb.Append('__')}
+        else{[void]$sb.Append($c)}
+    }
+    return $sb.ToString()
+}
+
+# What WinForms shows for a caption, as plain text (for a WPF TextBlock, which has no access keys). With a mnemonic: && is &, &x is x
+# (the key is underlined in WinForms, not drawn here), and a lone trailing & is dropped, as WinForms does. Without one the text is unchanged.
+function ConvertTo-FastLlmUiDisplayText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text,[Parameter(Mandatory)][bool]$UseMnemonic)
+    if(-not $UseMnemonic){return $Text}
+    $sb=New-Object System.Text.StringBuilder
+    for($i=0;$i -lt $Text.Length;$i++){
+        $c=$Text[$i]
+        if($c -ceq '&'){
+            if($i+1 -ge $Text.Length){continue}
+            $i++
+            [void]$sb.Append($Text[$i])
+        }
         else{[void]$sb.Append($c)}
     }
     return $sb.ToString()
