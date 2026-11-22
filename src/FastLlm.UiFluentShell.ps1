@@ -58,7 +58,11 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.85"/></Trigger>
               <Trigger Property="IsPressed" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.7"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
+                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.DisabledFillBrush}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -106,6 +110,37 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="FastLlm.ExpanderStyle" TargetType="Expander">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Expander">
+            <DockPanel>
+              <ToggleButton x:Name="Hd" DockPanel.Dock="Top" Content="{TemplateBinding Header}" Foreground="{TemplateBinding Foreground}"
+                            IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                            FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Background="Transparent" Padding="4,6,4,6" HorizontalContentAlignment="Left">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                      <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="Arrow" Text="&#xE70D;" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <ContentPresenter VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsChecked" Value="True"><Setter TargetName="Arrow" Property="Text" Value="&#xE70E;"/></Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <ContentPresenter x:Name="Body" Visibility="Collapsed"/>
+            </DockPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsExpanded" Value="True"><Setter TargetName="Body" Property="Visibility" Value="Visible"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style x:Key="FastLlm.NavItemStyle" TargetType="ListBoxItem">
       <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
       <Setter Property="Margin" Value="8,1,8,1"/>
@@ -145,9 +180,9 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
         <RowDefinition Height="*"/>
         <RowDefinition Height="Auto"/>
       </Grid.RowDefinitions>
-      <ListBox x:Name="NavList" Grid.Row="0" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once"
+      <ListBox x:Name="NavList" Grid.Row="0" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once" FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}"
                ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
-      <ListBox x:Name="NavSettingsList" Grid.Row="1" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once"
+      <ListBox x:Name="NavSettingsList" Grid.Row="1" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="None" IsTabStop="False" FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}"
                ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled"/>
     </Grid>
     <Grid Grid.Column="1">
@@ -233,14 +268,14 @@ function Get-FastLlmUiFluentThemeState {
     $scale = ConvertFrom-FastLlmUiTextScaleFactor $system.textScaleFactor
     $backdrop = Get-FastLlmUiBackdropChoice -Build ([int] $system.build) -TransparencyEnabled $system.enableTransparency -HighContrast ([bool] $system.highContrast)
     # A switch between two high-contrast palettes changes only the system colours, so they are part of the key.
-    $system = ''
+    $hcKey = ''
     if ([string] $choice -ceq 'high-contrast') {
         $sc = [System.Windows.SystemColors]
-        $system = '|' + (@($sc::WindowColor, $sc::WindowTextColor, $sc::HighlightColor, $sc::HighlightTextColor, $sc::GrayTextColor, $sc::HotTrackColor) -join ',')
+        $hcKey = '|' + (@($sc::WindowColor, $sc::WindowTextColor, $sc::HighlightColor, $sc::HighlightTextColor, $sc::GrayTextColor, $sc::HotTrackColor) -join ',')
     }
     return [pscustomobject] @{
         Choice = [string] $choice; Pair = $pair; Scale = [double] $scale; Backdrop = [string] $backdrop
-        Key = ([string] $choice + '|' + [string] $pair.lightFill + '|' + [string] $pair.darkFill + '|' + [string] $scale + '|' + [string] $backdrop + $system)
+        Key = ([string] $choice + '|' + [string] $pair.lightFill + '|' + [string] $pair.darkFill + '|' + [string] $scale + '|' + [string] $backdrop + $hcKey)
     }
 }
 
@@ -292,10 +327,14 @@ function Set-FastLlmUiFluentTheme {
     if ([string] $ThemeState.Choice -ceq 'high-contrast') {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value ([System.Windows.SystemColors]::HighlightBrush)
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledFillBrush' -Value ([System.Windows.SystemColors]::ControlBrush)
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
     }
     else {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value $dictionary['FastLlm.AccentFillBrush']
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value $dictionary['FastLlm.TextSecondaryBrush']
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledFillBrush' -Value $dictionary['FastLlm.CardBrush']
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value $dictionary['FastLlm.ControlStrokeBrush']
     }
     $merged = $f.Window.Resources.MergedDictionaries
     $merged.Clear()

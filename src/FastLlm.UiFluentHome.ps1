@@ -36,12 +36,20 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
               xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
   <Grid Margin="32,24,32,24" MaxWidth="900">
-  <StackPanel>
-    <StackPanel x:Name="HeaderGrid" Margin="0,0,200,0">
+  <Grid.ColumnDefinitions>
+    <ColumnDefinition Width="*"/>
+    <ColumnDefinition Width="Auto"/>
+  </Grid.ColumnDefinitions>
+  <Grid.RowDefinitions>
+    <RowDefinition Height="Auto"/>
+    <RowDefinition Height="Auto"/>
+  </Grid.RowDefinitions>
+    <StackPanel x:Name="HeaderGrid" Grid.Row="0" Grid.Column="0" Margin="0,0,16,0">
       <TextBlock x:Name="TitleText" TextWrapping="Wrap" FontFamily="{DynamicResource FastLlm.DisplayFont}"
                  FontSize="{DynamicResource FastLlm.SubtitleSize}" FontWeight="{DynamicResource FastLlm.SubtitleWeight}"/>
       <TextBlock x:Name="NoticeText" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
     </StackPanel>
+  <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
     <Border x:Name="StatusCard" Margin="0,20,0,0" Padding="16" BorderThickness="1"
             Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.CardStrokeBrush}"
             CornerRadius="{DynamicResource FastLlm.OverlayCornerRadius}">
@@ -95,17 +103,17 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
       </WrapPanel>
       <TextBlock x:Name="SwitchLine" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
     </StackPanel>
-    <Expander x:Name="ActivityExpander" Margin="0,16,0,0" IsExpanded="False">
+    <Expander x:Name="ActivityExpander" Margin="0,16,0,0" IsExpanded="False" Style="{DynamicResource FastLlm.ExpanderStyle}">
       <Expander.Header>
         <TextBlock x:Name="ActivityHeader" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
       </Expander.Header>
-      <TextBox x:Name="ActivityBox" Margin="0,8,0,0" Height="220" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+      <TextBox x:Name="ActivityBox" Margin="0,8,0,0" FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Height="220" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
                VerticalScrollBarVisibility="Auto" FontFamily="{DynamicResource FastLlm.MonoFont}"
                Background="{DynamicResource FastLlm.CardBrush}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"
                BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
     </Expander>
   </StackPanel>
-  <Button x:Name="TrayButton" HorizontalAlignment="Right" VerticalAlignment="Top" Style="{DynamicResource FastLlm.ButtonStyle}"/>
+  <Button x:Name="TrayButton" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top" Style="{DynamicResource FastLlm.ButtonStyle}"/>
   </Grid>
 </ScrollViewer>
 '@
@@ -260,7 +268,10 @@ function Initialize-FastLlmUiFluentHome {
     $menu.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.LayerBrush')
     $menu.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
     $menu.SetResourceReference([System.Windows.Controls.Control]::BorderBrushProperty, 'FastLlm.ControlStrongStrokeBrush')
+    $menu.SetResourceReference([System.Windows.Controls.Control]::FontSizeProperty, 'FastLlm.BodySize')
+    $menu.SetResourceReference([System.Windows.Controls.Control]::FontFamilyProperty, 'FastLlm.TextFont')
     foreach ($menuItem in @($startItem, $backgroundItem)) {
+        $menuItem.SetResourceReference([System.Windows.FrameworkElement]::FocusVisualStyleProperty, 'FastLlm.FocusVisual')
         $menuItem.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
         $menuItem.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.LayerBrush')
     }
@@ -365,7 +376,9 @@ function Update-FastLlmUiFluentHome {
                 $mark.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
                 $mark.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
                 $label = New-Object System.Windows.Controls.TextBlock
-                $label.Text = [string] $step.name + ', ' + [string] $step.state
+                $rowText = [string] $step.name + ', ' + [string] $step.state
+                $label.Text = $rowText
+                [System.Windows.Automation.AutomationProperties]::SetName($row, $rowText)
                 [void] $row.Children.Add($mark)
                 [void] $row.Children.Add($label)
                 [void] $e.StepsPanel.Items.Add($row)
