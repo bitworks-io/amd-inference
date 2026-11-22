@@ -275,9 +275,9 @@ if($env:OS -eq 'Windows_NT'){
 }
 
 # ASCII
-$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/WindowsFluentWindow.cs',
+$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/WindowsFluentWindow.cs',
     'tests/helpers/UiControlStatesMatrix.ps1','tests/helpers/New-UiControlStatesGolden.ps1','tests/ui-control-states-tests.ps1',
-    'tests/ui-card-state-tests.ps1','tests/ui-fluent-adapter-tests.ps1','tests/ui-theme-tests.ps1','tests/ui-window-tests.ps1','tests/ui-source-safety-tests.ps1',
+    'tests/ui-card-state-tests.ps1','tests/ui-fluent-adapter-tests.ps1','tests/ui-fluent-support-tests.ps1','tests/ui-theme-tests.ps1','tests/ui-window-tests.ps1','tests/ui-source-safety-tests.ps1',
     'tests/helpers/UiRenderHarness.ps1','tests/ui-render-tests.ps1'
 function Test-AsciiBytes([byte[]]$Bytes){foreach($b in $Bytes){if($b -ge 0x80){return $false}};return $true}
 Check (-not (Test-AsciiBytes ([byte[]](0x41,0xC3,0xA9)))) 'self-check: a non-ASCII byte is flagged'
