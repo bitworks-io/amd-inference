@@ -614,6 +614,11 @@ try {
         Check ([string]$rpPlanOptions.Vision -ceq 'on' -and [string]$rpPlanOptions.KvProfilesPath -ceq $rpProfiles) 'vision switch basis: the switch target options carry -Vision on and read the rows next to the catalog'
         $rpDefaultOptions=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $rpDefault
         Check (-not $rpDefaultOptions.ContainsKey('Vision')) 'vision switch basis: a plan without vision adds no Vision option'
+        # The saved switch basis (state/switch-basis-<runId>.json) keeps the mode too: its closed key check accepts Vision off|on and nothing else.
+        $rpChecked=& $module { param($O) ConvertTo-FastLlmSwitchBasisPlanOptions -Options $O } $rpOptions
+        Check ($null -ne $rpChecked -and [string]$rpChecked['Vision'] -ceq 'on' -and [string]$rpChecked['KvContextProfile'] -ceq 'long') 'vision switch basis: the saved basis keeps -Vision on (the closed key check accepts it)'
+        $rpBadVision=& $module { ConvertTo-FastLlmSwitchBasisPlanOptions -Options @{ Profile='balanced'; Vision='ON' } }
+        Check ($null -eq $rpBadVision) 'vision switch basis: a saved basis with a Vision value other than off|on (exact case) is not used'
     }
     finally {
         & $module {

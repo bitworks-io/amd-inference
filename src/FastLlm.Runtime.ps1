@@ -476,6 +476,7 @@ function ConvertTo-FastLlmSwitchBasisPlanOptions {
             'ChatPage' { if ($value -isnot [string] -or @('off', 'on') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
             'KvContextProfile' { if ($value -isnot [string] -or @('default', 'long') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
             'KvSlots' { if (-not (& $whole $value) -or @(1, 2) -notcontains [int] $value) { return $null }; $checked[$name] = [int] $value }
+            'Vision' { if ($value -isnot [string] -or @('off', 'on') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
             default { return $null }
         }
     }
