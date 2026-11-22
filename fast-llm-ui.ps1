@@ -15,6 +15,7 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiFlow.ps1')
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiPrerequisite.ps1')
 . (Join-Path $PSScriptRoot 'src/FastLlm.UiBackground.ps1')
+. (Join-Path $PSScriptRoot 'src/FastLlm.UiState.ps1')
 # Update and Trust are dot-sourced here, never imported through FastLlm.psm1.
 . (Join-Path $PSScriptRoot 'src/FastLlm.Update.ps1')
 # Components (the experimental switch and the list helpers) is dot-sourced here and in fast-llm.ps1, never imported through FastLlm.psm1.
@@ -306,38 +307,38 @@ $licenseBox.Add_CheckedChanged({
         $script:licenseRevert=$true;$licenseBox.Checked=$false;$script:licenseRevert=$false
     }
 })
+# The one observation of everything the enable rules read; the rules themselves are in src/FastLlm.UiState.ps1.
+function GetUiStateSnapshot([bool]$Busy) {
+    $updateKind=if($null -eq $script:updateRun){''}else{[string]$script:updateRun.kind}
+    return New-FastLlmUiStateSnapshot -Busy $Busy -UpdateKind $updateKind -ChildActive ([bool]$script:child) -Step ([string]$script:step) `
+        -RunReady ([bool]$script:runReady) -SideChildActive ([bool]$script:sideChild) -VcBrokerActive ($null -ne $script:vcBroker) `
+        -PreviewReady ([bool]$script:previewReady) -SwitchGap ([bool]$script:switchGap) -ChatUrlSet ([bool]$script:chatUrl) `
+        -BackgroundStopRequested ([bool]$script:bgStopRequested) -Background $script:bgState
+}
 function SetBusy([bool]$Busy) {
-    $Busy=[bool]($Busy -or $script:updateRun)
-    $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
-        $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-    foreach($control in @($installButton,$startButton,$modelBox,$pathBox,$contextBox,$barBox)){$control.Enabled=(-not $Busy -and -not $occupied)}
+    $states=Get-FastLlmUiControlStates -Snapshot (GetUiStateSnapshot $Busy)
+    $installButton.Enabled=$states.install
+    $startButton.Enabled=$states.start
+    $modelBox.Enabled=$states.model
+    $pathBox.Enabled=$states.path
+    $contextBox.Enabled=$states.context
+    $barBox.Enabled=$states.bar
+    $doctorButton.Enabled=$states.diagnostics
+    $driverButton.Enabled=$states.driverGuidance
     # A ready server (foreground or background) does not lock Settings or the support bundle; a launch, install, update or Microsoft setup does.
-    $availability=GetUiActionAvailabilityNow $Busy
-    foreach($control in @($doctorButton,$driverButton)){$control.Enabled=-not $Busy}
-    $settingsButton.Enabled=[bool]$availability.settings
-    $bundleButton.Enabled=[bool]$availability.saveBundle
-    $chooseButton.Enabled=[bool](-not $Busy -and -not $occupied -and -not $script:vcBroker -and $script:previewReady)
-    $backgroundStartButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
-        (Test-FastLlmUiBackgroundMayStart -State $script:bgState))
-    $backgroundAttachButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child -and
-        -not $script:bgState.attachedRequestId -and $script:bgState.observation -and
-        ($script:bgState.observation.attachable -or
-         ($script:bgState.observation.PSObject.Properties['readyIdentityVerified'] -and
-          $script:bgState.observation.readyIdentityVerified)) -and
-        (-not $script:bgState.pendingRequestId -or [string]$script:bgState.observation.requestId -ceq [string]$script:bgState.pendingRequestId))
-    $backgroundCheckButton.Enabled=(-not $Busy -and -not $script:vcBroker -and -not $script:child)
-    $stopButton.Enabled=($null -eq $script:vcBroker -and -not $script:bgStopRequested -and
-        ($script:child -or $script:bgState.attachedRequestId -or -not $occupied -or $script:switchGap))
-    $trayButton.Enabled=($null -eq $script:vcBroker)
-    $openChatButton.Enabled=[bool]$script:chatUrl
-    $progress.Visible=$Busy
+    $settingsButton.Enabled=$states.settings
+    $bundleButton.Enabled=$states.saveBundle
+    $chooseButton.Enabled=$states.chooseSetup
+    $backgroundStartButton.Enabled=$states.backgroundStart
+    $backgroundAttachButton.Enabled=$states.backgroundAttach
+    $backgroundCheckButton.Enabled=$states.backgroundCheck
+    $stopButton.Enabled=$states.stop
+    $trayButton.Enabled=$states.tray
+    $openChatButton.Enabled=$states.openChat
+    $progress.Visible=$states.progressVisible
 }
 function GetUiActionAvailabilityNow([bool]$Busy) {
-    $foregroundServing=[bool]($script:child -and $script:step -ceq 'serving' -and $script:runReady)
-    $launch=[bool]($Busy -and (-not $foregroundServing -or $script:updateRun -or $script:vcBroker))
-    $occupied=[bool]($script:bgState.pendingRequestId -or $script:bgState.attachedRequestId -or
-        $script:bgState.attention -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-    return Get-FastLlmUiActionAvailability -LaunchInProgress $launch -Serving ([bool]$script:runReady) -SideStepActive ([bool]$script:sideChild) -BackgroundOccupied $occupied
+    return Get-FastLlmUiSnapshotAvailability -Snapshot (GetUiStateSnapshot $Busy)
 }
 # Reads the Open chat button and the ready flag from a run status (foreground child or background run). Returns $true when either changed.
 function UpdateUiRunState($Status,[bool]$ForegroundChildActive) {
@@ -572,7 +573,7 @@ function RevealUiForAction {
 function SetTrayMenuAvailable([bool]$Available) {
     if($script:trayMenu){
         foreach($item in $script:trayMenu.Items){
-            $item.Enabled=if($script:vcBroker){$item.Text -ceq 'Restore FastLLM'}else{$Available}
+            $item.Enabled=Get-FastLlmUiTrayItemEnabled -ItemText ([string]$item.Text) -Available $Available -VcBrokerActive ($null -ne $script:vcBroker)
         }
     }
 }
