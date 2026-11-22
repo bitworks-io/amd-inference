@@ -14,6 +14,10 @@ if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
 # H0: setup
 Check ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') 'runs on an STA thread'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Windows.Forms,System.Drawing
+$res=@{}
+# A throwing WinForms handler must be recorded, never shown as a dialog that waits for a person.
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+[System.Windows.Forms.Application]::add_ThreadException({param($s,$e) $script:res['threadException']=$e.Exception.ToString()})
 if(-not ('Bitworks.FastLlm.Tests.FluentHostNative' -as [type])){
     Add-Type -Path (Join-Path $PSScriptRoot 'helpers/FluentHostNative.cs') -ErrorAction Stop
 }
@@ -30,8 +34,8 @@ function New-HostWindow{
 }
 
 # One dialog probe: a WinForms form shown modally over $Owner; the form's own timer reads the WPF window state while it is up.
-function Invoke-HostDialogProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd){
-    $st=@{opened=$false;during=$null;timedOut=$false;after=$null}
+function Invoke-HostDialogProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd,[IntPtr]$ExpectedOwner){
+    $st=@{opened=$false;during=$null;timedOut=$false;after=$null;owns=$false}
     $f=New-Object System.Windows.Forms.Form
     $f.Text=$Title;$f.StartPosition='Manual';$f.ShowInTaskbar=$false
     $f.Location=New-Object System.Drawing.Point(-32000,-32000)
@@ -41,7 +45,7 @@ function Invoke-HostDialogProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd){
     $d=New-Object System.Windows.Forms.Timer
     $d.Interval=5000
     $nat=[Bitworks.FastLlm.Tests.FluentHostNative]
-    $t.Add_Tick(({$t.Stop();$st.during=$nat::IsWindowEnabled($Hwnd);$f.Close()}).GetNewClosure())
+    $t.Add_Tick(({$t.Stop();$st.during=$nat::IsWindowEnabled($Hwnd);$st.owns=($nat::GetOwner($f.Handle).ToInt64() -eq $ExpectedOwner.ToInt64());$f.Close()}).GetNewClosure())
     $d.Add_Tick(({$d.Stop();$st.timedOut=$true;$f.Close()}).GetNewClosure())
     $f.Add_Shown(({$st.opened=$true;$t.Start()}).GetNewClosure())
     try{
@@ -55,8 +59,8 @@ function Invoke-HostDialogProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd){
 }
 
 # One message box probe: a timer finds the box by its caption, reads the WPF window state, then closes the box with WM_CLOSE.
-function Invoke-HostBoxProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd){
-    $st=@{boxFound=$false;during=$null;posts=0;timedOut=$false;after=$null;sw=[System.Diagnostics.Stopwatch]::StartNew()}
+function Invoke-HostBoxProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd,[IntPtr]$ExpectedOwner){
+    $st=@{boxFound=$false;during=$null;owns=$false;foundAt=0;notClosed=$false;timedOut=$false;after=$null;sw=[System.Diagnostics.Stopwatch]::StartNew()}
     $t=New-Object System.Windows.Forms.Timer
     $t.Interval=50
     $nat=[Bitworks.FastLlm.Tests.FluentHostNative]
@@ -64,8 +68,12 @@ function Invoke-HostBoxProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd){
         $ms=$st.sw.ElapsedMilliseconds
         $h=$nat::FindWindowByTitle($Title)
         if($h.ToInt64() -ne 0){
-            if(-not $st.boxFound){$st.boxFound=$true;$st.during=$nat::IsWindowEnabled($Hwnd)}
-            if($st.posts -lt 100){$st.posts++;$null=$nat::PostClose($h)}
+            if(-not $st.boxFound){$st.boxFound=$true;$st.foundAt=$ms;$st.during=$nat::IsWindowEnabled($Hwnd);$st.owns=($nat::GetOwner($h).ToInt64() -eq $ExpectedOwner.ToInt64())}
+            if(($ms - $st.foundAt) -gt 3000){
+                $st.notClosed=$true
+                $t.Stop()
+                try{[System.Windows.Forms.SendKeys]::SendWait('{ESC}')}catch{}
+            }else{$null=$nat::PostClose($h)}
         }elseif(-not $st.boxFound -and $ms -gt 5000){
             $st.timedOut=$true
             $t.Stop()
@@ -82,7 +90,6 @@ function Invoke-HostBoxProbe([object]$Owner,[string]$Title,[IntPtr]$Hwnd){
     return $st
 }
 
-$res=@{}
 $info=New-Object System.Collections.Generic.List[string]
 $script:busy=$false
 $script:si=0
@@ -109,6 +116,7 @@ function Stop-HostLoop{
 }
 
 # Steps: each returns $true when done, anything else to be run again on the next tick (each step has 15 s in all).
+$script:stepNames=@('H1 winforms timer','H2 tray','H3 owner wrapper modality','H4 hidden form modality','H5 close guards','H6 adapters')
 $script:steps=@(
     # H1: WinForms timer ticks under the WPF dispatcher
     {
@@ -162,8 +170,8 @@ $script:steps=@(
         $owner=New-Object System.Windows.Forms.NativeWindow
         $owner.AssignHandle($script:hwnd)
         try{
-            $r.dialog=Invoke-HostDialogProbe $owner 'FastLLM host dialog A' $script:hwnd
-            $r.box=Invoke-HostBoxProbe $owner 'FastLLM host box A' $script:hwnd
+            $r.dialog=Invoke-HostDialogProbe $owner 'FastLLM host dialog A' $script:hwnd $script:hwnd
+            $r.box=Invoke-HostBoxProbe $owner 'FastLLM host box A' $script:hwnd $script:hwnd
         }finally{$owner.ReleaseHandle()}
         $script:res['h3']=$r
         return $true
@@ -181,10 +189,10 @@ $script:steps=@(
         [System.Windows.Forms.Application]::add_LeaveThreadModal($leaveH)
         try{
             $m.enter=0;$m.leave=0
-            $r.dialog=Invoke-HostDialogProbe $hf 'FastLLM host dialog B' $script:hwnd
+            $r.dialog=Invoke-HostDialogProbe $hf 'FastLLM host dialog B' $script:hwnd $hf.Handle
             $r.dialogEnter=[int]$m.enter;$r.dialogLeave=[int]$m.leave
             $m.enter=0;$m.leave=0
-            $r.box=Invoke-HostBoxProbe $hf 'FastLLM host box B' $script:hwnd
+            $r.box=Invoke-HostBoxProbe $hf 'FastLLM host box B' $script:hwnd $hf.Handle
             $r.boxEnter=[int]$m.enter;$r.boxLeave=[int]$m.leave
         }finally{
             [System.Windows.Forms.Application]::remove_EnterThreadModal($enterH)
@@ -256,9 +264,9 @@ $script:steps=@(
         $btn.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
         $r.click=[bool]$st6.clicked
         $threwSet=$false
-        try{$a.Nope='x'}catch{$threwSet=$true}
+        try{$a.Nope='x'}catch{$threwSet=([string]$_.Exception.Message -match 'Nope')}
         $threwGet=$false
-        try{$null=& {Set-StrictMode -Version 2;$a.Nope}}catch{$threwGet=$true}
+        try{$null=& {Set-StrictMode -Version 2;$a.Nope}}catch{$threwGet=([string]$_.Exception.Message -match 'Nope')}
         $r.unknownSet=$threwSet
         $r.unknownGet=$threwGet
         $script:res['h6']=$r
@@ -270,7 +278,7 @@ $tick=New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval=[TimeSpan]::FromMilliseconds(50)
 $script:tick=$tick
 $deadline=New-Object System.Windows.Threading.DispatcherTimer
-$deadline.Interval=[TimeSpan]::FromSeconds(60)
+$deadline.Interval=[TimeSpan]::FromSeconds(30)
 $script:deadline=$deadline
 
 $tick.Add_Tick({
@@ -295,15 +303,17 @@ $tick.Add_Tick({
 $deadline.Add_Tick({
     $script:deadline.Stop()
     $script:res['deadline']=$true
+    $script:res['deadlineStep']="step $($script:si) ($($script:stepNames[[Math]::Min($script:si,$script:stepNames.Count-1)]))"
     if($script:busy){
         # a step is stuck inside a modal loop: ending the process is the only way out, and it must not hang CI
-        Write-Host 'FAIL: host loop deadline hit while a step was blocked in a modal loop'
+        Write-Host "FAIL: host loop deadline hit while step $($script:si) ($($script:stepNames[[Math]::Min($script:si,$script:stepNames.Count-1)])) was blocked in a modal loop"
         [Environment]::Exit(1)
     }
     Stop-HostLoop
 })
 
 try{
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({param($s,$e) $script:res['dispatcherException']=$e.Exception.ToString();$e.Handled=$true;Stop-HostLoop})
     $script:hwnd=[System.Windows.Interop.WindowInteropHelper]::new($win).EnsureHandle()
     Check ($script:hwnd.ToInt64() -ne 0) 'the WPF window has a handle'
     $win.Show()
@@ -320,17 +330,20 @@ try{
 # Evaluation happens here, after the dispatcher has ended, so a throwing Check can never strand the loop.
 function Add-Info([string]$Text){$info.Add("INFO: host $Text")}
 if($script:res.ContainsKey('h1')){Add-Info "winforms-timer-ticks: $($script:res.h1.ticks)"}
-if($script:res.ContainsKey('h3')){Add-Info "owner-wrapper-disables: showdialog=$(([string]($script:res.h3.dialog.during -eq $false)).ToLowerInvariant()) messagebox=$(([string]($script:res.h3.box.during -eq $false)).ToLowerInvariant())"}
+if($script:res.ContainsKey('h3')){Add-Info "owner-wrapper-owns: showdialog=$(([string]$script:res.h3.dialog.owns).ToLowerInvariant()) messagebox=$(([string]$script:res.h3.box.owns).ToLowerInvariant())"
+    Add-Info "modal-disables-wpf: showdialog=$(([string]($script:res.h3.dialog.during -eq $false)).ToLowerInvariant()) messagebox=$(([string]($script:res.h3.box.during -eq $false)).ToLowerInvariant())"}
 if($script:res.ContainsKey('h4')){
     $h4=$script:res.h4
-    Add-Info "thread-modal-events: showdialog-enter=$($h4.dialogEnter) showdialog-leave=$($h4.dialogLeave) messagebox-enter=$($h4.boxEnter) messagebox-leave=$($h4.boxLeave) wpf-enabled-during=$(([string]$h4.dialog.during).ToLowerInvariant())/$(([string]$h4.box.during).ToLowerInvariant())"
+    Add-Info "thread-modal-events: showdialog-enter=$($h4.dialogEnter) showdialog-leave=$($h4.dialogLeave) messagebox-enter=$($h4.boxEnter) messagebox-leave=$($h4.boxLeave) wpf-enabled-during=$(([string]$h4.dialog.during).ToLowerInvariant())/$(([string]$h4.box.during).ToLowerInvariant()) owner-hidden-form-owns=$(([string]$h4.dialog.owns).ToLowerInvariant())/$(([string]$h4.box.owns).ToLowerInvariant())"
 }
 if($script:res.ContainsKey('h5c')){Add-Info "close-guards: first-cancelled=$(([string](($script:res.h5a.calls -eq 1) -and (-not $script:res.h5a.w2Closed))).ToLowerInvariant()) second-closed=$(([string]($script:res.h5c.cfClosed -and $script:res.h5c.w2Closed)).ToLowerInvariant())"}
 if($script:res.ContainsKey('h6') -and $script:res.h6.text -and $script:res.h6.enabled -and $script:res.h6.visible -and $script:res.h6.click -and $script:res.h6.unknownSet -and $script:res.h6.unknownGet){Add-Info 'adapter: ok'}
 foreach($l in $info){Write-Host $l}
 
 Check (-not $script:res.ContainsKey('error')) ("the host loop ran without an error: $($script:res['error'])")
-Check (-not $script:res.ContainsKey('deadline')) 'the host loop finished before its 60 s deadline'
+Check (-not $script:res.ContainsKey('threadException')) ("no WinForms handler threw: $($script:res['threadException'])")
+Check (-not $script:res.ContainsKey('dispatcherException')) ("no dispatcher handler threw: $($script:res['dispatcherException'])")
+Check (-not $script:res.ContainsKey('deadline')) ("the host loop finished before its 30 s deadline: $($script:res['deadlineStep'])")
 foreach($k in 'h1','h2','h3','h4','h5a','h5b','h5c','h6'){Check $script:res.ContainsKey($k) "host step $k produced a result"}
 
 # H1
@@ -343,13 +356,13 @@ Check $script:res.h2.clicked 'a tray menu item click reaches its handler'
 foreach($pair in @(@('dialog','ShowDialog'),@('box','MessageBox'))){
     $p=$script:res.h3[$pair[0]]
     if($pair[0] -eq 'dialog'){Check ($p.opened -and -not $p.timedOut) 'the owned dialog opened (Shown fired in time)'}
-    else{Check ($p.boxFound -and -not $p.timedOut) 'the owned message box opened (found by its caption)'}
+    else{Check ($p.boxFound -and -not $p.timedOut -and -not $p.notClosed) 'the owned message box opened (found by its caption)'}
     Check ($p.during -eq $false) $(if($pair[0] -eq 'dialog'){'an owned ShowDialog disables the WPF window'}else{'an owned MessageBox disables the WPF window'})
     Check ($p.after -eq $true) "the WPF window is enabled again after the $($pair[1]) closed"
 }
 # H4 is evidence only, except that every probe must have actually opened and closed (no false evidence)
 Check ($script:res.h4.dialog.opened -and -not $script:res.h4.dialog.timedOut -and $script:res.h4.dialog.after -eq $true) 'the hidden-form dialog probe opened and closed'
-Check ($script:res.h4.box.boxFound -and -not $script:res.h4.box.timedOut -and $script:res.h4.box.after -eq $true) 'the hidden-form message box probe opened and closed'
+Check ($script:res.h4.box.boxFound -and -not $script:res.h4.box.timedOut -and -not $script:res.h4.box.notClosed -and $script:res.h4.box.after -eq $true) 'the hidden-form message box probe opened and closed'
 # H5
 Check ($script:res.h5a.calls -eq 1) 'first close attempt: the hidden form FormClosing ran once'
 Check (-not $script:res.h5a.w2Closed) 'first close attempt: the WPF window is still open'
