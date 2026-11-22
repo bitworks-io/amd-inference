@@ -153,5 +153,40 @@ Check ($hp['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF1AEBFF') 'the pa
 Check ($hp['FastLlm.TextOnAccentBrush'].Color.ToString() -ceq '#FF000000') 'the palette HighlightText colour reaches the text-on-accent brush'
 Check ($hp['FastLlm.LayerBrush'].IsFrozen -and $hp['FastLlm.TextPrimaryBrush'].IsFrozen) 'palette brushes are frozen'
 
+$dl2=New-FastLlmUiThemeDictionary -Theme light -AccentPair $pair -TextScale 1.0
+$dd2=New-FastLlmUiThemeDictionary -Theme dark -AccentPair $pair -TextScale 1.0
+
+# Behavioural check: the dictionary must work when APPLIED to an element (a wrapped value is rejected by WPF at assignment).
+$applyCases=@(
+    @{name='light';dict=$dl2;theme='light'},
+    @{name='dark';dict=$dd2;theme='dark'},
+    @{name='high-contrast palette';dict=$hp;theme='high-contrast'}
+)
+foreach($case in $applyCases){
+    $err=$null
+    try{
+        $tb=[System.Windows.Controls.TextBlock]::new()
+        $border=[System.Windows.Controls.Border]::new()
+        $border.Child=$tb
+        $border.Resources=$case.dict
+        $tb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty,'FastLlm.TextPrimaryBrush')
+        $tb.SetResourceReference([System.Windows.Controls.TextBlock]::FontFamilyProperty,'FastLlm.TextFont')
+        $tb.SetResourceReference([System.Windows.Controls.TextBlock]::FontSizeProperty,'FastLlm.BodySize')
+        $tb.SetResourceReference([System.Windows.Controls.TextBlock]::FontWeightProperty,'FastLlm.BodyWeight')
+        $border.SetResourceReference([System.Windows.Controls.Border]::CornerRadiusProperty,'FastLlm.ControlCornerRadius')
+        $border.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty,'FastLlm.CardBrush')
+        $border.Measure([System.Windows.Size]::new(200,100))
+        $border.Arrange([System.Windows.Rect]::new(0,0,200,100))
+    }catch{$err=$_.Exception.Message}
+    Check ($null -eq $err) ($case.name+' dictionary applies to elements without an exception: '+$err)
+    $expectText=if($case.theme -ceq 'high-contrast'){'#FFFFFF00'}else{(Get-FastLlmUiThemeTokens -Theme $case.theme).TextPrimary}
+    Check ($tb.Foreground -is [System.Windows.Media.SolidColorBrush]) ($case.name+' resolved Foreground is a SolidColorBrush')
+    Check ($tb.Foreground.Color.ToString() -ceq ([System.Windows.Media.ColorConverter]::ConvertFromString($expectText)).ToString()) ($case.name+' resolved Foreground is the TextPrimary colour')
+    Check ($tb.FontSize -eq [double](Get-FastLlmUiTypeRamp -TextScale 1.0).Body.size) ($case.name+' resolved FontSize is the ramp Body size')
+    Check ($tb.FontFamily.Source -ceq [string](Get-FastLlmUiMetrics).TextFont) ($case.name+' resolved FontFamily is the TextFont metric')
+    Check ($border.CornerRadius.TopLeft -eq 4) ($case.name+' resolved CornerRadius is 4')
+    Check ($border.Background -is [System.Windows.Media.SolidColorBrush]) ($case.name+' resolved Background is a SolidColorBrush')
+}
+
 Write-Host "UI window tests passed: $checks"
 exit 0

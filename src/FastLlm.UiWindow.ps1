@@ -71,11 +71,17 @@ function New-FastLlmUiThemeDictionary {
     )
     $newBrush = {
         param([string]$Argb)
-        $brush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($Argb))
+        $brush = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color][System.Windows.Media.ColorConverter]::ConvertFromString($Argb))
         $brush.Freeze()
         return $brush
     }
     $d = New-Object System.Windows.ResourceDictionary
+    # PowerShell stores a PSObject wrapper when it assigns through an IDictionary indexer, and WPF rejects a wrapper
+    # for a Brush, FontFamily or CornerRadius property. Every value goes in as its raw .NET object.
+    $put = {
+        param([string]$Key, $Value)
+        $d[$Key] = [System.Management.Automation.PSObject]::AsPSObject($Value).BaseObject
+    }
     if ($Theme -ceq 'high-contrast') {
         $sc = [System.Windows.SystemColors]
         if ($null -ne $HighContrastPalette) {
@@ -97,26 +103,26 @@ function New-FastLlmUiThemeDictionary {
             SuccessText = $text; CautionText = $text; CriticalText = $text
             SuccessBackground = $win; CautionBackground = $win; CriticalBackground = $win
         }
-        foreach ($k in $map.Keys) { $d['FastLlm.' + $k + 'Brush'] = $map[$k] }
+        foreach ($k in $map.Keys) { & $put ('FastLlm.' + $k + 'Brush') $map[$k] }
     } else {
         if ($null -eq $AccentPair) { $AccentPair = Get-FastLlmUiAccentPair $null }
         $fill = if ($Theme -ceq 'dark') { [string]$AccentPair['darkFill'] } else { [string]$AccentPair['lightFill'] }
         $tokens = Get-FastLlmUiThemeTokens -Theme $Theme -AccentFill $fill
-        foreach ($k in $tokens.Keys) { $d['FastLlm.' + $k + 'Brush'] = & $newBrush ([string]$tokens[$k]) }
+        foreach ($k in $tokens.Keys) { & $put ('FastLlm.' + $k + 'Brush') (& $newBrush ([string]$tokens[$k])) }
     }
     $ramp = Get-FastLlmUiTypeRamp -TextScale $TextScale
     foreach ($style in 'Caption', 'Body', 'BodyStrong', 'Subtitle', 'Title') {
         $row = $ramp[$style]
-        $d['FastLlm.' + $style + 'Size'] = [double]$row.size
-        $d['FastLlm.' + $style + 'LineHeight'] = [double]$row.lineHeight
-        if ($row.weight -ceq 'SemiBold') { $d['FastLlm.' + $style + 'Weight'] = [System.Windows.FontWeights]::SemiBold }
-        else { $d['FastLlm.' + $style + 'Weight'] = [System.Windows.FontWeights]::Regular }
+        & $put ('FastLlm.' + $style + 'Size') ([double]$row.size)
+        & $put ('FastLlm.' + $style + 'LineHeight') ([double]$row.lineHeight)
+        if ($row.weight -ceq 'SemiBold') { & $put ('FastLlm.' + $style + 'Weight') ([System.Windows.FontWeights]::SemiBold) }
+        else { & $put ('FastLlm.' + $style + 'Weight') ([System.Windows.FontWeights]::Regular) }
     }
     $m = Get-FastLlmUiMetrics
-    foreach ($f in 'TextFont', 'DisplayFont', 'IconFont', 'MonoFont') { $d['FastLlm.' + $f] = New-Object System.Windows.Media.FontFamily ([string]$m[$f]) }
-    $d['FastLlm.ControlCornerRadius'] = New-Object System.Windows.CornerRadius ([double]$m['ControlCornerRadius'])
-    $d['FastLlm.OverlayCornerRadius'] = New-Object System.Windows.CornerRadius ([double]$m['OverlayCornerRadius'])
-    $d['FastLlm.ControlHeight'] = [double]$m['ControlHeight']
-    $d['FastLlm.FocusThickness'] = [double]$m['FocusThickness']
+    foreach ($f in 'TextFont', 'DisplayFont', 'IconFont', 'MonoFont') { & $put ('FastLlm.' + $f) ([System.Windows.Media.FontFamily]::new([string]$m[$f])) }
+    & $put 'FastLlm.ControlCornerRadius' ([System.Windows.CornerRadius]::new([double]$m['ControlCornerRadius']))
+    & $put 'FastLlm.OverlayCornerRadius' ([System.Windows.CornerRadius]::new([double]$m['OverlayCornerRadius']))
+    & $put 'FastLlm.ControlHeight' ([double]$m['ControlHeight'])
+    & $put 'FastLlm.FocusThickness' ([double]$m['FocusThickness'])
     return $d
 }
