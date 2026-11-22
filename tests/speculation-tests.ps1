@@ -194,7 +194,8 @@ try {
     Check ($recipeSpec.threw -and $recipeSpec.code -ceq 'speculation-profile-not-measured') 'speculation: on a card with a measured recipe, no recipe is applied (no engine is probed); a default-context plan is refused for want of a profile id'
     $recipeSpecLong=Get-FastLlmPlan @identified -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Speculation 'ngram'
     Check ([string]$recipeSpecLong.selectionMode -ne 'recipe' -and -not $recipeSpecLong.PSObject.Properties['engineComponentId'] -and [string]$recipeSpecLong.speculation.profileId -ceq 'long' -and [string]$recipeSpecLong.speculation.engineId -ceq 'llama.cpp-b10698-vulkan') 'speculation: the plan runs on the built-in engine and is no recipe plan'
-    Check ((Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -RecipeId 'some-recipe' -Speculation 'ngram' }).message -like '*cannot be combined*') 'speculation: -Recipe with -Speculation is refused (a recipe is measured without speculation)'
+    $recipeSpecRefusal=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -RecipeId 'some-recipe' -Speculation 'ngram' }
+    Check ($recipeSpecRefusal.threw -and $recipeSpecRefusal.message -clike '-Recipe cannot be combined with -Speculation*') 'speculation: -Recipe with -Speculation is refused by the speculation rule itself (a recipe is measured without speculation), with no ModelId in the call'
     Check ((Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -ContextSize 8192 -Speculation 'ngram' }).message -like '*cannot be combined*') 'speculation: -ContextSize with a context profile is still refused'
 
     # ---- 4. the argv: the none value is replaced IN PLACE, the extra arguments are appended, the draft path goes through the one helper ------------------
@@ -394,6 +395,113 @@ try {
     Check ($null -ne $basisOptions -and [string]$basisOptions['Speculation'] -ceq 'ngram') 'switch: the saved basis of a run keeps Speculation (a closed value), so the picker asks the planner the same question'
     $badBasis=@{Profile='balanced';Speculation='draft-simple'}
     Check ($null -eq (& $module { param($O) ConvertTo-FastLlmSwitchBasisPlanOptions -Options $O } $badBasis)) 'switch: a basis with a Speculation value outside off|ngram|mtp is refused'
+
+    # ---- 10. the start-time re-plan keeps speculation (regression: the fresh plan once replaced the speculation plan with a plain one) ----------------------------
+    # The REAL Start-FastLlmServer, with the hardware, engine, model and consent checks and the supervisor replaced by recorders. The plan that comes in
+    # carries the block and --spec-type ngram-simple; the plan the supervisor receives must carry both, or status, run log, spec-summary, the benchmark
+    # refusal and the switch basis would never see the option.
+    function New-StartWorld([string]$Label,$Document){
+        $dir=Join-Path $work ('start-world-'+$Label)
+        New-Item -ItemType Directory -Path (Join-Path $dir 'config') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $dir 'install') -Force | Out-Null
+        [IO.File]::Copy($catalogPath,(Join-Path $dir 'config/catalog.json'),$true)
+        $profilesFile=Join-Path $dir 'config/serving-profiles.json'
+        if($null -ne $Document){ Write-Utf8 $profilesFile ($Document | ConvertTo-Json -Depth 12) } else { [IO.File]::Copy($specProfiles,$profilesFile,$true) }
+        return [pscustomobject]@{dir=$dir;catalog=(Join-Path $dir 'config/catalog.json');install=(Join-Path $dir 'install');profiles=$profilesFile}
+    }
+    $startSaved=& $module {
+        @{ prereq=(Get-Command Assert-FastLlmWindowsPrerequisites).ScriptBlock; engineInstalled=(Get-Command Test-FastLlmEngineInstallation).ScriptBlock; engineExe=(Get-Command Get-FastLlmEngineExecutable).ScriptBlock
+           fileHash=(Get-Command Test-FastLlmFileHash).ScriptBlock; consent=(Get-Command Test-FastLlmModelConsentReceipt).ScriptBlock; hardware=(Get-Command Get-FastLlmHardware).ScriptBlock
+           supervised=(Get-Command Invoke-FastLlmSupervisedServer).ScriptBlock }
+    }
+    & $module {
+        function script:Assert-FastLlmWindowsPrerequisites { }
+        function script:Test-FastLlmEngineInstallation { return $true }
+        function script:Get-FastLlmEngineExecutable { return 'C:\FastLLM\vulkan\llama-server.exe' }
+        function script:Test-FastLlmFileHash { return $true }
+        function script:Test-FastLlmModelConsentReceipt { return $true }
+        function script:Get-FastLlmHardware { return $script:specStartCard }
+        function script:Invoke-FastLlmSupervisedServer { param($Plan,$SwitchContext) $script:specStartCaptured = $Plan; $script:specStartContext = $SwitchContext; return 0 }
+    }
+    try {
+        function Invoke-RealStart($World,$Plan,[switch]$AllowSwitchOn){
+            & $module { param($Card) $script:specStartCard=$Card; $script:specStartCaptured=$null; $script:specStartContext=$null } $card
+            $outcome=Get-RefusalCode { if($AllowSwitchOn){ Start-FastLlmServer -Plan $Plan -CatalogPath $World.catalog -InstallRoot $World.install -AllowSwitch } else { Start-FastLlmServer -Plan $Plan -CatalogPath $World.catalog -InstallRoot $World.install } }
+            $outcome | Add-Member -NotePropertyName captured -NotePropertyValue (& $module { $script:specStartCaptured }) -Force
+            $outcome | Add-Member -NotePropertyName context -NotePropertyValue (& $module { $script:specStartContext }) -Force
+            return $outcome
+        }
+        $world=New-StartWorld 'ngram' $null
+        $startPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -KvProfilesPath $world.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -Speculation 'ngram'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $startPlan.modelPath) -Force | Out-Null
+        [IO.File]::WriteAllText($startPlan.modelPath,'x')
+        Check ($null -ne $startPlan.speculation -and (@($startPlan.serverArguments) -join ' ').Contains('--spec-type ngram-simple')) 'start re-plan: the plan that goes into Start-FastLlmServer carries the block and --spec-type ngram-simple'
+        $real=Invoke-RealStart $world $startPlan
+        Check (-not $real.threw -and $null -ne $real.captured) "start re-plan: the real Start-FastLlmServer reaches the supervisor with the test rows$(if($real.threw){': '+$real.message})"
+        $got=$real.captured
+        $gotArgs=@($got.serverArguments)
+        Check ($got.PSObject.Properties['speculation'] -and [string]$got.speculation.mode -ceq 'ngram' -and [string]$got.speculation.specType -ceq 'ngram-simple' -and (@($got.speculation.extraArguments) -join ' ') -ceq '--spec-ngram-size-n 12 --spec-ngram-size-m 48' -and [string]$got.speculation.resultId -ceq 'test-ngram-0001') 'start re-plan: the plan the supervisor receives still carries the speculation block (mode, spec type, extra arguments, evidence id)'
+        Check ($gotArgs[[Array]::IndexOf($gotArgs,'--spec-type')+1] -ceq 'ngram-simple' -and (($gotArgs[($gotArgs.Count-4)..($gotArgs.Count-1)]) -join ' ') -ceq '--spec-ngram-size-n 12 --spec-ngram-size-m 48') 'start re-plan: the supervisor''s arguments carry --spec-type ngram-simple and the row''s extra arguments last'
+        Check (Test-SameArguments $startPlan.serverArguments $got.serverArguments) 'start re-plan: the supervisor''s arguments equal the incoming plan''s (nothing was dropped or changed)'
+        # A plan without speculation is re-planned exactly as before.
+        $plainPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -ModelId 'qwen3.8-27b-ud-q4-k-m'
+        $plainReal=Invoke-RealStart $world $plainPlan
+        Check (-not $plainReal.threw -and -not $plainReal.captured.PSObject.Properties['speculation'] -and (@($plainReal.captured.serverArguments) -join ' ').Contains('--spec-type none')) 'start re-plan: a plan without speculation reaches the supervisor with no block and --spec-type none'
+        # The switch basis: a run that allows switching saves the serving options of the plan that runs, and they carry the mode.
+        $switchReal=Invoke-RealStart $world $startPlan -AllowSwitchOn
+        $basis=$null; if($null -ne $switchReal.context -and $switchReal.context.Contains('basisPlanOptions')){ $basis=$switchReal.context['basisPlanOptions'] }
+        Check (-not $switchReal.threw -and $null -ne $basis -and [string]$basis['Speculation'] -ceq 'ngram' -and [string]$basis['KvContextProfile'] -ceq 'long') "start re-plan: the saved switch basis of the start carries Speculation ngram and the profile$(if($switchReal.threw){': '+$switchReal.message})"
+        # The rows changed between the plan and the start: a typed refusal with no retry reason, and nothing is started.
+        $changedDoc=Get-SpecDocument;$changedDoc.addOns[2].specType='ngram-mod'
+        $changedWorld=New-StartWorld 'changed-spec-type' $changedDoc
+        $changed=Invoke-RealStart $changedWorld $startPlan
+        Check ($changed.threw -and $changed.code -ceq 'speculation-plan-changed' -and [string]::IsNullOrEmpty($changed.reason) -and $null -eq $changed.captured) 'start re-plan: rows whose spec type changed since the plan are refused (speculation-plan-changed), nothing starts and no reason is set'
+        $changedArgsDoc=Get-SpecDocument;$changedArgsDoc.addOns[2].extraArguments=@('--spec-ngram-size-n','8')
+        $changed2=Invoke-RealStart (New-StartWorld 'changed-args' $changedArgsDoc) $startPlan
+        Check ($changed2.threw -and $changed2.code -ceq 'speculation-plan-changed' -and $null -eq $changed2.captured) 'start re-plan: rows whose extra arguments changed are refused the same way'
+        $changedIdDoc=Get-SpecDocument;$changedIdDoc.addOns[2].evidence.resultId='test-ngram-9999'
+        $changed3=Invoke-RealStart (New-StartWorld 'changed-result' $changedIdDoc) $startPlan
+        Check ($changed3.threw -and $changed3.code -ceq 'speculation-plan-changed' -and $null -eq $changed3.captured) 'start re-plan: rows whose evidence id changed are refused the same way'
+        $goneDoc=Get-SpecDocument;$goneDoc.addOns=@($goneDoc.addOns | Where-Object { $_.kind -cne 'ngram' })
+        $gone=Invoke-RealStart (New-StartWorld 'row-gone' $goneDoc) $startPlan
+        Check ($gone.threw -and $gone.code -cin @('speculation-plan-changed','speculation-not-measured') -and [string]::IsNullOrEmpty($gone.reason) -and $null -eq $gone.captured) 'start re-plan: a row that is gone at start is a typed refusal with no retry reason, and nothing starts (never a plain start)'
+        # A forged block is never forwarded: the fresh plan is re-derived from the rows.
+        $forged=$startPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $forged.speculation.specType='ngram-mod'
+        $forged.serverArguments=@($forged.serverArguments | ForEach-Object { if($_ -ceq 'ngram-simple'){'ngram-mod'}else{$_} })
+        $forgedRun=Invoke-RealStart $world $forged
+        Check ($forgedRun.threw -and $forgedRun.code -ceq 'speculation-plan-changed' -and $null -eq $forgedRun.captured) 'start re-plan: a block that differs from what the rows say is refused, never copied onto the fresh plan'
+    }
+    finally {
+        & $module { param($Saved)
+            Set-Item -Path Function:script:Assert-FastLlmWindowsPrerequisites -Value $Saved.prereq
+            Set-Item -Path Function:script:Test-FastLlmEngineInstallation -Value $Saved.engineInstalled
+            Set-Item -Path Function:script:Get-FastLlmEngineExecutable -Value $Saved.engineExe
+            Set-Item -Path Function:script:Test-FastLlmFileHash -Value $Saved.fileHash
+            Set-Item -Path Function:script:Test-FastLlmModelConsentReceipt -Value $Saved.consent
+            Set-Item -Path Function:script:Get-FastLlmHardware -Value $Saved.hardware
+            Set-Item -Path Function:script:Invoke-FastLlmSupervisedServer -Value $Saved.supervised
+        } $startSaved
+    }
+
+    # ---- 11. a forged plan block is refused: the block must be the plan's own (model, engine, backend) and inside the engine's allowlist ----------------------
+    $forgeBase=Get-FastLlmPlan @common -KvContextProfile 'long' -Speculation 'ngram'
+    $forge={ param([scriptblock]$Mutate) $copy=$forgeBase | ConvertTo-Json -Depth 12 | ConvertFrom-Json; & $Mutate $copy; return $copy }
+    $forgeWorld=New-SpecWorld 'forge' 'installed'
+    $forgeCases=@(
+        @{Name='another model sha256';Mutate={ param($p) $p.speculation.modelSha256=('1'*64) }},
+        @{Name='another engine id';Mutate={ param($p) $p.speculation.engineId='llama.cpp-hip-b11658' }},
+        @{Name='another backend';Mutate={ param($p) $p.speculation.backend='hip' }},
+        @{Name='a flag outside the engine allowlist';Mutate={ param($p) $p.speculation.extraArguments=@('--spec-draft-sampling','on') }},
+        @{Name='a spec type outside the allowlist';Mutate={ param($p) $p.speculation.specType='ngram-bogus' }},
+        @{Name='an engine id in another case';Mutate={ param($p) $p.speculation.engineId='LLAMA.CPP-B10698-VULKAN' }})
+    foreach($forgeCase in $forgeCases){
+        $forgedPlan=& $forge $forgeCase.Mutate
+        $viaCheck=Get-RefusalCode { Assert-FastLlmSpeculationStartable -Plan $forgedPlan -CatalogPath $forgeWorld.catalog -InstallRoot $forgeWorld.install }
+        $viaBlock=Get-RefusalCode { & $module { param($P) Get-FastLlmPlanSpeculation -Plan $P } $forgedPlan }
+        Check ($viaCheck.threw -and $viaCheck.code -ceq 'speculation-invalid' -and $viaBlock.code -ceq 'speculation-invalid' -and [string]::IsNullOrEmpty($viaCheck.reason)) "forged plan: a block with $($forgeCase.Name) is refused (speculation-invalid) by the start check and by the block reader"
+    }
+    Check (-not (Get-RefusalCode { Assert-FastLlmSpeculationStartable -Plan $forgeBase -CatalogPath $forgeWorld.catalog -InstallRoot $forgeWorld.install }).threw) 'forged plan: the unforged plan passes the same check'
 
     Write-Host "speculation-tests (planner, allowlist, start check, self-test, benchmark, switch): $script:count checks passed"
 }

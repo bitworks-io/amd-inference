@@ -1591,6 +1591,67 @@
           }
         }
       ]
+    },
+    {
+      "name": "upper-case-engine-id-ngram",
+      "refuse": true,
+      "addOns": [
+        {
+          "kind": "ngram",
+          "modelId": "qwen3.8-27b-ud-q4-k-m",
+          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "engineId": "LLAMA.CPP-B10698-VULKAN",
+          "backend": "vulkan",
+          "specType": "ngram-simple",
+          "extraArguments": [
+            "--spec-ngram-size-n",
+            "12",
+            "--spec-ngram-size-m",
+            "48"
+          ],
+          "extraFreeVramMiB": {
+            "default": 0,
+            "long": 64
+          },
+          "evidence": {
+            "resultId": "test-ngram-0001",
+            "measuredAt": "2026-01-01T00:00:00Z",
+            "gpuClasses": [
+              "test-class"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mixed-case-hip-engine-id-mtp",
+      "refuse": true,
+      "addOns": [
+        {
+          "kind": "mtp",
+          "modelId": "qwen3.8-27b-ud-q4-k-m",
+          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "engineId": "Llama.cpp-hip-b11658",
+          "backend": "hip",
+          "componentId": "test-mtp-draft",
+          "specType": "draft-mtp",
+          "extraArguments": [
+            "--spec-draft-n-max",
+            "4"
+          ],
+          "extraFreeVramMiB": {
+            "default": 700,
+            "long": 900
+          },
+          "evidence": {
+            "resultId": "test-mtp-0001",
+            "measuredAt": "2026-01-01T00:00:00Z",
+            "gpuClasses": [
+              "test-class"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
