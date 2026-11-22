@@ -90,6 +90,35 @@ try {
     Check ([Bitworks.FastLlm.ProcessHost]::IsSecretLine('main: API_KEYS: 2 keys loaded', $null) -and [Bitworks.FastLlm.ProcessHost]::IsSecretLine('x LLAMA_API_KEY=whatever', $null)) 'W1: an api_key label in any letter case is a secret line'
     Check ([Bitworks.FastLlm.ProcessHost]::IsSecretLine("request header Authorization: Bearer $marker", $marker)) 'W1: a line that holds the key itself is a secret line'
     Check (-not [Bitworks.FastLlm.ProcessHost]::IsSecretLine('load_tensors: offloaded 41/41 layers to GPU', $marker) -and -not [Bitworks.FastLlm.ProcessHost]::IsSecretLine($null, $marker) -and -not [Bitworks.FastLlm.ProcessHost]::IsSecretLine('', $null)) 'W1: an ordinary line, an empty line and no line are not secret lines'
+    # The engine-surface fixtures record the log label(s) llama-server prints key material under, one list per audited tag. Every recorded
+    # label, shaped like the engine's own line, must be dropped by the filter: a renamed label then fails here, not in a capture.
+    function Get-UnfilteredSecretLabels($Fixtures) {
+        $missed = New-Object System.Collections.Generic.List[string]
+        foreach ($fixture in $Fixtures) {
+            if ($null -eq $fixture.PSObject.Properties['secretLogLabels']) { $missed.Add($fixture.tag + ' :: no secretLogLabels'); continue }
+            if (@($fixture.secretLogLabels).Count -eq 0) { $missed.Add($fixture.tag + ' :: empty secretLogLabels'); continue }
+            foreach ($label in @($fixture.secretLogLabels)) {
+                if (-not [Bitworks.FastLlm.ProcessHost]::IsSecretLine("0.00.123.456 I srv          main: ${label}: ****abcd", $null)) { $missed.Add($fixture.tag + ' :: ' + $label) }
+            }
+        }
+        return , $missed.ToArray()
+    }
+    $surfaceFixtures = @(Get-ChildItem -LiteralPath (Join-Path $root 'tests/fixtures') -Filter 'engine-surface-b*.json' | Sort-Object Name | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+    Check ($surfaceFixtures.Count -ge 3) 'W1: the engine-surface fixtures are found (one per audited tag)'
+    $unfiltered = Get-UnfilteredSecretLabels $surfaceFixtures
+    Check ($unfiltered.Count -eq 0) ('W1: every secret log label recorded in every engine-surface fixture is a secret line (missed: ' + ($unfiltered -join ', ') + ')')
+    # Mutation proof, kept permanent: a copy of a fixture (never the committed one) with a made-up label must be reported as missed.
+    $mutated = ($surfaceFixtures[0] | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+    $mutated.secretLogLabels = @($mutated.secretLogLabels) + @('key_list')
+    $mutatedMissed = Get-UnfilteredSecretLabels @($mutated)
+    Check ($mutatedMissed.Count -eq 1 -and $mutatedMissed[0] -eq ($mutated.tag + ' :: key_list')) 'W1: a made-up label in a test copy of a fixture is reported as not filtered (mutation proof)'
+    $noField = ($surfaceFixtures[0] | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+    $noField.PSObject.Properties.Remove('secretLogLabels')
+    Check ((Get-UnfilteredSecretLabels @($noField)).Count -eq 1) 'W1: a fixture without secretLogLabels is reported, not passed'
+    $emptyField = ($surfaceFixtures[0] | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+    $emptyField.secretLogLabels = @()
+    $emptyMissed = Get-UnfilteredSecretLabels @($emptyField)
+    Check ($emptyMissed.Count -eq 1 -and $emptyMissed[0] -eq ($emptyField.tag + ' :: empty secretLogLabels')) 'W1: a fixture with an empty secretLogLabels list is reported, not passed'
     $w1Script = Join-Path $temp 'w1-child.ps1'
     # A device-list shaped line with the api_keys label would be captured as a device entry (name api_keys, description the tail) without the filter.
     Set-Content -LiteralPath $w1Script -Encoding ASCII -Value @(

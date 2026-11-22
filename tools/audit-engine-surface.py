@@ -7,6 +7,8 @@ and writes a fixture (bitworks.fastllm-engine-surface/v1) with:
   envNames                every LLAMA_ARG_* environment name, and LLAMA_API_KEY
   metricsCounters         the llamacpp:* names the /metrics endpoint renders
   publicEndpointsWithKey  paths that answer without an API key when one is set
+  secretLogLabels         the label of every server log line printed from a branch that tests the configured API keys
+                          (llama-server prints "api_keys: ****<last chars>"); FastLLM's capture filter must drop each one
   source                  where it came from (and, for a build, its release assets)
 
 Usage:
@@ -27,6 +29,10 @@ RAW = 'https://raw.githubusercontent.com/%s/%%s/%%s' % REPO
 API = 'https://api.github.com/repos/%s' % REPO
 FILES = ('common/arg.cpp', 'tools/server/server-task.cpp', 'tools/server/server-http.cpp')
 UI_MARKER = '<embedded-ui-assets>'
+
+
+class AuditError(Exception):
+    """The source no longer has a shape the audit can read; no fixture is written."""
 
 
 def http_get(url):
@@ -94,8 +100,27 @@ def parse_public_endpoints(text):
     return sorted(set(paths))
 
 
+# A branch that tests the configured keys: `if (params.api_keys.size() ...) { body }` or an `else if` of the same, with a body that has no
+# nested braces. The key-printing statements are the log macros (SRV_TRC, LOG_INF, ...) inside such a body, and the label is the text
+# before the first colon of the format string. A branch that tests api_keys.empty() is not matched (it prints no key material).
+_KEY_BRANCH_RE = re.compile(r'if\s*\(\s*params\.api_keys\.size\(\)[^)]*\)\s*\{([^{}]*)\}')
+_LOG_LABEL_RE = re.compile(r'\b[A-Z][A-Z0-9]*_[A-Z]+\(\s*"([A-Za-z_][A-Za-z0-9_]*):')
+
+
+def parse_secret_log_labels(text):
+    """Labels of the log statements that print API key material. Fails (AuditError) rather than return an empty list."""
+    labels = set()
+    for branch in _KEY_BRANCH_RE.finditer(text):
+        labels.update(_LOG_LABEL_RE.findall(branch.group(1)))
+    if not labels:
+        raise AuditError('no log statement that prints API key material was found in tools/server/server-http.cpp; '
+                         'the engine changed shape, so the audit cannot say which label the capture filter must drop')
+    return sorted(labels)
+
+
 def build_fixture(tag, source):
     options, envs = parse_arg_cpp(source.text('common/arg.cpp'))
+    http_text = source.text('tools/server/server-http.cpp')
     info = {'repository': 'https://github.com/%s' % REPO, 'files': list(FILES)}
     release = source.release()
     if release:
@@ -108,7 +133,8 @@ def build_fixture(tag, source):
         'options': options,
         'envNames': envs,
         'metricsCounters': parse_metrics(source.text('tools/server/server-task.cpp')),
-        'publicEndpointsWithKey': parse_public_endpoints(source.text('tools/server/server-http.cpp')),
+        'publicEndpointsWithKey': parse_public_endpoints(http_text),
+        'secretLogLabels': parse_secret_log_labels(http_text),
     }
 
 
@@ -155,7 +181,11 @@ def main(argv=None):
     if not args.tag or not re.match(r'^b[0-9]+$', args.tag):
         parser.error('--tag bNNNN is required')
     source = DirSource(args.from_dir) if args.from_dir else RemoteSource(args.tag)
-    fixture = build_fixture(args.tag, source)
+    try:
+        fixture = build_fixture(args.tag, source)
+    except AuditError as error:
+        print('audit failed: %s' % error, file=sys.stderr)
+        return 2
     text = json.dumps(fixture, indent=2) + '\n'
     if args.out:
         with open(args.out, 'w', encoding='utf-8', newline='\n') as handle:
