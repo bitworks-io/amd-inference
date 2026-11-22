@@ -172,6 +172,12 @@ $refused=[ordered]@{
     'property element source'='<Image '+$ns+'><Image.Source>http://example.invalid/a.png</Image.Source></Image>'
     'hyperlink navigate uri'='<TextBlock '+$ns+'><Hyperlink NavigateUri="https://example.invalid">x</Hyperlink></TextBlock>'
     'non-source attribute with a scheme'='<TextBlock '+$ns+' Tag="http://example.invalid/a"/>'
+    'entity-encoded scheme'='<Image '+$ns+' Source="&#104;ttp://example.invalid/a.png"/>'
+    'uppercase scheme with leading space'='<TextBlock '+$ns+' Tag="  HTTP://example.invalid/a"/>'
+    'cdata property element'='<Image '+$ns+'><Image.Source><![CDATA[http://example.invalid/a.png]]></Image.Source></Image>'
+    'scheme without slashes'='<TextBlock '+$ns+' Tag="file:x"/>'
+    'network path with forward slashes'='<TextBlock '+$ns+' Tag="//host/share/x"/>'
+    'relative property element source'='<Image '+$ns+'><Image.Source>images/x.png</Image.Source></Image>'
 }
 foreach($k in $refused.Keys){
     $threw=$false;$msg=''
@@ -191,6 +197,9 @@ $allowed=[ordered]@{
     'step text'='<TextBlock '+$ns+' Text="Step 3 of 4: Model"/>'
     'time, colour and font list'='<Border '+$ns+' Background="#FF123456" FontFamily="Segoe UI, Arial" Tag="0:0:1"/>'
     'text content'='<TextBlock '+$ns+'><Run>Note: text</Run></TextBlock>'
+    'label starting with a scheme word'='<Button '+$ns+' Content="File: report"/>'
+    'label starting with slashes'='<Button '+$ns+' Content="// note"/>'
+    'designer namespaces'='<Grid '+$ns+' xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d"/>'
     'property element binding'='<Image '+$ns+'><Image.Source>{DynamicResource X}</Image.Source></Image>'
 }
 foreach($k in $allowed.Keys){

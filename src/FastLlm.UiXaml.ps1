@@ -14,9 +14,10 @@ function Assert-FastLlmUiXamlSafe {
     foreach ($token in @('x:Class','x:Code','ObjectDataProvider','XmlDataProvider','clr-namespace:')) {
         if ($Xaml.IndexOf($token,[System.StringComparison]::OrdinalIgnoreCase) -ge 0) { throw ('Unsafe XAML: '+$token) }
     }
+    # An empty string now fails below as 'not well-formed XML'; that is intended, since an empty entry would not parse anyway.
     # Markup may not load anything from a URI: parse as XML (no DTD, no resolver) and check every value.
     $uriNames=@('Source','ImageSource','UriSource','NavigateUri','BaseUri','Uri')
-    $fetchPatterns=@('^[a-z][a-z0-9+.-]*://','^(?:http|https|ftp|file):','^\\\\','^//','^[a-z]:[\\/]')
+    $fetchPatterns=@('^[a-z][a-z0-9+.-]*://','^(?:http|https|ftp|file):(?!\s)','^\\\\','^//(?!\s)','^[a-z]:[\\/]')
     $check={
         param([string]$Value,[bool]$UriTyped)
         $v=$Value.Trim()
