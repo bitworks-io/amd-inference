@@ -17,6 +17,15 @@ function Check([bool]$Condition,[string]$Message){
 . (Join-Path $root 'src/FastLlm.UiXaml.ps1')
 . (Join-Path $root 'tests/helpers/UiRenderHarness.ps1')
 
+# Pure checks, any OS: they catch a matrix that is wrapped or shaped wrongly before the Windows-only part.
+$matrix=@(Get-UiRenderMatrix)
+Check ($matrix.Count -eq 40) 'the matrix has 40 cases'
+Check (@($matrix|Where-Object{$_ -is [hashtable]}).Count -eq 40) 'every matrix case is one hashtable'
+Check (@($matrix|Where-Object{$_.theme -is [string] -and $_.scale -is [double] -and $_.textScale -is [double]}).Count -eq 40) 'every case has a single theme, scale and text scale'
+Check (@($matrix|ForEach-Object{"$($_.theme)|$($_.scale)|$($_.textScale)|$($_.width)x$($_.height)"}|Sort-Object -Unique).Count -eq 40) 'the 40 cases are all different'
+$bigText=@($matrix|Where-Object{[double]$_.textScale -eq 2.25})
+Check ($bigText.Count -eq 1 -and $bigText[0].theme -ceq 'light' -and $bigText[0].scale -eq 1.0 -and $bigText[0].width -eq 640) 'the matrix has the one light 225% text case'
+if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
 
@@ -36,7 +45,7 @@ $script:FastLlmUiXaml['Test.Sample']=@'
   <CheckBox x:Name="OptionBox" Content="Example option" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,12"/>
   <StackPanel Orientation="Vertical">
     <Button x:Name="AccentButton" Content="Example action" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextOnAccentBrush}" Background="{DynamicResource FastLlm.AccentFillBrush}" HorizontalAlignment="Left" Padding="12,6,12,6" Margin="0,0,0,8"/>
-    <Button x:Name="IconButton" Width="32" Height="32" HorizontalAlignment="Left" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="{DynamicResource FastLlm.CaptionSize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Background="{DynamicResource FastLlm.CardBrush}" Content="&#xE8C8;" AutomationProperties.Name="Copy example" ToolTip="Copy example"/>
+    <Button x:Name="IconButton" Width="32" Height="32" HorizontalAlignment="Left" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="16" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Background="{DynamicResource FastLlm.CardBrush}" Content="&#xE8C8;" AutomationProperties.Name="Copy example" ToolTip="Copy example"/>
   </StackPanel>
 </StackPanel>
 '@
@@ -51,6 +60,12 @@ $script:FastLlmUiXaml['Test.Overlap']=@'
 $script:FastLlmUiXaml['Test.Clipped']=@'
 <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
   <TextBlock x:Name="ClippedText" Width="60" HorizontalAlignment="Left" VerticalAlignment="Top" TextWrapping="NoWrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Text="This text is much too long to fit in sixty device independent pixels."/>
+</Grid>
+'@
+
+$script:FastLlmUiXaml['Test.ClippedButton']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <Button x:Name="NarrowButton" Content="A label too long for this button" Width="60" HorizontalAlignment="Left" VerticalAlignment="Top" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
 </Grid>
 '@
 
@@ -81,13 +96,11 @@ if([string]::IsNullOrEmpty($out)){
 [void][IO.Directory]::CreateDirectory($out)
 
 $matrix=@(Get-UiRenderMatrix)
-Check ($matrix.Count -eq 40) 'the matrix has 40 cases'
-Check (@($matrix|Where-Object{$_.textScale -eq 2.25}).Count -eq 1) 'the matrix has the 225% text case'
 
 # Each negative page shows exactly its own problem.
-$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox'}
+$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox'}
 $base=@{theme='light';scale=[double]1.0;textScale=[double]1.0;width=640;height=480}
-foreach($n in 'Overlap','Clipped','Unnamed','TabOrder','Outside'){
+foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside'){
     $found=@()
     try{$found=@((Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base).problems)}catch{$found=@('threw: '+$_.Exception.Message)}
     Check ($found.Count -eq 1 -and $found[0] -ceq $neg[$n]) ("the harness catches $n (expected '"+$neg[$n]+"', got '"+($found -join '; ')+"')")

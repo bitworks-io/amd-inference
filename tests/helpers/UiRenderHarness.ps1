@@ -17,7 +17,7 @@ function Get-UiRenderMatrix {
         [void]$cases.Add(@{ theme = $theme; scale = [double]1.0; textScale = [double]1.0; width = 1000; height = 680 })
     }
     [void]$cases.Add(@{ theme = 'light'; scale = [double]1.0; textScale = [double]2.25; width = 640; height = 480 })
-    return ,@($cases.ToArray())
+    return $cases.ToArray()
 }
 
 function Get-UiElementLabel($Element) {
@@ -61,6 +61,32 @@ function Get-UiRelativeRect($Element, $Page) {
         $t = $Element.TransformToAncestor($Page)
         return $t.TransformBounds((New-Object System.Windows.Rect(0, 0, $w, $h)))
     } catch { return $null }
+}
+
+# The part of a text block that is actually on screen: its rectangle (in $Stop's coordinates) intersected with the layout clip and the
+# ClipToBounds of itself and of every ancestor below $Stop. Layout never arranges an element below its unclipped size; it only clips it.
+# $Stop (the scroll presenter) is excluded because it clips to the viewport, and text below the fold is scrolled, not clipped.
+function Get-UiVisibleRect($Text, $Stop) {
+    $visible = Get-UiRelativeRect $Text $Stop
+    if ($null -eq $visible) { return $null }
+    $node = $Text
+    while ($null -ne $node -and -not [object]::ReferenceEquals($node, $Stop)) {
+        $clip = $null
+        if ($node -is [System.Windows.FrameworkElement]) {
+            $geo = [System.Windows.Controls.Primitives.LayoutInformation]::GetLayoutClip($node)
+            if ($null -ne $geo) { $clip = $geo.Bounds }
+        }
+        if ($null -eq $clip -and $node -is [System.Windows.UIElement] -and $node.ClipToBounds) {
+            $clip = New-Object System.Windows.Rect(0, 0, [double]$node.RenderSize.Width, [double]$node.RenderSize.Height)
+        }
+        if ($null -ne $clip) {
+            try { $clip = $node.TransformToAncestor($Stop).TransformBounds($clip) } catch { $clip = $null }
+            if ($null -ne $clip) { $visible = [System.Windows.Rect]::Intersect($visible, $clip) }
+            if ($visible.IsEmpty) { return $visible }
+        }
+        $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
+    }
+    return $visible
 }
 
 function Test-UiAuthored($Element) {
@@ -178,7 +204,9 @@ function Invoke-UiRenderCase {
     }
 
     $viewportWidth = [double]$sv.ViewportWidth
-    $extentHeight = [double]$sv.ExtentHeight
+    # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
+    $bottomLimit = [Math]::Max([double]$sv.ExtentHeight, [double]$sv.ViewportHeight)
+    $presenter = [System.Windows.Media.VisualTreeHelper]::GetParent($page)
     $all = Get-UiVisualElements $page
     $authored = @($all | Where-Object { (Test-UiAuthored $_) -and (Test-UiShown $_ $page) })
 
@@ -208,16 +236,28 @@ function Invoke-UiRenderCase {
         $ah = [double]$text.ActualHeight
         if ($aw -le 0 -and $ah -le 0) { continue }
         $natural = Get-UiTextNaturalSize $text $scale $aw
-        $isClipped = ($natural.Width -gt ($aw + 0.5)) -or ($natural.Height -gt ($ah + 0.5))
+        # Signal 1: Measure clamps DesiredSize to the constraint (Width, MaxWidth, a button's content area), so the live desired size minus margin
+        # falls below the natural size. Signal 2: the visible rectangle (layout clip, ClipToBounds) is smaller than the natural size.
+        $desired = $text.DesiredSize
+        $mw = [double]$text.Margin.Left + [double]$text.Margin.Right
+        $mh = [double]$text.Margin.Top + [double]$text.Margin.Bottom
+        $isClipped = ($natural.Width -gt ($desired.Width - $mw + 0.5)) -or ($natural.Height -gt ($desired.Height - $mh + 0.5))
+        if (-not $isClipped) {
+            $vis = Get-UiVisibleRect $text $presenter
+            if ($null -ne $vis) {
+                if ($vis.IsEmpty) { $isClipped = $true }
+                else { $isClipped = ($natural.Width -gt ($vis.Width + 0.5)) -or ($natural.Height -gt ($vis.Height + 0.5)) }
+            }
+        }
         if ($isClipped -and $text.TextTrimming -ne [System.Windows.TextTrimming]::None -and [string]$text.ToolTip -ceq [string]$text.Text) { $isClipped = $false }
         if ($isClipped) { [void]$problems.Add('clipped:' + (Get-UiElementLabel $text)) }
     }
 
     # outside: authored elements beyond the page's extent
     foreach ($el in $authored) {
-        $r = Get-UiRelativeRect $el $page
+        $r = Get-UiRelativeRect $el $presenter
         if ($null -eq $r) { continue }
-        if ($r.Left -lt -0.5 -or $r.Right -gt ($viewportWidth + 0.5) -or $r.Bottom -gt ($extentHeight + 0.5)) {
+        if ($r.Left -lt -0.5 -or $r.Right -gt ($viewportWidth + 0.5) -or $r.Bottom -gt ($bottomLimit + 0.5)) {
             [void]$problems.Add('outside:' + (Get-UiElementLabel $el))
         }
     }
