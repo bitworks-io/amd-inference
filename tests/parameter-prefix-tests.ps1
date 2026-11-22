@@ -121,4 +121,28 @@ Check ($script.ResolveParameter('Vi').Name -ceq 'Vision') 'fast-llm.ps1 -Vi bind
 Check ($script.ResolveParameter('V').Name -ceq 'VulkanBarMitigation' -and $script.ResolveParameter('Vu').Name -ceq 'VulkanBarMitigation') 'fast-llm.ps1 -V and -Vu still bind VulkanBarMitigation'
 Check ((Get-ParameterNames 'fast-llm.ps1') -ccontains 'Vision' -and (Get-ParameterNames 'fast-llm.ps1') -cnotcontains 'ImageMode') 'fast-llm.ps1 has a parameter named Vision (and none named ImageMode)'
 Check ((Get-ParameterNames 'Get-FastLlmPlan') -ccontains 'Vision') 'Get-FastLlmPlan takes -Vision (the planner has no -V abbreviation to protect)'
+# The speculation option is the parameter -Speculation. Every existing fast-llm.ps1 parameter that starts with S keeps every prefix that bound it
+# before (the generic check above covers all of them); -Sp was bound by none of them, so it binds Speculation. No exact alias was needed.
+$sParams=@((Get-ParameterNames 'fast-llm.ps1') | Where-Object { $_.StartsWith('S',[StringComparison]::OrdinalIgnoreCase) -and $_ -cne 'Speculation' })
+Check (($sParams -ccontains 'ServerPort') -and ($sParams -ccontains 'SkipSelfTest') -and ($sParams -ccontains 'SupportBundle') -and ($sParams -ccontains 'StartAtSignIn') -and ($sParams -ccontains 'SwitchAllowed') -and ($sParams -ccontains 'SwitchForce')) "fast-llm.ps1 has the S parameters this check knows ($($sParams -join ' '))"
+Check ((Get-ParameterNames 'fast-llm.ps1') -ccontains 'Speculation') 'fast-llm.ps1 has a parameter named Speculation'
+$speculationBad=@()
+foreach ($name in $sParams) {
+    for ($length=1; $length -le $name.Length; $length++) {
+        $prefix=$name.Substring(0,$length)
+        if ($prefix.Length -lt 2 -or $prefix -ieq 'Sp') { continue }
+        $hit=@((Get-ParameterNames 'fast-llm.ps1') | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) })
+        # A prefix that named exactly this one S parameter must still name it (and a prefix that was already ambiguous stays ambiguous).
+        $wasUnique=@($sParams | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -eq 1
+        if ($wasUnique -and ($hit.Count -ne 1 -or $hit[0] -cne $name)) { $speculationBad+="-$prefix ($name)" }
+    }
+}
+Check ($speculationBad.Count -eq 0) "no -S... prefix that bound one existing parameter is taken over by -Speculation (broken: $($speculationBad -join ' '))"
+foreach ($p in @('Sp','Spe','Spec','Specu','Speculation')) { Check ($script.ResolveParameter($p).Name -ceq 'Speculation') "fast-llm.ps1 -$p binds Speculation" }
+Check (-not (@($sParams | ForEach-Object { $_.StartsWith('Sp',[StringComparison]::OrdinalIgnoreCase) }) -contains $true)) 'no other fast-llm.ps1 parameter starts with Sp, so -Sp is unique'
+Check ($script.ResolveParameter('Se').Name -ceq 'ServerPort' -and $script.ResolveParameter('Sk').Name -ceq 'SkipSelfTest' -and $script.ResolveParameter('Su').Name -ceq 'SupportBundle' -and $script.ResolveParameter('St').Name -ceq 'StartAtSignIn' -and $script.ResolveParameter('SwitchA').Name -ceq 'SwitchAllowed' -and $script.ResolveParameter('SwitchF').Name -ceq 'SwitchForce') 'the S prefixes that were unique (-Se, -Sk, -Su, -St, -SwitchA, -SwitchF) still bind the same parameters'
+$ambiguous=$false
+try { $null=$script.ResolveParameter('S') } catch { $ambiguous=$true }
+Check $ambiguous '-S was ambiguous before and still is (it is not given to Speculation)'
+Check ((Get-ParameterNames 'Get-FastLlmPlan') -ccontains 'Speculation') 'Get-FastLlmPlan takes -Speculation'
 Write-Host "parameter-prefix-tests: $script:count checks passed"

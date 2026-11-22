@@ -66,6 +66,12 @@ namespace FastLlmTests {
             }
             // Run-log privacy tests: "marker-<mode>" behaves as <mode>, but the server echoes every request and response body to stderr
             // (as a verbose llama-server would) and returns a completion marker, so a leak into any FastLLM file is detectable.
+            // Speculation tests: "spec-<mode>" behaves as <mode> and /metrics also reports both speculation counters (draft 120, accepted 90),
+            // "specdraft-<mode>" reports only the draft counter and "specaccepted-<mode>" only the accepted one. Any other mode reports neither.
+            int specCounters = 0;
+            if (mode.StartsWith("spec-")) { specCounters = 3; mode = mode.Substring(5); }
+            else if (mode.StartsWith("specdraft-")) { specCounters = 1; mode = mode.Substring(10); }
+            else if (mode.StartsWith("specaccepted-")) { specCounters = 2; mode = mode.Substring(13); }
             bool echoMarkers = mode.StartsWith("marker-");
             if (echoMarkers) mode = mode.Substring(7);
             // Model switch tests: /metrics reports the four counters the supervisor reads. "busy-<mode>" behaves as <mode> with one request in
@@ -150,6 +156,8 @@ namespace FastLlmTests {
                                 if (busyReads > 0) { processing = 1; if (busyReads != Int32.MaxValue) busyReads--; }
                                 body = "# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.\n# TYPE llamacpp:prompt_tokens_total counter\nllamacpp:prompt_tokens_total 0\n" +
                                     "llamacpp:tokens_predicted_total 0\nllamacpp:requests_processing " + processing + "\nllamacpp:requests_deferred 0\n";
+                                if ((specCounters & 1) != 0) body += "llamacpp:spec_decode_num_draft_tokens_total 120\n";
+                                if ((specCounters & 2) != 0) body += "llamacpp:spec_decode_num_accepted_tokens_total 90\n";
                             }
                         }
                         if (path == "/v1/models") {

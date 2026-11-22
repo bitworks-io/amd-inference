@@ -293,6 +293,30 @@ try {
     Check (@(& $module { param($P) Read-FastLlmVisionAddOns -Path $P } $shippedProfiles).Count -eq 0) 'vision loader: the shipped file has no add-on row'
     Check (@(& $module { param($P) Read-FastLlmVisionAddOns -Path $P } (Join-Path $work 'absent.json')).Count -eq 0) 'vision loader: no file is no rows'
 
+    # ---- the speculation rows of the golden (the live matrix is planned from the TEST rows and compared with the checked-in file) ------------------------
+    $speculationProfiles=Join-Path $root 'tests/fixtures/speculation-profiles-test.json'
+    $specGolden=@($golden.speculationRows)
+    Check ($specGolden.Count -ge 10 -and $golden.speculationProfilesSha256 -ceq (Get-FileHash -LiteralPath $speculationProfiles -Algorithm SHA256).Hash.ToLowerInvariant()) 'speculation golden: the rows are bound to the test speculation rows by sha256'
+    $liveSpec=@(Get-FastLlmSpeculationArgumentsMatrix -Root $root -InstallRoot $installRoot)
+    Check ($liveSpec.Count -eq $specGolden.Count) "speculation-golden-matches-live: row count ($($liveSpec.Count))"
+    $specDiffs=0
+    for($i=0;$i -lt $specGolden.Count -and $i -lt $liveSpec.Count;$i++){
+        $g=$specGolden[$i];$l=$liveSpec[$i]
+        $same=($g.name -ceq $l.name) -and ($g.hardware -ceq $l.hardware) -and ($g.request -ceq $l.request) -and ($g.mode -ceq $l.mode) -and ($g.contextProfile -ceq $l.contextProfile) -and ([int]$g.slots -eq [int]$l.slots) -and
+              ($g.vision -ceq $l.vision) -and ($g.outcome -ceq $l.outcome) -and ($g.refusalCode -ceq $l.refusalCode) -and ($g.refusal -ceq $l.refusal) -and ($g.specType -ceq $l.specType) -and
+              (Test-SameArguments $g.extraArguments $l.extraArguments) -and ([int]$g.extraFreeVramMiB -eq [int]$l.extraFreeVramMiB) -and ([int64]$g.requiredFreeVramMiB -eq [int64]$l.requiredFreeVramMiB) -and (Test-SameArguments $g.arguments $l.arguments)
+        if(-not $same){$specDiffs++;Write-Host "DIFF speculation row $i name=$($g.name) live outcome=$($l.outcome) code=$($l.refusalCode)"}
+    }
+    Check ($specDiffs -eq 0) 'speculation-golden-matches-live: every row equal, -ceq on every argument and on every refusal text'
+    $specPlanRows=@($specGolden | Where-Object { $_.outcome -ceq 'plan' })
+    Check ($specPlanRows.Count -eq 5 -and @($specGolden | Where-Object { $_.outcome -ceq 'refused' }).Count -eq 5) 'speculation golden: five plan rows (ngram and mtp) and five refused rows'
+    $ngramRowG=@($specGolden | Where-Object { $_.name -ceq 'ngram-long' })[0]
+    $mtpRowG=@($specGolden | Where-Object { $_.name -ceq 'mtp-long' })[0]
+    $nA=@($ngramRowG.arguments);$mA=@($mtpRowG.arguments)
+    Check ($nA[[Array]::IndexOf($nA,'--spec-type')+1] -ceq 'ngram-simple' -and (($nA[($nA.Count-4)..($nA.Count-1)]) -join ' ') -ceq '--spec-ngram-size-n 12 --spec-ngram-size-m 48' -and -not ($nA -ccontains '--spec-draft-model')) 'speculation golden: an ngram row replaces none in place and appends the row''s extra arguments last'
+    Check ($mA[[Array]::IndexOf($mA,'--spec-type')+1] -ceq 'draft-mtp' -and $mA[[Array]::IndexOf($mA,'--spec-draft-model')+1] -ceq '<verified-draft>' -and (($mA[($mA.Count-2)..($mA.Count-1)]) -join ' ') -ceq '--spec-draft-n-max 4') 'speculation golden: an mtp row names --spec-draft-model <verified-draft> and appends the row''s extra arguments last'
+    Check ((@($specGolden | Where-Object { $_.outcome -ceq 'refused' } | ForEach-Object { $_.refusalCode }) -join ',') -ceq 'speculation-not-measured,speculation-not-measured,speculation-profile-not-measured,speculation-combination-not-offered,speculation-combination-not-offered') 'speculation golden: the refused rows carry the typed codes in order'
+
     # ---- off is today's plan: no field, no argument -----------------------------------------------------------------------------------
     $plainLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m'
     $offLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -Vision 'off'
