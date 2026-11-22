@@ -250,7 +250,7 @@ if ($Window -ceq 'fluent') { . (Join-Path $PSScriptRoot 'src/FastLlm.UiFluentShe
     @{Name='failureHeld start'
       Cur=@'
 $script:failureCapture=$null
-$script:failureHeld=$false
+$script:failureHeld=$false;$script:failureViewText=''
 
 '@
       Orig=@'
@@ -259,7 +259,7 @@ $script:failureCapture=$null
 '@}
     @{Name='ClearFailureCapture clear'
       Cur=@'
-function ClearFailureCapture {$script:failureCapture=$null;$script:failureHeld=$false;$failureCopyLink.Visible=$false}
+function ClearFailureCapture {$script:failureCapture=$null;$script:failureHeld=$false;$script:failureViewText='';$failureCopyLink.Visible=$false}
 '@
       Orig=@'
 function ClearFailureCapture {$script:failureCapture=$null;$failureCopyLink.Visible=$false}
@@ -283,6 +283,12 @@ if ($Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }
     @{Name='ShowFailure set'
       Cur=@'
     $script:failureHeld=$true
+
+'@
+      Orig=''}
+    @{Name='ShowFailure view text'
+      Cur=@'
+    $script:failureViewText=[string]$view.text
 
 '@
       Orig=''}
@@ -328,7 +334,7 @@ function Undo-NamedChanges([string]$Text){
     }
     return [pscustomobject]@{Text=$Text;Problems=$problems}
 }
-Check ($namedChanges.Count -eq 10) 'ten named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, GetUiTrayIcon, tray assignment, startup branch)'
+Check ($namedChanges.Count -eq 11) 'eleven named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch)'
 $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}

@@ -31,7 +31,17 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
         FontFamily="{DynamicResource FastLlm.TextFont}" FontSize="{DynamicResource FastLlm.BodySize}"
         Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Background="{DynamicResource FastLlm.LayerBrush}">
   <Window.Resources>
+    <Style x:Key="FastLlm.FocusVisual">
+      <Setter Property="Control.Template">
+        <Setter.Value>
+          <ControlTemplate>
+            <Rectangle Margin="-3" StrokeThickness="2" RadiusX="4" RadiusY="4" SnapsToDevicePixels="True" Stroke="{DynamicResource FastLlm.FocusBrush}"/>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style x:Key="FastLlm.ButtonStyle" TargetType="Button">
+      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>
       <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
       <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>
       <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrokeBrush}"/>
@@ -48,8 +58,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.85"/></Trigger>
               <Trigger Property="IsPressed" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.7"/></Trigger>
-              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Bd" Property="Opacity" Value="0.45"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -76,6 +85,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
       <Setter Property="BorderBrush" Value="Transparent"/>
       <Setter Property="Padding" Value="2,2,2,2"/>
       <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
@@ -90,8 +100,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.8"/></Trigger>
-              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Bd" Property="Opacity" Value="0.5"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -102,6 +111,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
       <Setter Property="Margin" Value="8,1,8,1"/>
       <Setter Property="Padding" Value="12,0,8,0"/>
       <Setter Property="MinHeight" Value="40"/>
+      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ListBoxItem">
@@ -118,8 +128,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                 <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>
                 <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
               </Trigger>
-              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -131,16 +140,23 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
       <ColumnDefinition x:Name="PaneColumn" Width="220"/>
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
-    <DockPanel Grid.Column="0" Margin="0,12,0,12" LastChildFill="True">
-      <ListBox x:Name="NavSettingsList" DockPanel.Dock="Bottom" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once"/>
-      <ListBox x:Name="NavList" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once"/>
-    </DockPanel>
+    <Grid Grid.Column="0" Margin="0,12,0,12">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <ListBox x:Name="NavList" Grid.Row="0" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+      <ListBox x:Name="NavSettingsList" Grid.Row="1" Background="Transparent" BorderThickness="0" KeyboardNavigation.TabNavigation="Once"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled"/>
+    </Grid>
     <Grid Grid.Column="1">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <StackPanel Grid.Row="0">
+      <ScrollViewer x:Name="MessageScroll" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+      <StackPanel>
         <Border x:Name="UpdateBar" Visibility="Collapsed" Margin="24,16,24,0" Padding="12,8,12,8" BorderThickness="1"
                 Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.CardStrokeBrush}"
                 CornerRadius="{DynamicResource FastLlm.ControlCornerRadius}">
@@ -165,6 +181,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
           </Grid>
         </Border>
       </StackPanel>
+      </ScrollViewer>
       <Border x:Name="PageHost" Grid.Row="1"/>
     </Grid>
   </Grid>
@@ -215,9 +232,15 @@ function Get-FastLlmUiFluentThemeState {
     $pair = Get-FastLlmUiAccentPair $system.accentPalette
     $scale = ConvertFrom-FastLlmUiTextScaleFactor $system.textScaleFactor
     $backdrop = Get-FastLlmUiBackdropChoice -Build ([int] $system.build) -TransparencyEnabled $system.enableTransparency -HighContrast ([bool] $system.highContrast)
+    # A switch between two high-contrast palettes changes only the system colours, so they are part of the key.
+    $system = ''
+    if ([string] $choice -ceq 'high-contrast') {
+        $sc = [System.Windows.SystemColors]
+        $system = '|' + (@($sc::WindowColor, $sc::WindowTextColor, $sc::HighlightColor, $sc::HighlightTextColor, $sc::GrayTextColor, $sc::HotTrackColor) -join ',')
+    }
     return [pscustomobject] @{
         Choice = [string] $choice; Pair = $pair; Scale = [double] $scale; Backdrop = [string] $backdrop
-        Key = ([string] $choice + '|' + [string] $pair.lightFill + '|' + [string] $pair.darkFill + '|' + [string] $scale + '|' + [string] $backdrop)
+        Key = ([string] $choice + '|' + [string] $pair.lightFill + '|' + [string] $pair.darkFill + '|' + [string] $scale + '|' + [string] $backdrop + $system)
     }
 }
 
@@ -251,7 +274,9 @@ function Set-FastLlmUiFluentWindowLook {
         }
         else {
             $win.SetResourceReference([System.Windows.Window]::BackgroundProperty, 'FastLlm.LayerBrush')
-            if ($null -ne $source) { $source.CompositionTarget.BackgroundColor = [System.Windows.Media.Colors]::White }
+            # The theme's layer colour (the system Window colour in high contrast, where the layer is that brush).
+            $layer = $win.TryFindResource('FastLlm.LayerBrush')
+            if ($null -ne $source -and $layer -is [System.Windows.Media.SolidColorBrush]) { $source.CompositionTarget.BackgroundColor = $layer.Color }
         }
     }
     catch { $null = $_ }
@@ -263,6 +288,15 @@ function Set-FastLlmUiFluentTheme {
     param([Parameter(Mandatory = $true)] $ThemeState)
     $f = $script:FastLlmUiFluent
     $dictionary = New-FastLlmUiThemeDictionary -Theme $ThemeState.Choice -AccentPair $ThemeState.Pair -TextScale $ThemeState.Scale
+    # The focus ring and the disabled text: accent and secondary text, or the system Highlight and GrayText colours in high contrast.
+    if ([string] $ThemeState.Choice -ceq 'high-contrast') {
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value ([System.Windows.SystemColors]::HighlightBrush)
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
+    }
+    else {
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value $dictionary['FastLlm.AccentFillBrush']
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value $dictionary['FastLlm.TextSecondaryBrush']
+    }
     $merged = $f.Window.Resources.MergedDictionaries
     $merged.Clear()
     $merged.Add($dictionary)
@@ -271,7 +305,7 @@ function Set-FastLlmUiFluentTheme {
     $f.Keys.Dot = $null
 }
 
-# Called from the window-message hook, or every 20 ticks when the hook could not be installed.
+# Called from the window-message hook (a start without the hook is refused, so there is no polling fallback).
 function Update-FastLlmUiFluentTheme {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
@@ -325,6 +359,12 @@ function Initialize-FastLlmUiFluentPane {
     }
     $f.Els.NavHome = $items[0].Item
     $f.Els.NavHome.IsSelected = $true
+    # The Settings list has one item, disabled for now: it is named so it is never an anonymous list. Home stays selected (Ctrl+Click cannot empty it).
+    [System.Windows.Automation.AutomationProperties]::SetName($f.Els.NavSettingsList, [string] $s.NavSettings)
+    $f.Els.NavList.Add_SelectionChanged({
+            $nav = $script:FastLlmUiFluent.Els
+            if ($null -eq $nav.NavList.SelectedItem) { $nav.NavHome.IsSelected = $true }
+        })
     $f.NavItems = $items.ToArray()
 }
 
@@ -333,10 +373,12 @@ function Update-FastLlmUiFluentPane {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
     if ($null -eq $f.Window -or $f.NavItems.Count -eq 0) { return }
+    # The message area (update offer, failure) never takes more than about 40 percent of the window; it scrolls inside that.
+    if ([double] $f.Window.ActualHeight -gt 0) { $f.Els.MessageScroll.MaxHeight = [double] $f.Window.ActualHeight * 0.4 }
     $collapsed = ([double] $f.Window.ActualWidth -lt 900)
     if ($f.Keys.PaneCollapsed -eq $collapsed) { return }
     $f.Keys.PaneCollapsed = $collapsed
-    $f.Els.PaneColumn.Width = New-Object System.Windows.GridLength($(if ($collapsed) { 56 } else { 220 }))
+    $f.Els.PaneColumn.Width = New-Object System.Windows.GridLength($(if ($collapsed) { 64 } else { 220 }))
     foreach ($nav in $f.NavItems) {
         $nav.Label.Visibility = if ($collapsed) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
         if ($nav.Enabled) { $nav.Item.ToolTip = $(if ($collapsed) { [string] $nav.Text } else { $null }) }
@@ -368,7 +410,7 @@ function Update-FastLlmUiFluentMessages {
 
     $held = [bool] $script:failureHeld
     if ($held) {
-        $raw = [string] $script:output.Text
+        $raw = [string] $script:failureViewText
         $failureText = $raw.Trim()
         if ($failureText.Length -gt 400) { $failureText = $failureText.Substring(0, 400) }
         if ($keys.Failure -cne $failureText) {
@@ -394,10 +436,6 @@ function Invoke-FastLlmUiFluentTick {
     try { Update-FastLlmUiFluentHome } catch { $f.TickError = [string] $_.Exception.Message }
     try { Update-FastLlmUiFluentMessages } catch { $f.TickError = [string] $_.Exception.Message }
     try { Update-FastLlmUiFluentPane } catch { $f.TickError = [string] $_.Exception.Message }
-    $hooked = ($null -ne $f.Hooks) -and [bool] $f.Hooks['hooked']
-    if (-not $hooked -and ([int] $f.Tick % 20) -eq 0) {
-        try { Update-FastLlmUiFluentTheme } catch { $f.TickError = [string] $_.Exception.Message }
-    }
 }
 
 # Shows an exception the way WinForms' default ThreadException would: through ShowFailure, or a message box owned by the window.
@@ -421,75 +459,81 @@ function Invoke-FastLlmUiFluentUnhandled {
 function Initialize-FastLlmUiFluentShell {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
-    # Before any WinForms handle exists, if that is still possible: the dispatcher and ThreadException handlers decide what an exception shows.
+    # Visual styles first, before any WinForms handle exists, so the dialogs the orchestration still opens are not drawn in the Windows 2000 style.
+    try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch { $null = $_ }
+    # Then the dispatcher and ThreadException handlers decide what an exception shows.
     try { [System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException) } catch { $null = $_ }
 
-    $classicForm = $script:form
-    $windowTitle = [string] $classicForm.Text
-
-    try { $f.Interop = [bool] (Initialize-FastLlmUiWindowInterop -SourceRoot $script:FastLlmUiFluentSourceRoot) } catch { $f.Interop = $false }
-
-    # The decorative text type (src/WindowsFluentAutomation.cs). A compile failure means no window: text C, exit 3; the compiler text goes to the console only.
-    try { Initialize-FastLlmUiFluentAutomation -SourceRoot $script:FastLlmUiFluentSourceRoot }
-    catch { Write-Host ([string] $_.Exception.Message); Stop-FastLlmUiFluentStartup -Reason 'xaml-parse' }
-
-    $themeState = $null
-    try { $themeState = Get-FastLlmUiFluentThemeState } catch { Stop-FastLlmUiFluentStartup -Reason 'theme-init' }
-    $win = $null
-    $page = $null
+    # Every step up to Show is one try: any fault is no window, the approved text C and exit 3 (the error text goes to the console only).
+    # The stage names the run-log reason: theme-init for the theme, the native types and the hooks, xaml-parse for the markup, elements and bindings.
+    $stage = 'theme-init'
     try {
+        $classicForm = $script:form
+        $windowTitle = [string] $classicForm.Text
+
+        # Fail-closed: without the native types or the message hook the sign-out guard would silently be missing.
+        $f.Interop = [bool] (Initialize-FastLlmUiWindowInterop -SourceRoot $script:FastLlmUiFluentSourceRoot)
+        if (-not $f.Interop) { throw 'The window interop types could not be loaded.' }
+        $themeState = Get-FastLlmUiFluentThemeState
+
+        $stage = 'xaml-parse'
+        # The decorative text type (src/WindowsFluentAutomation.cs).
+        Initialize-FastLlmUiFluentAutomation -SourceRoot $script:FastLlmUiFluentSourceRoot
         $win = New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
         $page = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
+        $f.Window = $win
+        $stage = 'theme-init'
+        Set-FastLlmUiFluentTheme -ThemeState $themeState
+
+        # Everything that locks once the handle exists comes first: New-FastLlmUiFormAdapter calls EnsureHandle().
+        $stage = 'xaml-parse'
+        $size = $script:FastLlmUiFluentWindowSize
+        $win.Title = $windowTitle
+        $win.Width = [double] $size.Width
+        $win.Height = [double] $size.Height
+        $win.MinWidth = [double] $size.MinWidth
+        $win.MinHeight = [double] $size.MinHeight
+        $win.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
+        try { $win.Icon = New-FastLlmUiAppIconImage } catch { $null = $_ }
+
+        # The named elements of the shell and of Home, the Home static text and the split button, then the adapters.
+        foreach ($name in 'PaneColumn', 'NavList', 'NavSettingsList', 'MessageScroll', 'UpdateBar', 'UpdateText', 'UpdateNotesButton', 'UpdateButton', 'ReinstallButton',
+            'FailureBar', 'FailureText', 'FailureCopyButton', 'PageHost') {
+            $f.Els[$name] = Get-FastLlmUiFluentElement -Root $win -Name $name
+        }
+        [void] (Initialize-FastLlmUiFluentHome -Page $page -Els $f.Els)
+        $f.Els.PageHost.Child = $page
+        Initialize-FastLlmUiFluentPane
+
+        $null = Initialize-FastLlmUiFluentBindings -InstallRoot $InstallRoot -Catalog $catalog -UiSettings $script:uiSettings
+        foreach ($row in (Get-FastLlmUiFluentBindingTable)) {
+            $adapter = Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
+            Connect-FastLlmUiFluentControl -Adapter $adapter -Element $f.Els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
+        }
+        # The failure link names itself as the classic one does.
+        [System.Windows.Automation.AutomationProperties]::SetName($f.Els.FailureCopyButton, [string] $script:failureCopyLink.Text)
+
+        # The form adapter takes over the window's handle; from here the orchestration's $form is the adapter (owner of every dialog and message box).
+        $formAdapter = New-FastLlmUiFormAdapter -Window $win
+        Set-Variable -Name form -Scope Script -Value $formAdapter
+        try { $classicForm.Dispose() } catch { $null = $_ }
+
+        $stage = 'theme-init'
+        Set-FastLlmUiFluentWindowLook -ThemeState $themeState
+        $f.Hooks = Register-FastLlmUiWindowHooks -Window $win -Form $formAdapter -OnThemeChanged { Update-FastLlmUiFluentTheme }
+        if (-not [bool] $f.Hooks['hooked']) { throw ('The window message hook could not be installed: ' + [string] $f.Hooks['error']) }
+
+        $stage = 'xaml-parse'
+        $win.Add_SizeChanged({ try { Update-FastLlmUiFluentPane } catch { $null = $_ } })
+        $uiTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $uiTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+        $uiTimer.Add_Tick({ Invoke-FastLlmUiFluentTick })
+        $f.Timer = $uiTimer
     }
-    catch { Stop-FastLlmUiFluentStartup -Reason 'xaml-parse' }
-    $f.Window = $win
-    try { Set-FastLlmUiFluentTheme -ThemeState $themeState } catch { Stop-FastLlmUiFluentStartup -Reason 'theme-init' }
-
-    # Everything that locks once the handle exists comes first: New-FastLlmUiFormAdapter calls EnsureHandle().
-    $size = $script:FastLlmUiFluentWindowSize
-    $win.Title = $windowTitle
-    $win.Width = [double] $size.Width
-    $win.Height = [double] $size.Height
-    $win.MinWidth = [double] $size.MinWidth
-    $win.MinHeight = [double] $size.MinHeight
-    $win.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
-    try {
-        $win.Icon = New-FastLlmUiAppIconImage
+    catch {
+        Write-Host ([string] $_.Exception.Message)
+        Stop-FastLlmUiFluentStartup -Reason $stage
     }
-    catch { $null = $_ }
-
-    # The named elements of the shell and of Home, the Home static text and the split button, then the adapters.
-    foreach ($name in 'PaneColumn', 'NavList', 'NavSettingsList', 'UpdateBar', 'UpdateText', 'UpdateNotesButton', 'UpdateButton', 'ReinstallButton',
-        'FailureBar', 'FailureText', 'FailureCopyButton', 'PageHost') {
-        $f.Els[$name] = Get-FastLlmUiFluentElement -Root $win -Name $name
-    }
-    [void] (Initialize-FastLlmUiFluentHome -Page $page -Els $f.Els)
-    $f.Els.PageHost.Child = $page
-    Initialize-FastLlmUiFluentPane
-
-    $null = Initialize-FastLlmUiFluentBindings -InstallRoot $InstallRoot -Catalog $catalog -UiSettings $script:uiSettings
-    foreach ($row in (Get-FastLlmUiFluentBindingTable)) {
-        $adapter = Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
-        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $f.Els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
-    }
-    # Home's TrayButton, the failure link and the quick actions keep the adapter caption; the failure link names itself as the classic one does.
-    [System.Windows.Automation.AutomationProperties]::SetName($f.Els.FailureCopyButton, [string] $script:failureCopyLink.Text)
-
-    # The form adapter takes over the window's handle; from here the orchestration's $form is the adapter (owner of every dialog and message box).
-    $formAdapter = New-FastLlmUiFormAdapter -Window $win
-    Set-Variable -Name form -Scope Script -Value $formAdapter
-    try { $classicForm.Dispose() } catch { $null = $_ }
-
-    Set-FastLlmUiFluentWindowLook -ThemeState $themeState
-    $f.Hooks = Register-FastLlmUiWindowHooks -Window $win -Form $formAdapter -OnThemeChanged { Update-FastLlmUiFluentTheme }
-    $win.Add_SizeChanged({ try { Update-FastLlmUiFluentPane } catch { $null = $_ } })
-
-    $uiTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $uiTimer.Interval = [TimeSpan]::FromMilliseconds(250)
-    $uiTimer.Add_Tick({ Invoke-FastLlmUiFluentTick })
-    $f.Timer = $uiTimer
-    # The first paint of the card, so the window never opens showing the empty markup.
-    Invoke-FastLlmUiFluentTick
 }
 
 # The message loop. On Closed: the window hooks, the tray icon and the dispatcher go; the seam's finally disposes the rest.
@@ -518,6 +562,8 @@ function Start-FastLlmUiFluentLoop {
             try { Clear-FastLlmUiFluentTrayIcon } catch { $null = $_ }
             [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown()
         })
+    # The first paint of the card (GetUiStateSnapshot exists only after the seam), so the window never opens showing the empty markup.
+    Invoke-FastLlmUiFluentTick
     $f.Timer.Start()
     $win.Show()
     [System.Windows.Threading.Dispatcher]::Run()

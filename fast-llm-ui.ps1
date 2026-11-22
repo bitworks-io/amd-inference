@@ -144,11 +144,11 @@ $script:evidenceUrl=$null
 $resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
 # "Copy full output": shown only while a failure from a child's capture is held; the copy is the raw capture, unchanged.
 $script:failureCapture=$null
-$script:failureHeld=$false
+$script:failureHeld=$false;$script:failureViewText=''
 $failureCopyLink=New-Object Windows.Forms.LinkLabel;$failureCopyLink.Text='Copy full output';$failureCopyLink.AutoSize=$true;$failureCopyLink.Visible=$false
 $failureCopyLink.Location=New-Object Drawing.Point((820-$failureCopyLink.PreferredWidth),652)
 $failureCopyLink.TabStop=$true;$failureCopyLink.TabIndex=$output.TabIndex+1;$failureCopyLink.AccessibleName='Copy full output';$form.Controls.Add($failureCopyLink)
-function ClearFailureCapture {$script:failureCapture=$null;$script:failureHeld=$false;$failureCopyLink.Visible=$false}
+function ClearFailureCapture {$script:failureCapture=$null;$script:failureHeld=$false;$script:failureViewText='';$failureCopyLink.Visible=$false}
 function SetFailureCapture([string]$Capture) {$script:failureCapture=$Capture;$failureCopyLink.Visible=-not [string]::IsNullOrEmpty($Capture)}
 $notesLabel=New-Object Windows.Forms.Label
 $notesLabel.Location=New-Object Drawing.Point(24,676);$notesLabel.Size=New-Object Drawing.Size(796,80);$notesLabel.Text='';$form.Controls.Add($notesLabel)
@@ -589,6 +589,7 @@ function ShowFailure($Message,[string]$Capture){
     # fixed window text shows as is and holds nothing.
     if($PSBoundParameters.ContainsKey('Capture')){$view=Get-FastLlmUiFailureView -Message ([string]$Message) -Capture $Capture}else{$view=Get-FastLlmUiFailureView -Message ([string]$Message)}
     $output.Text=[string]$view.text
+    $script:failureViewText=[string]$view.text
     SetFailureCapture ([string]$view.capture)
     if($script:child -or $script:vcBroker){
         $statusLabel.Text=if($script:vcBroker){'Microsoft setup is still running. Complete or cancel it in the Microsoft window.'}

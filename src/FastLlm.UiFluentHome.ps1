@@ -35,20 +35,14 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
 <ScrollViewer xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
               xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
-  <StackPanel Margin="32,24,32,24" MaxWidth="900" KeyboardNavigation.TabNavigation="Continue">
-    <Grid x:Name="HeaderGrid" KeyboardNavigation.TabIndex="4">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="Auto"/>
-      </Grid.ColumnDefinitions>
-      <StackPanel>
-        <TextBlock x:Name="TitleText" TextWrapping="Wrap" FontFamily="{DynamicResource FastLlm.DisplayFont}"
-                   FontSize="{DynamicResource FastLlm.SubtitleSize}" FontWeight="{DynamicResource FastLlm.SubtitleWeight}"/>
-        <TextBlock x:Name="NoticeText" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
-      </StackPanel>
-      <Button x:Name="TrayButton" Grid.Column="1" VerticalAlignment="Top" Margin="16,0,0,0" Style="{DynamicResource FastLlm.ButtonStyle}"/>
-    </Grid>
-    <Border x:Name="StatusCard" Margin="0,20,0,0" Padding="16" BorderThickness="1" KeyboardNavigation.TabIndex="1"
+  <Grid Margin="32,24,32,24" MaxWidth="900">
+  <StackPanel>
+    <StackPanel x:Name="HeaderGrid" Margin="0,0,200,0">
+      <TextBlock x:Name="TitleText" TextWrapping="Wrap" FontFamily="{DynamicResource FastLlm.DisplayFont}"
+                 FontSize="{DynamicResource FastLlm.SubtitleSize}" FontWeight="{DynamicResource FastLlm.SubtitleWeight}"/>
+      <TextBlock x:Name="NoticeText" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
+    </StackPanel>
+    <Border x:Name="StatusCard" Margin="0,20,0,0" Padding="16" BorderThickness="1"
             Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.CardStrokeBrush}"
             CornerRadius="{DynamicResource FastLlm.OverlayCornerRadius}">
       <StackPanel>
@@ -75,12 +69,12 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
         <TextBlock x:Name="BackgroundLine" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
         <ProgressBar x:Name="HomeProgress" Margin="0,12,0,0" Height="4" IsIndeterminate="True" Visibility="Collapsed"
                      Foreground="{DynamicResource FastLlm.AccentFillBrush}"/>
-        <StackPanel x:Name="StepsPanel" Margin="0,12,0,0" Visibility="Collapsed" Focusable="False"/>
-        <StackPanel x:Name="FactsPanel" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
+        <ItemsControl x:Name="StepsPanel" Margin="0,12,0,0" Visibility="Collapsed" Focusable="False"/>
+        <WrapPanel x:Name="FactsPanel" Margin="0,12,0,0" Visibility="Collapsed">
           <TextBlock x:Name="AddressLabel" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
           <TextBlock x:Name="AddressText" VerticalAlignment="Center" FontFamily="{DynamicResource FastLlm.MonoFont}"/>
           <Button x:Name="CopyButton" Margin="8,0,0,0" Style="{DynamicResource FastLlm.IconButtonStyle}"/>
-        </StackPanel>
+        </WrapPanel>
         <WrapPanel x:Name="WillStartPanel" Margin="0,12,0,0">
           <TextBlock x:Name="WillStartText" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
           <Button x:Name="ChangeButton" IsEnabled="False" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>
@@ -92,7 +86,7 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
         </WrapPanel>
       </StackPanel>
     </Border>
-    <StackPanel x:Name="QuickPanel" Margin="0,24,0,0" KeyboardNavigation.TabIndex="2">
+    <StackPanel x:Name="QuickPanel" Margin="0,24,0,0">
       <TextBlock x:Name="QuickHeading" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
       <WrapPanel Margin="0,8,0,0">
         <Button x:Name="OpenChatButton" Margin="0,0,8,8" Style="{DynamicResource FastLlm.ButtonStyle}"/>
@@ -101,7 +95,7 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
       </WrapPanel>
       <TextBlock x:Name="SwitchLine" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
     </StackPanel>
-    <Expander x:Name="ActivityExpander" Margin="0,16,0,0" IsExpanded="False" KeyboardNavigation.TabIndex="3">
+    <Expander x:Name="ActivityExpander" Margin="0,16,0,0" IsExpanded="False">
       <Expander.Header>
         <TextBlock x:Name="ActivityHeader" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
       </Expander.Header>
@@ -111,6 +105,8 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
                BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
     </Expander>
   </StackPanel>
+  <Button x:Name="TrayButton" HorizontalAlignment="Right" VerticalAlignment="Top" Style="{DynamicResource FastLlm.ButtonStyle}"/>
+  </Grid>
 </ScrollViewer>
 '@
 
@@ -170,9 +166,12 @@ function New-FastLlmUiFluentSink {
         switch -CaseSensitive ([string] $Property) {
             'Text' {
                 if ($noText -or $Mode -ceq 'Visual') { break }
-                if ($Mode -ceq 'Output') { $Element.Text = [string] $Value; break }
+                if ($Mode -ceq 'Output') { if ($Element.Text -cne [string] $Value) { $Element.Text = [string] $Value }; break }
                 # A TextBlock has no access keys: it gets the plain text WinForms shows. Content and Header (templates with RecognizesAccessKey) get access text.
-                if ($Mode -ceq 'TextBlock') { $Element.Text = & $display -Text ([string] $Value) -UseMnemonic ([bool] $Adapter.UseMnemonic) }
+                if ($Mode -ceq 'TextBlock') {
+                    $shown = & $display -Text ([string] $Value) -UseMnemonic ([bool] $Adapter.UseMnemonic)
+                    if ($Element.Text -cne $shown) { $Element.Text = $shown }
+                }
                 else {
                     $caption = & $convert -Text ([string] $Value) -UseMnemonic ([bool] $Adapter.UseMnemonic)
                     if ($Mode -ceq 'Content') { $Element.Content = $caption } else { $Element.Header = $caption }
@@ -245,7 +244,8 @@ function Initialize-FastLlmUiFluentHome {
     $Els.MoreStartButton.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
     [System.Windows.Automation.AutomationProperties]::SetName($Els.MoreStartButton, [string] $s.MoreStartOptions)
     $Els.MoreStartButton.ToolTip = [string] $s.MoreStartOptions
-    $Els.MoreStartButton.Height = 32
+    $Els.MoreStartButton.MinHeight = 32
+    $Els.MoreStartButton.FontSize = 16
 
     $menu = New-Object System.Windows.Controls.ContextMenu
     $startItem = New-Object System.Windows.Controls.MenuItem
@@ -255,6 +255,15 @@ function Initialize-FastLlmUiFluentHome {
     $Els['StartMenuItem'] = $startItem
     $Els['BackgroundStartMenuItem'] = $backgroundItem
     $more = $Els.MoreStartButton
+    # The arrow's own ContextMenu, so the menu inherits the window's resources; it is styled from the theme.
+    $more.ContextMenu = $menu
+    $menu.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.LayerBrush')
+    $menu.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
+    $menu.SetResourceReference([System.Windows.Controls.Control]::BorderBrushProperty, 'FastLlm.ControlStrongStrokeBrush')
+    foreach ($menuItem in @($startItem, $backgroundItem)) {
+        $menuItem.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
+        $menuItem.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.LayerBrush')
+    }
     $openMenu = {
         $menu.PlacementTarget = $more
         $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
@@ -321,7 +330,9 @@ function Update-FastLlmUiFluentHome {
     }
 
     # The detail line is a polite live region: its automation name is the composed text, raised only when that text changes.
-    $composed = [string] $card.headline + '. ' + [string] $script:statusLabel.Text
+    # The headline is not repeated when the detail already opens with it ("Not running. Install and start ...").
+    $detail = [string] $script:statusLabel.Text
+    $composed = if ($detail.StartsWith([string] $card.headline, [System.StringComparison]::OrdinalIgnoreCase)) { $detail } else { [string] $card.headline + '. ' + $detail }
     if ($keys.Composed -cne $composed) {
         $first = ($null -eq $keys.Composed)
         $keys.Composed = $composed
@@ -341,7 +352,7 @@ function Update-FastLlmUiFluentHome {
     $stepsKey = [string] $card.stepsText + '|' + (@($stepRows | ForEach-Object { if ($null -ne $_) { [string] $_.name + '=' + [string] $_.state } }) -join ';')
     if ($keys.Steps -cne $stepsKey) {
         $keys.Steps = $stepsKey
-        $e.StepsPanel.Children.Clear()
+        $e.StepsPanel.Items.Clear()
         if ($null -ne $card.steps -and $stepRows.Count -gt 0) {
             foreach ($step in $stepRows) {
                 $row = New-Object System.Windows.Controls.StackPanel
@@ -357,7 +368,7 @@ function Update-FastLlmUiFluentHome {
                 $label.Text = [string] $step.name + ', ' + [string] $step.state
                 [void] $row.Children.Add($mark)
                 [void] $row.Children.Add($label)
-                [void] $e.StepsPanel.Children.Add($row)
+                [void] $e.StepsPanel.Items.Add($row)
             }
             [System.Windows.Automation.AutomationProperties]::SetName($e.StepsPanel, [string] $card.stepsText)
             $e.StepsPanel.Visibility = [System.Windows.Visibility]::Visible
