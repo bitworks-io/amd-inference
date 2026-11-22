@@ -65,6 +65,7 @@ try {
         $adapters=@()
         if($Name -ceq 'test-24gb'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 23552))}
         elseif($Name -ceq 'test-24gb-tight'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 21000))}
+        elseif($Name -ceq 'test-24gb-22000'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 22000))}
         elseif($Name -ceq 'test-12gb'){$adapters=@((New-OptinAdapter 'Vulkan0' 12272 11474))}
         elseif($Name -ceq 'test-dual-24gb'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 23552),(New-OptinAdapter 'Vulkan1' 24576 23552))}
         else{throw "Unknown opt-in test hardware '$Name'."}
@@ -349,7 +350,8 @@ try {
     $vb=$visionLong.vision
     Check ($null -ne $vb -and [string]$vb.componentId -ceq 'test-vision-projector-q8' -and [string]$vb.profileId -ceq 'long' -and [int]$vb.extraFreeVramMiB -eq 1200 -and [int64]$vb.requiredFreeVramMiB -eq 22700 -and [string]$vb.resultId -ceq 'test-vision-addon-0001') 'vision plan: the vision block names the projector component, the profile id, the extra memory (1200), the total (21500 + 1200) and the evidence id'
     Check ([string]$vb.engineId -ceq 'llama.cpp-b10698-vulkan' -and [string]$vb.backend -ceq 'vulkan' -and [string]$vb.modelSha256 -ceq [string]$visionLong.model.sha256 -and [string]$vb.startRefusal -ceq 'vision-evidence-unavailable') 'vision plan: the block carries the model sha256, the engine id and backend, and says the start is refused (vision-evidence-unavailable)'
-    $visionExtra=@($visionLong.PSObject.Properties.Name | Where-Object { -not $plainLong.PSObject.Properties[$_] })
+    $longNoVision=Get-FastLlmPlan @visionCommon -KvContextProfile 'long'
+    $visionExtra=@($visionLong.PSObject.Properties.Name | Where-Object { -not $longNoVision.PSObject.Properties[$_] })
     Check ($visionExtra.Count -eq 1 -and $visionExtra[0] -ceq 'vision') 'vision plan: vision is the only field added to the opt-in plan'
     Check ([int]$visionLong.servingProfile.requiredFreeVramMiB -eq 21500 -and [int]$visionLong.model.requiredFreeVramMiB -eq 21500) 'vision plan: the profile row''s own requirement is unchanged; the extra memory is added in the vision block only'
     $visionArgs=@($visionLong.serverArguments)
@@ -390,7 +392,7 @@ try {
     Check ($r2b.threw -and $r2b.code -ceq 'vision-profile-not-measured') 'vision refusal 2: explicit default values are the same default-context plan and are refused the same way'
     $r2c=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-OptinHardware 'test-12gb') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $visionProfiles -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'default' -Vision 'on' }
     Check ($r2c.threw -and $r2c.code -ceq 'vision-profile-not-measured') 'vision refusal 2: a row with a value only for long is refused for the default profile'
-    $r2d=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-OptinHardware 'test-12gb') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $visionProfiles -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Vision 'on' }
+    $r2d=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-OptinHardware 'test-24gb') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $visionProfiles -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Vision 'on' }
     Check (-not $r2d.threw) 'vision plan: the same row with a value for long plans'
     $rOrder=Get-RefusalCode { Get-FastLlmPlan @visionCommon -ModelId 'qwen3.8-27b-q8-0' -Vision 'on' }
     Check ($rOrder.threw -and $rOrder.code -ceq 'vision-not-measured') 'vision order: with no row AND no profile id, refusal 1 (no row) comes before refusal 2'
@@ -417,17 +419,20 @@ try {
     $hipRefused=Get-RefusalCode { Get-FastLlmPlan -Hardware $rocmHardware -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath $visionProfiles -Vision 'on' }
     Check ($hipRefused.threw -and $hipRefused.code -ceq 'vision-not-measured') 'vision HIP: a plan on another backend finds no vision row (the same engine and backend binding as the opt-in rows)'
     $planSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw
-    Check (-not [regex]::IsMatch($planSource,'(?i)vision[^\r\n]*hip|hip[^\r\n]*vision')) 'vision HIP: no new HIP rule is written for vision'
+    Check (-not [regex]::IsMatch($planSource,'(?i)\bvision\b[^\r\n]*\bhip\b|\bhip\b[^\r\n]*\bvision\b')) 'vision HIP: no new HIP rule is written for vision'
 
     # ---- the diagnostic tools keep --no-mmproj, nothing else is touched ---------------------------------------------------------------
     foreach($tool in @('BackendParityDiagnostic','CpuReferenceLab','HipModelTrial','OffloadLab','SamplerDiagnostic','VulkanFitTrial','VulkanVidmemTrial')){
         $toolText=Get-Content -LiteralPath (Join-Path $root ('src/FastLlm.'+$tool+'.ps1')) -Raw
         Check ($toolText.Contains('--no-mmproj') -and -not [regex]::IsMatch($toolText,'--mmproj')) "diagnostic tool $tool keeps --no-mmproj and has no --mmproj"
     }
+    . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
     $resolvedNow=Resolve-FastLlmServingOptions -InstallRoot $installRoot -Bound @{} -IgnoreUserSettings
     Check (-not $resolvedNow.PSObject.Properties['vision'] -and @($resolvedNow.PSObject.Properties.Name).Count -eq 12) 'vision: no saved setting exists: Resolve-FastLlmServingOptions is unchanged (no vision property)'
 
     # ---- Start: refusals 4, 5 and 6, in order, before any process, download or request file ---------------------------------------------------
+    # The golden helper re-imports the module (-Force): take the instance that is loaded now.
+    $module=Get-Module FastLlm
     function New-VisionWorld([string]$Label,[string]$Component){
         $install=Join-Path $work ('vision-world-'+$Label)
         $config=Join-Path $install 'config'

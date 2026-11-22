@@ -16,6 +16,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.SpillCheck.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.ApiKey.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Sidecar.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.Vision.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DriverGuidance.ps1')
@@ -1155,8 +1156,13 @@ function Get-FastLlmPlan {
         [ValidateSet(1, 2)]
         [int] $KvSlots = 1,
 
-        # The measured serving profile rows (config/serving-profiles.json). Read only when -KvContextProfile or -KvSlots is not its default.
+        # The measured serving profile rows (config/serving-profiles.json). Read only when -KvContextProfile, -KvSlots or -Vision is not its default.
         [string] $KvProfilesPath,
+
+        # off (the default) leaves every argument and field as it is (--no-mmproj stays); on plans the vision option from a measured add-on row, or
+        # refuses it typed. In this release every start with vision is refused before anything is started (see FastLlm.Vision.ps1).
+        [ValidateSet('off', 'on')]
+        [string] $Vision = 'off',
 
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
@@ -1194,8 +1200,11 @@ function Get-FastLlmPlan {
     # ValidateSet ignores case; the comparisons below are exact. An option is on only when it is not its default, and only then is anything new done.
     $KvContextProfile = $KvContextProfile.ToLowerInvariant()
     $servingOptionOn = [bool] ($KvContextProfile -cne 'default' -or $KvSlots -ne 1)
+    $Vision = $Vision.ToLowerInvariant()
+    $visionOn = [bool] ($Vision -ceq 'on')
     if ($servingOptionOn -and $ContextSize -gt 0) { throw '-ContextSize cannot be combined with -KvContextProfile or -KvSlots: the measured profile row sets the context.' }
     if ($servingOptionOn -and $RecipeId) { throw '-Recipe cannot be combined with -KvContextProfile or -KvSlots: a recipe is measured for the default context profile and one slot.' }
+    if ($visionOn -and $RecipeId) { throw '-Recipe cannot be combined with -Vision on: a recipe is measured without a vision projector.' }
     $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
@@ -1281,7 +1290,10 @@ function Get-FastLlmPlan {
     if ($servingOptionOn -and -not $ModelId -and $Profile -eq 'balanced' -and $RecipesPath -and $GpuVariantsPath) {
         $recipeSkippedSink.Add('recipes not applied: recipes are measured for the default context profile and one slot; this plan uses a measured serving profile row')
     }
-    if (-not $servingOptionOn -and -not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
+    elseif ($visionOn -and -not $ModelId -and $Profile -eq 'balanced' -and $RecipesPath -and $GpuVariantsPath) {
+        $recipeSkippedSink.Add('recipes not applied: recipes are measured without a vision projector; this plan uses a measured vision row')
+    }
+    if (-not $servingOptionOn -and -not $visionOn -and -not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
         # Recipe data never fails an automatic plan; only an explicit -Recipe refuses.
         try {
             $dxgi = @()
@@ -1335,6 +1347,22 @@ function Get-FastLlmPlan {
         $servingEngineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
         $servingBackend = ([string] $Hardware.backend).ToLowerInvariant()
     }
+    # Vision (-Vision on): a model is a candidate only with a vision add-on row for exactly its sha256 on this plan's engine and backend (the
+    # built-in engine: recipes, and with them engine components, are not applied) AND a value for the plan's effective context profile id (a plan
+    # with no context profile option has no profile id, so no value). The free memory needed is that profile's requirement plus the row's value.
+    $visionRows = @()
+    $visionRowByModel = @{}
+    $visionEngineId = $null
+    $visionBackend = $null
+    $visionProfileId = ''
+    $visionRowFound = $false
+    $visionValueFound = $false
+    if ($visionOn) {
+        $visionRows = @(Read-FastLlmVisionAddOns -Path $KvProfilesPath)
+        $visionEngineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
+        $visionBackend = ([string] $Hardware.backend).ToLowerInvariant()
+        if ($servingOptionOn) { $visionProfileId = $KvContextProfile }
+    }
     if ($recipePick) {
         $selected = [pscustomobject] @{ model = $recipePick.model; placement = $recipePick.placement; score = 0; gpuCount = @($recipePick.placement.adapters).Count }
     }
@@ -1353,6 +1381,20 @@ function Get-FastLlmPlan {
                     continue
                 }
                 $requiredFree = [int64] $model.requiredFreeVramMiB
+                $visionRow = $null
+                $visionExtra = [int64] 0
+                if ($visionOn) {
+                    $visionModelKey = [string] $model.id
+                    if (-not $visionRowByModel.ContainsKey($visionModelKey)) {
+                        $visionRowByModel[$visionModelKey] = Find-FastLlmVisionAddOn -Rows $visionRows -Model $model -EngineId $visionEngineId -Backend $visionBackend
+                    }
+                    $visionRow = $visionRowByModel[$visionModelKey]
+                    if ($null -eq $visionRow) { continue }
+                    $visionRowFound = $true
+                    if (-not $visionProfileId -or -not $visionRow.extraFreeVramMiB.ContainsKey($visionProfileId)) { continue }
+                    $visionValueFound = $true
+                    $visionExtra = [int64] $visionRow.extraFreeVramMiB[$visionProfileId]
+                }
                 $servingRow = $null
                 if ($servingOptionOn) {
                     $servingModelKey = [string] $model.id
@@ -1363,6 +1405,7 @@ function Get-FastLlmPlan {
                     if ($null -eq $servingRow) { continue }
                     $requiredFree = [int64] $servingRow.requiredFreeVramMiB
                 }
+                $requiredFree += $visionExtra
                 if ($requiredFree -le [int64] $placement.selectionCapacity) {
                     $fitting += [pscustomobject] @{
                         model        = $model
@@ -1371,6 +1414,8 @@ function Get-FastLlmPlan {
                         placement    = $placement
                         requiredFree = $requiredFree
                         servingRow   = $servingRow
+                        visionRow    = $visionRow
+                        visionExtra  = $visionExtra
                     }
                 }
             }
@@ -1389,6 +1434,16 @@ function Get-FastLlmPlan {
     }
 
     if (-not $selected) {
+        # Vision refusals come first (a typed failure with its code in the message and in Data): no vision add-on row for any candidate, then no
+        # value for the effective profile id. A row that exists but does not fit is a fit refusal below.
+        if ($visionOn -and -not $visionRowFound) {
+            throw (New-FastLlmTypedFailure -Code 'vision-not-measured' -Message 'Vision is on, but no vision setup has been measured for this model and engine, so it is not offered. Nothing was started. To start without vision, leave -Vision off.')
+        }
+        if ($visionOn -and -not $visionValueFound) {
+            $visionProfileWords = 'the default context with one request at a time (no context profile option is on, so there is no profile id to take a measurement for)'
+            if ($visionProfileId) { $visionProfileWords = "the '$visionProfileId' context profile" }
+            throw (New-FastLlmTypedFailure -Code 'vision-profile-not-measured' -Message "Vision is on, but the measured vision setup has no memory figure for $visionProfileWords, so it is not offered. Nothing was started. To start without vision, leave -Vision off.")
+        }
         # No candidate had a measured row at all: the option is refused with the one plain reason. A row that exists but does not fit is a fit refusal below.
         # Plain reason, exactly as before; the code travels in Data so a background run and a switch can record why they refused.
         if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) {
@@ -1439,6 +1494,21 @@ function Get-FastLlmPlan {
             resultId            = [string] $servingRow.resultId
         }
     }
+    # The vision block (only with -Vision on). The row's own numbers; the total is the profile's requirement plus the row's extra memory.
+    $visionBlock = $null
+    if ($visionOn) {
+        $visionBlock = [pscustomobject] [ordered] @{
+            componentId         = [string] $selected.visionRow.componentId
+            modelSha256         = ([string] $model.sha256).ToLowerInvariant()
+            engineId            = $visionEngineId
+            backend             = $visionBackend
+            profileId           = $visionProfileId
+            extraFreeVramMiB    = [int] $selected.visionExtra
+            requiredFreeVramMiB = [int64] $selected.requiredFree
+            resultId            = [string] $selected.visionRow.resultId
+            startRefusal        = 'vision-evidence-unavailable'
+        }
+    }
     $selectedPlacement = $selected.placement
     $selectedAdapters = @($selectedPlacement.adapters)
     $homogeneous = $selectedAdapters.Count -gt 1
@@ -1462,6 +1532,7 @@ function Get-FastLlmPlan {
         'The selected GGUF is a hash-pinned community quantization of an Apache-2.0 Qwen model; it is not a first-party Qwen GGUF.'
     )
     if ($Profile -eq 'fast' -and -not $ModelId) { $warnings += 'Fast is an estimated model preference, not a measured tokens-per-second optimization. Select -ModelId to keep a specific artifact.' }
+    if ($visionOn) { $warnings += 'Vision is on for this plan, but no start with vision is offered in this release: FastLLM cannot verify yet where the projector is loaded, so a start is refused (vision-evidence-unavailable) before anything runs.' }
     if ($ContextSize -gt 0) { $warnings += 'A smaller context keeps the original conservative memory threshold; it is not a newly measured fit claim.' }
     if ($allEligible.Count -gt $selectedAdapters.Count) {
         if ($selectedAdapters.Count -eq 1) {
@@ -1644,6 +1715,9 @@ function Get-FastLlmPlan {
         # The one removal: the --no-ui element only. Every other element keeps its place.
         if ($ChatPage -ceq 'on') { $arguments = @($arguments | Where-Object { $_ -cne '--no-ui' }) }
         if ($Thinking -ceq 'off') { $arguments += @('--reasoning', 'off') }
+        # The one replacement: --no-mmproj becomes --mmproj <path>, in the same place. The path is only named here (a start with vision is refused
+        # before anything is started), as <verified-model> is named elsewhere.
+        if ($visionOn) { $arguments = @(Get-FastLlmVisionArguments -Arguments $arguments -ProjectorPath $script:FastLlmVisionProjectorPlaceholder) }
     }
 
     $planDocument = [pscustomobject] [ordered] @{
@@ -1688,6 +1762,10 @@ function Get-FastLlmPlan {
     # Present only when a context profile or slots option is on, so a default plan keeps exactly its fields.
     if ($servingProfileBlock) {
         $planDocument | Add-Member -NotePropertyName servingProfile -NotePropertyValue $servingProfileBlock
+    }
+    # Present only with -Vision on, so every other plan keeps exactly its fields.
+    if ($visionBlock) {
+        $planDocument | Add-Member -NotePropertyName vision -NotePropertyValue $visionBlock
     }
     # Present only when -PreferInstalledModels was passed (null when nothing was substituted), so a default plan keeps exactly its fields.
     if ($PreferInstalledModels) {
@@ -2390,7 +2468,7 @@ function Get-FastLlmComponents {
         }
         $label = "Component '$itemId'"
         $itemKind = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'kind' -Label $label)
-        if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft', 'tool', 'embedding-model')) {
+        if ($itemKind -cnotin @('engine', 'runtime', 'model', 'draft', 'tool', 'embedding-model', 'projector')) {
             throw "$label has an unsupported kind '$itemKind'."
         }
         $itemVersion = [string] (Get-FastLlmRequiredProperty -Object $item -Name 'version' -Label $label)
@@ -3931,6 +4009,10 @@ function Start-FastLlmServer {
         [string] $ApiKey = 'off'
     )
 
+    # Vision, fail closed and first: a plan that carries a vision block never starts. Every start with vision is refused here, typed, before any
+    # check, probe, download, request file or launch (a switch, the embedding sidecar and the stand-in start included). A plan without one is not touched.
+    Assert-FastLlmVisionStartable -Plan $Plan -CatalogPath $CatalogPath -InstallRoot $InstallRoot
+
     # ValidateSet ignores case and keeps the typed value; normalise once, before any comparison or forwarding.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     # The caller's own start owns the switch sequence; a start inside the sequence is given the table and runs once.
@@ -4544,5 +4626,7 @@ Export-ModuleMember -Function @(
     'Get-FastLlmApiKeyForDisplay',
     'ConvertTo-FastLlmKeyFreeText',
     # The optional embedding sidecar: the one question an entry point asks before a start (can embeddings be turned on here?).
-    'Assert-FastLlmEmbeddingsAvailable'
+    'Assert-FastLlmEmbeddingsAvailable',
+    # The vision option: the start check (refused in this release, before any start) for the entry points.
+    'Assert-FastLlmVisionStartable'
 )

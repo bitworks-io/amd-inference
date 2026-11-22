@@ -40,6 +40,8 @@ param(
 
     # Vulkan Resizable-BAR mitigation for a live start: off = none, on = set GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 on the
     # Vulkan lane, auto = only when Resizable BAR is confidently detected as off. Absent means auto.
+    # The alias V is exact, so -V still binds this parameter now that -Vision exists (an exact alias wins over a prefix).
+    [Alias('V')]
     [ValidateSet('off', 'on', 'auto')]
     [string] $VulkanBarMitigation = 'auto',
 
@@ -144,6 +146,15 @@ param(
     # allows it, and each request then gets the context divided by 2. An explicit value wins over the saved setting (and is not saved); on
     # settings it saves the value (1 removes it). Text, checked by ConvertTo-FastLlmSlots, so any other value is refused.
     [string] $KvSlots,
+
+    # plan and start only: off (the default) leaves everything as it is (--no-mmproj stays); on asks for the vision option, which needs a measured
+    # setup and an approved projector. This release lists neither, so a start with it is refused (typed, before anything starts): FastLLM cannot
+    # verify yet where the projector is loaded. Never saved as a setting; the window and the start at sign-in never ask for it.
+    # The parameter is named ImageMode with the alias Vision, so no existing abbreviation becomes ambiguous (any parameter name starting with V would
+    # take -V from -VulkanBarMitigation, which now has the exact alias V); -Vision is what is written on the command line.
+    [Alias('Vision')]
+    [ValidateSet('off', 'on')]
+    [string] $ImageMode,
 
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
@@ -400,6 +411,10 @@ if ($PSBoundParameters.ContainsKey('IdleStopMinutes')) { $null = ConvertTo-FastL
 if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvContextProfile is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots')) { $null = ConvertTo-FastLlmSlots -Value $KvSlots }
+# The vision option: plan and start only, and never saved. ValidateSet ignores case; the value is lower-cased into its own variable.
+if ($PSBoundParameters.ContainsKey('ImageMode') -and $effectiveAction -notin @('plan', 'start')) { throw '-Vision is supported only by plan and start.' }
+$requestedVision = $null
+if ($PSBoundParameters.ContainsKey('ImageMode')) { $requestedVision = $ImageMode.ToLowerInvariant() }
 # The embedding sidecar: start and settings only. The value is lower-cased into its own variable (the parameters are never assigned to).
 if (($PSBoundParameters.ContainsKey('Embeddings') -or $PSBoundParameters.ContainsKey('EmbeddingPort')) -and $effectiveAction -notin @('start', 'settings')) { throw '-Embeddings and -EmbeddingPort are supported only by start and settings.' }
 $requestedEmbeddings = $null
@@ -438,6 +453,12 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     # The background starts (window, sign-in) build the same options from the same function.
     $servingPlanOptions = Get-FastLlmServingPlanOptions -Options $servingOptions -ConfigRoot $(if ($PSScriptRoot) { Join-Path $PSScriptRoot 'config' } else { '' })
     foreach ($servingPlanKey in @($servingPlanOptions.Keys)) { $selectionOptions[$servingPlanKey] = $servingPlanOptions[$servingPlanKey] }
+    # Vision reaches the planner only when it is on (so the default plan call keeps the exact parameter set it always had), with the profile rows
+    # file its add-on rows are read from. The saved settings have no vision key: -IgnoreUserSettings and the background starts are unaffected.
+    if ($requestedVision -ceq 'on') {
+        $selectionOptions.Vision = 'on'
+        if (-not $selectionOptions.ContainsKey('KvProfilesPath')) { $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json' }
+    }
     # The idle stop never reaches the planner: it changes no server argument. It is handed to the start only.
     $effectiveIdleStopMinutes = [int] $servingOptions.idleStopMinutes
     # The API key never reaches the planner either, and no plan or dry run mentions it. A live start gets the flag from the saved setting
@@ -477,6 +498,9 @@ function Write-FastLlmPlan {
         Write-Host "Context:   $($Plan.servingProfile.contextPerSlot) tokens per request ($($Plan.servingProfile.slots) at once, $($Plan.model.contextSize) in total; context profile $($Plan.servingProfile.id))"
     }
     else { Write-Host "Context:   $($Plan.model.contextSize) tokens" }
+    if ($Plan.PSObject.Properties['vision'] -and $Plan.vision) {
+        Write-Host "Vision:    on (projector $($Plan.vision.componentId), $($Plan.vision.extraFreeVramMiB) MiB more free memory, $($Plan.vision.requiredFreeVramMiB) MiB in total). A start with vision is refused in this release ($($Plan.vision.startRefusal)): FastLLM cannot verify yet where the projector is loaded. Nothing would start."
+    }
     Write-Host "GPU plan:  $(@($Plan.selectedAdapters).Count) device(s); split mode $($Plan.splitMode)"
     Write-Host 'Placement: requested all GPU layers; startup must pass API and reported-layer checks (physical residency remains unqualified)'
     Write-Host "Endpoint:  $($Plan.endpoint)"
@@ -1010,6 +1034,8 @@ try {
                 if ($PlannedRecipe -and -not $recoveryAttempted -and -not (Test-FastLlmPlanMatchesPlannedRecipe -Plan $plan -PlannedRecipe $PlannedRecipe)) {
                     throw (New-FastLlmTypedFailure -Code 'planned-recipe-not-applicable' -Message "The setup '$PlannedRecipe' does not apply to this PC any more. Nothing was started; choose a setup again.")
                 }
+                # Vision, refused here before anything is provisioned or started: a plan with a vision block never starts (the start refuses it again).
+                if ($plan.PSObject.Properties['vision'] -and $plan.vision) { Assert-FastLlmVisionStartable -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot }
                 Write-FastLlmPlan -Plan $plan -Started
                 if ($VulkanBarMitigation -in @('on', 'off') -and $plan.PSObject.Properties['backend'] -and [string] $plan.backend -ieq 'hip') {
                     Write-Host 'Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'
