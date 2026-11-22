@@ -984,7 +984,7 @@ function Invoke-S2-Bindings {
     Invoke-Pump 200
     $btn.UpdateLayout()
     $texts = @(Get-ShellTexts $btn)
-    Check (($texts -ccontains 'my_model_id') -and -not (@($texts | Where-Object { $_ -match '__' }).Count -gt 0)) 'S2 a Content-mode caption with underscores renders with none lost' "rendered=[$($texts -join '|')]"
+    Check (($texts -ccontains 'my_model_id') -and -not (@($texts | Where-Object { $_ -match '__' }).Count -gt 0)) 'S2 a Content-mode caption with underscores renders with none lost' ("rendered=[$($texts -join '|')] content='$($btn.Content)' visibility=$($btn.Visibility) size=$($btn.ActualWidth)x$($btn.ActualHeight) tree: " + (Get-ShellTreeText $btn))
     $script:connectButton.UseMnemonic = $true
     $script:connectButton.Text = 'Connect an app'
     $inst = @(Get-ShellTexts $els.InstallButton)
@@ -1300,9 +1300,10 @@ function Invoke-S9-GlyphControlView {
     Invoke-Pump 250
     $els.StepsPanel.UpdateLayout()
     $row = $null
-    if ($els.StepsPanel.Items.Count -gt 0) { $row = $els.StepsPanel.Items[0] }
+    $rows = @(Get-ShellStepRows $els.StepsPanel)
+    if ($rows.Count -gt 0) { $row = $rows[0] }
     if ($null -eq $row) { Check $false 'S9 Home step row: mark not in the UIA control view; name present' 'the starting state produced no step rows' }
-    else { Test-ShellGlyphHidden 'S9 Home step row: mark not in the UIA control view; name present' $row }
+    else { Test-ShellStepRow 'S9 Home step row: mark not in the UIA control view; name present' $row }
     $script:shellSnap = New-ShellSnap
     Invoke-FastLlmUiFluentTick
 
@@ -1426,6 +1427,61 @@ function Invoke-S11-Expander {
 
 # The suite process used WPF in Part A, long before S0, so WPF has already read and cached its accessibility switches as legacy on Windows PowerShell 5.1,
 # whatever the product sets later. In-suite switch and peer results are therefore evidence only; the proof is the fresh child process in S19r.
+# The step rows of the Home card, whether the panel is a plain StackPanel (Children) or an ItemsControl (Items).
+function Get-ShellStepRows($Panel) {
+    $rows = New-Object System.Collections.ArrayList
+    if ($Panel -is [System.Windows.Controls.ItemsControl]) { foreach ($r in $Panel.Items) { [void]$rows.Add($r) } }
+    else { foreach ($r in $Panel.Children) { [void]$rows.Add($r) } }
+    return $rows.ToArray()
+}
+
+# The label (a TextBlock whose text is not a private-use glyph) and the mark (private-use glyph) of one step row.
+function Get-ShellStepParts($Row) {
+    $label = $null; $mark = $null
+    foreach ($n in @(Get-ShellVisuals $Row)) {
+        if ($n -is [System.Windows.Controls.TextBlock]) {
+            if (Test-ShellPrivateUseText ([string]$n.Text)) { if ($null -eq $mark) { $mark = $n } }
+            elseif ($null -eq $label) { $label = $n }
+        }
+    }
+    return @{ Label = $label; Mark = $mark }
+}
+
+# A printable outline of an element's visual tree (type, name, visibility), for a failure message.
+function Get-ShellTreeText($Root) {
+    $lines = New-Object System.Collections.ArrayList
+    $walk = $null
+    $walk = {
+        param($n, [int]$depth)
+        $nm = ''
+        if ($n -is [System.Windows.FrameworkElement]) { $nm = [string]$n.Name }
+        $vis = ''
+        if ($n -is [System.Windows.UIElement]) { $vis = [string]$n.Visibility + ' ' + [int]$n.ActualWidth + 'x' + [int]$n.ActualHeight }
+        [void]$lines.Add((' ' * $depth) + $n.GetType().Name + $(if ($nm -ne '') { " '$nm'" }) + $(if ($vis -ne '') { " ($vis)" }))
+        $c = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($n)
+        for ($i = 0; $i -lt $c; $i++) { & $walk ([System.Windows.Media.VisualTreeHelper]::GetChild($n, $i)) ($depth + 1) }
+    }
+    & $walk $Root 0
+    return ($lines.ToArray() -join ' / ')
+}
+
+function Test-ShellStepRow([string]$CheckName, $Row) {
+    $parts = Get-ShellStepParts $Row
+    $peer = Get-ShellNearestPeer $Row
+    $kept = @()
+    if ($null -ne $peer) { $kept = @(Get-ShellControlViewPeers $peer) }
+    $bad = New-Object System.Collections.ArrayList
+    foreach ($k in $kept) {
+        Write-Host ("INFO: " + $CheckName + " control-view peer " + $k.GetType().Name + " name='" + $k.GetName() + "'")
+        if ($k -is [System.Windows.Automation.Peers.UIElementAutomationPeer] -and $null -ne $parts.Mark -and [object]::ReferenceEquals($k.Owner, $parts.Mark)) { [void]$bad.Add('mark') }
+    }
+    $labelName = ''
+    $labelText = ''
+    if ($null -ne $parts.Label) { $labelText = [string]$parts.Label.Text; $labelName = Get-ShellPeerName $parts.Label }
+    $ok = ($null -ne $parts.Mark) -and [bool]$parts.Mark.IsVisible -and ($bad.Count -eq 0) -and ($labelText -ne '') -and ($labelName -ceq $labelText)
+    Check $ok $CheckName "markFound=$($null -ne $parts.Mark) markInControlView=$($bad.Count -gt 0) labelPeerName='$labelName' labelText='$labelText'"
+}
+
 function Get-ShellInSuiteLegacy {
     $names = @()
     try { $st = Get-FastLlmUiFluentAccessibilityState; $names = @($st.legacy) } catch { $names = @() }
@@ -1440,12 +1496,12 @@ function Invoke-S12-StepsPeer {
     Invoke-FastLlmUiFluentTick
     Invoke-Pump 200
     $want = [string](Get-FastLlmUiCardState -Snapshot $snap).stepsText
-    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.StepsPanel)
+    $summary = $els['StepsSummary']
+    $peer = $null
+    if ($null -ne $summary) { $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($summary) }
     $got = ''
     if ($null -ne $peer) { $got = [string]$peer.GetName() }
-    $inSuiteLegacy = Get-ShellInSuiteLegacy
-    if (@($inSuiteLegacy).Count -gt 0 -and $null -eq $peer) { Write-Host ("INFO: S12 no steps peer in this process: WPF cached legacy switches before the product could set them (" + (@($inSuiteLegacy) -join ',') + "); the proof is S19r") }
-    else { Check ($want -ne '' -and $null -ne $peer -and $got -ceq $want) 'S12 the steps list has a peer whose name is the composed steps text' "peer=$($null -ne $peer) name='$got' expected='$want'" }
+    Check ($want -ne '' -and $null -ne $peer -and $got -ceq $want) 'S12 the steps summary has a peer whose name is the composed steps text' "summary=$($null -ne $summary) peer=$($null -ne $peer) name='$got' expected='$want'"
     Reset-ShellState
     Check-NoExceptions 'S12'
 }
@@ -1793,24 +1849,19 @@ function Invoke-S19-StepsEvidence {
     Invoke-FastLlmUiFluentTick
     Invoke-Pump 250
     $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.StepsPanel)
-    if (@(Get-ShellInSuiteLegacy).Count -gt 0 -and $null -eq $peer) { Write-Host 'INFO: S19 no steps peer in this process (legacy switches cached by Part A); see S19r for the fresh-process proof' }
-    else { Check ($null -ne $peer) 'S19 the steps list has an automation peer (CreatePeerForElement is non-null on this runtime)' ("peer is null; switches: " + ($switches -join '; ')) }
-    # step items: each row's UIA name is its label text, never a type name
+    Write-Host ("INFO: S19 steps panel " + $els.StepsPanel.GetType().Name + " peer present=" + ($null -ne $peer))
+    # step rows: each label TextBlock's UIA name is its text (TextBlock peers do not depend on the accessibility switches)
     $bad = New-Object System.Collections.ArrayList
     $count = 0
-    $idx = -1
-    foreach ($row in @($els.StepsPanel.Items)) {
+    foreach ($row in @(Get-ShellStepRows $els.StepsPanel)) {
         $count++
-        $idx++
-        $labelText = ''
-        foreach ($c in @($row.Children)) { if ($c -is [System.Windows.Controls.TextBlock] -and -not (Test-ShellPrivateUseText ([string]$c.Text))) { $labelText = [string]$c.Text } }
-        $container = $els.StepsPanel.ItemContainerGenerator.ContainerFromIndex($idx)
-        $name = ''
-        if ($null -ne $container) { $name = Get-ShellPeerName $container }
-        Write-Host ("INFO: S19 step row container=" + $(if ($null -ne $container) { $container.GetType().Name } else { 'none' }) + " container peer name='" + $name + "' row peer name='" + (Get-ShellPeerName $row) + "' label='" + $labelText + "'")
+        $parts = Get-ShellStepParts $row
+        $labelText = ''; $name = ''
+        if ($null -ne $parts.Label) { $labelText = [string]$parts.Label.Text; $name = Get-ShellPeerName $parts.Label }
+        Write-Host ("INFO: S19 step row label='" + $labelText + "' label peer name='" + $name + "'")
         if ($labelText -eq '' -or $name -cne $labelText -or $name -match '^System\.|StackPanel|TextBlock|ContentPresenter') { [void]$bad.Add("name='$name' label='$labelText'") }
     }
-    Check ($count -ge 1 -and $bad.Count -eq 0) 'S19 every step row has its label text as its UIA name (for example "Model, in progress"), never a type name' "rows=$count bad=[$($bad -join '; ')]"
+    Check ($count -ge 1 -and $bad.Count -eq 0) 'S19 every step row label has its text as its UIA name (for example "Model, in progress"), never a type name' "rows=$count bad=[$($bad -join '; ')]"
     Reset-ShellState
     Check-NoExceptions 'S19'
 }
@@ -1820,6 +1871,7 @@ function Invoke-S19-StepsEvidence {
 $script:s19rChild = @'
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
+__PRE__
 $root = '__ROOT__'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1837,47 +1889,52 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
 $support = Test-FastLlmUiFluentHost
-$out = [ordered]@{ supported = [bool]$support.supported; reason = [string]$support.reason; edition = [string]$PSVersionTable.PSEdition; productLegacy = @(); fields = @{}; modern = $false; peerNonNull = $false }
+$out = [ordered]@{ supported = [bool]$support.supported; reason = [string]$support.reason; edition = [string]$PSVersionTable.PSEdition; productLegacy = @(); copies = @(); fields = @{}; modern = $false
+    itemsControlPeer = $false; listBoxPeer = $false }
 $cmd = Get-Command Get-FastLlmUiFluentAccessibilityState -ErrorAction SilentlyContinue
 if ($null -ne $cmd) { $st = Get-FastLlmUiFluentAccessibilityState; $out.productLegacy = @($st.legacy); $out['productTypeFound'] = [bool]$st.typeFound }
+# "modern": every static bool property of every copy of the AccessibilitySwitches class (WindowsBase, PresentationCore, PresentationFramework) reads False.
+# The backing fields stay 0 until first read, so they are listed as evidence only.
 $bad = 0
 $seen = 0
+$copies = New-Object System.Collections.ArrayList
 $flags = [System.Reflection.BindingFlags]'Static,Public,NonPublic'
 foreach ($asm in @([System.Windows.UIElement].Assembly, [System.Windows.DependencyObject].Assembly, [System.Windows.Controls.Button].Assembly)) {
     $types = @()
     try { $types = @($asm.GetTypes()) } catch [System.Reflection.ReflectionTypeLoadException] { $types = @($_.Exception.Types | Where-Object { $null -ne $_ }) }
     foreach ($t in $types) {
-        if ($t.Name -notlike '*AccessibilitySwitches') { continue }
-        foreach ($fl in $t.GetFields($flags)) {
-            $v = [string]$fl.GetValue($null)
-            $out.fields[$fl.Name] = $v
-            if ($fl.Name -match '^_useLegacyAccessibilityFeatures[1-5]?$|^_ItemsControlDoesNotSupportAutomation$') { $seen++; if ($v -cne '-1') { $bad++ } }
-        }
+        if ($t.Name -ne 'AccessibilitySwitches') { continue }
+        [void]$copies.Add($asm.GetName().Name + ':' + $t.FullName)
+        foreach ($fl in $t.GetFields($flags)) { $out.fields[$asm.GetName().Name + '.' + $fl.Name] = [string]$fl.GetValue($null) }
         foreach ($pr in $t.GetProperties($flags)) {
-            if ($pr.PropertyType -ne [bool] -or $pr.Name -notmatch 'Legacy|DoesNotSupport') { continue }
+            if ($pr.PropertyType -ne [bool]) { continue }
             $v = [string]$pr.GetValue($null, $null)
-            $out.fields[$pr.Name] = $v
+            $out.fields[$asm.GetName().Name + '.' + $pr.Name] = $v
             $seen++
             if ($v -cne 'False') { $bad++ }
         }
     }
 }
+$out.copies = @($copies.ToArray())
 $out.modern = ($seen -gt 0 -and $bad -eq 0 -and @($out.productLegacy).Count -eq 0)
 $ic = New-Object System.Windows.Controls.ItemsControl
-[void]$ic.Items.Add('one')
-[void]$ic.Items.Add('two')
-$peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($ic)
-$out.peerNonNull = ($null -ne $peer)
+[void]$ic.Items.Add('one'); [void]$ic.Items.Add('two')
+$out.itemsControlPeer = ($null -ne [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($ic))
+$lb = New-Object System.Windows.Controls.ListBox
+[void]$lb.Items.Add('one'); [void]$lb.Items.Add('two')
+$out.listBoxPeer = ($null -ne [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($lb))
 Write-Output ('S19R-JSON ' + ($out | ConvertTo-Json -Compress -Depth 4))
 '@
 
-function Invoke-S19r-FreshProcess {
+# The variant child sets the switches as its very first statement, before any dot-source (evidence only: does timing matter).
+$script:s19rFirst = "foreach (`$n in 'Switch.UseLegacyAccessibilityFeatures', 'Switch.UseLegacyAccessibilityFeatures.2', 'Switch.UseLegacyAccessibilityFeatures.3', 'Switch.UseLegacyAccessibilityFeatures.4', 'Switch.UseLegacyAccessibilityFeatures.5', 'Switch.UseLegacyToolTipDisplay', 'Switch.System.Windows.Controls.ItemsControlDoesNotSupportAutomation', 'Switch.System.Windows.Controls.OptOutOfGridColumnResizeUsingKeyboard') { [System.AppContext]::SetSwitch(`$n, `$false) }"
+
+function Invoke-S19rChild([string]$Variant, [string]$Pre) {
     $exe = (Get-Process -Id $PID).Path
-    $edition = if ($PSVersionTable.PSVersion.Major -le 5) { 'Windows PowerShell 5.1' } else { 'PowerShell 7' }
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fastllm-s19r-' + [guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $dir)
     $file = Join-Path $dir 'child.ps1'
-    [System.IO.File]::WriteAllText($file, $script:s19rChild.Replace('__ROOT__', $root.Replace("'", "''")), (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($file, $script:s19rChild.Replace('__PRE__', $Pre).Replace('__ROOT__', $root.Replace("'", "''")), (New-Object System.Text.UTF8Encoding($false)))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
     $psi.Arguments = '-STA -NoLogo -NoProfile -File "' + $file + '"'
@@ -1895,22 +1952,31 @@ function Invoke-S19r-FreshProcess {
     $errTask = $p.StandardError.ReadToEndAsync()
     Invoke-Pump 60000 ({ $script:s19rProc.HasExited })
     $timedOut = -not $p.HasExited
-    if ($timedOut) { try { $p.Kill() } catch { $null = $_ } ; $null = $p.WaitForExit(5000) }
-    $text = ''
-    $errText = ''
+    if ($timedOut) { try { $p.Kill() } catch { $null = $_ }; $null = $p.WaitForExit(5000) }
+    $text = ''; $errText = ''
     try { $text = [string]$outTask.Result; $errText = [string]$errTask.Result } catch { $null = $_ }
     $json = $null
     foreach ($line in ($text -split "`r?`n")) { if ($line.StartsWith('S19R-JSON ')) { $json = $line.Substring(10) } }
     $r = $null
     if ($null -ne $json) { try { $r = $json | ConvertFrom-Json } catch { $r = $null } }
-    Write-Host ("INFO: S19r " + $edition + " child pid " + $ownPid + " exit " + $(if ($timedOut) { 'timed out and killed' } else { $p.ExitCode }) + " result: " + $(if ($null -ne $json) { $json } else { '(none)' }))
-    if ($null -eq $r) {
-        Check $false "S19r $edition fresh process: supported, modern accessibility switches, steps-list peer present" ("no result line; exit=" + $(if ($timedOut) { 'timeout' } else { $p.ExitCode }) + " stderr=" + $errText + " stdout=" + $text)
-    }
-    else {
-        Check (($r.supported -eq $true) -and ($r.modern -eq $true) -and ($r.peerNonNull -eq $true)) "S19r $edition fresh process: supported, modern accessibility switches, steps-list peer present" ("supported=$($r.supported) reason=$($r.reason) modern=$($r.modern) peerNonNull=$($r.peerNonNull) productLegacy=[$(@($r.productLegacy) -join ',')] fields=$($r.fields | ConvertTo-Json -Compress)")
-    }
+    Write-Host ("INFO: S19r " + $Variant + " child pid " + $ownPid + " exit " + $(if ($timedOut) { 'timed out and killed' } else { $p.ExitCode }) + " result: " + $(if ($null -ne $json) { $json } else { '(none)' }))
     $script:s19rProc = $null
+    return @{ r = $r; text = $text; err = $errText; timedOut = $timedOut; code = $(if ($timedOut) { 'timeout' } else { $p.ExitCode }) }
+}
+
+function Invoke-S19r-FreshProcess {
+    $edition = if ($PSVersionTable.PSVersion.Major -le 5) { 'Windows PowerShell 5.1' } else { 'PowerShell 7' }
+    $real = Invoke-S19rChild 'real-order' ''
+    $r = $real.r
+    $name = "S19r $edition fresh process, startup order of fast-llm-ui.ps1: supported, every accessibility switch property reads False in every copy of the class"
+    if ($null -eq $r) { Check $false $name ("no result line; exit=" + $real.code + " stderr=" + $real.err + " stdout=" + $real.text) }
+    else {
+        Check (($r.supported -eq $true) -and ($r.modern -eq $true)) $name ("supported=$($r.supported) reason=$($r.reason) modern=$($r.modern) copies=[$(@($r.copies) -join ',')] productLegacy=[$(@($r.productLegacy) -join ',')] fields=$($r.fields | ConvertTo-Json -Compress)")
+        Write-Host ("INFO: S19r " + $edition + " real-order ItemsControl peer=" + $r.itemsControlPeer + " ListBox peer=" + $r.listBoxPeer + " (evidence, not asserted)")
+    }
+    $first = Invoke-S19rChild 'switches-first' $script:s19rFirst
+    if ($null -ne $first.r) { Write-Host ("INFO: S19r " + $edition + " switches-first modern=" + $first.r.modern + " ItemsControl peer=" + $first.r.itemsControlPeer + " ListBox peer=" + $first.r.listBoxPeer) }
+    else { Write-Host ("INFO: S19r " + $edition + " switches-first child gave no result; exit=" + $first.code + " stderr=" + $first.err) }
     Check-NoExceptions 'S19r'
 }
 
@@ -2095,7 +2161,7 @@ $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:tick = $tick
 $deadline = New-Object System.Windows.Threading.DispatcherTimer
-$deadline.Interval = [TimeSpan]::FromSeconds(210)
+$deadline.Interval = [TimeSpan]::FromSeconds(240)
 $script:deadline = $deadline
 
 $tick.Add_Tick({
@@ -2115,7 +2181,7 @@ $tick.Add_Tick({
 $deadline.Add_Tick({
     $script:deadline.Stop()
     $where = if ($script:si -gt 0 -and $script:si -le $script:steps.Count) { $script:steps[$script:si - 1] } else { 'before the first step' }
-    Write-Host "FAIL: the 210 s suite deadline was hit during step $where"
+    Write-Host "FAIL: the 240 s suite deadline was hit during step $where"
     # a step may be stuck in a modal loop: ending the process is the only way out and it must not hang CI
     [Environment]::Exit(1)
 })

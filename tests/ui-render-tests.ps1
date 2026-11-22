@@ -343,9 +343,14 @@ function New-ShellRenderPage($Case){
     $sw=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
     $homePage=New-FastLlmUiXamlElement -Name 'FastLlm.Home'
     $els=@{}
-    foreach($n in 'PaneColumn','NavList','NavSettingsList','UpdateBar','UpdateText','UpdateNotesButton','UpdateButton','ReinstallButton','FailureBar','FailureText','FailureCopyButton','PageHost'){
-        $els[$n]=Get-FastLlmUiFluentElement -Root $sw -Name $n
+    # Every named element of the shell markup (the product's Initialize fills the same collection from the same markup), so nothing an update function reads is missing.
+    $walk=$null
+    $walk={
+        param($node)
+        if($node -is [System.Windows.FrameworkElement] -and -not [string]::IsNullOrEmpty([string]$node.Name) -and -not $els.ContainsKey([string]$node.Name)){$els[[string]$node.Name]=$node}
+        foreach($child in [System.Windows.LogicalTreeHelper]::GetChildren($node)){ if($child -is [System.Windows.DependencyObject]){& $walk $child} }
     }
+    & $walk $sw
     [void](Initialize-FastLlmUiFluentHome -Page $homePage -Els $els)
     $els.PageHost.Child=$homePage
     $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width;ActualHeight=[double]$Case.height};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
