@@ -270,6 +270,26 @@ function Invoke-UiRenderCase {
         }
     }
 
+    # label-mismatch: an input's explicit name must equal the visible text of the label it points at. Each label's existing peer is read
+    # first (FromElement never creates one), before any peer is created below, so the diagnostics show what a cold page really has.
+    $diagnostics = New-Object System.Collections.ArrayList
+    $labelPeerState = @{}
+    $mismatched = @{}
+    foreach ($el in $authored) {
+        $label = [System.Windows.Automation.AutomationProperties]::GetLabeledBy($el)
+        if ($null -eq $label) { continue }
+        if ($null -ne [System.Windows.Automation.Peers.UIElementAutomationPeer]::FromElement($label)) { $labelPeerState[$el] = 'exists' } else { $labelPeerState[$el] = 'none' }
+        $explicit = [string][System.Windows.Automation.AutomationProperties]::GetName($el)
+        if ([string]::IsNullOrEmpty($explicit)) { continue }
+        $labelText = $null
+        if ($label -is [System.Windows.Controls.TextBlock]) { $labelText = [string]$label.Text }
+        elseif ($label -is [System.Windows.Controls.Label]) { $labelText = [string]$label.Content }
+        if ($null -ne $labelText -and -not $labelText.Trim().Equals($explicit.Trim(), [System.StringComparison]::Ordinal)) {
+            [void]$problems.Add('label-mismatch:' + (Get-UiElementLabel $el))
+            $mismatched[$el] = $true
+        }
+    }
+
     # unnamed: controls a screen reader would announce without a name
     foreach ($el in $authored) {
         $isNamed = $el -is [System.Windows.Controls.Button] -or $el -is [System.Windows.Controls.CheckBox] -or $el -is [System.Windows.Controls.ComboBox] -or
@@ -279,7 +299,20 @@ function Invoke-UiRenderCase {
         $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($el)
         $name = ''
         if ($null -ne $peer) { $name = [string]$peer.GetName() }
-        if (Test-UiNameMissing $name) { [void]$problems.Add('unnamed:' + $el.GetType().Name) }
+        $nameMissing = Test-UiNameMissing $name
+        if ($nameMissing) { [void]$problems.Add('unnamed:' + $el.GetType().Name) }
+        if ($nameMissing -or $mismatched.ContainsKey($el)) {
+            $labelDesc = 'none'
+            $labelPeerText = 'none'
+            $labeledBy = [System.Windows.Automation.AutomationProperties]::GetLabeledBy($el)
+            if ($null -ne $labeledBy) {
+                $labelName = 'none'
+                if ($labeledBy -is [System.Windows.FrameworkElement] -and -not [string]::IsNullOrEmpty([string]$labeledBy.Name)) { $labelName = [string]$labeledBy.Name }
+                $labelDesc = $labeledBy.GetType().Name + ':' + $labelName
+                $labelPeerText = [string]$labelPeerState[$el]
+            }
+            [void]$diagnostics.Add((Get-UiElementLabel $el) + ": GetName='" + [string][System.Windows.Automation.AutomationProperties]::GetName($el) + "' LabeledBy=" + $labelDesc + ' labelPeer=' + $labelPeerText + " peerName='" + $name + "'")
+        }
     }
     foreach ($tb in @($all | Where-Object { $_ -is [System.Windows.Controls.TextBlock] -and (Test-UiAuthored $_) -and (Test-UiShown $_ $page) })) {
         foreach ($inline in $tb.Inlines) {
@@ -324,7 +357,7 @@ function Invoke-UiRenderCase {
         }
     }
     return @{
-        problems = [string[]]@($problems.ToArray()); png = $png
+        problems = [string[]]@($problems.ToArray()); diagnostics = [string[]]@($diagnostics.ToArray()); png = $png
         titleFontSize = $titleFontSize; bodyFontSize = $bodyFontSize; titleForeground = $titleForeground
         textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
     }

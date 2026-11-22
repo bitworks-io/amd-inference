@@ -46,7 +46,7 @@ $script:FastLlmUiXaml['Test.Sample']=@'
   <TextBlock x:Name="TitleText" Text="Fluent harness check" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.TitleSize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,8"/>
   <TextBlock x:Name="BodyText" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}" Margin="0,0,0,12" Text="This sample page exists only to exercise the layout and accessibility checks. It holds a heading, a paragraph that wraps over several lines, a labelled text box, a check box and two buttons, one of them an icon button with a spoken name."/>
   <TextBlock x:Name="NameLabel" Text="Example field" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,4"/>
-  <TextBox x:Name="NameBox" AutomationProperties.LabeledBy="{x:Reference NameLabel}" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" Margin="0,0,0,12"/>
+  <TextBox x:Name="NameBox" AutomationProperties.Name="Example field" AutomationProperties.LabeledBy="{x:Reference NameLabel}" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" Margin="0,0,0,12"/>
   <CheckBox x:Name="OptionBox" Content="Example option" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,12"/>
   <StackPanel Orientation="Vertical">
     <Button x:Name="AccentButton" Content="Example action" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextOnAccentBrush}" Background="{DynamicResource FastLlm.AccentFillBrush}" HorizontalAlignment="Left" Padding="12,6,12,6" Margin="0,0,0,8"/>
@@ -93,6 +93,26 @@ $script:FastLlmUiXaml['Test.Outside']=@'
 </Canvas>
 '@
 
+$script:FastLlmUiXaml['Test.UnnamedTextBox']=@'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <TextBox x:Name="BareBox" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</StackPanel>
+'@
+
+$script:FastLlmUiXaml['Test.LabeledByOnly']=@'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <TextBlock x:Name="OnlyLabel" Text="Only label" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,4"/>
+  <TextBox x:Name="OnlyBox" AutomationProperties.LabeledBy="{x:Reference OnlyLabel}" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</StackPanel>
+'@
+
+$script:FastLlmUiXaml['Test.LabelMismatch']=@'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <TextBlock x:Name="MisLabel" Text="Visible text" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,4"/>
+  <TextBox x:Name="MisBox" AutomationProperties.Name="Other text" AutomationProperties.LabeledBy="{x:Reference MisLabel}" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</StackPanel>
+'@
+
 $out=$env:FASTLLM_RENDER_DIR
 if([string]::IsNullOrEmpty($out)){
     if(-not [string]::IsNullOrEmpty($env:RUNNER_TEMP)){$out=Join-Path $env:RUNNER_TEMP 'fastllm-fluent-render'}
@@ -103,12 +123,16 @@ if([string]::IsNullOrEmpty($out)){
 $matrix=@(Get-UiRenderMatrix)
 
 # Each negative page shows exactly its own problem.
-$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox'}
+$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox'}
 $base=@{theme='light';scale=[double]1.0;textScale=[double]1.0;width=640;height=480}
-foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside'){
+foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch'){
     $found=@()
-    try{$found=@((Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out).problems)}catch{$found=@('threw: '+$_.Exception.Message)}
-    Check ($found.Count -eq 1 -and $found[0] -ceq $neg[$n]) ("the harness catches $n (expected '"+$neg[$n]+"', got '"+($found -join '; ')+"')")
+    $diag=@()
+    try{$res=Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out;$found=@($res.problems);$diag=@($res.diagnostics)}catch{$found=@('threw: '+$_.Exception.Message)}
+    $diagText=''
+    $ok=($found.Count -eq 1 -and $found[0] -ceq $neg[$n])
+    if(-not $ok -and $diag.Count -gt 0){$diagText=' | diag: '+($diag -join '; ')}
+    Check $ok ("the harness catches $n (expected '"+$neg[$n]+"', got '"+($found -join '; ')+"')"+$diagText)
 }
 
 $sw=[Diagnostics.Stopwatch]::StartNew()
@@ -116,7 +140,9 @@ foreach($case in $matrix){
     $label="$($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
     $r=$null
     try{$r=Invoke-UiRenderCase -Name 'Test.Sample' -Case $case -OutFolder $out}catch{Check $false "sample page renders at ${label}: $($_.Exception.Message)";continue}
-    Check (@($r.problems).Count -eq 0) "sample page clean at ${label}: $(@($r.problems) -join '; ')"
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "sample page clean at ${label}: $(@($r.problems) -join '; ')$diagText"
     $real=$false
     if(Test-Path -LiteralPath $r.png){
         $info=Get-UiPngInfo -Path $r.png
@@ -139,9 +165,9 @@ foreach($case in $matrix){
 }
 Write-Host ('INFO: render matrix of {0} cases took {1:N1} s' -f $matrix.Count,$sw.Elapsed.TotalSeconds)
 
-# 46 PNGs per run: 40 sample cases plus 6 negative pages. Only files written during this run count, so leftovers cannot inflate the number.
+# 49 PNGs per run: 40 sample cases plus 9 negative pages. Only files written during this run count, so leftovers cannot inflate the number.
 $written=@(Get-ChildItem -LiteralPath $out -Filter 'Test.*.png' -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart })
-Check ($written.Count -eq 46) ("the render folder holds 46 PNGs written by this run (got $($written.Count))")
+Check ($written.Count -eq 49) ("the render folder holds 49 PNGs written by this run (got $($written.Count))")
 
 if($script:failures.Count -gt 0){throw ("FAIL: $($script:failures.Count) check(s) failed: "+($script:failures -join ' | '))}
 Write-Host "PASS: ui render tests ($($script:checks) checks)"
