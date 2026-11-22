@@ -36,6 +36,23 @@ try{
 }finally{Remove-Item function:Get-ItemProperty -ErrorAction SilentlyContinue}
 Check ((Get-Command Get-ItemProperty).CommandType -eq 'Cmdlet') 'the Get-ItemProperty stand-in is gone before the Windows part'
 
+# Pure, any OS, StrictMode 2: the resource store helper unwraps PSObject wrappers (a plain hashtable stands in for the ResourceDictionary).
+$h=@{}
+$h['old']=& { New-Object System.Text.StringBuilder }
+Check ($h['old'] -is [psobject]) 'precondition: the old indexer path stores a PSObject wrapper'
+Set-FastLlmUiResourceValue $h 'sb' (& { New-Object System.Text.StringBuilder })
+Check (-not ($h['sb'] -is [psobject])) 'the store helper unwraps New-Object output returned through a scriptblock'
+Set-FastLlmUiResourceValue $h 'dbl' ([double]14.5)
+Check ($h['dbl'] -eq 14.5) 'a double comes back equal'
+Check (-not ($h['dbl'] -is [psobject])) 'a double comes back unwrapped'
+Set-FastLlmUiResourceValue $h 'dt' ([System.DateTime]::new(2000,1,1))
+Check ($h['dt'] -eq [System.DateTime]::new(2000,1,1)) 'a struct comes back equal'
+Check (-not ($h['dt'] -is [psobject])) 'a struct comes back unwrapped'
+Set-FastLlmUiResourceValue $h 'single' ([System.DBNull]::Value)
+Check ([object]::ReferenceEquals($h['single'],[System.DBNull]::Value)) 'a static singleton keeps its reference identity'
+Set-FastLlmUiResourceValue $h 'nil' $null
+Check ($h.ContainsKey('nil') -and $null -eq $h['nil']) 'a null value is stored as null'
+
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
 
@@ -129,6 +146,7 @@ foreach($theme in 'light','dark'){
     foreach($k in $keys){Check ($d.Contains($k)) ($theme+' dictionary has '+$k)}
     foreach($t in $tokenNames){Check ($d['FastLlm.'+$t+'Brush'].IsFrozen) ($theme+' '+$t+' brush is frozen')}
     Check ($d['FastLlm.BodySize'] -is [double] -and $d['FastLlm.BodySize'] -eq 14.0) ($theme+' body size is a double 14')
+    Check (@($d.Keys|Where-Object{$d[$_] -is [psobject]}).Count -eq 0) ($theme+' dictionary holds only raw values')
     Check ($d['FastLlm.TitleWeight'] -eq [System.Windows.FontWeights]::SemiBold -and $d['FastLlm.BodyWeight'] -eq [System.Windows.FontWeights]::Regular) ($theme+' weights map')
 }
 $custom=@{lightFill='#FF123456';darkFill='#FF654321';lightSource='system';darkSource='system'}
@@ -151,6 +169,8 @@ Check ($hp['FastLlm.LayerBrush'].Color.ToString() -ceq '#FF000000') 'the palette
 Check ($hp['FastLlm.TextPrimaryBrush'].Color.ToString() -ceq '#FFFFFF00') 'the palette WindowText colour reaches the text brush'
 Check ($hp['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF1AEBFF') 'the palette Highlight colour reaches the accent brush'
 Check ($hp['FastLlm.TextOnAccentBrush'].Color.ToString() -ceq '#FF000000') 'the palette HighlightText colour reaches the text-on-accent brush'
+Check (@($hc.Keys|Where-Object{$hc[$_] -is [psobject]}).Count -eq 0) 'high-contrast dictionary holds only raw values'
+Check (@($hp.Keys|Where-Object{$hp[$_] -is [psobject]}).Count -eq 0) 'high-contrast palette dictionary holds only raw values'
 Check ($hp['FastLlm.LayerBrush'].IsFrozen -and $hp['FastLlm.TextPrimaryBrush'].IsFrozen) 'palette brushes are frozen'
 
 $dl2=New-FastLlmUiThemeDictionary -Theme light -AccentPair $pair -TextScale 1.0
@@ -215,9 +235,11 @@ $dOld=New-Object System.Windows.ResourceDictionary
 $dOld['FastLlm.TextPrimaryBrush']=$wrapped
 $rOld=Test-FastLlmApplyBrush $dOld
 $oldResolves=($null -eq $rOld.err) -and ($rOld.fg -is [System.Windows.Media.SolidColorBrush]) -and ($rOld.fg.Color.ToString() -ceq '#FF112233')
+Check ($dOld['FastLlm.TextPrimaryBrush'] -is [psobject]) 'the old store path keeps a PSObject wrapper (precondition)'
+Check ($null -eq $rOld.err -or $rOld.err -match 'Foreground') ('the old path fails on a Brush property, as in CI: '+$rOld.err)
 Check (-not $oldResolves) 'a wrapped resource value fails to resolve (the old bug is caught)'
 $dNew=New-Object System.Windows.ResourceDictionary
-$dNew['FastLlm.TextPrimaryBrush']=[System.Management.Automation.PSObject]::AsPSObject($wrapped).BaseObject
+$dNew['FastLlm.TextPrimaryBrush']=$wrapped.psobject.BaseObject
 $rNew=Test-FastLlmApplyBrush $dNew
 Check (($null -eq $rNew.err) -and ($rNew.fg -is [System.Windows.Media.SolidColorBrush]) -and ($rNew.fg.Color.ToString() -ceq '#FF112233')) ('the same brush stored as its raw object resolves: '+$rNew.err)
 
