@@ -1138,6 +1138,8 @@ function Get-FastLlmPlan {
 
         # The loopback port the server listens on. 0 = the catalog value (8080). The caller validates the 1024-65535 range
         # (the CLI and the control window do); this parameter only carries an already validated integer.
+        # The alias S is exact, so -S still binds this parameter now that -Speculation exists (an exact alias wins over a prefix).
+        [Alias('S')]
         [ValidateRange(0, 65535)]
         [int] $ServerPort = 0,
 
@@ -1210,6 +1212,16 @@ function Get-FastLlmPlan {
     $visionOn = [bool] ($Vision -ceq 'on')
     $Speculation = $Speculation.ToLowerInvariant()
     $specOn = [bool] ($Speculation -cne 'off')
+    # Speculation refusal 3 (a combination this version does not offer: 2 requests at once, or -Vision on). It is raised after the row and the value
+    # were found, wherever the plan would otherwise end (a plan, a fit refusal or a missing serving row), so no other refusal hides it.
+    $assertSpeculationCombination = {
+        if ($specOn -and $KvSlots -ne 1) {
+            throw (New-FastLlmTypedFailure -Code 'speculation-combination-not-offered' -Message 'Speculation is not offered with 2 requests at once (-KvSlots 2) in this release. Nothing was started. To start without speculation, leave -Speculation off.')
+        }
+        if ($specOn -and $visionOn) {
+            throw (New-FastLlmTypedFailure -Code 'speculation-combination-not-offered' -Message 'Speculation is not offered together with -Vision on in this release. Nothing was started. To start without speculation, leave -Speculation off.')
+        }
+    }
     if ($servingOptionOn -and $ContextSize -gt 0) { throw '-ContextSize cannot be combined with -KvContextProfile or -KvSlots: the measured profile row sets the context.' }
     if ($servingOptionOn -and $RecipeId) { throw '-Recipe cannot be combined with -KvContextProfile or -KvSlots: a recipe is measured for the default context profile and one slot.' }
     if ($visionOn -and $RecipeId) { throw '-Recipe cannot be combined with -Vision on: a recipe is measured without a vision projector.' }
@@ -1498,6 +1510,7 @@ function Get-FastLlmPlan {
             if ($specProfileId) { $specProfileWords = "the '$specProfileId' context profile" }
             throw (New-FastLlmTypedFailure -Code 'speculation-profile-not-measured' -Message "Speculation ($Speculation) is on, but the measured speculation setup has no memory figure for $specProfileWords, so it is not offered. Nothing was started. To start without speculation, leave -Speculation off.")
         }
+        & $assertSpeculationCombination
         # No candidate had a measured row at all: the option is refused with the one plain reason. A row that exists but does not fit is a fit refusal below.
         # Plain reason, exactly as before; the code travels in Data so a background run and a switch can record why they refused.
         if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) {
@@ -1517,14 +1530,8 @@ function Get-FastLlmPlan {
         throw $noProfileFits
     }
 
-    # Speculation refusal 3: a combination this version does not offer, after the row and the value were found (so the two refusals above come
-    # first): speculation with 2 requests at once, and speculation with -Vision on.
-    if ($specOn -and $KvSlots -ne 1) {
-        throw (New-FastLlmTypedFailure -Code 'speculation-combination-not-offered' -Message 'Speculation is not offered with 2 requests at once (-KvSlots 2) in this release. Nothing was started. To start without speculation, leave -Speculation off.')
-    }
-    if ($specOn -and $visionOn) {
-        throw (New-FastLlmTypedFailure -Code 'speculation-combination-not-offered' -Message 'Speculation is not offered together with -Vision on in this release. Nothing was started. To start without speculation, leave -Speculation off.')
-    }
+    # Speculation refusal 3 again for a plan that was selected (the two refusals above come first).
+    & $assertSpeculationCombination
 
     # Copy before narrowing context: the immutable artifact/provenance remains unchanged.
     $model = $selected.model | ConvertTo-Json -Depth 12 | ConvertFrom-Json

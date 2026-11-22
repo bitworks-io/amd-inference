@@ -20,19 +20,24 @@ try {
             mode='ngram'; specType=$SpecType; extraArguments=@($Extra); engineId='llama.cpp-b10698-vulkan'; backend='vulkan'; profileId='long'
             modelSha256=('0'*64); extraFreeVramMiB=64; requiredFreeVramMiB=21564; resultId='test-ngram-0001' }
     }
-    function Invoke-SpecRun([string]$Label,[string]$MockMode,$Block){
+    function Invoke-SpecRun([string]$Label,[string]$MockMode,$Block,[string[]]$ServerTail=@()){
         $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
         $listener.Start();$port=$listener.LocalEndpoint.Port;$listener.Stop()
         $runRoot=Join-Path $temp ('run-'+$Label)
         $lock=Enter-FastLlmOperation $runRoot
         $plan=[pscustomobject]@{
             enginePath=(Get-Process -Id $PID).Path
-            serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$MockMode,'-Model','test-model','-Context','1024')
+            serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$MockMode,'-Model','test-model','-Context','1024','-DiagnosticPath',(Join-Path $temp ('diagnostic-'+$Label+'.txt')))+@($ServerTail)
             endpoint="http://127.0.0.1:$port/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
             hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64);parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
             catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
         }
-        if($null -ne $Block){ $plan | Add-Member -NotePropertyName speculation -NotePropertyValue $Block }
+        if($null -ne $Block){
+            $plan | Add-Member -NotePropertyName speculation -NotePropertyValue $Block
+            # The real argument builder: the base arguments carry --spec-type none, and the row's spec type and extra arguments are the tail.
+            $plan.serverArguments=@(& $module { param($A,$S) Get-FastLlmSpeculationArguments -Arguments $A -Speculation $S } @($plan.serverArguments+@('--spec-type','none')) $Block)
+        }
+        elseif(@($ServerTail).Count -eq 0){ $plan.serverArguments=@($plan.serverArguments+@('--spec-type','none')) }
         $stopper=New-Object Diagnostics.Process
         $stopper.StartInfo.FileName=(Get-Process -Id $PID).Path
         $code="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
@@ -65,6 +70,13 @@ try {
     $block=New-Block 'ngram-simple' @('--spec-ngram-size-n','12','--spec-ngram-size-m','48')
     $run=Invoke-SpecRun 'ngram' 'spec-ok' $block
     Check ($null -eq $run.failure -and $run.exit -eq 0 -and [string]$run.status.phase -ceq 'stopped') "speculation run: an ngram plan reaches ready and is stopped by the user$(if($run.failure){': '+$run.failure.Message})"
+    $argsFile=Join-Path $temp 'diagnostic-ngram.txt.args'
+    $served=@(); if(Test-Path -LiteralPath $argsFile){ $served=@([IO.File]::ReadAllLines($argsFile)) }
+    Check (($served -join ' ') -ceq '--spec-type ngram-simple --spec-ngram-size-n 12 --spec-ngram-size-m 48') 'speculation run: the server process really received --spec-type with the row''s spec type in place of none, then the row''s extra arguments in row order'
+    $plainArgsFile=Join-Path $temp 'diagnostic-plain.txt.args'
+    $servedPlain=@(); if(Test-Path -LiteralPath $plainArgsFile){ $servedPlain=@([IO.File]::ReadAllLines($plainArgsFile)) }
+    Check (($servedPlain -join ' ') -ceq '--spec-type none') 'speculation run: a plain run''s server process received --spec-type none and nothing after it'
+    Check (((@($run.status.recipe.requestedArguments) -join ' ').Contains('--spec-type ngram-simple')) -and -not ((@($plain.status.recipe.requestedArguments) -join ' ').Contains('ngram'))) 'speculation run: the recorded requested arguments carry the spec type that ran (and a plain run''s do not)'
     $recorded=$run.status.speculation
     Check ($null -ne $recorded -and [string]$recorded.mode -ceq 'ngram' -and [string]$recorded.specType -ceq 'ngram-simple' -and (@($recorded.extraArguments) -join ' ') -ceq '--spec-ngram-size-n 12 --spec-ngram-size-m 48' -and [string]$recorded.resultId -ceq 'test-ngram-0001') 'speculation run: status.json records the real mode in an additive speculation field (mode, spec type, extra arguments, evidence id)'
     Check ((@($recorded.PSObject.Properties.Name) -join ',') -ceq 'mode,specType,extraArguments,resultId') 'speculation run: the status speculation field has exactly those four members'

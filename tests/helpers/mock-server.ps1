@@ -1,5 +1,8 @@
-param([int]$Port, [string]$Mode='ok', [string]$Model='test-model', [int]$Context=1024, [string]$DiagnosticPath='', [string]$ModeFile='', [string]$KeyMode='enforce')
+param([int]$Port, [string]$Mode='ok', [string]$Model='test-model', [int]$Context=1024, [string]$DiagnosticPath='', [string]$ModeFile='', [string]$KeyMode='enforce',
+       # Speculation tests: every other argument (the server arguments after the mock's own) is recorded, one per line, in <DiagnosticPath>.args.
+       [Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest=@())
 $ErrorActionPreference='Stop'
+if ($DiagnosticPath -and @($Rest).Count -gt 0) { [IO.File]::WriteAllLines(($DiagnosticPath + '.args'), [string[]]@($Rest)) }
 # -ModeFile (model switch tests): the mode of THIS start is the first line of the file. With more than one line the first is consumed, so the next
 # start of the same plan (the same arguments) gets the next mode; each start is appended to <ModeFile>.starts.
 if ($ModeFile) {

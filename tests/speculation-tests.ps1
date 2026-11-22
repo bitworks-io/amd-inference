@@ -166,6 +166,10 @@ try {
     Check ($r3b.threw -and $r3b.code -ceq 'speculation-combination-not-offered' -and $r3b.message -like '*-Vision*') 'speculation refusal 3: speculation with -Vision on is refused'
     $r3c=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvSlots 2 -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
     Check ($r3c.threw -and $r3c.code -ceq 'speculation-not-measured') 'speculation order: with no row AND 2 slots, refusal 1 (no row) comes before refusal 3 (the combination)'
+    $tightSlots=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-Card 21530) -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $specProfiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
+    Check ($tightSlots.threw -and $tightSlots.code -ceq 'speculation-combination-not-offered') 'speculation refusal 3: the combination is named even when the plan would not fit the card anyway (no fit refusal hides it)'
+    $noServingRow=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
+    Check ($noServingRow.threw -and $noServingRow.code -ceq 'speculation-combination-not-offered') 'speculation refusal 3: the combination is named when the profile row does not allow 2 slots either (no serving-row refusal hides it)'
     $r3d=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'default' -KvSlots 2 -ModelId 'qwen3.5-9b-q6-k' -Speculation 'ngram' }
     Check ($r3d.threw -and $r3d.code -ceq 'speculation-profile-not-measured') 'speculation order: with no value for the profile AND 2 slots, refusal 2 comes before refusal 3'
     # Fit: the extra memory is the row's, added to the profile's requirement. Nothing is derived.
@@ -303,6 +307,8 @@ try {
         # An ngram plan is startable by the check: it has no component and no evidence refusal.
         $ngramCheck=Get-RefusalCode { Assert-FastLlmSpeculationStartable -Plan $ngram -CatalogPath $w6.catalog -InstallRoot $w6.install }
         Check (-not $ngramCheck.threw) 'speculation start check: an ngram plan passes the start check (no component, no evidence refusal)'
+        $ngramStart=Invoke-SpecStart $w6 $ngram
+        Check ($ngramStart.threw -and $ngramStart.code -cne 'speculation-evidence-unavailable' -and $ngramStart.code -cnotlike 'speculation-*' -and @($ngramStart.calls) -contains 'PAST-THE-SPECULATION-CHECK' -and -not $ngramStart.changed) 'speculation start: the real Start-FastLlmServer lets an ngram plan through both speculation gates (it reaches the next start step, which the test stops)'
         $noBlock=Get-RefusalCode { Assert-FastLlmSpeculationStartable -Plan $off -CatalogPath $w6.catalog -InstallRoot $w6.install }
         Check (-not $noBlock.threw) 'speculation start check: a plan without a speculation block is not touched'
         $badBlock=$ngram | ConvertTo-Json -Depth 12 | ConvertFrom-Json

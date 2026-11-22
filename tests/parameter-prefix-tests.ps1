@@ -145,4 +145,8 @@ $ambiguous=$false
 try { $null=$script.ResolveParameter('S') } catch { $ambiguous=$true }
 Check $ambiguous '-S was ambiguous before and still is (it is not given to Speculation)'
 Check ((Get-ParameterNames 'Get-FastLlmPlan') -ccontains 'Speculation') 'Get-FastLlmPlan takes -Speculation'
+# Get-FastLlmPlan had one S parameter, ServerPort, so -S named it alone; the exact alias S keeps that (an exact alias wins over a prefix), and -Sp binds Speculation.
+$planCommand=Get-Command Get-FastLlmPlan
+Check ($planCommand.ResolveParameter('S').Name -ceq 'ServerPort' -and @($planCommand.Parameters['ServerPort'].Aliases) -contains 'S') 'Get-FastLlmPlan -S still binds ServerPort (through its exact alias S)'
+Check ($planCommand.ResolveParameter('Sp').Name -ceq 'Speculation' -and $planCommand.ResolveParameter('Se').Name -ceq 'ServerPort') 'Get-FastLlmPlan -Sp binds Speculation and -Se binds ServerPort'
 Write-Host "parameter-prefix-tests: $script:count checks passed"
