@@ -462,6 +462,11 @@
       "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
     },
     {
+      "suite": "ui-fluent-shell-tests",
+      "class": "ci",
+      "reason": "Windows-only checks of the Fluent window pieces on a real STA dispatcher: the form adapter (close guards, owner, session end), the app icon, the window message hooks; skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
+    },
+    {
       "suite": "ui-fluent-support-tests",
       "class": "ci",
       "reason": "The unsupported-PC path of the Fluent window: support decision, execution-policy flag rule, the approved texts A, B and C, and the window-unsupported run-log event; pure, no WPF, GPU or bench."
