@@ -1,29 +1,31 @@
 #requires -Version 5.1
 # Control adapters for the Fluent window. Each adapter is a [pscustomobject] that stands in for one WinForms
 # control, so the orchestration code can drive the new window unchanged. Pure: no WPF, no Windows-only calls.
-# A member that is not defined throws on get and on set (StrictMode 2 plus the object shape).
+# A member that is not defined throws on get and on set. The throw on get relies on the caller's StrictMode 2,
+# which fast-llm-ui.ps1 sets; the throw on set is the object shape and holds in any mode.
 # Internal note properties: __kind, __name, __state (hashtable), __handlers (event -> List[scriptblock]), __sink.
 
 # The ONE table of members per kind. The member-coverage test reads it.
-#   Values  : stored members that call the sink and, where one exists, raise a change event
-#   Layout  : stored members with no other effect
-#   Events  : the Add_<Event> methods
-#   Methods : extra methods or computed members
+#   Values   : get/set members that call the sink and, where one exists, raise a change event
+#   ReadOnly : get-only members (computed, or the Items collection)
+#   Layout   : get/set stored members with no other effect
+#   Events   : the Add_<Event> methods
+#   Methods  : real calls
 function Get-FastLlmUiAdapterMemberTable {
     [CmdletBinding()] param()
     $common=@('Text','Enabled','Visible')
-    $layout=@('Left','Width','Right','Height','Font','ForeColor','Location','Size','AutoSize','TabIndex','TabStop','AccessibleName')
+    $layout=@('Left','Width','Height','Font','ForeColor','Location','Size','AutoSize','TabIndex','TabStop','AccessibleName')
     $text=@('AutoEllipsis','TextAlign','UseMnemonic','PreferredWidth')
     return [ordered]@{
-        Button=@{Values=$common;Layout=$layout+$text;Events=@('Click','TextChanged');Methods=@()}
-        Label=@{Values=$common;Layout=$layout+$text;Events=@('TextChanged');Methods=@()}
-        LinkLabel=@{Values=$common;Layout=$layout+$text;Events=@('Click','LinkClicked','TextChanged');Methods=@()}
-        CheckBox=@{Values=$common+@('Checked');Layout=$layout+$text;Events=@('Click','CheckedChanged','TextChanged');Methods=@()}
-        ComboBox=@{Values=$common+@('SelectedIndex');Layout=$layout+@('DropDownStyle');Events=@('SelectedIndexChanged','TextChanged');Methods=@('Items','SelectedItem')}
-        NumericUpDown=@{Values=$common+@('Value','Maximum','Increment');Layout=$layout;Events=@('TextChanged');Methods=@()}
-        TextBox=@{Values=$common+@('SelectionStart');Layout=$layout+@('Multiline','ReadOnly','ScrollBars');Events=@('TextChanged');Methods=@('TextLength','AppendText','ScrollToCaret')}
-        ProgressBar=@{Values=$common;Layout=$layout+@('Style');Events=@('TextChanged');Methods=@()}
-        ToolTip=@{Values=$common;Layout=@();Events=@('TextChanged');Methods=@('SetToolTip')}
+        Button=@{Values=$common;Layout=$layout+$text;Events=@('Click','TextChanged');ReadOnly=@('Right');Methods=@()}
+        Label=@{Values=$common;Layout=$layout+$text;Events=@('TextChanged');ReadOnly=@('Right');Methods=@()}
+        LinkLabel=@{Values=$common;Layout=$layout+$text;Events=@('Click','LinkClicked','TextChanged');ReadOnly=@('Right');Methods=@()}
+        CheckBox=@{Values=$common+@('Checked');Layout=$layout+$text;Events=@('Click','CheckedChanged','TextChanged');ReadOnly=@('Right');Methods=@()}
+        ComboBox=@{Values=$common+@('SelectedIndex');Layout=$layout+@('DropDownStyle');Events=@('SelectedIndexChanged','TextChanged');ReadOnly=@('Right','Items','SelectedItem');Methods=@()}
+        NumericUpDown=@{Values=$common+@('Value','Maximum','Increment');Layout=$layout;Events=@('TextChanged');ReadOnly=@('Right');Methods=@()}
+        TextBox=@{Values=$common+@('SelectionStart');Layout=$layout+@('Multiline','ReadOnly','ScrollBars');Events=@('TextChanged');ReadOnly=@('Right','TextLength');Methods=@('AppendText','ScrollToCaret')}
+        ProgressBar=@{Values=$common;Layout=$layout+@('Style');Events=@('TextChanged');ReadOnly=@('Right');Methods=@()}
+        ToolTip=@{Values=$common;Layout=@();Events=@('TextChanged');ReadOnly=@();Methods=@('SetToolTip')}
     }
 }
 
@@ -73,6 +75,7 @@ function New-FastLlmUiAdapter {
             $raise='if($changed){$e=[System.EventArgs]::Empty;foreach($h in @($this.__handlers[''@E''])){& $h $this $e}}'.Replace('@E',$changeEvent[$m])
         }
         $coerce=''; if($m -ceq 'Text'){$coerce='if($null -eq $v){$v=''''}else{$v=[string]$v}'}
+        if($m -ceq 'SelectedIndex'){$coerce='if($v -lt -1 -or $v -ge $this.__state[''Items''].Count){throw [System.ArgumentOutOfRangeException]::new(''SelectedIndex'')}'}
         $setText=('param($v)'+"`n"+$coerce+"`n"+'$s=$this.__state;$old=$s[''@M'']'+"`n"+
             'if(($v -is [string]) -or ($old -is [string])){$changed=($old -cne $v)}else{$changed=($old -ne $v)}'+"`n"+
             '$s[''@M'']=$v'+"`n"+'$sk=$this.__sink;if($null -ne $sk){& $sk ''@M'' $v}'+"`n"+$raise).Replace('@M',$m)
@@ -80,11 +83,10 @@ function New-FastLlmUiAdapter {
     }
     foreach($m in $spec.Layout){
         $st[$m]=$defaults[$m]
-        if($m -ceq 'Right'){
-            Add-Member -InputObject $a -MemberType ScriptProperty -Name Right -Value ([scriptblock]::Create('$this.__state[''Left'']+$this.__state[''Width'']'))
-            continue
-        }
         Add-Member -InputObject $a -MemberType ScriptProperty -Name $m -Value ([scriptblock]::Create('$this.__state[''@M'']'.Replace('@M',$m))) -SecondValue ([scriptblock]::Create('param($v) $this.__state[''@M'']=$v'.Replace('@M',$m)))
+    }
+    if($spec.ReadOnly -contains 'Right'){
+        Add-Member -InputObject $a -MemberType ScriptProperty -Name Right -Value ([scriptblock]::Create('$this.__state[''Left'']+$this.__state[''Width'']'))
     }
     foreach($ev in $spec.Events){
         Add-Member -InputObject $a -MemberType ScriptMethod -Name ('Add_'+$ev) -Value ([scriptblock]::Create('param($h) $this.__handlers[''@E''].Add($h)'.Replace('@E',$ev)))
@@ -98,7 +100,7 @@ function New-FastLlmUiAdapter {
     }
     if($Kind -ceq 'TextBox'){
         Add-Member -InputObject $a -MemberType ScriptProperty -Name TextLength -Value {$this.__state['Text'].Length}
-        Add-Member -InputObject $a -MemberType ScriptMethod -Name AppendText -Value {param($s) $this.Text=$this.__state['Text']+[string]$s}
+        Add-Member -InputObject $a -MemberType ScriptMethod -Name AppendText -Value {param($s) $this.Text=$this.__state['Text']+[string]$s;$this.SelectionStart=$this.__state['Text'].Length}
         Add-Member -InputObject $a -MemberType ScriptMethod -Name ScrollToCaret -Value {$sk=$this.__sink;if($null -ne $sk){& $sk 'ScrollToEnd' $true}}
     }
     if($Kind -ceq 'ToolTip'){

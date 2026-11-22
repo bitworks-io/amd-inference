@@ -22,7 +22,7 @@ foreach($k in $kinds){
     Throws { $a.NoSuchMember=1 } 'NoSuchMember' "$k set unknown"
     # every table member exists
     $spec=$table[$k]
-    foreach($m in @($spec.Values)+@($spec.Layout)+@($spec.Methods)){Check ($null -ne ($a.psobject.Members[$m])) "$k has $m"}
+    foreach($m in @($spec.Values)+@($spec.Layout)+@($spec.ReadOnly)+@($spec.Methods)){Check ($null -ne ($a.psobject.Members[$m])) "$k has $m"}
     foreach($e in $spec.Events){Check ($null -ne ($a.psobject.Members['Add_'+$e])) "$k has Add_$e"}
     # text round trip + sink + event once per change
     $got=@(); $sinkCalls=New-Object System.Collections.ArrayList
@@ -40,6 +40,32 @@ foreach($k in $kinds){
     $a.Enabled=$false; $a.Visible=$false
     Check ((-not $a.Enabled) -and (-not $a.Visible)) "$k Enabled/Visible"
     Check ($sinkCalls -contains 'Enabled=False') "$k sink Enabled"
+
+    # every Values member: distinct value, get returns it, sink got exactly (member, value)
+    $b2=New-FastLlmUiAdapter -Kind $k -Name "v$k"
+    if($k -ceq 'ComboBox'){[void]$b2.Items.Add('i0');[void]$b2.Items.Add('i1');[void]$b2.Items.Add('i2')}
+    $pairs=New-Object System.Collections.ArrayList
+    Set-FastLlmUiAdapterSink -Adapter $b2 -Sink { param($Property,$Value) [void]$pairs.Add(@($Property,$Value)) }
+    foreach($m in $spec.Values){
+        $cur=$b2.$m
+        if($cur -is [bool]){$v=-not $cur}elseif($m -ceq 'SelectedIndex'){$v=2}elseif($cur -is [int]){$v=42}else{$v="v-$m"}
+        $pairs.Clear(); $b2.$m=$v
+        Check ($b2.$m -eq $v) "$k $m get returns set value"
+        Check ($pairs.Count -eq 1 -and $pairs[0][0] -ceq $m -and $pairs[0][1] -eq $v) "$k $m sink received ($m,$v)"
+    }
+    # every Layout member: round trip
+    foreach($m in $spec.Layout){
+        $cur=$b2.$m
+        if($cur -is [bool]){$v=-not $cur}elseif($cur -is [int]){$v=42}else{$v="v-$m"}
+        $b2.$m=$v
+        Check ($b2.$m -eq $v) "$k $m layout round trip"
+    }
+    # every ReadOnly member: get works, set throws
+    foreach($m in $spec.ReadOnly){
+        $null=$b2.$m
+        $thrown=$false; try{$b2.$m=1}catch{$thrown=$true}
+        Check $thrown "$k $m is read-only"
+    }
 }
 
 # UseMnemonic defaults
@@ -68,7 +94,12 @@ Check ($null -eq $cb.SelectedItem -and $cb.SelectedIndex -eq -1) 'SelectedItem n
 $cb.SelectedIndex=1; $cb.SelectedIndex=1
 Check ($cb.SelectedItem -ceq 'b' -and $n -eq 1) 'SelectedItem follows SelectedIndex, event once'
 $cb.SelectedIndex=0; Check ($cb.SelectedItem -ceq 'a' -and $n -eq 2) 'SelectedItem follows again'
-$cb.SelectedIndex=9; Check ($null -eq $cb.SelectedItem) 'SelectedItem null out of range'
+Throws { $cb.SelectedIndex=-2 } 'SelectedIndex' 'SelectedIndex -2 throws'
+Throws { $cb.SelectedIndex=$cb.Items.Count } 'SelectedIndex' 'SelectedIndex Count throws'
+$ae=$null; try{$cb.SelectedIndex=2}catch{$ae=$_.Exception;while($null -ne $ae.InnerException){$ae=$ae.InnerException}}
+Check ($ae -is [System.ArgumentOutOfRangeException]) 'SelectedIndex throws ArgumentOutOfRangeException'
+Check ($cb.SelectedIndex -eq 0) 'failed set leaves the index'
+$cb.SelectedIndex=-1; Check ($cb.SelectedIndex -eq -1 -and $null -eq $cb.SelectedItem) 'SelectedIndex -1 accepted'
 
 # NumericUpDown
 $nu=New-FastLlmUiAdapter -Kind NumericUpDown -Name 'nu'
@@ -81,7 +112,8 @@ Set-FastLlmUiAdapterSink -Adapter $tb -Sink { param($Property,$Value) [void]$cal
 $tb.Add_TextChanged({ param($sender,$e) $script:n++ })
 $tb.AppendText('ab'); $tb.AppendText('cd')
 Check ($tb.Text -ceq 'abcd' -and $tb.TextLength -eq 4 -and $n -eq 2) 'AppendText concatenates and raises TextChanged'
-$tb.SelectionStart=$tb.TextLength; Check ($tb.SelectionStart -eq 4) 'SelectionStart'
+Check ($tb.SelectionStart -eq 4) 'AppendText moves SelectionStart to the end'
+$tb.SelectionStart=1; Check ($tb.SelectionStart -eq 1) 'SelectionStart settable'
 $calls.Clear(); $tb.ScrollToCaret()
 Check ($calls.Count -eq 1 -and $calls[0] -ceq 'ScrollToEnd=True') 'ScrollToCaret sends ScrollToEnd'
 Throws { $null=$tb.Items } 'Items' 'TextBox has no Items'
@@ -105,6 +137,21 @@ $ln.Add_LinkClicked({ param($sender,$e) $script:got=$e })
 Invoke-FastLlmUiAdapterEvent -Adapter $ln -Event LinkClicked
 Check ($null -ne $got) 'LinkClicked delivers args'
 Throws { $bt.Add_LinkClicked({}) } 'Add_LinkClicked' 'Button has no LinkClicked'
+
+# Click on CheckBox and LinkLabel
+foreach($k in 'CheckBox','LinkLabel'){
+    $x=New-FastLlmUiAdapter -Kind $k -Name "x$k"; $hit=$null
+    $x.Add_Click({ param($sender,$e) $script:hit=$sender.__name })
+    Invoke-FastLlmUiAdapterEvent -Adapter $x -Event Click
+    Check ($hit -ceq "x$k") "$k Click raised with sender"
+}
+
+# The unknown-member throw on get relies on the caller's StrictMode 2
+$u=New-FastLlmUiAdapter -Kind Button -Name 'u'
+$strictThrows=& { Set-StrictMode -Version 2; try{$null=$u.NoSuchMember;$false}catch{$true} }
+Check $strictThrows 'unknown get throws under StrictMode 2 in a child scope'
+$looseNull=& { Set-StrictMode -Off; $null -eq $u.NoSuchMember }
+Check $looseNull 'unknown get returns null without StrictMode (the documented dependency)'
 
 # Access text
 Check ((ConvertTo-FastLlmUiAccessText -Text 'Install && start' -UseMnemonic $true) -ceq 'Install & start') 'access: &&'
