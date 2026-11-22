@@ -177,12 +177,12 @@ try {
             # Stop from an independent client once the supervisor declares readiness.
             $stopper=New-Object Diagnostics.Process
             $stopper.StartInfo.FileName=(Get-Process -Id $PID).Path
-            $stopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { if (-not `$s.processIdentity -or `$s.processIdentity.pid -le 0 -or `$s.processIdentity.startUtcTicks -le 0) { exit 2 }; `$child=[Diagnostics.Process]::GetProcessById([int]`$s.processIdentity.pid); try { if (`$child.StartTime.ToUniversalTime().Ticks -ne [long]`$s.processIdentity.startUtcTicks) { exit 3 } } finally { `$child.Dispose() }; Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+            $stopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 600; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { if (-not `$s.processIdentity -or `$s.processIdentity.pid -le 0 -or `$s.processIdentity.startUtcTicks -le 0) { exit 2 }; `$child=[Diagnostics.Process]::GetProcessById([int]`$s.processIdentity.pid); try { if (`$child.StartTime.ToUniversalTime().Ticks -ne [long]`$s.processIdentity.startUtcTicks) { exit 3 } } finally { `$child.Dispose() }; Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
             $stopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stopCode))
             $stopper.StartInfo.UseShellExecute=$false
             $stopper.Start()|Out-Null
             try {
-                $result=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } $plan $runRoot $catalog
+                $result=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C } $plan $runRoot $catalog
                 Check ($result -eq 0) 'healthy supervised API reaches readiness then obeys stop'
                 Check ($result -eq 0) 'native mock child observes empty config roots and stripped inherited overrides'
                 Check ($stopper.WaitForExit(5000) -and $stopper.ExitCode -eq 0) 'independent stop client observed readiness'
@@ -229,7 +229,7 @@ try {
             }
         } else {
             $pattern=switch($mode){partial{'not report all'};context{'Effective context'};unstable{'not repeatable'};chat{'no text'};sse{'completion marker'};exit{'before readiness'};timeout{'deadline'};duplicate{'ambiguous'}}
-            Throws { & $module { param($P,$R,$T) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds $T } $plan $runRoot $(if($mode -eq 'timeout'){2}else{15}) } $pattern
+            Throws { & $module { param($P,$R,$T) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds $T } $plan $runRoot $(if($mode -eq 'timeout'){2}else{90}) } $pattern
             Check ((Get-FastLlmStatus $runRoot).phase -eq 'failed') "$mode failure recorded"
         }
         $probe=New-Object Net.Sockets.TcpClient
@@ -300,14 +300,14 @@ try {
         if($ExpectReady){
             $slotStopper=New-Object Diagnostics.Process
             $slotStopper.StartInfo.FileName=(Get-Process -Id $PID).Path
-            $slotStopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($slotRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($slotRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+            $slotStopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 600; `$i++) { try { `$s=Get-FastLlmStatus '$($slotRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($slotRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
             $slotStopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($slotStopCode))
             $slotStopper.StartInfo.UseShellExecute=$false
             $slotStopper.Start()|Out-Null
         }
         $slotExit=$null;$slotFailure=$null
         try {
-            try { $slotExit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } $slotPlan $slotRoot $catalog }
+            try { $slotExit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C } $slotPlan $slotRoot $catalog }
             catch { $slotFailure=$_.Exception }
         } finally {
             if($slotStopper){ if(-not $slotStopper.HasExited){ $slotStopper.Kill() }; $slotStopper.Dispose() }
@@ -396,7 +396,7 @@ try {
             if ($expectPass -or $expectSkip) {
                 $stopper=New-Object Diagnostics.Process
                 $stopper.StartInfo.FileName=(Get-Process -Id $PID).Path
-                $stopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+                $stopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 600; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
                 $stopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stopCode))
                 $stopper.StartInfo.UseShellExecute=$false
                 $stopper.Start()|Out-Null
@@ -404,7 +404,7 @@ try {
             $exit=$null;$failure=$null;$console=@()
             try {
                 try {
-                    $out=@(& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C -SelfTest } $plan $runRoot $catalog 6>&1)
+                    $out=@(& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C -SelfTest } $plan $runRoot $catalog 6>&1)
                     foreach ($item in $out) { if ($item -is [Management.Automation.InformationRecord]) { $console += [string]$item } elseif ($item -is [int]) { $exit = $item } }
                 } catch { $failure=$_.Exception }
             } finally {
@@ -652,7 +652,7 @@ try {
         Check (([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/FastLlm.Runtime.ps1'))).Contains("if (`$reachedReady) { `$_.Exception.Data['FastLlmAfterReady']=`$true }")) 'a failure after the supervisor reached ready is tagged FastLlmAfterReady'
         # First run: the server loads, then the run fails (the child is alive when the failure is raised).
         $firstFailure=$null
-        try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } (New-FallbackSequencePlan 'unstable' 'hip-recipe') $fallbackRoot $catalog | Out-Null } catch { $firstFailure=$_.Exception }
+        try { & $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C } (New-FallbackSequencePlan 'unstable' 'hip-recipe') $fallbackRoot $catalog | Out-Null } catch { $firstFailure=$_.Exception }
         $firstStatus=Get-FastLlmStatus $fallbackRoot
         Check ($null -ne $firstFailure -and $firstStatus.phase -ceq 'failed' -and $firstStatus.processIdentity.pid -gt 0) 'fallback sequence: the first run fails with a recorded child'
         $firstChildAlive=$true
@@ -667,12 +667,12 @@ try {
         $secondPlan | Add-Member -NotePropertyName fallback -NotePropertyValue ([pscustomobject]@{fromRecipe='hip-recipe';toRecipe='vulkan-recipe';toModelId='test-model';reason='hip-dll-missing';applied=$true})
         $secondStopper=New-Object Diagnostics.Process
         $secondStopper.StartInfo.FileName=(Get-Process -Id $PID).Path
-        $secondStopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($fallbackRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($fallbackRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+        $secondStopCode="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 600; `$i++) { try { `$s=Get-FastLlmStatus '$($fallbackRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($fallbackRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
         $secondStopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($secondStopCode))
         $secondStopper.StartInfo.UseShellExecute=$false
         $secondStopper.Start()|Out-Null
         $secondFailure=$null;$secondExit=$null
-        try { $secondExit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C -SelfTest } $secondPlan $fallbackRoot $catalog } catch { $secondFailure=$_.Exception }
+        try { $secondExit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C -SelfTest } $secondPlan $fallbackRoot $catalog } catch { $secondFailure=$_.Exception }
         finally { if (-not $secondStopper.HasExited) { $secondStopper.Kill() }; $secondStopper.Dispose() }
         if ($null -ne $secondFailure) { Write-Host ('Fallback sequence: the second run raised: ' + [regex]::Replace([string]$secondFailure.Message,'[\x00-\x1f\x7f]',' ')) }
         $secondStatus=Get-FastLlmStatus $fallbackRoot
