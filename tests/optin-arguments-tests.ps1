@@ -603,6 +603,24 @@ try {
         $rpLost=Invoke-RpStart $rpPlan
         Check ($rpLost.threw -and $null -eq $rpLost.captured) 'vision re-plan: a row that is gone at start is refused and nothing reaches the supervisor (never a start without the projector)'
         [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+        # One case per compared field, each changing ONLY that field, so each comparison is pinned on its own.
+        $rpEvidence=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+        $rpEvidence.addOns[0].evidence.resultId=([string]$rpEvidence.addOns[0].evidence.resultId)+'-new'
+        Write-Utf8 $rpProfiles (ConvertTo-Json -InputObject $rpEvidence -Depth 10)
+        $rpNewEvidence=Invoke-RpStart $rpPlan
+        Check ($rpNewEvidence.threw -and $rpNewEvidence.code -ceq 'vision-plan-changed' -and $null -eq $rpNewEvidence.captured) 'vision re-plan: the same vision row with new evidence (only resultId differs) is refused vision-plan-changed'
+        [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+        $rpComponent=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+        $rpComponent.addOns[0].componentId=([string]$rpComponent.addOns[0].componentId)+'-other'
+        Write-Utf8 $rpProfiles (ConvertTo-Json -InputObject $rpComponent -Depth 10)
+        $rpOtherComponent=Invoke-RpStart $rpPlan
+        Check ($rpOtherComponent.threw -and $rpOtherComponent.code -ceq 'vision-plan-changed' -and $null -eq $rpOtherComponent.captured) 'vision re-plan: the same vision row naming another projector component (only componentId differs) is refused vision-plan-changed'
+        [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+        # The profile id comes from the forwarded context profile, not the row, so only the incoming plan's block can differ in it.
+        $rpOtherProfile=$rpPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $rpOtherProfile.vision.profileId='default'
+        $rpProfileRun=Invoke-RpStart $rpOtherProfile
+        Check ($rpProfileRun.threw -and $rpProfileRun.code -ceq 'vision-plan-changed' -and $null -eq $rpProfileRun.captured) 'vision re-plan: a vision block whose profile id differs from the re-derived one (only profileId differs) is refused vision-plan-changed'
         # A plan without vision makes the call it always made: no vision block, --no-mmproj kept.
         $rpDefault=Get-FastLlmPlan @rpCommon
         $rpDefaultRun=Invoke-RpStart $rpDefault
