@@ -322,10 +322,22 @@ try{
     [System.Windows.Threading.Dispatcher]::Run()
 }finally{
     Stop-HostLoop
-    foreach($o in @($script:objs)){try{$o.Dispose()}catch{}}
-    foreach($o in @($script:cf,$script:hf,$script:tray)){if($null -ne $o){try{$o.Dispose()}catch{}}}
-    if($null -ne $script:w2){try{$script:st5.through=$true;$script:w2.Close()}catch{}}
 }
+
+# Cleanup runs AFTER the evidence is printed and every Check has run; it can only warn, never change the result.
+function Invoke-HostCleanup{
+    try{
+        for($i=0;$i -lt $script:objs.Count;$i++){
+            try{$script:objs[$i].Dispose()}catch{Write-Host "WARN: cleanup: $($_.Exception.Message)"}
+        }
+        foreach($name in 'cf','hf','tray'){
+            try{$o=Get-Variable -Name $name -Scope Script -ValueOnly;if($null -ne $o){$o.Dispose()}}catch{Write-Host "WARN: cleanup: $($_.Exception.Message)"}
+        }
+        try{if($null -ne $script:w2){$script:st5.through=$true;$script:w2.Close()}}catch{Write-Host "WARN: cleanup: $($_.Exception.Message)"}
+    }catch{Write-Host "WARN: cleanup: $($_.Exception.Message)"}
+}
+
+try{
 
 # Evaluation happens here, after the dispatcher has ended, so a throwing Check can never strand the loop.
 function Add-Info([string]$Text){$info.Add("INFO: host $Text")}
@@ -378,4 +390,5 @@ Check $script:res.h6.unknownSet 'writing an unknown adapter member throws'
 Check $script:res.h6.unknownGet 'reading an unknown adapter member throws under StrictMode 2'
 
 Write-Host "UI fluent host tests passed: $checks"
+}finally{Invoke-HostCleanup}
 exit 0
