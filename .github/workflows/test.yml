@@ -414,6 +414,29 @@ jobs:
           path: ${{ runner.temp }}\fastllm-settings-dialog\*.png
           if-no-files-found: error
           retention-days: 14
+      # Off-screen WPF render and accessibility checks of the Fluent window pages (never shown); PNGs are uploaded for a person to look at.
+      - name: Fluent render tests in Windows PowerShell 5.1 (off-screen)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: powershell
+        env:
+          FASTLLM_RENDER_DIR: ${{ runner.temp }}\fastllm-fluent-render\ps51
+        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-render-tests.ps1
+      - name: Fluent render tests in PowerShell 7 (off-screen)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          FASTLLM_RENDER_DIR: ${{ runner.temp }}\fastllm-fluent-render\ps7
+        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-render-tests.ps1
+      - name: Upload the Fluent renders
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fluent-render
+          path: ${{ runner.temp }}\fastllm-fluent-render\**\*.png
+          if-no-files-found: error
+          retention-days: 14
       # These mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
       #   runner creates belong to Administrators.

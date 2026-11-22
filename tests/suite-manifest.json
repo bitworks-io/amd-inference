@@ -442,6 +442,11 @@
       "reason": "The Fluent theme tokens, WCAG contrast pairs, type ramp, accent fallback and backdrop choice; pure, no registry, WPF, GPU or bench."
     },
     {
+      "suite": "ui-render-tests",
+      "class": "ci",
+      "reason": "Renders sample and negative Fluent pages off-screen on a real STA thread (40-case theme, scale and text-size matrix), asserts layout and accessibility checks and saves PNGs for the run's artifact; Windows only, skips elsewhere; no network, model, GPU or admin; wired in test.yml."
+    },
+    {
       "suite": "ui-window-tests",
       "class": "ci",
       "reason": "The Fluent window interop and WPF theme dictionary on a real STA thread; Windows only, no GPU or bench, runs in test.yml."
