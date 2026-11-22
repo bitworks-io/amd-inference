@@ -37,6 +37,35 @@ Check ((Remove-UiAccessKey 'a__b_c') -ceq 'a_bc') 'a doubled underscore, then th
 Check ((Remove-UiAccessKey 'x_') -ceq 'x_') 'a trailing lone underscore is literal'
 $hcPal=Get-UiRenderHighContrastPalette
 Check (@($hcPal.Values|Sort-Object -Unique).Count -eq 4) 'the high-contrast palette has four distinct colours'
+# The x:Name values of a markup string that live in the page's own namescope: elements inside a ControlTemplate, DataTemplate, ItemsPanelTemplate,
+# HierarchicalDataTemplate or Style (their Setters included) have a namescope of their own, which the page's FindName cannot reach.
+function Get-UiPageElementNames([string]$Xaml){
+    $xamlNs='http://schemas.microsoft.com/winfx/2006/xaml'
+    $skip=@('ControlTemplate','DataTemplate','ItemsPanelTemplate','HierarchicalDataTemplate','Style')
+    $doc=New-Object System.Xml.XmlDocument
+    $doc.LoadXml($Xaml)
+    $names=New-Object System.Collections.ArrayList
+    $walk=$null
+    $walk={
+        param($node)
+        if($node.NodeType -ne [System.Xml.XmlNodeType]::Element){return}
+        $local=[string]$node.LocalName
+        if($skip -contains $local){return}
+        $nm=$node.GetAttribute('Name',$xamlNs)
+        if(-not [string]::IsNullOrEmpty($nm)){[void]$names.Add([string]$nm)}
+        foreach($c in $node.ChildNodes){& $walk $c}
+    }
+    & $walk $doc.DocumentElement
+    return ,@($names.ToArray())
+}
+# Pure check on any OS, from the shell file's own markup text: the page names are found and the template part names are not.
+$shellText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
+$shellMatch=[regex]::Match($shellText,"(?s)\`$script:FastLlmUiXaml\['FastLlm\.Shell'\]\s*=\s*@'\r?\n(.*?)\r?\n'@")
+Check $shellMatch.Success 'the shell markup was found in the shell file'
+$pageNames=Get-UiPageElementNames $shellMatch.Groups[1].Value
+Check (($pageNames -contains 'PaneColumn') -and ($pageNames -contains 'NavList') -and ($pageNames -contains 'MessageScroll')) "the page names include PaneColumn, NavList and MessageScroll (got $($pageNames -join ', '))"
+$partHits=@('Bd','Hd','Arrow','Body','Bar')|Where-Object{$pageNames -contains $_}
+Check (@($partHits).Count -eq 0) "the page names hold no template part name (found: $(@($partHits) -join ', '))"
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -345,8 +374,7 @@ function New-ShellRenderPage($Case){
     $els=@{}
     # Every x:Name in the registered shell markup, resolved through the XAML namescope (FindName), so ColumnDefinitions and other non-visuals resolve too.
     $missing=@()
-    foreach($m in [regex]::Matches([string]$script:FastLlmUiXaml['FastLlm.Shell'],'x:Name="([^"]+)"')){
-        $n=[string]$m.Groups[1].Value
+    foreach($n in (Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Shell']))){
         $found=$sw.FindName($n)
         if($null -eq $found){$missing+=$n}else{$els[$n]=$found}
     }
