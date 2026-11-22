@@ -447,6 +447,11 @@
       "reason": "The status card state precedence and the honest-colour rule over the control-state matrix; pure, no GPU or bench."
     },
     {
+      "suite": "ui-fluent-adapter-tests",
+      "class": "ci",
+      "reason": "The pure control adapters that stand in for the WinForms controls in the Fluent window: set and get, sink, change events, unknown-member throws, access text; no WPF, GPU or bench."
+    },
+    {
       "suite": "ui-control-states-tests",
       "class": "ci",
       "reason": "Characterization of the window's enable rules against a golden table; pure, no GPU or bench."

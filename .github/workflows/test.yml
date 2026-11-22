@@ -368,6 +368,7 @@ jobs:
           .\tests\ui-flow-tests.ps1
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
+          .\tests\ui-fluent-adapter-tests.ps1
           .\tests\ui-theme-tests.ps1
           .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
@@ -395,6 +396,7 @@ jobs:
           .\tests\ui-flow-tests.ps1
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
+          .\tests\ui-fluent-adapter-tests.ps1
           .\tests\ui-theme-tests.ps1
           .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
