@@ -1,0 +1,75 @@
+{
+  "schema": "bitworks.fastllm-components/v1",
+  "components": [
+    {
+      "id": "test-vision-projector-q8",
+      "kind": "projector",
+      "displayName": "Test vision projector (fixture, not a real projector)",
+      "version": "test-1",
+      "source": {
+        "url": "https://example.invalid/test-vision-projector-q8.zip",
+        "allowedRedirectHosts": [
+          "example.invalid"
+        ],
+        "sha256": "a03c26e5c8ebb40d7231cbb00a6066175b885f2e443e59707e4f864eb292acdb",
+        "sizeBytes": 4096,
+        "format": "zip",
+        "fileManifest": [
+          {
+            "path": "test-vision-projector-q8.gguf",
+            "sizeBytes": 192,
+            "sha256": "9bef19112832db1f768603878ba1001315d1339c2b4e92009ca79f5fb5d82e54"
+          }
+        ]
+      },
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://example.invalid/license",
+        "consent": "accept"
+      },
+      "platform": {
+        "os": "windows",
+        "arch": "x64",
+        "backend": "vulkan"
+      },
+      "entryPoint": "test-vision-projector-q8.gguf",
+      "requires": [],
+      "signer": null
+    },
+    {
+      "id": "test-mtp-draft",
+      "kind": "draft",
+      "displayName": "Test MTP draft file (fixture, not a real draft)",
+      "version": "test-1",
+      "source": {
+        "url": "https://example.invalid/test-mtp-draft.zip",
+        "allowedRedirectHosts": [
+          "example.invalid"
+        ],
+        "sha256": "b13c26e5c8ebb40d7231cbb00a6066175b885f2e443e59707e4f864eb292acdb",
+        "sizeBytes": 4096,
+        "format": "zip",
+        "fileManifest": [
+          {
+            "path": "test-mtp-draft.gguf",
+            "sizeBytes": 192,
+            "sha256": "dca0c6191db53f4e3efdd1ba0d8871d2d0dac59966e725e645c6517fe9fd2d1c"
+          }
+        ]
+      },
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://example.invalid/license",
+        "consent": "accept"
+      },
+      "platform": {
+        "os": "windows",
+        "arch": "x64",
+        "backend": "vulkan"
+      },
+      "entryPoint": "test-mtp-draft.gguf",
+      "requires": [],
+      "signer": null
+    }
+  ]
+}

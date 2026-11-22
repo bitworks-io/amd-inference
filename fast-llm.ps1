@@ -154,6 +154,12 @@ param(
     [ValidateSet('off', 'on')]
     [string] $Vision,
 
+    # plan and start only: off (the default) leaves everything as it is (--spec-type none stays); ngram or mtp asks for the speculation option, which needs
+    # a measured setup (mtp also an approved draft file). This release lists none, so a start with it is refused (typed, before anything starts). Never
+    # saved as a setting; the window, the start at sign-in and every measurement tool never ask for it. -Sp binds this parameter.
+    [ValidateSet('off', 'ngram', 'mtp')]
+    [string] $Speculation,
+
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
 
@@ -413,6 +419,10 @@ if ($PSBoundParameters.ContainsKey('KvSlots')) { $null = ConvertTo-FastLlmSlots 
 if ($PSBoundParameters.ContainsKey('Vision') -and $effectiveAction -notin @('plan', 'start')) { throw '-Vision is supported only by plan and start.' }
 $requestedVision = $null
 if ($PSBoundParameters.ContainsKey('Vision')) { $requestedVision = $Vision.ToLowerInvariant() }
+# The speculation option: plan and start only, and never saved. The value is lower-cased into its own variable.
+if ($PSBoundParameters.ContainsKey('Speculation') -and $effectiveAction -notin @('plan', 'start')) { throw '-Speculation is supported only by plan and start.' }
+$requestedSpeculation = $null
+if ($PSBoundParameters.ContainsKey('Speculation')) { $requestedSpeculation = $Speculation.ToLowerInvariant() }
 # The embedding sidecar: start and settings only. The value is lower-cased into its own variable (the parameters are never assigned to).
 if (($PSBoundParameters.ContainsKey('Embeddings') -or $PSBoundParameters.ContainsKey('EmbeddingPort')) -and $effectiveAction -notin @('start', 'settings')) { throw '-Embeddings and -EmbeddingPort are supported only by start and settings.' }
 $requestedEmbeddings = $null
@@ -458,6 +468,12 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
         $selectionOptions.Vision = 'on'
         if (-not $selectionOptions.ContainsKey('KvProfilesPath')) { $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json' }
     }
+    # Speculation reaches the planner only when it is on, with the profile rows file its add-on rows are read from (nothing saved, so -IgnoreUserSettings
+    # and the background starts are unaffected).
+    if ($PSBoundParameters.ContainsKey('Speculation') -and $requestedSpeculation -cne 'off') {
+        $selectionOptions.Speculation = $requestedSpeculation
+        if (-not $selectionOptions.ContainsKey('KvProfilesPath')) { $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json' }
+    }
     # The idle stop never reaches the planner: it changes no server argument. It is handed to the start only.
     $effectiveIdleStopMinutes = [int] $servingOptions.idleStopMinutes
     # The API key never reaches the planner either, and no plan or dry run mentions it. A live start gets the flag from the saved setting
@@ -499,6 +515,11 @@ function Write-FastLlmPlan {
     else { Write-Host "Context:   $($Plan.model.contextSize) tokens" }
     if ($Plan.PSObject.Properties['vision'] -and $Plan.vision) {
         Write-Host "Vision:    on (projector $($Plan.vision.componentId), $($Plan.vision.extraFreeVramMiB) MiB more free memory, $($Plan.vision.requiredFreeVramMiB) MiB in total). A start with vision is refused in this release ($($Plan.vision.startRefusal)): FastLLM cannot verify yet where the projector is loaded. Nothing would start."
+    }
+    if ($Plan.PSObject.Properties['speculation'] -and $Plan.speculation) {
+        $speculationNote = 'a start is not refused for the speculation option itself'
+        if ([string] $Plan.speculation.mode -ceq 'mtp') { $speculationNote = "a start with a draft file is refused in this release ($($Plan.speculation.startRefusal)): FastLLM cannot verify yet where the draft model is loaded. Nothing would start" }
+        Write-Host "Speculation: $($Plan.speculation.mode) ($($Plan.speculation.specType); $($Plan.speculation.extraFreeVramMiB) MiB more free memory, $($Plan.speculation.requiredFreeVramMiB) MiB in total). $speculationNote."
     }
     Write-Host "GPU plan:  $(@($Plan.selectedAdapters).Count) device(s); split mode $($Plan.splitMode)"
     Write-Host 'Placement: requested all GPU layers; startup must pass API and reported-layer checks (physical residency remains unqualified)'
@@ -1035,6 +1056,8 @@ try {
                 }
                 # Vision, refused here before anything is provisioned or started: a plan with a vision block never starts (the start refuses it again).
                 if ($plan.PSObject.Properties['vision'] -and $plan.vision) { Assert-FastLlmVisionStartable -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot }
+                # Speculation, the same: a plan with a speculation block must pass the start check here, before anything is provisioned or started.
+                if ($plan.PSObject.Properties['speculation'] -and $plan.speculation) { Assert-FastLlmSpeculationStartable -Plan $plan -CatalogPath $catalogPath -InstallRoot $InstallRoot }
                 Write-FastLlmPlan -Plan $plan -Started
                 if ($VulkanBarMitigation -in @('on', 'off') -and $plan.PSObject.Properties['backend'] -and [string] $plan.backend -ieq 'hip') {
                     Write-Host 'Resizable BAR mitigation is a Vulkan setting and does not apply to the HIP engine.'

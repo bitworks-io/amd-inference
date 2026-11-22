@@ -31,16 +31,22 @@ Shape:
     "dimension": int 1..65536       # the length of one embedding vector; the start check compares it
     "evidence": { "resultId": str, "measuredAt": "YYYY-MM-DDTHH:MM:SSZ", "gpuClasses": [str, ...] }
   }
-  AddOn = {                         # the measured extra memory of the vision option: a projector file beside the text model (--mmproj)
-    "kind": "vision"                # the only accepted kind; "mtp" and "ngram" rows are refused for now
+  AddOn = {                         # the measured extra memory of an opt-in option: kind vision (a projector file beside the text model, --mmproj),
+                                    # kind ngram (speculative decoding from the context, no extra file) or kind mtp (speculation with a separate draft file)
+    "kind": "vision"|"ngram"|"mtp"
     "modelId": str                  # a config/catalog.json model id
     "modelSha256": 64 lowercase hex # equals that catalog model's sha256
     "engineId": str                 # the built-in engine id or a listed llama.cpp engine component (the planner uses the built-in engine only)
     "backend": "vulkan"|"hip"       # equals the backend of that engine
-    "componentId": str              # a config/components.json component of kind "projector"
-    "extraFreeVramMiB": { "default"|"long": int > 0, ... }   # a non-empty object: the free memory the projector adds to that profile's requirement
+    "componentId": str              # vision: a config/components.json component of kind "projector"; mtp: one of kind "draft"; ngram: no such key
+    "specType": str                 # ngram and mtp: the exact --spec-type value, from the closed allowlist of that engine id (SPECULATION_ALLOWLIST)
+    "extraArguments": [str, ...]    # ngram and mtp: appended to the server arguments in this order; every flag from the engine's allowlist, each with at most one value
+    "extraFreeVramMiB": { "default"|"long": int > 0, ... }   # a non-empty object: the free memory the add-on adds to that profile's requirement
+                                    # (vision and mtp: > 0; ngram: >= 0)
     "evidence": { "resultId": str, "measuredAt": "YYYY-MM-DDTHH:MM:SSZ", "gpuClasses": [str, ...] }
   }
+  A vision row has the keys kind, modelId, modelSha256, engineId, backend, componentId, extraFreeVramMiB, evidence. An ngram row has no componentId and
+  adds specType and extraArguments. An mtp row has componentId (a draft component), specType and extraArguments.
 One row per (modelSha256, engineId, backend, id), one sidecar row per (role, componentSha256, engineId, backend), and one add-on row per
 (kind, modelSha256, engineId, backend). The planner adds the extra memory of the effective profile id to that profile's requirement; with no
 value for the profile (a default-context plan has no profile id) the option is refused. Nothing is derived from a formula or a file size.
@@ -66,8 +72,36 @@ EVIDENCE_KEYS = {"resultId", "measuredAt", "gpuClasses"}
 PROFILE_IDS = ("default", "long")
 CACHE_TYPES = ("f16", "q8_0")
 SLOT_SETS = ([1], [2], [1, 2])
-ADD_ON_KEYS = {"kind", "modelId", "modelSha256", "engineId", "backend", "componentId", "extraFreeVramMiB", "evidence"}
-ADD_ON_KIND = "vision"
+ADD_ON_SHARED_KEYS = {"kind", "modelId", "modelSha256", "engineId", "backend", "extraFreeVramMiB", "evidence"}
+ADD_ON_KEYS_BY_KIND = {
+    "vision": ADD_ON_SHARED_KEYS | {"componentId"},
+    "ngram": ADD_ON_SHARED_KEYS | {"specType", "extraArguments"},
+    "mtp": ADD_ON_SHARED_KEYS | {"componentId", "specType", "extraArguments"},
+}
+ADD_ON_KINDS = ("vision", "ngram", "mtp")
+EXTRA_ARGUMENT_VALUE_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._:,]{0,31}")
+# The closed per-engine allowlist of the speculation rows: for each pinned engine id, the --spec-type values a row of each kind may use, the extra
+# argument NAMES (flags; a value follows its flag) a row may append, and the flag the planner itself uses for the draft file of an mtp row. A row
+# outside it is refused here and by the PowerShell loader (src/FastLlm.Speculation.ps1 holds the same table). Flag names differ between pins
+# (--spec-draft-sampling and --spec-draft-n-ubatch exist from b11658; the old --draft* names are gone), so one list is never shared across engines.
+# tests/test_serving_profiles.py proves every name is in the engine-surface fixture of the engine's tag. A pinned engine with no fixture would get an
+# empty entry.
+_NGRAM_FLAGS = ["--spec-ngram-size-n", "--spec-ngram-size-m", "--spec-ngram-min-hits",
+                "--spec-ngram-simple-size-n", "--spec-ngram-simple-size-m", "--spec-ngram-simple-min-hits",
+                "--spec-ngram-map-k-size-n", "--spec-ngram-map-k-size-m", "--spec-ngram-map-k-min-hits",
+                "--spec-ngram-map-k4v-size-n", "--spec-ngram-map-k4v-size-m", "--spec-ngram-map-k4v-min-hits",
+                "--spec-ngram-mod-n-match", "--spec-ngram-mod-n-max", "--spec-ngram-mod-n-min"]
+_DRAFT_FLAGS = ["--spec-draft-n-max", "--spec-draft-n-min", "--spec-draft-p-min"]
+_SPEC_TYPES = {"ngram": ["ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"], "mtp": ["draft-mtp"]}
+_B10698 = {"specTypes": _SPEC_TYPES, "flags": _NGRAM_FLAGS + _DRAFT_FLAGS, "draftModelFlag": "--spec-draft-model"}
+_B11658 = {"specTypes": _SPEC_TYPES, "flags": _NGRAM_FLAGS + _DRAFT_FLAGS + ["--spec-draft-n-ubatch", "--spec-draft-sampling"],
+           "draftModelFlag": "--spec-draft-model"}
+SPECULATION_ALLOWLIST = {
+    "llama.cpp-b10698-vulkan": _B10698,
+    "llama.cpp-hip-b11658": _B11658,
+    "llama.cpp-hip-b11658-gfx1201": _B11658,
+    "llama.cpp-hip-b11658-gfx1200": _B11658,
+}
 SIDECAR_KEYS = {"role", "componentId", "componentSha256", "engineId", "backend", "placement", "contextSize", "pooling", "dimension", "evidence"}
 SIDECAR_POOLINGS = ("mean", "cls", "last")
 SIDECAR_MAX_CONTEXT = 1048576
@@ -278,29 +312,81 @@ def projector_ids(components):
     return ids
 
 
-def check_add_on(where, row, models, engines, projectors, errors):
+def draft_ids(components):
+    """The ids of the listed components of kind draft."""
+    ids = set()
+    listed = components.get("components", []) if isinstance(components, dict) else []
+    for component in listed if isinstance(listed, list) else []:
+        if isinstance(component, dict) and component.get("kind") == "draft" and is_str(component.get("id")):
+            ids.add(component["id"])
+    return ids
+
+
+def check_extra_arguments(where, row, allowed_flags, errors):
+    """extraArguments: a list of strings: flags from the engine's allowlist, each with at most one plain value, no flag twice."""
+    arguments = row["extraArguments"]
+    if not isinstance(arguments, list) or not all(isinstance(a, str) for a in arguments):
+        errors.append(f"{where}: extraArguments must be a list of strings")
+        return
+    seen = set()
+    previous_was_flag = False
+    for index, argument in enumerate(arguments):
+        if argument.startswith("--"):
+            if argument not in allowed_flags:
+                errors.append(f"{where}: extraArguments flag {argument!r} is not allowed for engine {row['engineId']!r}")
+            if argument in seen:
+                errors.append(f"{where}: extraArguments names {argument!r} twice")
+            seen.add(argument)
+            previous_was_flag = True
+            continue
+        if index == 0:
+            errors.append(f"{where}: extraArguments must start with a flag")
+        elif not previous_was_flag:
+            errors.append(f"{where}: extraArguments gives a flag more than one value")
+        if not EXTRA_ARGUMENT_VALUE_RE.fullmatch(argument):
+            errors.append(f"{where}: extraArguments value {argument!r} is not a short plain value")
+        previous_was_flag = False
+
+
+def check_add_on(where, row, models, engines, projectors, errors, drafts=None):
     """Validates one add-on row; returns its uniqueness key, or None when the row has no usable key."""
-    if not check_keys(where, row, ADD_ON_KEYS, errors):
+    if not isinstance(row, dict):
+        errors.append(f"{where}: must be an object")
         return None
-    kind = row["kind"]
-    if not isinstance(kind, str) or kind != ADD_ON_KIND:
-        errors.append(f"{where}: kind must be 'vision' (other kinds, such as 'mtp' and 'ngram', are not accepted yet)")
-        kind = None
+    kind = row.get("kind")
+    if not isinstance(kind, str) or kind not in ADD_ON_KINDS:
+        errors.append(f"{where}: kind must be 'vision', 'ngram' or 'mtp'")
+        if "kind" not in row:
+            errors.append(f"{where}: missing keys ['kind']")
+        return None
+    if not check_keys(where, row, ADD_ON_KEYS_BY_KIND[kind], errors):
+        return None
     sha_ok, _model = check_model_and_engine(where, row, models, engines, errors)
-    component_id = row["componentId"]
-    if not isinstance(component_id, str) or component_id not in projectors:
+    component_id = row.get("componentId")
+    if kind == "vision" and (not isinstance(component_id, str) or component_id not in projectors):
         errors.append(f"{where}: componentId {component_id!r} is not a listed projector component")
+    if kind == "mtp" and (not isinstance(component_id, str) or component_id not in (drafts or set())):
+        errors.append(f"{where}: componentId {component_id!r} is not a listed draft component")
+    if kind in ("ngram", "mtp"):
+        entry = SPECULATION_ALLOWLIST.get(row["engineId"]) if isinstance(row["engineId"], str) else None
+        spec_types = entry["specTypes"][kind] if entry else []
+        flags = entry["flags"] if entry else []
+        if not isinstance(row["specType"], str) or row["specType"] not in spec_types:
+            errors.append(f"{where}: specType {row['specType']!r} is not allowed for a {kind} row on engine {row['engineId']!r}")
+        check_extra_arguments(where, row, flags, errors)
     extra = row["extraFreeVramMiB"]
+    minimum = 0 if kind == "ngram" else 1
     if not isinstance(extra, dict) or not extra:
         errors.append(f"{where}: extraFreeVramMiB must be a non-empty object of profile id to MiB")
     else:
         for profile_id, mib in extra.items():
             if profile_id not in PROFILE_IDS:
                 errors.append(f"{where}: extraFreeVramMiB has the unknown profile id {profile_id!r}")
-            if not is_int(mib) or mib <= 0:
-                errors.append(f"{where}: extraFreeVramMiB[{profile_id!r}] must be a positive whole number of MiB")
+            if not is_int(mib) or mib < minimum:
+                words = "a positive whole number of MiB" if minimum else "a whole number of MiB (0 or more)"
+                errors.append(f"{where}: extraFreeVramMiB[{profile_id!r}] must be {words}")
     check_evidence(where, row["evidence"], errors)
-    if kind is not None and sha_ok and isinstance(row["engineId"], str) and isinstance(row["backend"], str):
+    if sha_ok and isinstance(row["engineId"], str) and isinstance(row["backend"], str):
         return (kind, row["modelSha256"], row["engineId"], row["backend"])
     return None
 
@@ -319,10 +405,11 @@ def validate(document, catalog, components):
     models = catalog_models(catalog)
     engines = known_engines(catalog, components)
     projectors = projector_ids(components)
+    drafts = draft_ids(components)
     seen_add_ons = set()
     for index, row in enumerate(add_ons):
         where = f"addOns[{index}]"
-        key = check_add_on(where, row, models, engines, projectors, errors)
+        key = check_add_on(where, row, models, engines, projectors, errors, drafts)
         if key is None:
             continue
         if key in seen_add_ons:

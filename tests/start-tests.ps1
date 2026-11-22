@@ -355,6 +355,24 @@ try {
         $visionBad=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Vision','maybe','-InstallRoot',$profileRoot)
         Check ($visionBad.exit -ne 0) 'vision-cli: -Vision maybe is refused (a closed set)'
         Check (-not (Test-Path -LiteralPath (Join-Path $profileRoot 'settings.json') -PathType Leaf) -or -not ((Get-Content -LiteralPath (Join-Path $profileRoot 'settings.json') -Raw) -match 'vision')) 'vision-cli: nothing about vision is ever written to settings.json'
+        # The speculation option (-Speculation off|ngram|mtp): plan and start only, never saved, default off. Nothing here ships a measured row.
+        $specOff=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-AsJson','-Speculation','off','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+        Check ($specOff.exit -eq 0 -and $specOff.text -ceq $visionNone.text -and -not (($specOff.text | ConvertFrom-Json).PSObject.Properties.Name -contains 'speculation') -and (($specOff.text | ConvertFrom-Json).serverArguments -join ' ').Contains('--spec-type none')) 'speculation-cli: plan -Speculation off is byte-identical to a plan without it and keeps --spec-type none'
+        foreach($specMode in @('ngram','mtp')){
+            $specOn=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Speculation',$specMode,'-KvContextProfile','long','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+            Check ($specOn.exit -ne 0 -and $specOn.text -like '*speculation-not-measured*' -and $specOn.text -like '*Nothing was started*') "speculation-cli: plan -Speculation $specMode is refused with speculation-not-measured (no measured row ships)"
+        }
+        $specPrefix=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Sp','ngram','-InstallRoot',$profileRoot,'-IgnoreUserSettings')
+        Check ($specPrefix.exit -ne 0 -and $specPrefix.text -like '*speculation-not-measured*') 'speculation-cli: -Sp binds -Speculation'
+        foreach($specAction in @('status','settings','install','stop')){
+            $specWrong=Invoke-StartTestCli @($specAction,'-Speculation','ngram','-InstallRoot',$profileRoot)
+            Check ($specWrong.exit -ne 0 -and $specWrong.text -like '*-Speculation is supported only by plan and start*') "speculation-cli: $specAction -Speculation is refused: there is no saved speculation setting"
+        }
+        $specBad=Invoke-StartTestCli @('plan','-HardwareFile',$fixture,'-Speculation','draft-simple','-InstallRoot',$profileRoot)
+        Check ($specBad.exit -ne 0) 'speculation-cli: -Speculation draft-simple is refused (a closed set: off|ngram|mtp)'
+        Check (-not (Test-Path -LiteralPath (Join-Path $profileRoot 'settings.json') -PathType Leaf) -or -not ((Get-Content -LiteralPath (Join-Path $profileRoot 'settings.json') -Raw) -match 'peculation')) 'speculation-cli: nothing about speculation is ever written to settings.json'
+        $specSource=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
+        Check ($specSource.Contains("-IgnoreUserSettings") -and -not [regex]::IsMatch($specSource,'(?i)resolvedServing\.speculation|servingOptions\.speculation|\$settings\.speculation')) 'speculation-cli: no saved or resolved setting feeds the option, so -IgnoreUserSettings and the background starts keep none'
     }
     # M11: a malformed settings.json is said out loud by a live start, and only there. The decision is a pure function, tested in-process;
     # a real 'start' child is never run by a mock suite (it would take the lock, write status and probe hardware).

@@ -15,6 +15,13 @@
 
 $script:FastLlmVisionAddOnKind = 'vision'
 $script:FastLlmVisionAddOnKeys = @('kind', 'modelId', 'modelSha256', 'engineId', 'backend', 'componentId', 'extraFreeVramMiB', 'evidence')
+# The add-on kinds and their closed key sets (the vision rows are the ones above; the speculation rows are described in FastLlm.Speculation.ps1).
+$script:FastLlmAddOnKinds = @('vision', 'ngram', 'mtp')
+$script:FastLlmAddOnKeysByKind = @{
+    vision = @('kind', 'modelId', 'modelSha256', 'engineId', 'backend', 'componentId', 'extraFreeVramMiB', 'evidence')
+    ngram  = @('kind', 'modelId', 'modelSha256', 'engineId', 'backend', 'specType', 'extraArguments', 'extraFreeVramMiB', 'evidence')
+    mtp    = @('kind', 'modelId', 'modelSha256', 'engineId', 'backend', 'componentId', 'specType', 'extraArguments', 'extraFreeVramMiB', 'evidence')
+}
 $script:FastLlmVisionEvidenceKeys = @('resultId', 'measuredAt', 'gpuClasses')
 $script:FastLlmVisionBackends = @('vulkan', 'hip')
 $script:FastLlmVisionProjectorPlaceholder = '<verified-projector>'
@@ -22,7 +29,7 @@ $script:FastLlmVisionNoMmproj = '--no-mmproj'
 
 function New-FastLlmVisionAddOnsInvalid {
     param([Parameter(Mandatory = $true)][string] $Detail)
-    return (New-FastLlmServingProfilesFailure -Detail ('The serving profiles file has a vision add-on row that is not valid (' + $Detail + '), so vision cannot be used. Nothing was started.'))
+    return (New-FastLlmServingProfilesFailure -Detail ('The serving profiles file has an add-on row that is not valid (' + $Detail + '), so vision and speculation cannot be used. Nothing was started.'))
 }
 
 # True for a closed key set: every expected key is there (exact case) and nothing else is.
@@ -35,46 +42,58 @@ function Test-FastLlmVisionClosedKeys {
     return $true
 }
 
-# The add-on rows of the serving profiles file, validated with the rules of the checker (closed keys, kind vision only, whole positive MiB per
-# known profile id, evidence, no duplicate key). No path, or a path with no file, is no rows (every vision plan is then refused as not measured).
-# A file that cannot be read, has another schema, or has a row the checker would refuse is a typed failure: vision is never honoured, and never
-# silently dropped, from a file that cannot be trusted. The list is returned as a list (a one-row file is still a list).
-function Read-FastLlmVisionAddOns {
+# The add-on rows of the serving profiles file, validated with the rules of the checker (closed keys per kind, kinds vision, ngram and mtp, whole MiB
+# per known profile id (positive; ngram may add 0), a speculation row's spec type and extra arguments from the engine's allowlist, evidence, no
+# duplicate key). No path, or a path with no file, is no rows (every plan asking for an add-on is then refused as not measured). A file that cannot be
+# read, has another schema, or has a row the checker would refuse is a typed failure: an add-on is never honoured, and never silently dropped, from a
+# file that cannot be trusted. The list is returned as a list (a one-row file is still a list).
+function Read-FastLlmAddOnRows {
     param([string] $Path)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
     $document = $null
     try { $document = Read-FastLlmJson -Path $Path -MaxBytes $script:FastLlmServingProfilesMaxBytes }
-    catch { throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file could not be read as JSON, so vision cannot be used.') }
+    catch { throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file could not be read as JSON, so vision and speculation cannot be used.') }
     $schema = Get-FastLlmServingProfileValue -Row $document -Name 'schema'
     $rowsProperty = $null
     if ($document -is [pscustomobject]) { $rowsProperty = $document.PSObject.Properties['addOns'] }
     if (-not ($schema -is [string]) -or $schema -cne $script:FastLlmServingProfilesSchema -or $null -eq $rowsProperty -or -not ($rowsProperty.Value -is [array])) {
-        throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file has an unexpected schema, so vision cannot be used.')
+        throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file has an unexpected schema, so vision and speculation cannot be used.')
     }
     $rawText = ''
-    try { $rawText = [System.IO.File]::ReadAllText($Path) } catch { throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file could not be read as JSON, so vision cannot be used.') }
+    try { $rawText = [System.IO.File]::ReadAllText($Path) } catch { throw (New-FastLlmServingProfilesFailure -Detail 'The serving profiles file could not be read as JSON, so vision and speculation cannot be used.') }
     $isWhole = { param($Value) return [bool] ($Value -is [int] -or $Value -is [long]) }
     $rows = New-Object 'System.Collections.Generic.List[object]'
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
     foreach ($row in @($rowsProperty.Value)) {
-        if (-not (Test-FastLlmVisionClosedKeys -Row $row -Expected $script:FastLlmVisionAddOnKeys)) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'a row is not an object with exactly the add-on keys') }
-        $kind = $row.kind
-        if (-not ($kind -is [string]) -or $kind -cne $script:FastLlmVisionAddOnKind) { throw (New-FastLlmVisionAddOnsInvalid -Detail "kind must be 'vision'; other kinds are not accepted yet") }
+        if ($row -isnot [pscustomobject]) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'a row is not an object with exactly the add-on keys') }
+        $kindProperty = $row.PSObject.Properties['kind']
+        $kind = $null
+        if ($null -ne $kindProperty) { $kind = $kindProperty.Value }
+        if (-not ($kind -is [string]) -or $script:FastLlmAddOnKinds -cnotcontains $kind) { throw (New-FastLlmVisionAddOnsInvalid -Detail "kind must be 'vision', 'ngram' or 'mtp'") }
+        if (-not (Test-FastLlmVisionClosedKeys -Row $row -Expected @($script:FastLlmAddOnKeysByKind[$kind]))) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'a row is not an object with exactly the add-on keys') }
         $sha = $row.modelSha256
         if (-not ($sha -is [string]) -or $sha -cnotmatch '^[0-9a-f]{64}\z') { throw (New-FastLlmVisionAddOnsInvalid -Detail 'modelSha256 must be 64 lowercase hex characters') }
-        foreach ($textKey in @('modelId', 'engineId', 'componentId')) {
+        $textKeys = @('modelId', 'engineId')
+        if ($kind -cne 'ngram') { $textKeys += 'componentId' }
+        foreach ($textKey in $textKeys) {
             $textValue = $row.PSObject.Properties[$textKey].Value
             if (-not ($textValue -is [string]) -or $textValue -ceq '') { throw (New-FastLlmVisionAddOnsInvalid -Detail "$textKey must be a non-empty string") }
         }
         $backend = $row.backend
         if (-not ($backend -is [string]) -or $script:FastLlmVisionBackends -cnotcontains $backend) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'backend must be vulkan or hip') }
+        if ($kind -cne 'vision') {
+            $specProblem = Test-FastLlmSpeculationRow -Kind $kind -EngineId ([string] $row.engineId) -SpecType $row.specType -ExtraArguments $row.extraArguments
+            if ($null -ne $specProblem) { throw (New-FastLlmVisionAddOnsInvalid -Detail $specProblem) }
+        }
+        $minimum = 1
+        if ($kind -ceq 'ngram') { $minimum = 0 }
         $extra = $row.extraFreeVramMiB
         if ($extra -isnot [pscustomobject] -or @($extra.PSObject.Properties).Count -eq 0) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'extraFreeVramMiB must be a non-empty object of profile id to MiB') }
         $extraById = @{}
         foreach ($extraProperty in @($extra.PSObject.Properties)) {
             $profileId = [string] $extraProperty.Name
             if ($script:FastLlmServingProfileIds -cnotcontains $profileId) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'extraFreeVramMiB has a profile id that is not default or long') }
-            if (-not (& $isWhole $extraProperty.Value) -or [long] $extraProperty.Value -le 0) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'extraFreeVramMiB must be a positive whole number of MiB per profile id') }
+            if (-not (& $isWhole $extraProperty.Value) -or [long] $extraProperty.Value -lt $minimum) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'extraFreeVramMiB must be a whole number of MiB per profile id (positive; an ngram row may add 0)') }
             $extraById[$profileId] = [int64] $extraProperty.Value
         }
         $evidence = $row.evidence
@@ -100,11 +119,22 @@ function Read-FastLlmVisionAddOns {
         }
         $key = $kind + '|' + $sha + '|' + [string] $row.engineId + '|' + $backend
         if (-not $seen.Add($key)) { throw (New-FastLlmVisionAddOnsInvalid -Detail 'two rows have the same kind, model, engine and backend') }
-        $rows.Add([pscustomobject] [ordered] @{
-                modelId = [string] $row.modelId; modelSha256 = [string] $sha; engineId = [string] $row.engineId; backend = [string] $backend
-                componentId = [string] $row.componentId; extraFreeVramMiB = $extraById; resultId = [string] $evidence.resultId })
+        $loaded = [ordered] @{
+            kind = [string] $kind; modelId = [string] $row.modelId; modelSha256 = [string] $sha; engineId = [string] $row.engineId; backend = [string] $backend }
+        if ($kind -cne 'ngram') { $loaded.componentId = [string] $row.componentId }
+        if ($kind -cne 'vision') { $loaded.specType = [string] $row.specType; $loaded.extraArguments = [string[]] @($row.extraArguments | ForEach-Object { [string] $_ }) }
+        $loaded.extraFreeVramMiB = $extraById
+        $loaded.resultId = [string] $evidence.resultId
+        $rows.Add([pscustomobject] $loaded)
     }
     return $rows.ToArray()
+}
+
+# The vision add-on rows only (the planner of -Vision on reads these); the file is read and validated as a whole, so a bad speculation row also
+# makes vision fail typed rather than be honoured from a file that cannot be trusted.
+function Read-FastLlmVisionAddOns {
+    param([string] $Path)
+    return @(Read-FastLlmAddOnRows -Path $Path | Where-Object { [string] $_.kind -ceq $script:FastLlmVisionAddOnKind })
 }
 
 # The one add-on row whose model sha256, engine id AND backend equal the plan's, or $null. (The rows are already unique by that key.)

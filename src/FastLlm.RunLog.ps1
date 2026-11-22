@@ -15,7 +15,7 @@ $script:FastLlmRunLogRuns = @{}
 # The fixed allowlist: the only field names an event may carry. Anything else is refused with run-log-field-not-allowed.
 $script:FastLlmRunLogAllowedFields = @{
     # profile and slots are present only on a start with a serving profile (opt-in context profile or slots): closed values, never free text.
-    'start'               = @('modelId', 'recipeId', 'backend', 'engineVersion', 'contextSize', 'port', 'thinking', 'chatPage', 'selfTest', 'profile', 'slots')
+    'start'               = @('modelId', 'recipeId', 'backend', 'engineVersion', 'contextSize', 'port', 'thinking', 'chatPage', 'selfTest', 'profile', 'slots', 'speculation')
     'phase'               = @('phase', 'failureCode')
     'startup-diagnostics' = @('status', 'kvBufferCount', 'computeBufferCount', 'kvTotalMiB', 'computeTotalMiB', 'flashMode', 'flashResolved')
     'placement'           = @('reportedLayers', 'totalLayers', 'reportedAllLayers', 'deviceCount', 'devices', 'modelBufferTotalMiB')
@@ -24,6 +24,8 @@ $script:FastLlmRunLogAllowedFields = @{
     'self-test'           = @('status', 'reasons', 'generationTokS', 'promptTokS', 'firstTextMs', 'expectedGenerationTokS', 'comparable')
     # Opt-in idle stop: the minutes setting and two times. The check-failed event has no field; it is written once per run.
     'idle-stop'           = @('idleStopMinutes', 'lastActivityUtc', 'stoppedAtUtc')
+    # Opt-in speculation: written once at the end of a run that had it, the two counters of /metrics. Numbers (or null) only; see Write-FastLlmRunLogEvent.
+    'spec-summary'        = @('draftTokens', 'acceptedTokens')
     'idle-check-failed'   = @()
     # The idle read of /metrics was refused with HTTP 401 (an API key mismatch). No field; written once per run of refused reads. Nothing is stopped for it.
     'idle-metrics-unauthorized' = @()
@@ -107,6 +109,13 @@ function Write-FastLlmRunLogEvent {
     foreach ($name in @($Fields.Keys)) {
         if ($allowed -cnotcontains [string] $name) { throw "run-log-field-not-allowed: '$name' is not a field of the '$Event' event." }
         $line[[string] $name] = ConvertTo-FastLlmRunLogValue -Name ([string] $name) -Value $Fields[$name]
+    }
+    # A spec-summary field is a non-negative whole number or null, never text.
+    if ($Event -ceq 'spec-summary') {
+        foreach ($counterName in @($line.Keys | Where-Object { $_ -cne 'ts' -and $_ -cne 'runId' -and $_ -cne 'event' })) {
+            $counterValue = $line[$counterName]
+            if ($null -ne $counterValue -and -not (($counterValue -is [int] -or $counterValue -is [long]) -and [long] $counterValue -ge 0)) { throw "run-log-value-not-allowed: field '$counterName' must be a non-negative whole number or null." }
+        }
     }
     # After the API checks start only a fixed text may describe a failure: the detail could echo request text.
     if ($Event -ceq 'end' -and $line.Contains('failureMessage')) {
@@ -210,6 +219,23 @@ function Get-FastLlmRunLogStartFields {
             $fields.profile = [string] $profileId
             $fields.slots = [int] $profileSlots
         }
+    }
+    # Only for a plan with speculation, and only a spec type of the closed shape: a default start line is unchanged.
+    $speculationBlock = Get-FastLlmRunLogProperty $Plan 'speculation'
+    if ($null -ne $speculationBlock) {
+        $specType = Get-FastLlmRunLogProperty $speculationBlock 'specType'
+        if ($specType -is [string] -and $specType -cmatch '^[a-z0-9][a-z0-9-]{0,39}\z') { $fields.speculation = [string] $specType }
+    }
+    return $fields
+}
+
+# The two counters of the stop-time summary: a number or null (a counter the server did not list is null, never 0). Never text.
+function Get-FastLlmRunLogSpecSummaryFields {
+    param($Counters)
+    $fields = [ordered] @{ draftTokens = $null; acceptedTokens = $null }
+    foreach ($pair in @(@('draftTokens', 'draftTokens'), @('acceptedTokens', 'acceptedTokens'))) {
+        $value = Get-FastLlmRunLogProperty $Counters $pair[0]
+        if (($value -is [int] -or $value -is [long]) -and [long] $value -ge 0) { $fields[$pair[1]] = [long] $value }
     }
     return $fields
 }

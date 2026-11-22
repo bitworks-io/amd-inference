@@ -409,9 +409,13 @@ class VisionAddOnRowTests(unittest.TestCase):
         # The fixture projector is not a shipped component: the same row against config/components.json names an unknown component.
         self.assertRefused(VISION_GOOD, "is not a listed projector component", components=COMPONENTS)
 
-    def test_mtp_and_ngram_rows_are_still_refused(self):
-        for kind in ("mtp", "ngram", "audio", "", None, 1, "Vision"):
-            self.assertRefused(vision(lambda r, k=kind: r.update(kind=k)), "kind must be 'vision'")
+    def test_other_kinds_are_refused(self):
+        # CHANGED EXPECTATION: "mtp" and "ngram" are accepted kinds now (SpeculationAddOnRowTests), each with its own closed key set, so a
+        # vision-shaped row that only changes its kind is refused for its keys; any other kind is refused as an unknown kind.
+        for kind in ("mtp", "ngram"):
+            self.assertRefused(vision(lambda r, k=kind: r.update(kind=k)), "keys")
+        for kind in ("audio", "", None, 1, "Vision"):
+            self.assertRefused(vision(lambda r, k=kind: r.update(kind=k)), "kind must be 'vision', 'ngram' or 'mtp'")
 
     def test_row_keys_are_closed(self):
         self.assertRefused(vision(lambda r: r.update(bogus=1)), "unexpected keys")
@@ -471,7 +475,7 @@ class VisionAddOnRowTests(unittest.TestCase):
         doc["profiles"][0]["contextTotal"] = 0
         doc["addOns"][0]["kind"] = "mtp"
         errors = self.errors(doc)
-        self.assertTrue(any("contextTotal" in e for e in errors) and any("kind must be 'vision'" in e for e in errors), errors)
+        self.assertTrue(any("contextTotal" in e for e in errors) and any("keys" in e for e in errors), errors)
 
     def test_parity_cases_with_the_powershell_loader(self):
         # tests/optin-arguments-tests.ps1 reads the same table and requires the same verdict from the loader. These are shape checks only: the
@@ -504,3 +508,190 @@ def top_sidecars(fn):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- addOns[]: the speculation rows (kind "ngram" and kind "mtp") beside the vision rows ----
+# Test rows and a test draft component only: config/serving-profiles.json ships no add-on row and config/components.json no draft component.
+SPEC_COMPONENTS_FIXTURE = json.loads((ROOT / "tests" / "fixtures" / "speculation-components-test.json").read_text(encoding="utf-8"))
+SPEC_GOOD = json.loads((ROOT / "tests" / "fixtures" / "speculation-profiles-test.json").read_text(encoding="utf-8"))
+SPEC_PARITY = json.loads((ROOT / "tests" / "fixtures" / "speculation-addon-parity-cases.json").read_text(encoding="utf-8"))
+# The test draft and projector components, and the pinned engine components of the shipped list (so a row can name the pinned HIP engine).
+SPEC_COMPONENTS = {"schema": SPEC_COMPONENTS_FIXTURE["schema"],
+                   "components": SPEC_COMPONENTS_FIXTURE["components"] + [c for c in COMPONENTS["components"] if c.get("kind") == "engine"]}
+NGRAM_KEYS = ["kind", "modelId", "modelSha256", "engineId", "backend", "specType", "extraArguments", "extraFreeVramMiB", "evidence"]
+MTP_KEYS = ["kind", "modelId", "modelSha256", "engineId", "backend", "componentId", "specType", "extraArguments", "extraFreeVramMiB", "evidence"]
+HIP_ENGINE = "llama.cpp-hip-b11658"
+
+
+def spec_row(fn, index=2):
+    doc = copy.deepcopy(SPEC_GOOD)
+    fn(doc["addOns"][index])
+    return doc
+
+
+class SpeculationAddOnRowTests(unittest.TestCase):
+    def errors(self, doc, components=None):
+        return sp.validate(doc, CATALOG, SPEC_COMPONENTS if components is None else components)
+
+    def assertRefused(self, doc, text, components=None):
+        errors = self.errors(doc, components)
+        self.assertTrue(errors, "expected a refusal")
+        self.assertTrue(any(text in e for e in errors), errors)
+
+    def test_valid_rows_pass_and_use_exactly_the_row_keys(self):
+        self.assertEqual(self.errors(SPEC_GOOD), [])
+        kinds = [r["kind"] for r in SPEC_GOOD["addOns"]]
+        self.assertEqual(kinds, ["vision", "vision", "ngram", "ngram", "mtp"])
+        for row in SPEC_GOOD["addOns"]:
+            if row["kind"] == "ngram":
+                self.assertEqual(list(row), NGRAM_KEYS)
+            if row["kind"] == "mtp":
+                self.assertEqual(list(row), MTP_KEYS)
+
+    def test_shipped_files_ship_no_row_and_no_draft_component_and_are_byte_identical(self):
+        self.assertEqual(SHIPPED["addOns"], [])
+        self.assertEqual([c["id"] for c in COMPONENTS["components"] if c.get("kind") == "draft"], [])
+        self.assertEqual(self.errors(SHIPPED, COMPONENTS), [])
+        self.assertEqual(hashlib.sha256(SHIPPED_PATH.read_bytes()).hexdigest(), "927651eabb7fd2ab3c1ffb99e742cdfa2dcd06b891aa329ed6fc48a8117f2160")
+        self.assertEqual(hashlib.sha256((ROOT / "config" / "components.json").read_bytes()).hexdigest(), "6183105bedffec0e3e8b91020fb77548f0478463fffcd1d0a253ccbee65b0684")
+        self.assertEqual(sp.check_digest(str(ROOT)), [])
+
+    def test_test_rows_never_ship(self):
+        self.assertNotEqual(SHIPPED_PATH.read_bytes(), (ROOT / "tests" / "fixtures" / "speculation-profiles-test.json").read_bytes())
+
+    def test_unknown_specType_and_flag_for_the_engine_are_refused(self):
+        self.assertRefused(spec_row(lambda r: r.update(specType="ngram-bogus")), "specType")
+        self.assertRefused(spec_row(lambda r: r.update(specType="draft-simple")), "specType")
+        self.assertRefused(spec_row(lambda r: r.update(specType="draft-mtp")), "specType")
+        self.assertRefused(spec_row(lambda r: r.update(specType="ngram-simple"), 4), "specType")
+        self.assertRefused(spec_row(lambda r: r.update(extraArguments=["--spec-ngram-bogus", "3"])), "not allowed for engine")
+        self.assertRefused(spec_row(lambda r: r.update(extraArguments=["--draft-max", "4"]), 4), "not allowed for engine")
+        # A flag that exists on one pin only is refused on the other.
+        self.assertRefused(spec_row(lambda r: r.update(extraArguments=["--spec-draft-sampling", "on"]), 4), "not allowed for engine")
+        self.assertEqual(self.errors(spec_row(lambda r: r.update(engineId=HIP_ENGINE, backend="hip", extraArguments=["--spec-draft-sampling", "on"]), 4)), [])
+
+    def test_component_id_rules(self):
+        self.assertRefused(spec_row(lambda r: r.update(componentId="test-mtp-draft")), "unexpected keys")
+        self.assertRefused(spec_row(lambda r: r.pop("componentId"), 4), "missing keys")
+        self.assertRefused(spec_row(lambda r: r.update(componentId="other-draft"), 4), "is not a listed draft component")
+        self.assertRefused(spec_row(lambda r: r.update(componentId="test-vision-projector-q8"), 4), "is not a listed draft component")
+        self.assertRefused(SPEC_GOOD, "is not a listed draft component", components=COMPONENTS)
+
+    def test_row_keys_are_closed(self):
+        self.assertRefused(spec_row(lambda r: r.update(bogus=1)), "unexpected keys")
+        for key in NGRAM_KEYS:
+            self.assertRefused(spec_row(lambda r, k=key: r.pop(k)), "missing keys")
+        for key in MTP_KEYS:
+            self.assertRefused(spec_row(lambda r, k=key: r.pop(k), 4), "missing keys")
+        self.assertRefused(spec_row(lambda r: r.update(specType="ngram-simple", extraArguments=[]), 0), "unexpected keys")
+
+    def test_extra_memory_ngram_allows_zero_mtp_does_not(self):
+        self.assertEqual(self.errors(spec_row(lambda r: r.update(extraFreeVramMiB={"default": 0}))), [])
+        for bad in (-1, 1.5, "1", True, None):
+            self.assertRefused(spec_row(lambda r, b=bad: r["extraFreeVramMiB"].update(long=b)), "whole number of MiB")
+        self.assertRefused(spec_row(lambda r: r.update(extraFreeVramMiB={})), "non-empty object")
+        self.assertRefused(spec_row(lambda r: r.update(extraFreeVramMiB={"huge": 1})), "unknown profile id")
+        self.assertRefused(spec_row(lambda r: r.update(extraFreeVramMiB={"long": 0}), 4), "positive whole number")
+        self.assertRefused(spec_row(lambda r: r.update(extraFreeVramMiB={"long": -5}), 4), "positive whole number")
+
+    def test_extra_arguments_shape(self):
+        for bad, text in ((["12", "--spec-ngram-size-n"], "must start with a flag"), (["--spec-ngram-size-n", "1", "2"], "one value"),
+                          (["--spec-ngram-size-n", "1", "--spec-ngram-size-n", "2"], "twice"), (["--spec-ngram-size-n", "-1"], "value"),
+                          (["--spec-ngram-size-n", "C:\\x\\y"], "value"), (["--spec-ngram-size-n", ""], "value"),
+                          (["--spec-ngram-size-n=12"], "not allowed for engine"), ("--spec-ngram-size-n", "list of strings"), (["--spec-ngram-size-n", 12], "list of strings"),
+                          (["--spec-draft-model", "x.gguf"], "not allowed for engine")):
+            self.assertRefused(spec_row(lambda r, b=bad: r.update(extraArguments=b)), text)
+        self.assertEqual(self.errors(spec_row(lambda r: r.update(extraArguments=[]))), [])
+
+    def test_duplicates_use_kind_model_engine_backend(self):
+        doc = copy.deepcopy(SPEC_GOOD)
+        doc["addOns"].append(copy.deepcopy(doc["addOns"][2]))
+        self.assertRefused(doc, "duplicate add-on row")
+        doc = copy.deepcopy(SPEC_GOOD)
+        doc["addOns"].append(copy.deepcopy(doc["addOns"][4]))
+        doc["addOns"][5]["extraFreeVramMiB"] = {"long": 7}
+        self.assertRefused(doc, "duplicate add-on row")
+        # An ngram row and an mtp row for the same model are different keys.
+        self.assertEqual(self.errors(SPEC_GOOD), [])
+
+    def test_parity_cases_with_the_powershell_loader(self):
+        self.assertGreaterEqual(len(SPEC_PARITY["cases"]), 40)
+        for case in SPEC_PARITY["cases"]:
+            doc = copy.deepcopy(SPEC_GOOD)
+            doc["addOns"] = copy.deepcopy(case["addOns"])
+            self.assertEqual(bool(self.errors(doc)), case["refuse"], case["name"])
+
+    def test_cli_accepts_the_test_rows_and_refuses_a_bad_one(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "config").mkdir()
+        shutil.copyfile(str(ROOT / "config" / "catalog.json"), str(root / "config" / "catalog.json"))
+        (root / "config" / "components.json").write_text(json.dumps(SPEC_COMPONENTS), encoding="utf-8")
+        raw = json.dumps(SPEC_GOOD, indent=2) + "\n"
+        (root / "config" / "serving-profiles.json").write_bytes(raw.encode("utf-8"))
+        (root / "config" / "serving-profiles.sha256").write_bytes((hashlib.sha256(raw.encode("utf-8")).hexdigest() + "  serving-profiles.json\n").encode("ascii"))
+        self.assertEqual(sp.main(["--root", str(root)]), 0)
+        (root / "config" / "serving-profiles.json").write_bytes(raw.replace("ngram-simple", "ngram-bogus").encode("utf-8"))
+        self.assertEqual(sp.main(["--root", str(root)]), 1)
+
+
+# ---- the closed per-engine allowlist: every allowed flag is one the pinned engine tag really accepts ----
+def engine_tag(engine_id):
+    """The llama.cpp tag of a pinned engine id: the built-in engine's catalog version, or the version of the listed engine component."""
+    if engine_id == "llama.cpp-" + CATALOG["engine"]["version"] + "-vulkan":
+        return CATALOG["engine"]["version"]
+    for component in COMPONENTS["components"]:
+        if component.get("kind") == "engine" and component.get("id") == engine_id:
+            return component["version"]
+    return None
+
+
+def surface(tag):
+    path = ROOT / "tests" / "fixtures" / ("engine-surface-" + tag + ".json")
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+class SpeculationAllowlistTests(unittest.TestCase):
+    def test_every_pinned_engine_has_an_entry_and_nothing_else_has(self):
+        pinned = sorted(sp.known_engines(CATALOG, COMPONENTS))
+        self.assertEqual(sorted(sp.SPECULATION_ALLOWLIST), pinned)
+
+    def test_every_allowlisted_flag_is_in_the_fixture_of_that_engines_tag(self):
+        for engine_id, entry in sp.SPECULATION_ALLOWLIST.items():
+            tag = engine_tag(engine_id)
+            self.assertIsNotNone(tag, engine_id)
+            fixture = surface(tag)
+            if fixture is None:
+                # A pinned engine with no engine-surface fixture gets an empty allowlist.
+                self.assertEqual(entry["flags"], [], engine_id)
+                self.assertEqual(entry["specTypes"], {"ngram": [], "mtp": []}, engine_id)
+                continue
+            options = set(fixture["options"])
+            for flag in entry["flags"]:
+                self.assertIn(flag, options, engine_id + " " + flag)
+            self.assertIn("--spec-type", options)
+            if entry["draftModelFlag"] is not None:
+                self.assertIn(entry["draftModelFlag"], options, engine_id)
+                self.assertNotIn(entry["draftModelFlag"], entry["flags"])
+
+    def test_the_lists_are_per_engine_not_shared(self):
+        vulkan = sp.SPECULATION_ALLOWLIST["llama.cpp-b10698-vulkan"]
+        hip = sp.SPECULATION_ALLOWLIST[HIP_ENGINE]
+        self.assertNotIn("--spec-draft-sampling", vulkan["flags"])
+        self.assertIn("--spec-draft-sampling", hip["flags"])
+        self.assertNotIn("--spec-draft-sampling", surface("b10698")["options"])
+        self.assertIn("--spec-draft-sampling", surface("b11658")["options"])
+        for entry in sp.SPECULATION_ALLOWLIST.values():
+            self.assertFalse([f for f in entry["flags"] if f.startswith("--draft")], "the removed --draft names are never allowed")
+            self.assertTrue(all(t.startswith("ngram-") for t in entry["specTypes"]["ngram"]))
+            self.assertTrue(set(entry["specTypes"]["mtp"]) <= {"draft-mtp"})
+
+    def test_every_hip_engine_component_shares_the_hip_pins_list(self):
+        for engine_id in sp.known_engines(CATALOG, COMPONENTS):
+            if engine_id.startswith("llama.cpp-hip-b11658"):
+                self.assertEqual(sp.SPECULATION_ALLOWLIST[engine_id], sp.SPECULATION_ALLOWLIST[HIP_ENGINE])
+
+    def test_the_counters_the_summary_reads_exist_in_every_fixture(self):
+        for tag in ("b10698", "b11658", "b12373"):
+            counters = surface(tag)["metricsCounters"]
+            self.assertIn("llamacpp:spec_decode_num_draft_tokens_total", counters)
+            self.assertIn("llamacpp:spec_decode_num_accepted_tokens_total", counters)

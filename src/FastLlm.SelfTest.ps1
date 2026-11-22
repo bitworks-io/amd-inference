@@ -14,7 +14,7 @@ function Get-FastLlmMedian {
 }
 
 function Get-FastLlmSelfTestVerdict {
-    param([object[]] $Samples, [int] $GenerationTokens = 128, $Expected, [string] $EngineBuild, [int] $ContextSize, [string] $MitigationEffective)
+    param([object[]] $Samples, [int] $GenerationTokens = 128, $Expected, [string] $EngineBuild, [int] $ContextSize, [string] $MitigationEffective, [string] $SpeculationEffective = 'none')
     $result = [ordered]@{ status = 'pass'; reasons = @(); generationTokS = $null; promptTokS = $null; firstTextMs = $null; expectedGenerationTokS = $null; comparable = $false }
     $all = @($Samples | Where-Object { $null -ne $_ })
     $valid = @($all | Where-Object { [int] $_.outputTokens -ge $GenerationTokens -and [double] $_.generationTokensPerSecond -gt 0 -and [double] $_.promptTokensPerSecond -gt 0 })
@@ -26,9 +26,15 @@ function Get-FastLlmSelfTestVerdict {
     if ($Expected) {
         $mitigation = 'off'
         if ($Expected.PSObject.Properties['mitigation'] -and $Expected.mitigation) { $mitigation = [string] $Expected.mitigation }
+        # Speculation changes the speed itself, so numbers are comparable only when they were measured with the same speculation: an expected block that
+        # does not record a speculation field means none (the same rule shape as the mitigation above).
+        $speculation = 'none'
+        if ($Expected.PSObject.Properties['speculation'] -and $Expected.speculation) { $speculation = [string] $Expected.speculation }
+        $speculationNow = 'none'
+        if ($SpeculationEffective) { $speculationNow = $SpeculationEffective }
         $result.expectedGenerationTokS = [double] $Expected.generationTokS
         # A non-Vulkan (HIP) engine has no BAR mitigation, so a recipe measured on one records 'not-applicable' and the comparison skips it.
-        $result.comparable = ([string] $Expected.engineBuild -eq $EngineBuild) -and ([int] $Expected.contextTokens -ge $ContextSize) -and (($mitigation -ceq 'not-applicable') -or ($mitigation -eq $MitigationEffective))
+        $result.comparable = ([string] $Expected.engineBuild -eq $EngineBuild) -and ([int] $Expected.contextTokens -ge $ContextSize) -and (($mitigation -ceq 'not-applicable') -or ($mitigation -eq $MitigationEffective)) -and ($speculation -ceq $speculationNow)
         if ($result.comparable -and $result.generationTokS -lt 0.70 * [double] $Expected.generationTokS) {
             $result.status = 'below-expected'
             $result.reasons = @('driver-version', 'resizable-bar', 'other-apps-using-vram', 'power-or-thermal-limits')
@@ -38,7 +44,7 @@ function Get-FastLlmSelfTestVerdict {
 }
 
 function Invoke-FastLlmSelfTest {
-    param([string] $BaseUrl, [int] $ContextSize, $Expected, [string] $EngineBuild, [string] $MitigationEffective, [scriptblock] $Request)
+    param([string] $BaseUrl, [int] $ContextSize, $Expected, [string] $EngineBuild, [string] $MitigationEffective, [scriptblock] $Request, [string] $SpeculationEffective = 'none')
     $fail = { param($reason) [pscustomobject] [ordered]@{ status = 'fail'; reasons = @($reason); generationTokS = $null; promptTokS = $null; firstTextMs = $null
             expectedGenerationTokS = $null; comparable = $false; promptArtifactSha256 = $null; measuredAt = (Get-Date).ToUniversalTime().ToString('o') } }
     $promptTokens = $script:FastLlmSelfTestPromptTokens
@@ -73,7 +79,7 @@ function Invoke-FastLlmSelfTest {
             }
             if ($round -gt 0) { $samples += $sample }   # round 0 is the discarded warm-up
         }
-        $verdict = Get-FastLlmSelfTestVerdict -Samples $samples -GenerationTokens $generation -Expected $Expected -EngineBuild $EngineBuild -ContextSize $ContextSize -MitigationEffective $MitigationEffective
+        $verdict = Get-FastLlmSelfTestVerdict -Samples $samples -GenerationTokens $generation -Expected $Expected -EngineBuild $EngineBuild -ContextSize $ContextSize -MitigationEffective $MitigationEffective -SpeculationEffective $SpeculationEffective
         $verdict | Add-Member -NotePropertyName promptArtifactSha256 -NotePropertyValue (Get-FastLlmPromptArtifactSha256 $prompt)
         $verdict | Add-Member -NotePropertyName measuredAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o'))
         return $verdict
