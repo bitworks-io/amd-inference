@@ -139,8 +139,38 @@ function Show-Scn($Scn) { $Scn.Window.Show(); Invoke-Pump 150 }
 # Part A: the form adapter
 # ======================================================================================================================
 
+# File-level state and function: the real handlers in fast-llm-ui.ps1 are plain scriptblocks (no GetNewClosure) that call file-level
+# functions and write $script: state. A closure cannot stand in for that, so A1 and A12 use this exact shape.
+$script:shellMark = 0
+$script:shellX = 0
+$script:shellReason = ''
+$script:shellSame = $false
+$script:shellForm = $null
+$script:shellCancel = $true
+function Set-ShellTestMark { $script:shellMark++ }
+
 function Invoke-A1-CloseCancelled {
+    $script:shellMark = 0; $script:shellX = 0; $script:shellReason = ''; $script:shellSame = $false; $script:shellCancel = $true
     $s = New-Scn 'a1'; $form = $s.Form; $w = $s.Window
+    $script:shellForm = $form
+    $form.Add_FormClosing({ param($sender, $event)
+        Set-ShellTestMark
+        $script:shellX = 1
+        $script:shellReason = [string]$event.CloseReason
+        $script:shellSame = [object]::ReferenceEquals($sender.PSObject.BaseObject, $script:shellForm.PSObject.BaseObject)
+        $event.Cancel = $true })
+    Show-Scn $s
+    $form.Close()
+    Invoke-Pump 150
+    Check ($script:shellMark -eq 1 -and $script:shellX -eq 1) 'A1 a cancelled close runs the plain-scriptblock FormClosing handler once (file-level function and $script: state)' "mark=$($script:shellMark) x=$($script:shellX) expected mark=1 x=1"
+    Check ($script:shellReason -eq 'UserClosing') 'A1 a cancelled close reports CloseReason UserClosing' "actual=$($script:shellReason) expected=UserClosing"
+    Check $script:shellSame 'A1 the handler sender is the form adapter' 'sender.PSObject.BaseObject was not form.PSObject.BaseObject'
+    Check ($w.IsVisible -and $s.Closed.n -eq 0) 'A1 a cancelled close leaves the window open' "IsVisible=$($w.IsVisible) closedEvents=$($s.Closed.n)"
+    Check-NoExceptions 'A1'
+}
+
+function Invoke-A1c-CloseCancelledClosure {
+    $s = New-Scn 'a1c'; $form = $s.Form; $w = $s.Window
     $st = @{ n = 0; reason = ''; same = $false }
     $form.Add_FormClosing(({ param($sender, $event)
         $st.n++; $st.reason = [string]$event.CloseReason
@@ -150,11 +180,11 @@ function Invoke-A1-CloseCancelled {
     Show-Scn $s
     $form.Close()
     Invoke-Pump 150
-    Check ($st.n -eq 1 -and $st.x -eq 1) 'A1 a cancelled close runs the FormClosing handler once' "n=$($st.n) x=$($st.x) expected n=1 x=1"
-    Check ($st.reason -eq 'UserClosing') 'A1 a cancelled close reports CloseReason UserClosing' "actual=$($st.reason) expected=UserClosing"
-    Check $st.same 'A1 the handler sender is the form adapter' 'sender.PSObject.BaseObject was not form.PSObject.BaseObject'
-    Check ($w.IsVisible -and $s.Closed.n -eq 0) 'A1 a cancelled close leaves the window open' "IsVisible=$($w.IsVisible) closedEvents=$($s.Closed.n)"
-    Check-NoExceptions 'A1'
+    Check ($st.n -eq 1 -and $st.x -eq 1) 'A1c closure variant: a cancelled close runs the FormClosing handler once' "n=$($st.n) x=$($st.x) expected n=1 x=1"
+    Check ($st.reason -eq 'UserClosing') 'A1c closure variant: a cancelled close reports CloseReason UserClosing' "actual=$($st.reason) expected=UserClosing"
+    Check $st.same 'A1c closure variant: the handler sender is the form adapter' 'sender.PSObject.BaseObject was not form.PSObject.BaseObject'
+    Check ($w.IsVisible -and $s.Closed.n -eq 0) 'A1c closure variant: a cancelled close leaves the window open' "IsVisible=$($w.IsVisible) closedEvents=$($s.Closed.n)"
+    Check-NoExceptions 'A1c'
 }
 
 function Invoke-A2-CloseAllowed {
@@ -338,16 +368,39 @@ function Invoke-A12-SessionEnd {
     $none = [IntPtr]::Zero
     $r1 = $script:native::SendMessage($s.Hwnd, [uint32]0x0011, $none, $none).ToInt64()
     Invoke-Pump 100
-    Check ($r1 -eq 0 -and $w.IsVisible -and $s.Closed.n -eq 0) 'A12 a guard cancel refuses WM_QUERYENDSESSION and the window stays open' "result=$r1 expected=0 IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
+    Check ($r1 -eq 0 -and $w.IsVisible -and $s.Closed.n -eq 0) 'A12 a guard cancel refuses the sign-out (WM_QUERYENDSESSION returns 0, window stays open)' "result=$r1 expected=0 IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
     Check ($st.n -eq 1 -and $st.reason -eq 'WindowsShutDown') 'A12 the session-end FormClosing runs once with CloseReason WindowsShutDown' "n=$($st.n) reason=$($st.reason)"
     Check ($form.FastLlmFormState['Closing'] -eq $false) 'A12 the Closing flag is reset after the session-end query' "Closing=$($form.FastLlmFormState['Closing'])"
     $st.cancel = $false
     $r2 = $script:native::SendMessage($s.Hwnd, [uint32]0x0011, $none, $none).ToInt64()
     Invoke-Pump 100
-    Check ($r2 -ne 0 -and $st.reason -eq 'WindowsShutDown') 'A12 an allowing handler lets WM_QUERYENDSESSION return non-zero' "result=$r2 expected non-zero reason=$($st.reason)"
+    Check ($r2 -ne 0 -and $st.reason -eq 'WindowsShutDown') 'A12 an allowed close proceeds (WM_QUERYENDSESSION returns non-zero)' "result=$r2 expected non-zero reason=$($st.reason)"
     Check ($w.IsVisible -and $s.Closed.n -eq 0) 'A12 WM_QUERYENDSESSION is only a query: the window is not closed' "IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
     Unregister-FastLlmUiWindowHooks -Window $w
     Check-NoExceptions 'A12'
+}
+
+function Invoke-A12b-SessionEndPlain {
+    $script:shellMark = 0; $script:shellX = 0; $script:shellReason = ''; $script:shellCancel = $true
+    $s = New-Scn 'a12b'; $form = $s.Form; $w = $s.Window
+    $form.Add_FormClosing({ param($sender, $event)
+        Set-ShellTestMark
+        $script:shellX = 1
+        $script:shellReason = [string]$event.CloseReason
+        if ($script:shellCancel) { $event.Cancel = $true } })
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
+    Show-Scn $s
+    $none = [IntPtr]::Zero
+    $r1 = $script:native::SendMessage($s.Hwnd, [uint32]0x0011, $none, $none).ToInt64()
+    Invoke-Pump 100
+    Check ($r1 -eq 0 -and $w.IsVisible -and $s.Closed.n -eq 0) 'A12b plain-scriptblock guard cancel refuses the sign-out (WM_QUERYENDSESSION returns 0, window stays open)' "result=$r1 expected=0 IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
+    Check ($script:shellMark -eq 1 -and $script:shellX -eq 1 -and $script:shellReason -eq 'WindowsShutDown') 'A12b the plain handler ran once through the hook with file-level function and $script: state, CloseReason WindowsShutDown' "mark=$($script:shellMark) x=$($script:shellX) reason=$($script:shellReason)"
+    $script:shellCancel = $false
+    $r2 = $script:native::SendMessage($s.Hwnd, [uint32]0x0011, $none, $none).ToInt64()
+    Invoke-Pump 100
+    Check ($r2 -ne 0 -and $script:shellMark -eq 2) 'A12b plain-scriptblock allowed close proceeds (WM_QUERYENDSESSION returns non-zero)' "result=$r2 expected non-zero mark=$($script:shellMark) expected=2"
+    Unregister-FastLlmUiWindowHooks -Window $w
+    Check-NoExceptions 'A12b'
 }
 
 function Invoke-A13-Members {
@@ -528,9 +581,9 @@ function Invoke-B7-Unregister {
 # ======================================================================================================================
 
 $script:steps = @(
-    'Invoke-A1-CloseCancelled', 'Invoke-A2-CloseAllowed', 'Invoke-A3-BoxNo', 'Invoke-A4-BoxYes', 'Invoke-A5-CloseInsideHandler',
+    'Invoke-A1-CloseCancelled', 'Invoke-A1c-CloseCancelledClosure', 'Invoke-A2-CloseAllowed', 'Invoke-A3-BoxNo', 'Invoke-A4-BoxYes', 'Invoke-A5-CloseInsideHandler',
     'Invoke-A6-ThrowingHandler', 'Invoke-A7-Visible', 'Invoke-A8-RestoreFromTray', 'Invoke-A9-Shown', 'Invoke-A10-Owner',
-    'Invoke-A11-ScreenGap', 'Invoke-A12-SessionEnd', 'Invoke-A13-Members', 'Invoke-A14-LeakyHandler',
+    'Invoke-A11-ScreenGap', 'Invoke-A12-SessionEnd', 'Invoke-A12b-SessionEndPlain', 'Invoke-A13-Members', 'Invoke-A14-LeakyHandler',
     'Invoke-B1-GdiLeak', 'Invoke-B2-IconSizes', 'Invoke-B3-AppIcon', 'Invoke-B4-ThemeHook', 'Invoke-B5-SettingChangeString',
     'Invoke-B6-HookFailure', 'Invoke-B7-Unregister'
 )
