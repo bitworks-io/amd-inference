@@ -4159,10 +4159,30 @@ function Start-FastLlmServer {
         if ([int] $planProfileSlots -ne 1) { $freshRecipeOptions.KvSlots = [int] $planProfileSlots }
         if ($freshRecipeOptions.ContainsKey('KvContextProfile') -or $freshRecipeOptions.ContainsKey('KvSlots')) { $freshRecipeOptions.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     }
+    # A plan with a vision block re-plans with the MODE only (-Vision on): the block is re-derived from the measured rows next to the catalog, never
+    # copied from the old plan, so the re-plan cannot start without the projector. Only added then, so the default call keeps its exact parameter set.
+    $planHadVision = [bool] ($Plan.PSObject.Properties['vision'] -and $null -ne $Plan.vision)
+    if ($planHadVision) {
+        $freshRecipeOptions.Vision = 'on'
+        if (-not $freshRecipeOptions.ContainsKey('KvProfilesPath')) { $freshRecipeOptions.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+    }
     # An engine-component plan already validated the components catalog above (same file, same catalog); the re-plan reuses it. Only added then, so the
     # default call keeps the exact parameter set it always had.
     if ($null -ne $startComponent) { $freshRecipeOptions.EngineComponents = $startComponents }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
+    # The projector block must be the same one: the same component, profile, extra memory and evidence. Anything else is a different plan.
+    if ($planHadVision) {
+        $visionChanged = -not ($freshPlan.PSObject.Properties['vision'] -and $null -ne $freshPlan.vision)
+        if (-not $visionChanged) {
+            foreach ($visionField in @('componentId', 'profileId', 'resultId')) {
+                if (-not ($Plan.vision.PSObject.Properties[$visionField] -and $freshPlan.vision.PSObject.Properties[$visionField]) -or [string] $Plan.vision.$visionField -cne [string] $freshPlan.vision.$visionField) { $visionChanged = $true }
+            }
+            if (-not ($Plan.vision.PSObject.Properties['extraFreeVramMiB'] -and $freshPlan.vision.PSObject.Properties['extraFreeVramMiB']) -or [int64] $Plan.vision.extraFreeVramMiB -ne [int64] $freshPlan.vision.extraFreeVramMiB) { $visionChanged = $true }
+        }
+        if ($visionChanged) {
+            throw (New-FastLlmTypedFailure -Code 'vision-plan-changed' -Message 'The vision setup changed while preparing startup. Nothing was started; plan again.')
+        }
+    }
     $planRequiresProvisioning = [string] $freshPlan.catalogVersion -ne [string] $Plan.catalogVersion -or
         [string] $freshPlan.backend -ne [string] $Plan.backend -or
         [string] $freshPlan.enginePath -ne [string] $Plan.enginePath -or
@@ -4343,6 +4363,8 @@ function Get-FastLlmSwitchServingOptions {
         if ([string] $servedProfile.id -cne 'default') { $options.KvContextProfile = [string] $servedProfile.id }
         if ([int] $servedProfile.slots -ne 1) { $options.KvSlots = [int] $servedProfile.slots }
     }
+    # A plan that carries a vision block keeps the mode (the target re-derives its own block from the rows, or is refused).
+    if ($PreviousPlan.PSObject.Properties['vision'] -and $null -ne $PreviousPlan.vision) { $options.Vision = 'on' }
     return $options
 }
 
@@ -4360,7 +4382,7 @@ function Get-FastLlmSwitchPlanOptions {
         $options[[string] $name] = $ServingOptions[$name]
     }
     if ($Request.recipeId) { $options.RecipeId = [string] $Request.recipeId } else { $options.ModelId = [string] $Request.modelId }
-    if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+    if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots') -or $options.ContainsKey('Vision')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     return $options
 }
 

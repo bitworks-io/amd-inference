@@ -539,6 +539,119 @@ try {
         } $savedBoundaries
     }
 
+    # ---- the start-time re-plan keeps -Vision (real Start-FastLlmServer) --------------------------------------------------------------------
+    # Today every vision plan is refused at the top of Start-FastLlmServer, before the re-plan, so this is latent. The refusal is replaced here by a
+    # function that returns (standing for a future release that can verify the projector), so the re-plan is what is under test: it must forward the
+    # MODE, re-derive the block from the rows, and refuse typed when the block changed. The old block is never copied onto the fresh plan.
+    $rpWorld=Join-Path $work 'replan-world'
+    $rpConfig=Join-Path $rpWorld 'config'
+    foreach($folder in @($rpWorld,$rpConfig)){New-Item -ItemType Directory -Path $folder -Force | Out-Null}
+    $rpCatalog=Join-Path $rpConfig 'catalog.json'
+    $rpProfiles=Join-Path $rpConfig 'serving-profiles.json'
+    [IO.File]::Copy($catalogPath,$rpCatalog,$true)
+    [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+    $rpBoundaries=& $module {
+        @{ vision=(Get-Command Assert-FastLlmVisionStartable).ScriptBlock; prerequisites=(Get-Command Assert-FastLlmWindowsPrerequisites).ScriptBlock
+           engineInstall=(Get-Command Test-FastLlmEngineInstallation).ScriptBlock; engineExe=(Get-Command Get-FastLlmEngineExecutable).ScriptBlock
+           hash=(Get-Command Test-FastLlmFileHash).ScriptBlock; consent=(Get-Command Test-FastLlmModelConsentReceipt).ScriptBlock
+           hardware=(Get-Command Get-FastLlmHardware).ScriptBlock; supervised=(Get-Command Invoke-FastLlmSupervisedServer).ScriptBlock }
+    }
+    & $module {
+        param($Card)
+        $script:rpCard=$Card
+        $script:rpCaptured=$null
+        $script:rpHardwareCalls=0
+        function script:Assert-FastLlmVisionStartable { param($Plan,$CatalogPath,$InstallRoot) }
+        function script:Assert-FastLlmWindowsPrerequisites { }
+        function script:Test-FastLlmEngineInstallation { return $true }
+        function script:Get-FastLlmEngineExecutable { return 'C:\FastLLM\vulkan\llama-server.exe' }
+        function script:Test-FastLlmFileHash { return $true }
+        function script:Test-FastLlmModelConsentReceipt { return $true }
+        function script:Get-FastLlmHardware { $script:rpHardwareCalls++; return $script:rpCard }
+        function script:Invoke-FastLlmSupervisedServer { param($Plan) $script:rpCaptured=$Plan; return 0 }
+    } $visionCard
+    try {
+        function Get-RpArgument($Arguments,[string]$Flag){ $list=@($Arguments);$at=[Array]::IndexOf($list,$Flag); if($at -lt 0){return '<absent>'}; return [string]$list[$at+1] }
+        function Invoke-RpStart($Plan){
+            & $module { $script:rpCaptured=$null;$script:rpHardwareCalls=0 }
+            $result=Get-RefusalCode { Start-FastLlmServer -Plan $Plan -CatalogPath $rpCatalog -InstallRoot $rpWorld }
+            $result | Add-Member -NotePropertyName captured -NotePropertyValue (& $module { $script:rpCaptured }) -Force
+            $result | Add-Member -NotePropertyName hardwareCalls -NotePropertyValue ([int](& $module { $script:rpHardwareCalls })) -Force
+            return $result
+        }
+        $rpCommon=@{Hardware=$visionCard;CatalogPath=$rpCatalog;Profile='balanced';NoEngineExecution=$true;InstallRoot=$rpWorld;KvProfilesPath=$rpProfiles;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+        $rpPlan=Get-FastLlmPlan @rpCommon -Vision 'on'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $rpPlan.modelPath) -Force | Out-Null
+        [IO.File]::WriteAllText($rpPlan.modelPath,'x')
+        $rpRun=Invoke-RpStart $rpPlan
+        $rpBlock=$null
+        if($null -ne $rpRun.captured -and $rpRun.captured.PSObject.Properties['vision']){$rpBlock=$rpRun.captured.vision}
+        Check (-not $rpRun.threw -and $rpRun.hardwareCalls -eq 1 -and $null -ne $rpRun.captured) 'vision re-plan: with the start refusal stood down, the real start re-plans once and reaches the supervisor'
+        Check ($null -ne $rpBlock -and [string]$rpBlock.componentId -ceq [string]$rpPlan.vision.componentId -and [string]$rpBlock.profileId -ceq [string]$rpPlan.vision.profileId -and [int]$rpBlock.extraFreeVramMiB -eq [int]$rpPlan.vision.extraFreeVramMiB -and [string]$rpBlock.resultId -ceq [string]$rpPlan.vision.resultId) 'vision re-plan: the plan the supervisor gets has the vision block (same projector component, profile id, extra memory and evidence id)'
+        $rpArgs=@(); if($null -ne $rpRun.captured){$rpArgs=@($rpRun.captured.serverArguments)}
+        Check (($rpArgs -ccontains '--mmproj') -and -not ($rpArgs -ccontains '--no-mmproj')) 'vision re-plan: the arguments the supervisor gets have --mmproj and no --no-mmproj'
+        Check ($null -ne $rpRun.captured -and [string]$rpRun.captured.servingProfile.id -ceq 'long' -and (Get-RpArgument $rpArgs '--ctx-size') -ceq '65536') 'vision re-plan: the serving profile is still forwarded (long, --ctx-size 65536)'
+        # The block is re-derived from the rows at start, never copied: a changed row at start is a changed plan.
+        $rpChanged=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+        $rpChanged.addOns[0].extraFreeVramMiB.long=400
+        Write-Utf8 $rpProfiles (ConvertTo-Json -InputObject $rpChanged -Depth 10)
+        $rpSwapped=Invoke-RpStart $rpPlan
+        Check ($rpSwapped.threw -and $rpSwapped.code -ceq 'vision-plan-changed' -and $rpSwapped.message -like '*changed while preparing startup. Nothing was started; plan again.' -and $null -eq $rpSwapped.captured) 'vision re-plan: a vision row whose extra memory changed between plan and start is refused vision-plan-changed; nothing reaches the supervisor'
+        Check ($rpSwapped.reason -cne 'PlanChanged' -and $rpSwapped.reason -cne 'RuntimeCheckFailed' -and $rpSwapped.reason -cne 'ModelNeedsProvisioning') 'vision re-plan: vision-plan-changed carries no reason that the CLI would recover or re-plan on'
+        # A row that is gone at start: the planner itself refuses the forwarded mode (never a plan without the projector).
+        [IO.File]::Copy($shippedProfiles,$rpProfiles,$true)
+        $rpLost=Invoke-RpStart $rpPlan
+        Check ($rpLost.threw -and $null -eq $rpLost.captured) 'vision re-plan: a row that is gone at start is refused and nothing reaches the supervisor (never a start without the projector)'
+        [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+        # One case per compared field, each changing ONLY that field, so each comparison is pinned on its own.
+        $rpEvidence=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+        $rpEvidence.addOns[0].evidence.resultId=([string]$rpEvidence.addOns[0].evidence.resultId)+'-new'
+        Write-Utf8 $rpProfiles (ConvertTo-Json -InputObject $rpEvidence -Depth 10)
+        $rpNewEvidence=Invoke-RpStart $rpPlan
+        Check ($rpNewEvidence.threw -and $rpNewEvidence.code -ceq 'vision-plan-changed' -and $null -eq $rpNewEvidence.captured) 'vision re-plan: the same vision row with new evidence (only resultId differs) is refused vision-plan-changed'
+        [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+        $rpComponent=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+        $rpComponent.addOns[0].componentId=([string]$rpComponent.addOns[0].componentId)+'-other'
+        Write-Utf8 $rpProfiles (ConvertTo-Json -InputObject $rpComponent -Depth 10)
+        $rpOtherComponent=Invoke-RpStart $rpPlan
+        Check ($rpOtherComponent.threw -and $rpOtherComponent.code -ceq 'vision-plan-changed' -and $null -eq $rpOtherComponent.captured) 'vision re-plan: the same vision row naming another projector component (only componentId differs) is refused vision-plan-changed'
+        [IO.File]::Copy($visionProfiles,$rpProfiles,$true)
+        # The profile id comes from the forwarded context profile, not the row, so only the incoming plan's block can differ in it.
+        $rpOtherProfile=$rpPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $rpOtherProfile.vision.profileId='default'
+        $rpProfileRun=Invoke-RpStart $rpOtherProfile
+        Check ($rpProfileRun.threw -and $rpProfileRun.code -ceq 'vision-plan-changed' -and $null -eq $rpProfileRun.captured) 'vision re-plan: a vision block whose profile id differs from the re-derived one (only profileId differs) is refused vision-plan-changed'
+        # A plan without vision makes the call it always made: no vision block, --no-mmproj kept.
+        $rpDefault=Get-FastLlmPlan @rpCommon
+        $rpDefaultRun=Invoke-RpStart $rpDefault
+        Check (-not $rpDefaultRun.threw -and $null -ne $rpDefaultRun.captured -and -not $rpDefaultRun.captured.PSObject.Properties['vision'] -and (@($rpDefaultRun.captured.serverArguments) -ccontains '--no-mmproj') -and -not (@($rpDefaultRun.captured.serverArguments) -ccontains '--mmproj')) 'vision re-plan: a plan without vision re-plans without it (no block, --no-mmproj kept)'
+        # The switch basis: the serving options of a plan that carries vision keep the mode, so a switch asks the planner the same question.
+        $rpOptions=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $rpPlan
+        Check ($rpOptions.ContainsKey('Vision') -and [string]$rpOptions.Vision -ceq 'on' -and [string]$rpOptions.KvContextProfile -ceq 'long') 'vision switch basis: the serving options of a vision plan carry -Vision on with the context profile'
+        $rpPlanOptions=& $module { param($P,$C,$I) Get-FastLlmSwitchPlanOptions -PreviousPlan $P -Request ([pscustomobject]@{recipeId=$null;modelId='qwen3.8-27b-ud-q4-k-m'}) -CatalogPath $C -InstallRoot $I } $rpPlan $rpCatalog $rpWorld
+        Check ([string]$rpPlanOptions.Vision -ceq 'on' -and [string]$rpPlanOptions.KvProfilesPath -ceq $rpProfiles) 'vision switch basis: the switch target options carry -Vision on and read the rows next to the catalog'
+        $rpDefaultOptions=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $rpDefault
+        Check (-not $rpDefaultOptions.ContainsKey('Vision')) 'vision switch basis: a plan without vision adds no Vision option'
+        # The saved switch basis (state/switch-basis-<runId>.json) keeps the mode too: its closed key check accepts Vision off|on and nothing else.
+        $rpChecked=& $module { param($O) ConvertTo-FastLlmSwitchBasisPlanOptions -Options $O } $rpOptions
+        Check ($null -ne $rpChecked -and [string]$rpChecked['Vision'] -ceq 'on' -and [string]$rpChecked['KvContextProfile'] -ceq 'long') 'vision switch basis: the saved basis keeps -Vision on (the closed key check accepts it)'
+        $rpBadVision=& $module { ConvertTo-FastLlmSwitchBasisPlanOptions -Options @{ Profile='balanced'; Vision='ON' } }
+        Check ($null -eq $rpBadVision) 'vision switch basis: a saved basis with a Vision value other than off|on (exact case) is not used'
+    }
+    finally {
+        & $module {
+            param($Saved)
+            Set-Item -Path Function:script:Assert-FastLlmVisionStartable -Value $Saved.vision
+            Set-Item -Path Function:script:Assert-FastLlmWindowsPrerequisites -Value $Saved.prerequisites
+            Set-Item -Path Function:script:Test-FastLlmEngineInstallation -Value $Saved.engineInstall
+            Set-Item -Path Function:script:Get-FastLlmEngineExecutable -Value $Saved.engineExe
+            Set-Item -Path Function:script:Test-FastLlmFileHash -Value $Saved.hash
+            Set-Item -Path Function:script:Test-FastLlmModelConsentReceipt -Value $Saved.consent
+            Set-Item -Path Function:script:Get-FastLlmHardware -Value $Saved.hardware
+            Set-Item -Path Function:script:Invoke-FastLlmSupervisedServer -Value $Saved.supervised
+        } $rpBoundaries
+    }
+
     Write-Host "optin-arguments-tests: $script:count checks passed"
 }
 finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
