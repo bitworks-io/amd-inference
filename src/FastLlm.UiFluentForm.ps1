@@ -49,7 +49,8 @@ function New-FastLlmUiFormAdapter {
     $invokeClosing = ${function:Invoke-FastLlmUiFormClosing}
     $closing = {
         param($sender, $e)
-        if (& $invokeClosing -Form $state.Form -CloseReason ([System.Windows.Forms.CloseReason]::UserClosing)) { $e.Cancel = $true }
+        $cancel = [bool] (@(& $invokeClosing -Form $state.Form -CloseReason ([System.Windows.Forms.CloseReason]::UserClosing)) | Select-Object -Last 1)
+        if ($cancel) { $e.Cancel = $true }
     }.GetNewClosure()
     $Window.add_Closing($closing)
 
@@ -82,6 +83,7 @@ function New-FastLlmUiFormAdapter {
     return $native
 }
 
+# Contract: the function returns exactly ONE [bool] (handler output is discarded), so callers (the Closing closure, the session-end hook) can use it in an if.
 # Runs every FormClosing handler in order as ( $form, FormClosingEventArgs ). Returns $true when the close is cancelled.
 # A throwing handler cancels the close (the guards fail safe) and the exception is re-raised on the dispatcher with BeginInvoke,
 # because an exception thrown inside a WPF event handler would otherwise be lost; this keeps it visible.
@@ -95,7 +97,7 @@ function Invoke-FastLlmUiFormClosing {
     $fcArgs = New-Object System.Windows.Forms.FormClosingEventArgs($CloseReason, $false)
     $state['Closing'] = $true
     try {
-        foreach ($h in @($state.FormClosing)) { & $h $Form $fcArgs }
+        foreach ($h in @($state.FormClosing)) { $null = & $h $Form $fcArgs }
     }
     catch {
         $ex = $_
