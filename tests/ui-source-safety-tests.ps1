@@ -289,12 +289,20 @@ if($env:OS -eq 'Windows_NT'){
 }
 
 # ASCII
-$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/WindowsFluentWindow.cs',
+$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/WindowsFluentWindow.cs','src/WindowsFluentAutomation.cs',
     'tests/ui-fluent-members-tests.ps1','tests/ui-fluent-parity-tests.ps1',
     'tests/ui-fluent-shell-tests.ps1','tests/helpers/FluentHostNative.cs',
     'tests/helpers/UiControlStatesMatrix.ps1','tests/helpers/New-UiControlStatesGolden.ps1','tests/ui-control-states-tests.ps1',
     'tests/ui-card-state-tests.ps1','tests/ui-fluent-adapter-tests.ps1','tests/ui-fluent-support-tests.ps1','tests/ui-theme-tests.ps1','tests/ui-window-tests.ps1','tests/ui-source-safety-tests.ps1',
     'tests/helpers/UiRenderHarness.ps1','tests/ui-render-tests.ps1'
+# AccessibilityView is not a WPF API: markup or code that sets it fails at run time on the user's PC, so no file under src/ may contain it.
+function Test-HasAccessibilityView([string]$Text){return ($Text.IndexOf('AccessibilityView',[StringComparison]::OrdinalIgnoreCase) -ge 0)}
+Check (Test-HasAccessibilityView 'AutomationProperties.AccessibilityView="Raw"') 'self-check: the text AccessibilityView is flagged'
+Check (Test-HasAccessibilityView 'x accessibilityview y') 'self-check: the text is matched case-insensitively'
+Check (-not (Test-HasAccessibilityView 'IsControlElement')) 'self-check: unrelated text is not flagged'
+foreach($f in @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File -Recurse)){
+    Check (-not (Test-HasAccessibilityView ([IO.File]::ReadAllText($f.FullName)))) ('no AccessibilityView in '+(Get-RepoRelativePath $f.FullName))
+}
 function Test-AsciiBytes([byte[]]$Bytes){foreach($b in $Bytes){if($b -ge 0x80){return $false}};return $true}
 Check (-not (Test-AsciiBytes ([byte[]](0x41,0xC3,0xA9)))) 'self-check: a non-ASCII byte is flagged'
 foreach($rel in $asciiFiles){

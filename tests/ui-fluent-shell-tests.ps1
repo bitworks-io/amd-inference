@@ -601,18 +601,22 @@ function Invoke-B7-Unregister {
 # Part B2: hook semantics (behaviour through SendMessage to our own hwnd; handlers are plain scriptblocks, the real shape)
 # ======================================================================================================================
 
-$script:hRuns = 0
 $script:hAnswer = ''
 $script:hCap = ''
 $script:hForm = $null
 $script:hWin = $null
+$script:hRunsRef = @{ n = 0 }
+# The counter is a reference object: a timer closure runs in its own module scope and cannot read $script: state.
+function Step-ShellRun([hashtable]$Counter) { $Counter.n++ }
 
 function Invoke-H1-ReentrantQuery {
     $s = New-Scn 'h1'; $form = $s.Form; $w = $s.Window
-    $script:hRuns = 0; $script:hAnswer = ''; $script:hForm = $form
+    $runs = @{ n = 0 }
+    $script:hRunsRef = $runs
+    $script:hAnswer = ''; $script:hForm = $form
     $script:hCap = 'FastLLM shell hook H1 ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     $form.Add_FormClosing({ param($sender, $event)
-        $script:hRuns++
+        Step-ShellRun $script:hRunsRef
         $r = [System.Windows.Forms.MessageBox]::Show($script:hForm, 'Close?', $script:hCap, 'YesNo', 'Question')
         $script:hAnswer = [string]$r
         if ($r -ne 'Yes') { $event.Cancel = $true } })
@@ -631,7 +635,7 @@ function Invoke-H1-ReentrantQuery {
         if ($h.ToInt64() -ne 0) {
             if (-not $st.q) {
                 $st.q = $true; $st.at = $ms
-                $st.runsAtQuery = $script:hRuns
+                $st.runsAtQuery = $runs.n
                 $st.result = $nat::SendMessage($hw, [uint32]0x0011, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
             }
             elseif (($ms - $st.at) -gt 300) { $null = $nat::PostButtonClick($h, 7); if (($ms - $st.at) -gt 2000) { $null = $nat::PostCommand($h, 7) } }
@@ -644,7 +648,7 @@ function Invoke-H1-ReentrantQuery {
     Invoke-Pump 150
     Check ($st.q -and -not $st.timedOut) 'H1 the guard box appeared and the query was sent from inside its modal loop' "q=$($st.q) timedOut=$($st.timedOut)"
     Check ($st.result -eq 0) 'H1 WM_QUERYENDSESSION while a guard box is up returns 0 (refused)' "result=$($st.result) expected=0"
-    Check ($script:hRuns -eq 1 -and $st.runsAtQuery -eq 1) 'H1 no second guard box opened: the handler ran once' "runs=$($script:hRuns) runsAtQuery=$($st.runsAtQuery) expected=1"
+    Check ($runs.n -eq 1 -and $st.runsAtQuery -eq 1) 'H1 no second guard box opened: the handler ran once' "runs=$($runs.n) runsAtQuery=$($st.runsAtQuery) expected=1"
     Check ($script:hAnswer -eq 'No' -and $w.IsVisible -and $s.Closed.n -eq 0) 'H1 after No the window is open' "answer=$($script:hAnswer) IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
     $form.FastLlmFormState.FormClosing.Clear()
     $msg = ''
@@ -672,19 +676,25 @@ function Invoke-H2-ThrowingQuery {
     Check-NoExceptions 'H2'
 }
 
+# How many hook entries the hooks file holds for this window (matched by reference).
+function Get-ShellHookEntryCount($Window) {
+    $n = 0
+    foreach ($e in @($script:FastLlmUiHookEntries)) { if ([object]::ReferenceEquals($e.Window.PSObject.BaseObject, $Window.PSObject.BaseObject)) { $n++ } }
+    return $n
+}
+
 function Invoke-H3-UnregisterOnClosed {
     $s = New-Scn 'h3'; $form = $s.Form; $w = $s.Window
     $script:hWin = $w
-    $key = [string]$s.Hwnd.ToInt64()
     $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
     $w.Add_Closed({ Unregister-FastLlmUiWindowHooks -Window $script:hWin })
     Show-Scn $s
-    Check ($script:FastLlmUiHookState.ContainsKey($key)) 'H3 the hook state holds an entry for the window after Register' "key=$key"
+    Check ((Get-ShellHookEntryCount $w) -eq 1) 'H3 the hook state holds one entry for the window after Register' "entries=$(Get-ShellHookEntryCount $w)"
     $form.Close()
     Invoke-Pump 300 ({ $s.Closed.n -ge 1 }).GetNewClosure()
     Invoke-Pump 100
     Check ($s.Closed.n -eq 1) 'H3 the window closed' "closed=$($s.Closed.n)"
-    Check (-not $script:FastLlmUiHookState.ContainsKey($key)) 'H3 Unregister called from Closed leaves no hook state entry for the window' "key=$key still present"
+    Check ((Get-ShellHookEntryCount $w) -eq 0) 'H3 Unregister called from Closed leaves no hook state entry for the window' "entries=$(Get-ShellHookEntryCount $w)"
     $e1 = ''; try { Unregister-FastLlmUiWindowHooks -Window $w } catch { $e1 = $_.Exception.Message }
     Check ($e1 -eq '') 'H3 a second Unregister is a no-op' $e1
     Check-NoExceptions 'H3'
@@ -1160,6 +1170,116 @@ function Invoke-S8-DispatcherHandler {
     Check-NoExceptions 'S8'
 }
 
+# The peers the UIA ControlViewWalker would reach below a peer: every descendant peer whose IsControlElement() is true (the walk passes through
+# the ones that are not, as UIA does).
+function Get-ShellControlViewPeers($Peer) {
+    $out = New-Object System.Collections.ArrayList
+    $walk = $null
+    $walk = {
+        param($p)
+        try { $p.ResetChildrenCache() } catch { $null = $_ }
+        foreach ($c in @($p.GetChildren())) {
+            if ($null -eq $c) { continue }
+            if ($c.IsControlElement()) { [void]$out.Add($c) }
+            & $walk $c
+        }
+    }
+    & $walk $Peer
+    return , $out.ToArray()
+}
+
+# The element's own peer, or the peer of its nearest ancestor that has one (a StackPanel has none).
+function Get-ShellNearestPeer($Element) {
+    $up = $Element
+    while ($null -ne $up) {
+        if ($up -is [System.Windows.UIElement]) {
+            $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($up)
+            if ($null -ne $peer) { return $peer }
+        }
+        $up = [System.Windows.Media.VisualTreeHelper]::GetParent($up)
+    }
+    return $null
+}
+
+function Test-ShellPrivateUseText([string]$Text) {
+    if ($Text.Length -eq 0) { return $false }
+    foreach ($c in $Text.ToCharArray()) { if ([int]$c -lt 0xE000 -or [int]$c -gt 0xF8FF) { return $false } }
+    return $true
+}
+
+# One decorative glyph below an element: the glyph is in the visual tree and visible, is not among the control-view peers, and the element still has a name.
+function Test-ShellGlyphHidden([string]$CheckName, $Element) {
+    $glyph = $null
+    foreach ($n in @(Get-ShellVisuals $Element)) { if ($n -is [System.Windows.Controls.TextBlock] -and (Test-ShellPrivateUseText ([string]$n.Text))) { $glyph = $n; break } }
+    $peer = Get-ShellNearestPeer $Element
+    if ($null -eq $peer) { Check $false $CheckName 'no automation peer for the element or any ancestor'; return }
+    $name = [string]$peer.GetName()
+    $kept = @(Get-ShellControlViewPeers $peer)
+    $bad = New-Object System.Collections.ArrayList
+    foreach ($k in $kept) {
+        Write-Host ("INFO: " + $CheckName + " control-view peer " + $k.GetType().Name + " class=" + $k.GetClassName() + " name='" + $k.GetName() + "'")
+        if ($k -is [System.Windows.Automation.Peers.UIElementAutomationPeer]) {
+            $o = $k.Owner
+            if ($o -is [System.Windows.Controls.TextBlock] -and ((Test-ShellPrivateUseText ([string]$o.Text)) -or ($null -ne $glyph -and [object]::ReferenceEquals($o, $glyph)))) { [void]$bad.Add($k.GetType().Name + ':' + [string]$o.Text) }
+        }
+    }
+    Write-Host ("INFO: " + $CheckName + " own peer " + $peer.GetType().Name + " name='" + $name + "' control-view peers=" + $kept.Count)
+    $ok = ($null -ne $glyph) -and [bool]$glyph.IsVisible -and ($bad.Count -eq 0) -and (Test-ShellNameReadable $name)
+    Check $ok $CheckName "glyphFound=$($null -ne $glyph) glyphVisible=$(if ($null -ne $glyph) { $glyph.IsVisible } else { 'n/a' }) glyphPeersInControlView=[$($bad -join ',')] name='$name'"
+}
+
+function Invoke-S9-GlyphControlView {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    Test-ShellGlyphHidden 'S9 nav item: glyph not in the UIA control view; name present' $els.NavHome
+    $script:shellSnap = New-ShellSnap @{ ChildActive = $true; Step = 'model download' }
+    Invoke-FastLlmUiFluentTick
+    Invoke-Pump 250
+    $els.StepsPanel.UpdateLayout()
+    $row = $null
+    if ($els.StepsPanel.Children.Count -gt 0) { $row = $els.StepsPanel.Children[0] }
+    if ($null -eq $row) { Check $false 'S9 Home step row: mark not in the UIA control view; name present' 'the starting state produced no step rows' }
+    else { Test-ShellGlyphHidden 'S9 Home step row: mark not in the UIA control view; name present' $row }
+    $script:shellSnap = New-ShellSnap
+    Invoke-FastLlmUiFluentTick
+
+    # Negative control: a plain TextBlock with a private-use glyph IS in the control view, so the walker can see glyphs at all.
+    $plain = New-Object System.Windows.Controls.TextBlock
+    $plain.Text = [string][char]0xE80F
+    [void]$els.QuickPanel.Children.Add($plain)
+    try {
+        Invoke-Pump 150
+        $els.QuickPanel.UpdateLayout()
+        $holder = Get-ShellNearestPeer $els.QuickPanel
+        $found = $false
+        if ($null -ne $holder) {
+            foreach ($k in @(Get-ShellControlViewPeers $holder)) {
+                if ($k -is [System.Windows.Automation.Peers.UIElementAutomationPeer] -and [object]::ReferenceEquals($k.Owner, $plain)) { $found = $true }
+            }
+        }
+        Check ($found -and [bool]$plain.IsVisible) 'S9 negative control: a plain TextBlock glyph IS in the UIA control view' "holder=$($null -ne $holder) found=$found visible=$($plain.IsVisible)"
+    }
+    finally { $els.QuickPanel.Children.Remove($plain) }
+
+    # The peer of the decorative type reports neither a control nor a content element.
+    $deco = New-Object Bitworks.FastLlm.DecorativeTextBlock
+    $deco.Text = [string][char]0xE80F
+    $dp = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($deco)
+    Check ($null -ne $dp -and $dp.IsControlElement() -eq $false -and $dp.IsContentElement() -eq $false) 'S9 DecorativeTextBlock peer is neither a control nor a content element' "peer=$dp control=$(if ($null -ne $dp) { $dp.IsControlElement() }) content=$(if ($null -ne $dp) { $dp.IsContentElement() })"
+
+    # A second load of the automation source must hit the type guard: Windows PowerShell 5.1 throws on a duplicate type.
+    $typeBefore = 'Bitworks.FastLlm.DecorativeTextBlock' -as [type]
+    $script:addTypeCalls = 0
+    function Add-Type { $script:addTypeCalls++; Microsoft.PowerShell.Utility\Add-Type @args }
+    $loadErr = ''
+    try { Initialize-FastLlmUiFluentAutomation -SourceRoot $root } catch { $loadErr = $_.Exception.Message }
+    Remove-Item -Path Function:\Add-Type -ErrorAction SilentlyContinue
+    $typeAfter = 'Bitworks.FastLlm.DecorativeTextBlock' -as [type]
+    Check ($loadErr -eq '' -and $script:addTypeCalls -eq 0 -and $null -ne $typeBefore -and [object]::ReferenceEquals($typeBefore, $typeAfter)) 'S9 a second load of the automation source hits the type guard (no Add-Type)' "error=$loadErr addTypeCalls=$($script:addTypeCalls) sameType=$([object]::ReferenceEquals($typeBefore, $typeAfter))"
+    Check-NoExceptions 'S9'
+}
+
 $script:steps = @(
     'Invoke-A1-CloseCancelled', 'Invoke-A1c-CloseCancelledClosure', 'Invoke-A2-CloseAllowed', 'Invoke-A3-BoxNo', 'Invoke-A4-BoxYes', 'Invoke-A5-CloseInsideHandler',
     'Invoke-A6-ThrowingHandler', 'Invoke-A7-Visible', 'Invoke-A8-RestoreFromTray', 'Invoke-A9-Shown', 'Invoke-A10-Owner',
@@ -1170,7 +1290,7 @@ $script:steps = @(
     'Invoke-H6-PassThrough', 'Invoke-H7-DpiEvidence',
     # S0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-S0-ShellStart', 'Invoke-S1-Shown', 'Invoke-S2-Bindings', 'Invoke-S3-HomeParity', 'Invoke-S4-Resources', 'Invoke-S5-SplitMenu', 'Invoke-S6-Nav',
-    'Invoke-S7-ShellTheme', 'Invoke-S8-DispatcherHandler'
+    'Invoke-S7-ShellTheme', 'Invoke-S8-DispatcherHandler', 'Invoke-S9-GlyphControlView'
 )
 
 $tick = New-Object System.Windows.Threading.DispatcherTimer
