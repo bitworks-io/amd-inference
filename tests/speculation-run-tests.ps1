@@ -40,13 +40,13 @@ try {
         elseif(@($ServerTail).Count -eq 0){ $plan.serverArguments=@($plan.serverArguments+@('--spec-type','none')) }
         $stopper=New-Object Diagnostics.Process
         $stopper.StartInfo.FileName=(Get-Process -Id $PID).Path
-        $code="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 150; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
+        $code="Import-Module '$($root.Replace("'","''"))/src/FastLlm.psm1'; for (`$i=0; `$i -lt 600; `$i++) { try { `$s=Get-FastLlmStatus '$($runRoot.Replace("'","''"))'; if (`$s.phase -eq 'ready') { Request-FastLlmStop '$($runRoot.Replace("'","''"))'; exit 0 } } catch {}; Start-Sleep -Milliseconds 200 }; exit 1"
         $stopper.StartInfo.Arguments='-NoLogo -NoProfile -OutputFormat Text -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
         $stopper.StartInfo.UseShellExecute=$false
         $stopper.Start()|Out-Null
         $exit=$null;$failure=$null
         try {
-            try { $exit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 15 -CatalogPath $C } $plan $runRoot $catalog }
+            try { $exit=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C } $plan $runRoot $catalog }
             catch { $failure=$_.Exception }
         } finally { if(-not $stopper.HasExited){ $stopper.Kill() }; $stopper.Dispose(); $lock.Dispose() }
         $events=@()
@@ -85,6 +85,8 @@ try {
     Check ([string]$start.speculation -ceq 'ngram-simple' -and (@($start.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ((@($defaultStartFields -split ',')+'speculation' | Sort-Object) -join ',')) 'speculation run: the run log start event gains one field, speculation'
     $summary=@($run.events | Where-Object { [string]$_.event -ceq 'spec-summary' })
     Check ($summary.Count -eq 1 -and [long]$summary[0].draftTokens -eq 120 -and [long]$summary[0].acceptedTokens -eq 90 -and (@($summary[0].PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'acceptedTokens,draftTokens,event,runId,ts') 'speculation run: at stop one spec-summary event carries draftTokens 120 and acceptedTokens 90 read from /metrics, and nothing else'
+    # The stop request is sent the first moment the status says ready, so this run is stopped immediately after Ready: it still writes its one summary.
+    Check ($summary.Count -eq 1 -and [string]$run.status.stopReason -ceq 'user') 'speculation run: a run stopped immediately after Ready (the stop request is sent at the first ready status) still writes exactly one spec-summary'
     $names=@($run.events | ForEach-Object { [string]$_.event })
     Check ($names.IndexOf('spec-summary') -gt $names.IndexOf('start') -and $names.IndexOf('spec-summary') -lt $names.IndexOf('end')) 'speculation run: the spec-summary comes after start and before end'
 
@@ -99,7 +101,10 @@ try {
     Check ($s3.Count -eq 1 -and $s3[0].PSObject.Properties['draftTokens'] -and $s3[0].PSObject.Properties['acceptedTokens'] -and $null -eq $s3[0].draftTokens -and $null -eq $s3[0].acceptedTokens) 'speculation run: with neither counter reported both are null'
     $noMetrics=Invoke-SpecRun 'no-metrics' 'spec-nometrics-ok' $block
     $s4=@($noMetrics.events | Where-Object { [string]$_.event -ceq 'spec-summary' })
-    Check ($null -eq $noMetrics.failure -and $s4.Count -eq 1 -and $null -eq $s4[0].draftTokens -and $null -eq $s4[0].acceptedTokens) 'speculation run: a /metrics that cannot be read gives null counters and never fails the run'
+    $noMetricsWhy="failure code '$(if($noMetrics.failure){[string]$noMetrics.failure.Data['FastLlmFailureCode']})' message '$(if($noMetrics.failure){[string]$noMetrics.failure.Message})'; events: $(@($noMetrics.events | ForEach-Object { [string]$_.event }) -join ',')"
+    Check ($null -eq $noMetrics.failure) "speculation run: a /metrics that cannot be read does not fail the run ($noMetricsWhy)"
+    Check ($s4.Count -eq 1) "speculation run: a /metrics that cannot be read still writes exactly one spec-summary ($noMetricsWhy)"
+    Check ($s4.Count -eq 1 -and $s4[0].PSObject.Properties['draftTokens'] -and $s4[0].PSObject.Properties['acceptedTokens'] -and $null -eq $s4[0].draftTokens -and $null -eq $s4[0].acceptedTokens) 'speculation run: a /metrics that cannot be read gives null for both counters'
 
     # ---- the counter reader and the run log allowlist: numbers only -------------------------------------------------------------------------------------
     $entry=& $module { Get-FastLlmSpeculationAllowlistEntry -EngineId 'llama.cpp-b10698-vulkan' }

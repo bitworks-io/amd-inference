@@ -1971,7 +1971,13 @@ function Invoke-FastLlmSupervisedServer {
         if ($speculation -and $reachedReady -and $spawned) {
             try {
                 $summaryText = $null
-                try { $summaryText = Get-FastLlmIdleMetricsText -BaseUrl $baseUrl -Request $apiKeyRequest } catch { $summaryText = $null }
+                # A longer wait than the idle read's 250 ms: a busy PC must not turn a readable /metrics into null counters (the stop is already decided).
+                try {
+                    $summaryResponse = $null
+                    if ($apiKeyRequest) { $summaryResponse = & $apiKeyRequest '/metrics' $null 3000 }
+                    else { $summaryResponse = Invoke-FastLlmHttp -BaseUrl $baseUrl -Path '/metrics' -TimeoutMs 3000 }
+                    if ($null -ne $summaryResponse -and [int] $summaryResponse.Status -eq 200) { $summaryText = [string] $summaryResponse.Body }
+                } catch { $summaryText = $null }
                 $summaryEntry = Get-FastLlmSpeculationAllowlistEntry -EngineId ([string] $speculation.engineId)
                 $summaryCounters = Get-FastLlmSpeculationCounters -MetricsText ([string] $summaryText) -Counters $summaryEntry.counters
                 Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'spec-summary' -Fields { Get-FastLlmRunLogSpecSummaryFields -Counters $summaryCounters }
