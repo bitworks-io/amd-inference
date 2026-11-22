@@ -83,27 +83,48 @@ function Check-NoExceptions([string]$Name) {
     $script:dispEx.Clear(); $script:threadEx.Clear()
 }
 
-# A WinForms timer that finds a message box by its caption, records the owner and the WPF window state, then presses a button.
+# A WinForms timer that finds a message box by its caption, records the owner and the WPF window state, then closes it with an escalation
+# ladder, one rung per second: BM_CLICK(id), WM_COMMAND(id), WM_COMMAND(IDCANCEL), WM_CLOSE. A YesNo box ignores WM_CLOSE, so the ladder starts with the button.
+# Records which rung closed the box and whether buttons 1 and 2 exist. After 6 s a still-open box gets WM_CLOSE and hardStop is set (the caller fails the case).
 function Start-BoxAnswer([string]$Caption, [int]$ButtonId, [IntPtr]$Hwnd, [hashtable]$St) {
-    $St.found = $false; $St.during = $null; $St.owner = [long]0; $St.timedOut = $false
+    $St.found = $false; $St.during = $null; $St.owner = [long]0; $St.timedOut = $false; $St.hardStop = $false; $St.rung = ''; $St.closedBy = ''
     $st = $St
     $nat = $script:native
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $loc = @{ clickAt = [long]-100000; foundAt = [long]0 }
+    $loc = @{ rung = -1; foundAt = [long]0; last = '' }
+    $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND IDCANCEL', 'WM_CLOSE')
     $t = New-Object System.Windows.Forms.Timer
     $t.Interval = 50
     $t.Add_Tick(({
         $h = $nat::FindWindowByTitle($Caption)
         $ms = $sw.ElapsedMilliseconds
         if ($h.ToInt64() -ne 0) {
-            if (-not $st.found) { $st.found = $true; $loc.foundAt = $ms; $st.during = $nat::IsWindowEnabled($Hwnd); $st.owner = $nat::GetOwner($h).ToInt64() }
-            if (($ms - $loc.clickAt) -gt 1000) {
-                $loc.clickAt = $ms
-                # BM_CLICK first; if the box is still there a second later, WM_COMMAND to the box itself
-                if (($ms - $loc.foundAt) -lt 1000) { $null = $nat::PostButtonClick($h, $ButtonId) } else { $null = $nat::PostCommand($h, $ButtonId) }
+            if (-not $st.found) {
+                $st.found = $true; $loc.foundAt = $ms; $st.during = $nat::IsWindowEnabled($Hwnd); $st.owner = $nat::GetOwner($h).ToInt64()
+                $ok = ($nat::GetDlgItem($h, 1).ToInt64() -ne 0); $cancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0)
+                Write-Host ("INFO: box '" + $Caption + "' has button id 1 (OK)=" + $ok + " id 2 (Cancel)=" + $cancel)
+            }
+            $age = $ms - $loc.foundAt
+            if ($age -ge 6000) {
+                if (-not $st.hardStop) { $st.hardStop = $true; $null = $nat::PostClose($h) }
+            }
+            else {
+                $rung = [int][Math]::Floor($age / 1000)
+                if ($rung -gt $loc.rung) {
+                    $loc.rung = $rung
+                    $idx = [Math]::Min($rung, 3)
+                    $loc.last = $names[$idx]; $st.rung = $loc.last
+                    if ($idx -eq 0) { $null = $nat::PostButtonClick($h, $ButtonId) }
+                    elseif ($idx -eq 1) { $null = $nat::PostCommand($h, $ButtonId) }
+                    elseif ($idx -eq 2) { $null = $nat::PostCommand($h, 2) }
+                    else { $null = $nat::PostClose($h) }
+                }
             }
         }
-        elseif (-not $st.found -and $ms -gt 8000) { $st.timedOut = $true; $t.Stop() }
+        else {
+            if ($st.found -and $st.closedBy -eq '') { $st.closedBy = $loc.last; Write-Host ("INFO: box '" + $Caption + "' closed by rung: " + $loc.last) }
+            elseif (-not $st.found -and $ms -gt 8000) { $st.timedOut = $true; $t.Stop() }
+        }
     }).GetNewClosure())
     $script:objs.Add($t)
     $t.Start()
@@ -213,7 +234,7 @@ function Invoke-A3-BoxNo {
     $t = Start-BoxAnswer $cap 7 $s.Hwnd $box
     try { $form.Close() } finally { $t.Stop() }
     Invoke-Pump 100
-    Check ($box.found -and -not $box.timedOut) 'A3 the guard message box appeared' "found=$($box.found) timedOut=$($box.timedOut)"
+    Check ($box.found -and -not $box.timedOut -and -not $box.hardStop) 'A3 the guard message box appeared and closed within 6 s' "found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) lastRung=$($box.rung)"
     Check ($box.owner -eq $s.Hwnd.ToInt64()) 'A3 the guard box is owned by the WPF window handle' "GW_OWNER=$($box.owner) expected=$($s.Hwnd.ToInt64())"
     Check ($box.during -eq $false) 'A3 the WPF window is disabled while the guard box is up' "IsWindowEnabled during=$($box.during) expected=False"
     Check ($st.answer -eq 'No') 'A3 the box was answered No' "answer=$($st.answer)"
@@ -343,7 +364,7 @@ function Invoke-A10-Owner {
         $box = @{}
         $t = Start-BoxAnswer $cap $c.id $s.Hwnd $box
         try { $null = & $c.call $cap } finally { $t.Stop() }
-        Check ($box.found -and -not $box.timedOut) ("A10 " + $c.tag + ' appeared') "found=$($box.found) timedOut=$($box.timedOut)"
+        Check ($box.found -and -not $box.timedOut -and -not $box.hardStop) ("A10 " + $c.tag + ' appeared and closed within 6 s') "found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) lastRung=$($box.rung) closedBy=$($box.closedBy)"
         Check ($box.owner -eq $hw) ("A10 " + $c.tag + ' owner is the WPF window handle') "GW_OWNER=$($box.owner) expected=$hw"
     }
     Check-NoExceptions 'A10'
@@ -577,15 +598,579 @@ function Invoke-B7-Unregister {
 }
 
 # ======================================================================================================================
-# Part B (added later): shell bindings, Home parity and render checks. Append their step functions below and add them to $script:steps.
+# Part B2: hook semantics (behaviour through SendMessage to our own hwnd; handlers are plain scriptblocks, the real shape)
 # ======================================================================================================================
+
+$script:hRuns = 0
+$script:hAnswer = ''
+$script:hCap = ''
+$script:hForm = $null
+$script:hWin = $null
+
+function Invoke-H1-ReentrantQuery {
+    $s = New-Scn 'h1'; $form = $s.Form; $w = $s.Window
+    $script:hRuns = 0; $script:hAnswer = ''; $script:hForm = $form
+    $script:hCap = 'FastLLM shell hook H1 ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $form.Add_FormClosing({ param($sender, $event)
+        $script:hRuns++
+        $r = [System.Windows.Forms.MessageBox]::Show($script:hForm, 'Close?', $script:hCap, 'YesNo', 'Question')
+        $script:hAnswer = [string]$r
+        if ($r -ne 'Yes') { $event.Cancel = $true } })
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
+    Show-Scn $s
+    $nat = $script:native
+    $hw = $s.Hwnd
+    $cap = $script:hCap
+    $st = @{ q = $false; result = [long]-1; runsAtQuery = -1; at = [long]0; timedOut = $false }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $t = New-Object System.Windows.Forms.Timer
+    $t.Interval = 50
+    $t.Add_Tick(({
+        $h = $nat::FindWindowByTitle($cap)
+        $ms = $sw.ElapsedMilliseconds
+        if ($h.ToInt64() -ne 0) {
+            if (-not $st.q) {
+                $st.q = $true; $st.at = $ms
+                $st.runsAtQuery = $script:hRuns
+                $st.result = $nat::SendMessage($hw, [uint32]0x0011, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+            }
+            elseif (($ms - $st.at) -gt 300) { $null = $nat::PostButtonClick($h, 7); if (($ms - $st.at) -gt 2000) { $null = $nat::PostCommand($h, 7) } }
+        }
+        elseif (-not $st.q -and $ms -gt 8000) { $st.timedOut = $true; $t.Stop() }
+    }).GetNewClosure())
+    $script:objs.Add($t)
+    $t.Start()
+    try { $form.Close() } finally { $t.Stop() }
+    Invoke-Pump 150
+    Check ($st.q -and -not $st.timedOut) 'H1 the guard box appeared and the query was sent from inside its modal loop' "q=$($st.q) timedOut=$($st.timedOut)"
+    Check ($st.result -eq 0) 'H1 WM_QUERYENDSESSION while a guard box is up returns 0 (refused)' "result=$($st.result) expected=0"
+    Check ($script:hRuns -eq 1 -and $st.runsAtQuery -eq 1) 'H1 no second guard box opened: the handler ran once' "runs=$($script:hRuns) runsAtQuery=$($st.runsAtQuery) expected=1"
+    Check ($script:hAnswer -eq 'No' -and $w.IsVisible -and $s.Closed.n -eq 0) 'H1 after No the window is open' "answer=$($script:hAnswer) IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
+    $form.FastLlmFormState.FormClosing.Clear()
+    $msg = ''
+    try { $form.Close() } catch { $msg = $_.Exception.Message }
+    Invoke-Pump 200 ({ $s.Closed.n -ge 1 }).GetNewClosure()
+    Check ($msg -eq '' -and $s.Closed.n -eq 1) 'H1 a later Close() with no cancelling handler closes it without an exception' "message=$msg closed=$($s.Closed.n)"
+    Check-NoExceptions 'H1'
+}
+
+function Invoke-H2-ThrowingQuery {
+    $s = New-Scn 'h2'; $form = $s.Form; $w = $s.Window
+    $form.Add_FormClosing({ param($sender, $event) throw 'query failed' })
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
+    Show-Scn $s
+    $de = $script:dispEx
+    $r = $script:native::SendMessage($s.Hwnd, [uint32]0x0011, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    Invoke-Pump 600 ({ $de.Count -ge 1 }).GetNewClosure()
+    Invoke-Pump 200
+    $msgs = @($script:dispEx.ToArray())
+    Check ($r -eq 0) 'H2 a throwing handler on WM_QUERYENDSESSION refuses it (returns 0)' "result=$r expected=0"
+    Check ($msgs.Count -eq 1 -and ($msgs -join ' ') -match 'query failed') 'H2 exactly one dispatcher exception is recorded for it' "count=$($msgs.Count) text=$($msgs -join ' | ')"
+    Check ($w.IsVisible -and $s.Closed.n -eq 0) 'H2 the window stays open' "IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
+    $script:dispEx.Clear()
+    Unregister-FastLlmUiWindowHooks -Window $w
+    Check-NoExceptions 'H2'
+}
+
+function Invoke-H3-UnregisterOnClosed {
+    $s = New-Scn 'h3'; $form = $s.Form; $w = $s.Window
+    $script:hWin = $w
+    $key = [string]$s.Hwnd.ToInt64()
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
+    $w.Add_Closed({ Unregister-FastLlmUiWindowHooks -Window $script:hWin })
+    Show-Scn $s
+    Check ($script:FastLlmUiHookState.ContainsKey($key)) 'H3 the hook state holds an entry for the window after Register' "key=$key"
+    $form.Close()
+    Invoke-Pump 300 ({ $s.Closed.n -ge 1 }).GetNewClosure()
+    Invoke-Pump 100
+    Check ($s.Closed.n -eq 1) 'H3 the window closed' "closed=$($s.Closed.n)"
+    Check (-not $script:FastLlmUiHookState.ContainsKey($key)) 'H3 Unregister called from Closed leaves no hook state entry for the window' "key=$key still present"
+    $e1 = ''; try { Unregister-FastLlmUiWindowHooks -Window $w } catch { $e1 = $_.Exception.Message }
+    Check ($e1 -eq '') 'H3 a second Unregister is a no-op' $e1
+    Check-NoExceptions 'H3'
+}
+
+function Invoke-H4-ThemeCallbackThrows {
+    $s = New-Scn 'h4'; $form = $s.Form; $w = $s.Window
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { throw 'theme boom' }
+    Show-Scn $s
+    $de = $script:dispEx
+    $null = $script:native::SendMessage($s.Hwnd, [uint32]0x0015, [IntPtr]::Zero, [IntPtr]::Zero)
+    Invoke-Pump 800 ({ $de.Count -ge 1 }).GetNewClosure()
+    Invoke-Pump 300
+    $msgs = @($script:dispEx.ToArray())
+    Check ($msgs.Count -eq 1 -and ($msgs -join ' ') -match 'theme boom') 'H4 a throwing theme callback records exactly one dispatcher exception' "count=$($msgs.Count) text=$($msgs -join ' | ')"
+    Check ($w.IsVisible -and $s.Closed.n -eq 0) 'H4 the window stays open' "IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
+    $script:dispEx.Clear()
+    Unregister-FastLlmUiWindowHooks -Window $w
+    Check-NoExceptions 'H4'
+}
+
+function Invoke-H5-EndSession {
+    $script:shellMark = 0
+    $s = New-Scn 'h5'; $form = $s.Form; $w = $s.Window
+    $form.Add_FormClosing({ param($sender, $event) Set-ShellTestMark; $event.Cancel = $true })
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
+    Show-Scn $s
+    $null = $script:native::SendMessage($s.Hwnd, [uint32]0x0016, [IntPtr]1, [IntPtr]::Zero)
+    Invoke-Pump 300
+    Check ($script:shellMark -eq 0) 'H5 WM_ENDSESSION (wParam 1) does not run FormClosing' "runs=$($script:shellMark) expected=0"
+    Check ($w.IsVisible -and $s.Closed.n -eq 0) 'H5 WM_ENDSESSION leaves the window as it was' "IsVisible=$($w.IsVisible) closed=$($s.Closed.n)"
+    Unregister-FastLlmUiWindowHooks -Window $w
+    Check-NoExceptions 'H5'
+}
+
+function Invoke-H6-PassThrough {
+    $s = New-Scn 'h6'; $form = $s.Form; $w = $s.Window
+    $null = Register-FastLlmUiWindowHooks -Window $w -Form $form -OnThemeChanged { }
+    Show-Scn $s
+    $len = $script:native::SendMessage($s.Hwnd, [uint32]0x000E, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    Check ($len -eq [long]$s.Title.Length) 'H6 an unrelated message passes through: WM_GETTEXTLENGTH returns the title length' "result=$len expected=$($s.Title.Length)"
+    Unregister-FastLlmUiWindowHooks -Window $w
+    Check-NoExceptions 'H6'
+}
+
+function Invoke-H7-DpiEvidence {
+    $a = $script:native::GetDpiAwareness()
+    $names = @{ '0' = 'unaware'; '1' = 'system'; '2' = 'per-monitor'; '-1' = 'invalid'; '-2' = 'not available' }
+    $small = [System.Windows.Forms.SystemInformation]::SmallIconSize
+    Write-Host ("INFO: H7 process DPI awareness=" + $a + " (" + $names[[string]$a] + ") SmallIconSize=" + $small.Width + "x" + $small.Height)
+}
+
+# ======================================================================================================================
+# Part B: the shell (bindings, access text, Home parity, Shown, theme, resources, split menu, nav, dispatcher handler)
+# ======================================================================================================================
+# The suite's own stubs stand in for the orchestration the shell reads (fast-llm-ui.ps1): the snapshot, the failure display and the settings.
+# Initialize-FastLlmUiFluentShell and Start-FastLlmUiFluentLoop run for real. Step S0 enters the loop's Dispatcher.Run: every later step
+# runs from the 50 ms step timer INSIDE that nested frame, which ends when Stop-ShellLoop shuts the dispatcher down.
+
+Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
+. (Join-Path $root 'tests/helpers/UiControlStatesMatrix.ps1')
+. (Join-Path $root 'src/FastLlm.Update.ps1')
+. (Join-Path $root 'src/FastLlm.Components.ps1')
+. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+
+# The real stop function exits the process, so a startup fault would end the suite silently: keep its text for one check, then stand a throwing one in.
+$script:realStopText = [string](Get-Command Stop-FastLlmUiFluentStartup -CommandType Function).Definition
+function Stop-FastLlmUiFluentStartup {
+    param([string]$Reason)
+    throw "startup stopped: $Reason"
+}
+# Counts the runs of the shell's theme update (the window-message hook calls it by name) and then runs the real one.
+$script:origUpdateTheme = ${function:Update-FastLlmUiFluentTheme}
+$script:themeCalls = 0
+function Update-FastLlmUiFluentTheme {
+    $script:themeCalls++
+    & $script:origUpdateTheme
+}
+
+$script:shellSnap = $null
+$script:shellFailMsg = ''
+$script:failureHeld = $false
+$script:shellOk = $false
+$script:shellShown = 0
+$script:shellMenuMark = 0
+$script:shellTitle = ''
+function GetUiStateSnapshot([bool]$Busy) { return $script:shellSnap }
+function GetUiBackgroundRunStatus { return $null }
+function ShowFailure($Message) { $script:shellFailMsg = [string]$Message }
+
+function New-ShellSnap([hashtable]$O = @{}) {
+    $d = @{ Busy = $false; UpdateKind = ''; ChildActive = $false; Step = ''; RunReady = $false; SideChildActive = $false; VcBrokerActive = $false; PreviewReady = $false
+        SwitchGap = $false; ChatUrlSet = $false; BackgroundStopRequested = $false; Background = 'absent'; FlowPhase = ''; FailureHeld = $false }
+    foreach ($k in $O.Keys) { $d[$k] = $O[$k] }
+    $bg = $d.Background
+    if ($bg -is [string]) { $bg = Get-UiBackgroundFixture -Name $bg }
+    return New-FastLlmUiStateSnapshot -Busy $d.Busy -UpdateKind $d.UpdateKind -ChildActive $d.ChildActive -Step $d.Step -RunReady $d.RunReady `
+        -SideChildActive $d.SideChildActive -VcBrokerActive $d.VcBrokerActive -PreviewReady $d.PreviewReady -SwitchGap $d.SwitchGap `
+        -ChatUrlSet $d.ChatUrlSet -BackgroundStopRequested $d.BackgroundStopRequested -Background $bg -FlowPhase $d.FlowPhase -FailureHeld $d.FailureHeld
+}
+
+function Get-ShellVisuals($Root) {
+    $list = New-Object System.Collections.ArrayList
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Root)
+    while ($stack.Count -gt 0) {
+        $n = $stack.Pop()
+        [void]$list.Add($n)
+        $c = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($n)
+        for ($i = 0; $i -lt $c; $i++) { $stack.Push([System.Windows.Media.VisualTreeHelper]::GetChild($n, $i)) }
+    }
+    return , $list.ToArray()
+}
+
+# The text of every TextBlock in an element's visual tree (an AccessText draws its text in an inner TextBlock, without the key underscore).
+function Get-ShellTexts($Root) {
+    $out = New-Object System.Collections.ArrayList
+    foreach ($n in @(Get-ShellVisuals $Root)) { if ($n -is [System.Windows.Controls.TextBlock]) { [void]$out.Add([string]$n.Text) } }
+    return , $out.ToArray()
+}
+
+function Get-ShellPeerName($Element) {
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($Element)
+    if ($null -eq $peer) { return '' }
+    return [string]$peer.GetName()
+}
+
+# True when the name has a character that is not whitespace and not an icon glyph (Private Use Area).
+function Test-ShellNameReadable([string]$Name) {
+    foreach ($c in $Name.ToCharArray()) { if (-not [char]::IsWhiteSpace($c) -and ([int]$c -lt 0xE000 -or [int]$c -gt 0xF8FF)) { return $true } }
+    return $false
+}
+
+function New-ShellClick($Element, $RoutedEvent) {
+    return New-Object System.Windows.RoutedEventArgs($RoutedEvent, $Element)
+}
+
+function Invoke-S0-ShellStart {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fastllm-shell-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $dir)
+    $script:InstallRoot = $dir
+    $script:settingsRoot = $dir
+    $script:installPath = $dir
+    $script:catalog = Get-FastLlmCatalog (Join-Path $root 'config/catalog.json')
+    $script:uiSettings = Read-FastLlmUiSettings -InstallRoot $dir -AppRoot $root
+    $script:shellSnap = New-ShellSnap
+    $classic = New-Object System.Windows.Forms.Form
+    $classic.Text = 'FastLLM shell check ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $script:shellTitle = [string]$classic.Text
+    $script:form = $classic
+
+    $textC1 = Get-FastLlmUiUnsupportedText -Reason 'theme-init' -Folder 'C:\example'
+    $textC2 = Get-FastLlmUiUnsupportedText -Reason 'xaml-parse' -Folder 'C:\example'
+    $shellSource = [System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
+    Check (($textC1 -ceq $textC2) -and $textC1 -match 'a fault in FastLLM') 'S0 the reasons theme-init and xaml-parse give the same text C (a fault in FastLLM)' "theme-init='$textC1' xaml-parse='$textC2'"
+    Check ($script:realStopText -match 'Show-FastLlmUiUnsupported\s+-Reason\s+\$Reason' -and $script:realStopText -match 'exit 3') 'S0 the real Stop-FastLlmUiFluentStartup passes its reason to Show-FastLlmUiUnsupported and exits 3' $script:realStopText
+    Check (($shellSource -match "Stop-FastLlmUiFluentStartup -Reason 'theme-init'") -and ($shellSource -match "Stop-FastLlmUiFluentStartup -Reason 'xaml-parse'")) 'S0 the shell stops with theme-init and xaml-parse on a theme or markup fault' 'a call with one of the two reasons was not found in the shell file'
+
+    $err = ''
+    try { Initialize-FastLlmUiFluentShell } catch { $err = $_.Exception.Message }
+    Check ($err -eq '') 'S0 the startup did not stop (Initialize-FastLlmUiFluentShell returned)' $err
+    if ($err -ne '') { $script:shellOk = $false; return }
+    $script:shellOk = $true
+    $f = $script:FastLlmUiFluent
+    $win = $f.Window
+    Check ($win.Title -ceq $script:shellTitle) 'S0 the shell window carries the classic form title' "title=$($win.Title) expected=$($script:shellTitle)"
+    Check ($null -ne $f.Hooks -and $f.Hooks['hooked'] -eq $true) 'S0 the window hooks registered' "hooks=$($f.Hooks)"
+    Check ($null -ne $script:form.FastLlmFormState) 'S0 the orchestration form is now the form adapter' 'form has no FastLlmFormState'
+    $script:scns.Add([pscustomobject]@{ Window = $win; Form = $script:form; Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($win).Handle; Closed = @{ n = 0 }; Title = $win.Title })
+    $script:form.Add_Shown({ $script:shellShown++ })
+    Check-NoExceptions 'S0'
+    # From here the loop owns the thread. The step timer is not busy any more, so S1 onward run inside the loop's nested frame.
+    $script:busy = $false
+    try { Start-FastLlmUiFluentLoop }
+    catch { $script:fail++; Write-Host "FAIL: S0 Start-FastLlmUiFluentLoop threw -- $($_.Exception.ToString())" }
+}
+
+function Invoke-S1-Shown {
+    if (-not $script:shellOk) { return }
+    $win = $script:FastLlmUiFluent.Window
+    Invoke-Pump 5000 ({ $script:shellShown -ge 1 })
+    Invoke-Pump 700
+    Check ($script:shellShown -eq 1) 'S1 a Shown handler added through form.Add_Shown runs exactly once after the real shell window renders' "runs=$($script:shellShown) expected=1"
+    Check ($win.IsVisible) 'S1 the shell window is visible' "IsVisible=$($win.IsVisible)"
+    Check-NoExceptions 'S1'
+}
+
+function Invoke-S2-Bindings {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    # the detail line
+    $script:statusLabel.Text = 'detail line check one'
+    Check ($els.StatusDetail.Text -ceq 'detail line check one') 'S2 setting statusLabel.Text updates the card detail' "text=$($els.StatusDetail.Text)"
+    # the split button's main part
+    $script:installButton.Enabled = $false
+    Check ($els.InstallButton.IsEnabled -eq $false) 'S2 installButton.Enabled=false disables the main part of the split button' "IsEnabled=$($els.InstallButton.IsEnabled)"
+    $script:installButton.Enabled = $true
+    Check ($els.InstallButton.IsEnabled -eq $true) 'S2 installButton.Enabled=true enables it again' "IsEnabled=$($els.InstallButton.IsEnabled)"
+    # a WPF click runs the plain-scriptblock Click handler of the adapter
+    $script:shellMark = 0
+    $script:installButton.Add_Click({ param($sender, $ea) Set-ShellTestMark })
+    $els.InstallButton.RaiseEvent((New-ShellClick $els.InstallButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Check ($script:shellMark -eq 1) 'S2 a WPF click (ButtonBase.ClickEvent) on the main part runs the installButton Click handler once' "runs=$($script:shellMark) expected=1"
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.InstallButton)
+    $invoke = [System.Windows.Automation.Provider.IInvokeProvider]($peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Invoke))
+    $invoke.Invoke()
+    Invoke-Pump 300 ({ $script:shellMark -ge 2 })
+    Check ($script:shellMark -eq 2) 'S2 an automation Invoke on the main part runs the handler too' "runs=$($script:shellMark) expected=2"
+    # the card headline follows Get-FastLlmUiCardState for three snapshots
+    $snaps = @(
+        @{ Label = 'not running'; Snap = (New-ShellSnap @{}); Held = $false },
+        @{ Label = 'running'; Snap = (New-ShellSnap @{ ChildActive = $true; Step = 'serving'; RunReady = $true }); Held = $false },
+        @{ Label = 'needs attention with a held failure'; Snap = (New-ShellSnap @{ FailureHeld = $true }); Held = $true })
+    $seen = @{}
+    foreach ($c in $snaps) {
+        $script:shellSnap = $c.Snap
+        $script:failureHeld = [bool]$c.Held
+        if ($c.Held) { $script:output.Text = 'failure output check' }
+        Invoke-FastLlmUiFluentTick
+        $want = [string](Get-FastLlmUiCardState -Snapshot $c.Snap).headline
+        $seen[$want] = $true
+        Check ($want -ne '' -and $els.StatusHeadline.Text -ceq $want) ("S2 the card headline follows Get-FastLlmUiCardState: " + $c.Label) "headline=$($els.StatusHeadline.Text) expected=$want"
+    }
+    Check ($seen.Count -eq 3) 'S2 the three snapshots gave three different headlines' "distinct=$($seen.Count) expected=3"
+    Check ($els.FailureBar.Visibility -eq [System.Windows.Visibility]::Visible -and $els.FailureText.Text -ceq 'failure output check') 'S2 the held failure shows in the message area' "visibility=$($els.FailureBar.Visibility) text=$($els.FailureText.Text)"
+    $script:shellSnap = New-ShellSnap
+    $script:failureHeld = $false
+    $script:output.Text = ''
+    Invoke-FastLlmUiFluentTick
+    Check ($els.FailureBar.Visibility -eq [System.Windows.Visibility]::Collapsed) 'S2 the failure bar hides when no failure is held' "visibility=$($els.FailureBar.Visibility)"
+
+    # access text, end to end
+    $script:notesLabel.Text = 'a && b _c'
+    Check ($els.NotesText.Text -ceq 'a & b _c') 'S2 notesLabel (UseMnemonic true) shows what WinForms shows: a & b _c' "text=$($els.NotesText.Text)"
+    $script:notesLabel.Text = ''
+    $script:statusLabel.Text = 'model_a_b'
+    Check ($els.StatusDetail.Text -ceq 'model_a_b') 'S2 statusLabel (UseMnemonic false) shows model_a_b unchanged' "text=$($els.StatusDetail.Text)"
+    $btn = $els.ConnectButton
+    $script:connectButton.UseMnemonic = $false
+    $script:connectButton.Text = 'my_model_id'
+    Invoke-Pump 200
+    $btn.UpdateLayout()
+    $texts = @(Get-ShellTexts $btn)
+    Check (($texts -ccontains 'my_model_id') -and -not (@($texts | Where-Object { $_ -match '__' }).Count -gt 0)) 'S2 a Content-mode caption with underscores renders with none lost' "rendered=[$($texts -join '|')]"
+    $script:connectButton.UseMnemonic = $true
+    $script:connectButton.Text = 'Connect an app'
+    $inst = @(Get-ShellTexts $els.InstallButton)
+    Check ($inst -ccontains 'Install & start') 'S2 the Install && start caption renders as Install & start' "rendered=[$($inst -join '|')]"
+    Check-NoExceptions 'S2'
+}
+
+# element, adapter, mode, kind (named: an interactive element with a name a screen reader speaks; text: a non-interactive TextBlock; visual: a non-interactive bar),
+# and the flags: noText (the element draws an icon, not the caption), noVisible (the card logic owns its visibility)
+$script:shellParity = @(
+    @{ El = 'TitleText'; Ad = 'title'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
+    @{ El = 'NoticeText'; Ad = 'notice'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
+    @{ El = 'TrayButton'; Ad = 'trayButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'InstallButton'; Ad = 'installButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $true },
+    @{ El = 'StartMenuItem'; Ad = 'startButton'; Mode = 'Header'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'BackgroundStartMenuItem'; Ad = 'backgroundStartButton'; Mode = 'Header'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'StopButton'; Ad = 'stopButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $true },
+    @{ El = 'AttachButton'; Ad = 'backgroundAttachButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $true },
+    @{ El = 'CopyButton'; Ad = 'copyButton'; Mode = 'Content'; Kind = 'named'; NoText = $true; NoVisible = $true },
+    @{ El = 'StatusDetail'; Ad = 'statusLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
+    @{ El = 'BackgroundLine'; Ad = 'backgroundLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
+    @{ El = 'NotesText'; Ad = 'notesLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
+    @{ El = 'ResultsLink'; Ad = 'resultsLink'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'BarLink'; Ad = 'barLink'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'HomeProgress'; Ad = 'progress'; Mode = 'Visual'; Kind = 'visual'; NoText = $true; NoVisible = $false },
+    @{ El = 'ActivityBox'; Ad = 'output'; Mode = 'Output'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'OpenChatButton'; Ad = 'openChatButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'ConnectButton'; Ad = 'connectButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'SwitchButton'; Ad = 'switchButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'SwitchLine'; Ad = 'switchLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
+    @{ El = 'UpdateText'; Ad = 'bannerLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $true },
+    @{ El = 'UpdateNotesButton'; Ad = 'bannerNotes'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'UpdateButton'; Ad = 'bannerButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'ReinstallButton'; Ad = 'reinstallButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    @{ El = 'FailureCopyButton'; Ad = 'failureCopyLink'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false }
+)
+
+function Get-ShellElementText($Element, [string]$Mode) {
+    if ($Mode -ceq 'Content') { return [string]$Element.Content }
+    if ($Mode -ceq 'Header') { return [string]$Element.Header }
+    return [string]$Element.Text
+}
+
+function Invoke-S3-HomeParity {
+    if (-not $script:shellOk) { return }
+    $els = $script:FastLlmUiFluent.Els
+    foreach ($row in $script:shellParity) {
+        $n = $row.El
+        $el = $els[$n]
+        Check ($null -ne $el) "S3 $n exists" 'no such element'
+        if ($null -eq $el) { continue }
+        $ad = Get-Variable -Name $row.Ad -Scope Script -ValueOnly
+        if ($row.Kind -ceq 'named') {
+            $name = Get-ShellPeerName $el
+            Check ((-not ($el -is [System.Windows.Controls.TextBlock])) -and (Test-ShellNameReadable $name)) "S3 $n is interactive and has a spoken name" "name='$name'"
+        }
+        elseif ($row.Kind -ceq 'text') { Check ($el -is [System.Windows.Controls.TextBlock]) "S3 $n is a non-interactive text element" "type=$($el.GetType().Name)" }
+        else { Check ($el -is [System.Windows.Controls.ProgressBar]) "S3 $n is a non-interactive progress bar" "type=$($el.GetType().Name)" }
+        $origText = [string]$ad.Text; $origEnabled = [bool]$ad.Enabled; $origVisible = [bool]$ad.Visible
+        # Text
+        if ($row.Mode -cne 'Visual') {
+            $before = Get-ShellElementText $el $row.Mode
+            $ad.Text = 'zz parity ' + $row.Ad
+            $after = Get-ShellElementText $el $row.Mode
+            if ($row.NoText) { Check ($after -ceq $before) "S3 $n keeps its icon when $($row.Ad).Text is written" "before='$before' after='$after'" }
+            else { Check ($after -ceq ('zz parity ' + $row.Ad)) "S3 $($row.Ad).Text reaches $n" "element text='$after'" }
+        }
+        # Enabled
+        $ad.Enabled = $false
+        $off = [bool]$el.IsEnabled
+        $ad.Enabled = $true
+        $on = [bool]$el.IsEnabled
+        Check (($off -eq $false) -and ($on -eq $true)) "S3 $($row.Ad).Enabled reaches $n" "after false=$off after true=$on"
+        # Visible
+        $v0 = $el.Visibility
+        $ad.Visible = $false
+        $v1 = $el.Visibility
+        $ad.Visible = $true
+        $v2 = $el.Visibility
+        if ($row.NoVisible) { Check (($v1 -eq $v0) -and ($v2 -eq $v0)) "S3 $n visibility stays with the card or message logic when $($row.Ad).Visible is written" "start=$v0 after false=$v1 after true=$v2" }
+        else { Check (($v1 -eq [System.Windows.Visibility]::Collapsed) -and ($v2 -eq [System.Windows.Visibility]::Visible)) "S3 $($row.Ad).Visible reaches $n" "after false=$v1 after true=$v2" }
+        $ad.Text = $origText; $ad.Enabled = $origEnabled; $ad.Visible = $origVisible
+        if (-not $row.NoVisible) { $el.Visibility = $v0 }
+    }
+    Check-NoExceptions 'S3'
+}
+
+function Invoke-S4-Resources {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $dict = $f.Window.Resources.MergedDictionaries[0]
+    $same = {
+        param($Brush, [string]$Key)
+        $want = $dict[$Key]
+        return (($Brush -is [System.Windows.Media.SolidColorBrush]) -and ($want -is [System.Windows.Media.SolidColorBrush]) -and ($Brush.Color.ToString() -ceq $want.Color.ToString()))
+    }
+    $rows = @(
+        @{ N = 'InstallButton'; Fg = 'FastLlm.TextOnAccentBrush'; Bg = 'FastLlm.AccentFillBrush' },
+        @{ N = 'OpenChatButton'; Fg = 'FastLlm.TextPrimaryBrush'; Bg = 'FastLlm.CardBrush' },
+        @{ N = 'ActivityBox'; Fg = 'FastLlm.TextPrimaryBrush'; Bg = 'FastLlm.CardBrush' })
+    $bodySize = [double]$dict['FastLlm.BodySize']
+    foreach ($r in $rows) {
+        $el = $els[$r.N]
+        Check (& $same $el.Foreground $r.Fg) "S4 Home $($r.N) Foreground is the theme value $($r.Fg)" "actual=$($el.Foreground)"
+        Check (& $same $el.Background $r.Bg) "S4 Home $($r.N) Background is the theme value $($r.Bg)" "actual=$($el.Background)"
+        Check ([Math]::Abs([double]$el.FontSize - $bodySize) -lt 0.01) "S4 Home $($r.N) FontSize is the theme body size" "actual=$($el.FontSize) expected=$bodySize"
+    }
+    Check (& $same $els.StatusCard.Background 'FastLlm.CardBrush') 'S4 the status card Background is the theme card colour' "actual=$($els.StatusCard.Background)"
+    $sub = [double]$dict['FastLlm.SubtitleSize']
+    Check ([Math]::Abs([double]$els.TitleText.FontSize - $sub) -lt 0.01 -and $sub -ne $bodySize) 'S4 the Home title FontSize is the theme subtitle size, not the body size' "actual=$($els.TitleText.FontSize) expected=$sub body=$bodySize"
+    Check-NoExceptions 'S4'
+}
+
+function Invoke-S5-SplitMenu {
+    if (-not $script:shellOk) { return }
+    $els = $script:FastLlmUiFluent.Els
+    $script:shellMenuMark = 0
+    $script:startButton.Add_Click({ param($sender, $ea) $script:shellMenuMark++ })
+    $script:backgroundStartButton.Add_Click({ param($sender, $ea) $script:shellMenuMark += 10 })
+    $more = $els.MoreStartButton
+    $menu = $els.StartMenuItem.Parent
+    Check ($menu -is [System.Windows.Controls.ContextMenu] -and $menu.Items.Count -eq 2) 'S5 the two start items live in one ContextMenu' "parent=$($menu.GetType().Name)"
+    $more.RaiseEvent((New-ShellClick $more ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 300
+    Check ($menu.IsOpen) 'S5 clicking the split arrow opens the menu' "IsOpen=$($menu.IsOpen)"
+    Check ([object]::ReferenceEquals($menu.PlacementTarget.PSObject.BaseObject, $more.PSObject.BaseObject)) 'S5 the menu is placed against the split arrow' "target=$($menu.PlacementTarget)"
+    foreach ($key in 'StartMenuItem', 'BackgroundStartMenuItem') {
+        $item = $els[$key]
+        Check (Test-ShellNameReadable (Get-ShellPeerName $item)) "S5 $key has an automation name" "name='$(Get-ShellPeerName $item)'"
+    }
+    $item = $els.StartMenuItem
+    $item.RaiseEvent((New-ShellClick $item ([System.Windows.Controls.MenuItem]::ClickEvent)))
+    Check ($script:shellMenuMark -eq 1) 'S5 a click on the first menu item runs the startButton handler' "marks=$($script:shellMenuMark) expected=1"
+    $item2 = $els.BackgroundStartMenuItem
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($item2)
+    $inv = [System.Windows.Automation.Provider.IInvokeProvider]($peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Invoke))
+    $threw = ''
+    try { $inv.Invoke() } catch { $threw = $_.Exception.Message }
+    Invoke-Pump 400 ({ $script:shellMenuMark -ge 11 })
+    Check ($threw -eq '' -and $script:shellMenuMark -eq 11) 'S5 an automation Invoke on the second item runs the backgroundStartButton handler' "marks=$($script:shellMenuMark) expected=11 error=$threw"
+    $menu.IsOpen = $false
+    Invoke-Pump 100
+    Check-NoExceptions 'S5'
+}
+
+function Invoke-S6-Nav {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $list = $els.NavList
+    $home1 = $els.NavHome
+    $second = $f.NavItems[1]['Item']
+    $list.UpdateLayout()
+    $bd = $home1.Template.FindName('Bd', $home1)
+    $bar = $home1.Template.FindName('Bar', $home1)
+    Check ($null -ne $bd -and $null -ne $bar) 'S6 the nav item template renders its parts (Bd and Bar)' "bd=$bd bar=$bar"
+    Check ($home1.ActualHeight -ge 40 -and $home1.IsSelected -and $bar.Visibility -eq [System.Windows.Visibility]::Visible) 'S6 the selected Home item is at least 40 high and shows its bar' "height=$($home1.ActualHeight) selected=$($home1.IsSelected) bar=$($bar.Visibility)"
+    $threw = ''
+    try {
+        $src = [System.Windows.PresentationSource]::FromVisual($home1)
+        $ke = New-Object System.Windows.Input.KeyEventArgs([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, [System.Windows.Input.Key]::Down)
+        $ke.RoutedEvent = [System.Windows.Input.Keyboard]::KeyDownEvent
+        $home1.RaiseEvent($ke)
+    }
+    catch { $threw = $_.Exception.Message }
+    Invoke-Pump 150
+    Check ($threw -eq '') 'S6 a Down arrow KeyDown on the nav item raises no exception' $threw
+    # selection moves: the second item is enabled for this check only (all but Home are disabled in this build)
+    $second.IsEnabled = $true
+    $list.SelectedIndex = 1
+    Invoke-Pump 150
+    $bar2 = $second.Template.FindName('Bar', $second)
+    Check ($second.IsSelected -and -not $home1.IsSelected -and $null -ne $bar2 -and $bar2.Visibility -eq [System.Windows.Visibility]::Visible -and $bar.Visibility -eq [System.Windows.Visibility]::Collapsed) 'S6 a selection change moves the bar from Home to the second item' "second=$($second.IsSelected) home=$($home1.IsSelected) bar2=$($bar2.Visibility) bar=$($bar.Visibility)"
+    $list.SelectedIndex = 0
+    $second.IsEnabled = $false
+    Invoke-Pump 100
+    Check ($home1.IsSelected) 'S6 Home is selected again' "selected=$($home1.IsSelected)"
+    Check-NoExceptions 'S6'
+}
+
+function Invoke-S7-ShellTheme {
+    if (-not $script:shellOk) { return }
+    $win = $script:FastLlmUiFluent.Window
+    $hwnd = [System.Windows.Interop.WindowInteropHelper]::new($win).Handle
+    $ptr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni('ImmersiveColorSet')
+    try {
+        $pre = $script:themeCalls
+        $null = $script:native::SendMessage($hwnd, [uint32]0x001A, [IntPtr]::Zero, $ptr)
+        Invoke-Pump 1500 ({ $script:themeCalls -gt $pre })
+        Invoke-Pump 400
+        Check (($script:themeCalls - $pre) -eq 1) 'S7 WM_SETTINGCHANGE with ImmersiveColorSet on the shell window runs the shell theme update exactly once' "before=$pre after=$($script:themeCalls)"
+    }
+    finally { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr) }
+    Check-NoExceptions 'S7'
+}
+
+function Invoke-S8-DispatcherHandler {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $win = $f.Window
+    $disp = $win.Dispatcher
+    # The suite's recorder sets Handled too, so it is taken off while the handler registered by Start-FastLlmUiFluentLoop is looked at.
+    # The probe is registered last (it runs after the shell's) and reads Handled before it sets it itself.
+    $script:probeSeen = $null
+    $script:probeText = ''
+    $script:shellFailMsg = ''
+    $f.LastException = $null
+    $probe = [System.Windows.Threading.DispatcherUnhandledExceptionEventHandler] { param($s, $e) $script:probeSeen = [bool]$e.Handled; $script:probeText = $e.Exception.ToString(); $e.Handled = $true }
+    $disp.remove_UnhandledException($script:dispHandler)
+    $disp.add_UnhandledException($probe)
+    try {
+        $boom = [Action] { throw 'shell dispatcher boom' }
+        $null = $disp.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, $boom)
+        Invoke-Pump 1500 ({ $null -ne $script:probeSeen })
+        Invoke-Pump 300
+    }
+    finally {
+        $disp.remove_UnhandledException($probe)
+        $disp.add_UnhandledException($script:dispHandler)
+    }
+    Check ($script:probeText -match 'shell dispatcher boom') 'S8 an exception thrown in a dispatcher callback reaches the dispatcher handlers' "text=$($script:probeText)"
+    Check ($null -ne $f.LastException -and ([string]$f.LastException.ToString()) -match 'shell dispatcher boom') 'S8 the shell records the exception' "last=$($f.LastException)"
+    Check ($script:shellFailMsg -match 'shell dispatcher boom') 'S8 the shell shows the exception through ShowFailure' "shown=$($script:shellFailMsg)"
+    Check ($script:probeSeen -eq $true) 'S8 the shell handler marked the exception Handled' "Handled seen by the later handler=$($script:probeSeen)"
+    Check ($win.IsVisible) 'S8 the window stays open' "IsVisible=$($win.IsVisible)"
+    Check-NoExceptions 'S8'
+}
 
 $script:steps = @(
     'Invoke-A1-CloseCancelled', 'Invoke-A1c-CloseCancelledClosure', 'Invoke-A2-CloseAllowed', 'Invoke-A3-BoxNo', 'Invoke-A4-BoxYes', 'Invoke-A5-CloseInsideHandler',
     'Invoke-A6-ThrowingHandler', 'Invoke-A7-Visible', 'Invoke-A8-RestoreFromTray', 'Invoke-A9-Shown', 'Invoke-A10-Owner',
     'Invoke-A11-ScreenGap', 'Invoke-A12-SessionEnd', 'Invoke-A12b-SessionEndPlain', 'Invoke-A13-Members', 'Invoke-A14-LeakyHandler',
     'Invoke-B1-GdiLeak', 'Invoke-B2-IconSizes', 'Invoke-B3-AppIcon', 'Invoke-B4-ThemeHook', 'Invoke-B5-SettingChangeString',
-    'Invoke-B6-HookFailure', 'Invoke-B7-Unregister'
+    'Invoke-B6-HookFailure', 'Invoke-B7-Unregister',
+    'Invoke-H1-ReentrantQuery', 'Invoke-H2-ThrowingQuery', 'Invoke-H3-UnregisterOnClosed', 'Invoke-H4-ThemeCallbackThrows', 'Invoke-H5-EndSession',
+    'Invoke-H6-PassThrough', 'Invoke-H7-DpiEvidence',
+    # S0 enters the shell's message loop; every step after it runs inside that loop's frame
+    'Invoke-S0-ShellStart', 'Invoke-S1-Shown', 'Invoke-S2-Bindings', 'Invoke-S3-HomeParity', 'Invoke-S4-Resources', 'Invoke-S5-SplitMenu', 'Invoke-S6-Nav',
+    'Invoke-S7-ShellTheme', 'Invoke-S8-DispatcherHandler'
 )
 
 $tick = New-Object System.Windows.Threading.DispatcherTimer
@@ -616,7 +1201,9 @@ $deadline.Add_Tick({
     [Environment]::Exit(1)
 })
 
-[System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s, $e) $script:dispEx.Add($e.Exception.ToString()); $e.Handled = $true })
+# Kept in a variable so the dispatcher-handler check (S8) can take it off while it looks at the shell's own handler.
+$script:dispHandler = [System.Windows.Threading.DispatcherUnhandledExceptionEventHandler] { param($s, $e) $script:dispEx.Add($e.Exception.ToString()); $e.Handled = $true }
+[System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException($script:dispHandler)
 try {
     $tick.Start()
     $deadline.Start()

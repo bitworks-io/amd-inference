@@ -36,6 +36,12 @@ namespace Bitworks.FastLlm.Tests {
         [DllImport("kernel32.dll", EntryPoint = "GetCurrentProcess")]
         private static extern IntPtr GetCurrentProcessRaw();
 
+        [DllImport("user32.dll", EntryPoint = "GetThreadDpiAwarenessContext")]
+        private static extern IntPtr GetThreadDpiAwarenessContextRaw();
+
+        [DllImport("user32.dll", EntryPoint = "GetAwarenessFromDpiAwarenessContext")]
+        private static extern int GetAwarenessFromDpiAwarenessContextRaw(IntPtr context);
+
         public static bool IsWindowEnabled(IntPtr hwnd) {
             try { return IsWindowEnabledRaw(hwnd); } catch (Exception) { return false; }
         }
@@ -81,6 +87,11 @@ namespace Bitworks.FastLlm.Tests {
         // GDI objects held by this process (GetGuiResources GR_GDIOBJECTS); -1 when the call fails.
         public static int GetGdiObjectCount() {
             try { return (int)GetGuiResourcesRaw(GetCurrentProcessRaw(), GR_GDIOBJECTS); } catch (Exception) { return -1; }
+        }
+
+        // Thread DPI awareness: 0 unaware, 1 system, 2 per-monitor, -1 invalid, -2 the call is not available. Evidence only.
+        public static int GetDpiAwareness() {
+            try { return GetAwarenessFromDpiAwarenessContextRaw(GetThreadDpiAwarenessContextRaw()); } catch (Exception) { return -2; }
         }
     }
 }

@@ -177,7 +177,9 @@ function Invoke-UiRenderCase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)]$Case,
-        [string]$OutFolder = ''
+        [string]$OutFolder = '',
+        # Optional: runs once on the page (after its theme dictionary is set, before it is measured), e.g. to bind adapters and apply a state.
+        [scriptblock]$Prepare = $null
     )
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
@@ -194,6 +196,7 @@ function Invoke-UiRenderCase {
     }
     $dict = New-FastLlmUiThemeDictionary @themeArgs
     $page.Resources = $dict
+    if ($null -ne $Prepare) { & $Prepare $page }
 
     $sv = New-Object System.Windows.Controls.ScrollViewer
     $sv.Width = $width

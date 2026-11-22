@@ -213,6 +213,94 @@ foreach($case in $matrix){
 }
 Write-Host ('INFO: render matrix of {0} cases took {1:N1} s' -f $matrix.Count,$sw.Elapsed.TotalSeconds)
 
+# ---- The Home page of the Fluent window. The page is bound to the real adapters and shown in one card state per case.
+# The prepare step does what the shell does for Home (Initialize-FastLlmUiFluentHome, the binding table, one refresh of the card); the orchestration
+# the refresh reads (the snapshot, the background status) is a stub here.
+Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
+. (Join-Path $root 'tests/helpers/UiControlStatesMatrix.ps1')
+. (Join-Path $root 'src/FastLlm.Update.ps1')
+. (Join-Path $root 'src/FastLlm.Components.ps1')
+. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentAdapter.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentBindings.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentHome.ps1')
+$script:homeDir=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-render-'+[guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $script:homeDir)
+$script:InstallRoot=$script:homeDir
+$script:installPath=$script:homeDir
+$script:homeCatalog=Get-FastLlmCatalog (Join-Path $root 'config/catalog.json')
+$script:homeSettings=Read-FastLlmUiSettings -InstallRoot $script:homeDir -AppRoot $root
+$script:homeSnap=$null
+$script:homeCaseTheme='light'
+$script:homeState='not-running'
+function GetUiStateSnapshot([bool]$Busy){return $script:homeSnap}
+function GetUiBackgroundRunStatus{return $null}
+function New-HomeSnap([hashtable]$O=@{}){
+    $d=@{Busy=$false;UpdateKind='';ChildActive=$false;Step='';RunReady=$false;SideChildActive=$false;VcBrokerActive=$false;PreviewReady=$false
+        SwitchGap=$false;ChatUrlSet=$false;BackgroundStopRequested=$false;Background='absent';FlowPhase='';FailureHeld=$false}
+    foreach($k in $O.Keys){$d[$k]=$O[$k]}
+    $bg=$d.Background; if($bg -is [string]){$bg=Get-UiBackgroundFixture -Name $bg}
+    return New-FastLlmUiStateSnapshot -Busy $d.Busy -UpdateKind $d.UpdateKind -ChildActive $d.ChildActive -Step $d.Step -RunReady $d.RunReady `
+        -SideChildActive $d.SideChildActive -VcBrokerActive $d.VcBrokerActive -PreviewReady $d.PreviewReady -SwitchGap $d.SwitchGap `
+        -ChatUrlSet $d.ChatUrlSet -BackgroundStopRequested $d.BackgroundStopRequested -Background $bg -FlowPhase $d.FlowPhase -FailureHeld $d.FailureHeld
+}
+# The card states the render covers, by the snapshot that produces each one.
+$homeSnaps=[ordered]@{
+    'not-running'=@{}
+    'starting'=@{ChildActive=$true;Step='model download'}
+    'running'=@{ChildActive=$true;Step='serving';RunReady=$true}
+    'needs-attention'=@{FailureHeld=$true}
+    'background-found'=@{Background='ready-attachable'}
+    'waiting-microsoft'=@{VcBrokerActive=$true}
+}
+$homeStatusText=@{
+    'not-running'='Not running. Install & start sets up and starts the best setup for your card.'
+    'starting'='Downloading the model. This can take a while on a first start.'
+    'running'='Running. Connect an app with the address below.'
+    'needs-attention'='Action needs attention. Use Copy full output, then review Diagnostics.'
+    'background-found'='A FastLLM run is already active in the background. Attach to use it.'
+    'waiting-microsoft'='Microsoft setup is still running. Complete or cancel it in the Microsoft window.'
+}
+function Initialize-HomeRenderPage($Page){
+    $els=@{}
+    [void](Initialize-FastLlmUiFluentHome -Page $Page -Els $els)
+    $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
+    foreach($row in (Get-FastLlmUiFluentHomeBindings)){
+        $adapter=Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
+        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
+    }
+    $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme}
+    $script:statusLabel.Text=[string]$homeStatusText[$script:homeState]
+    $script:homeSnap=New-HomeSnap $homeSnaps[$script:homeState]
+    Update-FastLlmUiFluentHome
+    $script:FastLlmUiFluent.Tick=2
+}
+$homePrepare={param($page) Initialize-HomeRenderPage $page}
+function Test-HomeCase([string]$State,$case){
+    $script:homeState=$State
+    $script:homeCaseTheme=[string]$case.theme
+    $label="Home $State $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Home' -Case $case -OutFolder $out -Prepare $homePrepare}catch{Check $false "Home renders at ${label}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "Home clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+    $real=$false
+    if($r.png -and (Test-Path -LiteralPath $r.png)){$info=Get-UiPngInfo -Path $r.png;$real=$info.hasContent}
+    Check $real "the Home render is real at $label"
+}
+$homeSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($case in $matrix){Test-HomeCase 'not-running' $case}
+foreach($state in 'starting','running','needs-attention','background-found','waiting-microsoft'){
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($text in 1.0,2.25){
+            $case=@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+            Test-HomeCase $state $case
+        }
+    }
+}
+Write-Host ('INFO: Home render of {0} cases took {1:N1} s' -f ($matrix.Count+30),$homeSw.Elapsed.TotalSeconds)
+
 # 49 PNGs per run: 40 sample cases plus 9 negative pages. Only files written during this run count, so leftovers cannot inflate the number.
 $written=@(Get-ChildItem -LiteralPath $out -Filter 'Test.*.png' -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart })
 Check ($written.Count -eq 49) ("the render folder holds 49 PNGs written by this run (got $($written.Count))")
