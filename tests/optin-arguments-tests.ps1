@@ -154,6 +154,9 @@ try {
 
     # ---- the plan document with an option ------------------------------------------------------------------------------------------
     $card=New-OptinHardware 'test-24gb'
+    # A base parameter set with some keys replaced. Windows PowerShell 5.1 refuses a parameter given both in a splat and by name
+    # (ParameterAlreadyBound) while PowerShell 7 lets the named one win, so no call here passes a splatted key by name again.
+    function Join-TestSplat([hashtable]$Base,[hashtable]$Override){ $merged=$Base.Clone(); foreach($key in @($Override.Keys)){ $merged[$key]=$Override[$key] }; return $merged }
     $optCommon=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$testProfiles}
     $defaultCardPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot
     $longTwo=Get-FastLlmPlan @optCommon -KvContextProfile 'long' -KvSlots 2
@@ -291,12 +294,12 @@ try {
     Check (@(& $module { param($P) Read-FastLlmVisionAddOns -Path $P } (Join-Path $work 'absent.json')).Count -eq 0) 'vision loader: no file is no rows'
 
     # ---- off is today's plan: no field, no argument -----------------------------------------------------------------------------------
-    $plainLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvProfilesPath $testProfiles
-    $offLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvProfilesPath $testProfiles -Vision 'off'
+    $plainLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m'
+    $offLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -Vision 'off'
     Check (($plainLong | ConvertTo-Json -Depth 12) -ceq ($offLong | ConvertTo-Json -Depth 12) -and -not $offLong.PSObject.Properties['vision']) 'vision off: -Vision off is byte-identical to no -Vision and adds no field'
     Check (($plainLong.serverArguments -ccontains '--no-mmproj') -and -not ($plainLong.serverArguments -ccontains '--mmproj')) 'vision off: the arguments keep --no-mmproj'
     Check (($defaultCardPlan.serverArguments -ccontains '--no-mmproj') -and -not ($defaultCardPlan.serverArguments -ccontains '--mmproj') -and -not $defaultCardPlan.PSObject.Properties['vision']) 'vision off: a direct planner call (the bench path) keeps --no-mmproj and has no vision field'
-    $offVisionFile=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvProfilesPath $malformedProfiles -KvContextProfile 'default' -Vision 'off'
+    $offVisionFile=& { $s=Join-TestSplat $optCommon @{KvProfilesPath=$malformedProfiles}; Get-FastLlmPlan @s -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'default' -Vision 'off' }
     Check ($null -ne $offVisionFile) 'vision off: the add-on rows are never read (a profile file that is not JSON changes nothing)'
     RefusedLike { Get-FastLlmPlan @visionCommon -Vision 'maybe' } 'Vision|validate|Valid' 'vision: the parameter is a closed set (off|on)'
 
@@ -359,13 +362,13 @@ try {
     $visionDefaultTwo=Get-FastLlmPlan @visionCommon -KvSlots 2 -Vision 'on'
     Check ([string]$visionDefaultTwo.vision.profileId -ceq 'default' -and [int]$visionDefaultTwo.vision.extraFreeVramMiB -eq 900 -and [int64]$visionDefaultTwo.vision.requiredFreeVramMiB -eq 21400) 'vision plan: 2 slots with the default context profile is keyed on profile id default (900 extra)'
     # Step 1: no matching add-on row.
-    $r1=Get-RefusalCode { Get-FastLlmPlan @visionCommon -ModelId 'qwen3.8-27b-q8-0' -KvContextProfile 'long' -Vision 'on' }
+    $r1=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{ModelId='qwen3.8-27b-q8-0'}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
     Check ($r1.threw -and $r1.code -ceq 'vision-not-measured' -and $r1.message -like 'vision-not-measured: *Nothing was started*') 'vision refusal 1: a model without a vision add-on row is refused (vision-not-measured)'
-    $r1b=Get-RefusalCode { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -KvProfilesPath $testProfiles -Vision 'on' }
+    $r1b=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$testProfiles}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
     Check ($r1b.threw -and $r1b.code -ceq 'vision-not-measured') 'vision refusal 1: the profile file of the opt-in rows has no add-on row, so the option is refused'
-    $r1c=Get-RefusalCode { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -KvProfilesPath $shippedProfiles -Vision 'on' }
+    $r1c=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$shippedProfiles}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
     Check ($r1c.threw -and $r1c.code -ceq 'vision-not-measured') 'vision refusal 1: the shipped file (addOns is empty) refuses every vision plan'
-    $r1d=Get-RefusalCode { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -KvProfilesPath (Join-Path $work 'absent.json') -Vision 'on' }
+    $r1d=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=(Join-Path $work 'absent.json')}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
     Check ($r1d.threw -and $r1d.code -ceq 'vision-not-measured') 'vision refusal 1: no profile file is no row'
     foreach($mut in @(
             @{Name='v-other-sha';Label='another model sha256';Mutate={ param($d) $d.addOns[0].modelSha256=('0'*64) }},
@@ -376,15 +379,15 @@ try {
         & $mut.Mutate $mutDocument
         $mutPath=Join-Path $work ($mut.Name+'-vision.json')
         Write-Utf8 $mutPath ($mutDocument | ConvertTo-Json -Depth 10)
-        $rm=Get-RefusalCode { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -KvProfilesPath $mutPath -Vision 'on' }
+        $rm=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$mutPath}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
         Check ($rm.threw -and $rm.code -ceq 'vision-not-measured') "vision refusal 1: a row for $($mut.Label) does not apply to this plan"
     }
-    RefusedLike { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -Vision 'on' -KvProfilesPath $malformedProfiles } 'serving-profiles-invalid' 'vision: a profile file that is not JSON fails typed (never honoured, never dropped)'
+    RefusedLike { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$malformedProfiles}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' } 'serving-profiles-invalid' 'vision: a profile file that is not JSON fails typed (never honoured, never dropped)'
     $mtpDocument=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
     $mtpDocument.addOns[0].kind='mtp'
     $mtpPath=Join-Path $work 'vision-mtp.json'
     Write-Utf8 $mtpPath ($mtpDocument | ConvertTo-Json -Depth 10)
-    RefusedLike { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -Vision 'on' -KvProfilesPath $mtpPath } 'serving-profiles-invalid' 'vision: an mtp row in the file fails typed (the loader refuses what the checker refuses)'
+    RefusedLike { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$mtpPath}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' } 'serving-profiles-invalid' 'vision: an mtp row in the file fails typed (the loader refuses what the checker refuses)'
     # Step 2: a row, but no value for the effective profile.
     $r2=Get-RefusalCode { Get-FastLlmPlan @visionCommon -Vision 'on' }
     Check ($r2.threw -and $r2.code -ceq 'vision-profile-not-measured' -and $r2.message -like '*Nothing was started*') 'vision refusal 2: a default-context plan has no profile id to key a value on, so it is refused (vision-profile-not-measured)'
@@ -394,7 +397,7 @@ try {
     Check ($r2c.threw -and $r2c.code -ceq 'vision-profile-not-measured') 'vision refusal 2: a row with a value only for long is refused for the default profile'
     $r2d=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-OptinHardware 'test-24gb') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $visionProfiles -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Vision 'on' }
     Check (-not $r2d.threw) 'vision plan: the same row with a value for long plans'
-    $rOrder=Get-RefusalCode { Get-FastLlmPlan @visionCommon -ModelId 'qwen3.8-27b-q8-0' -Vision 'on' }
+    $rOrder=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{ModelId='qwen3.8-27b-q8-0'}; Get-FastLlmPlan @s -Vision 'on' }
     Check ($rOrder.threw -and $rOrder.code -ceq 'vision-not-measured') 'vision order: with no row AND no profile id, refusal 1 (no row) comes before refusal 2'
     # Fit: the extra memory is the row's, added to the profile's requirement. Nothing is derived.
     $fitCard=New-OptinHardware 'test-24gb-22000'
@@ -406,7 +409,7 @@ try {
     $extraChanged.addOns[0].extraFreeVramMiB.long=400
     $extraPath=Join-Path $work 'vision-small-extra.json'
     Write-Utf8 $extraPath ($extraChanged | ConvertTo-Json -Depth 10)
-    $fitSmall=Get-FastLlmPlan @fitCommon -KvProfilesPath $extraPath -Vision 'on'
+    $fitSmall=& { $s=Join-TestSplat $fitCommon @{KvProfilesPath=$extraPath}; Get-FastLlmPlan @s -Vision 'on' }
     Check ([int64]$fitSmall.vision.requiredFreeVramMiB -eq 21900) 'vision fit: the number comes from the row (21500 + 400 = 21900 fits 22000); no constant, file size or formula is used'
     RefusedLike { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -RecipeId 'some-recipe' -Vision 'on' } 'cannot be combined' 'vision: -Recipe with -Vision on is refused (a recipe is measured without a projector)'
     RefusedLike { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -ContextSize 8192 -Vision 'on' } 'cannot be combined' 'vision: -ContextSize with a context profile is still refused'
