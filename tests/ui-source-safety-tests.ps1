@@ -159,6 +159,45 @@ foreach($t in 'x:Class','x:Code','ObjectDataProvider','XmlDataProvider','clr-nam
 $threw=$false
 try{Assert-FastLlmUiXamlSafe -Xaml '<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"/>'}catch{$threw=$true}
 Check (-not $threw) 'plain markup passes'
+$ns='xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"'
+$refused=[ordered]@{
+    'http image source'='<Image '+$ns+' Source="http://example.invalid/a.png"/>'
+    'https resource dictionary'='<ResourceDictionary '+$ns+' Source="https://example.invalid/d.xaml"/>'
+    'ftp source'='<Image '+$ns+' Source="ftp://example.invalid/x"/>'
+    'file source'='<Image '+$ns+' Source="file:///C:/x.xaml"/>'
+    'siteoforigin source'='<Image '+$ns+' Source="pack://siteoforigin:,,,/x.xaml"/>'
+    'unc source'='<Image '+$ns+' Source="\\host\share\x.png"/>'
+    'drive source'='<Image '+$ns+' Source="C:\x.png"/>'
+    'relative source'='<Image '+$ns+' Source="images/x.png"/>'
+    'property element source'='<Image '+$ns+'><Image.Source>http://example.invalid/a.png</Image.Source></Image>'
+    'hyperlink navigate uri'='<TextBlock '+$ns+'><Hyperlink NavigateUri="https://example.invalid">x</Hyperlink></TextBlock>'
+    'non-source attribute with a scheme'='<TextBlock '+$ns+' Tag="http://example.invalid/a"/>'
+}
+foreach($k in $refused.Keys){
+    $threw=$false;$msg=''
+    try{Assert-FastLlmUiXamlSafe -Xaml $refused[$k]}catch{$threw=$true;$msg=$_.Exception.Message}
+    Check ($threw -and $msg.StartsWith('Unsafe XAML: external reference')) "refuses $k"
+}
+$threw=$false;$msg=''
+try{Assert-FastLlmUiXamlSafe -Xaml ('<!DOCTYPE x [<!ENTITY e "y">]><Grid '+$ns+'/>')}catch{$threw=$true;$msg=$_.Exception.Message}
+Check ($threw -and $msg -ceq 'Unsafe XAML: DTD') 'refuses a DTD'
+$threw=$false;$msg=''
+try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid '+$ns+'>')}catch{$threw=$true;$msg=$_.Exception.Message}
+Check ($threw -and $msg -ceq 'Unsafe XAML: not well-formed XML') 'refuses markup that is not well-formed'
+$allowed=[ordered]@{
+    'pack application source'='<Image '+$ns+' Source="pack://application:,,,/FastLlm;component/x.png"/>'
+    'dynamic resource source'='<Image '+$ns+' Source="{DynamicResource X}"/>'
+    'colon in content'='<Button '+$ns+' Content="Note: text"/>'
+    'step text'='<TextBlock '+$ns+' Text="Step 3 of 4: Model"/>'
+    'time, colour and font list'='<Border '+$ns+' Background="#FF123456" FontFamily="Segoe UI, Arial" Tag="0:0:1"/>'
+    'text content'='<TextBlock '+$ns+'><Run>Note: text</Run></TextBlock>'
+    'property element binding'='<Image '+$ns+'><Image.Source>{DynamicResource X}</Image.Source></Image>'
+}
+foreach($k in $allowed.Keys){
+    $threw=$false;$msg=''
+    try{Assert-FastLlmUiXamlSafe -Xaml $allowed[$k]}catch{$threw=$true;$msg=$_.Exception.Message}
+    Check (-not $threw) "passes $k"
+}
 $threw=$false;$msg=''
 try{New-FastLlmUiXamlElement -Name 'Missing'|Out-Null}catch{$threw=$true;$msg=$_.Exception.Message}
 Check ($threw -and $msg -ceq "Unknown XAML 'Missing'") 'unknown names are refused'
