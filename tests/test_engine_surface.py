@@ -66,9 +66,9 @@ class EngineSurfaceFixtureTests(unittest.TestCase):
         for tag, fx in self.fixtures.items():
             self.assertEqual(fx['schema'], SCHEMA, tag)
             self.assertEqual(fx['tag'], tag)
-            for key in ('source', 'options', 'envNames', 'metricsCounters', 'publicEndpointsWithKey'):
+            for key in ('source', 'options', 'envNames', 'metricsCounters', 'publicEndpointsWithKey', 'secretLogLabels'):
                 self.assertIn(key, fx, tag)
-            for key in ('options', 'envNames', 'metricsCounters', 'publicEndpointsWithKey'):
+            for key in ('options', 'envNames', 'metricsCounters', 'publicEndpointsWithKey', 'secretLogLabels'):
                 self.assertIsInstance(fx[key], list, (tag, key))
                 self.assertEqual(fx[key], sorted(set(fx[key])), (tag, key))
                 self.assertTrue(fx[key], (tag, key))
@@ -101,6 +101,12 @@ class EngineSurfaceFixtureTests(unittest.TestCase):
     def test_api_key_env_name_exists(self):
         for tag, fx in self.fixtures.items():
             self.assertIn('LLAMA_API_KEY', fx['envNames'], tag)
+
+    def test_secret_log_labels_recorded_for_every_tag(self):
+        # The labels feed the PowerShell check in tests/api-key-wiring-tests.ps1 (W1), which ties each one to IsSecretLine.
+        for tag, fx in self.fixtures.items():
+            self.assertTrue(fx['secretLogLabels'], tag)
+            self.assertIn('api_keys', fx['secretLogLabels'], tag)
 
     def test_public_endpoints_with_key_match_or_are_named(self):
         base = set(self.fixtures[PINNED_TAGS[0]]['publicEndpointsWithKey'])
@@ -162,6 +168,16 @@ SAMPLE_HTTP = '''
         endpoints.insert(frontend_paths.begin(), frontend_paths.end());
         return endpoints;
     }();
+    if (params.api_keys.size() == 1) {
+        const auto key = params.api_keys[0];
+        const std::string substr = key.substr(std::max(static_cast<int>(key.length() - 4), 0));
+        SRV_TRC("api_keys: ****%s\\n", substr.c_str());
+    } else if (params.api_keys.size() > 1) {
+        SRV_TRC("api_keys: %zu keys loaded\\n", params.api_keys.size());
+    }
+    if (params.cors_origins == "*" && params.api_keys.empty()) {
+        SRV_WRN("%s", "CORS is open and no API key is set\\n");
+    }
 '''
 
 SAMPLE_TASK = '''
@@ -222,6 +238,35 @@ class AuditToolTests(unittest.TestCase):
         self.assertIn('--no-ui', fx['options'])
         self.assertIn('LLAMA_API_KEY', fx['envNames'])
         self.assertEqual(fx['publicEndpointsWithKey'], ['/', '/health', '/v1/health', '<embedded-ui-assets>'])
+        self.assertEqual(fx['secretLogLabels'], ['api_keys'])
+
+    def test_parse_secret_log_labels(self):
+        self.assertEqual(self.tool.parse_secret_log_labels(SAMPLE_HTTP), ['api_keys'])
+
+    def test_secret_log_labels_follow_a_renamed_label(self):
+        renamed = SAMPLE_HTTP.replace('api_keys: ', 'key_list: ')
+        self.assertEqual(self.tool.parse_secret_log_labels(renamed), ['key_list'])
+
+    def test_secret_log_labels_ignore_logs_outside_the_key_branches(self):
+        # The CORS warning sits in an if that tests api_keys.empty(), not a key-printing branch.
+        self.assertNotIn('CORS is open and no API key is set', self.tool.parse_secret_log_labels(SAMPLE_HTTP))
+
+    def test_secret_log_labels_fail_closed_when_no_statement_is_found(self):
+        for text in ('', 'int main() { return 0; }', SAMPLE_HTTP.replace('SRV_TRC(', 'trace(')):
+            with self.assertRaises(self.tool.AuditError):
+                self.tool.parse_secret_log_labels(text)
+
+    def test_from_dir_fails_when_the_key_log_statement_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel, text in (('common/arg.cpp', SAMPLE_ARG),
+                              ('tools/server/server-http.cpp', 'static int none;'),
+                              ('tools/server/server-task.cpp', SAMPLE_TASK)):
+                target = root / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding='utf-8')
+            with self.assertRaises(self.tool.AuditError):
+                self.tool.build_fixture('b1', self.tool.DirSource(str(root)))
 
     def test_candidate_rule_picks_newest_tag_with_both_assets_before_cutoff(self):
         def rel(tag, when, vulkan=True, rocm=True):
