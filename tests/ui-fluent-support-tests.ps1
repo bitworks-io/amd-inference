@@ -73,6 +73,45 @@ $shellSrc=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFluentShell.p
 $firstDot=$shellSrc.IndexOf('. (Join-Path $PSScriptRoot')
 Check ($shellSrc.Substring($firstDot).StartsWith(". (Join-Path `$PSScriptRoot 'FastLlm.UiFluentSupport.ps1')") -and $shellSrc.IndexOf('Set-FastLlmUiFluentAccessibilitySwitches') -lt $shellSrc.IndexOf('Set-StrictMode') -and $shellSrc.IndexOf('Set-StrictMode') -lt $shellSrc.IndexOf("FastLlm.UiFluentAdapter.ps1'")) 'the shell file sets the switches before every other statement and dot-source'
 
+# --- doctor: window accessibility in a child process ---
+function Probe([scriptblock]$Runner,[bool]$Win=$true,[bool]$Core=$true){Get-FastLlmDoctorWindowAccessibility -SupportScript 'x' -ChildRunner $Runner -Windows $Win -CoreClr $Core}
+$r=Probe { @{timedOut=$false;exitCode=0;stdout="{`"typeFound`":true,`"legacy`":[]}`n"} }
+Check ($r.status -ceq 'modern' -and @($r.fields).Count -eq 0 -and $r.reason -ceq '' -and $r.summary -ceq 'Window accessibility: modern') 'doctor a11y: modern'
+$r=Probe { @{timedOut=$false;exitCode=0;stdout='{"typeFound":true,"legacy":["PresentationCore.UseLegacyToolTipDisplay","WindowsBase.UseNetFx47CompatibleAccessibilityFeatures"]}'} }
+Check ($r.status -ceq 'legacy' -and @($r.fields).Count -eq 2 -and $r.reason -ceq '' -and $r.summary -ceq 'Window accessibility: legacy (fields: PresentationCore.UseLegacyToolTipDisplay, WindowsBase.UseNetFx47CompatibleAccessibilityFeatures)') 'doctor a11y: legacy names the fields'
+$r=Probe { @{timedOut=$false;exitCode=0;stdout='{"typeFound":true,"legacy":["WindowsBase.UseLegacyToolTipDisplay"]}'} }
+Check ($r.status -ceq 'legacy' -and @($r.fields).Count -eq 1 -and @($r.fields)[0] -ceq 'WindowsBase.UseLegacyToolTipDisplay') 'doctor a11y: one legacy field stays a list'
+$r=Probe { @{timedOut=$false;exitCode=0;stdout='{"typeFound":false,"legacy":[]}'} } $true $true
+Check ($r.status -ceq 'modern') 'doctor a11y: missing type on pwsh 7 is modern'
+$r=Probe { @{timedOut=$false;exitCode=0;stdout='{"typeFound":false,"legacy":[]}'} } $true $false
+Check ($r.status -ceq 'legacy' -and @($r.fields)[0] -ceq 'type-missing') 'doctor a11y: missing type on 5.1 is legacy type-missing'
+$r=Probe { @{timedOut=$true;exitCode=-1;stdout=''} }
+Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'timeout' -and $r.summary -ceq 'Window accessibility: not checked (timeout)') 'doctor a11y: timeout'
+$r=Probe { @{timedOut=$false;exitCode=0;stdout='{"loadFailed":true}'} }
+Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'wpf-load-failed') 'doctor a11y: wpf load failure'
+$r=Probe { throw 'secret path C:\x' }
+Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'child-failed' -and -not $r.summary.Contains('secret')) 'doctor a11y: a throwing runner is child-failed, no exception text'
+foreach($bad in @(@{timedOut=$false;exitCode=1;stdout='{"typeFound":true,"legacy":[]}'},@{timedOut=$false;exitCode=0;stdout='garbage'},@{timedOut=$false;exitCode=0;stdout=''},
+    @{timedOut=$false;exitCode=0;stdout='{"typeFound":true}'},@{timedOut=$false;exitCode=0;stdout='{"typeFound":"yes","legacy":[]}'},
+    @{timedOut=$false;exitCode=0;stdout='{"typeFound":true,"legacy":["C:\\secret\\x.dll"]}'},@{timedOut=$false;exitCode=0;stdout="{`"typeFound`":true,`"legacy`":[]}`nsecond"},@{timedOut=$false;exitCode=0;stdout='null'})){
+    $badRun=$bad
+    $r=Probe { $badRun }.GetNewClosure()
+    Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'child-failed' -and $r.summary -ceq 'Window accessibility: not checked (child-failed)') "doctor a11y: garbage child output is child-failed ($($bad.stdout))"
+}
+$r=Probe { throw 'runner must not run' } $false
+Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'not-windows' -and $r.summary -ceq 'Window accessibility: not checked (not-windows)') 'doctor a11y: not Windows never starts a child'
+if($env:OS -ne 'Windows_NT'){
+    $r=Get-FastLlmDoctorWindowAccessibility
+    Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'not-windows') 'doctor a11y: the real call off Windows is not-windows'
+}else{
+    # The REAL child, on the running shell: switches set first in a fresh process, so both 5.1 and 7 read modern.
+    $r=Get-FastLlmDoctorWindowAccessibility -SupportScript (Join-Path $root 'src/FastLlm.UiFluentSupport.ps1')
+    Check ($r.status -ceq 'modern' -and $r.reason -ceq '' -and @($r.fields).Count -eq 0) ("doctor a11y: the real child reads modern (status=$($r.status) reason=$($r.reason) fields=$(@($r.fields) -join ','))")
+}
+$doctorSrc=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
+Check ($doctorSrc.Contains('windowAccessibility = $windowAccessibility') -and $doctorSrc.Contains('Get-FastLlmDoctorWindowAccessibility -SupportScript')) 'doctor JSON carries windowAccessibility'
+Check ($sup.Contains("EnvironmentVariables['FASTLLM_DOCTOR_A11Y_SUPPORT']") -and $sup.Contains('-NoProfile -NonInteractive') -and $sup.Contains('GetCurrentProcess().MainModule.FileName') -and $sup.Contains('$process.Kill()')) 'the child uses the same shell, no profile, and is killed by its own Process object'
+
 # --- policy flag ---
 function Pol([string]$M='Undefined',[string]$U='Undefined',[string]$C='Undefined',[string]$L='Undefined'){Get-FastLlmUiCliPolicyFlag -Policies @{MachinePolicy=$M;UserPolicy=$U;CurrentUser=$C;LocalMachine=$L}}
 $flag='-ExecutionPolicy RemoteSigned '

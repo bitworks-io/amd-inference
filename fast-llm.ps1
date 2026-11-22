@@ -367,6 +367,8 @@ Import-Module $modulePath -Force
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.SupportBundle.ps1')
 # Connection info and the API-format check are dot-sourced here and in fast-llm-ui.ps1, never through FastLlm.psm1.
 . (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.ConnectInfo.ps1')
+# The window accessibility check for doctor runs in a child process; its helper lives with the Fluent support code.
+. (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFluentSupport.ps1')
 # switch asks the RUNNING supervisor to change its model. With no supervised server running (it stopped when idle, was stopped, failed or was
 # never started) there is nothing to switch from: the request is then a normal start of the target, with model switching allowed.
 function Get-FastLlmSwitchCliAction {
@@ -1200,6 +1202,9 @@ try {
                     'Install integrity: FAILED (' + [string]$installIntegrityResult.reason + '): ' + ($integrityDetail -join ', ')
                 }
             }
+            # Advisory: the Fluent window's accessibility mode, read in a child process. Names only; never changes the exit status.
+            try { $windowAccessibility = Get-FastLlmDoctorWindowAccessibility -SupportScript (Join-Path (Join-Path $projectRoot 'src') 'FastLlm.UiFluentSupport.ps1') }
+            catch { $windowAccessibility = [pscustomobject] @{ status = 'not-checked'; fields = @(); reason = 'child-failed'; summary = 'Window accessibility: not checked (child-failed)' } }
             $diagnostic = [ordered] @{
                 timestamp      = (Get-Date).ToUniversalTime().ToString('o')
                 windows        = $env:OS -eq 'Windows_NT'
@@ -1234,6 +1239,7 @@ try {
                     mismatches       = @($installIntegrityResult.mismatches)
                     summary          = $installIntegritySummary
                 }
+                windowAccessibility = $windowAccessibility
                 error          = $null
             }
             if ($installIntegrityResult.status -ceq 'failed') { $diagnostic.error = 'Install integrity failed: ' + $installIntegritySummary.Substring('Install integrity: FAILED '.Length) }
