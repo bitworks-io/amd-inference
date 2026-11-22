@@ -158,6 +158,9 @@ function Invoke-UiWindowEnableRules {
     $script:switchGap = [bool]$Row.switchGap
     $script:chatUrl = $Row.chatUrl
     $script:bgStopRequested = [bool]$Row.bgStopRequested
+    # The snapshot also carries the held-failure flag and the flow phase (the status card reads them); the enable rules do not.
+    $script:failureHeld = $false
+    $script:flow = $null
     SetBusy ([bool]$Row.busy)
     $bits = New-Object System.Text.StringBuilder
     for ($i = 0; $i -lt $script:UiMatrixControlVars.Count; $i++) {
