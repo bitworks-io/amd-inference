@@ -477,6 +477,7 @@ function ConvertTo-FastLlmSwitchBasisPlanOptions {
             'KvContextProfile' { if ($value -isnot [string] -or @('default', 'long') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
             'KvSlots' { if (-not (& $whole $value) -or @(1, 2) -notcontains [int] $value) { return $null }; $checked[$name] = [int] $value }
             'Vision' { if ($value -isnot [string] -or @('off', 'on') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
+            'Speculation' { if ($value -isnot [string] -or @('ngram', 'mtp') -cnotcontains $value) { return $null }; $checked[$name] = [string] $value }
             default { return $null }
         }
     }
@@ -1235,6 +1236,8 @@ function Invoke-FastLlmSupervisedServer {
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
     # $null for every plan without a serving profile (all of today's plans): nothing below then differs from before. Checked before anything is written or launched.
     $servingProfile = Get-FastLlmPlanServingProfile -Plan $Plan
+    # The same for the speculation block (typed speculation-invalid, no retry reason): $null for every plan without one.
+    $speculation = Get-FastLlmPlanSpeculation -Plan $Plan
     # A key was asked for exactly when the parameter was passed. Then the holder must be a well-formed key (typed api-key-invalid otherwise,
     # before anything is written or launched): a start that was asked for a key never runs without one.
     $apiKeyRequested = $PSBoundParameters.ContainsKey('ApiKeyHolder')
@@ -1430,6 +1433,12 @@ function Invoke-FastLlmSupervisedServer {
             $state.recipe.profile = [string] $servingProfile.id
             $state.recipe.contextPerSlot = [int] $servingProfile.contextPerSlot
         }
+    }
+    # Recorded only for a plan with speculation, so the default status stays byte-identical: the real mode in an additive field, and the spec
+    # type in the recipe (so the measurement tools that require none refuse the run).
+    if ($speculation) {
+        $state.speculation = [ordered]@{ mode = [string] $speculation.mode; specType = [string] $speculation.specType; extraArguments = @($speculation.extraArguments); resultId = $speculation.resultId }
+        if ($state.recipe) { $state.recipe.speculation = [string] $speculation.specType }
     }
     $stateRoot = Get-FastLlmStateRoot -InstallRoot $InstallRoot -Create
     # Run log (best-effort, prompt-free): the plan's own fields and phase names only. Nothing a server prints or a client sends.
@@ -1637,7 +1646,9 @@ function Invoke-FastLlmSupervisedServer {
             if ($servingProfile) { $contextForTest = [int] $servingProfile.contextPerSlot }
             $mitigation = 'off'
             if ($state.vulkanMemoryPolicy -and $state.vulkanMemoryPolicy.effective -eq 'on') { $mitigation = 'on' }
-            $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation @apiKeyRequestOption
+            $speculationEffective = 'none'
+            if ($speculation) { $speculationEffective = [string] $speculation.specType }
+            $selfTestResult = Invoke-FastLlmSelfTest -BaseUrl $baseUrl -ContextSize $contextForTest -Expected $expected -EngineBuild ([string] $Plan.engineVersion) -MitigationEffective $mitigation -SpeculationEffective $speculationEffective @apiKeyRequestOption
             if ($null -ne $apiKeyRunExposure.failure) { throw $apiKeyRunExposure.failure }
             # The GPU memory check right after the self-test (the KV buffer exists by now). A state that is not ok makes the numbers not comparable.
             $spillStep = Invoke-FastLlmSpillCheckAtReady -Plan $Plan -InstallRoot $InstallRoot -KnownLuid $spillBindingLuid -BarDecision $state.vulkanMemoryPolicy -Process $hostProcess.Process
@@ -1954,6 +1965,17 @@ function Invoke-FastLlmSupervisedServer {
             $sidecarKeep = [bool] ($switchAccepted -or ($null -ne $switchOrigin -and [string] $switchOrigin.role -ceq 'target' -and -not $reachedReady -and
                     [string] $state.phase -ceq 'failed' -and [string] $state.failureCode -cne 'api-key-listener-changed'))
             try { Exit-FastLlmSidecarRun -Session $SidecarSession -InstallRoot $InstallRoot -State $state -Keep:$sidecarKeep } catch { $null = $_ }
+        }
+        # Run log: a run with speculation that reached Ready writes one spec-summary at its end, read from /metrics while the server is still up.
+        # A counter the server does not list, or a metrics read that fails, is recorded as null (never 0). Best-effort: it can never change a stop.
+        if ($speculation -and $reachedReady -and $spawned) {
+            try {
+                $summaryText = $null
+                try { $summaryText = Get-FastLlmIdleMetricsText -BaseUrl $baseUrl -Request $apiKeyRequest } catch { $summaryText = $null }
+                $summaryEntry = Get-FastLlmSpeculationAllowlistEntry -EngineId ([string] $speculation.engineId)
+                $summaryCounters = Get-FastLlmSpeculationCounters -MetricsText ([string] $summaryText) -Counters $summaryEntry.counters
+                Add-FastLlmRunLogEvent -InstallRoot $InstallRoot -State $state -Event 'spec-summary' -Fields { Get-FastLlmRunLogSpecSummaryFields -Counters $summaryCounters }
+            } catch { $null = $_ }
         }
         # Run log: the final phase and the end event (before the child is disposed, so its exit code is read if it already exited).
         $serverExitCode = $null

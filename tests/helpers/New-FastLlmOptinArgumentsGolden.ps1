@@ -219,13 +219,13 @@ function Get-FastLlmSpeculationArgumentsMatrix {
     # name, hardware, request (a model id), mode, contextProfile, slots, vision
     $cases = @(
         @('ngram-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'long', 1, 'off'),
-        @('ngram-default-profile-zero-extra', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'default', 1, 'off'),
         @('ngram-mod-no-extra-arguments', 'test-12gb', 'qwen3.5-9b-q6-k', 'ngram', 'long', 1, 'off'),
         @('mtp-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'mtp', 'long', 1, 'off'),
-        @('mtp-default-profile', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'mtp', 'default', 1, 'off'),
         @('refused-no-row-for-the-model', 'test-24gb', 'qwen3.8-27b-q8-0', 'ngram', 'long', 1, 'off'),
         @('refused-no-mtp-row-for-the-model', 'test-12gb', 'qwen3.5-9b-q6-k', 'mtp', 'long', 1, 'off'),
         @('refused-row-has-no-value-for-the-profile', 'test-12gb', 'qwen3.5-9b-q6-k', 'ngram', 'default', 1, 'off'),
+        @('refused-explicit-default-has-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'default', 1, 'off'),
+        @('refused-mtp-explicit-default-has-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'mtp', 'default', 1, 'off'),
         @('refused-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'long', 2, 'off'),
         @('refused-with-vision', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'long', 1, 'on')
     )

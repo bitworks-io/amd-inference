@@ -59,7 +59,7 @@ try {
     $plainStart=@($plain.events | Where-Object { [string]$_.event -ceq 'start' })[0]
     Check ((@($plainStart.PSObject.Properties.Name | Sort-Object) -join ',') -ceq $defaultStartFields) 'speculation run: a plain run''s start event has exactly its existing fields'
     Check (@($plain.events | Where-Object { [string]$_.event -ceq 'spec-summary' }).Count -eq 0) 'speculation run: a plain run writes no spec-summary event, even when the server reports the counters'
-    Check (-not ([IO.File]::ReadAllText((Join-Path $temp 'run-plain/state/status.json'))).Contains('speculation"')) 'speculation run: a plain run''s status.json text has no speculation key'
+    Check (-not [regex]::IsMatch([IO.File]::ReadAllText((Join-Path $temp 'run-plain/state/status.json')),'"speculation"\s*:\s*\{')) 'speculation run: a plain run''s status.json text has no speculation block (only the recipe''s existing none)'
 
     # ---- an ngram plan really starts and records the real mode ----------------------------------------------------------------------------------------
     $block=New-Block 'ngram-simple' @('--spec-ngram-size-n','12','--spec-ngram-size-m','48')
@@ -70,7 +70,7 @@ try {
     Check ((@($recorded.PSObject.Properties.Name) -join ',') -ceq 'mode,specType,extraArguments,resultId') 'speculation run: the status speculation field has exactly those four members'
     Check ([string]$run.status.recipe.speculation -ceq 'ngram-simple') 'speculation run: recipe.speculation names the spec type that runs, so the measurement tools that require none refuse it'
     $start=@($run.events | Where-Object { [string]$_.event -ceq 'start' })[0]
-    Check ([string]$start.speculation -ceq 'ngram-simple' -and (@($start.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ($defaultStartFields+',speculation')) 'speculation run: the run log start event gains one field, speculation'
+    Check ([string]$start.speculation -ceq 'ngram-simple' -and (@($start.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ((@($defaultStartFields -split ',')+'speculation' | Sort-Object) -join ',')) 'speculation run: the run log start event gains one field, speculation'
     $summary=@($run.events | Where-Object { [string]$_.event -ceq 'spec-summary' })
     Check ($summary.Count -eq 1 -and [long]$summary[0].draftTokens -eq 120 -and [long]$summary[0].acceptedTokens -eq 90 -and (@($summary[0].PSObject.Properties.Name | Sort-Object) -join ',') -ceq 'acceptedTokens,draftTokens,event,runId,ts') 'speculation run: at stop one spec-summary event carries draftTokens 120 and acceptedTokens 90 read from /metrics, and nothing else'
     $names=@($run.events | ForEach-Object { [string]$_.event })

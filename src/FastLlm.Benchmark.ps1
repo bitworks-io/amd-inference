@@ -134,7 +134,7 @@ $script:FastLlmBenchmarkInputRelativePaths = @('src/WindowsCpuTopology.cs','src/
     'src/FastLlm.ModelStore.ps1','src/FastLlm.RunLog.ps1',
     'src/FastLlm.ServingProfileRun.ps1',
     'src/FastLlm.OffloadBenchmark.ps1','src/FastLlm.Soak.ps1','src/FastLlm.DriverGuidance.ps1','src/FastLlm.DriverGuidanceView.ps1','src/FastLlm.PrerequisiteDiagnostics.ps1',
-    'src/WindowsBootTime.cs','src/WindowsGpuTelemetry.cs','src/FastLlm.SpillCheck.ps1','src/FastLlm.ApiKey.ps1','src/WindowsGpuProcessMemory.cs','src/FastLlm.Sidecar.ps1','src/FastLlm.Vision.ps1')
+    'src/WindowsBootTime.cs','src/WindowsGpuTelemetry.cs','src/FastLlm.SpillCheck.ps1','src/FastLlm.ApiKey.ps1','src/WindowsGpuProcessMemory.cs','src/FastLlm.Sidecar.ps1','src/FastLlm.Vision.ps1','src/FastLlm.Speculation.ps1')
 # Every file the module loads at import (the dot-sourced .ps1 files, transitively, and the C# sources they Add-Type) is listed above, except this
 # producer itself, which the report pins as producer.sourceSha256. tests/benchmark-vnext-tests.ps1 parses the dot-source and Add-Type lines and fails when
 # a loaded file is missing from the list. Classification (producer.inputClassification): 'identity' = the collectors (tools/* except tools/benchmark.ps1)
@@ -1749,6 +1749,10 @@ function Assert-FastLlmBenchmarkDefaultSetup {
     # whatever its block says (it was on for this run).
     $embeddingsRefusal = 'Benchmarks measure the default setup. Turn embeddings off, start again, then benchmark.'
     if ($State.PSObject.Properties['sidecars']) { throw $embeddingsRefusal }
+    # Speculation is the same: a user choice that changes the speed itself. A status with a speculation field, or a recipe whose speculation is not none, is refused.
+    $speculationRefusal = 'Benchmarks measure the default setup. Turn speculation off (-Speculation off), start again, then benchmark.'
+    if ($State.PSObject.Properties['speculation']) { throw $speculationRefusal }
+    if ($State.PSObject.Properties['recipe'] -and $State.recipe -and $State.recipe.PSObject.Properties['speculation'] -and [string] $State.recipe.speculation -cne 'none') { throw $speculationRefusal }
     $profileRefusal = 'Benchmarks measure the default setup. Set the context profile to default and requests at once to 1 (-KvContextProfile default -KvSlots 1), start again, then benchmark.'
     if (Test-FastLlmServingProfileRun $State) { throw $profileRefusal }
     if ($State.recipe -and $State.recipe.PSObject.Properties['requestedArguments']) {

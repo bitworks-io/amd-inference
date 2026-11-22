@@ -66,7 +66,7 @@ try {
     $components=Get-Content -LiteralPath (Join-Path $root 'config/components.json') -Raw | ConvertFrom-Json
     $builtIn='llama.cpp-'+[string]$catalog.engine.version+'-vulkan'
     $pinned=@($builtIn)+@($components.components | Where-Object { $_.kind -ceq 'engine' } | ForEach-Object { [string]$_.id })
-    Check ((@($allow.Keys | Sort-Object) -join ',') -ceq (@($pinned | Sort-Object) -join ',')) 'allowlist: exactly the pinned engine ids have an entry (the built-in engine and every listed engine component)'
+    Check ((@($allow.Keys | Sort-Object) -join ',') -ceq (@($pinned | Sort-Object -Unique) -join ',')) 'allowlist: exactly the pinned engine ids have an entry (the built-in engine and every listed engine component)'
     $tagOf=@{};$tagOf[$builtIn]=[string]$catalog.engine.version
     foreach($c in @($components.components | Where-Object { $_.kind -ceq 'engine' })){ $tagOf[[string]$c.id]=[string]$c.version }
     $membershipBad=0
@@ -111,8 +111,11 @@ try {
     Check ([int]$ngram.servingProfile.requiredFreeVramMiB -eq 21500 -and [int]$ngram.model.requiredFreeVramMiB -eq 21500) 'speculation plan: the profile row''s own requirement is unchanged; the extra memory is added in the speculation block only'
     $mtp=Get-FastLlmPlan @common -KvContextProfile 'long' -Speculation 'mtp'
     Check ([string]$mtp.speculation.mode -ceq 'mtp' -and [string]$mtp.speculation.componentId -ceq 'test-mtp-draft' -and [string]$mtp.speculation.specType -ceq 'draft-mtp' -and [int64]$mtp.speculation.requiredFreeVramMiB -eq 22400 -and [string]$mtp.speculation.startRefusal -ceq 'speculation-evidence-unavailable') 'speculation plan: an mtp block names the draft component and says the start is refused (speculation-evidence-unavailable)'
-    $shortDefault=Get-FastLlmPlan @common -KvContextProfile 'default' -KvSlots 1 -Speculation 'ngram'
-    Check ([string]$shortDefault.speculation.profileId -ceq 'default' -and [int]$shortDefault.speculation.extraFreeVramMiB -eq 0 -and [int64]$shortDefault.speculation.requiredFreeVramMiB -eq 20500) 'speculation plan: an ngram row may add 0 MiB (an explicit default profile still has a profile id)'
+    # An explicit default profile with one request is the same default-context plan: it has no profile id, so a value for it is never used (the
+    # default value of a row matters only with 2 requests at once, which speculation does not offer in this version).
+    $zeroExtra=Get-SpecDocument;$zeroExtra.addOns[2].extraFreeVramMiB.long=0
+    $zeroPlan=Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $zeroExtra 'zero-extra.json') -Speculation 'ngram'
+    Check ([int]$zeroPlan.speculation.extraFreeVramMiB -eq 0 -and [int64]$zeroPlan.speculation.requiredFreeVramMiB -eq 21500) 'speculation plan: an ngram row may add 0 MiB (the total is the profile row''s requirement)'
     # Refusal 1: no row of that kind.
     $r1=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.8-27b-q8-0' -KvContextProfile 'long' -Speculation 'ngram' }
     Check ($r1.threw -and $r1.code -ceq 'speculation-not-measured' -and $r1.message -like 'speculation-not-measured: *Nothing was started*' -and $r1.message -like '*-Speculation off*' -and [string]::IsNullOrEmpty($r1.reason)) 'speculation refusal 1: a model without an ngram row is refused (speculation-not-measured), nothing was started, and no reason is set for a retry or recovery'
@@ -148,8 +151,10 @@ try {
     # Refusal 2: a row, but no value for the effective profile.
     $r2=Get-RefusalCode { Get-FastLlmPlan @common -Speculation 'ngram' }
     Check ($r2.threw -and $r2.code -ceq 'speculation-profile-not-measured' -and $r2.message -like '*Nothing was started*' -and [string]::IsNullOrEmpty($r2.reason)) 'speculation refusal 2: a default-context plan has no profile id to key a value on, so it is refused (speculation-profile-not-measured)'
-    $r2b=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'default' -Speculation 'mtp' -ModelId 'qwen3.8-27b-ud-q4-k-m' }
-    Check (-not $r2b.threw) 'speculation: an explicit default profile has a profile id and plans (value 700)'
+    foreach($specMode in @('ngram','mtp')){
+        $r2b=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'default' -KvSlots 1 -Speculation $specMode }
+        Check ($r2b.threw -and $r2b.code -ceq 'speculation-profile-not-measured') "speculation refusal 2: explicit default values are the same default-context plan and are refused the same way ($specMode)"
+    }
     $r2c=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'default' -Speculation 'ngram' }
     Check ($r2c.threw -and $r2c.code -ceq 'speculation-profile-not-measured') 'speculation refusal 2: a row with a value only for long is refused for the default profile'
     $rOrder=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
@@ -213,7 +218,7 @@ try {
     $allOn=[pscustomobject]@{contextProfile='long';slots=2;embeddings='on';embeddingPort=8090;thinking='off';chatPage='on';idleStopMinutes=15}
     $planOptions=Get-FastLlmServingPlanOptions -Options $allOn -ConfigRoot (Join-Path $root 'config')
     Check (-not $planOptions.ContainsKey('Speculation') -and -not (Get-FastLlmServingServerOptions -Options $allOn).ContainsKey('Speculation')) 'default off: the shared serving options (used by start, the window and the sign-in start) never carry a speculation option'
-    foreach($file in @('src/FastLlm.BackgroundHost.ps1','src/FastLlm.SignInStart.ps1','src/FastLlm.UiBackground.ps1','src/FastLlm.UiFlow.ps1','src/FastLlm.ServingSettings.ps1','src/FastLlm.Benchmark.ps1','src/FastLlm.ServingProfileRun.ps1','fast-llm-ui.ps1')){
+    foreach($file in @('src/FastLlm.BackgroundHost.ps1','src/FastLlm.SignInStart.ps1','src/FastLlm.UiBackground.ps1','src/FastLlm.UiFlow.ps1','src/FastLlm.ServingSettings.ps1','src/FastLlm.ServingProfileRun.ps1','fast-llm-ui.ps1')){
         $text=Get-Content -LiteralPath (Join-Path $root $file) -Raw
         Check (-not [regex]::IsMatch($text,'(?i)-Speculation|\bSpeculation\s*=|speculation-not-measured|FastLlmSpeculation')) "bench and background paths: $file never asks for speculation"
     }
@@ -233,7 +238,7 @@ try {
         $componentRoot=& $module { param($I,$E) Get-FastLlmComponentRoot -InstallRoot $I -Component $E } $install $entry
         if($Component -cne 'missing'){
             New-Item -ItemType Directory -Path $componentRoot -Force | Out-Null
-            $bytes=[Text.Encoding]::ASCII.GetBytes((('FastLLM test vision projector fixture. Not a projector. ')*4).Substring(0,192))
+            $bytes=[Text.Encoding]::ASCII.GetBytes((('FastLLM test speculation draft fixture. Not a draft file. ')*4).Substring(0,192))
             if($Component -ceq 'corrupt'){$bytes[0]=[byte]0x58}
             [IO.File]::WriteAllBytes((Join-Path $componentRoot ([string]$entry.entryPoint)),$bytes)
             if($Component -cne 'no-consent'){ & $module { param($I,$E) Write-FastLlmComponentConsentReceipt -Component $E -InstallRoot $I -AcceptanceMode 'explicit-switch' } $install $entry }

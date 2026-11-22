@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'FastLlm.ApiKey.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Sidecar.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Vision.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.Speculation.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.OffloadBenchmark.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.Soak.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.DriverGuidance.ps1')
@@ -1156,13 +1157,18 @@ function Get-FastLlmPlan {
         [ValidateSet(1, 2)]
         [int] $KvSlots = 1,
 
-        # The measured serving profile rows (config/serving-profiles.json). Read only when -KvContextProfile, -KvSlots or -Vision is not its default.
+        # The measured serving profile rows (config/serving-profiles.json). Read only when -KvContextProfile, -KvSlots, -Vision or -Speculation is not its default.
         [string] $KvProfilesPath,
 
         # off (the default) leaves every argument and field as it is (--no-mmproj stays); on plans the vision option from a measured add-on row, or
         # refuses it typed. In this release every start with vision is refused before anything is started (see FastLlm.Vision.ps1).
         [ValidateSet('off', 'on')]
         [string] $Vision = 'off',
+
+        # off (the default) leaves every argument and field as it is (--spec-type none stays); ngram or mtp plans the speculation option from a measured
+        # add-on row of that kind, or refuses it typed. In this release no row ships and every mtp start is refused (see FastLlm.Speculation.ps1).
+        [ValidateSet('off', 'ngram', 'mtp')]
+        [string] $Speculation = 'off',
 
         # Set by model recovery: the cached model was not chosen by the user, so the plan is labelled estimated, not "Chosen by you".
         [switch] $Recovered,
@@ -1202,9 +1208,12 @@ function Get-FastLlmPlan {
     $servingOptionOn = [bool] ($KvContextProfile -cne 'default' -or $KvSlots -ne 1)
     $Vision = $Vision.ToLowerInvariant()
     $visionOn = [bool] ($Vision -ceq 'on')
+    $Speculation = $Speculation.ToLowerInvariant()
+    $specOn = [bool] ($Speculation -cne 'off')
     if ($servingOptionOn -and $ContextSize -gt 0) { throw '-ContextSize cannot be combined with -KvContextProfile or -KvSlots: the measured profile row sets the context.' }
     if ($servingOptionOn -and $RecipeId) { throw '-Recipe cannot be combined with -KvContextProfile or -KvSlots: a recipe is measured for the default context profile and one slot.' }
     if ($visionOn -and $RecipeId) { throw '-Recipe cannot be combined with -Vision on: a recipe is measured without a vision projector.' }
+    if ($specOn -and $RecipeId) { throw '-Recipe cannot be combined with -Speculation: a recipe is measured without speculation.' }
     $isFallbackPass = -not [string]::IsNullOrEmpty($FallbackFromRecipe)
     $catalog = Get-FastLlmCatalog -CatalogPath $CatalogPath
     Assert-FastLlmHardware -Hardware $Hardware
@@ -1293,7 +1302,10 @@ function Get-FastLlmPlan {
     elseif ($visionOn -and -not $ModelId -and $Profile -eq 'balanced' -and $RecipesPath -and $GpuVariantsPath) {
         $recipeSkippedSink.Add('recipes not applied: recipes are measured without a vision projector; this plan uses a measured vision row')
     }
-    if (-not $servingOptionOn -and -not $visionOn -and -not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
+    elseif ($specOn -and -not $ModelId -and $Profile -eq 'balanced' -and $RecipesPath -and $GpuVariantsPath) {
+        $recipeSkippedSink.Add('recipes not applied: recipes are measured without speculation; this plan uses a measured speculation row')
+    }
+    if (-not $servingOptionOn -and -not $visionOn -and -not $specOn -and -not $ModelId -and ($Profile -eq 'balanced' -or $RecipeId) -and $RecipesPath -and $GpuVariantsPath -and (Test-Path -LiteralPath $GpuVariantsPath)) {
         # Recipe data never fails an automatic plan; only an explicit -Recipe refuses.
         try {
             $dxgi = @()
@@ -1363,6 +1375,22 @@ function Get-FastLlmPlan {
         $visionBackend = ([string] $Hardware.backend).ToLowerInvariant()
         if ($servingOptionOn) { $visionProfileId = $KvContextProfile }
     }
+    # Speculation (-Speculation ngram|mtp): a model is a candidate only with an add-on row of that kind for exactly its sha256 on this plan's engine and
+    # backend (the built-in engine: recipes, and with them engine components, are not applied) AND a value for the plan's effective context profile id
+    # (a plan with no context profile option has no profile id, so no value). The free memory needed is that profile's requirement plus the row's value.
+    $specRows = @()
+    $specRowByModel = @{}
+    $specEngineId = $null
+    $specBackend = $null
+    $specProfileId = ''
+    $specRowFound = $false
+    $specValueFound = $false
+    if ($specOn) {
+        $specRows = @(Read-FastLlmAddOnRows -Path $KvProfilesPath)
+        $specEngineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
+        $specBackend = ([string] $Hardware.backend).ToLowerInvariant()
+        if ($servingOptionOn) { $specProfileId = $KvContextProfile }
+    }
     if ($recipePick) {
         $selected = [pscustomobject] @{ model = $recipePick.model; placement = $recipePick.placement; score = 0; gpuCount = @($recipePick.placement.adapters).Count }
     }
@@ -1395,6 +1423,20 @@ function Get-FastLlmPlan {
                     $visionValueFound = $true
                     $visionExtra = [int64] $visionRow.extraFreeVramMiB[$visionProfileId]
                 }
+                $specRow = $null
+                $specExtra = [int64] 0
+                if ($specOn) {
+                    $specModelKey = [string] $model.id
+                    if (-not $specRowByModel.ContainsKey($specModelKey)) {
+                        $specRowByModel[$specModelKey] = Find-FastLlmSpeculationAddOn -Rows $specRows -Kind $Speculation -Model $model -EngineId $specEngineId -Backend $specBackend
+                    }
+                    $specRow = $specRowByModel[$specModelKey]
+                    if ($null -eq $specRow) { continue }
+                    $specRowFound = $true
+                    if (-not $specProfileId -or -not $specRow.extraFreeVramMiB.ContainsKey($specProfileId)) { continue }
+                    $specValueFound = $true
+                    $specExtra = [int64] $specRow.extraFreeVramMiB[$specProfileId]
+                }
                 $servingRow = $null
                 if ($servingOptionOn) {
                     $servingModelKey = [string] $model.id
@@ -1406,6 +1448,7 @@ function Get-FastLlmPlan {
                     $requiredFree = [int64] $servingRow.requiredFreeVramMiB
                 }
                 $requiredFree += $visionExtra
+                $requiredFree += $specExtra
                 if ($requiredFree -le [int64] $placement.selectionCapacity) {
                     $fitting += [pscustomobject] @{
                         model        = $model
@@ -1416,6 +1459,8 @@ function Get-FastLlmPlan {
                         servingRow   = $servingRow
                         visionRow    = $visionRow
                         visionExtra  = $visionExtra
+                        specRow      = $specRow
+                        specExtra    = $specExtra
                     }
                 }
             }
@@ -1444,6 +1489,15 @@ function Get-FastLlmPlan {
             if ($visionProfileId) { $visionProfileWords = "the '$visionProfileId' context profile" }
             throw (New-FastLlmTypedFailure -Code 'vision-profile-not-measured' -Message "Vision is on, but the measured vision setup has no memory figure for $visionProfileWords, so it is not offered. Nothing was started. To start without vision, leave -Vision off.")
         }
+        # Speculation refusals follow (the same two): no add-on row of that kind for any candidate, then no value for the effective profile id.
+        if ($specOn -and -not $specRowFound) {
+            throw (New-FastLlmTypedFailure -Code 'speculation-not-measured' -Message "Speculation ($Speculation) is on, but no speculation setup of that kind has been measured for this model and engine, so it is not offered. Nothing was started. To start without speculation, leave -Speculation off.")
+        }
+        if ($specOn -and -not $specValueFound) {
+            $specProfileWords = 'the default context with one request at a time (no context profile option is on, so there is no profile id to take a measurement for)'
+            if ($specProfileId) { $specProfileWords = "the '$specProfileId' context profile" }
+            throw (New-FastLlmTypedFailure -Code 'speculation-profile-not-measured' -Message "Speculation ($Speculation) is on, but the measured speculation setup has no memory figure for $specProfileWords, so it is not offered. Nothing was started. To start without speculation, leave -Speculation off.")
+        }
         # No candidate had a measured row at all: the option is refused with the one plain reason. A row that exists but does not fit is a fit refusal below.
         # Plain reason, exactly as before; the code travels in Data so a background run and a switch can record why they refused.
         if ($servingOptionOn -and @($servingRowByModel.Values | Where-Object { $null -ne $_ }).Count -eq 0) {
@@ -1461,6 +1515,15 @@ function Get-FastLlmPlan {
         $noProfileFits = New-Object -TypeName System.InvalidOperationException -ArgumentList "No catalog profile fits the currently free AMD VRAM ($maximumAvailableCapacity MiB across a supported placement). Close GPU-heavy applications or select different hardware."
         $noProfileFits.Data['FastLlmFailureCode'] = 'no-profile-fits'
         throw $noProfileFits
+    }
+
+    # Speculation refusal 3: a combination this version does not offer, after the row and the value were found (so the two refusals above come
+    # first): speculation with 2 requests at once, and speculation with -Vision on.
+    if ($specOn -and $KvSlots -ne 1) {
+        throw (New-FastLlmTypedFailure -Code 'speculation-combination-not-offered' -Message 'Speculation is not offered with 2 requests at once (-KvSlots 2) in this release. Nothing was started. To start without speculation, leave -Speculation off.')
+    }
+    if ($specOn -and $visionOn) {
+        throw (New-FastLlmTypedFailure -Code 'speculation-combination-not-offered' -Message 'Speculation is not offered together with -Vision on in this release. Nothing was started. To start without speculation, leave -Speculation off.')
     }
 
     # Copy before narrowing context: the immutable artifact/provenance remains unchanged.
@@ -1509,6 +1572,27 @@ function Get-FastLlmPlan {
             startRefusal        = 'vision-evidence-unavailable'
         }
     }
+    # The speculation block (only with -Speculation ngram|mtp). The row's own values; the total is the profile's requirement plus the row's extra memory.
+    $speculationBlock = $null
+    if ($specOn) {
+        $speculationBlock = [ordered] @{
+            mode                = $Speculation
+            specType            = [string] $selected.specRow.specType
+            extraArguments      = [string[]] @($selected.specRow.extraArguments)
+            engineId            = $specEngineId
+            backend             = $specBackend
+            profileId           = $specProfileId
+            modelSha256         = ([string] $model.sha256).ToLowerInvariant()
+            extraFreeVramMiB    = [int] $selected.specExtra
+            requiredFreeVramMiB = [int64] $selected.requiredFree
+            resultId            = [string] $selected.specRow.resultId
+        }
+        if ($Speculation -ceq 'mtp') {
+            $speculationBlock.componentId = [string] $selected.specRow.componentId
+            $speculationBlock.startRefusal = 'speculation-evidence-unavailable'
+        }
+        $speculationBlock = [pscustomobject] $speculationBlock
+    }
     $selectedPlacement = $selected.placement
     $selectedAdapters = @($selectedPlacement.adapters)
     $homogeneous = $selectedAdapters.Count -gt 1
@@ -1532,6 +1616,8 @@ function Get-FastLlmPlan {
         'The selected GGUF is a hash-pinned community quantization of an Apache-2.0 Qwen model; it is not a first-party Qwen GGUF.'
     )
     if ($Profile -eq 'fast' -and -not $ModelId) { $warnings += 'Fast is an estimated model preference, not a measured tokens-per-second optimization. Select -ModelId to keep a specific artifact.' }
+    if ($specOn -and $Speculation -ceq 'mtp') { $warnings += 'Speculation (mtp) is on for this plan, but no start with a draft file is offered in this release: FastLLM cannot verify yet where the draft model is loaded, so a start is refused (speculation-evidence-unavailable) before anything runs.' }
+    elseif ($specOn) { $warnings += 'Speculation (ngram) is on for this plan: it is a measured option, not the default setup, so benchmarks refuse a run started with it.' }
     if ($visionOn) { $warnings += 'Vision is on for this plan, but no start with vision is offered in this release: FastLLM cannot verify yet where the projector is loaded, so a start is refused (vision-evidence-unavailable) before anything runs.' }
     if ($ContextSize -gt 0) { $warnings += 'A smaller context keeps the original conservative memory threshold; it is not a newly measured fit claim.' }
     if ($allEligible.Count -gt $selectedAdapters.Count) {
@@ -1718,6 +1804,9 @@ function Get-FastLlmPlan {
         # The one replacement: --no-mmproj becomes --mmproj <path>, in the same place. The path is only named here (a start with vision is refused
         # before anything is started), as <verified-model> is named elsewhere.
         if ($visionOn) { $arguments = @(Get-FastLlmVisionArguments -Arguments $arguments -ProjectorPath $script:FastLlmVisionProjectorPlaceholder) }
+        # The one replacement and the appended arguments of speculation: the none after --spec-type becomes the row's spec type, then (mtp) the draft file
+        # and the row's extra arguments follow at the end. Last, so the row's arguments are the end of the list in row order.
+        if ($specOn) { $arguments = @(Get-FastLlmSpeculationArguments -Arguments $arguments -Speculation $speculationBlock -DraftPath $script:FastLlmSpeculationDraftPlaceholder) }
     }
 
     $planDocument = [pscustomobject] [ordered] @{
@@ -1766,6 +1855,10 @@ function Get-FastLlmPlan {
     # Present only with -Vision on, so every other plan keeps exactly its fields.
     if ($visionBlock) {
         $planDocument | Add-Member -NotePropertyName vision -NotePropertyValue $visionBlock
+    }
+    # Present only with -Speculation ngram|mtp, so every other plan keeps exactly its fields.
+    if ($speculationBlock) {
+        $planDocument | Add-Member -NotePropertyName speculation -NotePropertyValue $speculationBlock
     }
     # Present only when -PreferInstalledModels was passed (null when nothing was substituted), so a default plan keeps exactly its fields.
     if ($PreferInstalledModels) {
@@ -4012,6 +4105,9 @@ function Start-FastLlmServer {
     # Vision, fail closed and first: a plan that carries a vision block never starts. Every start with vision is refused here, typed, before any
     # check, probe, download, request file or launch (a switch, the embedding sidecar and the stand-in start included). A plan without one is not touched.
     Assert-FastLlmVisionStartable -Plan $Plan -CatalogPath $CatalogPath -InstallRoot $InstallRoot
+    # Speculation, fail closed and right after it: a plan with a speculation block starts only when it passes this check (an n-gram plan does; an mtp
+    # plan never does in this release). Before any check, probe, download, request file or launch. A plan without a block is not touched.
+    Assert-FastLlmSpeculationStartable -Plan $Plan -CatalogPath $CatalogPath -InstallRoot $InstallRoot
 
     # ValidateSet ignores case and keeps the typed value; normalise once, before any comparison or forwarding.
     $DeviceBinding = $DeviceBinding.ToLowerInvariant()
@@ -4365,6 +4461,10 @@ function Get-FastLlmSwitchServingOptions {
     }
     # A plan that carries a vision block keeps the mode (the target re-derives its own block from the rows, or is refused).
     if ($PreviousPlan.PSObject.Properties['vision'] -and $null -ne $PreviousPlan.vision) { $options.Vision = 'on' }
+    # The checked speculation of the plan that served: the planner applies the same option to the target, or refuses it typed (never starts the
+    # target without speculation).
+    $servedSpeculation = Get-FastLlmPlanSpeculation -Plan $PreviousPlan
+    if ($null -ne $servedSpeculation) { $options.Speculation = [string] $servedSpeculation.mode }
     return $options
 }
 
@@ -4382,7 +4482,7 @@ function Get-FastLlmSwitchPlanOptions {
         $options[[string] $name] = $ServingOptions[$name]
     }
     if ($Request.recipeId) { $options.RecipeId = [string] $Request.recipeId } else { $options.ModelId = [string] $Request.modelId }
-    if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots') -or $options.ContainsKey('Vision')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+    if ($options.ContainsKey('KvContextProfile') -or $options.ContainsKey('KvSlots') -or $options.ContainsKey('Vision') -or $options.ContainsKey('Speculation')) { $options.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
     return $options
 }
 
@@ -4650,5 +4750,7 @@ Export-ModuleMember -Function @(
     # The optional embedding sidecar: the one question an entry point asks before a start (can embeddings be turned on here?).
     'Assert-FastLlmEmbeddingsAvailable',
     # The vision option: the start check (refused in this release, before any start) for the entry points.
-    'Assert-FastLlmVisionStartable'
+    'Assert-FastLlmVisionStartable',
+    # The speculation option: the start check (an mtp start is refused in this release, before any start) for the entry points.
+    'Assert-FastLlmSpeculationStartable'
 )

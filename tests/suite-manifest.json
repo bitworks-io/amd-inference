@@ -272,6 +272,16 @@
       "reason": "Serving settings (port) read/write, validation, precedence and the bench-path tripwire; temp folders only, no engine, GPU or network. Wired in test.yml."
     },
     {
+      "suite": "speculation-run-tests",
+      "class": "ci",
+      "reason": "The speculation option against the native mock server: an n-gram plan really starts, status.json, the run log start field and the stop-time spec-summary event (present, absent and unreadable counters); no engine, GPU, network or bench required. Wired in test.yml."
+    },
+    {
+      "suite": "speculation-tests",
+      "class": "ci",
+      "reason": "The speculation option's add-on rows (loader vs checker parity), per-engine allowlist against the engine-surface fixtures, planner refusals in order, argv shape, the start check with its mutation proof, self-test comparability, the benchmark refusal and the model switch; test rows only, no engine, GPU, network or bench required. Wired in test.yml."
+    },
+    {
       "suite": "sidecar-tests",
       "class": "ci",
       "reason": "The opt-in embedding sidecar: supervised starts against the native mock text server and a mock embedding engine that takes the sidecar's real arguments, with a fixture embedding component and fixture sidecar rows (start after Ready, failure isolation, switch and restore, idle stop over both servers, the API key on the sidecar, the refusals, the argument golden); a fake key protector and generated marker keys; no network, model, GPU or admin; wired in test.yml."
