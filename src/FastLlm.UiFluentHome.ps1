@@ -78,7 +78,10 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
         <TextBlock x:Name="BackgroundLine" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
         <ProgressBar x:Name="HomeProgress" Margin="0,12,0,0" Height="4" IsIndeterminate="True" Visibility="Collapsed"
                      Foreground="{DynamicResource FastLlm.AccentFillBrush}"/>
-        <ItemsControl x:Name="StepsPanel" Margin="0,12,0,0" Visibility="Collapsed" Focusable="False"/>
+        <StackPanel x:Name="StepsBlock" Margin="0,12,0,0" Visibility="Collapsed">
+          <TextBlock x:Name="StepsSummary" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
+          <StackPanel x:Name="StepsPanel" Margin="0,6,0,0"/>
+        </StackPanel>
         <WrapPanel x:Name="FactsPanel" Margin="0,12,0,0" Visibility="Collapsed">
           <TextBlock x:Name="AddressLabel" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
           <TextBlock x:Name="AddressText" VerticalAlignment="Center" FontFamily="{DynamicResource FastLlm.MonoFont}"/>
@@ -245,7 +248,7 @@ function Initialize-FastLlmUiFluentHome {
     param([Parameter(Mandatory = $true)] $Page, [Parameter(Mandatory = $true)][hashtable] $Els)
     $s = $script:FastLlmUiFluentStrings
     foreach ($name in 'HeaderGrid', 'TitleText', 'NoticeText', 'TrayButton', 'StatusCard', 'StatusDot', 'StatusHeadline', 'StartSplit', 'InstallButton',
-        'MoreStartButton', 'StopButton', 'AttachButton', 'StatusDetail', 'BackgroundLine', 'HomeProgress', 'StepsPanel', 'FactsPanel', 'AddressLabel',
+        'MoreStartButton', 'StopButton', 'AttachButton', 'StatusDetail', 'BackgroundLine', 'HomeProgress', 'StepsBlock', 'StepsSummary', 'StepsPanel', 'FactsPanel', 'AddressLabel',
         'AddressText', 'CopyButton', 'WillStartPanel', 'WillStartText', 'ChangeButton', 'NotesText', 'ResultsLink', 'BarLink', 'QuickPanel', 'QuickHeading',
         'OpenChatButton', 'ConnectButton', 'SwitchButton', 'SwitchLine', 'ActivityExpander', 'ActivityHeader', 'ActivityBox') {
         $Els[$name] = Get-FastLlmUiFluentElement -Root $Page -Name $name
@@ -308,7 +311,6 @@ function Initialize-FastLlmUiFluentHome {
     $Els['ActivityHeader'].Text = $activity
     [System.Windows.Automation.AutomationProperties]::SetName($Els['ActivityBox'], $activity)
     [System.Windows.Automation.AutomationProperties]::SetLabeledBy($Els['ActivityBox'], $Els['ActivityHeader'])
-    [System.Windows.Automation.AutomationProperties]::SetName($Els['StepsPanel'], '')
     [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els['OpenChatButton'], $true)
     return $Els
 }
@@ -367,7 +369,7 @@ function Update-FastLlmUiFluentHome {
     $stepsKey = [string] $card.stepsText + '|' + (@($stepRows | ForEach-Object { if ($null -ne $_) { [string] $_.name + '=' + [string] $_.state } }) -join ';')
     if ($keys['Steps'] -cne $stepsKey) {
         $keys['Steps'] = $stepsKey
-        $e['StepsPanel'].Items.Clear()
+        $e['StepsPanel'].Children.Clear()
         if ($null -ne $card.steps -and $stepRows.Count -gt 0) {
             foreach ($step in $stepRows) {
                 $row = New-Object System.Windows.Controls.StackPanel
@@ -382,15 +384,16 @@ function Update-FastLlmUiFluentHome {
                 $label = New-Object System.Windows.Controls.TextBlock
                 $rowText = [string] $step.name + ', ' + [string] $step.state
                 $label.Text = $rowText
-                [System.Windows.Automation.AutomationProperties]::SetName($row, $rowText)
                 [void] $row.Children.Add($mark)
                 [void] $row.Children.Add($label)
-                [void] $e['StepsPanel'].Items.Add($row)
+                [void] $e['StepsPanel'].Children.Add($row)
             }
-            [System.Windows.Automation.AutomationProperties]::SetName($e['StepsPanel'], [string] $card.stepsText)
-            $e['StepsPanel'].Visibility = [System.Windows.Visibility]::Visible
+            # Plain TextBlocks always have a peer (Name = Text): the summary names the whole step state, the rows name each step.
+            $e['StepsSummary'].Text = [string] $card.stepsText
+            [System.Windows.Automation.AutomationProperties]::SetName($e['StepsSummary'], [string] $card.stepsText)
+            $e['StepsBlock'].Visibility = [System.Windows.Visibility]::Visible
         }
-        else { $e['StepsPanel'].Visibility = [System.Windows.Visibility]::Collapsed }
+        else { $e['StepsBlock'].Visibility = [System.Windows.Visibility]::Collapsed }
     }
 
     # The facts line: the address, only while a run is up. The URL is the one Copy puts on the clipboard; it is read on a change and every 5 seconds.

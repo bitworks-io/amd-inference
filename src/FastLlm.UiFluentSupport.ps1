@@ -57,16 +57,26 @@ function Test-FastLlmUiFluentHost {
 # The WPF accessibility fields as WPF itself reads them (internal type). Legacy: the names of the fields that read True. A missing property is not legacy.
 function Get-FastLlmUiFluentAccessibilityState {
     [CmdletBinding()] param()
-    $type = [System.Windows.DependencyObject].Assembly.GetType('System.Windows.AccessibilitySwitches')
-    if ($null -eq $type) { return @{ typeFound = $false; legacy = @() } }
+    # WPF compiles the switch class into more than one assembly; each copy caches its own reads, so every copy is read.
+    $assemblies = @([System.Windows.DependencyObject].Assembly, [System.Windows.UIElement].Assembly, [System.Windows.Controls.ItemsControl].Assembly)
     $legacy = New-Object System.Collections.ArrayList
-    foreach ($name in 'UseNetFx47CompatibleAccessibilityFeatures', 'UseNetFx471CompatibleAccessibilityFeatures', 'UseNetFx472CompatibleAccessibilityFeatures',
-        'UseNetFx48CompatibleAccessibilityFeatures', 'UseLegacyToolTipDisplay', 'ItemsControlDoesNotSupportAutomation') {
-        $property = $type.GetProperty($name, [System.Reflection.BindingFlags] 'NonPublic,Static')
-        if ($null -eq $property) { continue }
-        if ([bool] $property.GetValue($null)) { [void] $legacy.Add($name) }
+    $found = $false
+    $seen = @{}
+    foreach ($assembly in $assemblies) {
+        $short = $assembly.GetName().Name
+        if ($seen.ContainsKey($short)) { continue }
+        $seen[$short] = $true
+        $type = $assembly.GetType('System.Windows.AccessibilitySwitches')
+        if ($null -eq $type) { continue }
+        $found = $true
+        foreach ($name in 'UseNetFx47CompatibleAccessibilityFeatures', 'UseNetFx471CompatibleAccessibilityFeatures', 'UseNetFx472CompatibleAccessibilityFeatures',
+            'UseNetFx48CompatibleAccessibilityFeatures', 'UseLegacyToolTipDisplay', 'ItemsControlDoesNotSupportAutomation') {
+            $property = $type.GetProperty($name, [System.Reflection.BindingFlags] 'NonPublic,Static')
+            if ($null -eq $property) { continue }
+            if ([bool] $property.GetValue($null)) { [void] $legacy.Add($short + '.' + $name) }
+        }
     }
-    return @{ typeFound = $true; legacy = @($legacy.ToArray()) }
+    return @{ typeFound = $found; legacy = @($legacy.ToArray()) }
 }
 
 # Records window-accessibility-legacy once, with the legacy field NAMES only (no path, no value). -Reader and -Log are seams for tests.

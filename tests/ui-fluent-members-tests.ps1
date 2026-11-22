@@ -424,25 +424,63 @@ Check ($proof.install -ceq 'Install && start') 'a button keeps its classic text 
 [void](Remove-Item -LiteralPath $wrapperFile -Force)
 [void](Remove-Item -LiteralPath $scratchDir -Force)
 
-# Classic untouched: the accessibility switches are set only inside Test-FastLlmUiFluentHost, and that check is called only on the fluent-guarded support-check line.
-function Get-CommandCalls([string]$Path,[string]$CommandName){
-    $errs=$null
-    $ast=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$errs)
-    return ,@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $CommandName},$true))
-}
-$setCalls=@();$hostCalls=@()
+# Classic untouched: the accessibility switches have exactly two call sites (the top of the shell file, which runs when the shell is dot-sourced, and
+# Test-FastLlmUiFluentHost), and both files are reachable only through the fluent guard of the support-check statement.
+function Get-FileAst([string]$Path){ return [System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$null) }
+function Get-CommandCalls($Ast,[string]$CommandName){ return ,@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $CommandName},$true)) }
+function Get-Ancestor($Node,[type]$Type){ $a=$Node.Parent; while($null -ne $a -and $a -isnot $Type){$a=$a.Parent}; return $a }
+$guardPattern='\$Window\s+-ceq\s+''fluent'''
 $scanFiles=@(Join-Path $root 'fast-llm-ui.ps1')+@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' -File|ForEach-Object{$_.FullName})+@(Join-Path $root 'fast-llm.ps1')
+$setCalls=@();$hostCalls=@()
 foreach($f in $scanFiles){
     if(-not (Test-Path -LiteralPath $f)){continue}
-    foreach($c in (Get-CommandCalls $f 'Set-FastLlmUiFluentAccessibilitySwitches')){$setCalls+=[pscustomobject]@{File=$f;Node=$c}}
-    foreach($c in (Get-CommandCalls $f 'Test-FastLlmUiFluentHost')){$hostCalls+=[pscustomobject]@{File=$f;Node=$c}}
+    $ast=Get-FileAst $f
+    foreach($c in (Get-CommandCalls $ast 'Set-FastLlmUiFluentAccessibilitySwitches')){$setCalls+=[pscustomobject]@{File=$f;Node=$c}}
+    foreach($c in (Get-CommandCalls $ast 'Test-FastLlmUiFluentHost')){$hostCalls+=[pscustomobject]@{File=$f;Node=$c}}
 }
-Check ($setCalls.Count -eq 1) 'the accessibility switches are set at exactly one call site'
-$owner=$setCalls[0].Node.Parent;while($null -ne $owner -and $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$owner=$owner.Parent}
-Check ($null -ne $owner -and $owner.Name -ceq 'Test-FastLlmUiFluentHost' -and $setCalls[0].File.EndsWith('FastLlm.UiFluentSupport.ps1')) 'the switches are set only inside Test-FastLlmUiFluentHost'
+Check ($setCalls.Count -eq 2) 'the accessibility switches are set at exactly two call sites'
+$inSupport=@($setCalls|Where-Object{$_.File.EndsWith('FastLlm.UiFluentSupport.ps1')})
+$inShell=@($setCalls|Where-Object{$_.File.EndsWith('FastLlm.UiFluentShell.ps1')})
+Check ($inSupport.Count -eq 1 -and $inShell.Count -eq 1) 'one call site in the support file and one in the shell file, nowhere else'
+$fnOwner=Get-Ancestor $inSupport[0].Node ([System.Management.Automation.Language.FunctionDefinitionAst])
+Check ($null -ne $fnOwner -and $fnOwner.Name -ceq 'Test-FastLlmUiFluentHost') 'the support-file call is inside Test-FastLlmUiFluentHost'
+Check ($null -eq (Get-Ancestor $inShell[0].Node ([System.Management.Automation.Language.FunctionDefinitionAst]))) 'the shell-file call runs at dot-source time (top level)'
 Check ($hostCalls.Count -eq 1 -and $hostCalls[0].File.EndsWith('fast-llm-ui.ps1')) 'Test-FastLlmUiFluentHost is called only from fast-llm-ui.ps1, once'
-$guard=$hostCalls[0].Node.Parent;$guarded=$false
-while($null -ne $guard){if($guard -is [System.Management.Automation.Language.IfStatementAst] -and $guard.Clauses[0].Item1.Extent.Text -match '\$Window\s+-ceq\s+''fluent'''){$guarded=$true;break};$guard=$guard.Parent}
-Check $guarded 'the support check call is inside if ($Window -ceq ''fluent'')'
+function Test-InFluentGuard($Node){
+    $g=$Node.Parent
+    while($null -ne $g){ if($g -is [System.Management.Automation.Language.IfStatementAst] -and $g.Clauses[0].Item1.Extent.Text -match $guardPattern){return $true}; $g=$g.Parent }
+    return $false
+}
+Check (Test-InFluentGuard $hostCalls[0].Node) 'the support check call is inside the fluent guard'
+# Every dot-source of the shell or support file in the window script is inside the fluent guard, and no file dot-sourced before the seam mentions them.
+$uiAst=Get-FileAst (Join-Path $root 'fast-llm-ui.ps1')
+$dotCmds=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot},$true))
+$fluentDots=@($dotCmds|Where-Object{$_.Extent.Text -match 'UiFluentShell\.ps1|UiFluentSupport\.ps1'})
+Check ($fluentDots.Count -eq 1 -and (Test-InFluentGuard $fluentDots[0])) 'the window script dot-sources the shell file once, only inside the fluent guard'
+$preSeam=@($dotCmds|Where-Object{$_.Extent.StartLineNumber -lt $seam -and $_.Extent.Text -notmatch 'UiFluentShell'})
+$leaks=@()
+foreach($d in $preSeam){
+    if($d.Extent.Text -match "'(src/[^']+\.ps1)'"){
+        $file=Join-Path $root $Matches[1]
+        if((Test-Path -LiteralPath $file) -and ((Get-Content -LiteralPath $file -Raw) -match 'UiFluentShell\.ps1|UiFluentSupport\.ps1|Set-FastLlmUiFluentAccessibilitySwitches')){$leaks+=$Matches[1]}
+    }
+}
+Check ($preSeam.Count -gt 5 -and $leaks.Count -eq 0) 'no file dot-sourced before the seam mentions the fluent shell, the support file or the setter'
+# A classic start never executes the accessibility setter: the real support-check statement, run with $Window=classic against a mock setter.
+# Positive control: the same statement with $Window=fluent, its shell path redirected to a scratch file that only calls the mock setter.
+$guardIf=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match $guardPattern -and $n.Extent.Text -match 'UiFluentShell\.ps1'},$true))
+Check ($guardIf.Count -eq 1) 'the support-check statement is found by AST'
+$scratch=Join-Path ([IO.Path]::GetTempPath()) ('fluent-guard-'+[guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path (Join-Path $scratch 'src') -Force)
+Set-Content -LiteralPath (Join-Path $scratch 'src/FastLlm.UiFluentShell.ps1') -Value 'Set-FastLlmUiFluentAccessibilitySwitches; $guardCounter.dot++; function Test-FastLlmUiFluentHost { @{ supported = $true; reason = "" } }' -Encoding ASCII
+$statement=$guardIf[0].Extent.Text.Replace('$PSScriptRoot',"'"+$scratch.Replace("'","''")+"'")
+$guardCounter=@{ setter = 0; dot = 0 }
+function Set-FastLlmUiFluentAccessibilitySwitches { $guardCounter.setter++ }
+try{
+    & { $Window='classic'; Invoke-Expression $statement }
+    Check ($guardCounter.setter -eq 0 -and $guardCounter.dot -eq 0) 'a classic start never executes the accessibility setter (nor dot-sources the shell file)'
+    & { $Window='fluent'; Invoke-Expression $statement }
+    Check ($guardCounter.setter -eq 1 -and $guardCounter.dot -eq 1) 'positive control: a fluent start through the same statement dot-sources the shell file and runs the setter'
+}finally{ if(Test-Path -LiteralPath $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force} }
 
 Write-Host "UI fluent member coverage tests passed: $checks"

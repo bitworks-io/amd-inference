@@ -4,9 +4,11 @@
 # (FastLlm.UiFluentSupport.ps1), then Initialize-FastLlmUiFluentShell right after the control-creation block, then Start-FastLlmUiFluentLoop.
 # No WPF or WinForms type is resolved at dot-source time, only inside function bodies. The new fluent-only strings are in
 # FastLlm.UiFluentHome.ps1 ($script:FastLlmUiFluentStrings); today's captions come only from the adapters.
+# FIRST: the accessibility switches, before any other statement or dot-source here (WPF caches them on first read; the support file touches no WPF type).
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentSupport.ps1')
+Set-FastLlmUiFluentAccessibilitySwitches
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentAdapter.ps1')
-. (Join-Path $PSScriptRoot 'FastLlm.UiFluentSupport.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentForm.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentBindings.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiTheme.ps1')

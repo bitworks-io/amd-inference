@@ -50,8 +50,8 @@ Check ($hostBody.IndexOf('Set-FastLlmUiFluentAccessibilitySwitches') -ge 0 -and 
 # --- accessibility read-back: a legacy read never blocks, is recorded once with names only ---
 $script:logged=@()
 $logger={param($Fields) $script:logged+=,$Fields}
-Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { @{typeFound=$true;legacy=@('UseNetFx47CompatibleAccessibilityFeatures','UseLegacyToolTipDisplay')} } -Log $logger
-Check ($script:logged.Count -eq 1 -and $script:logged[0].Keys.Count -eq 1 -and $script:logged[0]['fields'] -ceq 'UseNetFx47CompatibleAccessibilityFeatures,UseLegacyToolTipDisplay') 'legacy read: exactly one event, field names only'
+Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { @{typeFound=$true;legacy=@('WindowsBase.UseNetFx47CompatibleAccessibilityFeatures','PresentationFramework.ItemsControlDoesNotSupportAutomation')} } -Log $logger
+Check ($script:logged.Count -eq 1 -and $script:logged[0].Keys.Count -eq 1 -and $script:logged[0]['fields'] -ceq 'WindowsBase.UseNetFx47CompatibleAccessibilityFeatures,PresentationFramework.ItemsControlDoesNotSupportAutomation') 'legacy read: exactly one event, field names only'
 $script:logged=@()
 Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { @{typeFound=$true;legacy=@()} } -Log $logger
 Check ($script:logged.Count -eq 0) 'modern read: nothing recorded'
@@ -65,6 +65,13 @@ Check $threw 'a failing reader throws to the host check, which swallows it (host
 $hostSrc2=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFluentSupport.ps1') -Raw
 Check ($hostSrc2.Contains('try { Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $isCore } catch') -and $hostSrc2.IndexOf('Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr') -gt $hostSrc2.IndexOf('Get-FastLlmUiFluentSupport -NetFrameworkRelease')) 'the host check reads back after the assemblies are loaded and swallows a fault'
 Check ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.RunLog.ps1') -Raw).Contains("'window-accessibility-legacy' = @('fields')")) 'the run log allows the event with the one field'
+
+# The read-back checks every assembly copy of the switch class and names a legacy field <Assembly>.<Property>; the shell sets the switches before anything else.
+$sup=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFluentSupport.ps1') -Raw
+Check ($sup.Contains('[System.Windows.DependencyObject].Assembly') -and $sup.Contains('[System.Windows.UIElement].Assembly') -and $sup.Contains('[System.Windows.Controls.ItemsControl].Assembly') -and $sup.Contains("`$short + '.' + `$name")) 'the read-back covers WindowsBase, PresentationCore and PresentationFramework'
+$shellSrc=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFluentShell.ps1') -Raw
+$firstDot=$shellSrc.IndexOf('. (Join-Path $PSScriptRoot')
+Check ($shellSrc.Substring($firstDot).StartsWith(". (Join-Path `$PSScriptRoot 'FastLlm.UiFluentSupport.ps1')") -and $shellSrc.IndexOf('Set-FastLlmUiFluentAccessibilitySwitches') -lt $shellSrc.IndexOf('Set-StrictMode') -and $shellSrc.IndexOf('Set-StrictMode') -lt $shellSrc.IndexOf("FastLlm.UiFluentAdapter.ps1'")) 'the shell file sets the switches before every other statement and dot-source'
 
 # --- policy flag ---
 function Pol([string]$M='Undefined',[string]$U='Undefined',[string]$C='Undefined',[string]$L='Undefined'){Get-FastLlmUiCliPolicyFlag -Policies @{MachinePolicy=$M;UserPolicy=$U;CurrentUser=$C;LocalMachine=$L}}
