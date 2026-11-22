@@ -248,12 +248,12 @@ function Initialize-FastLlmUiFluentHome {
     }
 
     # The split button's arrow: its own tab stop with its own name; Enter and Space click it, Alt+Down opens the same menu.
-    $Els.MoreStartButton.Content = New-FastLlmUiFluentGlyphText $script:FastLlmUiFluentGlyphs.More
-    $Els.MoreStartButton.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
-    [System.Windows.Automation.AutomationProperties]::SetName($Els.MoreStartButton, [string] $s.MoreStartOptions)
-    $Els.MoreStartButton.ToolTip = [string] $s.MoreStartOptions
-    $Els.MoreStartButton.MinHeight = 32
-    $Els.MoreStartButton.FontSize = 16
+    $Els['MoreStartButton'].Content = New-FastLlmUiFluentGlyphText $script:FastLlmUiFluentGlyphs.More
+    $Els['MoreStartButton'].FontFamily = New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['MoreStartButton'], [string] $s.MoreStartOptions)
+    $Els['MoreStartButton'].ToolTip = [string] $s.MoreStartOptions
+    $Els['MoreStartButton'].MinHeight = 32
+    $Els['MoreStartButton'].FontSize = 16
 
     $menu = New-Object System.Windows.Controls.ContextMenu
     $startItem = New-Object System.Windows.Controls.MenuItem
@@ -262,7 +262,7 @@ function Initialize-FastLlmUiFluentHome {
     [void] $menu.Items.Add($backgroundItem)
     $Els['StartMenuItem'] = $startItem
     $Els['BackgroundStartMenuItem'] = $backgroundItem
-    $more = $Els.MoreStartButton
+    $more = $Els['MoreStartButton']
     # The arrow's own ContextMenu, so the menu inherits the window's resources; it is styled from the theme.
     $more.ContextMenu = $menu
     $menu.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.LayerBrush')
@@ -280,32 +280,32 @@ function Initialize-FastLlmUiFluentHome {
         $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
         $menu.IsOpen = $true
     }.GetNewClosure()
-    $Els.MoreStartButton.Add_Click({ param($sender, $routed) & $openMenu }.GetNewClosure())
-    $Els.MoreStartButton.Add_PreviewKeyDown({
+    $Els['MoreStartButton'].Add_Click({ param($sender, $routed) & $openMenu }.GetNewClosure())
+    $Els['MoreStartButton'].Add_PreviewKeyDown({
             param($sender, $keyArgs)
             if ($keyArgs.Key -eq [System.Windows.Input.Key]::System -and $keyArgs.SystemKey -eq [System.Windows.Input.Key]::Down) { & $openMenu; $keyArgs.Handled = $true }
         }.GetNewClosure())
 
     # The copy button is an icon button of at least 32 x 32, named and with a tooltip.
-    $Els.CopyButton.Content = New-FastLlmUiFluentGlyphText $script:FastLlmUiFluentGlyphs.Copy
-    [System.Windows.Automation.AutomationProperties]::SetName($Els.CopyButton, [string] $s.CopyAddress)
-    $Els.CopyButton.ToolTip = [string] $s.CopyAddress
-    $Els.CopyButton.MinWidth = 32
-    $Els.CopyButton.MinHeight = 32
+    $Els['CopyButton'].Content = New-FastLlmUiFluentGlyphText $script:FastLlmUiFluentGlyphs.Copy
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['CopyButton'], [string] $s.CopyAddress)
+    $Els['CopyButton'].ToolTip = [string] $s.CopyAddress
+    $Els['CopyButton'].MinWidth = 32
+    $Els['CopyButton'].MinHeight = 32
 
-    $Els.AddressLabel.Text = [string] $s.Address
-    $Els.ChangeButton.Content = [string] $s.Change
-    $Els.ChangeButton.ToolTip = [string] $s.ComingLater
-    [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els.ChangeButton, $true)
-    $Els.QuickHeading.Text = [string] $s.QuickActions
+    $Els['AddressLabel'].Text = [string] $s.Address
+    $Els['ChangeButton'].Content = [string] $s.Change
+    $Els['ChangeButton'].ToolTip = [string] $s.ComingLater
+    [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els['ChangeButton'], $true)
+    $Els['QuickHeading'].Text = [string] $s.QuickActions
 
     # The only input on Home is the read-only Activity box: explicit name and LabeledBy, both from one constant.
     $activity = [string] $s.Activity
-    $Els.ActivityHeader.Text = $activity
-    [System.Windows.Automation.AutomationProperties]::SetName($Els.ActivityBox, $activity)
-    [System.Windows.Automation.AutomationProperties]::SetLabeledBy($Els.ActivityBox, $Els.ActivityHeader)
-    [System.Windows.Automation.AutomationProperties]::SetName($Els.StepsPanel, '')
-    [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els.OpenChatButton, $true)
+    $Els['ActivityHeader'].Text = $activity
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['ActivityBox'], $activity)
+    [System.Windows.Automation.AutomationProperties]::SetLabeledBy($Els['ActivityBox'], $Els['ActivityHeader'])
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['StepsPanel'], '')
+    [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els['OpenChatButton'], $true)
     return $Els
 }
 
@@ -313,30 +313,30 @@ function Initialize-FastLlmUiFluentHome {
 function Update-FastLlmUiFluentHome {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
-    $e = $f.Els
-    $keys = $f.Keys
+    $e = $f['Els']
+    $keys = $f['Keys']
     $s = $script:FastLlmUiFluentStrings
     $glyphs = $script:FastLlmUiFluentGlyphs
     $snapshot = GetUiStateSnapshot $false
     $card = Get-FastLlmUiCardState -Snapshot $snapshot
-    $highContrast = ([string] $f.Theme -ceq 'high-contrast')
+    $highContrast = ([string] $f['Theme'] -ceq 'high-contrast')
 
     # The headline and the dot. The dot is a filled circle, or an outline in high contrast; the state word carries the meaning either way.
-    $e.StatusHeadline.Text = [string] $card.headline
+    $e['StatusHeadline'].Text = [string] $card.headline
     $toneKey = switch ([string] $card.tone) {
         'success' { 'FastLlm.SuccessTextBrush' } 'caution' { 'FastLlm.CautionTextBrush' } 'critical' { 'FastLlm.CriticalTextBrush' }
         'accent' { 'FastLlm.AccentFillBrush' } default { 'FastLlm.TextSecondaryBrush' }
     }
     $dotKey = $toneKey + '|' + $highContrast
-    if ($keys.Dot -cne $dotKey) {
-        $keys.Dot = $dotKey
+    if ($keys['Dot'] -cne $dotKey) {
+        $keys['Dot'] = $dotKey
         if ($highContrast) {
-            $e.StatusDot.Fill = [System.Windows.Media.Brushes]::Transparent
-            $e.StatusDot.SetResourceReference([System.Windows.Shapes.Shape]::StrokeProperty, 'FastLlm.TextPrimaryBrush')
+            $e['StatusDot'].Fill = [System.Windows.Media.Brushes]::Transparent
+            $e['StatusDot'].SetResourceReference([System.Windows.Shapes.Shape]::StrokeProperty, 'FastLlm.TextPrimaryBrush')
         }
         else {
-            $e.StatusDot.Stroke = $null
-            $e.StatusDot.SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, $toneKey)
+            $e['StatusDot'].Stroke = $null
+            $e['StatusDot'].SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, $toneKey)
         }
     }
 
@@ -344,26 +344,26 @@ function Update-FastLlmUiFluentHome {
     # The headline is not repeated when the detail already opens with it ("Not running. Install and start ...").
     $detail = [string] $script:statusLabel.Text
     $composed = if ($detail.StartsWith([string] $card.headline, [System.StringComparison]::OrdinalIgnoreCase)) { $detail } else { [string] $card.headline + '. ' + $detail }
-    if ($keys.Composed -cne $composed) {
-        $first = ($null -eq $keys.Composed)
-        $keys.Composed = $composed
-        [System.Windows.Automation.AutomationProperties]::SetName($e.StatusDetail, $composed)
-        if (-not $first) { Send-FastLlmUiFluentLiveRegion -Element $e.StatusDetail }
+    if ($keys['Composed'] -cne $composed) {
+        $first = ($null -eq $keys['Composed'])
+        $keys['Composed'] = $composed
+        [System.Windows.Automation.AutomationProperties]::SetName($e['StatusDetail'], $composed)
+        if (-not $first) { Send-FastLlmUiFluentLiveRegion -Element $e['StatusDetail'] }
     }
 
     # The main action: the card says which one shows; whether it can be pressed is only the adapter's Enabled (SetBusy).
     $action = [string] $card.mainAction
-    $e.StartSplit.Visibility = if ($action -ceq 'start') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    $e.StopButton.Visibility = if ($action -ceq 'stop') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    $e.AttachButton.Visibility = if ($action -ceq 'attach') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
-    $e.MoreStartButton.IsEnabled = ([bool] $script:startButton.Enabled -or [bool] $script:backgroundStartButton.Enabled)
+    $e['StartSplit'].Visibility = if ($action -ceq 'start') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $e['StopButton'].Visibility = if ($action -ceq 'stop') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $e['AttachButton'].Visibility = if ($action -ceq 'attach') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $e['MoreStartButton'].IsEnabled = ([bool] $script:startButton.Enabled -or [bool] $script:backgroundStartButton.Enabled)
 
     # The steps, only while starting. The list has its own automation text ("Step 3 of 4, Model, in progress").
     $stepRows = @($card.steps)
     $stepsKey = [string] $card.stepsText + '|' + (@($stepRows | ForEach-Object { if ($null -ne $_) { [string] $_.name + '=' + [string] $_.state } }) -join ';')
-    if ($keys.Steps -cne $stepsKey) {
-        $keys.Steps = $stepsKey
-        $e.StepsPanel.Items.Clear()
+    if ($keys['Steps'] -cne $stepsKey) {
+        $keys['Steps'] = $stepsKey
+        $e['StepsPanel'].Items.Clear()
         if ($null -ne $card.steps -and $stepRows.Count -gt 0) {
             foreach ($step in $stepRows) {
                 $row = New-Object System.Windows.Controls.StackPanel
@@ -381,43 +381,43 @@ function Update-FastLlmUiFluentHome {
                 [System.Windows.Automation.AutomationProperties]::SetName($row, $rowText)
                 [void] $row.Children.Add($mark)
                 [void] $row.Children.Add($label)
-                [void] $e.StepsPanel.Items.Add($row)
+                [void] $e['StepsPanel'].Items.Add($row)
             }
-            [System.Windows.Automation.AutomationProperties]::SetName($e.StepsPanel, [string] $card.stepsText)
-            $e.StepsPanel.Visibility = [System.Windows.Visibility]::Visible
+            [System.Windows.Automation.AutomationProperties]::SetName($e['StepsPanel'], [string] $card.stepsText)
+            $e['StepsPanel'].Visibility = [System.Windows.Visibility]::Visible
         }
-        else { $e.StepsPanel.Visibility = [System.Windows.Visibility]::Collapsed }
+        else { $e['StepsPanel'].Visibility = [System.Windows.Visibility]::Collapsed }
     }
 
     # The facts line: the address, only while a run is up. The URL is the one Copy puts on the clipboard; it is read on a change and every 5 seconds.
     $running = ([string] $card.state -ceq 'running' -or [string] $card.state -ceq 'running-background')
     if ($running) {
-        if ($keys.Running -ne $true -or ([int] $f.Tick % 20) -eq 0) {
-            try { $e.AddressText.Text = [string] (Get-FastLlmUiApiUrl -Status (GetUiBackgroundRunStatus) -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)) }
+        if ($keys['Running'] -ne $true -or ([int] $f['Tick'] % 20) -eq 0) {
+            try { $e['AddressText'].Text = [string] (Get-FastLlmUiApiUrl -Status (GetUiBackgroundRunStatus) -Settings (Get-FastLlmServingSettings -InstallRoot $script:installPath)) }
             catch { $null = $_ }
         }
-        $e.FactsPanel.Visibility = [System.Windows.Visibility]::Visible
+        $e['FactsPanel'].Visibility = [System.Windows.Visibility]::Visible
     }
-    else { $e.FactsPanel.Visibility = [System.Windows.Visibility]::Collapsed }
-    $keys.Running = $running
+    else { $e['FactsPanel'].Visibility = [System.Windows.Visibility]::Collapsed }
+    $keys['Running'] = $running
 
     # What a start will use: the model box value and the context value, so the inputs ReadSelection reads are never invisible.
     $contextValue = [int] $script:contextBox.Value
     $contextText = if ($contextValue -eq 0) { [string] $s.ContextDefault } else { [string] $contextValue }
-    $e.WillStartText.Text = ([string] $s.WillStartFormat) -f [string] $script:modelBox.SelectedItem, $contextText
-    $e.WillStartPanel.Visibility = if ($action -ceq 'start') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $e['WillStartText'].Text = ([string] $s.WillStartFormat) -f [string] $script:modelBox.SelectedItem, $contextText
+    $e['WillStartPanel'].Visibility = if ($action -ceq 'start') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
 
     # A greyed Open chat says why.
     $chatOff = -not [bool] $script:openChatButton.Enabled
-    if ($keys.ChatOff -ne $chatOff) {
-        $keys.ChatOff = $chatOff
+    if ($keys['ChatOff'] -ne $chatOff) {
+        $keys['ChatOff'] = $chatOff
         if ($chatOff) {
-            $e.OpenChatButton.ToolTip = [string] $s.OpenChatWhy
-            [System.Windows.Automation.AutomationProperties]::SetHelpText($e.OpenChatButton, [string] $s.OpenChatWhy)
+            $e['OpenChatButton'].ToolTip = [string] $s.OpenChatWhy
+            [System.Windows.Automation.AutomationProperties]::SetHelpText($e['OpenChatButton'], [string] $s.OpenChatWhy)
         }
         else {
-            $e.OpenChatButton.ToolTip = $null
-            [System.Windows.Automation.AutomationProperties]::SetHelpText($e.OpenChatButton, '')
+            $e['OpenChatButton'].ToolTip = $null
+            [System.Windows.Automation.AutomationProperties]::SetHelpText($e['OpenChatButton'], '')
         }
     }
 }
