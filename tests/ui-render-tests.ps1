@@ -26,6 +26,13 @@ Check (@($matrix|Where-Object{$_.theme -is [string] -and $_.scale -is [double] -
 Check (@($matrix|ForEach-Object{"$($_.theme)|$($_.scale)|$($_.textScale)|$($_.width)x$($_.height)"}|Sort-Object -Unique).Count -eq 40) 'the 40 cases are all different'
 $bigText=@($matrix|Where-Object{[double]$_.textScale -eq 2.25})
 Check ($bigText.Count -eq 1 -and $bigText[0].theme -ceq 'light' -and $bigText[0].scale -eq 1.0 -and $bigText[0].width -eq 640) 'the matrix has the one light 225% text case'
+Check ((Remove-UiAccessKey '_Name') -ceq 'Name') 'an access key underscore is stripped'
+Check ((Remove-UiAccessKey 'Na_me') -ceq 'Name') 'an access key underscore inside the text is stripped'
+Check ((Remove-UiAccessKey 'a__b') -ceq 'a_b') 'a doubled underscore is one literal underscore'
+Check ((Remove-UiAccessKey '__Name') -ceq '_Name') 'a doubled underscore at the start is kept as one'
+Check ((Remove-UiAccessKey 'Plain') -ceq 'Plain') 'text without underscores is unchanged'
+$hcPal=Get-UiRenderHighContrastPalette
+Check (@($hcPal.Values|Sort-Object -Unique).Count -eq 4) 'the high-contrast palette has four distinct colours'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -129,6 +136,12 @@ foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside'
     $found=@()
     $diag=@()
     try{$res=Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out;$found=@($res.problems);$diag=@($res.diagnostics)}catch{$found=@('threw: '+$_.Exception.Message)}
+    if($n -ceq 'LabeledByOnly'){
+        # The root cause of the cold-page failure, recorded on green runs too: whether the label already had an automation peer.
+        $peerState='unknown'
+        foreach($d in $diag){if($d -match 'labelPeer=(\w+)'){$peerState=$Matches[1];break}}
+        Write-Host ('INFO: render LabeledByOnly labelPeer='+$peerState)
+    }
     $diagText=''
     $ok=($found.Count -eq 1 -and $found[0] -ceq $neg[$n])
     if(-not $ok -and $diag.Count -gt 0){$diagText=' | diag: '+($diag -join '; ')}
@@ -155,9 +168,13 @@ foreach($case in $matrix){
     Check ($null -ne $r.titleFontSize -and [Math]::Abs([double]$r.titleFontSize-$expTitle) -le 0.01) "title font size follows the text scale at ${label} (got $($r.titleFontSize), want $expTitle)"
     Check ($null -ne $r.bodyFontSize -and [Math]::Abs([double]$r.bodyFontSize-$expBody) -le 0.01) "body font size follows the text scale at ${label} (got $($r.bodyFontSize), want $expBody)"
     $themeArgs=@{Theme=[string]$case.theme;AccentPair=(Get-FastLlmUiAccentPair -Palette $null);TextScale=[double]$case.textScale}
-    if($case.theme -ceq 'high-contrast'){$expFg='#FFFFFFFF'}
-    else{$expFg=(New-FastLlmUiThemeDictionary @themeArgs)['FastLlm.TextPrimaryBrush'].Color.ToString()}
+    if($case.theme -ceq 'high-contrast'){
+        $expFg=([System.Windows.Media.ColorConverter]::ConvertFromString($hcPal.WindowText)).ToString()
+        $darkText=(New-FastLlmUiThemeDictionary -Theme dark -AccentPair (Get-FastLlmUiAccentPair -Palette $null) -TextScale 1.0)['FastLlm.TextPrimaryBrush'].Color.ToString()
+        Check ($expFg -cne $darkText) "the high-contrast probe colour differs from dark TextPrimary at ${label}"
+    }else{$expFg=(New-FastLlmUiThemeDictionary @themeArgs)['FastLlm.TextPrimaryBrush'].Color.ToString()}
     Check ([string]$r.titleForeground -ceq $expFg) "title colour is the theme text colour at ${label} (got $($r.titleForeground), want $expFg)"
+    Check ($r.labeledInputs -ge 1) "the label-mismatch check saw at least 1 labelled input at ${label} (got $($r.labeledInputs))"
     Check ($r.textBlocks -ge 6) "the clipped check examined at least 6 text blocks at ${label} (got $($r.textBlocks))"
     Check ($r.namedControls -ge 4) "the unnamed check examined at least 4 controls at ${label} (got $($r.namedControls))"
     Check ($r.tabStops -eq 4) "the tab-order check saw 4 tab stops at ${label} (got $($r.tabStops))"

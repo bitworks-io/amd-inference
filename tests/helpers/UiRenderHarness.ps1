@@ -20,6 +20,25 @@ function Get-UiRenderMatrix {
     return $cases.ToArray()
 }
 
+# High-contrast palette for the probes: four DISTINCT colours, and WindowText differs from the dark theme's TextPrimary (white).
+function Get-UiRenderHighContrastPalette {
+    return @{ Window = '#000000'; WindowText = '#FFFF00'; Highlight = '#1AEBFF'; HighlightText = '#202020' }
+}
+
+# The text an access key label shows: a single underscore marks the key and is dropped, a doubled underscore is a literal underscore.
+function Remove-UiAccessKey([string]$Text) {
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        if ($c -eq '_') {
+            if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '_') { [void]$sb.Append('_'); $i++ }
+            continue
+        }
+        [void]$sb.Append($c)
+    }
+    return $sb.ToString()
+}
+
 function Get-UiElementLabel($Element) {
     $n = ''
     if ($Element -is [System.Windows.FrameworkElement]) { $n = [string]$Element.Name }
@@ -169,7 +188,7 @@ function Invoke-UiRenderCase {
     $page = New-FastLlmUiXamlElement -Name $Name
     $themeArgs = @{ Theme = $theme; AccentPair = (Get-FastLlmUiAccentPair -Palette $null); TextScale = $textScale }
     if ($theme -eq 'high-contrast') {
-        $themeArgs['HighContrastPalette'] = @{ Window = '#000000'; WindowText = '#FFFFFF'; Highlight = '#1AEBFF'; HighlightText = '#000000' }
+        $themeArgs['HighContrastPalette'] = Get-UiRenderHighContrastPalette
     }
     $dict = New-FastLlmUiThemeDictionary @themeArgs
     $page.Resources = $dict
@@ -275,15 +294,20 @@ function Invoke-UiRenderCase {
     $diagnostics = New-Object System.Collections.ArrayList
     $labelPeerState = @{}
     $mismatched = @{}
+    $labeledInputs = 0
     foreach ($el in $authored) {
         $label = [System.Windows.Automation.AutomationProperties]::GetLabeledBy($el)
         if ($null -eq $label) { continue }
+        $labeledInputs++
         if ($null -ne [System.Windows.Automation.Peers.UIElementAutomationPeer]::FromElement($label)) { $labelPeerState[$el] = 'exists' } else { $labelPeerState[$el] = 'none' }
         $explicit = [string][System.Windows.Automation.AutomationProperties]::GetName($el)
         if ([string]::IsNullOrEmpty($explicit)) { continue }
         $labelText = $null
         if ($label -is [System.Windows.Controls.TextBlock]) { $labelText = [string]$label.Text }
-        elseif ($label -is [System.Windows.Controls.Label]) { $labelText = [string]$label.Content }
+        elseif ($label -is [System.Windows.Controls.Label]) {
+            if ($label.Content -is [string]) { $labelText = Remove-UiAccessKey ([string]$label.Content) }
+            else { [void]$diagnostics.Add((Get-UiElementLabel $el) + ': label-content-not-text (' + (Get-UiElementLabel $label) + ')') }
+        }
         if ($null -ne $labelText -and -not $labelText.Trim().Equals($explicit.Trim(), [System.StringComparison]::Ordinal)) {
             [void]$problems.Add('label-mismatch:' + (Get-UiElementLabel $el))
             $mismatched[$el] = $true
@@ -359,6 +383,6 @@ function Invoke-UiRenderCase {
     return @{
         problems = [string[]]@($problems.ToArray()); diagnostics = [string[]]@($diagnostics.ToArray()); png = $png
         titleFontSize = $titleFontSize; bodyFontSize = $bodyFontSize; titleForeground = $titleForeground
-        textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
+        labeledInputs = $labeledInputs; textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
     }
 }
