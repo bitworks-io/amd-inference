@@ -32,6 +32,12 @@ try {
     }
     $card=New-Card 23552
     $common=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles;ModelId='qwen3.8-27b-ud-q4-k-m'}
+    # A splat plus a named argument for the same key throws ParameterAlreadyBound on Windows PowerShell 5.1 (PowerShell 7 lets the named one win), so a call
+    # that needs another value for a key uses a splat without that key.
+    function Get-SplatWithout($Base,[string[]]$Keys){ $copy=$Base.Clone(); foreach($key in $Keys){ $copy.Remove($key) }; return $copy }
+    $commonNoModel=Get-SplatWithout $common @('ModelId')
+    $commonNoProfiles=Get-SplatWithout $common @('KvProfilesPath')
+    $commonNoModelNoProfiles=Get-SplatWithout $common @('ModelId','KvProfilesPath')
     function Get-SpecDocument(){ return (Get-Content -LiteralPath $specProfiles -Raw | ConvertFrom-Json) }
     function Save-SpecDocument($Document,[string]$Name){ $path=Join-Path $work $Name; Write-Utf8 $path ($Document | ConvertTo-Json -Depth 12); return $path }
 
@@ -114,15 +120,15 @@ try {
     # An explicit default profile with one request is the same default-context plan: it has no profile id, so a value for it is never used (the
     # default value of a row matters only with 2 requests at once, which speculation does not offer in this version).
     $zeroExtra=Get-SpecDocument;$zeroExtra.addOns[2].extraFreeVramMiB.long=0
-    $zeroPlan=Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $zeroExtra 'zero-extra.json') -Speculation 'ngram'
+    $zeroPlan=Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $zeroExtra 'zero-extra.json') -Speculation 'ngram'
     Check ([int]$zeroPlan.speculation.extraFreeVramMiB -eq 0 -and [int64]$zeroPlan.speculation.requiredFreeVramMiB -eq 21500) 'speculation plan: an ngram row may add 0 MiB (the total is the profile row''s requirement)'
     # Refusal 1: no row of that kind.
-    $r1=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.8-27b-q8-0' -KvContextProfile 'long' -Speculation 'ngram' }
+    $r1=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -ModelId 'qwen3.8-27b-q8-0' -KvContextProfile 'long' -Speculation 'ngram' }
     Check ($r1.threw -and $r1.code -ceq 'speculation-not-measured' -and $r1.message -like 'speculation-not-measured: *Nothing was started*' -and $r1.message -like '*-Speculation off*' -and [string]::IsNullOrEmpty($r1.reason)) 'speculation refusal 1: a model without an ngram row is refused (speculation-not-measured), nothing was started, and no reason is set for a retry or recovery'
-    $r1b=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Speculation 'mtp' }
+    $r1b=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Speculation 'mtp' }
     Check ($r1b.threw -and $r1b.code -ceq 'speculation-not-measured') 'speculation refusal 1: a model with an ngram row but no mtp row is refused for mtp (the kind must match)'
     foreach($file in @($shippedProfiles,(Join-Path $root 'tests/fixtures/serving-profiles-test.json'),(Join-Path $work 'absent.json'))){
-        $rf=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath $file -Speculation 'ngram' }
+        $rf=Get-RefusalCode { Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'long' -KvProfilesPath $file -Speculation 'ngram' }
         Check ($rf.threw -and $rf.code -ceq 'speculation-not-measured') ('speculation refusal 1: '+(Split-Path -Leaf $file)+' has no ngram row, so the option is refused')
     }
     foreach($mut in @(
@@ -132,7 +138,7 @@ try {
             @{Name='s-other-backend';Label='another backend';Mutate={ param($d) $d.addOns[2].backend='hip' }})){
         $mutDocument=Get-SpecDocument
         & $mut.Mutate $mutDocument
-        $rm=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $mutDocument ($mut.Name+'.json')) -Speculation 'ngram' }
+        $rm=Get-RefusalCode { Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $mutDocument ($mut.Name+'.json')) -Speculation 'ngram' }
         Check ($rm.threw -and ($rm.code -ceq 'speculation-not-measured' -or $rm.code -ceq 'serving-profiles-invalid')) "speculation refusal 1: a row for $($mut.Label) does not apply to this plan"
     }
     $hipCard=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/dual-rx-7900-xtx-24gb.json') -Raw | ConvertFrom-Json
@@ -141,13 +147,13 @@ try {
     $planSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw
     Check (-not [regex]::IsMatch($planSource,'(?i)\bspeculation\b[^\r\n]*\bhip\b|\bhip\b[^\r\n]*\bspeculation\b')) 'speculation HIP: no new HIP rule is written for speculation'
     $malformed=Join-Path $work 'malformed.json';Write-Utf8 $malformed '{not json'
-    Check ((Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath $malformed -Speculation 'ngram' }).code -ceq 'serving-profiles-invalid') 'speculation: a profile file that is not JSON fails typed (never honoured, never dropped)'
-    $offUnread=Get-FastLlmPlan @common -KvContextProfile 'default' -KvProfilesPath $malformed -Speculation 'off'
+    Check ((Get-RefusalCode { Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'long' -KvProfilesPath $malformed -Speculation 'ngram' }).code -ceq 'serving-profiles-invalid') 'speculation: a profile file that is not JSON fails typed (never honoured, never dropped)'
+    $offUnread=Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'default' -KvProfilesPath $malformed -Speculation 'off'
     Check ($null -ne $offUnread) 'speculation off: the add-on rows are never read (a profile file that is not JSON changes nothing)'
     $badSpecRow=Get-SpecDocument;$badSpecRow.addOns[2].specType='ngram-bogus'
-    Check ((Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $badSpecRow 'bad-spec-type.json') -Speculation 'ngram' }).code -ceq 'serving-profiles-invalid') 'speculation: a row with a spec type outside the engine''s allowlist fails typed in the planner too'
+    Check ((Get-RefusalCode { Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $badSpecRow 'bad-spec-type.json') -Speculation 'ngram' }).code -ceq 'serving-profiles-invalid') 'speculation: a row with a spec type outside the engine''s allowlist fails typed in the planner too'
     $badFlagRow=Get-SpecDocument;$badFlagRow.addOns[2].extraArguments=@('--spec-draft-sampling','on')
-    Check ((Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $badFlagRow 'bad-flag.json') -Speculation 'ngram' }).code -ceq 'serving-profiles-invalid') 'speculation: a row with a flag outside the engine''s allowlist fails typed in the planner too'
+    Check ((Get-RefusalCode { Get-FastLlmPlan @commonNoProfiles -KvContextProfile 'long' -KvProfilesPath (Save-SpecDocument $badFlagRow 'bad-flag.json') -Speculation 'ngram' }).code -ceq 'serving-profiles-invalid') 'speculation: a row with a flag outside the engine''s allowlist fails typed in the planner too'
     # Refusal 2: a row, but no value for the effective profile.
     $r2=Get-RefusalCode { Get-FastLlmPlan @common -Speculation 'ngram' }
     Check ($r2.threw -and $r2.code -ceq 'speculation-profile-not-measured' -and $r2.message -like '*Nothing was started*' -and [string]::IsNullOrEmpty($r2.reason)) 'speculation refusal 2: a default-context plan has no profile id to key a value on, so it is refused (speculation-profile-not-measured)'
@@ -155,31 +161,32 @@ try {
         $r2b=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'default' -KvSlots 1 -Speculation $specMode }
         Check ($r2b.threw -and $r2b.code -ceq 'speculation-profile-not-measured') "speculation refusal 2: explicit default values are the same default-context plan and are refused the same way ($specMode)"
     }
-    $r2c=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'default' -Speculation 'ngram' }
+    $r2c=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'default' -Speculation 'ngram' }
     Check ($r2c.threw -and $r2c.code -ceq 'speculation-profile-not-measured') 'speculation refusal 2: a row with a value only for long is refused for the default profile'
-    $rOrder=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
+    $rOrder=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
     Check ($rOrder.threw -and $rOrder.code -ceq 'speculation-not-measured') 'speculation order: with no row AND no profile id, refusal 1 comes before refusal 2'
     # Refusal 3: a combination that is not offered in this version.
     $r3=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
     Check ($r3.threw -and $r3.code -ceq 'speculation-combination-not-offered' -and $r3.message -like '*-KvSlots*' -and $r3.message -like '*Nothing was started*' -and [string]::IsNullOrEmpty($r3.reason)) 'speculation refusal 3: speculation with 2 requests at once is refused (speculation-combination-not-offered)'
     $r3b=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -Vision 'on' -Speculation 'ngram' }
     Check ($r3b.threw -and $r3b.code -ceq 'speculation-combination-not-offered' -and $r3b.message -like '*-Vision*') 'speculation refusal 3: speculation with -Vision on is refused'
-    $r3c=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'long' -KvSlots 2 -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
+    $r3c=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -KvContextProfile 'long' -KvSlots 2 -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
     Check ($r3c.threw -and $r3c.code -ceq 'speculation-not-measured') 'speculation order: with no row AND 2 slots, refusal 1 (no row) comes before refusal 3 (the combination)'
     $tightSlots=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-Card 21530) -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $specProfiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
     Check ($tightSlots.threw -and $tightSlots.code -ceq 'speculation-combination-not-offered') 'speculation refusal 3: the combination is named even when the plan would not fit the card anyway (no fit refusal hides it)'
-    $noServingRow=Get-RefusalCode { Get-FastLlmPlan @common -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
+    $noServingRow=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
     Check ($noServingRow.threw -and $noServingRow.code -ceq 'speculation-combination-not-offered') 'speculation refusal 3: the combination is named when the profile row does not allow 2 slots either (no serving-row refusal hides it)'
-    $r3d=Get-RefusalCode { Get-FastLlmPlan @common -KvContextProfile 'default' -KvSlots 2 -ModelId 'qwen3.5-9b-q6-k' -Speculation 'ngram' }
+    $r3d=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -KvContextProfile 'default' -KvSlots 2 -ModelId 'qwen3.5-9b-q6-k' -Speculation 'ngram' }
     Check ($r3d.threw -and $r3d.code -ceq 'speculation-profile-not-measured') 'speculation order: with no value for the profile AND 2 slots, refusal 2 comes before refusal 3'
     # Fit: the extra memory is the row's, added to the profile's requirement. Nothing is derived.
     $tight=New-Card 21530
     $fitCommon=@{Hardware=$tight;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+    $fitCommonNoProfiles=Get-SplatWithout $fitCommon @('KvProfilesPath')
     Check ([string](Get-FastLlmPlan @fitCommon).servingProfile.id -ceq 'long') 'speculation fit: with 21530 MiB free the long row alone (21500) fits'
     $rFit=Get-RefusalCode { Get-FastLlmPlan @fitCommon -Speculation 'ngram' }
     Check ($rFit.threw -and $rFit.code -ceq 'model-does-not-fit') 'speculation fit: the same card with ngram on needs 21500 + 64 and does not fit (the existing model-does-not-fit refusal)'
     $smallExtra=Get-SpecDocument;$smallExtra.addOns[2].extraFreeVramMiB.long=30
-    Check ([int64](Get-FastLlmPlan @fitCommon -KvProfilesPath (Save-SpecDocument $smallExtra 'small-extra.json') -Speculation 'ngram').speculation.requiredFreeVramMiB -eq 21530) 'speculation fit: the number comes from the row (21500 + 30 = 21530 fits exactly); no constant or formula is used'
+    Check ([int64](Get-FastLlmPlan @fitCommonNoProfiles -KvProfilesPath (Save-SpecDocument $smallExtra 'small-extra.json') -Speculation 'ngram').speculation.requiredFreeVramMiB -eq 21530) 'speculation fit: the number comes from the row (21500 + 30 = 21530 fits exactly); no constant or formula is used'
     $recipeCard=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/rx-7900-xt-20gb-identified.json') -Raw | ConvertFrom-Json
     $recipeCard.backend='Vulkan';$recipeCard.adapters[0].device='Vulkan0';$recipeCard.adapters[0].backend='Vulkan'
     $identified=@{Hardware=$recipeCard;CatalogPath=$catalogPath;RecipesPath=(Join-Path $root 'config/recipes.json');GpuVariantsPath=(Join-Path $root 'config/gpu-variants.json');Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles}
