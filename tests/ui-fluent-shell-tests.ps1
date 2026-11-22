@@ -872,10 +872,12 @@ function Invoke-S0-ShellStart {
     $shellSource = [System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
     Check (($textC1 -ceq $textC2) -and $textC1 -match 'a fault in FastLLM') 'S0 the reasons theme-init and xaml-parse give the same text C (a fault in FastLLM)' "theme-init='$textC1' xaml-parse='$textC2'"
     Check ($script:realStopText -match 'Show-FastLlmUiUnsupported\s+-Reason\s+\$Reason' -and $script:realStopText -match 'exit 3') 'S0 the real Stop-FastLlmUiFluentStartup passes its reason to Show-FastLlmUiUnsupported and exits 3' $script:realStopText
-    Check (($shellSource -match "Stop-FastLlmUiFluentStartup -Reason 'theme-init'") -and ($shellSource -match "Stop-FastLlmUiFluentStartup -Reason 'xaml-parse'")) 'S0 the shell stops with theme-init and xaml-parse on a theme or markup fault' 'a call with one of the two reasons was not found in the shell file'
+    Check (($shellSource -match "'theme-init'") -and ($shellSource -match "'xaml-parse'")) 'S0 both startup reasons (theme-init, xaml-parse) appear in the shell file; the behaviour is proven by the S99 injected faults' 'a reason literal was not found in the shell file'
 
     $err = ''
+    $initWatch = [System.Diagnostics.Stopwatch]::StartNew()
     try { Initialize-FastLlmUiFluentShell } catch { $err = $_.Exception.Message }
+    Write-Host ("INFO: S0 Initialize-FastLlmUiFluentShell took " + $initWatch.ElapsedMilliseconds + " ms")
     Check ($err -eq '') 'S0 the startup did not stop (Initialize-FastLlmUiFluentShell returned)' $err
     if ($err -ne '') { $script:shellOk = $false; return }
     $script:shellOk = $true
@@ -895,6 +897,10 @@ function Invoke-S0-ShellStart {
     Check-NoExceptions 'S0'
     # From here the loop owns the thread. The step timer is not busy any more, so S1 onward run inside the loop's nested frame.
     $script:busy = $false
+    # A DispatcherTimer re-queues itself only after its Tick returns, and S0 does not return until the loop ends: re-arm the step timer by hand so S1 onward run in the nested frame.
+    # The loop ends when the last step calls Stop-ShellLoop (InvokeShutdown ends the nested frame and the outer one together), so no step may follow that.
+    $script:tick.Stop()
+    $script:tick.Start()
     try { Start-FastLlmUiFluentLoop }
     catch { $script:fail++; Write-Host "FAIL: S0 Start-FastLlmUiFluentLoop threw -- $($_.Exception.ToString())" }
 }
@@ -1267,7 +1273,7 @@ function Invoke-S9-GlyphControlView {
     Invoke-Pump 250
     $els.StepsPanel.UpdateLayout()
     $row = $null
-    if ($els.StepsPanel.Children.Count -gt 0) { $row = $els.StepsPanel.Children[0] }
+    if ($els.StepsPanel.Items.Count -gt 0) { $row = $els.StepsPanel.Items[0] }
     if ($null -eq $row) { Check $false 'S9 Home step row: mark not in the UIA control view; name present' 'the starting state produced no step rows' }
     else { Test-ShellGlyphHidden 'S9 Home step row: mark not in the UIA control view; name present' $row }
     $script:shellSnap = New-ShellSnap
@@ -1505,6 +1511,10 @@ function Invoke-S14-HighContrast {
         $stroke = $els.StatusDot.Stroke
         $fillClear = ($null -eq $fill) -or (($fill -is [System.Windows.Media.SolidColorBrush]) -and $fill.Color.A -eq 0)
         $strokeText = ($stroke -is [System.Windows.Media.SolidColorBrush]) -and ($stroke.Color.ToString() -ceq $text1)
+        $hcState = & $origState
+        $sc = [System.Windows.SystemColors]
+        $six = (@($sc::WindowColor, $sc::WindowTextColor, $sc::HighlightColor, $sc::HighlightTextColor, $sc::GrayTextColor, $sc::HotTrackColor) -join ',')
+        Check (([string]$hcState.Choice -ceq 'high-contrast') -and ([string]$hcState.Key).Contains($six)) 'S14 the high-contrast theme key contains the six system colours' "choice=$($hcState.Choice) key=$($hcState.Key) expected to contain $six"
         Check (([string]$f.Theme -ceq 'high-contrast') -and $fillClear -and $strokeText) 'S14 in high contrast the status dot is an outline: transparent fill, stroke in the text colour' "theme=$($f.Theme) fill=$fill stroke=$stroke text=$text1"
         $script:hcPal = $white
         Update-FastLlmUiFluentTheme
@@ -1664,6 +1674,156 @@ function Invoke-S18-WinFormsTimer {
     Check-NoExceptions 'S18'
 }
 
+function Invoke-S19-StepsEvidence {
+    if (-not $script:shellOk) { return }
+    $els = $script:FastLlmUiFluent.Els
+    # N2 evidence: the WPF accessibility switches this runtime holds
+    $switches = New-Object System.Collections.ArrayList
+    foreach ($asm in @([System.Windows.UIElement].Assembly, [System.Windows.DependencyObject].Assembly, [System.Windows.Controls.Button].Assembly)) {
+        $types = @()
+        try { $types = @($asm.GetTypes()) } catch [System.Reflection.ReflectionTypeLoadException] { $types = @($_.Exception.Types | Where-Object { $null -ne $_ }) } catch { $types = @() }
+        foreach ($t in $types) {
+            if ($t.Name -like '*AccessibilitySwitches') {
+                $flags = [System.Reflection.BindingFlags]'Static,Public,NonPublic'
+                foreach ($pr in $t.GetProperties($flags)) { try { [void]$switches.Add($t.FullName + '.' + $pr.Name + '=' + $pr.GetValue($null, $null)) } catch { [void]$switches.Add($t.FullName + '.' + $pr.Name + '=(unreadable)') } }
+                foreach ($fl in $t.GetFields($flags)) { try { [void]$switches.Add($t.FullName + '.' + $fl.Name + '=' + $fl.GetValue($null)) } catch { [void]$switches.Add($t.FullName + '.' + $fl.Name + '=(unreadable)') } }
+            }
+        }
+    }
+    foreach ($sw in $switches) { Write-Host ("INFO: S19 accessibility switch " + $sw) }
+    if ($switches.Count -eq 0) { Write-Host 'INFO: S19 no type named *AccessibilitySwitches was found in WindowsBase, PresentationCore or PresentationFramework' }
+    foreach ($name in 'Switch.UseLegacyAccessibilityFeatures', 'Switch.UseLegacyAccessibilityFeatures.2', 'Switch.UseLegacyAccessibilityFeatures.3') {
+        $v = $false
+        $known = $false
+        try { $known = [AppContext]::TryGetSwitch($name, [ref]$v) } catch { $known = $false }
+        Write-Host ("INFO: S19 AppContext " + $name + " set=" + $known + " value=" + $v)
+    }
+    Write-Host ("INFO: S19 runtime " + $PSVersionTable.PSVersion + " clr " + [Environment]::Version + " " + [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)
+    $snap = New-ShellSnap @{ ChildActive = $true; Step = 'model download' }
+    $script:shellSnap = $snap
+    Invoke-FastLlmUiFluentTick
+    Invoke-Pump 250
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.StepsPanel)
+    Check ($null -ne $peer) 'S19 the steps list has an automation peer (CreatePeerForElement is non-null on this runtime)' ("peer is null; switches: " + ($switches -join '; '))
+    # step items: each row's UIA name is its label text, never a type name
+    $bad = New-Object System.Collections.ArrayList
+    $count = 0
+    foreach ($row in @($els.StepsPanel.Items)) {
+        $count++
+        $labelText = ''
+        foreach ($c in @($row.Children)) { if ($c -is [System.Windows.Controls.TextBlock] -and -not (Test-ShellPrivateUseText ([string]$c.Text))) { $labelText = [string]$c.Text } }
+        $name = Get-ShellPeerName $row
+        Write-Host ("INFO: S19 step row name='" + $name + "' label='" + $labelText + "'")
+        if ($labelText -eq '' -or $name -cne $labelText -or $name -match '^System\.|StackPanel|TextBlock|ContentPresenter') { [void]$bad.Add("name='$name' label='$labelText'") }
+    }
+    Check ($count -ge 1 -and $bad.Count -eq 0) 'S19 every step row has its label text as its UIA name (for example "Model, in progress"), never a type name' "rows=$count bad=[$($bad -join '; ')]"
+    Reset-ShellState
+    Check-NoExceptions 'S19'
+}
+
+function Invoke-S20-MessageArea {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $win = $f.Window
+    $els = $f.Els
+    $origRead = ${function:Read-FastLlmUiSystemTheme}
+    function Read-FastLlmUiSystemTheme {
+        $o = & $origRead
+        $o.textScaleFactor = 225
+        return $o
+    }
+    $long = ('Engine start failed while loading the model. ' * 10).Substring(0, 400)
+    try {
+        Update-FastLlmUiFluentTheme
+        $win.Width = 640
+        $win.Height = 480
+        $script:bannerLabel.Text = 'An update to FastLLM is available.'
+        $script:bannerLabel.Visible = $true
+        $script:shellSnap = New-ShellSnap @{ FailureHeld = $true }
+        $script:failureHeld = $true
+        $script:failureViewText = $long
+        Invoke-FastLlmUiFluentTick
+        Invoke-Pump 800
+        $win.UpdateLayout()
+        Invoke-FastLlmUiFluentTick
+        Invoke-Pump 300
+        $sv = $els.MessageScroll
+        $h = [double]$win.ActualHeight
+        $want = $h * 0.4
+        Check ($h -gt 0 -and [Math]::Abs([double]$sv.MaxHeight - $want) -lt 1.0) 'S20 at 640x480 the message area is capped at 40 percent of the window height' "MaxHeight=$($sv.MaxHeight) expected=$want windowHeight=$h width=$($win.ActualWidth)"
+        Check ([double]$sv.ScrollableHeight -gt 0) 'S20 with a 400-character failure at text 2.25 the message area scrolls inside its cap' "ScrollableHeight=$($sv.ScrollableHeight) ExtentHeight=$($sv.ExtentHeight) ViewportHeight=$($sv.ViewportHeight)"
+    }
+    finally {
+        Remove-Item -Path Function:\Read-FastLlmUiSystemTheme -ErrorAction SilentlyContinue
+        $win.Width = 1000
+        $win.Height = 680
+        $script:bannerLabel.Visible = $false
+        Update-FastLlmUiFluentTheme
+        Reset-ShellState
+        Invoke-Pump 300
+    }
+    Check-NoExceptions 'S20'
+}
+
+function Invoke-S21-ExpanderTemplate {
+    if (-not $script:shellOk) { return }
+    $els = $script:FastLlmUiFluent.Els
+    $exp = $els.ActivityExpander
+    Reset-ShellState
+    $exp.IsExpanded = $false
+    Invoke-Pump 200
+    $exp.UpdateLayout()
+    $toggle = $exp.Template.FindName('Hd', $exp)
+    Check ($null -ne $toggle) 'S21 the Expander template has its header toggle (Hd)' 'FindName Hd returned null'
+    if ($null -ne $toggle) {
+        # a click on the header: ButtonBase.OnClick toggles and raises Click
+        $onClick = [System.Windows.Controls.Primitives.ButtonBase].GetMethod('OnClick', [System.Reflection.BindingFlags]'NonPublic,Instance')
+        $null = $onClick.Invoke($toggle, @())
+        Invoke-Pump 150
+        Check ($exp.IsExpanded -eq $true) 'S21 a click on the header expands the Expander' "IsExpanded=$($exp.IsExpanded)"
+        $null = $onClick.Invoke($toggle, @())
+        Invoke-Pump 150
+        Check ($exp.IsExpanded -eq $false) 'S21 a second click collapses it' "IsExpanded=$($exp.IsExpanded)"
+        # the keyboard: Space on the focused header toggles it (Enter is recorded)
+        $null = $toggle.Focus()
+        Invoke-Pump 150
+        if ($toggle.IsKeyboardFocused) {
+            $src = [System.Windows.PresentationSource]::FromVisual($toggle)
+            foreach ($key in [System.Windows.Input.Key]::Space, [System.Windows.Input.Key]::Return) {
+                $before = $exp.IsExpanded
+                $kd = New-Object System.Windows.Input.KeyEventArgs([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, $key)
+                $kd.RoutedEvent = [System.Windows.Input.Keyboard]::KeyDownEvent
+                $toggle.RaiseEvent($kd)
+                $ku = New-Object System.Windows.Input.KeyEventArgs([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, $key)
+                $ku.RoutedEvent = [System.Windows.Input.Keyboard]::KeyUpEvent
+                $toggle.RaiseEvent($ku)
+                Invoke-Pump 150
+                $changed = ($exp.IsExpanded -ne $before)
+                if ($key -eq [System.Windows.Input.Key]::Space) { Check $changed 'S21 Space on the focused header toggles the Expander' "before=$before after=$($exp.IsExpanded)" }
+                else { Write-Host ("INFO: S21 Enter on the header toggled it: " + $changed) }
+                if ($changed -and $key -eq [System.Windows.Input.Key]::Space) { $exp.IsExpanded = $before }
+            }
+        }
+        else { Write-Host 'INFO: S21 the header could not take keyboard focus here (window not active), so the Space and Enter checks were skipped' }
+    }
+    $exp.IsExpanded = $false
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($exp)
+    $pattern = $null
+    if ($null -ne $peer) { $pattern = $peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::ExpandCollapse) }
+    Check ($null -ne $pattern) 'S21 the Expander peer supports the ExpandCollapse pattern' "peer=$($null -ne $peer) pattern=$($null -ne $pattern)"
+    if ($null -ne $pattern) {
+        $ec = [System.Windows.Automation.Provider.IExpandCollapseProvider]$pattern
+        $ec.Expand()
+        Invoke-Pump 100
+        $afterExpand = $exp.IsExpanded
+        $ec.Collapse()
+        Invoke-Pump 100
+        Check ($afterExpand -eq $true -and $exp.IsExpanded -eq $false) 'S21 Expand() and Collapse() through the pattern change IsExpanded' "after Expand=$afterExpand after Collapse=$($exp.IsExpanded)"
+    }
+    Reset-ShellState
+    Check-NoExceptions 'S21'
+}
+
 # Faults are injected last: each Initialize run replaces the shell state, so nothing after these may use the real shell.
 function Invoke-S99-StartupFaults {
     if (-not $script:shellOk) { return }
@@ -1734,7 +1894,8 @@ $script:steps = @(
     'Invoke-S0-ShellStart', 'Invoke-S1-Shown', 'Invoke-S2-Bindings', 'Invoke-S3-HomeParity', 'Invoke-S4-Resources', 'Invoke-S5-SplitMenu', 'Invoke-S6-Nav',
     'Invoke-S7-ShellTheme', 'Invoke-S8-DispatcherHandler', 'Invoke-S9-GlyphControlView',
     'Invoke-S10-LiveRegions', 'Invoke-S10b-FailureAnnouncement', 'Invoke-S11-Expander', 'Invoke-S12-StepsPeer', 'Invoke-S13-TabOrder', 'Invoke-S14-HighContrast',
-    'Invoke-S15-SplitKeyboard', 'Invoke-S16-PaneCollapse', 'Invoke-S17-TrayKeyboard', 'Invoke-S18-WinFormsTimer', 'Invoke-S99-StartupFaults'
+    'Invoke-S15-SplitKeyboard', 'Invoke-S16-PaneCollapse', 'Invoke-S17-TrayKeyboard', 'Invoke-S18-WinFormsTimer',
+    'Invoke-S19-StepsEvidence', 'Invoke-S20-MessageArea', 'Invoke-S21-ExpanderTemplate', 'Invoke-S99-StartupFaults'
 )
 
 $tick = New-Object System.Windows.Threading.DispatcherTimer
@@ -1751,6 +1912,7 @@ $tick.Add_Tick({
         if ($script:si -ge $script:steps.Count) { Stop-ShellLoop; return }
         $name = $script:steps[$script:si]
         $script:si++
+        Write-Host "INFO: step $name started"
         try { $null = & $name }
         catch { $script:fail++; Write-Host "FAIL: step $name threw -- $($_.Exception.ToString())" }
         if ($script:si -ge $script:steps.Count) { Stop-ShellLoop }

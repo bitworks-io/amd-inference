@@ -302,6 +302,26 @@ foreach($state in 'starting','running','needs-attention','background-found','wai
 }
 Write-Host ('INFO: Home render of {0} cases took {1:N1} s' -f ($matrix.Count+30),$homeSw.Elapsed.TotalSeconds)
 
+# ---- Overlap pin: Home at text 1.0, 2.0 and 2.25 has no overlap, and the Minimize to tray button is the last tab stop (tree order).
+foreach($text in 1.0,2.0,2.25){
+    $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+    $script:homeState='not-running'
+    $script:homeCaseTheme='light'
+    $script:pinPage=$null
+    $pinPrepare={param($page) $script:pinPage=$page; Initialize-HomeRenderPage $page}
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Home' -Case $case -OutFolder $out -Prepare $pinPrepare}catch{Check $false "Home overlap pin renders at text ${text}: $($_.Exception.Message)";continue}
+    $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
+    Check ($overlaps.Count -eq 0) "Home has no overlap at text ${text}: $($overlaps -join '; ')"
+    $stops=@()
+    foreach($el in @(Get-UiVisualElements $script:pinPage)){
+        if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $script:pinPage)){$stops+=$el}
+    }
+    $lastName=''
+    if($stops.Count -gt 0){$lastName=[string]$stops[$stops.Count-1].Name}
+    Check ($lastName -ceq 'TrayButton') "TrayButton is the last tab stop at text ${text} (last is '$lastName' of $($stops.Count) stops)"
+}
+
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
 # The update bar is visible and the failure bar holds 400 characters in every case.
