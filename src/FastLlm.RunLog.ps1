@@ -29,6 +29,8 @@ $script:FastLlmRunLogAllowedFields = @{
     'idle-check-failed'   = @()
     # -Window fluent on a PC that cannot run WPF (or a fault in the window code): one closed reason code, never a path.
     'window-unsupported'  = @('reason')
+    # The window runs, but WPF reads its accessibility switches as legacy: the legacy field NAMES only, comma-joined (or type-missing).
+    'window-accessibility-legacy' = @('fields')
     # The idle read of /metrics was refused with HTTP 401 (an API key mismatch). No field; written once per run of refused reads. Nothing is stopped for it.
     'idle-metrics-unauthorized' = @()
     # GPU memory check: the state names and numbers only (MiB); no text.

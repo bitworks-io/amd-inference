@@ -49,6 +49,7 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
                  FontSize="{DynamicResource FastLlm.SubtitleSize}" FontWeight="{DynamicResource FastLlm.SubtitleWeight}"/>
       <TextBlock x:Name="NoticeText" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
     </StackPanel>
+  <Button x:Name="TrayButton" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top" Style="{DynamicResource FastLlm.ButtonStyle}"/>
   <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
     <Border x:Name="StatusCard" Margin="0,20,0,0" Padding="16" BorderThickness="1"
             Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.CardStrokeBrush}"
@@ -83,10 +84,14 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
           <TextBlock x:Name="AddressText" VerticalAlignment="Center" FontFamily="{DynamicResource FastLlm.MonoFont}"/>
           <Button x:Name="CopyButton" Margin="8,0,0,0" Style="{DynamicResource FastLlm.IconButtonStyle}"/>
         </WrapPanel>
-        <WrapPanel x:Name="WillStartPanel" Margin="0,12,0,0">
-          <TextBlock x:Name="WillStartText" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
-          <Button x:Name="ChangeButton" IsEnabled="False" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>
-        </WrapPanel>
+        <Grid x:Name="WillStartPanel" Margin="0,12,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock x:Name="WillStartText" Grid.Column="0" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+          <Button x:Name="ChangeButton" Grid.Column="1" IsEnabled="False" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>
+        </Grid>
         <TextBlock x:Name="NotesText" Margin="0,12,0,0" TextWrapping="Wrap"/>
         <WrapPanel Margin="0,4,0,0">
           <Button x:Name="ResultsLink" Margin="0,0,12,0" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>
@@ -113,7 +118,6 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
                BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
     </Expander>
   </StackPanel>
-  <Button x:Name="TrayButton" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top" Style="{DynamicResource FastLlm.ButtonStyle}"/>
   </Grid>
 </ScrollViewer>
 '@

@@ -22,10 +22,24 @@ function Get-FastLlmUiFluentSupport {
     return @{ supported = $true; reason = '' }
 }
 
+# Windows PowerShell 5.1 targets no framework, so WPF reads every accessibility switch as legacy (no peer for the steps list, no live-region
+# announcements). Setting the switches all together, before any WPF type is touched, turns the modern behaviour on; WPF verifies they agree on
+# first read. Harmless on pwsh 7, where they are already modern. Self-contained: dropping this function and its one call removes the change.
+function Set-FastLlmUiFluentAccessibilitySwitches {
+    [CmdletBinding()] param()
+    foreach ($name in 'Switch.UseLegacyAccessibilityFeatures', 'Switch.UseLegacyAccessibilityFeatures.2', 'Switch.UseLegacyAccessibilityFeatures.3',
+        'Switch.UseLegacyAccessibilityFeatures.4', 'Switch.UseLegacyAccessibilityFeatures.5', 'Switch.UseLegacyToolTipDisplay',
+        'Switch.System.Windows.Controls.ItemsControlDoesNotSupportAutomation', 'Switch.System.Windows.Controls.OptOutOfGridColumnResizeUsingKeyboard') {
+        [System.AppContext]::SetSwitch($name, $false)
+    }
+}
+
 # The real host check: reads the registry and loads the WPF assemblies. Off Windows it never touches the registry.
 function Test-FastLlmUiFluentHost {
     [CmdletBinding()]
     param()
+    # First, before any WPF type is loaded or touched.
+    try { Set-FastLlmUiFluentAccessibilitySwitches } catch { return @{ supported = $false; reason = 'wpf-unavailable' } }
     if ($env:OS -ne 'Windows_NT') { return @{ supported = $false; reason = 'wpf-unavailable' } }
     $release = $null
     try {
@@ -34,7 +48,49 @@ function Test-FastLlmUiFluentHost {
     }
     catch { $release = $null }
     $isCore = $PSVersionTable.PSEdition -eq 'Core'
-    return Get-FastLlmUiFluentSupport -NetFrameworkRelease $release -IsCoreClr $isCore -LoadAssemblies { Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase -ErrorAction Stop }
+    $decision = Get-FastLlmUiFluentSupport -NetFrameworkRelease $release -IsCoreClr $isCore -LoadAssemblies { Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase -ErrorAction Stop }
+    # After the assemblies are loaded: read the switches back. A legacy read never blocks the window; it is recorded once.
+    if ($decision.supported) { try { Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $isCore } catch { $null = $_ } }
+    return $decision
+}
+
+# The WPF accessibility fields as WPF itself reads them (internal type). Legacy: the names of the fields that read True. A missing property is not legacy.
+function Get-FastLlmUiFluentAccessibilityState {
+    [CmdletBinding()] param()
+    $type = [System.Windows.DependencyObject].Assembly.GetType('System.Windows.AccessibilitySwitches')
+    if ($null -eq $type) { return @{ typeFound = $false; legacy = @() } }
+    $legacy = New-Object System.Collections.ArrayList
+    foreach ($name in 'UseNetFx47CompatibleAccessibilityFeatures', 'UseNetFx471CompatibleAccessibilityFeatures', 'UseNetFx472CompatibleAccessibilityFeatures',
+        'UseNetFx48CompatibleAccessibilityFeatures', 'UseLegacyToolTipDisplay', 'ItemsControlDoesNotSupportAutomation') {
+        $property = $type.GetProperty($name, [System.Reflection.BindingFlags] 'NonPublic,Static')
+        if ($null -eq $property) { continue }
+        if ([bool] $property.GetValue($null)) { [void] $legacy.Add($name) }
+    }
+    return @{ typeFound = $true; legacy = @($legacy.ToArray()) }
+}
+
+# Records window-accessibility-legacy once, with the legacy field NAMES only (no path, no value). -Reader and -Log are seams for tests.
+# Missing type: nothing on pwsh 7, 'type-missing' on Windows PowerShell 5.1.
+function Invoke-FastLlmUiFluentAccessibilityCheck {
+    [CmdletBinding()]
+    param(
+        [bool] $CoreClr = ($PSVersionTable.PSEdition -eq 'Core'),
+        [scriptblock] $Reader = { Get-FastLlmUiFluentAccessibilityState },
+        [scriptblock] $Log,
+        [string] $InstallRoot
+    )
+    if ($null -eq $Log) {
+        if (-not $InstallRoot) { $found = Get-Variable -Name InstallRoot -ValueOnly -ErrorAction SilentlyContinue; if ($found) { $InstallRoot = [string] $found } }
+        if (-not $InstallRoot) { return }
+        $root = $InstallRoot
+        $Log = { param($Fields) [void] (Write-FastLlmRunLogEvent -InstallRoot $root -RunId ([guid]::NewGuid().ToString('N')) -Event 'window-accessibility-legacy' -Fields $Fields) }.GetNewClosure()
+    }
+    $state = & $Reader
+    $names = @()
+    if (-not $state.typeFound) { if (-not $CoreClr) { $names = @('type-missing') } }
+    else { $names = @($state.legacy) }
+    if ($names.Count -eq 0) { return }
+    & $Log @{ fields = ($names -join ',') }
 }
 
 # FastLLM.cmd's rule: the flag is added only when the effective policy without the Process scope is Restricted or Undefined.

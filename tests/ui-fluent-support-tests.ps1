@@ -35,6 +35,37 @@ if($env:OS -ne 'Windows_NT'){
     Check (-not $h.supported -and $h.reason -ceq 'wpf-unavailable') 'off Windows the host check says wpf-unavailable'
 }
 
+# --- accessibility switches (Windows PowerShell 5.1 reads WPF as legacy without them) ---
+Set-FastLlmUiFluentAccessibilitySwitches
+$switchNames='Switch.UseLegacyAccessibilityFeatures','Switch.UseLegacyAccessibilityFeatures.2','Switch.UseLegacyAccessibilityFeatures.3','Switch.UseLegacyAccessibilityFeatures.4','Switch.UseLegacyAccessibilityFeatures.5','Switch.UseLegacyToolTipDisplay','Switch.System.Windows.Controls.ItemsControlDoesNotSupportAutomation','Switch.System.Windows.Controls.OptOutOfGridColumnResizeUsingKeyboard'
+foreach($n in $switchNames){
+    $val=$true
+    $isSet=[System.AppContext]::TryGetSwitch($n,[ref]$val)
+    Check ($isSet -and -not $val) "accessibility switch set to false: $n"
+}
+$hostSrc=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFluentSupport.ps1') -Raw
+$hostBody=$hostSrc.Substring($hostSrc.IndexOf('function Test-FastLlmUiFluentHost'))
+Check ($hostBody.IndexOf('Set-FastLlmUiFluentAccessibilitySwitches') -ge 0 -and $hostBody.IndexOf('Set-FastLlmUiFluentAccessibilitySwitches') -lt $hostBody.IndexOf('Get-FastLlmUiFluentSupport') -and $hostBody.IndexOf('Set-FastLlmUiFluentAccessibilitySwitches') -lt $hostBody.IndexOf('Add-Type')) 'the switches are set before any assembly load in the host check'
+
+# --- accessibility read-back: a legacy read never blocks, is recorded once with names only ---
+$script:logged=@()
+$logger={param($Fields) $script:logged+=,$Fields}
+Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { @{typeFound=$true;legacy=@('UseNetFx47CompatibleAccessibilityFeatures','UseLegacyToolTipDisplay')} } -Log $logger
+Check ($script:logged.Count -eq 1 -and $script:logged[0].Keys.Count -eq 1 -and $script:logged[0]['fields'] -ceq 'UseNetFx47CompatibleAccessibilityFeatures,UseLegacyToolTipDisplay') 'legacy read: exactly one event, field names only'
+$script:logged=@()
+Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { @{typeFound=$true;legacy=@()} } -Log $logger
+Check ($script:logged.Count -eq 0) 'modern read: nothing recorded'
+Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { @{typeFound=$false;legacy=@()} } -Log $logger
+Check ($script:logged.Count -eq 1 -and $script:logged[0]['fields'] -ceq 'type-missing') 'type missing on 5.1: type-missing recorded'
+$script:logged=@()
+Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $true -Reader { @{typeFound=$false;legacy=@()} } -Log $logger
+Check ($script:logged.Count -eq 0) 'type missing on pwsh 7: nothing recorded'
+$threw=$false; try{Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $false -Reader { throw 'x' } -Log $logger}catch{$threw=$true}
+Check $threw 'a failing reader throws to the host check, which swallows it (host never blocks)'
+$hostSrc2=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.UiFluentSupport.ps1') -Raw
+Check ($hostSrc2.Contains('try { Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr $isCore } catch') -and $hostSrc2.IndexOf('Invoke-FastLlmUiFluentAccessibilityCheck -CoreClr') -gt $hostSrc2.IndexOf('Get-FastLlmUiFluentSupport -NetFrameworkRelease')) 'the host check reads back after the assemblies are loaded and swallows a fault'
+Check ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.RunLog.ps1') -Raw).Contains("'window-accessibility-legacy' = @('fields')")) 'the run log allows the event with the one field'
+
 # --- policy flag ---
 function Pol([string]$M='Undefined',[string]$U='Undefined',[string]$C='Undefined',[string]$L='Undefined'){Get-FastLlmUiCliPolicyFlag -Policies @{MachinePolicy=$M;UserPolicy=$U;CurrentUser=$C;LocalMachine=$L}}
 $flag='-ExecutionPolicy RemoteSigned '

@@ -424,4 +424,25 @@ Check ($proof.install -ceq 'Install && start') 'a button keeps its classic text 
 [void](Remove-Item -LiteralPath $wrapperFile -Force)
 [void](Remove-Item -LiteralPath $scratchDir -Force)
 
+# Classic untouched: the accessibility switches are set only inside Test-FastLlmUiFluentHost, and that check is called only on the fluent-guarded support-check line.
+function Get-CommandCalls([string]$Path,[string]$CommandName){
+    $errs=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$errs)
+    return ,@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $CommandName},$true))
+}
+$setCalls=@();$hostCalls=@()
+$scanFiles=@(Join-Path $root 'fast-llm-ui.ps1')+@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' -File|ForEach-Object{$_.FullName})+@(Join-Path $root 'fast-llm.ps1')
+foreach($f in $scanFiles){
+    if(-not (Test-Path -LiteralPath $f)){continue}
+    foreach($c in (Get-CommandCalls $f 'Set-FastLlmUiFluentAccessibilitySwitches')){$setCalls+=[pscustomobject]@{File=$f;Node=$c}}
+    foreach($c in (Get-CommandCalls $f 'Test-FastLlmUiFluentHost')){$hostCalls+=[pscustomobject]@{File=$f;Node=$c}}
+}
+Check ($setCalls.Count -eq 1) 'the accessibility switches are set at exactly one call site'
+$owner=$setCalls[0].Node.Parent;while($null -ne $owner -and $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$owner=$owner.Parent}
+Check ($null -ne $owner -and $owner.Name -ceq 'Test-FastLlmUiFluentHost' -and $setCalls[0].File.EndsWith('FastLlm.UiFluentSupport.ps1')) 'the switches are set only inside Test-FastLlmUiFluentHost'
+Check ($hostCalls.Count -eq 1 -and $hostCalls[0].File.EndsWith('fast-llm-ui.ps1')) 'Test-FastLlmUiFluentHost is called only from fast-llm-ui.ps1, once'
+$guard=$hostCalls[0].Node.Parent;$guarded=$false
+while($null -ne $guard){if($guard -is [System.Management.Automation.Language.IfStatementAst] -and $guard.Clauses[0].Item1.Extent.Text -match '\$Window\s+-ceq\s+''fluent'''){$guarded=$true;break};$guard=$guard.Parent}
+Check $guarded 'the support check call is inside if ($Window -ceq ''fluent'')'
+
 Write-Host "UI fluent member coverage tests passed: $checks"
