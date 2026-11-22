@@ -82,7 +82,8 @@ function Get-FastLlmUiUnsupportedText {
 }
 
 # Tells the user why no window opens: console, a standard message box (interactive sessions only) and the run-log reason code.
-# Returns nothing; the caller exits 3. -NoMessageBox is for tests. -Policies lets a test bypass Get-ExecutionPolicy.
+# Returns nothing; the caller exits 3. -NoMessageBox is for tests. -Policies lets a test bypass the policy read; -PolicyReader replaces it
+# (a scriptblock returning Get-ExecutionPolicy -List style objects). If the read fails, the text carries NO policy flag: never suggest weakening a policy we could not read.
 function Show-FastLlmUiUnsupported {
     [CmdletBinding()]
     param(
@@ -90,13 +91,21 @@ function Show-FastLlmUiUnsupported {
         [Parameter(Mandatory = $true)][string] $InstallRoot,
         [Parameter(Mandatory = $true)][string] $Folder,
         [System.Collections.IDictionary] $Policies,
+        [scriptblock] $PolicyReader = { Get-ExecutionPolicy -List },
         [switch] $NoMessageBox
     )
+    $policyFlag = ''
     if ($null -eq $Policies) {
-        $Policies = @{}
-        try { foreach ($p in @(Get-ExecutionPolicy -List)) { $Policies[[string] $p.Scope] = [string] $p.ExecutionPolicy } } catch { $Policies = @{} }
+        $read = $null
+        try {
+            $read = @{}
+            foreach ($p in @(& $PolicyReader)) { $read[[string] $p.Scope] = [string] $p.ExecutionPolicy }
+        }
+        catch { $read = $null }
+        if ($null -ne $read) { $policyFlag = Get-FastLlmUiCliPolicyFlag -Policies $read }
     }
-    $text = Get-FastLlmUiUnsupportedText -Reason $Reason -Folder $Folder -PolicyFlag (Get-FastLlmUiCliPolicyFlag -Policies $Policies)
+    else { $policyFlag = Get-FastLlmUiCliPolicyFlag -Policies $Policies }
+    $text = Get-FastLlmUiUnsupportedText -Reason $Reason -Folder $Folder -PolicyFlag $policyFlag
     Write-Host $text
     if (-not $NoMessageBox -and [Environment]::UserInteractive) {
         try {

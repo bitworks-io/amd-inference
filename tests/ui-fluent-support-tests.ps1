@@ -92,5 +92,11 @@ try{
     }
     $t=$false; try{Write-FastLlmRunLogEvent -InstallRoot $tmp -RunId ('a'*32) -Event 'window-unsupported' -Fields @{reason='x';folder=$F}}catch{$t=$true}
     Check $t 'window-unsupported drops (refuses) any other field'
+    # A policy read that fails adds NO flag (never suggest weakening a policy that could not be read); a working read still decides.
+    $out3=@(Show-FastLlmUiUnsupported -Reason 'dotnet-too-old' -InstallRoot $tmp -Folder $F -PolicyReader { throw 'policy read failed' } -NoMessageBox 6>&1 | ForEach-Object{[string]$_})
+    Check ($out3.Count -eq 1 -and $out3[0] -ceq (Get-FastLlmUiUnsupportedText -Reason 'dotnet-too-old' -Folder $F -PolicyFlag '')) 'a failed policy read gives text with no flag'
+    Check (-not ($out3[0] -match '-ExecutionPolicy')) 'a failed policy read: no -ExecutionPolicy in the text'
+    $out4=@(Show-FastLlmUiUnsupported -Reason 'dotnet-too-old' -InstallRoot $tmp -Folder $F -PolicyReader { @([pscustomobject]@{Scope='LocalMachine';ExecutionPolicy='Restricted'}) } -NoMessageBox 6>&1 | ForEach-Object{[string]$_})
+    Check ($out4[0] -ceq (Get-FastLlmUiUnsupportedText -Reason 'dotnet-too-old' -Folder $F -PolicyFlag '-ExecutionPolicy RemoteSigned ')) 'a working read of Restricted still adds the flag'
 }finally{ if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force} }
 Write-Host "ui-fluent-support-tests: $checks checks passed"
