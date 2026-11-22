@@ -302,7 +302,7 @@ foreach($state in 'starting','running','needs-attention','background-found','wai
 }
 Write-Host ('INFO: Home render of {0} cases took {1:N1} s' -f ($matrix.Count+30),$homeSw.Elapsed.TotalSeconds)
 
-# ---- Overlap pin: Home at text 1.0, 2.0 and 2.25 has no overlap, and the Minimize to tray button is the last tab stop (tree order).
+# ---- Overlap pin: Home at text 1.0, 2.0 and 2.25 has no overlap, the Minimize to tray button is the first tab stop, and the whole tab sequence is the reading order.
 foreach($text in 1.0,2.0,2.25){
     $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
     $script:homeState='not-running'
@@ -313,13 +313,26 @@ foreach($text in 1.0,2.0,2.25){
     try{$r=Invoke-UiRenderCase -Name 'FastLlm.Home' -Case $case -OutFolder $out -Prepare $pinPrepare}catch{Check $false "Home overlap pin renders at text ${text}: $($_.Exception.Message)";continue}
     $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
     Check ($overlaps.Count -eq 0) "Home has no overlap at text ${text}: $($overlaps -join '; ')"
-    $stops=@()
-    foreach($el in @(Get-UiVisualElements $script:pinPage)){
-        if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $script:pinPage)){$stops+=$el}
+    $all=Get-UiVisualElements $script:pinPage
+    $stops=New-Object System.Collections.ArrayList
+    foreach($el in $all){
+        if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $script:pinPage)){[void]$stops.Add($el)}
     }
-    $lastName=''
-    if($stops.Count -gt 0){$lastName=[string]$stops[$stops.Count-1].Name}
-    Check ($lastName -ceq 'TrayButton') "TrayButton is the last tab stop at text ${text} (last is '$lastName' of $($stops.Count) stops)"
+    $firstName=''
+    if($stops.Count -gt 0){$firstName=[string]$stops[0].Name}
+    Check ($firstName -ceq 'TrayButton') "TrayButton is the first tab stop in Home at text ${text} (first is '$firstName' of $($stops.Count) stops)"
+    $rows=@()
+    $order=0
+    foreach($el in $stops){
+        $rect=Get-UiRelativeRect $el $script:pinPage
+        if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+        $order++
+    }
+    $byRead=@($rows|Sort-Object -Property @{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
+    $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
+    $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
+    Write-Host "INFO: Home tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
+    Check ($treeNames -ceq $readNames -and $rows.Count -eq $stops.Count) "the Home tab sequence is the reading order at text ${text}"
 }
 
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
@@ -335,7 +348,7 @@ function New-ShellRenderPage($Case){
     }
     [void](Initialize-FastLlmUiFluentHome -Page $homePage -Els $els)
     $els.PageHost.Child=$homePage
-    $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
+    $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width;ActualHeight=[double]$Case.height};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
         NavItems=@();LastException=$null;InUnhandled=$false;TickError=''}
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
@@ -385,7 +398,7 @@ foreach($theme in 'light','dark','high-contrast'){
                 $lb=$script:shellRp.Els[$ln]
                 $mode=[System.Windows.Controls.ScrollViewer]::GetHorizontalScrollBarVisibility($lb)
                 if($mode -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled){$badBars+="$ln mode=$mode"}
-                foreach($v in @(Get-UiVisualElements $lb)){
+                foreach($v in (Get-UiVisualElements $lb)){
                     if($v -is [System.Windows.Controls.Primitives.ScrollBar] -and $v.Orientation -eq [System.Windows.Controls.Orientation]::Horizontal -and $v.Visibility -eq [System.Windows.Visibility]::Visible){$badBars+="$ln horizontal bar visible"}
                 }
             }

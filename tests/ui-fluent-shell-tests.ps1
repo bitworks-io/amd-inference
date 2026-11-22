@@ -77,10 +77,12 @@ function New-Scn([string]$Name) {
     return $s
 }
 
+# After the shell starts, Application.ThreadException has ONE handler (the shell's replaces the suite's), so the exceptions the product recorded count too.
+$script:unhandledLog = New-Object System.Collections.ArrayList
 function Check-NoExceptions([string]$Name) {
-    $d = @($script:dispEx.ToArray()); $t = @($script:threadEx.ToArray())
-    Check (($d.Count -eq 0) -and ($t.Count -eq 0)) "$Name : no dispatcher or WinForms exception recorded" ("dispatcher=" + ($d -join ' | ') + " winforms=" + ($t -join ' | '))
-    $script:dispEx.Clear(); $script:threadEx.Clear()
+    $d = @($script:dispEx.ToArray()); $t = @($script:threadEx.ToArray()); $u = @($script:unhandledLog.ToArray())
+    Check (($d.Count -eq 0) -and ($t.Count -eq 0) -and ($u.Count -eq 0)) "$Name : no dispatcher or WinForms exception recorded" ("dispatcher=" + ($d -join ' | ') + " winforms=" + ($t -join ' | ') + " shell=" + ($u -join ' | '))
+    $script:dispEx.Clear(); $script:threadEx.Clear(); $script:unhandledLog.Clear()
 }
 
 # A WinForms timer that finds a message box by its caption, records the owner and the WPF window state, then closes it with an escalation
@@ -785,6 +787,13 @@ $script:shellTitle = ''
 # GetUiStateSnapshot is NOT defined here: fast-llm-ui.ps1 defines it after the seam, so the stub is defined after Initialize (S0), as there.
 $script:snapOverride = $null
 $script:failureViewText = ''
+# Counts what the shell's exception handlers record (plain code, a reference list), then runs the real one.
+$script:origUnhandled = ${function:Invoke-FastLlmUiFluentUnhandled}
+function Invoke-FastLlmUiFluentUnhandled {
+    param($Exception)
+    if ($null -ne $Exception) { [void]$script:unhandledLog.Add([string]$Exception.ToString()) } else { [void]$script:unhandledLog.Add('(null exception)') }
+    & $script:origUnhandled -Exception $Exception
+}
 # Live-region events, recorded by name in a reference object (the wrapper is plain code; a closure could not read $script:).
 $script:liveLog = New-Object System.Collections.ArrayList
 $script:origLive = ${function:Send-FastLlmUiFluentLiveRegion}
@@ -822,14 +831,14 @@ function Get-ShellVisuals($Root) {
         $c = [System.Windows.Media.VisualTreeHelper]::GetChildrenCount($n)
         for ($i = 0; $i -lt $c; $i++) { $stack.Push([System.Windows.Media.VisualTreeHelper]::GetChild($n, $i)) }
     }
-    return , $list.ToArray()
+    return $list.ToArray()
 }
 
 # The text of every TextBlock in an element's visual tree (an AccessText draws its text in an inner TextBlock, without the key underscore).
 function Get-ShellTexts($Root) {
     $out = New-Object System.Collections.ArrayList
     foreach ($n in @(Get-ShellVisuals $Root)) { if ($n -is [System.Windows.Controls.TextBlock]) { [void]$out.Add([string]$n.Text) } }
-    return , $out.ToArray()
+    return $out.ToArray()
 }
 
 function Get-ShellPeerName($Element) {
@@ -1006,7 +1015,7 @@ $script:shellParity = @(
     @{ El = 'ConnectButton'; Ad = 'connectButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
     @{ El = 'SwitchButton'; Ad = 'switchButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
     @{ El = 'SwitchLine'; Ad = 'switchLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
-    @{ El = 'UpdateText'; Ad = 'bannerLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $true },
+    @{ El = 'UpdateText'; Ad = 'bannerLabel'; Mode = 'TextBlock'; Kind = 'text'; NoText = $false; NoVisible = $false },
     @{ El = 'UpdateNotesButton'; Ad = 'bannerNotes'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
     @{ El = 'UpdateButton'; Ad = 'bannerButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
     @{ El = 'ReinstallButton'; Ad = 'reinstallButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
@@ -1060,6 +1069,17 @@ function Invoke-S3-HomeParity {
         $ad.Text = $origText; $ad.Enabled = $origEnabled; $ad.Visible = $origVisible
         if (-not $row.NoVisible) { $el.Visibility = $v0 }
     }
+    # the update BAR follows the message logic: the offer shows it, no offer hides it
+    $origBanner = [bool]$script:bannerLabel.Visible; $origReinstall = [bool]$script:reinstallButton.Visible
+    $script:bannerLabel.Visible = $true
+    Invoke-FastLlmUiFluentTick
+    $barOn = $els.UpdateBar.Visibility
+    $script:bannerLabel.Visible = $false; $script:reinstallButton.Visible = $false
+    Invoke-FastLlmUiFluentTick
+    $barOff = $els.UpdateBar.Visibility
+    Check (($barOn -eq [System.Windows.Visibility]::Visible) -and ($barOff -eq [System.Windows.Visibility]::Collapsed)) 'S3 the update bar follows the message logic (an offer shows it, none hides it)' "with offer=$barOn without=$barOff"
+    $script:bannerLabel.Visible = $origBanner; $script:reinstallButton.Visible = $origReinstall
+    Invoke-FastLlmUiFluentTick
     Check-NoExceptions 'S3'
 }
 
@@ -1075,7 +1095,7 @@ function Invoke-S4-Resources {
     }
     $rows = @(
         @{ N = 'InstallButton'; Fg = 'FastLlm.TextOnAccentBrush'; Bg = 'FastLlm.AccentFillBrush' },
-        @{ N = 'OpenChatButton'; Fg = 'FastLlm.TextPrimaryBrush'; Bg = 'FastLlm.CardBrush' },
+        @{ N = 'ConnectButton'; Fg = 'FastLlm.TextPrimaryBrush'; Bg = 'FastLlm.CardBrush' },
         @{ N = 'ActivityBox'; Fg = 'FastLlm.TextPrimaryBrush'; Bg = 'FastLlm.CardBrush' })
     $bodySize = [double]$dict['FastLlm.BodySize']
     foreach ($r in $rows) {
@@ -1084,6 +1104,11 @@ function Invoke-S4-Resources {
         Check (& $same $el.Background $r.Bg) "S4 Home $($r.N) Background is the theme value $($r.Bg)" "actual=$($el.Background)"
         Check ([Math]::Abs([double]$el.FontSize - $bodySize) -lt 0.01) "S4 Home $($r.N) FontSize is the theme body size" "actual=$($el.FontSize) expected=$bodySize"
     }
+    # a disabled button (Open chat is disabled at start): text and fill come from the theme's disabled keys
+    $dis = $els.OpenChatButton
+    $disBd = $dis.Template.FindName('Bd', $dis)
+    Check ((-not $dis.IsEnabled) -and (& $same $dis.Foreground 'FastLlm.DisabledTextBrush')) 'S4 a disabled button (Open chat) draws its text in the theme disabled text colour' "enabled=$($dis.IsEnabled) foreground=$($dis.Foreground)"
+    Check (($null -ne $disBd) -and (& $same $disBd.Background 'FastLlm.DisabledFillBrush')) 'S4 a disabled button fills with the theme disabled fill colour' "Bd=$($null -ne $disBd) background=$(if ($null -ne $disBd) { $disBd.Background })"
     Check (& $same $els.StatusCard.Background 'FastLlm.CardBrush') 'S4 the status card Background is the theme card colour' "actual=$($els.StatusCard.Background)"
     $sub = [double]$dict['FastLlm.SubtitleSize']
     Check ([Math]::Abs([double]$els.TitleText.FontSize - $sub) -lt 0.01 -and $sub -ne $bodySize) 'S4 the Home title FontSize is the theme subtitle size, not the body size' "actual=$($els.TitleText.FontSize) expected=$sub body=$bodySize"
@@ -1202,6 +1227,8 @@ function Invoke-S8-DispatcherHandler {
     Check ($script:shellFailMsg -match 'shell dispatcher boom') 'S8 the shell shows the exception through ShowFailure' "shown=$($script:shellFailMsg)"
     Check ($script:probeSeen -eq $true) 'S8 the shell handler marked the exception Handled' "Handled seen by the later handler=$($script:probeSeen)"
     Check ($win.IsVisible) 'S8 the window stays open' "IsVisible=$($win.IsVisible)"
+    Check ($script:unhandledLog.Count -eq 1 -and (($script:unhandledLog.ToArray() -join ' ') -match 'shell dispatcher boom')) 'S8 the shell handler recorded exactly that exception' "recorded=$($script:unhandledLog.Count)"
+    $script:unhandledLog.Clear()
     Check-NoExceptions 'S8'
 }
 
@@ -1220,7 +1247,7 @@ function Get-ShellControlViewPeers($Peer) {
         }
     }
     & $walk $Peer
-    return , $out.ToArray()
+    return $out.ToArray()
 }
 
 # The element's own peer, or the peer of its nearest ancestor that has one (a StackPanel has none).
@@ -1397,6 +1424,14 @@ function Invoke-S11-Expander {
     Check-NoExceptions 'S11'
 }
 
+# The suite process used WPF in Part A, long before S0, so WPF has already read and cached its accessibility switches as legacy on Windows PowerShell 5.1,
+# whatever the product sets later. In-suite switch and peer results are therefore evidence only; the proof is the fresh child process in S19r.
+function Get-ShellInSuiteLegacy {
+    $names = @()
+    try { $st = Get-FastLlmUiFluentAccessibilityState; $names = @($st.legacy) } catch { $names = @() }
+    return , $names
+}
+
 function Invoke-S12-StepsPeer {
     if (-not $script:shellOk) { return }
     $els = $script:FastLlmUiFluent.Els
@@ -1408,7 +1443,9 @@ function Invoke-S12-StepsPeer {
     $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.StepsPanel)
     $got = ''
     if ($null -ne $peer) { $got = [string]$peer.GetName() }
-    Check ($want -ne '' -and $null -ne $peer -and $got -ceq $want) 'S12 the steps list has a peer whose name is the composed steps text' "peer=$($null -ne $peer) name='$got' expected='$want'"
+    $inSuiteLegacy = Get-ShellInSuiteLegacy
+    if (@($inSuiteLegacy).Count -gt 0 -and $null -eq $peer) { Write-Host ("INFO: S12 no steps peer in this process: WPF cached legacy switches before the product could set them (" + (@($inSuiteLegacy) -join ',') + "); the proof is S19r") }
+    else { Check ($want -ne '' -and $null -ne $peer -and $got -ceq $want) 'S12 the steps list has a peer whose name is the composed steps text' "peer=$($null -ne $peer) name='$got' expected='$want'" }
     Reset-ShellState
     Check-NoExceptions 'S12'
 }
@@ -1594,37 +1631,70 @@ function Invoke-S16-PaneCollapse {
     Check-NoExceptions 'S16'
 }
 
-function Invoke-S17-TrayKeyboard {
-    $script:trayClicks = 0
+# One tray-menu keyboard run: a strip as the classic tray builds it, shown, then Down and Enter POSTED to its handle (SendMessage skips the message
+# loop, so the ToolStrip key handling would never run). $Mode 'winforms' runs a real WinForms loop; 'dispatcher' pumps the shell's Dispatcher.
+function Step-ShellRun2([hashtable]$Counter) { $Counter.n++ }
+function Invoke-TrayVariant([string]$Mode) {
+    $ref = @{ n = 0 }
+    $script:trayRef = $ref
     $strip = New-Object System.Windows.Forms.ContextMenuStrip
     $first = $strip.Items.Add('Restore FastLLM')
     $null = $strip.Items.Add('Stop inference / download')
-    $first.Add_Click({ $script:trayClicks++ })
-    $ni = New-Object System.Windows.Forms.NotifyIcon
-    $ni.Icon = Get-FastLlmUiFluentTrayIcon
-    $ni.Text = 'FastLLM shell check'
-    $ni.ContextMenuStrip = $strip
-    $ni.Visible = $true
-    $script:objs.Add($strip)
-    $script:objs.Add($ni)
-    $threw = ''
+    $first.Add_Click({ Step-ShellRun2 $script:trayRef })
+    $nat = $script:native
+    $err = ''
     try {
-        $strip.Show((New-Object System.Drawing.Point(40, 40)))
-        Invoke-Pump 300
-        $h = $strip.Handle
-        $null = $script:native::SendMessage($h, [uint32]0x0100, [IntPtr]0x28, [IntPtr]::Zero)
-        Invoke-Pump 100
-        $null = $script:native::SendMessage($h, [uint32]0x0100, [IntPtr]0x0D, [IntPtr]::Zero)
-        Invoke-Pump 300
+        if ($Mode -ceq 'winforms') {
+            $ctx = New-Object System.Windows.Forms.Form
+            $ctx.ShowInTaskbar = $false; $ctx.Opacity = 0; $ctx.StartPosition = 'Manual'
+            $ctx.Location = New-Object System.Drawing.Point(-32000, -32000); $ctx.Size = New-Object System.Drawing.Size(50, 50)
+            $st = @{ stage = 0 }
+            $t = New-Object System.Windows.Forms.Timer
+            $t.Interval = 150
+            $t.Add_Tick(({
+                $st.stage++
+                if ($st.stage -eq 1) { $strip.Show((New-Object System.Drawing.Point(40, 40))) }
+                elseif ($st.stage -eq 3) { $null = $nat::PostMessage($strip.Handle, [uint32]0x0100, [IntPtr]0x28, [IntPtr]::Zero) }
+                elseif ($st.stage -eq 5) { $null = $nat::PostMessage($strip.Handle, [uint32]0x0100, [IntPtr]0x0D, [IntPtr]::Zero) }
+                elseif ($st.stage -ge 9) { $t.Stop(); $ctx.Close() }
+            }).GetNewClosure())
+            $dead = New-Object System.Windows.Forms.Timer
+            $dead.Interval = 6000
+            $dead.Add_Tick(({ $dead.Stop(); $t.Stop(); $ctx.Close() }).GetNewClosure())
+            $dead.Start(); $t.Start()
+            try { [System.Windows.Forms.Application]::Run($ctx) } finally { $t.Dispose(); $dead.Dispose(); $ctx.Dispose() }
+        }
+        else {
+            $strip.Show((New-Object System.Drawing.Point(40, 40)))
+            Invoke-Pump 400
+            $null = $nat::PostMessage($strip.Handle, [uint32]0x0100, [IntPtr]0x28, [IntPtr]::Zero)
+            Invoke-Pump 300
+            $null = $nat::PostMessage($strip.Handle, [uint32]0x0100, [IntPtr]0x0D, [IntPtr]::Zero)
+            Invoke-Pump 500
+        }
     }
-    catch { $threw = $_.Exception.Message }
-    $n = $script:trayClicks
-    if ($n -eq 1) { Write-Host 'INFO: S17 WinForms keyboard handling works without a WinForms loop: Down then Enter ran the first tray item' }
-    else { Write-Host 'INFO: S17 WinForms keyboard handling did NOT run the first tray item under Dispatcher.Run (the lead decides the remedy)' }
-    Check ($threw -eq '' -and $n -eq 1) 'S17 tray menu: Down then Enter (WM_KEYDOWN to the strip) runs the first item Click under Dispatcher.Run' "error=$threw clicks=$n expected=1"
+    catch { $err = $_.Exception.Message }
     try { $strip.Close() } catch { $null = $_ }
-    $ni.Visible = $false
-    Invoke-Pump 100
+    $strip.Dispose()
+    return @{ ok = ($err -eq '' -and $ref.n -eq 1); clicks = $ref.n; error = $err }
+}
+
+function Invoke-S17-TrayKeyboard {
+    $a = Invoke-TrayVariant 'winforms'
+    $b = Invoke-TrayVariant 'dispatcher'
+    $c = @{ ok = $false; clicks = 0; error = '' }
+    try {
+        Add-Type -AssemblyName WindowsFormsIntegration
+        [System.Windows.Forms.Integration.WindowsFormsHost]::EnableWindowsFormsInterop()
+        $c = Invoke-TrayVariant 'dispatcher'
+    }
+    catch { $c = @{ ok = $false; clicks = 0; error = $_.Exception.Message } }
+    $word = { param($r) if ($r.ok) { 'pass' } else { 'fail' } }
+    Write-Host ("INFO: S17 tray keyboard control=" + (& $word $a) + " dispatcher=" + (& $word $b) + " dispatcher+interop=" + (& $word $c))
+    Write-Host ("INFO: S17 details control clicks=" + $a.clicks + " error='" + $a.error + "'; dispatcher clicks=" + $b.clicks + " error='" + $b.error + "'; dispatcher+interop clicks=" + $c.clicks + " error='" + $c.error + "'")
+    Check $a.ok 'S17 control: under a real WinForms loop, Down then Enter (PostMessage to the strip) runs the first tray item' "clicks=$($a.clicks) expected=1 error=$($a.error) (if this fails the test itself is not valid: do not read (b) as a product result)"
+    if ($a.ok) { Check $b.ok 'S17 under the shell Dispatcher.Run (no interop), Down then Enter (PostMessage to the strip) runs the first tray item' "clicks=$($b.clicks) expected=1 error=$($b.error)" }
+    else { Write-Host 'INFO: S17 the control failed, so the dispatcher result is not counted as a product result' }
     Check-NoExceptions 'S17'
 }
 
@@ -1668,9 +1738,11 @@ function Invoke-S18-WinFormsTimer {
     $forms1 = [System.Windows.Forms.Application]::OpenForms.Count
     $recorded = ($null -ne $f.LastException) -and (([string]$f.LastException.ToString()) -match 'winforms timer boom')
     Check ($recorded -and ($script:shellFailMsg -match 'winforms timer boom') -and $forms1 -eq $forms0) 'S18 a throw in a WinForms Timer tick reaches the fluent ThreadException handler and opens no dialog' "recorded=$recorded shown='$($script:shellFailMsg)' openForms before=$forms0 after=$forms1"
+    $shellSaw = @($script:unhandledLog.ToArray())
+    Check ($shellSaw.Count -eq 1 -and ($shellSaw -join ' ') -match 'winforms timer boom') 'S18 the shell recorded exactly that one ThreadException' "count=$($shellSaw.Count)"
     $mine = @($script:threadEx.ToArray())
-    Check ($mine.Count -eq 1 -and ($mine -join ' ') -match 'winforms timer boom') 'S18 the suite recorder saw exactly that one ThreadException' "count=$($mine.Count)"
-    $script:threadEx.Clear()
+    Check ($mine.Count -eq 0) 'S18 after the shell starts the suite ThreadException recorder no longer receives it (the add replaces the thread single handler)' "suite recorder saw $($mine.Count)"
+    $script:threadEx.Clear(); $script:unhandledLog.Clear()
     Check-NoExceptions 'S18'
 }
 
@@ -1679,17 +1751,34 @@ function Invoke-S19-StepsEvidence {
     $els = $script:FastLlmUiFluent.Els
     # N2 evidence: the WPF accessibility switches this runtime holds
     $switches = New-Object System.Collections.ArrayList
+    $legacy = New-Object System.Collections.ArrayList
     foreach ($asm in @([System.Windows.UIElement].Assembly, [System.Windows.DependencyObject].Assembly, [System.Windows.Controls.Button].Assembly)) {
         $types = @()
         try { $types = @($asm.GetTypes()) } catch [System.Reflection.ReflectionTypeLoadException] { $types = @($_.Exception.Types | Where-Object { $null -ne $_ }) } catch { $types = @() }
         foreach ($t in $types) {
             if ($t.Name -like '*AccessibilitySwitches') {
                 $flags = [System.Reflection.BindingFlags]'Static,Public,NonPublic'
-                foreach ($pr in $t.GetProperties($flags)) { try { [void]$switches.Add($t.FullName + '.' + $pr.Name + '=' + $pr.GetValue($null, $null)) } catch { [void]$switches.Add($t.FullName + '.' + $pr.Name + '=(unreadable)') } }
-                foreach ($fl in $t.GetFields($flags)) { try { [void]$switches.Add($t.FullName + '.' + $fl.Name + '=' + $fl.GetValue($null)) } catch { [void]$switches.Add($t.FullName + '.' + $fl.Name + '=(unreadable)') } }
+                foreach ($pr in $t.GetProperties($flags)) {
+                    $val = '(unreadable)'
+                    try { $val = [string]$pr.GetValue($null, $null) } catch { $null = $_ }
+                    [void]$switches.Add($t.FullName + '.' + $pr.Name + '=' + $val)
+                    if ($pr.PropertyType -eq [bool] -and $pr.Name -match 'Legacy|DoesNotSupport') { [void]$legacy.Add(@{ Name = $pr.Name; Value = $val; Bool = $true }) }
+                }
+                foreach ($fl in $t.GetFields($flags)) {
+                    $val = '(unreadable)'
+                    try { $val = [string]$fl.GetValue($null) } catch { $null = $_ }
+                    [void]$switches.Add($t.FullName + '.' + $fl.Name + '=' + $val)
+                    if ($fl.Name -match '^_useLegacyAccessibilityFeatures[1-5]?$|^_ItemsControlDoesNotSupportAutomation$') { [void]$legacy.Add(@{ Name = $fl.Name; Value = $val; Bool = $false }) }
+                }
             }
         }
     }
+    $badSw = New-Object System.Collections.ArrayList
+    foreach ($l in $legacy) {
+        if ($l.Bool) { if ($l.Value -cne 'False') { [void]$badSw.Add($l.Name + '=' + $l.Value) } }
+        elseif ($l.Value -cne '-1') { [void]$badSw.Add($l.Name + '=' + $l.Value) }
+    }
+    Write-Host ("INFO: S19 in-suite switches (cached before the product could set them; the proof is S19r): found=" + $legacy.Count + " legacy-looking=[" + ($badSw -join ', ') + "]")
     foreach ($sw in $switches) { Write-Host ("INFO: S19 accessibility switch " + $sw) }
     if ($switches.Count -eq 0) { Write-Host 'INFO: S19 no type named *AccessibilitySwitches was found in WindowsBase, PresentationCore or PresentationFramework' }
     foreach ($name in 'Switch.UseLegacyAccessibilityFeatures', 'Switch.UseLegacyAccessibilityFeatures.2', 'Switch.UseLegacyAccessibilityFeatures.3') {
@@ -1704,21 +1793,125 @@ function Invoke-S19-StepsEvidence {
     Invoke-FastLlmUiFluentTick
     Invoke-Pump 250
     $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.StepsPanel)
-    Check ($null -ne $peer) 'S19 the steps list has an automation peer (CreatePeerForElement is non-null on this runtime)' ("peer is null; switches: " + ($switches -join '; '))
+    if (@(Get-ShellInSuiteLegacy).Count -gt 0 -and $null -eq $peer) { Write-Host 'INFO: S19 no steps peer in this process (legacy switches cached by Part A); see S19r for the fresh-process proof' }
+    else { Check ($null -ne $peer) 'S19 the steps list has an automation peer (CreatePeerForElement is non-null on this runtime)' ("peer is null; switches: " + ($switches -join '; ')) }
     # step items: each row's UIA name is its label text, never a type name
     $bad = New-Object System.Collections.ArrayList
     $count = 0
+    $idx = -1
     foreach ($row in @($els.StepsPanel.Items)) {
         $count++
+        $idx++
         $labelText = ''
         foreach ($c in @($row.Children)) { if ($c -is [System.Windows.Controls.TextBlock] -and -not (Test-ShellPrivateUseText ([string]$c.Text))) { $labelText = [string]$c.Text } }
-        $name = Get-ShellPeerName $row
-        Write-Host ("INFO: S19 step row name='" + $name + "' label='" + $labelText + "'")
+        $container = $els.StepsPanel.ItemContainerGenerator.ContainerFromIndex($idx)
+        $name = ''
+        if ($null -ne $container) { $name = Get-ShellPeerName $container }
+        Write-Host ("INFO: S19 step row container=" + $(if ($null -ne $container) { $container.GetType().Name } else { 'none' }) + " container peer name='" + $name + "' row peer name='" + (Get-ShellPeerName $row) + "' label='" + $labelText + "'")
         if ($labelText -eq '' -or $name -cne $labelText -or $name -match '^System\.|StackPanel|TextBlock|ContentPresenter') { [void]$bad.Add("name='$name' label='$labelText'") }
     }
     Check ($count -ge 1 -and $bad.Count -eq 0) 'S19 every step row has its label text as its UIA name (for example "Model, in progress"), never a type name' "rows=$count bad=[$($bad -join '; ')]"
     Reset-ShellState
     Check-NoExceptions 'S19'
+}
+
+# S19r: the proof in a fresh process, in the startup order of fast-llm-ui.ps1 (its lines 1-34: the assembly loads and dot-sources, then the shell file),
+# without the administrator refusal (CI is elevated) and without the lab-app lifetime. Each shell runs its own leg with its own executable.
+$script:s19rChild = @'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2
+$root = '__ROOT__'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
+. (Join-Path $root 'src/FastLlm.UiFlow.ps1')
+. (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1')
+. (Join-Path $root 'src/FastLlm.UiBackground.ps1')
+. (Join-Path $root 'src/FastLlm.UiState.ps1')
+. (Join-Path $root 'src/FastLlm.Update.ps1')
+. (Join-Path $root 'src/FastLlm.Components.ps1')
+. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.SignInStart.ps1')
+. (Join-Path $root 'src/FastLlm.SupportBundle.ps1')
+. (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
+& (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
+. (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+$support = Test-FastLlmUiFluentHost
+$out = [ordered]@{ supported = [bool]$support.supported; reason = [string]$support.reason; edition = [string]$PSVersionTable.PSEdition; productLegacy = @(); fields = @{}; modern = $false; peerNonNull = $false }
+$cmd = Get-Command Get-FastLlmUiFluentAccessibilityState -ErrorAction SilentlyContinue
+if ($null -ne $cmd) { $st = Get-FastLlmUiFluentAccessibilityState; $out.productLegacy = @($st.legacy); $out['productTypeFound'] = [bool]$st.typeFound }
+$bad = 0
+$seen = 0
+$flags = [System.Reflection.BindingFlags]'Static,Public,NonPublic'
+foreach ($asm in @([System.Windows.UIElement].Assembly, [System.Windows.DependencyObject].Assembly, [System.Windows.Controls.Button].Assembly)) {
+    $types = @()
+    try { $types = @($asm.GetTypes()) } catch [System.Reflection.ReflectionTypeLoadException] { $types = @($_.Exception.Types | Where-Object { $null -ne $_ }) }
+    foreach ($t in $types) {
+        if ($t.Name -notlike '*AccessibilitySwitches') { continue }
+        foreach ($fl in $t.GetFields($flags)) {
+            $v = [string]$fl.GetValue($null)
+            $out.fields[$fl.Name] = $v
+            if ($fl.Name -match '^_useLegacyAccessibilityFeatures[1-5]?$|^_ItemsControlDoesNotSupportAutomation$') { $seen++; if ($v -cne '-1') { $bad++ } }
+        }
+        foreach ($pr in $t.GetProperties($flags)) {
+            if ($pr.PropertyType -ne [bool] -or $pr.Name -notmatch 'Legacy|DoesNotSupport') { continue }
+            $v = [string]$pr.GetValue($null, $null)
+            $out.fields[$pr.Name] = $v
+            $seen++
+            if ($v -cne 'False') { $bad++ }
+        }
+    }
+}
+$out.modern = ($seen -gt 0 -and $bad -eq 0 -and @($out.productLegacy).Count -eq 0)
+$ic = New-Object System.Windows.Controls.ItemsControl
+[void]$ic.Items.Add('one')
+[void]$ic.Items.Add('two')
+$peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($ic)
+$out.peerNonNull = ($null -ne $peer)
+Write-Output ('S19R-JSON ' + ($out | ConvertTo-Json -Compress -Depth 4))
+'@
+
+function Invoke-S19r-FreshProcess {
+    $exe = (Get-Process -Id $PID).Path
+    $edition = if ($PSVersionTable.PSVersion.Major -le 5) { 'Windows PowerShell 5.1' } else { 'PowerShell 7' }
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fastllm-s19r-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $dir)
+    $file = Join-Path $dir 'child.ps1'
+    [System.IO.File]::WriteAllText($file, $script:s19rChild.Replace('__ROOT__', $root.Replace("'", "''")), (New-Object System.Text.UTF8Encoding($false)))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = '-STA -NoLogo -NoProfile -File "' + $file + '"'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.EnvironmentVariables['FASTLLM_TESTS_NO_BENCH'] = '1'
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    $script:s19rProc = $p
+    $null = $p.Start()
+    $ownPid = $p.Id
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    Invoke-Pump 60000 ({ $script:s19rProc.HasExited })
+    $timedOut = -not $p.HasExited
+    if ($timedOut) { try { $p.Kill() } catch { $null = $_ } ; $null = $p.WaitForExit(5000) }
+    $text = ''
+    $errText = ''
+    try { $text = [string]$outTask.Result; $errText = [string]$errTask.Result } catch { $null = $_ }
+    $json = $null
+    foreach ($line in ($text -split "`r?`n")) { if ($line.StartsWith('S19R-JSON ')) { $json = $line.Substring(10) } }
+    $r = $null
+    if ($null -ne $json) { try { $r = $json | ConvertFrom-Json } catch { $r = $null } }
+    Write-Host ("INFO: S19r " + $edition + " child pid " + $ownPid + " exit " + $(if ($timedOut) { 'timed out and killed' } else { $p.ExitCode }) + " result: " + $(if ($null -ne $json) { $json } else { '(none)' }))
+    if ($null -eq $r) {
+        Check $false "S19r $edition fresh process: supported, modern accessibility switches, steps-list peer present" ("no result line; exit=" + $(if ($timedOut) { 'timeout' } else { $p.ExitCode }) + " stderr=" + $errText + " stdout=" + $text)
+    }
+    else {
+        Check (($r.supported -eq $true) -and ($r.modern -eq $true) -and ($r.peerNonNull -eq $true)) "S19r $edition fresh process: supported, modern accessibility switches, steps-list peer present" ("supported=$($r.supported) reason=$($r.reason) modern=$($r.modern) peerNonNull=$($r.peerNonNull) productLegacy=[$(@($r.productLegacy) -join ',')] fields=$($r.fields | ConvertTo-Json -Compress)")
+    }
+    $script:s19rProc = $null
+    Check-NoExceptions 'S19r'
 }
 
 function Invoke-S20-MessageArea {
@@ -1894,15 +2087,15 @@ $script:steps = @(
     'Invoke-S0-ShellStart', 'Invoke-S1-Shown', 'Invoke-S2-Bindings', 'Invoke-S3-HomeParity', 'Invoke-S4-Resources', 'Invoke-S5-SplitMenu', 'Invoke-S6-Nav',
     'Invoke-S7-ShellTheme', 'Invoke-S8-DispatcherHandler', 'Invoke-S9-GlyphControlView',
     'Invoke-S10-LiveRegions', 'Invoke-S10b-FailureAnnouncement', 'Invoke-S11-Expander', 'Invoke-S12-StepsPeer', 'Invoke-S13-TabOrder', 'Invoke-S14-HighContrast',
-    'Invoke-S15-SplitKeyboard', 'Invoke-S16-PaneCollapse', 'Invoke-S17-TrayKeyboard', 'Invoke-S18-WinFormsTimer',
-    'Invoke-S19-StepsEvidence', 'Invoke-S20-MessageArea', 'Invoke-S21-ExpanderTemplate', 'Invoke-S99-StartupFaults'
+    'Invoke-S15-SplitKeyboard', 'Invoke-S16-PaneCollapse', 'Invoke-S18-WinFormsTimer',
+    'Invoke-S19-StepsEvidence', 'Invoke-S19r-FreshProcess', 'Invoke-S20-MessageArea', 'Invoke-S21-ExpanderTemplate', 'Invoke-S17-TrayKeyboard', 'Invoke-S99-StartupFaults'
 )
 
 $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:tick = $tick
 $deadline = New-Object System.Windows.Threading.DispatcherTimer
-$deadline.Interval = [TimeSpan]::FromSeconds(150)
+$deadline.Interval = [TimeSpan]::FromSeconds(210)
 $script:deadline = $deadline
 
 $tick.Add_Tick({
@@ -1922,7 +2115,7 @@ $tick.Add_Tick({
 $deadline.Add_Tick({
     $script:deadline.Stop()
     $where = if ($script:si -gt 0 -and $script:si -le $script:steps.Count) { $script:steps[$script:si - 1] } else { 'before the first step' }
-    Write-Host "FAIL: the 150 s suite deadline was hit during step $where"
+    Write-Host "FAIL: the 210 s suite deadline was hit during step $where"
     # a step may be stuck in a modal loop: ending the process is the only way out and it must not hang CI
     [Environment]::Exit(1)
 })

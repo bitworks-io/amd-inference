@@ -372,7 +372,10 @@ function Invoke-UiRenderCase {
         $byRead = @($stops | Sort-Object -Property @{ Expression = 'Row' }, @{ Expression = 'Left' }, @{ Expression = 'Order' })
         $same = $true
         for ($i = 0; $i -lt $stops.Count; $i++) { if (-not [object]::ReferenceEquals($byTab[$i].El, $byRead[$i].El)) { $same = $false; break } }
-        if (-not $same) { [void]$problems.Add('tab-order') }
+        if (-not $same) {
+            [void]$problems.Add('tab-order')
+            [void]$diagnostics.Add('tab-order: by tab order [' + ((@($byTab | ForEach-Object { Get-UiElementLabel $_.El }) -join ', ')) + '] by reading order [' + ((@($byRead | ForEach-Object { Get-UiElementLabel $_.El }) -join ', ')) + ']')
+        }
     }
 
     # Probes: proof that the theme and the checks really reached the page. They never add a problem.

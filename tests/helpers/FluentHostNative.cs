@@ -79,6 +79,12 @@ namespace Bitworks.FastLlm.Tests {
             try { return PostMessageRaw(dialog, WM_COMMAND, new IntPtr(id), IntPtr.Zero); } catch (Exception) { return false; }
         }
 
+        // Posts a message to a window of this process (the queue, so the message loop and its key filters see it).
+        public static bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam) {
+            if (hwnd == IntPtr.Zero) { return false; }
+            try { return PostMessageRaw(hwnd, msg, wParam, lParam); } catch (Exception) { return false; }
+        }
+
         // Synchronous SendMessage to a window of this process only; the caller passes its own hwnd.
         public static IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam) {
             return SendMessageRaw(hwnd, msg, wParam, lParam);
