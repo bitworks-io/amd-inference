@@ -5,7 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# FastLLM.cmd as it was before the sign-in branch was added. The window path must stay exactly this text.
+# FastLLM.cmd as it was before the sign-in branch was added, with the one exit-code-3 change (the window already told the user why).
+# The window path must stay exactly this text.
 ORIGINAL_LINES = r"""@echo off
 setlocal
 set "FASTLLM_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -18,13 +19,16 @@ set "FASTLLM_EP="
 if /i "%FASTLLM_POLICY%"=="Restricted" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
 if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
 "%FASTLLM_PS%" -NoLogo -NoProfile %FASTLLM_EP% -STA -File "%~dp0fast-llm-ui.ps1"
-if errorlevel 1 (
+set "FASTLLM_EXIT=%errorlevel%"
+if "%FASTLLM_EXIT%"=="3" goto fastllm_done
+if not "%FASTLLM_EXIT%"=="0" (
   echo FastLLM could not open. If PowerShell says running scripts is disabled, a script policy is blocking it.
   echo Otherwise, run FastLLM as a standard user, not as administrator.
   echo For script policy help, see the FastLLM README:
   echo https://github.com/bitworks-io/amd-inference
   pause
 )
+:fastllm_done
 endlocal
 """.split("\n")[:-1]
 
@@ -60,6 +64,20 @@ class LauncherPolicyTests(unittest.TestCase):
             self.assertIn(inserted, lines)
             lines.remove(inserted)
         self.assertEqual(lines, ORIGINAL_LINES)
+
+    def test_exit_code_3_skips_the_generic_failure_text(self):
+        lines = (ROOT / "FastLLM.cmd").read_text(encoding="utf-8").split("\n")
+        window = next(i for i, l in enumerate(lines) if "fast-llm-ui.ps1" in l and "FASTLLM_PS%" in l)
+        # The exit code is saved on its own line right after the window line: %errorlevel% inside a parenthesised block is read at parse time.
+        self.assertEqual(lines[window + 1], 'set "FASTLLM_EXIT=%errorlevel%"')
+        self.assertEqual(lines[window + 2], 'if "%FASTLLM_EXIT%"=="3" goto fastllm_done')
+        self.assertEqual(lines[window + 3], 'if not "%FASTLLM_EXIT%"=="0" (')
+        # The skip lands after the generic text and before endlocal; every other non-zero code still gets the text.
+        done = lines.index(":fastllm_done")
+        self.assertEqual(lines[done + 1], "endlocal")
+        self.assertGreater(done, max(i for i, l in enumerate(lines) if l.startswith("  echo FastLLM could not open")))
+        self.assertLess(done, lines.index(":signin"))
+        self.assertEqual(sum(1 for l in lines if l.strip() == "pause"), 1)
 
     def test_sign_in_branch_runs_only_the_sign_in_tool(self):
         text = (ROOT / "FastLLM.cmd").read_text(encoding="utf-8")

@@ -20,6 +20,27 @@ function Get-UiRenderMatrix {
     return $cases.ToArray()
 }
 
+# High-contrast palette for the probes: four DISTINCT colours, and WindowText differs from the dark theme's TextPrimary (white).
+function Get-UiRenderHighContrastPalette {
+    return @{ Window = '#000000'; WindowText = '#FFFF00'; Highlight = '#1AEBFF'; HighlightText = '#202020' }
+}
+
+# The text an access key label shows (WPF AccessText): a doubled underscore is one literal underscore; the FIRST single underscore marks the
+# key and is dropped; any later single underscore, and a trailing lone one, show as text. The Windows run pins this against WPF itself.
+function Remove-UiAccessKey([string]$Text) {
+    $sb = New-Object System.Text.StringBuilder
+    $keySeen = $false
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        if ($c -ne '_') { [void]$sb.Append($c); continue }
+        if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '_') { [void]$sb.Append('_'); $i++; continue }
+        if ($i + 1 -ge $Text.Length) { [void]$sb.Append('_'); continue }
+        if (-not $keySeen) { $keySeen = $true; continue }
+        [void]$sb.Append('_')
+    }
+    return $sb.ToString()
+}
+
 function Get-UiElementLabel($Element) {
     $n = ''
     if ($Element -is [System.Windows.FrameworkElement]) { $n = [string]$Element.Name }
@@ -156,7 +177,11 @@ function Invoke-UiRenderCase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)]$Case,
-        [string]$OutFolder = ''
+        [string]$OutFolder = '',
+        # Optional: runs once on the page (after its theme dictionary is set, before it is measured), e.g. to bind adapters and apply a state.
+        [scriptblock]$Prepare = $null,
+        # Optional: an element built by the caller, used instead of parsing the registered markup for $Name ($Name then only names the PNG).
+        $Element = $null
     )
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
@@ -166,13 +191,14 @@ function Invoke-UiRenderCase {
     $height = [int]$Case.height
     $problems = New-Object System.Collections.ArrayList
 
-    $page = New-FastLlmUiXamlElement -Name $Name
+    if ($null -ne $Element) { $page = $Element } else { $page = New-FastLlmUiXamlElement -Name $Name }
     $themeArgs = @{ Theme = $theme; AccentPair = (Get-FastLlmUiAccentPair -Palette $null); TextScale = $textScale }
     if ($theme -eq 'high-contrast') {
-        $themeArgs['HighContrastPalette'] = @{ Window = '#000000'; WindowText = '#FFFFFF'; Highlight = '#1AEBFF'; HighlightText = '#000000' }
+        $themeArgs['HighContrastPalette'] = Get-UiRenderHighContrastPalette
     }
     $dict = New-FastLlmUiThemeDictionary @themeArgs
     $page.Resources = $dict
+    if ($null -ne $Prepare) { & $Prepare $page }
 
     $sv = New-Object System.Windows.Controls.ScrollViewer
     $sv.Width = $width
@@ -275,15 +301,20 @@ function Invoke-UiRenderCase {
     $diagnostics = New-Object System.Collections.ArrayList
     $labelPeerState = @{}
     $mismatched = @{}
+    $labeledInputs = 0
     foreach ($el in $authored) {
         $label = [System.Windows.Automation.AutomationProperties]::GetLabeledBy($el)
         if ($null -eq $label) { continue }
+        $labeledInputs++
         if ($null -ne [System.Windows.Automation.Peers.UIElementAutomationPeer]::FromElement($label)) { $labelPeerState[$el] = 'exists' } else { $labelPeerState[$el] = 'none' }
         $explicit = [string][System.Windows.Automation.AutomationProperties]::GetName($el)
         if ([string]::IsNullOrEmpty($explicit)) { continue }
         $labelText = $null
         if ($label -is [System.Windows.Controls.TextBlock]) { $labelText = [string]$label.Text }
-        elseif ($label -is [System.Windows.Controls.Label]) { $labelText = [string]$label.Content }
+        elseif ($label -is [System.Windows.Controls.Label]) {
+            if ($label.Content -is [string]) { $labelText = Remove-UiAccessKey ([string]$label.Content) }
+            else { [void]$diagnostics.Add((Get-UiElementLabel $el) + ': label-content-not-text (' + (Get-UiElementLabel $label) + ')') }
+        }
         if ($null -ne $labelText -and -not $labelText.Trim().Equals($explicit.Trim(), [System.StringComparison]::Ordinal)) {
             [void]$problems.Add('label-mismatch:' + (Get-UiElementLabel $el))
             $mismatched[$el] = $true
@@ -341,7 +372,10 @@ function Invoke-UiRenderCase {
         $byRead = @($stops | Sort-Object -Property @{ Expression = 'Row' }, @{ Expression = 'Left' }, @{ Expression = 'Order' })
         $same = $true
         for ($i = 0; $i -lt $stops.Count; $i++) { if (-not [object]::ReferenceEquals($byTab[$i].El, $byRead[$i].El)) { $same = $false; break } }
-        if (-not $same) { [void]$problems.Add('tab-order') }
+        if (-not $same) {
+            [void]$problems.Add('tab-order')
+            [void]$diagnostics.Add('tab-order: by tab order [' + ((@($byTab | ForEach-Object { Get-UiElementLabel $_.El }) -join ', ')) + '] by reading order [' + ((@($byRead | ForEach-Object { Get-UiElementLabel $_.El }) -join ', ')) + ']')
+        }
     }
 
     # Probes: proof that the theme and the checks really reached the page. They never add a problem.
@@ -359,6 +393,6 @@ function Invoke-UiRenderCase {
     return @{
         problems = [string[]]@($problems.ToArray()); diagnostics = [string[]]@($diagnostics.ToArray()); png = $png
         titleFontSize = $titleFontSize; bodyFontSize = $bodyFontSize; titleForeground = $titleForeground
-        textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
+        labeledInputs = $labeledInputs; textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
     }
 }

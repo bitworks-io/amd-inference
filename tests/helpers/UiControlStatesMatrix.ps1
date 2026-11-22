@@ -142,7 +142,7 @@ function Get-UiWindowRuleFunctionText {
 }
 
 function Invoke-UiWindowEnableRules {
-    param([Parameter(Mandatory=$true)][string]$SourceText, [Parameter(Mandatory=$true)]$Row)
+    param([Parameter(Mandatory=$true)][string]$SourceText, [Parameter(Mandatory=$true)]$Row, [switch]$FailureHeld, [string]$FlowPhase = '')
     foreach ($text in (Get-UiWindowRuleFunctionText -SourceText $SourceText)) { Invoke-Expression $text }
     foreach ($name in $script:UiMatrixControlVars) {
         Set-Variable -Name $name -Value ([pscustomobject]@{Enabled=$null;Visible=$null})
@@ -158,6 +158,9 @@ function Invoke-UiWindowEnableRules {
     $script:switchGap = [bool]$Row.switchGap
     $script:chatUrl = $Row.chatUrl
     $script:bgStopRequested = [bool]$Row.bgStopRequested
+    # The snapshot also carries the held-failure flag and the flow phase (the status card reads them); the enable rules do not.
+    $script:failureHeld = [bool]$FailureHeld
+    $script:flow = if ($FlowPhase) { [pscustomobject]@{phase=$FlowPhase} } else { $null }
     SetBusy ([bool]$Row.busy)
     $bits = New-Object System.Text.StringBuilder
     for ($i = 0; $i -lt $script:UiMatrixControlVars.Count; $i++) {

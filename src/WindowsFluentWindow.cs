@@ -144,4 +144,33 @@ namespace Bitworks.FastLlm {
             }
         }
     }
+
+    // The window-message hook body. PowerShell cannot write back a ref bool from a scriptblock delegate, so the
+    // hook itself is C#; PowerShell runs only for session-end queries and theme messages.
+    public sealed class FluentWindowHook {
+        private readonly Func<bool> refuseSessionEnd;
+        private readonly Action themeChanged;
+
+        public FluentWindowHook(Func<bool> refuseSessionEnd, Action themeChanged) {
+            this.refuseSessionEnd = refuseSessionEnd;
+            this.themeChanged = themeChanged;
+        }
+
+        public IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
+            if (msg == 0x0011) {
+                bool refuse;
+                try { refuse = refuseSessionEnd(); } catch { refuse = true; }
+                if (refuse) { handled = true; }
+                return IntPtr.Zero;
+            }
+            if (msg == 0x001A || msg == 0x0015 || msg == 0x0320) {
+                try { themeChanged(); } catch { }
+            }
+            return IntPtr.Zero;
+        }
+
+        public Delegate CreateHook(Type hookType) {
+            return Delegate.CreateDelegate(hookType, this, "WndProc");
+        }
+    }
 }

@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([string]$InstallRoot)
+param([string]$InstallRoot,[ValidateSet('classic','fluent',IgnoreCase=$false)][string]$Window='classic')
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
 if ($env:OS -ne 'Windows_NT') { throw 'The control window requires Windows PowerShell on Windows.' }
@@ -30,6 +30,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.ConnectInfo.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
+# The Fluent window (opt-in with -Window fluent) is checked before anything else is built; an unsupported PC opens no window.
+if ($Window -ceq 'fluent') { . (Join-Path $PSScriptRoot 'src/FastLlm.UiFluentShell.ps1'); $fluentSupport=Test-FastLlmUiFluentHost; if (-not $fluentSupport.supported) { Show-FastLlmUiUnsupported -Reason $fluentSupport.reason -InstallRoot $InstallRoot -Folder $PSScriptRoot; exit 3 } }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
 # The UI settings file lives under the launch root only (never the editable folder box), so it is read and written from the same place.
 $script:settingsRoot=$InstallRoot
@@ -142,10 +144,11 @@ $script:evidenceUrl=$null
 $resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
 # "Copy full output": shown only while a failure from a child's capture is held; the copy is the raw capture, unchanged.
 $script:failureCapture=$null
+$script:failureHeld=$false;$script:failureViewText=''
 $failureCopyLink=New-Object Windows.Forms.LinkLabel;$failureCopyLink.Text='Copy full output';$failureCopyLink.AutoSize=$true;$failureCopyLink.Visible=$false
 $failureCopyLink.Location=New-Object Drawing.Point((820-$failureCopyLink.PreferredWidth),652)
 $failureCopyLink.TabStop=$true;$failureCopyLink.TabIndex=$output.TabIndex+1;$failureCopyLink.AccessibleName='Copy full output';$form.Controls.Add($failureCopyLink)
-function ClearFailureCapture {$script:failureCapture=$null;$failureCopyLink.Visible=$false}
+function ClearFailureCapture {$script:failureCapture=$null;$script:failureHeld=$false;$script:failureViewText='';$failureCopyLink.Visible=$false}
 function SetFailureCapture([string]$Capture) {$script:failureCapture=$Capture;$failureCopyLink.Visible=-not [string]::IsNullOrEmpty($Capture)}
 $notesLabel=New-Object Windows.Forms.Label
 $notesLabel.Location=New-Object Drawing.Point(24,676);$notesLabel.Size=New-Object Drawing.Size(796,80);$notesLabel.Text='';$form.Controls.Add($notesLabel)
@@ -181,6 +184,7 @@ $bannerButton.Text='Update';$bannerButton.Location=New-Object Drawing.Point(480,
 # Offered only while the reinstall decision allows it (Get-FastLlmUiReinstallOffer); a click asks for confirmation and re-decides before anything is changed.
 $reinstallButton=New-Object Windows.Forms.Button
 $reinstallButton.Text='Reinstall previous version';$reinstallButton.Location=New-Object Drawing.Point(640,4);$reinstallButton.Size=New-Object Drawing.Size(180,28);$reinstallButton.Visible=$false;$form.Controls.Add($reinstallButton)
+if ($Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }
 function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate) {
     $script:bannerUrl=$Url
     if([string]::IsNullOrEmpty($Text)){$bannerLabel.Visible=$false;$bannerNotes.Visible=$false;$bannerButton.Visible=$false;return}
@@ -313,7 +317,8 @@ function GetUiStateSnapshot([bool]$Busy) {
     return New-FastLlmUiStateSnapshot -Busy $Busy -UpdateKind $updateKind -ChildActive ([bool]$script:child) -Step ([string]$script:step) `
         -RunReady ([bool]$script:runReady) -SideChildActive ([bool]$script:sideChild) -VcBrokerActive ($null -ne $script:vcBroker) `
         -PreviewReady ([bool]$script:previewReady) -SwitchGap ([bool]$script:switchGap) -ChatUrlSet ([bool]$script:chatUrl) `
-        -BackgroundStopRequested ([bool]$script:bgStopRequested) -Background $script:bgState
+        -BackgroundStopRequested ([bool]$script:bgStopRequested) -Background $script:bgState `
+        -FailureHeld ([bool]$script:failureHeld) -FlowPhase ([string]$(if($script:flow){$script:flow.phase}))
 }
 function SetBusy([bool]$Busy) {
     $states=Get-FastLlmUiControlStates -Snapshot (GetUiStateSnapshot $Busy)
@@ -579,10 +584,12 @@ function SetTrayMenuAvailable([bool]$Available) {
 }
 function ShowFailure($Message,[string]$Capture){
     try{RevealUiForAction}catch{[void][Windows.Forms.MessageBox]::Show('FastLLM needs attention, but the control window could not be restored.','FastLLM','OK','Warning')}
+    $script:failureHeld=$true
     # A failure from a child's capture shows the capture without PowerShell's error-record details and keeps it whole for "Copy full output";
     # fixed window text shows as is and holds nothing.
     if($PSBoundParameters.ContainsKey('Capture')){$view=Get-FastLlmUiFailureView -Message ([string]$Message) -Capture $Capture}else{$view=Get-FastLlmUiFailureView -Message ([string]$Message)}
     $output.Text=[string]$view.text
+    $script:failureViewText=[string]$view.text
     SetFailureCapture ([string]$view.capture)
     if($script:child -or $script:vcBroker){
         $statusLabel.Text=if($script:vcBroker){'Microsoft setup is still running. Complete or cancel it in the Microsoft window.'}
@@ -604,6 +611,8 @@ function DisposeTrayControls {
     }
     if($script:trayMenu){try{$script:trayMenu.Dispose()}catch{};$script:trayMenu=$null}
 }
+# The tray icon: the stock application icon, or the drawn one in the Fluent window.
+function GetUiTrayIcon { if ($script:Window -ceq 'fluent') { return Get-FastLlmUiFluentTrayIcon } ; return [Drawing.SystemIcons]::Application }
 function EnsureTrayIcon {
     if($script:trayIcon){return}
     try{
@@ -615,7 +624,7 @@ function EnsureTrayIcon {
         $stopItem.Add_Click({try{StopUiOperation}catch{$message=$_.Exception.Message;try{RestoreFromTray}catch{};ShowFailure $message}})
         $exitItem.Add_Click({try{ExitFromTray}catch{ShowFailure $_.Exception.Message}})
         $script:trayIcon=New-Object Windows.Forms.NotifyIcon
-        $script:trayIcon.Icon=[Drawing.SystemIcons]::Application
+        $script:trayIcon.Icon=GetUiTrayIcon
         $script:trayIcon.Text='Bitworks FastLLM (Preview)'
         $script:trayIcon.ContextMenuStrip=$script:trayMenu
         $script:trayIcon.Add_DoubleClick({try{RestoreFromTray}catch{[void][Windows.Forms.MessageBox]::Show('Unable to restore the FastLLM window.','FastLLM tray','OK','Warning')}})
@@ -2066,7 +2075,7 @@ $form.Add_FormClosing({param($sender,$event)
     $script:startupRun=$null
 })
 $timer.Start()
-try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application]::Run($form)}finally{
+try{if($Window -ceq 'fluent'){Start-FastLlmUiFluentLoop}else{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application]::Run($form)}}finally{
     if($script:child){$script:child.Dispose()}
     if($script:sideChild){$script:sideChild.Dispose()}
     Close-FastLlmUiBackgroundPoll $script:bgPoll

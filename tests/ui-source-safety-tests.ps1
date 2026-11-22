@@ -32,6 +32,17 @@ function Get-Ast([string]$Text){
     $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$tokens,[ref]$errs)
     return $ast
 }
+# Each scanned file is read and parsed ONCE; every rule takes the cached AST (path -> @{ast;tokens;errors;text}).
+$script:ParseCache=@{}
+function Get-ParsedFile([string]$Path){
+    if(-not $script:ParseCache.ContainsKey($Path)){
+        $text=Read-Utf8 $Path
+        $errs=$null;$tokens=$null
+        $ast=[System.Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errs)
+        $script:ParseCache[$Path]=@{ast=$ast;tokens=$tokens;errors=$errs;text=$text}
+    }
+    return $script:ParseCache[$Path]
+}
 function Test-TableVariable($Node){
     return ($Node -is [System.Management.Automation.Language.VariableExpressionAst]) -and ($Node.VariablePath.UserPath -ieq $tableVar)
 }
@@ -42,9 +53,10 @@ function Get-LoaderFunctionExtent($Ast){
 }
 
 # Every use of the XAML parser in one file's text: by AST (type names, string constants) and by raw text offset.
-function Get-ParserUseOutside([string]$Text,[string]$RelPath){
+function Get-ParserUseOutside([string]$Text,[string]$RelPath,$Ast=$null){
     $bad=New-Object System.Collections.ArrayList
-    $ast=Get-Ast $Text
+    $ast=$Ast
+    if($null -eq $ast){$ast=Get-Ast $Text}
     $ext=$null
     if($RelPath -ceq $loaderName){$ext=Get-LoaderFunctionExtent $ast}
     $inside={param([int]$Offset)($null -ne $ext) -and $Offset -ge $ext.StartOffset -and $Offset -lt $ext.EndOffset}
@@ -65,9 +77,10 @@ function Get-ParserUseOutside([string]$Text,[string]$RelPath){
 
 # Every write to the XAML table in one file's text. Allowed: constant single-quoted here-string index assignments, and in the
 # loader exactly one initialisation to an empty hashtable.
-function Get-TableWriteFindings([string]$Text,[string]$RelPath){
+function Get-TableWriteFindings([string]$Text,[string]$RelPath,$Ast=$null){
     $bad=New-Object System.Collections.ArrayList
-    $ast=Get-Ast $Text
+    $ast=$Ast
+    if($null -eq $ast){$ast=Get-Ast $Text}
     $assigns=@($ast.FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst]},$true))
     $inits=0
     foreach($a in $assigns){
@@ -113,10 +126,11 @@ $parserBad=New-Object System.Collections.ArrayList
 foreach($f in $files){
     $rel=Get-RepoRelativePath $f
     if($rel -ceq $ownName){continue}
-    foreach($b in (Get-ParserUseOutside (Read-Utf8 $f) $rel)){[void]$parserBad.Add($b)}
+    $pf=Get-ParsedFile $f
+    foreach($b in (Get-ParserUseOutside $pf.text $rel $pf.ast)){[void]$parserBad.Add($b)}
 }
 Check ($parserBad.Count -eq 0) ('XAML is parsed in one place only ('+(($parserBad|Select-Object -First 3) -join ' | ')+')')
-$loaderText=Read-Utf8 (Join-Path $root $loaderName)
+$loaderText=(Get-ParsedFile (Join-Path $root $loaderName)).text
 Check ($loaderText -match 'Windows\.Markup\.XamlReader\]::Parse') 'the loader function does parse'
 
 # 3 and 4. table writes
@@ -124,9 +138,9 @@ $writeBad=New-Object System.Collections.ArrayList
 $tableEntries=0
 foreach($f in $files){
     $rel=Get-RepoRelativePath $f
-    $t=Read-Utf8 $f
-    foreach($b in (Get-TableWriteFindings $t $rel)){[void]$writeBad.Add($b)}
-    $tableEntries+=@((Get-Ast $t).FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and (Test-TableVariable $n.Left.Target)},$true)).Count
+    $pf=Get-ParsedFile $f
+    foreach($b in (Get-TableWriteFindings $pf.text $rel $pf.ast)){[void]$writeBad.Add($b)}
+    $tableEntries+=@($pf.ast.FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and (Test-TableVariable $n.Left.Target)},$true)).Count
 }
 Check ($writeBad.Count -eq 0) ('XAML is constant markup only, written only by constant assignments ('+(($writeBad|Select-Object -First 3) -join ' | ')+')')
 Check ($tableEntries -ge 1) 'at least one registered page is scanned'
@@ -275,10 +289,20 @@ if($env:OS -eq 'Windows_NT'){
 }
 
 # ASCII
-$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/WindowsFluentWindow.cs',
+$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/WindowsFluentWindow.cs','src/WindowsFluentAutomation.cs',
+    'tests/ui-fluent-members-tests.ps1','tests/ui-fluent-parity-tests.ps1',
+    'tests/ui-fluent-shell-tests.ps1','tests/helpers/FluentHostNative.cs',
     'tests/helpers/UiControlStatesMatrix.ps1','tests/helpers/New-UiControlStatesGolden.ps1','tests/ui-control-states-tests.ps1',
-    'tests/ui-card-state-tests.ps1','tests/ui-theme-tests.ps1','tests/ui-window-tests.ps1','tests/ui-source-safety-tests.ps1',
+    'tests/ui-card-state-tests.ps1','tests/ui-fluent-adapter-tests.ps1','tests/ui-fluent-support-tests.ps1','tests/ui-theme-tests.ps1','tests/ui-window-tests.ps1','tests/ui-source-safety-tests.ps1',
     'tests/helpers/UiRenderHarness.ps1','tests/ui-render-tests.ps1'
+# AccessibilityView is not a WPF API: markup or code that sets it fails at run time on the user's PC, so no file under src/ may contain it.
+function Test-HasAccessibilityView([string]$Text){return ($Text.IndexOf('AccessibilityView',[StringComparison]::OrdinalIgnoreCase) -ge 0)}
+Check (Test-HasAccessibilityView 'AutomationProperties.AccessibilityView="Raw"') 'self-check: the text AccessibilityView is flagged'
+Check (Test-HasAccessibilityView 'x accessibilityview y') 'self-check: the text is matched case-insensitively'
+Check (-not (Test-HasAccessibilityView 'IsControlElement')) 'self-check: unrelated text is not flagged'
+foreach($f in @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File -Recurse)){
+    Check (-not (Test-HasAccessibilityView ([IO.File]::ReadAllText($f.FullName)))) ('no AccessibilityView in '+(Get-RepoRelativePath $f.FullName))
+}
 function Test-AsciiBytes([byte[]]$Bytes){foreach($b in $Bytes){if($b -ge 0x80){return $false}};return $true}
 Check (-not (Test-AsciiBytes ([byte[]](0x41,0xC3,0xA9)))) 'self-check: a non-ASCII byte is flagged'
 foreach($rel in $asciiFiles){
@@ -293,14 +317,14 @@ function Get-Sha256Lf([string]$Text){
     $sha=[Security.Cryptography.SHA256]::Create()
     try{return (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($lf))|ForEach-Object{$_.ToString('x2')}) -join '')}finally{$sha.Dispose()}
 }
-function Get-AdminRefusalText([string]$Text){
-    $ast=Get-Ast $Text
+function Get-AdminRefusalText($Ast){
+    $ast=$Ast
     $m=@($ast.FindAll({param($n)$n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text.Contains('WindowsBuiltInRole]::Administrator')},$true))
     if($m.Count -ne 1){return $null}
     return $m[0].Extent.Text
 }
-function Get-CloseGuardsText([string]$Text){
-    $ast=Get-Ast $Text
+function Get-CloseGuardsText($Ast){
+    $ast=$Ast
     $m=@($ast.FindAll({param($n)
         $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
         $n.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Member.Value -ceq 'Add_FormClosing' -and
@@ -311,9 +335,9 @@ function Get-CloseGuardsText([string]$Text){
 }
 $adminHash='7106c46006a2b9be7c633e1aeff49506a47ca0c12602539d17dbb9472b5a737f'
 $closeHash='7a4a7c9923207fe9f2e83ee74e4e70aa2201ec7f77d2b9b6559a8a68f1b16ac4'
-$windowText=Read-Utf8 (Join-Path $root 'fast-llm-ui.ps1')
-$adminText=Get-AdminRefusalText $windowText
-$closeText=Get-CloseGuardsText $windowText
+$windowParsed=Get-ParsedFile (Join-Path $root 'fast-llm-ui.ps1')
+$adminText=Get-AdminRefusalText $windowParsed.ast
+$closeText=Get-CloseGuardsText $windowParsed.ast
 Check ($null -ne $adminText) 'the admin refusal statement is found once'
 Check ($null -ne $closeText) 'the FormClosing handler is found once'
 Check ((Get-Sha256Lf $adminText) -ceq $adminHash) 'the admin refusal is unchanged'

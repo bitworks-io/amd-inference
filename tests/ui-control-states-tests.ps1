@@ -36,6 +36,15 @@ function Get-Mismatches([string]$SourceText,[switch]$First){
 $mismatches=Get-Mismatches $windowText
 Check ($mismatches.Count -eq 0) ("the window's enable rules match 646ccb05 on every row (first mismatches: "+((@($mismatches)|Select-Object -First 3) -join ' | ')+')')
 
+# The snapshot also carries a held failure and the flow phase (for the status card); the enable rules must ignore both. Every row again,
+# with a failure held and a flow in its 'consent' phase: the bits must still equal the golden.
+$ignoredBad=New-Object System.Collections.ArrayList
+foreach($r in $matrix){
+    $got=Invoke-UiWindowEnableRules -SourceText $windowText -Row $r -FailureHeld -FlowPhase 'consent'
+    if(-not ($got -ceq $goldenRows[$r.key])){[void]$ignoredBad.Add($r.key+' got '+$got+' want '+$goldenRows[$r.key])}
+}
+Check ($ignoredBad.Count -eq 0) ('with a held failure and a consent-phase flow, all 2,230 rows still match the golden (first mismatches: '+((@($ignoredBad)|Select-Object -First 3) -join ' | ')+')')
+
 # Readable anchors, hand-checked against the released code.
 function Row([string]$Key){$m=@($matrix|Where-Object{$_.key -ceq $Key});if($m.Count -ne 1){throw "FAIL: no row $Key"};return $m[0]}
 function Bit([string]$Bits,[string]$Column){return $Bits[[array]::IndexOf((Get-UiControlStatesColumns),$Column)]}

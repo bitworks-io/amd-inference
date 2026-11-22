@@ -368,6 +368,9 @@ jobs:
           .\tests\ui-flow-tests.ps1
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
+          .\tests\ui-fluent-adapter-tests.ps1
+          .\tests\ui-fluent-support-tests.ps1
+          .\tests\ui-fluent-members-tests.ps1
           .\tests\ui-theme-tests.ps1
           .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
@@ -395,6 +398,9 @@ jobs:
           .\tests\ui-flow-tests.ps1
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
+          .\tests\ui-fluent-adapter-tests.ps1
+          .\tests\ui-fluent-support-tests.ps1
+          .\tests\ui-fluent-members-tests.ps1
           .\tests\ui-theme-tests.ps1
           .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
@@ -432,6 +438,65 @@ jobs:
           path: ${{ runner.temp }}\fastllm-settings-dialog\*.png
           if-no-files-found: error
           retention-days: 14
+      # These mock suites run in the standard-user bench native gate instead of here:
+      # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
+      #   runner creates belong to Administrators.
+      # - tests/vulkan-memory-policy-tests.ps1: its doctor and live-start cases need a standard user, because doctor
+      #   refuses elevation.
+      - name: UI background tests in Windows PowerShell 5.1 (mock only)
+        shell: powershell
+        run: |
+          .\tests\ui-background-tests.ps1
+      - name: UI background tests in PowerShell 7 (mock only)
+        shell: pwsh
+        run: |
+          .\tests\ui-background-tests.ps1
+
+  # WPF-only suites on their own runner, in parallel with the powershell job (same suites, both shells).
+  wpf:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: UI fluent host tests in Windows PowerShell 5.1 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: powershell
+        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-fluent-host-tests.ps1
+      - name: UI fluent host tests in PowerShell 7 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-host-tests.ps1
+      - name: UI fluent parity tests in Windows PowerShell 5.1 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: powershell
+        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-fluent-parity-tests.ps1
+      - name: UI fluent parity tests in PowerShell 7 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-parity-tests.ps1
+      - name: UI fluent shell tests in Windows PowerShell 5.1 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: powershell
+        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-fluent-shell-tests.ps1
+      - name: UI fluent shell tests in PowerShell 7 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-shell-tests.ps1
+      - name: UI window tests in Windows PowerShell 5.1 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: powershell
+        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-window-tests.ps1
+      - name: UI window tests in PowerShell 7 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-window-tests.ps1
       # Off-screen WPF render and accessibility checks of the Fluent window pages (never shown); PNGs are uploaded for a person to look at.
       - name: Fluent render tests in Windows PowerShell 5.1 (off-screen)
         if: ${{ !cancelled() }}
@@ -455,29 +520,6 @@ jobs:
           path: ${{ runner.temp }}\fastllm-fluent-render\**\*.png
           if-no-files-found: error
           retention-days: 14
-      # These mock suites run in the standard-user bench native gate instead of here:
-      # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
-      #   runner creates belong to Administrators.
-      # - tests/vulkan-memory-policy-tests.ps1: its doctor and live-start cases need a standard user, because doctor
-      #   refuses elevation.
-      - name: UI background tests in Windows PowerShell 5.1 (mock only)
-        shell: powershell
-        run: |
-          .\tests\ui-background-tests.ps1
-      - name: UI background tests in PowerShell 7 (mock only)
-        shell: pwsh
-        run: |
-          .\tests\ui-background-tests.ps1
-      - name: UI window tests in Windows PowerShell 5.1 (STA)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        shell: powershell
-        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-window-tests.ps1
-      - name: UI window tests in PowerShell 7 (STA)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        shell: pwsh
-        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-window-tests.ps1
 
   release-scripts:
     runs-on: windows-latest

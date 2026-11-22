@@ -163,12 +163,16 @@ Check ([object]::ReferenceEquals($hc['FastLlm.TextPrimaryBrush'],[System.Windows
 Check ([object]::ReferenceEquals($hc['FastLlm.LayerBrush'],[System.Windows.SystemColors]::WindowBrush)) 'high contrast layer is the system Window brush itself'
 Check ([object]::ReferenceEquals($hc['FastLlm.AccentFillBrush'],[System.Windows.SystemColors]::HighlightBrush)) 'high contrast accent is the system Highlight brush itself'
 Check ([object]::ReferenceEquals($hc['FastLlm.TextOnAccentBrush'],[System.Windows.SystemColors]::HighlightTextBrush)) 'high contrast text on accent is the system HighlightText brush itself'
-$pal=@{Window='#000000';WindowText='#FFFF00';Highlight='#1AEBFF';HighlightText='#000000'}
+# Four DISTINCT colours, and every expectation below is computed from the palette, so a brush mapped to the wrong system colour
+# (for example TextOnAccent taken from Window) cannot pass by coincidence.
+$pal=@{Window='#000000';WindowText='#FFFF00';Highlight='#1AEBFF';HighlightText='#202020'}
+function ConvertTo-PaletteArgb([string]$Rgb){return ([System.Windows.Media.ColorConverter]::ConvertFromString($Rgb)).ToString()}
+Check (@($pal.Values|Sort-Object -Unique).Count -eq 4) 'the high-contrast test palette has four distinct colours'
 $hp=New-FastLlmUiThemeDictionary -Theme high-contrast -AccentPair $pair -TextScale 1.0 -HighContrastPalette $pal
-Check ($hp['FastLlm.LayerBrush'].Color.ToString() -ceq '#FF000000') 'the palette Window colour reaches the layer brush'
-Check ($hp['FastLlm.TextPrimaryBrush'].Color.ToString() -ceq '#FFFFFF00') 'the palette WindowText colour reaches the text brush'
-Check ($hp['FastLlm.AccentFillBrush'].Color.ToString() -ceq '#FF1AEBFF') 'the palette Highlight colour reaches the accent brush'
-Check ($hp['FastLlm.TextOnAccentBrush'].Color.ToString() -ceq '#FF000000') 'the palette HighlightText colour reaches the text-on-accent brush'
+Check ($hp['FastLlm.LayerBrush'].Color.ToString() -ceq (ConvertTo-PaletteArgb $pal.Window)) 'the palette Window colour reaches the layer brush'
+Check ($hp['FastLlm.TextPrimaryBrush'].Color.ToString() -ceq (ConvertTo-PaletteArgb $pal.WindowText)) 'the palette WindowText colour reaches the text brush'
+Check ($hp['FastLlm.AccentFillBrush'].Color.ToString() -ceq (ConvertTo-PaletteArgb $pal.Highlight)) 'the palette Highlight colour reaches the accent brush'
+Check ($hp['FastLlm.TextOnAccentBrush'].Color.ToString() -ceq (ConvertTo-PaletteArgb $pal.HighlightText)) 'the palette HighlightText colour reaches the text-on-accent brush'
 Check (@($hc.Keys|Where-Object{$hc[$_] -is [psobject]}).Count -eq 0) 'high-contrast dictionary holds only raw values'
 Check (@($hp.Keys|Where-Object{$hp[$_] -is [psobject]}).Count -eq 0) 'high-contrast palette dictionary holds only raw values'
 Check ($hp['FastLlm.LayerBrush'].IsFrozen -and $hp['FastLlm.TextPrimaryBrush'].IsFrozen) 'palette brushes are frozen'
@@ -199,7 +203,7 @@ foreach($case in $applyCases){
         $border.Arrange([System.Windows.Rect]::new(0,0,200,100))
     }catch{$err=$_.Exception.Message}
     Check ($null -eq $err) ($case.name+' dictionary applies to elements without an exception: '+$err)
-    $expectText=if($case.theme -ceq 'high-contrast'){'#FFFFFF00'}else{(Get-FastLlmUiThemeTokens -Theme $case.theme).TextPrimary}
+    $expectText=if($case.theme -ceq 'high-contrast'){ConvertTo-PaletteArgb $pal.WindowText}else{(Get-FastLlmUiThemeTokens -Theme $case.theme).TextPrimary}
     Check ($tb.Foreground -is [System.Windows.Media.SolidColorBrush]) ($case.name+' resolved Foreground is a SolidColorBrush')
     Check ($tb.Foreground.Color.ToString() -ceq ([System.Windows.Media.ColorConverter]::ConvertFromString($expectText)).ToString()) ($case.name+' resolved Foreground is the TextPrimary colour')
     Check ($tb.FontSize -eq [double](Get-FastLlmUiTypeRamp -TextScale 1.0).Body.size) ($case.name+' resolved FontSize is the ramp Body size')

@@ -447,6 +447,31 @@
       "reason": "The status card state precedence and the honest-colour rule over the control-state matrix; pure, no GPU or bench."
     },
     {
+      "suite": "ui-fluent-adapter-tests",
+      "class": "ci",
+      "reason": "The pure control adapters that stand in for the WinForms controls in the Fluent window: set and get, sink, change events, unknown-member throws, access text; no WPF, GPU or bench."
+    },
+    {
+      "suite": "ui-fluent-members-tests",
+      "class": "ci",
+      "reason": "Member coverage of the Fluent window: every member the window script uses on a control after the rebinding seam exists on its adapter kind, with a self-check, the UpdateActive kind rule and the bindings scope proof; pure AST, no WPF, GPU or bench."
+    },
+    {
+      "suite": "ui-fluent-parity-tests",
+      "class": "ci",
+      "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
+    },
+    {
+      "suite": "ui-fluent-shell-tests",
+      "class": "ci",
+      "reason": "Windows-only checks of the Fluent window pieces on a real STA dispatcher: the form adapter (close guards, owner, session end), the app icon, the window message hooks; skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
+    },
+    {
+      "suite": "ui-fluent-support-tests",
+      "class": "ci",
+      "reason": "The unsupported-PC path of the Fluent window: support decision, execution-policy flag rule, the approved texts A, B and C, and the window-unsupported run-log event; pure, no WPF, GPU or bench."
+    },
+    {
       "suite": "ui-control-states-tests",
       "class": "ci",
       "reason": "Characterization of the window's enable rules against a golden table; pure, no GPU or bench."
@@ -465,6 +490,11 @@
       "suite": "ui-window-tests",
       "class": "ci",
       "reason": "The Fluent window interop and WPF theme dictionary on a real STA thread; Windows only, no GPU or bench, runs in test.yml."
+    },
+    {
+      "suite": "ui-fluent-host-tests",
+      "class": "ci",
+      "reason": "WPF host mechanics for the Fluent window on a real STA thread (WinForms timer under the dispatcher, tray, modal dialogs, close guards, adapter objects); Windows only, no GPU or bench, runs in test.yml."
     },
     {
       "suite": "ui-source-safety-tests",

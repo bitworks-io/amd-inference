@@ -11,13 +11,16 @@ if /i "%FASTLLM_POLICY%"=="Restricted" set "FASTLLM_EP=-ExecutionPolicy RemoteSi
 if /i "%FASTLLM_POLICY%"=="Undefined" set "FASTLLM_EP=-ExecutionPolicy RemoteSigned"
 if /i "%~1"=="/signin" goto signin
 "%FASTLLM_PS%" -NoLogo -NoProfile %FASTLLM_EP% -STA -File "%~dp0fast-llm-ui.ps1"
-if errorlevel 1 (
+set "FASTLLM_EXIT=%errorlevel%"
+if "%FASTLLM_EXIT%"=="3" goto fastllm_done
+if not "%FASTLLM_EXIT%"=="0" (
   echo FastLLM could not open. If PowerShell says running scripts is disabled, a script policy is blocking it.
   echo Otherwise, run FastLLM as a standard user, not as administrator.
   echo For script policy help, see the FastLLM README:
   echo https://github.com/bitworks-io/amd-inference
   pause
 )
+:fastllm_done
 endlocal
 goto :eof
 

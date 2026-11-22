@@ -53,14 +53,38 @@ Assert-True ($ui -notmatch '(?i)-ExecutionPolicy') 'child processes inherit the 
 # are never weakened. FastLLM.cmd is the only product launcher that sets one. The allowlist holds lab-only admin scripts that
 # are never packaged (tools/build-release.py keeps them out), each with its justification.
 $policyAllowlist = @{ 'tools/setup-windows-lab.cmd' = 'private bench administration launcher (admin SSH setup); excluded from the release package' }
+# Product files that only READ the effective policy and PRINT the user-approved hint text (same list as tests/test_execution_policy.py).
+$policyTextOnly = @{ 'src/FastLlm.UiFluentSupport.ps1' = 'builds the user-approved unsupported-PC hint text and reads the effective policy; never sets one' }
 $policyExt = @('.ps1', '.psm1', '.psd1', '.cmd', '.bat', '.py', '.sh')
 $policyFiles = @(Get-Item -LiteralPath (Join-Path $repo 'fast-llm.ps1'), (Join-Path $repo 'fast-llm-ui.ps1'))
 foreach ($dir in 'src', 'tools') { $policyFiles += @(Get-ChildItem -LiteralPath (Join-Path $repo $dir) -Recurse -File | Where-Object { $policyExt -contains $_.Extension.ToLowerInvariant() }) }
 foreach ($f in $policyFiles) {
     $rel = $f.FullName.Substring($repo.Length + 1).Replace('\', '/')
     $hit = [bool](Select-String -LiteralPath $f.FullName -Pattern 'ExecutionPolicy' -Quiet)
-    if ($policyAllowlist.ContainsKey($rel)) { continue }
+    if ($policyAllowlist.ContainsKey($rel) -or $policyTextOnly.ContainsKey($rel)) { continue }
     Assert-True (-not $hit) "$rel sets or names an execution policy; only FastLLM.cmd may, and lab-only scripts must be allowlisted with a justification"
+}
+# A text-only file may name the policy only as printed text and may read it (Get-ExecutionPolicy), never set it.
+function Get-PolicyTextOnlyProblems([string[]]$Lines, [string]$Name) {
+    $problems = @()
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $line = $Lines[$i]; $where = "${Name}:$($i + 1)"
+        if ($line -match '(?i)Set-ExecutionPolicy') { $problems += "$where sets a policy" }
+        if ($line -match '(?i)Start-Process' -and $line -match '(?i)ExecutionPolicy') { $problems += "$where starts a process with a policy" }
+        $masked = $line -replace '(?i)Get-ExecutionPolicy', 'Get-'
+        if ($masked.TrimStart().StartsWith('#')) { continue }
+        foreach ($m in [regex]::Matches($masked, '(?i)-ExecutionPolicy')) {
+            $quotes = ($masked.Substring(0, $m.Index).ToCharArray() | Where-Object { $_ -eq [char]39 }).Count
+            if ($quotes % 2 -ne 1) { $problems += "$where names -ExecutionPolicy outside a quoted string" }
+        }
+    }
+    return , $problems
+}
+foreach ($rel in $policyTextOnly.Keys) {
+    $full = Join-Path $repo ($rel.Replace('/', '\'))
+    Assert-True ([bool](Select-String -LiteralPath $full -Pattern 'ExecutionPolicy' -Quiet)) "$rel is on the text-only policy list but no longer names a policy; remove it from the list"
+    $found = Get-PolicyTextOnlyProblems -Lines @(Get-Content -LiteralPath $full) -Name $rel
+    Assert-True ($found.Count -eq 0) ("$rel must never set a policy: " + ($found -join '; '))
 }
 # The doctor signature-skip seam (FASTLLM_TEST_SKIP_CATALOG_SIGNATURE) is only ever READ, and only in fast-llm.ps1: no product file
 # (src, tools, the entry scripts) may set it, and no product file other than fast-llm.ps1 may name it at all.
