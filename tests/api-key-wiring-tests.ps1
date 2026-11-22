@@ -115,6 +115,10 @@ try {
     $noField = ($surfaceFixtures[0] | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
     $noField.PSObject.Properties.Remove('secretLogLabels')
     Check ((Get-UnfilteredSecretLabels @($noField)).Count -eq 1) 'W1: a fixture without secretLogLabels is reported, not passed'
+    $emptyField = ($surfaceFixtures[0] | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+    $emptyField.secretLogLabels = @()
+    $emptyMissed = Get-UnfilteredSecretLabels @($emptyField)
+    Check ($emptyMissed.Count -eq 1 -and $emptyMissed[0] -eq ($emptyField.tag + ' :: empty secretLogLabels')) 'W1: a fixture with an empty secretLogLabels list is reported, not passed'
     $w1Script = Join-Path $temp 'w1-child.ps1'
     # A device-list shaped line with the api_keys label would be captured as a device entry (name api_keys, description the tail) without the filter.
     Set-Content -LiteralPath $w1Script -Encoding ASCII -Value @(
