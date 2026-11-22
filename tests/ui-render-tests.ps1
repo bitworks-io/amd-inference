@@ -223,7 +223,8 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentAdapter.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentBindings.ps1')
-. (Join-Path $root 'src/FastLlm.UiFluentHome.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+Initialize-FastLlmUiFluentAutomation -SourceRoot $root
 $script:homeDir=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-render-'+[guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $script:homeDir)
 $script:InstallRoot=$script:homeDir
@@ -300,6 +301,79 @@ foreach($state in 'starting','running','needs-attention','background-found','wai
     }
 }
 Write-Host ('INFO: Home render of {0} cases took {1:N1} s' -f ($matrix.Count+30),$homeSw.Elapsed.TotalSeconds)
+
+# ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
+# The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
+# The update bar is visible and the failure bar holds 400 characters in every case.
+$script:shellRp=$null
+function New-ShellRenderPage($Case){
+    $sw=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
+    $homePage=New-FastLlmUiXamlElement -Name 'FastLlm.Home'
+    $els=@{}
+    foreach($n in 'PaneColumn','NavList','NavSettingsList','UpdateBar','UpdateText','UpdateNotesButton','UpdateButton','ReinstallButton','FailureBar','FailureText','FailureCopyButton','PageHost'){
+        $els[$n]=Get-FastLlmUiFluentElement -Root $sw -Name $n
+    }
+    [void](Initialize-FastLlmUiFluentHome -Page $homePage -Els $els)
+    $els.PageHost.Child=$homePage
+    $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
+        NavItems=@();LastException=$null;InUnhandled=$false;TickError=''}
+    Initialize-FastLlmUiFluentPane
+    $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
+    foreach($row in (Get-FastLlmUiFluentBindingTable)){
+        $adapter=Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
+        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
+    }
+    $long=('Engine start failed while loading the model. '*10).Substring(0,400)
+    $script:bannerLabel.Text='An update to FastLLM is available.'
+    $script:bannerLabel.Visible=$true
+    $script:bannerButton.Visible=$true
+    $script:bannerNotes.Visible=$true
+    $script:failureHeld=$true
+    $script:failureViewText=$long
+    $script:output.Text=$long
+    $script:failureCopyLink.Visible=$true
+    $script:homeSnap=New-HomeSnap @{FailureHeld=$true}
+    Update-FastLlmUiFluentHome
+    Update-FastLlmUiFluentMessages
+    Update-FastLlmUiFluentPane
+    $res=$sw.Resources
+    $content=$sw.Content
+    $sw.Content=$null
+    return @{Content=$content;Resources=$res;Els=$els}
+}
+$shellPrepare={
+    param($page)
+    foreach($k in @($script:shellRp.Resources.Keys)){$page.Resources[$k]=([object]$script:shellRp.Resources[$k]).psobject.BaseObject}
+}
+$shellSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($theme in 'light','dark','high-contrast'){
+    foreach($size in @(@(640,480),@(1000,680))){
+        foreach($text in 1.0,2.25){
+            $case=@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=[int]$size[0];height=[int]$size[1]}
+            $label="Shell $theme $($case.scale) $text $($case.width)x$($case.height)"
+            $script:homeCaseTheme=$theme
+            $r=$null
+            try{
+                $script:shellRp=New-ShellRenderPage $case
+                $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare
+            }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
+            $diagText=''
+            if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+            Check (@($r.problems).Count -eq 0) "Shell clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+            $badBars=@()
+            foreach($ln in 'NavList','NavSettingsList'){
+                $lb=$script:shellRp.Els[$ln]
+                $mode=[System.Windows.Controls.ScrollViewer]::GetHorizontalScrollBarVisibility($lb)
+                if($mode -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled){$badBars+="$ln mode=$mode"}
+                foreach($v in @(Get-UiVisualElements $lb)){
+                    if($v -is [System.Windows.Controls.Primitives.ScrollBar] -and $v.Orientation -eq [System.Windows.Controls.Orientation]::Horizontal -and $v.Visibility -eq [System.Windows.Visibility]::Visible){$badBars+="$ln horizontal bar visible"}
+                }
+            }
+            Check ($badBars.Count -eq 0) "the navigation lists have no horizontal scrolling at ${label}: $($badBars -join '; ')"
+        }
+    }
+}
+Write-Host ('INFO: Shell render of 12 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
 
 # 49 PNGs per run: 40 sample cases plus 9 negative pages. Only files written during this run count, so leftovers cannot inflate the number.
 $written=@(Get-ChildItem -LiteralPath $out -Filter 'Test.*.png' -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart })

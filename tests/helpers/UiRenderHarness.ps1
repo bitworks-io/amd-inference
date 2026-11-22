@@ -179,7 +179,9 @@ function Invoke-UiRenderCase {
         [Parameter(Mandatory = $true)]$Case,
         [string]$OutFolder = '',
         # Optional: runs once on the page (after its theme dictionary is set, before it is measured), e.g. to bind adapters and apply a state.
-        [scriptblock]$Prepare = $null
+        [scriptblock]$Prepare = $null,
+        # Optional: an element built by the caller, used instead of parsing the registered markup for $Name ($Name then only names the PNG).
+        $Element = $null
     )
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
@@ -189,7 +191,7 @@ function Invoke-UiRenderCase {
     $height = [int]$Case.height
     $problems = New-Object System.Collections.ArrayList
 
-    $page = New-FastLlmUiXamlElement -Name $Name
+    if ($null -ne $Element) { $page = $Element } else { $page = New-FastLlmUiXamlElement -Name $Name }
     $themeArgs = @{ Theme = $theme; AccentPair = (Get-FastLlmUiAccentPair -Palette $null); TextScale = $textScale }
     if ($theme -eq 'high-contrast') {
         $themeArgs['HighContrastPalette'] = Get-UiRenderHighContrastPalette
