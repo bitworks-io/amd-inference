@@ -37,30 +37,19 @@ function New-FastLlmUiFormAdapter {
     # Captured scriptblocks: a closure runs in its own module scope and cannot see this file's functions.
     $toForm = ${function:ConvertTo-FastLlmUiFormWindowState}
     $toWpf = ${function:ConvertTo-FastLlmUiWpfWindowState}
-    $state = @{ Shown = (New-Object System.Collections.ArrayList); FormClosing = (New-Object System.Collections.ArrayList); ShownDone = $false; Form = $native }
+    $state = @{ Shown = (New-Object System.Collections.ArrayList); FormClosing = (New-Object System.Collections.ArrayList); ShownDone = $false; Closing = $false; Window = $Window; Form = $native }
 
-    # Visible text of the classic form: same title, same font (fast-llm-ui.ps1 line 51).
+    # Same font as the classic form (fast-llm-ui.ps1 line 51). The title is not set here; the Text member maps to Window.Title.
     $font = New-Object System.Drawing.Font('Segoe UI', 10)
     $controls = [pscustomobject] @{}
     $controls | Add-Member -MemberType ScriptMethod -Name Add -Value { param($c) }
 
-    # Closing is hooked once. Handlers run as the classic FormClosing handlers do: ( $form, FormClosingEventArgs ), in order.
-    # A throwing handler cancels the close (the guards fail safe) and the exception is re-raised on the dispatcher with BeginInvoke,
-    # because an exception thrown inside a WPF event handler here would otherwise be swallowed or lost; this keeps it visible.
+    # Closing is hooked once. The handler-running code is Invoke-FastLlmUiFormClosing (also called by the session-end hook with WindowsShutDown).
+    # It is captured as a scriptblock because a closure runs in its own module scope and cannot see this file's functions.
+    $invokeClosing = ${function:Invoke-FastLlmUiFormClosing}
     $closing = {
         param($sender, $e)
-        $fcArgs = New-Object System.Windows.Forms.FormClosingEventArgs([System.Windows.Forms.CloseReason]::UserClosing, $false)
-        try {
-            foreach ($h in @($state.FormClosing)) { & $h $state.Form $fcArgs }
-        }
-        catch {
-            $ex = $_
-            $e.Cancel = $true
-            $rethrow = { throw $ex }.GetNewClosure()
-            [void] $Window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action] $rethrow)
-            return
-        }
-        if ($fcArgs.Cancel) { $e.Cancel = $true }
+        if (& $invokeClosing -Form $state.Form -CloseReason ([System.Windows.Forms.CloseReason]::UserClosing)) { $e.Cancel = $true }
     }.GetNewClosure()
     $Window.add_Closing($closing)
 
@@ -78,10 +67,12 @@ function New-FastLlmUiFormAdapter {
     $native | Add-Member -MemberType ScriptProperty -Name Visible -Value ({ [bool] $Window.IsVisible }.GetNewClosure())
     $native | Add-Member -MemberType NoteProperty -Name Font -Value $font
     $native | Add-Member -MemberType ScriptProperty -Name WindowState -Value ({ & $toForm $Window.WindowState }.GetNewClosure()) -SecondValue ({ param($v) $Window.WindowState = & $toWpf $v }.GetNewClosure())
+    # WPF forbids Show() and Close() while a Window is closing (InvalidOperationException), so both do nothing during the FormClosing handlers:
+    # RevealUiForAction, ExitFromTray or a timer path can run while a guard's MessageBox is open.
     $native | Add-Member -MemberType ScriptMethod -Name Hide -Value ({ $Window.Hide() }.GetNewClosure())
-    $native | Add-Member -MemberType ScriptMethod -Name Show -Value ({ $Window.Show() }.GetNewClosure())
+    $native | Add-Member -MemberType ScriptMethod -Name Show -Value ({ if ($state['Closing']) { return }; $Window.Show() }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Activate -Value ({ [void] $Window.Activate() }.GetNewClosure())
-    $native | Add-Member -MemberType ScriptMethod -Name Close -Value ({ $Window.Close() }.GetNewClosure())
+    $native | Add-Member -MemberType ScriptMethod -Name Close -Value ({ if ($state['Closing']) { return }; $Window.Close() }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Dispose -Value ({ if ($this.Handle -ne [IntPtr]::Zero) { $this.ReleaseHandle() } })
     $native | Add-Member -MemberType ScriptMethod -Name Add_Shown -Value ({ param($handler) [void] $state.Shown.Add($handler) }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Add_FormClosing -Value ({ param($handler) [void] $state.FormClosing.Add($handler) }.GetNewClosure())
@@ -89,6 +80,31 @@ function New-FastLlmUiFormAdapter {
     # Stored, never applied: the XAML window owns its size, start position and colours.
     foreach ($name in 'Size', 'MinimumSize', 'StartPosition', 'BackColor') { $native | Add-Member -MemberType NoteProperty -Name $name -Value $null }
     return $native
+}
+
+# Runs every FormClosing handler in order as ( $form, FormClosingEventArgs ). Returns $true when the close is cancelled.
+# A throwing handler cancels the close (the guards fail safe) and the exception is re-raised on the dispatcher with BeginInvoke,
+# because an exception thrown inside a WPF event handler would otherwise be lost; this keeps it visible.
+function Invoke-FastLlmUiFormClosing {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Form,
+        [Parameter(Mandatory = $true)] $CloseReason
+    )
+    $state = $Form.FastLlmFormState
+    $fcArgs = New-Object System.Windows.Forms.FormClosingEventArgs($CloseReason, $false)
+    $state['Closing'] = $true
+    try {
+        foreach ($h in @($state.FormClosing)) { & $h $Form $fcArgs }
+    }
+    catch {
+        $ex = $_
+        $rethrow = { throw $ex }.GetNewClosure()
+        [void] $state.Window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action] $rethrow)
+        return $true
+    }
+    finally { $state['Closing'] = $false }
+    return [bool] $fcArgs.Cancel
 }
 
 # For tests only: the handler lists the adapter collected.
