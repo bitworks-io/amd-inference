@@ -65,6 +65,7 @@ try {
         $adapters=@()
         if($Name -ceq 'test-24gb'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 23552))}
         elseif($Name -ceq 'test-24gb-tight'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 21000))}
+        elseif($Name -ceq 'test-24gb-22000'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 22000))}
         elseif($Name -ceq 'test-12gb'){$adapters=@((New-OptinAdapter 'Vulkan0' 12272 11474))}
         elseif($Name -ceq 'test-dual-24gb'){$adapters=@((New-OptinAdapter 'Vulkan0' 24576 23552),(New-OptinAdapter 'Vulkan1' 24576 23552))}
         else{throw "Unknown opt-in test hardware '$Name'."}
@@ -153,6 +154,9 @@ try {
 
     # ---- the plan document with an option ------------------------------------------------------------------------------------------
     $card=New-OptinHardware 'test-24gb'
+    # A base parameter set with some keys replaced. Windows PowerShell 5.1 refuses a parameter given both in a splat and by name
+    # (ParameterAlreadyBound) while PowerShell 7 lets the named one win, so no call here passes a splatted key by name again.
+    function Join-TestSplat([hashtable]$Base,[hashtable]$Override){ $merged=$Base.Clone(); foreach($key in @($Override.Keys)){ $merged[$key]=$Override[$key] }; return $merged }
     $optCommon=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$testProfiles}
     $defaultCardPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot
     $longTwo=Get-FastLlmPlan @optCommon -KvContextProfile 'long' -KvSlots 2
@@ -253,6 +257,287 @@ try {
     # ---- the bench path: -PreferInstalledModels and direct calls without the parameters get today's plan -----------------------
     $benchPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -PreferInstalledModels
     Check (-not $benchPlan.PSObject.Properties['servingProfile'] -and [int]$benchPlan.model.parallel -eq 1) 'bench path: a direct planner call without the options has no serving profile and one slot'
+
+    # =====================================================================================================================================
+    # The vision option (-Vision on): the argv shape and every refusal. Every vision start ends in a typed refusal before any process starts
+    # (nothing can verify where the projector is loaded yet), so these tests pin the shape and the fail-closed behaviour. TEST rows only
+    # (tests/fixtures/vision-profiles-test.json, tests/fixtures/vision-components-test.json); config/ ships neither a row nor a projector.
+    # =====================================================================================================================================
+    $visionProfiles=Join-Path $root 'tests/fixtures/vision-profiles-test.json'
+    $visionComponents=Join-Path $root 'tests/fixtures/vision-components-test.json'
+    $module=Get-Module FastLlm
+    function Get-RefusalCode([scriptblock]$Action){
+        $observed=[ordered]@{threw=$false;code='';message='';reason=''}
+        try { & $Action | Out-Null } catch { $observed.threw=$true;$observed.message=[string]$_.Exception.Message;$observed.code=[string]$_.Exception.Data['FastLlmFailureCode'];$observed.reason=[string]$_.Exception.Data['FastLlmReason'] }
+        return [pscustomobject]$observed
+    }
+    $visionCard=New-OptinHardware 'test-24gb'
+    $visionCommon=@{Hardware=$visionCard;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId='qwen3.8-27b-ud-q4-k-m'}
+
+    # ---- the loader refuses what the checker refuses (tests/fixtures/vision-addon-parity-cases.json is read by both) ---------------
+    $parity=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/vision-addon-parity-cases.json') -Raw | ConvertFrom-Json
+    $visionDocument=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+    $profilesJson=ConvertTo-Json -InputObject @($visionDocument.profiles) -Depth 10
+    $parityMismatch=0;$parityCases=0
+    foreach($case in @($parity.cases)){
+        $parityCases++
+        $caseFile=Join-Path $work ('parity-'+$parityCases+'.json')
+        Write-Utf8 $caseFile ('{"schema":"bitworks.fastllm-serving-profiles/v1","profiles":'+$profilesJson+',"addOns":'+(ConvertTo-Json -InputObject $case.addOns -Depth 10)+',"sidecars":[]}')
+        $loaderRefused=$false
+        try { & $module { param($P) Read-FastLlmVisionAddOns -Path $P | Out-Null } $caseFile } catch { $loaderRefused=[bool]([string]$_.Exception.Data['FastLlmFailureCode'] -ceq 'serving-profiles-invalid') }
+        if($loaderRefused -ne [bool]$case.refuse){$parityMismatch++;Write-Host "DIFF parity case $($case.name): checker refuses=$($case.refuse) loader refused=$loaderRefused"}
+    }
+    Check ($parityCases -ge 20 -and $parityMismatch -eq 0) "vision loader parity: the PowerShell loader and the checker give the same verdict on all $parityCases shared cases"
+    $goodRows=@(& $module { param($P) Read-FastLlmVisionAddOns -Path $P } $visionProfiles)
+    Check ($goodRows.Count -eq 2 -and [string]$goodRows[0].componentId -ceq 'test-vision-projector-q8') 'vision loader: the two test rows are read (a one-row file is a list too)'
+    Check (@(& $module { param($P) Read-FastLlmVisionAddOns -Path $P } $shippedProfiles).Count -eq 0) 'vision loader: the shipped file has no add-on row'
+    Check (@(& $module { param($P) Read-FastLlmVisionAddOns -Path $P } (Join-Path $work 'absent.json')).Count -eq 0) 'vision loader: no file is no rows'
+
+    # ---- off is today's plan: no field, no argument -----------------------------------------------------------------------------------
+    $plainLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m'
+    $offLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -Vision 'off'
+    Check (($plainLong | ConvertTo-Json -Depth 12) -ceq ($offLong | ConvertTo-Json -Depth 12) -and -not $offLong.PSObject.Properties['vision']) 'vision off: -Vision off is byte-identical to no -Vision and adds no field'
+    Check (($plainLong.serverArguments -ccontains '--no-mmproj') -and -not ($plainLong.serverArguments -ccontains '--mmproj')) 'vision off: the arguments keep --no-mmproj'
+    Check (($defaultCardPlan.serverArguments -ccontains '--no-mmproj') -and -not ($defaultCardPlan.serverArguments -ccontains '--mmproj') -and -not $defaultCardPlan.PSObject.Properties['vision']) 'vision off: a direct planner call (the bench path) keeps --no-mmproj and has no vision field'
+    $offVisionFile=& { $s=Join-TestSplat $optCommon @{KvProfilesPath=$malformedProfiles}; Get-FastLlmPlan @s -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'default' -Vision 'off' }
+    Check ($null -ne $offVisionFile) 'vision off: the add-on rows are never read (a profile file that is not JSON changes nothing)'
+    RefusedLike { Get-FastLlmPlan @visionCommon -Vision 'maybe' } 'Vision|validate|Valid' 'vision: the parameter is a closed set (off|on)'
+
+    # ---- the argv: --no-mmproj is replaced IN PLACE by --mmproj and the path; nothing else moves -------------------------------------------
+    $visionGolden=@($golden.visionRows)
+    Check ($visionGolden.Count -ge 8 -and $golden.visionProfilesSha256 -ceq (Get-FileHash -LiteralPath $visionProfiles -Algorithm SHA256).Hash.ToLowerInvariant()) 'vision golden: the rows are bound to the test vision rows by sha256'
+    $liveVision=@(Get-FastLlmVisionArgumentsMatrix -Root $root -InstallRoot $installRoot)
+    Check ($liveVision.Count -eq $visionGolden.Count) "vision-golden-matches-live: row count ($($liveVision.Count))"
+    $visionDiffs=0
+    for($i=0;$i -lt $visionGolden.Count -and $i -lt $liveVision.Count;$i++){
+        $g=$visionGolden[$i];$l=$liveVision[$i]
+        $same=($g.name -ceq $l.name) -and ($g.hardware -ceq $l.hardware) -and ($g.request -ceq $l.request) -and ($g.contextProfile -ceq $l.contextProfile) -and ([int]$g.slots -eq [int]$l.slots) -and
+              ($g.outcome -ceq $l.outcome) -and ($g.refusalCode -ceq $l.refusalCode) -and ($g.refusal -ceq $l.refusal) -and ($g.visionProfileId -ceq $l.visionProfileId) -and
+              ([int]$g.extraFreeVramMiB -eq [int]$l.extraFreeVramMiB) -and ([int64]$g.requiredFreeVramMiB -eq [int64]$l.requiredFreeVramMiB) -and
+              (Test-SameArguments $g.arguments $l.arguments) -and (Test-SameArguments $g.argumentsWithProjector $l.argumentsWithProjector)
+        if(-not $same){$visionDiffs++;Write-Host "DIFF vision row $i name=$($g.name) live outcome=$($l.outcome) code=$($l.refusalCode)"}
+    }
+    Check ($visionDiffs -eq 0) 'vision-golden-matches-live: every row equal, -ceq on every argument and on every refusal text'
+    $visionPlanRows=@($visionGolden | Where-Object { $_.outcome -ceq 'plan' })
+    Check ($visionPlanRows.Count -ge 4) "vision golden: $($visionPlanRows.Count) plan rows"
+    $replacedBad=0
+    foreach($g in $visionPlanRows){
+        $hardwareName=[string]$g.hardware
+        $baseParameters=@{Hardware=(New-OptinHardware $hardwareName);CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId=[string]$g.request;KvContextProfile=[string]$g.contextProfile;KvSlots=[int]$g.slots}
+        $baseArgs=@((Get-FastLlmPlan @baseParameters).serverArguments | ForEach-Object { & $normalise ([string]$_) })
+        $withProjector=@($g.argumentsWithProjector);$planArgs=@($g.arguments)
+        $at=[Array]::IndexOf($baseArgs,'--no-mmproj')
+        $expected=@();for($k=0;$k -lt $baseArgs.Count;$k++){ if($k -eq $at){$expected+=@('--mmproj','C:\Users\Test User\FastLLM\components\projector\test-vision-projector-q8\test-vision-projector-q8.gguf')}else{$expected+=$baseArgs[$k]} }
+        $expectedPlan=@();for($k=0;$k -lt $baseArgs.Count;$k++){ if($k -eq $at){$expectedPlan+=@('--mmproj','<verified-projector>')}else{$expectedPlan+=$baseArgs[$k]} }
+        $ok=($at -ge 0) -and (Test-SameArguments $expected $withProjector) -and (Test-SameArguments $expectedPlan $planArgs) -and ($withProjector.Count -eq $baseArgs.Count+1) -and -not ($withProjector -ccontains '--no-mmproj')
+        if(-not $ok){$replacedBad++;Write-Host "DIFF in-place vision row $($g.name)"}
+    }
+    Check ($replacedBad -eq 0) 'vision argv: in every plan row the --no-mmproj element is replaced in place by --mmproj and the path; every other element keeps its place and value'
+    $firstVision=$visionPlanRows[0];$fa=@($firstVision.argumentsWithProjector)
+    Check ($fa[[Array]::IndexOf($fa,'--mmproj')+1] -ceq 'C:\Users\Test User\FastLLM\components\projector\test-vision-projector-q8\test-vision-projector-q8.gguf' -and [Array]::IndexOf($fa,'--mmproj') -eq [Array]::IndexOf($fa,'--offline')+1) 'vision argv: --mmproj sits where --no-mmproj was (right after --offline) and its path has a space'
+    # The path with a space stays ONE argument through the same helper that passes --model today (no new quoting code).
+    $joined=& $module { param($A) Join-FastLlmProcessArguments -Arguments $A } @($fa)
+    Check ($joined.Contains('--mmproj "C:\Users\Test User\FastLLM\components\projector\test-vision-projector-q8\test-vision-projector-q8.gguf" --spec-type none')) 'vision argv: the projector path with a space is quoted as one argument by Join-FastLlmProcessArguments'
+    $modelJoined=& $module { param($A) Join-FastLlmProcessArguments -Arguments $A } @('--model','C:\Users\Test User\m.gguf')
+    Check ($modelJoined -ceq '--model "C:\Users\Test User\m.gguf"') 'vision argv: --model with a space is quoted the same way (the same helper)'
+    $quoteSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw
+    Check (-not [regex]::IsMatch($quoteSource,'mmproj[^\r\n]*(\\"|`"|Quote)')) 'vision argv: no new quoting code is written for the projector path'
+    $builtTwice=@(& $module { param($A,$P) Get-FastLlmVisionArguments -Arguments $A -ProjectorPath $P } @($plainLong.serverArguments) 'C:\p q\a.gguf')
+    Check ($builtTwice.Count -eq @($plainLong.serverArguments).Count+1 -and ($builtTwice -ccontains 'C:\p q\a.gguf') -and -not ($builtTwice -ccontains '--no-mmproj')) 'vision argv: the builder replaces the one element and adds the path'
+    RefusedLike { & $module { Get-FastLlmVisionArguments -Arguments @('--model','m') -ProjectorPath 'p.gguf' } } 'exactly one' 'vision argv: arguments without --no-mmproj are refused (nothing is appended)'
+    RefusedLike { & $module { Get-FastLlmVisionArguments -Arguments @('--no-mmproj','--no-mmproj') -ProjectorPath 'p.gguf' } } 'exactly one' 'vision argv: two --no-mmproj elements are refused'
+    RefusedLike { & $module { Get-FastLlmVisionArguments -Arguments @('--no-mmproj') -ProjectorPath '' } } 'projector path' 'vision argv: an empty projector path is refused'
+
+    # ---- the planner: lookup, effective profile id and fit; refusals 1 and 2, in that order ------------------------------------------------
+    $visionLong=Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -Vision 'on'
+    $vb=$visionLong.vision
+    Check ($null -ne $vb -and [string]$vb.componentId -ceq 'test-vision-projector-q8' -and [string]$vb.profileId -ceq 'long' -and [int]$vb.extraFreeVramMiB -eq 1200 -and [int64]$vb.requiredFreeVramMiB -eq 22700 -and [string]$vb.resultId -ceq 'test-vision-addon-0001') 'vision plan: the vision block names the projector component, the profile id, the extra memory (1200), the total (21500 + 1200) and the evidence id'
+    Check ([string]$vb.engineId -ceq 'llama.cpp-b10698-vulkan' -and [string]$vb.backend -ceq 'vulkan' -and [string]$vb.modelSha256 -ceq [string]$visionLong.model.sha256 -and [string]$vb.startRefusal -ceq 'vision-evidence-unavailable') 'vision plan: the block carries the model sha256, the engine id and backend, and says the start is refused (vision-evidence-unavailable)'
+    $longNoVision=Get-FastLlmPlan @visionCommon -KvContextProfile 'long'
+    $visionExtra=@($visionLong.PSObject.Properties.Name | Where-Object { -not $longNoVision.PSObject.Properties[$_] })
+    Check ($visionExtra.Count -eq 1 -and $visionExtra[0] -ceq 'vision') 'vision plan: vision is the only field added to the opt-in plan'
+    Check ([int]$visionLong.servingProfile.requiredFreeVramMiB -eq 21500 -and [int]$visionLong.model.requiredFreeVramMiB -eq 21500) 'vision plan: the profile row''s own requirement is unchanged; the extra memory is added in the vision block only'
+    $visionArgs=@($visionLong.serverArguments)
+    Check (($visionArgs -ccontains '--mmproj') -and $visionArgs[[Array]::IndexOf($visionArgs,'--mmproj')+1] -ceq '<verified-projector>' -and -not ($visionArgs -ccontains '--no-mmproj')) 'vision plan: the planned arguments show --mmproj <verified-projector> in place of --no-mmproj'
+    $visionDefaultTwo=Get-FastLlmPlan @visionCommon -KvSlots 2 -Vision 'on'
+    Check ([string]$visionDefaultTwo.vision.profileId -ceq 'default' -and [int]$visionDefaultTwo.vision.extraFreeVramMiB -eq 900 -and [int64]$visionDefaultTwo.vision.requiredFreeVramMiB -eq 21400) 'vision plan: 2 slots with the default context profile is keyed on profile id default (900 extra)'
+    # Step 1: no matching add-on row.
+    $r1=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{ModelId='qwen3.8-27b-q8-0'}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
+    Check ($r1.threw -and $r1.code -ceq 'vision-not-measured' -and $r1.message -like 'vision-not-measured: *Nothing was started*') 'vision refusal 1: a model without a vision add-on row is refused (vision-not-measured)'
+    $r1b=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$testProfiles}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
+    Check ($r1b.threw -and $r1b.code -ceq 'vision-not-measured') 'vision refusal 1: the profile file of the opt-in rows has no add-on row, so the option is refused'
+    $r1c=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$shippedProfiles}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
+    Check ($r1c.threw -and $r1c.code -ceq 'vision-not-measured') 'vision refusal 1: the shipped file (addOns is empty) refuses every vision plan'
+    $r1d=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=(Join-Path $work 'absent.json')}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
+    Check ($r1d.threw -and $r1d.code -ceq 'vision-not-measured') 'vision refusal 1: no profile file is no row'
+    foreach($mut in @(
+            @{Name='v-other-sha';Label='another model sha256';Mutate={ param($d) $d.addOns[0].modelSha256=('0'*64) }},
+            @{Name='v-other-engine';Label='another engine build';Mutate={ param($d) $d.addOns[0].engineId='llama.cpp-b99999-vulkan' }},
+            @{Name='v-hip-engine';Label='the HIP engine and backend';Mutate={ param($d) $d.addOns[0].engineId='llama.cpp-hip-b11658'; $d.addOns[0].backend='hip' }},
+            @{Name='v-other-backend';Label='another backend';Mutate={ param($d) $d.addOns[0].backend='hip' }})){
+        $mutDocument=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+        & $mut.Mutate $mutDocument
+        $mutPath=Join-Path $work ($mut.Name+'-vision.json')
+        Write-Utf8 $mutPath ($mutDocument | ConvertTo-Json -Depth 10)
+        $rm=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$mutPath}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' }
+        Check ($rm.threw -and $rm.code -ceq 'vision-not-measured') "vision refusal 1: a row for $($mut.Label) does not apply to this plan"
+    }
+    RefusedLike { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$malformedProfiles}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' } 'serving-profiles-invalid' 'vision: a profile file that is not JSON fails typed (never honoured, never dropped)'
+    $mtpDocument=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+    $mtpDocument.addOns[0].kind='mtp'
+    $mtpPath=Join-Path $work 'vision-mtp.json'
+    Write-Utf8 $mtpPath ($mtpDocument | ConvertTo-Json -Depth 10)
+    RefusedLike { $s=Join-TestSplat $visionCommon @{KvProfilesPath=$mtpPath}; Get-FastLlmPlan @s -KvContextProfile 'long' -Vision 'on' } 'serving-profiles-invalid' 'vision: an mtp row in the file fails typed (the loader refuses what the checker refuses)'
+    # Step 2: a row, but no value for the effective profile.
+    $r2=Get-RefusalCode { Get-FastLlmPlan @visionCommon -Vision 'on' }
+    Check ($r2.threw -and $r2.code -ceq 'vision-profile-not-measured' -and $r2.message -like '*Nothing was started*') 'vision refusal 2: a default-context plan has no profile id to key a value on, so it is refused (vision-profile-not-measured)'
+    $r2b=Get-RefusalCode { Get-FastLlmPlan @visionCommon -KvContextProfile 'default' -KvSlots 1 -Vision 'on' }
+    Check ($r2b.threw -and $r2b.code -ceq 'vision-profile-not-measured') 'vision refusal 2: explicit default values are the same default-context plan and are refused the same way'
+    $r2c=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-OptinHardware 'test-12gb') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $visionProfiles -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'default' -Vision 'on' }
+    Check ($r2c.threw -and $r2c.code -ceq 'vision-profile-not-measured') 'vision refusal 2: a row with a value only for long is refused for the default profile'
+    $r2d=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-OptinHardware 'test-24gb') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $visionProfiles -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -Vision 'on' }
+    Check (-not $r2d.threw) 'vision plan: the same row with a value for long plans'
+    $rOrder=Get-RefusalCode { $s=Join-TestSplat $visionCommon @{ModelId='qwen3.8-27b-q8-0'}; Get-FastLlmPlan @s -Vision 'on' }
+    Check ($rOrder.threw -and $rOrder.code -ceq 'vision-not-measured') 'vision order: with no row AND no profile id, refusal 1 (no row) comes before refusal 2'
+    # Fit: the extra memory is the row's, added to the profile's requirement. Nothing is derived.
+    $fitCard=New-OptinHardware 'test-24gb-22000'
+    $fitCommon=@{Hardware=$fitCard;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+    Check ([string](Get-FastLlmPlan @fitCommon).servingProfile.id -ceq 'long') 'vision fit: with 22000 MiB free the long row alone (21500) fits'
+    $rFit=Get-RefusalCode { Get-FastLlmPlan @fitCommon -Vision 'on' }
+    Check ($rFit.threw -and $rFit.code -ceq 'model-does-not-fit') 'vision fit: the same card with vision on needs 21500 + 1200 and does not fit (the existing model-does-not-fit refusal)'
+    $extraChanged=Get-Content -LiteralPath $visionProfiles -Raw | ConvertFrom-Json
+    $extraChanged.addOns[0].extraFreeVramMiB.long=400
+    $extraPath=Join-Path $work 'vision-small-extra.json'
+    Write-Utf8 $extraPath ($extraChanged | ConvertTo-Json -Depth 10)
+    $fitSmall=& { $s=Join-TestSplat $fitCommon @{KvProfilesPath=$extraPath}; Get-FastLlmPlan @s -Vision 'on' }
+    Check ([int64]$fitSmall.vision.requiredFreeVramMiB -eq 21900) 'vision fit: the number comes from the row (21500 + 400 = 21900 fits 22000); no constant, file size or formula is used'
+    RefusedLike { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -RecipeId 'some-recipe' -Vision 'on' } 'cannot be combined' 'vision: -Recipe with -Vision on is refused (a recipe is measured without a projector)'
+    RefusedLike { Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -ContextSize 8192 -Vision 'on' } 'cannot be combined' 'vision: -ContextSize with a context profile is still refused'
+    $recipeVision=Get-RefusalCode { Get-FastLlmPlan @identifiedCommon -KvProfilesPath $visionProfiles -Vision 'on' }
+    Check ($recipeVision.threw -and $recipeVision.code -ceq 'vision-profile-not-measured' -and -not ($recipeVision.message -like '*engine*probe*')) 'vision: on a card with a measured recipe, vision does not apply the recipe (no engine is probed); a default-context plan is refused for want of a profile id'
+    $recipeVisionLong=Get-FastLlmPlan @identifiedCommon -KvContextProfile 'long' -KvProfilesPath $visionProfiles -Vision 'on'
+    Check ([string]$recipeVisionLong.selectionMode -ceq 'auto' -and -not $recipeVisionLong.PSObject.Properties['engineComponentId'] -and [string]$recipeVisionLong.vision.profileId -ceq 'long') 'vision: the vision plan runs on the built-in engine and is no recipe plan'
+
+    # ---- HIP: #60 has no HIP rule of its own for long or 2 slots; its engine binding is what keeps a HIP plan out, and vision reuses it -------------
+    $hipRefused=Get-RefusalCode { Get-FastLlmPlan -Hardware $rocmHardware -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath $visionProfiles -Vision 'on' }
+    Check ($hipRefused.threw -and $hipRefused.code -ceq 'vision-not-measured') 'vision HIP: a plan on another backend finds no vision row (the same engine and backend binding as the opt-in rows)'
+    $planSource=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw
+    Check (-not [regex]::IsMatch($planSource,'(?i)\bvision\b[^\r\n]*\bhip\b|\bhip\b[^\r\n]*\bvision\b')) 'vision HIP: no new HIP rule is written for vision'
+
+    # ---- the diagnostic tools keep --no-mmproj, nothing else is touched ---------------------------------------------------------------
+    foreach($tool in @('BackendParityDiagnostic','CpuReferenceLab','HipModelTrial','OffloadLab','SamplerDiagnostic','VulkanFitTrial','VulkanVidmemTrial')){
+        $toolText=Get-Content -LiteralPath (Join-Path $root ('src/FastLlm.'+$tool+'.ps1')) -Raw
+        Check ($toolText.Contains('--no-mmproj') -and -not [regex]::IsMatch($toolText,'--mmproj')) "diagnostic tool $tool keeps --no-mmproj and has no --mmproj"
+    }
+    . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+    $resolvedNow=Resolve-FastLlmServingOptions -InstallRoot $installRoot -Bound @{} -IgnoreUserSettings
+    Check (-not $resolvedNow.PSObject.Properties['vision'] -and @($resolvedNow.PSObject.Properties.Name).Count -eq 12) 'vision: no saved setting exists: Resolve-FastLlmServingOptions is unchanged (no vision property)'
+
+    # ---- Start: refusals 4, 5 and 6, in order, before any process, download or request file ---------------------------------------------------
+    # The golden helper re-imports the module (-Force): take the instance that is loaded now.
+    $module=Get-Module FastLlm
+    function New-VisionWorld([string]$Label,[string]$Component){
+        $install=Join-Path $work ('vision-world-'+$Label)
+        $config=Join-Path $install 'config'
+        foreach($folder in @($install,$config,(Join-Path $install 'state'))){New-Item -ItemType Directory -Path $folder -Force | Out-Null}
+        [IO.File]::Copy($catalogPath,(Join-Path $config 'catalog.json'),$true)
+        [IO.File]::Copy($visionComponents,(Join-Path $config 'components.json'),$true)
+        $entry=@((Get-Content -LiteralPath $visionComponents -Raw | ConvertFrom-Json).components)[0]
+        $componentRoot=& $module { param($I,$E) Get-FastLlmComponentRoot -InstallRoot $I -Component $E } $install $entry
+        if($Component -cne 'missing'){
+            New-Item -ItemType Directory -Path $componentRoot -Force | Out-Null
+            $bytes=[Text.Encoding]::ASCII.GetBytes((('FastLLM test vision projector fixture. Not a projector. ')*4).Substring(0,192))
+            if($Component -ceq 'corrupt'){$bytes[0]=[byte]0x58}
+            [IO.File]::WriteAllBytes((Join-Path $componentRoot ([string]$entry.entryPoint)),$bytes)
+            if($Component -cne 'no-consent'){ & $module { param($I,$E) Write-FastLlmComponentConsentReceipt -Component $E -InstallRoot $I -AcceptanceMode 'explicit-switch' } $install $entry }
+        }
+        return [pscustomobject]@{install=$install;catalog=(Join-Path $config 'catalog.json');components=(Join-Path $config 'components.json');componentRoot=$componentRoot}
+    }
+    function Get-TreeListing([string]$Folder){ return @(Get-ChildItem -LiteralPath $Folder -Recurse -Force | ForEach-Object { $_.FullName.Substring($Folder.Length)+'|'+$(if($_.PSIsContainer){'d'}else{[string]$_.Length}) } | Sort-Object) }
+    # The module's process, download and state boundaries are replaced by recorders for these checks, and put back after.
+    $savedBoundaries=& $module {
+        @{ supervised=(Get-Command Invoke-FastLlmSupervisedServer).ScriptBlock; hardware=(Get-Command Get-FastLlmHardware).ScriptBlock; writeState=(Get-Command Write-FastLlmState).ScriptBlock
+           prerequisites=(Get-Command Assert-FastLlmWindowsPrerequisites).ScriptBlock; install=(Get-Command Install-FastLlmModel).ScriptBlock; save=(Get-Command Save-FastLlmVerifiedFile).ScriptBlock }
+    }
+    $script:visionCalls=New-Object 'Collections.Generic.List[string]'
+    & $module {
+        function script:Invoke-FastLlmSupervisedServer { $script:visionCalls.Add('PROCESS-SUPERVISED') ; throw 'PROCESS-SUPERVISED' }
+        function script:Get-FastLlmHardware { $script:visionCalls.Add('PROBE-HARDWARE'); throw 'PROBE-HARDWARE' }
+        function script:Write-FastLlmState { param($InstallRoot,$State,$FileName) $script:visionCalls.Add('WRITE-STATE') }
+        function script:Assert-FastLlmWindowsPrerequisites { $script:visionCalls.Add('PAST-THE-VISION-CHECK'); throw 'PAST-THE-VISION-CHECK' }
+        function script:Install-FastLlmModel { $script:visionCalls.Add('DOWNLOAD-MODEL') }
+        function script:Save-FastLlmVerifiedFile { $script:visionCalls.Add('DOWNLOAD-FILE') }
+    }
+    & $module { param($Calls) $script:visionCalls=$Calls } $script:visionCalls
+    try {
+        $visionPlanForStart=Get-FastLlmPlan @visionCommon -KvContextProfile 'long' -Vision 'on'
+        function Invoke-VisionStart($World,$Plan,[hashtable]$Extra=@{}){
+            $script:visionCalls.Clear()
+            $before=Get-TreeListing $World.install
+            $result=Get-RefusalCode { Start-FastLlmServer -Plan $Plan -CatalogPath $World.catalog -InstallRoot $World.install @Extra }
+            $after=Get-TreeListing $World.install
+            $result | Add-Member -NotePropertyName calls -NotePropertyValue @($script:visionCalls) -Force
+            $result | Add-Member -NotePropertyName changed -NotePropertyValue (($before -join "`n") -cne ($after -join "`n")) -Force
+            return $result
+        }
+        $w4=New-VisionWorld 'missing' 'missing'
+        $s4=Invoke-VisionStart $w4 $visionPlanForStart
+        Check ($s4.threw -and $s4.code -ceq 'needs-setup-component-missing' -and $s4.message -like "*test-vision-projector-q8*is not installed*A start never installs*Nothing was started*" -and $s4.calls.Count -eq 0 -and -not $s4.changed) 'vision refusal 4: a projector that is not installed is needs-setup-component-missing; no process, no probe, no download, no request or status file'
+        $w4b=New-VisionWorld 'noconsent' 'no-consent'
+        $s4b=Invoke-VisionStart $w4b $visionPlanForStart
+        Check ($s4b.threw -and $s4b.code -ceq 'needs-setup-component-missing' -and $s4b.calls.Count -eq 0 -and -not $s4b.changed) 'vision refusal 4: an installed projector whose license was not accepted counts as not installed'
+        $w4c=New-VisionWorld 'unlisted' 'installed'
+        [IO.File]::WriteAllText($w4c.components,'{"schema":"bitworks.fastllm-components/v1","components":[]}',(New-Object Text.UTF8Encoding($false)))
+        $s4c=Invoke-VisionStart $w4c $visionPlanForStart
+        Check ($s4c.threw -and $s4c.code -ceq 'needs-setup-component-missing' -and $s4c.message -like '*not listed*' -and $s4c.calls.Count -eq 0 -and -not $s4c.changed) 'vision refusal 4: a projector component that is not in the components list is refused the same way'
+        $w5=New-VisionWorld 'corrupt' 'corrupt'
+        $s5=Invoke-VisionStart $w5 $visionPlanForStart
+        Check ($s5.threw -and $s5.code -ceq 'needs-setup-component-missing' -and $s5.message -like "*failed its file check*pinned*Nothing was started*" -and $s5.calls.Count -eq 0 -and -not $s5.changed) 'vision refusal 5: a projector whose hash differs from the pin is refused (needs-setup-component-missing, "failed its file check"); nothing runs'
+        $w6=New-VisionWorld 'good' 'installed'
+        $s6=Invoke-VisionStart $w6 $visionPlanForStart
+        Check ($s6.threw -and $s6.code -ceq 'vision-evidence-unavailable' -and $s6.message -like '*cannot be verified yet*' -and $s6.message -like '*Nothing was started*' -and $s6.calls.Count -eq 0 -and -not $s6.changed) 'vision refusal 6 (pin): with a valid row, a profile value, a non-HIP plan, the projector installed and its hash matching, the start is STILL refused: vision-evidence-unavailable; nothing starts and no file is written'
+        Check ($s6.message -ceq 'vision-evidence-unavailable: Vision cannot be verified yet: FastLLM has no way yet to prove where the vision projector is loaded (on the GPU or on the CPU), so a start with vision is not offered in this release. Nothing was started. To start without vision, leave -Vision off.') 'vision refusal 6: the message says plainly that vision cannot be verified yet and that nothing started'
+        Check ($s6.reason -cne 'RuntimeCheckFailed' -and $s6.reason -cne 'PlanChanged' -and $s6.reason -cne 'ModelNeedsProvisioning') 'vision refusal 6: no reason that the CLI would recover, re-plan or repair on'
+        $s6again=Invoke-VisionStart $w6 $visionPlanForStart
+        Check ($s6again.code -ceq 'vision-evidence-unavailable' -and $s6again.message -ceq $s6.message) 'vision refusal 6: the same every time'
+        $w6b=New-VisionWorld 'good-switch' 'installed'
+        $s7=Invoke-VisionStart $w6b $visionPlanForStart @{AllowSwitch=$true}
+        Check ($s7.threw -and $s7.code -ceq 'vision-evidence-unavailable' -and $s7.calls.Count -eq 0 -and -not $s7.changed) 'vision with -AllowSwitch: refused at the same point (vision-evidence-unavailable) and nothing starts, so a switch can never carry vision'
+        $s7missing=Invoke-VisionStart $w4 $visionPlanForStart @{AllowSwitch=$true}
+        Check ($s7missing.code -ceq 'needs-setup-component-missing' -and $s7missing.calls.Count -eq 0) 'vision with -AllowSwitch: an earlier refusal (4) still comes first'
+        $s6emb=Invoke-VisionStart $w6 $visionPlanForStart @{Embeddings='on'}
+        Check ($s6emb.threw -and $s6emb.code -ceq 'vision-evidence-unavailable' -and $s6emb.calls.Count -eq 0 -and -not $s6emb.changed) 'vision with embeddings on: refused first, no sidecar session is started'
+        # The same assertion the CLI start branch calls right after the plan, before any model download.
+        $direct=Get-RefusalCode { Assert-FastLlmVisionStartable -Plan $visionPlanForStart -CatalogPath $w6.catalog -InstallRoot $w6.install }
+        Check ($direct.threw -and $direct.code -ceq 'vision-evidence-unavailable') 'vision: Assert-FastLlmVisionStartable (the check the CLI runs before any download) refuses with the same code'
+        $directMissing=Get-RefusalCode { Assert-FastLlmVisionStartable -Plan $visionPlanForStart -CatalogPath $w4.catalog -InstallRoot $w4.install }
+        Check ($directMissing.code -ceq 'needs-setup-component-missing') 'vision: Assert-FastLlmVisionStartable refuses a missing projector first'
+        # A plan without vision is not touched: -IgnoreUserSettings, the bench path and a direct supervisor call all have such a plan.
+        $defaultPlanForStart=Get-FastLlmPlan -Hardware $visionCard -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m'
+        $sDefault=Invoke-VisionStart $w6 $defaultPlanForStart
+        Check ($sDefault.threw -and $sDefault.message -ceq 'PAST-THE-VISION-CHECK' -and $sDefault.code -cne 'vision-evidence-unavailable') 'vision off: a plan without vision goes straight past the vision check (the start continues as it always did)'
+        Check (($defaultPlanForStart.serverArguments -ccontains '--no-mmproj') -and -not ($defaultPlanForStart.serverArguments -ccontains '--mmproj')) 'vision off: the arguments a direct start would pass keep --no-mmproj'
+        $forgedPlan=$defaultPlanForStart | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $forgedPlan | Add-Member -NotePropertyName vision -NotePropertyValue ([pscustomobject]@{componentId='test-vision-projector-q8'}) -Force
+        $sForged=Invoke-VisionStart $w6 $forgedPlan
+        Check ($sForged.threw -and $sForged.code -ceq 'vision-evidence-unavailable' -and $sForged.calls.Count -eq 0) 'vision: a plan that carries any vision block can never start (a vision block with fields missing is refused too)'
+        # A HIP plan with a vision block is refused the same way: vision never starts on any plan.
+        $hipForged=$visionPlanForStart | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $hipForged.backend='hip'
+        $sHip=Invoke-VisionStart $w6 $hipForged
+        Check ($sHip.threw -and $sHip.code -ceq 'vision-evidence-unavailable' -and $sHip.calls.Count -eq 0) 'vision: a HIP plan with a vision block is refused too (it never starts)'
+    }
+    finally {
+        & $module {
+            param($Saved)
+            Set-Item -Path Function:script:Invoke-FastLlmSupervisedServer -Value $Saved.supervised
+            Set-Item -Path Function:script:Get-FastLlmHardware -Value $Saved.hardware
+            Set-Item -Path Function:script:Write-FastLlmState -Value $Saved.writeState
+            Set-Item -Path Function:script:Assert-FastLlmWindowsPrerequisites -Value $Saved.prerequisites
+            Set-Item -Path Function:script:Install-FastLlmModel -Value $Saved.install
+            Set-Item -Path Function:script:Save-FastLlmVerifiedFile -Value $Saved.save
+        } $savedBoundaries
+    }
 
     Write-Host "optin-arguments-tests: $script:count checks passed"
 }

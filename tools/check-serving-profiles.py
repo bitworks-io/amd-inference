@@ -5,7 +5,7 @@ Measured rows for the opt-in serving settings (context profile, slots). The plan
 model sha256, engine id and backend equal the plan's; with no row the option is refused. Nothing is derived from a formula.
 
 Shape:
-  { "schema": "bitworks.fastllm-serving-profiles/v1", "profiles": [ Profile, ... ], "addOns": [], "sidecars": [ Sidecar, ... ] }
+  { "schema": "bitworks.fastllm-serving-profiles/v1", "profiles": [ Profile, ... ], "addOns": [ AddOn, ... ], "sidecars": [ Sidecar, ... ] }
   Profile = {
     "modelId": str                  # a config/catalog.json model id
     "modelSha256": 64 lowercase hex # equals that catalog model's sha256
@@ -31,8 +31,19 @@ Shape:
     "dimension": int 1..65536       # the length of one embedding vector; the start check compares it
     "evidence": { "resultId": str, "measuredAt": "YYYY-MM-DDTHH:MM:SSZ", "gpuClasses": [str, ...] }
   }
-One row per (modelSha256, engineId, backend, id), and one sidecar row per (role, componentSha256, engineId, backend).
-"addOns" is reserved and must be an empty list for now.
+  AddOn = {                         # the measured extra memory of the vision option: a projector file beside the text model (--mmproj)
+    "kind": "vision"                # the only accepted kind; "mtp" and "ngram" rows are refused for now
+    "modelId": str                  # a config/catalog.json model id
+    "modelSha256": 64 lowercase hex # equals that catalog model's sha256
+    "engineId": str                 # the built-in engine id or a listed llama.cpp engine component (the planner uses the built-in engine only)
+    "backend": "vulkan"|"hip"       # equals the backend of that engine
+    "componentId": str              # a config/components.json component of kind "projector"
+    "extraFreeVramMiB": { "default"|"long": int > 0, ... }   # a non-empty object: the free memory the projector adds to that profile's requirement
+    "evidence": { "resultId": str, "measuredAt": "YYYY-MM-DDTHH:MM:SSZ", "gpuClasses": [str, ...] }
+  }
+One row per (modelSha256, engineId, backend, id), one sidecar row per (role, componentSha256, engineId, backend), and one add-on row per
+(kind, modelSha256, engineId, backend). The planner adds the extra memory of the effective profile id to that profile's requirement; with no
+value for the profile (a default-context plan has no profile id) the option is refused. Nothing is derived from a formula or a file size.
 config/serving-profiles.sha256 holds "<sha256 of the file>  serving-profiles.json" and a line feed.
 Usage: check-serving-profiles.py [--root R]
 """
@@ -55,6 +66,8 @@ EVIDENCE_KEYS = {"resultId", "measuredAt", "gpuClasses"}
 PROFILE_IDS = ("default", "long")
 CACHE_TYPES = ("f16", "q8_0")
 SLOT_SETS = ([1], [2], [1, 2])
+ADD_ON_KEYS = {"kind", "modelId", "modelSha256", "engineId", "backend", "componentId", "extraFreeVramMiB", "evidence"}
+ADD_ON_KIND = "vision"
 SIDECAR_KEYS = {"role", "componentId", "componentSha256", "engineId", "backend", "placement", "contextSize", "pooling", "dimension", "evidence"}
 SIDECAR_POOLINGS = ("mean", "cls", "last")
 SIDECAR_MAX_CONTEXT = 1048576
@@ -136,10 +149,8 @@ def check_evidence(where, evidence, errors):
         errors.append(f"{where}: evidence.gpuClasses must be a non-empty list of short names")
 
 
-def check_profile(where, row, models, engines, errors):
-    """Validates one row; returns its uniqueness key, or None when the row has no usable key."""
-    if not check_keys(where, row, PROFILE_KEYS, errors):
-        return None
+def check_model_and_engine(where, row, models, engines, errors):
+    """The model and engine binding shared by a profile row and an add-on row. Returns (sha is well formed, the catalog model or None)."""
     sha = row["modelSha256"]
     sha_ok = isinstance(sha, str) and bool(SHA_RE.fullmatch(sha))
     if not sha_ok:
@@ -154,6 +165,15 @@ def check_profile(where, row, models, engines, errors):
         errors.append(f"{where}: engineId {row['engineId']!r} is not the built-in engine or a listed llama.cpp engine component")
     elif row["backend"] != engine_backend:
         errors.append(f"{where}: backend must be {engine_backend!r} for engine {row['engineId']!r}")
+    return sha_ok, model
+
+
+def check_profile(where, row, models, engines, errors):
+    """Validates one row; returns its uniqueness key, or None when the row has no usable key."""
+    if not check_keys(where, row, PROFILE_KEYS, errors):
+        return None
+    sha_ok, model = check_model_and_engine(where, row, models, engines, errors)
+    sha = row["modelSha256"]
     profile_id = row["id"]
     if profile_id not in PROFILE_IDS or not isinstance(profile_id, str):
         errors.append(f"{where}: id must be 'default' or 'long'")
@@ -248,6 +268,43 @@ def check_sidecar(where, row, catalog, components, errors):
     return None
 
 
+def projector_ids(components):
+    """The ids of the listed components of kind projector."""
+    ids = set()
+    listed = components.get("components", []) if isinstance(components, dict) else []
+    for component in listed if isinstance(listed, list) else []:
+        if isinstance(component, dict) and component.get("kind") == "projector" and is_str(component.get("id")):
+            ids.add(component["id"])
+    return ids
+
+
+def check_add_on(where, row, models, engines, projectors, errors):
+    """Validates one add-on row; returns its uniqueness key, or None when the row has no usable key."""
+    if not check_keys(where, row, ADD_ON_KEYS, errors):
+        return None
+    kind = row["kind"]
+    if not isinstance(kind, str) or kind != ADD_ON_KIND:
+        errors.append(f"{where}: kind must be 'vision' (other kinds, such as 'mtp' and 'ngram', are not accepted yet)")
+        kind = None
+    sha_ok, _model = check_model_and_engine(where, row, models, engines, errors)
+    component_id = row["componentId"]
+    if not isinstance(component_id, str) or component_id not in projectors:
+        errors.append(f"{where}: componentId {component_id!r} is not a listed projector component")
+    extra = row["extraFreeVramMiB"]
+    if not isinstance(extra, dict) or not extra:
+        errors.append(f"{where}: extraFreeVramMiB must be a non-empty object of profile id to MiB")
+    else:
+        for profile_id, mib in extra.items():
+            if profile_id not in PROFILE_IDS:
+                errors.append(f"{where}: extraFreeVramMiB has the unknown profile id {profile_id!r}")
+            if not is_int(mib) or mib <= 0:
+                errors.append(f"{where}: extraFreeVramMiB[{profile_id!r}] must be a positive whole number of MiB")
+    check_evidence(where, row["evidence"], errors)
+    if kind is not None and sha_ok and isinstance(row["engineId"], str) and isinstance(row["backend"], str):
+        return (kind, row["modelSha256"], row["engineId"], row["backend"])
+    return None
+
+
 def validate(document, catalog, components):
     """Returns a list of problems; empty means the document is valid against this catalog and component list."""
     errors = []
@@ -255,8 +312,22 @@ def validate(document, catalog, components):
         return errors
     if document["schema"] != SCHEMA:
         errors.append(f"schema must be {SCHEMA!r}")
-    if not isinstance(document["addOns"], list) or document["addOns"]:
-        errors.append("addOns must be an empty list: its rows are reserved and not accepted yet")
+    add_ons = document["addOns"]
+    if not isinstance(add_ons, list):
+        errors.append("addOns must be a list")
+        add_ons = []
+    models = catalog_models(catalog)
+    engines = known_engines(catalog, components)
+    projectors = projector_ids(components)
+    seen_add_ons = set()
+    for index, row in enumerate(add_ons):
+        where = f"addOns[{index}]"
+        key = check_add_on(where, row, models, engines, projectors, errors)
+        if key is None:
+            continue
+        if key in seen_add_ons:
+            errors.append(f"{where}: duplicate add-on row for this kind, model, engine and backend")
+        seen_add_ons.add(key)
     sidecars = document["sidecars"]
     if not isinstance(sidecars, list):
         errors.append("sidecars must be a list")
@@ -274,8 +345,6 @@ def validate(document, catalog, components):
     if not isinstance(profiles, list):
         errors.append("profiles must be a list")
         return errors
-    models = catalog_models(catalog)
-    engines = known_engines(catalog, components)
     seen = set()
     for index, row in enumerate(profiles):
         where = f"profiles[{index}]"
@@ -324,8 +393,13 @@ def main(argv=None):
         print(f"check-serving-profiles: {line}", file=sys.stderr)
     if errors:
         return 1
+    extras = []
     if document["sidecars"]:
-        print(f"serving profiles ok ({len(document['profiles'])}, sidecars {len(document['sidecars'])})")
+        extras.append(f"sidecars {len(document['sidecars'])}")
+    if document["addOns"]:
+        extras.append(f"add-ons {len(document['addOns'])}")
+    if extras:
+        print(f"serving profiles ok ({len(document['profiles'])}, {', '.join(extras)})")
     else:
         print(f"serving profiles ok ({len(document['profiles'])})")
     return 0
