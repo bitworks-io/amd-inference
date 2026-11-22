@@ -467,6 +467,11 @@
       "reason": "The Fluent window interop and WPF theme dictionary on a real STA thread; Windows only, no GPU or bench, runs in test.yml."
     },
     {
+      "suite": "ui-fluent-host-tests",
+      "class": "ci",
+      "reason": "WPF host mechanics for the Fluent window on a real STA thread (WinForms timer under the dispatcher, tray, modal dialogs, close guards, adapter objects); Windows only, no GPU or bench, runs in test.yml."
+    },
+    {
       "suite": "ui-source-safety-tests",
       "class": "ci",
       "reason": "Static source rules (constant-only XAML, one parser site, ASCII files) plus pins of the admin refusal and the close guards; pure, no GPU or bench."
