@@ -233,6 +233,19 @@ class ProductToolsRealTreeTests(unittest.TestCase):
             cls.members = {n: z.read(n) for n in z.namelist()}
         cls.allow = br.load_product_tools(str(ROOT))
 
+    def test_package_includes_window_csharp_sources(self):
+        # The window's C# files are compiled at run time from the installed src/ folder, so a package that dropped one would break the window.
+        # The catalog (FastLLM.cat) is generated over the extracted package tree and the doctor integrity check compares that same tree,
+        # so a file in the package file list and MANIFEST.json is covered by both.
+        manifest = {e["path"] for e in json.loads(self.members["MANIFEST.json"])["files"]}
+        on_disk = sorted(p.name for p in (ROOT / "src").glob("*.cs"))
+        for name in ("WindowsFluentWindow.cs", "WindowsFluentAutomation.cs"):
+            self.assertIn(name, on_disk, name + " is missing from src/")
+        for name in on_disk:
+            rel = "src/" + name
+            self.assertIn(rel, self.members, rel + " is not in the package file list")
+            self.assertIn(rel, manifest, rel + " is not in MANIFEST.json")
+
     def test_packaged_tools_equal_the_allowlist(self):
         packaged = sorted(n[len("tools/"):] for n in self.members if n.startswith("tools/"))
         self.assertEqual(packaged, self.allow)
