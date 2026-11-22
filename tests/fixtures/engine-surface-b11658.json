@@ -779,5 +779,8 @@
     "/health",
     "/v1/health",
     "<embedded-ui-assets>"
+  ],
+  "secretLogLabels": [
+    "api_keys"
   ]
 }
