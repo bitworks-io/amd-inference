@@ -1,3 +1,4 @@
+#requires -Version 5.1
 # Loaded by the Fluent window. The Windows side of the theme layer: the interop loader (dark title bar, Mica, OS build), the system theme
 # reader and the WPF ResourceDictionary builder. The pure token, ramp and accent functions live in FastLlm.UiTheme.ps1, which the caller
 # dot-sources first. Nothing here throws except New-FastLlmUiThemeDictionary on a bad argument.
@@ -16,14 +17,21 @@ function Initialize-FastLlmUiWindowInterop {
     }
 }
 
+# The comma keeps a REG_BINARY byte[] from being unrolled into Object[] by the pipeline; a DWORD stays Int32 and a missing value stays $null.
+function Get-FastLlmUiPropertyValue {
+    param($Properties, [string]$Name)
+    if ($null -eq $Properties) { return $null }
+    $prop = $Properties.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $null }
+    return ,$prop.Value
+}
+
 function Get-FastLlmUiRegistryValue {
     param([string]$Path, [string]$Name)
     try {
         $p = Get-ItemProperty -LiteralPath $Path -ErrorAction SilentlyContinue
-        if ($null -eq $p) { return $null }
-        $prop = $p.PSObject.Properties[$Name]
-        if ($null -eq $prop) { return $null }
-        return $prop.Value
+        $v = Get-FastLlmUiPropertyValue $p $Name
+        return ,$v
     } catch {
         return $null
     }

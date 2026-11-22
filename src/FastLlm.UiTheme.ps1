@@ -1,3 +1,4 @@
+#requires -Version 5.1
 # Loaded by the Fluent window. The pure theme layer: colour parsing, alpha composition and the WCAG 2.x contrast ratio, the light and dark
 # tokens and metrics, the type ramp with the text scale, the theme choice, the accent palette with its contrast fallback and the
 # Mica-or-solid backdrop choice. It touches no registry, WPF or Windows API: the caller reads the raw values and passes them in, so every

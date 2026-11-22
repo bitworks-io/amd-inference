@@ -5,11 +5,23 @@ $root=Split-Path $PSScriptRoot -Parent
 $checks=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
 
-$onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
-if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
-
 . (Join-Path $root 'src/FastLlm.UiTheme.ps1')
 . (Join-Path $root 'src/FastLlm.UiWindow.ps1')
+
+# Pure, any OS: a REG_BINARY byte[] must survive the property reader as a byte[] (the pipeline would unroll it to Object[]).
+$fakeKey=[pscustomobject]@{AccentPalette=[byte[]](1..32);AppsUseLightTheme=0}
+$bytes=Get-FastLlmUiPropertyValue $fakeKey 'AccentPalette'
+Check ($bytes -is [byte[]] -and $bytes.Length -eq 32) 'a 32-byte palette stays a byte[] of 32'
+$capture=[pscustomobject]@{accentPalette=Get-FastLlmUiPropertyValue $fakeKey 'AccentPalette'}
+Check ($capture.accentPalette -is [byte[]] -and $capture.accentPalette.Length -eq 32) 'the palette stays a byte[] inside the theme object'
+Check ($null -ne (ConvertFrom-FastLlmUiAccentPalette $capture.accentPalette)) 'the captured palette parses'
+$dword=Get-FastLlmUiPropertyValue $fakeKey 'AppsUseLightTheme'
+Check ($dword -is [int] -and $dword -eq 0) 'a DWORD stays an Int32'
+Check ($null -eq (Get-FastLlmUiPropertyValue $fakeKey 'Missing')) 'a missing value is null'
+Check ($null -eq (Get-FastLlmUiPropertyValue $null 'AccentPalette')) 'a missing key is null'
+
+$onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
+if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
 
 Check ([Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') 'runs on an STA thread'
 Check (Initialize-FastLlmUiWindowInterop -SourceRoot $root) 'the interop compiles'
@@ -36,6 +48,8 @@ try{
 }finally{$win.Close()}
 
 $theme=Read-FastLlmUiSystemTheme
+Check ($null -eq $theme.accentPalette -or $theme.accentPalette -is [byte[]]) 'the accent palette is read as bytes'
+if($null -ne $theme.accentPalette){Check ($theme.accentPalette -is [byte[]] -and $theme.accentPalette.Length -eq 32) 'a present accent palette is 32 bytes'}
 Check ($theme.build -gt 0 -and $theme.highContrast -is [bool]) 'the system theme is read without throwing'
 
 # Cross-check the accent palette indexes against the WinRT UISettings (Windows PowerShell 5.1 only).
@@ -47,7 +61,8 @@ if($PSVersionTable.PSVersion.Major -le 5){
     }catch{Write-Host ('INFO: UISettings not available: '+$_.Exception.Message)}
     $pal=$theme.accentPalette
     if($null -eq $ui){Write-Host 'INFO: accent palette cross-check skipped (no UISettings)'}
-    elseif($pal -isnot [byte[]]){Write-Host 'INFO: accent palette cross-check skipped (no AccentPalette value)'}
+    elseif($null -eq $pal){Write-Host 'INFO: accent palette cross-check skipped (no AccentPalette value)'}
+    elseif($pal -isnot [byte[]]){Check $false 'a present AccentPalette is a byte[]'}
     else{
         $conv=ConvertFrom-FastLlmUiAccentPalette $pal
         if($null -eq $conv){Write-Host 'INFO: accent palette cross-check skipped (AccentPalette is not 32 bytes)'}
