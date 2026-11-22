@@ -25,16 +25,18 @@ function Get-UiRenderHighContrastPalette {
     return @{ Window = '#000000'; WindowText = '#FFFF00'; Highlight = '#1AEBFF'; HighlightText = '#202020' }
 }
 
-# The text an access key label shows: a single underscore marks the key and is dropped, a doubled underscore is a literal underscore.
+# The text an access key label shows (WPF AccessText): a doubled underscore is one literal underscore; the FIRST single underscore marks the
+# key and is dropped; any later single underscore, and a trailing lone one, show as text. The Windows run pins this against WPF itself.
 function Remove-UiAccessKey([string]$Text) {
     $sb = New-Object System.Text.StringBuilder
+    $keySeen = $false
     for ($i = 0; $i -lt $Text.Length; $i++) {
         $c = $Text[$i]
-        if ($c -eq '_') {
-            if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '_') { [void]$sb.Append('_'); $i++ }
-            continue
-        }
-        [void]$sb.Append($c)
+        if ($c -ne '_') { [void]$sb.Append($c); continue }
+        if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '_') { [void]$sb.Append('_'); $i++; continue }
+        if ($i + 1 -ge $Text.Length) { [void]$sb.Append('_'); continue }
+        if (-not $keySeen) { $keySeen = $true; continue }
+        [void]$sb.Append('_')
     }
     return $sb.ToString()
 }

@@ -31,6 +31,10 @@ Check ((Remove-UiAccessKey 'Na_me') -ceq 'Name') 'an access key underscore insid
 Check ((Remove-UiAccessKey 'a__b') -ceq 'a_b') 'a doubled underscore is one literal underscore'
 Check ((Remove-UiAccessKey '__Name') -ceq '_Name') 'a doubled underscore at the start is kept as one'
 Check ((Remove-UiAccessKey 'Plain') -ceq 'Plain') 'text without underscores is unchanged'
+Check ((Remove-UiAccessKey 'a_b_c') -ceq 'ab_c') 'only the first single underscore is the access key'
+Check ((Remove-UiAccessKey '_a__b') -ceq 'a_b') 'a key underscore plus a doubled underscore'
+Check ((Remove-UiAccessKey 'a__b_c') -ceq 'a_bc') 'a doubled underscore, then the first single one is the key'
+Check ((Remove-UiAccessKey 'x_') -ceq 'x_') 'a trailing lone underscore is literal'
 $hcPal=Get-UiRenderHighContrastPalette
 Check (@($hcPal.Values|Sort-Object -Unique).Count -eq 4) 'the high-contrast palette has four distinct colours'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
@@ -46,6 +50,33 @@ if(-not $interop){
     try{Add-Type -Path (Join-Path $root 'src/WindowsFluentWindow.cs') -ErrorAction Stop}catch{Write-Host ('INFO: interop load error: '+$_.Exception.ToString())}
 }
 Check $interop 'WPF and the interop load'
+if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
+
+# Pin Remove-UiAccessKey against WPF's own rule, found by reflection (CI only; the log shows the real rule on a mismatch).
+$wpfRule=@([System.Windows.Controls.AccessText].GetMethods('NonPublic,Static')|Where-Object{$_.Name -ceq 'RemoveAccessKeyMarker' -and @($_.GetParameters()).Count -eq 1 -and $_.GetParameters()[0].ParameterType -eq [string]})
+if($wpfRule.Count -ne 1){
+    $names=(@([System.Windows.Controls.AccessText].GetMethods('NonPublic,Static')|Where-Object{$_.Name -match 'Access'}|ForEach-Object{$_.Name}|Sort-Object -Unique) -join ', ')
+    Check $false ("AccessText.RemoveAccessKeyMarker (one string parameter) found exactly once (found $($wpfRule.Count); NonPublic static AccessText methods with 'Access': $names)")
+}else{
+    foreach($t in '_Name','Na_me','a__b','__Name','Plain','a_b_c','_a__b','a__b_c','x_','_','__'){
+        $want=[string]$wpfRule[0].Invoke($null,@([string]$t))
+        $got=Remove-UiAccessKey $t
+        Check ($got -ceq $want) "Remove-UiAccessKey matches WPF for '$t' (ours '$got', WPF '$want')"
+    }
+    # Product round trip: WinForms caption -> adapter conversion -> WPF access text -> the text WinForms shows.
+    . (Join-Path $root 'src/FastLlm.UiFluentAdapter.ps1')
+    $trips=@(
+        @{text='Install && start';mn=$true;shown='Install & start'},
+        @{text='&Save a_b';mn=$true;shown='Save a_b'},
+        @{text='a_b &Save';mn=$true;shown='a_b Save'},
+        @{text='model_a_b';mn=$false;shown='model_a_b'},
+        @{text='a & b';mn=$false;shown='a & b'})
+    foreach($trip in $trips){
+        $conv=ConvertTo-FastLlmUiAccessText -Text $trip.text -UseMnemonic $trip.mn
+        $shown=[string]$wpfRule[0].Invoke($null,@([string]$conv))
+        Check ($shown -ceq $trip.shown) "access text round trip for '$($trip.text)' (UseMnemonic $($trip.mn)): converted '$conv', WPF shows '$shown', want '$($trip.shown)'"
+    }
+}
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 
 $script:FastLlmUiXaml['Test.Sample']=@'
