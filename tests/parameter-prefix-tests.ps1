@@ -45,7 +45,17 @@ foreach ($command in $old.Keys) {
             $wasUnique=@($before | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) }).Count -eq 1
             if (-not $wasUnique) { continue }
             $now=@($after | Where-Object { $_.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) })
-            if ($now.Count -ne 1 -or $now[0] -cne $name) { $broken+="-$prefix ($name)" }
+            if ($now.Count -ne 1 -or $now[0] -cne $name) {
+                # The one exception: the parameter itself declares this prefix as an exact alias. The binder resolves an exact alias before any
+                # prefix, so the abbreviation still binds the same parameter (fast-llm.ps1 -V for -VulkanBarMitigation, beside -Vision). Any other
+                # prefix that stops being unique stays broken.
+                $declaresAlias=$false
+                try {
+                    $info=if ($command -ceq 'fast-llm.ps1') { Get-Command -Name (Join-Path $root 'fast-llm.ps1') } else { Get-Command -Name $command }
+                    $declaresAlias=($info.Parameters.ContainsKey($name) -and @($info.Parameters[$name].Aliases) -contains $prefix -and $info.ResolveParameter($prefix).Name -ceq $name)
+                } catch { $declaresAlias=$false }
+                if (-not $declaresAlias) { $broken+="-$prefix ($name)" }
+            }
         }
     }
     Check ($broken.Count -eq 0) "${command}: every prefix that was unique stays unique (broken: $($broken -join ' '))"
@@ -104,10 +114,11 @@ foreach ($name in $oldStart) {
 Check ($startRebound.Count -eq 0 -and $start.Parameters.ContainsKey('Embeddings') -and $start.Parameters.ContainsKey('EmbeddingPort')) "Start-FastLlmServer: the embedding parameters leave every prefix that was unique bound to the same parameter (changed: $($startRebound -join ' '))"
 $setSettings=Get-Command Set-FastLlmServingSettings
 Check ($setSettings.ResolveParameter('S').Name -ceq 'ServerPort' -and $setSettings.ResolveParameter('T').Name -ceq 'Thinking' -and $setSettings.ResolveParameter('C').Name -ceq 'ChatPage' -and $setSettings.Parameters.ContainsKey('Embeddings') -and $setSettings.Parameters.ContainsKey('EmbeddingPort')) 'Set-FastLlmServingSettings takes the embedding settings, and -S, -T and -C still bind ServerPort, Thinking and ChatPage'
-# The vision option is written -Vision. A parameter of a name that starts with V would make -V (until now unique for -VulkanBarMitigation)
-# ambiguous, so the parameter is named ImageMode with the alias Vision, and VulkanBarMitigation has the alias V: an exact alias wins over a prefix.
-Check ($script.ResolveParameter('Vision').Name -ceq 'ImageMode') 'fast-llm.ps1 plan -Vision binds the vision option'
+# The vision option is the parameter -Vision, so what users type matches Get-Help. A second parameter starting with V would make -V (until now
+# unique for -VulkanBarMitigation) ambiguous, so VulkanBarMitigation has the exact alias V: an exact alias wins over a prefix.
+Check ($script.ResolveParameter('Vision').Name -ceq 'Vision') 'fast-llm.ps1 plan -Vision binds the vision option'
+Check ($script.ResolveParameter('Vi').Name -ceq 'Vision') 'fast-llm.ps1 -Vi binds Vision'
 Check ($script.ResolveParameter('V').Name -ceq 'VulkanBarMitigation' -and $script.ResolveParameter('Vu').Name -ceq 'VulkanBarMitigation') 'fast-llm.ps1 -V and -Vu still bind VulkanBarMitigation'
-Check ((Get-ParameterNames 'fast-llm.ps1') -cnotcontains 'Vision') 'fast-llm.ps1 has no parameter named Vision itself: it is the alias of ImageMode'
+Check ((Get-ParameterNames 'fast-llm.ps1') -ccontains 'Vision' -and (Get-ParameterNames 'fast-llm.ps1') -cnotcontains 'ImageMode') 'fast-llm.ps1 has a parameter named Vision (and none named ImageMode)'
 Check ((Get-ParameterNames 'Get-FastLlmPlan') -ccontains 'Vision') 'Get-FastLlmPlan takes -Vision (the planner has no -V abbreviation to protect)'
 Write-Host "parameter-prefix-tests: $script:count checks passed"

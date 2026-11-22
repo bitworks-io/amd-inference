@@ -150,11 +150,9 @@ param(
     # plan and start only: off (the default) leaves everything as it is (--no-mmproj stays); on asks for the vision option, which needs a measured
     # setup and an approved projector. This release lists neither, so a start with it is refused (typed, before anything starts): FastLLM cannot
     # verify yet where the projector is loaded. Never saved as a setting; the window and the start at sign-in never ask for it.
-    # The parameter is named ImageMode with the alias Vision, so no existing abbreviation becomes ambiguous (any parameter name starting with V would
-    # take -V from -VulkanBarMitigation, which now has the exact alias V); -Vision is what is written on the command line.
-    [Alias('Vision')]
+    # -V stays bound to -VulkanBarMitigation through that parameter's exact alias V (an exact alias wins over a prefix); -Vi binds this one.
     [ValidateSet('off', 'on')]
-    [string] $ImageMode,
+    [string] $Vision,
 
     # settings only: save the loopback port (1024-65535; 8080 is the default and removes the saved value). Text for the same reason as -ServerPort.
     [string] $Port,
@@ -412,9 +410,9 @@ if ($PSBoundParameters.ContainsKey('KvContextProfile') -and $effectiveAction -no
 if ($PSBoundParameters.ContainsKey('KvSlots') -and $effectiveAction -notin @('plan', 'install', 'start', 'settings')) { throw '-KvSlots is supported only by plan, install, start and settings.' }
 if ($PSBoundParameters.ContainsKey('KvSlots')) { $null = ConvertTo-FastLlmSlots -Value $KvSlots }
 # The vision option: plan and start only, and never saved. ValidateSet ignores case; the value is lower-cased into its own variable.
-if ($PSBoundParameters.ContainsKey('ImageMode') -and $effectiveAction -notin @('plan', 'start')) { throw '-Vision is supported only by plan and start.' }
+if ($PSBoundParameters.ContainsKey('Vision') -and $effectiveAction -notin @('plan', 'start')) { throw '-Vision is supported only by plan and start.' }
 $requestedVision = $null
-if ($PSBoundParameters.ContainsKey('ImageMode')) { $requestedVision = $ImageMode.ToLowerInvariant() }
+if ($PSBoundParameters.ContainsKey('Vision')) { $requestedVision = $Vision.ToLowerInvariant() }
 # The embedding sidecar: start and settings only. The value is lower-cased into its own variable (the parameters are never assigned to).
 if (($PSBoundParameters.ContainsKey('Embeddings') -or $PSBoundParameters.ContainsKey('EmbeddingPort')) -and $effectiveAction -notin @('start', 'settings')) { throw '-Embeddings and -EmbeddingPort are supported only by start and settings.' }
 $requestedEmbeddings = $null
@@ -456,7 +454,7 @@ if ($effectiveAction -in @('plan', 'install', 'start', 'doctor')) {
     # Vision reaches the planner only when it is on (so the default plan call keeps the exact parameter set it always had), with the profile rows
     # file its add-on rows are read from. The saved settings have no vision key: -IgnoreUserSettings and the background starts are unaffected.
     # (Guarded by the bound parameter like the options above, so a harness that runs only this block never reads a variable it did not set.)
-    if ($PSBoundParameters.ContainsKey('ImageMode') -and $requestedVision -ceq 'on') {
+    if ($PSBoundParameters.ContainsKey('Vision') -and $requestedVision -ceq 'on') {
         $selectionOptions.Vision = 'on'
         if (-not $selectionOptions.ContainsKey('KvProfilesPath')) { $selectionOptions.KvProfilesPath = Join-Path (Join-Path $PSScriptRoot 'config') 'serving-profiles.json' }
     }
