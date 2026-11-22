@@ -4272,6 +4272,13 @@ function Start-FastLlmServer {
     # An engine-component plan already validated the components catalog above (same file, same catalog); the re-plan reuses it. Only added then, so the
     # default call keeps the exact parameter set it always had.
     if ($null -ne $startComponent) { $freshRecipeOptions.EngineComponents = $startComponents }
+    # Added only for a plan with speculation: ONLY its mode is forwarded (with the rows file), so the fresh plan re-derives the block and the arguments
+    # from the measured rows. The incoming block is never copied onto the fresh plan; a block that is not a checked one is the typed speculation-invalid.
+    $incomingSpeculation = Get-FastLlmPlanSpeculation -Plan $Plan
+    if ($null -ne $incomingSpeculation) {
+        $freshRecipeOptions.Speculation = [string] $incomingSpeculation.mode
+        if (-not $freshRecipeOptions.ContainsKey('KvProfilesPath')) { $freshRecipeOptions.KvProfilesPath = Join-Path $configRoot 'serving-profiles.json' }
+    }
     $freshPlan = Get-FastLlmPlan -Hardware $freshHardware -CatalogPath $CatalogPath -Profile ([string] $Plan.profile) -InstallRoot $InstallRoot -ModelId $Plan.requestedModelId -ContextSize $Plan.requestedContextSize -AllowExperimentalModel:$Plan.allowExperimentalModel @freshRecipeOptions
     # The projector block must be the same one: the same component, profile, extra memory and evidence. Anything else is a different plan.
     if ($planHadVision) {
@@ -4335,6 +4342,16 @@ function Start-FastLlmServer {
     # A plan that stands in for another recipe re-plans to the same stand-in, so the fallback is not lost (or reported as a changed recipe) at start.
     if ($Plan.PSObject.Properties['fallback'] -and $Plan.fallback -and -not $freshPlan.PSObject.Properties['fallback']) {
         $freshPlan | Add-Member -NotePropertyName fallback -NotePropertyValue $Plan.fallback -Force
+    }
+    # Speculation must come out of the re-plan exactly as it went in (same spec type, extra arguments and evidence id): the rows changed or the block
+    # was lost since the plan was made is a typed refusal with no retry reason, never a start without speculation or with another one.
+    if ($null -ne $incomingSpeculation) {
+        $freshSpeculation = Get-FastLlmPlanSpeculation -Plan $freshPlan
+        if ($null -eq $freshSpeculation -or [string] $freshSpeculation.specType -cne [string] $incomingSpeculation.specType -or
+            (@($freshSpeculation.extraArguments) -join [string][char] 31) -cne (@($incomingSpeculation.extraArguments) -join [string][char] 31) -or
+            [string] $freshSpeculation.resultId -cne [string] $incomingSpeculation.resultId) {
+            throw (New-FastLlmTypedFailure -Code 'speculation-plan-changed' -Message 'The measured speculation setting changed while preparing startup. Nothing was started; plan again.')
+        }
     }
     $startedExplicit = [bool] $planRecipeId
     $Plan = $freshPlan

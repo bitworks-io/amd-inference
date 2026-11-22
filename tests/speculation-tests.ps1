@@ -431,6 +431,15 @@ try {
             $outcome | Add-Member -NotePropertyName context -NotePropertyValue (& $module { $script:specStartContext }) -Force
             return $outcome
         }
+        # A world whose plan was made from the test rows, and whose rows file is then replaced (the rows changed between the plan and the start).
+        function New-ChangedStart([string]$Label,$ChangedDocument,[switch]$Remove){
+            $w=New-StartWorld $Label $null
+            $pl=Get-FastLlmPlan -Hardware $card -CatalogPath $w.catalog -Profile balanced -NoEngineExecution -InstallRoot $w.install -KvProfilesPath $w.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -Speculation 'ngram'
+            New-Item -ItemType Directory -Path (Split-Path -Parent $pl.modelPath) -Force | Out-Null
+            [IO.File]::WriteAllText($pl.modelPath,'x')
+            Write-Utf8 $w.profiles ($ChangedDocument | ConvertTo-Json -Depth 12)
+            return [pscustomobject]@{world=$w;plan=$pl}
+        }
         $world=New-StartWorld 'ngram' $null
         $startPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -KvProfilesPath $world.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -Speculation 'ngram'
         New-Item -ItemType Directory -Path (Split-Path -Parent $startPlan.modelPath) -Force | Out-Null
@@ -453,17 +462,20 @@ try {
         Check (-not $switchReal.threw -and $null -ne $basis -and [string]$basis['Speculation'] -ceq 'ngram' -and [string]$basis['KvContextProfile'] -ceq 'long') "start re-plan: the saved switch basis of the start carries Speculation ngram and the profile$(if($switchReal.threw){': '+$switchReal.message})"
         # The rows changed between the plan and the start: a typed refusal with no retry reason, and nothing is started.
         $changedDoc=Get-SpecDocument;$changedDoc.addOns[2].specType='ngram-mod'
-        $changedWorld=New-StartWorld 'changed-spec-type' $changedDoc
-        $changed=Invoke-RealStart $changedWorld $startPlan
+        $cs1=New-ChangedStart 'changed-spec-type' $changedDoc
+        $changed=Invoke-RealStart $cs1.world $cs1.plan
         Check ($changed.threw -and $changed.code -ceq 'speculation-plan-changed' -and [string]::IsNullOrEmpty($changed.reason) -and $null -eq $changed.captured) 'start re-plan: rows whose spec type changed since the plan are refused (speculation-plan-changed), nothing starts and no reason is set'
         $changedArgsDoc=Get-SpecDocument;$changedArgsDoc.addOns[2].extraArguments=@('--spec-ngram-size-n','8')
-        $changed2=Invoke-RealStart (New-StartWorld 'changed-args' $changedArgsDoc) $startPlan
+        $cs2=New-ChangedStart 'changed-args' $changedArgsDoc
+        $changed2=Invoke-RealStart $cs2.world $cs2.plan
         Check ($changed2.threw -and $changed2.code -ceq 'speculation-plan-changed' -and $null -eq $changed2.captured) 'start re-plan: rows whose extra arguments changed are refused the same way'
         $changedIdDoc=Get-SpecDocument;$changedIdDoc.addOns[2].evidence.resultId='test-ngram-9999'
-        $changed3=Invoke-RealStart (New-StartWorld 'changed-result' $changedIdDoc) $startPlan
+        $cs3=New-ChangedStart 'changed-result' $changedIdDoc
+        $changed3=Invoke-RealStart $cs3.world $cs3.plan
         Check ($changed3.threw -and $changed3.code -ceq 'speculation-plan-changed' -and $null -eq $changed3.captured) 'start re-plan: rows whose evidence id changed are refused the same way'
         $goneDoc=Get-SpecDocument;$goneDoc.addOns=@($goneDoc.addOns | Where-Object { $_.kind -cne 'ngram' })
-        $gone=Invoke-RealStart (New-StartWorld 'row-gone' $goneDoc) $startPlan
+        $cs4=New-ChangedStart 'row-gone' $goneDoc
+        $gone=Invoke-RealStart $cs4.world $cs4.plan
         Check ($gone.threw -and $gone.code -cin @('speculation-plan-changed','speculation-not-measured') -and [string]::IsNullOrEmpty($gone.reason) -and $null -eq $gone.captured) 'start re-plan: a row that is gone at start is a typed refusal with no retry reason, and nothing starts (never a plain start)'
         # A forged block is never forwarded: the fresh plan is re-derived from the rows.
         $forged=$startPlan | ConvertTo-Json -Depth 12 | ConvertFrom-Json

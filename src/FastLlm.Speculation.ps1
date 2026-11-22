@@ -61,7 +61,8 @@ function Get-FastLlmSpeculationAllowlist {
 function Get-FastLlmSpeculationAllowlistEntry {
     param([AllowEmptyString()][string] $EngineId)
     $table = Get-FastLlmSpeculationAllowlist
-    if ($EngineId -and $table.ContainsKey($EngineId)) { return $table[$EngineId] }
+    # Exact, like the checker: a PowerShell hashtable ignores case, so the key is compared on its own first.
+    if ($EngineId -and @($table.Keys) -ccontains $EngineId) { return $table[$EngineId] }
     return (New-FastLlmSpeculationAllowlistEntry)
 }
 
@@ -153,12 +154,30 @@ function Get-FastLlmPlanSpeculation {
     $engineId = & $read 'engineId'
     $extra = & $read 'extraArguments'
     $resultId = & $read 'resultId'
+    $blockBackend = & $read 'backend'
+    $blockSha = & $read 'modelSha256'
     $valid = ($mode -is [string]) -and ($script:FastLlmSpeculationModes -ccontains $mode) -and ($engineId -is [string]) -and ($specType -is [string]) -and
         ($specType -cmatch $script:FastLlmSpeculationSpecTypePattern)
     if ($valid) {
         $extraList = @(); if ($null -ne $extra) { $extraList = @($extra) }
         $valid = ($null -eq (Test-FastLlmSpeculationRow -Kind $mode -EngineId $engineId -SpecType $specType -ExtraArguments $extraList)) -and
             ($null -eq $resultId -or ($resultId -is [string] -and $resultId -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\z'))
+    }
+    # The block is the plan's own: its model sha256, backend and engine id are the plan's (so a block cannot be moved onto another plan).
+    if ($valid) {
+        $valid = ($blockBackend -is [string]) -and ($blockSha -is [string]) -and ($blockSha -cmatch '^[0-9a-f]{64}\z')
+    }
+    if ($valid) {
+        $planSha = $null
+        if ($Plan.PSObject.Properties['model'] -and $Plan.model -and $Plan.model.PSObject.Properties['sha256']) { $planSha = ([string] $Plan.model.sha256).ToLowerInvariant() }
+        if ($null -ne $planSha -and $planSha -cne $blockSha) { $valid = $false }
+        $planBackend = $null
+        if ($Plan.PSObject.Properties['backend'] -and $null -ne $Plan.backend) { $planBackend = ([string] $Plan.backend).ToLowerInvariant() }
+        if ($null -ne $planBackend -and $planBackend -cne $blockBackend) { $valid = $false }
+        $expectedEngineId = $null
+        if ($Plan.PSObject.Properties['engineComponentId'] -and $Plan.engineComponentId) { $expectedEngineId = [string] $Plan.engineComponentId }
+        elseif ($Plan.PSObject.Properties['engineVersion'] -and $Plan.engineVersion -and $null -ne $planBackend) { $expectedEngineId = 'llama.cpp-' + [string] $Plan.engineVersion + '-' + $planBackend }
+        if ($null -ne $expectedEngineId -and $expectedEngineId -cne [string] $engineId) { $valid = $false }
     }
     if (-not $valid) {
         throw (New-FastLlmTypedFailure -Code 'speculation-invalid' -Message 'The plan carries a speculation setting that FastLLM does not allow for this engine. Nothing was started; plan again.')

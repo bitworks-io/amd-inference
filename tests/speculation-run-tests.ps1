@@ -29,7 +29,7 @@ try {
             enginePath=(Get-Process -Id $PID).Path
             serverArguments=@('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode',$MockMode,'-Model','test-model','-Context','1024','-DiagnosticPath',(Join-Path $temp ('diagnostic-'+$Label+'.txt')))+@($ServerTail)
             endpoint="http://127.0.0.1:$port/v1"; selectedAdapters=@([pscustomobject]@{device='Vulkan0'})
-            hardwareFingerprint='synthetic';engineVersion='test';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64);parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
+            hardwareFingerprint='synthetic';engineVersion='b10698';model=[pscustomobject]@{id='test-model';contextSize=1024;sha256=('0'*64);parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
             catalogVersion='test';backend='Vulkan';splitMode='none';tensorSplit=$null;modelPath='test-model'
         }
         if($null -ne $Block){
