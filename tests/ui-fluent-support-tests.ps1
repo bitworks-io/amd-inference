@@ -98,6 +98,8 @@ foreach($bad in @(@{timedOut=$false;exitCode=1;stdout='{"typeFound":true,"legacy
     $r=Probe { $badRun }.GetNewClosure()
     Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'child-failed' -and $r.summary -ceq 'Window accessibility: not checked (child-failed)') "doctor a11y: garbage child output is child-failed ($($bad.stdout))"
 }
+$launch=$sup.Substring($sup.IndexOf('function Invoke-FastLlmDoctorAccessibilityChild'),$sup.IndexOf('function Get-FastLlmDoctorWindowAccessibility')-$sup.IndexOf('function Invoke-FastLlmDoctorAccessibilityChild'))
+Check ($launch -notmatch '(?i)EncodedCommand' -and $launch -notmatch '(?i)ExecutionPolicy' -and $launch.Contains('Invoke-FastLlmUiFluentAccessibilityProbe') -and $launch.Contains('. $env:FASTLLM_DOCTOR_A11Y_SUPPORT')) 'the doctor child launch is plain: no EncodedCommand, no ExecutionPolicy'
 $r=Probe { throw 'runner must not run' } $false
 Check ($r.status -ceq 'not-checked' -and $r.reason -ceq 'not-windows' -and $r.summary -ceq 'Window accessibility: not checked (not-windows)') 'doctor a11y: not Windows never starts a child'
 if($env:OS -ne 'Windows_NT'){

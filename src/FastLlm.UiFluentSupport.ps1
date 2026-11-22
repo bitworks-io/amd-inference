@@ -188,6 +188,21 @@ function Show-FastLlmUiUnsupported {
 # line; only field names leave this function (no path, no value, no exception text). Failures map to a reason code:
 # not-windows, wpf-load-failed, timeout, child-failed.
 
+# The child's whole body: sets the switches first, loads WPF, writes exactly one JSON line and returns the exit code (0 read, 1 fault).
+function Invoke-FastLlmUiFluentAccessibilityProbe {
+    [CmdletBinding()] param()
+    try {
+        Set-FastLlmUiFluentAccessibilitySwitches
+        $loaded = $true
+        try { Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase -ErrorAction Stop } catch { $loaded = $false }
+        if (-not $loaded) { [Console]::Out.WriteLine('{"loadFailed":true}'); return 0 }
+        $state = Get-FastLlmUiFluentAccessibilityState
+        [Console]::Out.WriteLine((@{ typeFound = [bool] $state.typeFound; legacy = @($state.legacy) } | ConvertTo-Json -Compress))
+        return 0
+    }
+    catch { return 1 }
+}
+
 # Runs the child and returns @{ timedOut; exitCode; stdout }. Kills only its own Process object.
 function Invoke-FastLlmDoctorAccessibilityChild {
     [CmdletBinding()]
@@ -195,24 +210,10 @@ function Invoke-FastLlmDoctorAccessibilityChild {
         [Parameter(Mandatory = $true)][string] $SupportScript,
         [int] $TimeoutSeconds = 30
     )
-    $childScript = @'
-$ErrorActionPreference = 'Stop'
-try {
-    . $env:FASTLLM_DOCTOR_A11Y_SUPPORT
-    Set-FastLlmUiFluentAccessibilitySwitches
-    $loaded = $true
-    try { Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase -ErrorAction Stop } catch { $loaded = $false }
-    if (-not $loaded) { [Console]::Out.WriteLine('{"loadFailed":true}'); exit 0 }
-    $state = Get-FastLlmUiFluentAccessibilityState
-    [Console]::Out.WriteLine((@{ typeFound = [bool] $state.typeFound; legacy = @($state.legacy) } | ConvertTo-Json -Compress))
-    exit 0
-}
-catch { exit 1 }
-'@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + $encoded
+    # The path travels in an environment variable, so the literal $env: below reaches the child unexpanded.
+    $info.Arguments = '-NoProfile -NonInteractive -Command "& { . $env:FASTLLM_DOCTOR_A11Y_SUPPORT; exit (Invoke-FastLlmUiFluentAccessibilityProbe) }"'
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
