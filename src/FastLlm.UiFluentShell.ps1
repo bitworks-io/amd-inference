@@ -192,6 +192,21 @@ function Stop-FastLlmUiFluentStartup {
     exit 3
 }
 
+# Compiles the decorative text type once, after WPF is loaded. References are given by assembly path (names do not resolve on pwsh 7).
+function Initialize-FastLlmUiFluentAutomation {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SourceRoot)
+    if ('Bitworks.FastLlm.DecorativeTextBlock' -as [type]) { return }
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+    $refs = @(
+        [System.Windows.Controls.TextBlock].Assembly.Location,
+        [System.Windows.UIElement].Assembly.Location,
+        [System.Windows.DependencyObject].Assembly.Location,
+        [System.Xaml.XamlSchemaContext].Assembly.Location
+    )
+    Add-Type -Path (Join-Path $SourceRoot 'src/WindowsFluentAutomation.cs') -ReferencedAssemblies $refs -ErrorAction Stop
+}
+
 # What the system theme says now, as one object plus a key that changes when anything the look depends on changes.
 function Get-FastLlmUiFluentThemeState {
     [CmdletBinding()] param()
@@ -286,18 +301,16 @@ function Initialize-FastLlmUiFluentPane {
         $item.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.NavItemStyle')
         $panel = New-Object System.Windows.Controls.StackPanel
         $panel.Orientation = [System.Windows.Controls.Orientation]::Horizontal
-        $glyph = New-Object System.Windows.Controls.TextBlock
+        $glyph = New-Object Bitworks.FastLlm.DecorativeTextBlock
         $glyph.Text = New-FastLlmUiFluentGlyphText $row.Glyph
         $glyph.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
         $glyph.FontSize = 16
         $glyph.Width = 24
         $glyph.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-        [System.Windows.Automation.AutomationProperties]::SetAccessibilityView($glyph, [System.Windows.Automation.Peers.AccessibilityView]::Raw)
-        $label = New-Object System.Windows.Controls.TextBlock
+        $label = New-Object Bitworks.FastLlm.DecorativeTextBlock
         $label.Text = [string] $row.Label
         $label.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
         $label.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-        [System.Windows.Automation.AutomationProperties]::SetAccessibilityView($label, [System.Windows.Automation.Peers.AccessibilityView]::Raw)
         [void] $panel.Children.Add($glyph)
         [void] $panel.Children.Add($label)
         $item.Content = $panel
@@ -416,6 +429,10 @@ function Initialize-FastLlmUiFluentShell {
 
     try { $f.Interop = [bool] (Initialize-FastLlmUiWindowInterop -SourceRoot $script:FastLlmUiFluentSourceRoot) } catch { $f.Interop = $false }
 
+    # The decorative text type (src/WindowsFluentAutomation.cs). A compile failure means no window: text C, exit 3; the compiler text goes to the console only.
+    try { Initialize-FastLlmUiFluentAutomation -SourceRoot $script:FastLlmUiFluentSourceRoot }
+    catch { Write-Host ([string] $_.Exception.Message); Stop-FastLlmUiFluentStartup -Reason 'xaml-parse' }
+
     $themeState = $null
     try { $themeState = Get-FastLlmUiFluentThemeState } catch { Stop-FastLlmUiFluentStartup -Reason 'theme-init' }
     $win = $null
@@ -437,8 +454,7 @@ function Initialize-FastLlmUiFluentShell {
     $win.MinHeight = [double] $size.MinHeight
     $win.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
     try {
-        $accent = if ([string] $themeState.Choice -ceq 'dark') { [string] $themeState.Pair.darkFill } else { [string] $themeState.Pair.lightFill }
-        $win.Icon = New-FastLlmUiAppIconImage -AccentArgb $accent
+        $win.Icon = New-FastLlmUiAppIconImage
     }
     catch { $null = $_ }
 

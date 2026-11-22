@@ -58,8 +58,7 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <Ellipse x:Name="StatusDot" Width="12" Height="12" Margin="0,0,10,0" VerticalAlignment="Center" StrokeThickness="2"
-                   AutomationProperties.AccessibilityView="Raw"/>
+          <Ellipse x:Name="StatusDot" Width="12" Height="12" Margin="0,0,10,0" VerticalAlignment="Center" StrokeThickness="2"/>
           <TextBlock x:Name="StatusHeadline" Grid.Column="1" VerticalAlignment="Center" TextWrapping="Wrap"
                      FontFamily="{DynamicResource FastLlm.DisplayFont}" FontSize="{DynamicResource FastLlm.SubtitleSize}"
                      FontWeight="{DynamicResource FastLlm.SubtitleWeight}"/>
@@ -348,13 +347,12 @@ function Update-FastLlmUiFluentHome {
                 $row = New-Object System.Windows.Controls.StackPanel
                 $row.Orientation = [System.Windows.Controls.Orientation]::Horizontal
                 $row.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
-                $mark = New-Object System.Windows.Controls.TextBlock
+                $mark = New-Object Bitworks.FastLlm.DecorativeTextBlock
                 $code = switch ([string] $step.state) { 'done' { $glyphs.StepDone } 'in progress' { $glyphs.StepActive } 'needs attention' { $glyphs.StepAttention } default { $glyphs.StepWait } }
                 $mark.Text = New-FastLlmUiFluentGlyphText $code
                 $mark.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe Fluent Icons, Segoe MDL2 Assets')
                 $mark.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
                 $mark.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-                [System.Windows.Automation.AutomationProperties]::SetAccessibilityView($mark, [System.Windows.Automation.Peers.AccessibilityView]::Raw)
                 $label = New-Object System.Windows.Controls.TextBlock
                 $label.Text = [string] $step.name + ', ' + [string] $step.state
                 [void] $row.Children.Add($mark)
