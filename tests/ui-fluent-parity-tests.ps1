@@ -3,7 +3,8 @@
 # The classic creation block of fast-llm-ui.ps1 (from the form to the reinstall button) is cut out of the file by its syntax tree and run with
 # real WinForms, then Initialize-FastLlmUiFluentBindings runs with the same inputs. Per control name, the start state must match:
 # Text, Enabled, the control's own visible flag, Checked, Items, SelectedIndex, Value (with Maximum and Increment) and UseMnemonic.
-# A difference fails with the control name and the property. Two cases: default settings, and saved settings that differ from every default.
+# A difference fails with the control name and the property. Two cases: default settings, and saved settings (BAR off, experimental on, updates off, licences accepted automatically) that move each
+# saved-setting control away from its default.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 if ($env:OS -ne 'Windows_NT') {
@@ -25,9 +26,19 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.UiFluentBindings.ps1')
 
 # A control's own visible flag (WinForms keeps it as the state bit 0x2 behind the non-public Control.GetState); the effective Visible is false on a form never shown.
-$script:controlGetState = [Windows.Forms.Control].GetMethod('GetState', [Reflection.BindingFlags]'NonPublic, Instance', $null, [Type[]]@([int]), $null)
-Check ($null -ne $script:controlGetState) "WinForms has Control.GetState(int), which this test reads for a control's own visible flag"
-function Test-OwnVisible($Control) { return [bool]$script:controlGetState.Invoke($Control, @([int]2)) }
+# The parameter is an int on .NET Framework and the private Control.States enum on .NET 8 (pwsh 7), so the method is found by name and one parameter,
+# and the argument is built from the parameter's own type (STATE_VISIBLE = 2 in both).
+$getStateMethods = @([Windows.Forms.Control].GetMethods([Reflection.BindingFlags]'NonPublic, Instance') | Where-Object { $_.Name -ceq 'GetState' -and $_.GetParameters().Count -eq 1 })
+Check ($getStateMethods.Count -eq 1) "WinForms has exactly one non-public one-parameter Control.GetState, which this test reads for a control's own visible flag (found $($getStateMethods.Count))"
+$script:controlGetState = $getStateMethods[0]
+$stateType = $script:controlGetState.GetParameters()[0].ParameterType
+$script:visibleStateArg = if ($stateType.IsEnum) { [Enum]::ToObject($stateType, 2) } else { [int]2 }
+function Test-OwnVisible($Control) { return [bool]$script:controlGetState.Invoke($Control, @($script:visibleStateArg)) }
+# Sanity: the probe reads a hidden control as false and a visible one as true.
+$probeHidden = New-Object Windows.Forms.Button; $probeHidden.Visible = $false
+$probeShown = New-Object Windows.Forms.Button; $probeShown.Visible = $true
+Check ((-not (Test-OwnVisible $probeHidden)) -and (Test-OwnVisible $probeShown)) 'the own-visible probe reads Visible=false as false and Visible=true as true'
+$probeHidden.Dispose(); $probeShown.Dispose()
 
 # The creation block, cut from the real script.
 $path = Join-Path $root 'fast-llm-ui.ps1'
@@ -39,7 +50,8 @@ $starts = @($tree.FindAll({ param($n) $n -is [System.Management.Automation.Langu
 Check ($starts.Count -eq 1) 'the script creates the main form once'
 $ends = @($tree.FindAll({ param($n) $n -is [System.Management.Automation.Language.StatementAst] -and $n.Extent.Text -ceq '$form.Controls.Add($reinstallButton)' }, $true))
 Check ($ends.Count -ge 1) 'the script adds the reinstall button to the form'
-# The first such statement after the form is the creation line (a later one is inside the update handler).
+# Each match comes twice (the PipelineAst and its CommandExpressionAst on the same line), and a later pair is inside the update handler;
+# the smallest end after the form is the creation line's.
 $startOffset = $starts[0].Extent.StartOffset
 $endOffset = ($ends | Where-Object { $_.Extent.StartOffset -gt $startOffset } | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Minimum).Minimum
 Check ($endOffset -gt $startOffset) 'the creation block runs from the form to the reinstall button'
@@ -87,12 +99,13 @@ function Compare-Name([string]$Name, $Classic, $Adapter, [string]$Case) {
     return , $problems.ToArray()
 }
 
-function Test-Case([string]$Case, [scriptblock]$Prepare) {
+function Test-Case([string]$Case, [scriptblock]$Prepare, [scriptblock]$Verify) {
     $dir = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-parity-' + [guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $dir)
     try {
         & $Prepare $dir
         $classic = Invoke-ClassicCreation -InstallRoot $dir
+        if ($null -ne $Verify) { & $Verify $classic }
         $made = Initialize-FastLlmUiFluentBindings -InstallRoot $dir -Catalog $catalog -UiSettings $script:uiSettings
         Check ($made.Count -eq $names.Count) "$Case : one adapter per control name ($($names.Count))"
         $all = New-Object System.Collections.ArrayList
@@ -114,10 +127,21 @@ function Test-Case([string]$Case, [scriptblock]$Prepare) {
 Test-Case 'default settings' { param($dir) }
 Test-Case 'saved settings' {
     param($dir)
-    $saved = [pscustomobject]@{ vulkanBarMitigation = 'off'; experimentalComponents = 'on'; updateCheck = 'off' }
-    [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), ($saved | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    # The licence block in the shape Get-FastLlmComponentLicenseSettings reads: mode, acceptedAt and a non-empty accepted list of title and host.
+    $saved = [pscustomobject]@{
+        vulkanBarMitigation = 'off'; experimentalComponents = 'on'; updateCheck = 'off'
+        componentLicenses = [pscustomobject]@{ mode = 'accept-automatically'; acceptedAt = '2026-01-02T03:04:05Z'; accepted = @([pscustomobject]@{ title = 'Example engine component'; host = 'example.invalid' }) }
+    }
+    [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), ($saved | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+} {
+    param($classic)
+    # The classic controls took the saved values, so the comparison below runs the Checked=true paths (not only the defaults).
+    Check ([bool]$classic['licenseBox'].Checked) 'saved settings case: the classic licence box is checked (accept-automatically was read)'
+    Check ([bool]$classic['experimentalBox'].Checked -and -not [bool]$classic['updateBox'].Checked) 'saved settings case: the classic experimental box is checked and the update box is not'
+    Check ([int]$classic['barBox'].SelectedIndex -eq 2) 'saved settings case: the classic BAR box shows Off'
 }
 Check ([string]$script:uiSettings.vulkanBarMitigation -ceq 'off') 'the second case read the saved BAR setting'
 Check ([string]$script:uiSettings.experimentalComponents -ceq 'on') 'the second case read the saved experimental setting'
+Check ([string]$script:uiSettings.updateCheck -ceq 'off') 'the second case read the saved update setting'
 
 Write-Host "UI fluent parity tests passed: $($script:checks)"

@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([string]$InstallRoot,[ValidateSet('classic','fluent')][string]$Window='classic')
+param([string]$InstallRoot,[ValidateSet('classic','fluent',IgnoreCase=$false)][string]$Window='classic')
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
 if ($env:OS -ne 'Windows_NT') { throw 'The control window requires Windows PowerShell on Windows.' }
@@ -611,7 +611,7 @@ function DisposeTrayControls {
     if($script:trayMenu){try{$script:trayMenu.Dispose()}catch{};$script:trayMenu=$null}
 }
 # The tray icon: the stock application icon, or the drawn one in the Fluent window.
-function GetUiTrayIcon { if ($Window -ceq 'fluent') { return Get-FastLlmUiFluentTrayIcon } ; return [Drawing.SystemIcons]::Application }
+function GetUiTrayIcon { if ($script:Window -ceq 'fluent') { return Get-FastLlmUiFluentTrayIcon } ; return [Drawing.SystemIcons]::Application }
 function EnsureTrayIcon {
     if($script:trayIcon){return}
     try{
