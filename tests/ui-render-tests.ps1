@@ -343,14 +343,14 @@ function New-ShellRenderPage($Case){
     $sw=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
     $homePage=New-FastLlmUiXamlElement -Name 'FastLlm.Home'
     $els=@{}
-    # Every named element of the shell markup (the product's Initialize fills the same collection from the same markup), so nothing an update function reads is missing.
-    $walk=$null
-    $walk={
-        param($node)
-        if($node -is [System.Windows.FrameworkElement] -and -not [string]::IsNullOrEmpty([string]$node.Name) -and -not $els.ContainsKey([string]$node.Name)){$els[[string]$node.Name]=$node}
-        foreach($child in [System.Windows.LogicalTreeHelper]::GetChildren($node)){ if($child -is [System.Windows.DependencyObject]){& $walk $child} }
+    # Every x:Name in the registered shell markup, resolved through the XAML namescope (FindName), so ColumnDefinitions and other non-visuals resolve too.
+    $missing=@()
+    foreach($m in [regex]::Matches([string]$script:FastLlmUiXaml['FastLlm.Shell'],'x:Name="([^"]+)"')){
+        $n=[string]$m.Groups[1].Value
+        $found=$sw.FindName($n)
+        if($null -eq $found){$missing+=$n}else{$els[$n]=$found}
     }
-    & $walk $sw
+    if($missing.Count -gt 0){throw ('shell names that did not resolve: '+($missing -join ', '))}
     [void](Initialize-FastLlmUiFluentHome -Page $homePage -Els $els)
     $els.PageHost.Child=$homePage
     $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width;ActualHeight=[double]$Case.height};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null

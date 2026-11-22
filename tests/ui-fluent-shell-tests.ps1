@@ -835,9 +835,26 @@ function Get-ShellVisuals($Root) {
 }
 
 # The text of every TextBlock in an element's visual tree (an AccessText draws its text in an inner TextBlock, without the key underscore).
+function Get-ShellInlineText($Inlines) {
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($i in $Inlines) {
+        if ($i -is [System.Windows.Documents.Run]) { [void]$sb.Append([string]$i.Text) }
+        elseif ($i -is [System.Windows.Documents.Span]) { [void]$sb.Append((Get-ShellInlineText $i.Inlines)) }
+        elseif ($i -is [System.Windows.Documents.LineBreak]) { [void]$sb.Append("`n") }
+    }
+    return $sb.ToString()
+}
+
+# The text a TextBlock draws: its Text, or (an AccessText draws through Run inlines and leaves Text empty) the joined text of its inlines.
 function Get-ShellTexts($Root) {
     $out = New-Object System.Collections.ArrayList
-    foreach ($n in @(Get-ShellVisuals $Root)) { if ($n -is [System.Windows.Controls.TextBlock]) { [void]$out.Add([string]$n.Text) } }
+    foreach ($n in @(Get-ShellVisuals $Root)) {
+        if ($n -is [System.Windows.Controls.TextBlock]) {
+            $t = [string]$n.Text
+            if ($t -eq '') { $t = Get-ShellInlineText $n.Inlines }
+            [void]$out.Add($t)
+        }
+    }
     return $out.ToArray()
 }
 
@@ -984,6 +1001,8 @@ function Invoke-S2-Bindings {
     Invoke-Pump 200
     $btn.UpdateLayout()
     $texts = @(Get-ShellTexts $btn)
+    $accessKeys = @(Get-ShellVisuals $btn | Where-Object { $_ -is [System.Windows.Controls.AccessText] } | ForEach-Object { [int][char]$_.AccessKey })
+    Check (@($accessKeys | Where-Object { $_ -ne 0 }).Count -eq 0) 'S2 a caption with underscores sets no access key on its AccessText' "accessKeys=[$($accessKeys -join ',')]"
     Check (($texts -ccontains 'my_model_id') -and -not (@($texts | Where-Object { $_ -match '__' }).Count -gt 0)) 'S2 a Content-mode caption with underscores renders with none lost' ("rendered=[$($texts -join '|')] content='$($btn.Content)' visibility=$($btn.Visibility) size=$($btn.ActualWidth)x$($btn.ActualHeight) tree: " + (Get-ShellTreeText $btn))
     $script:connectButton.UseMnemonic = $true
     $script:connectButton.Text = 'Connect an app'
