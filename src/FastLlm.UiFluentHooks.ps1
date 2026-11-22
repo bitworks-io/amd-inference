@@ -1,10 +1,12 @@
 #requires -Version 5.1
 # Window-message hooks for the fluent window: theme changes (settings, system colors, DWM colorization) and session end.
-# The hook delegate is a scriptblock converted to HwndSourceHook, so it captures what it calls as scriptblocks, never by function name.
+# The hook body is the C# class Bitworks.FastLlm.FluentWindowHook (a scriptblock delegate cannot write back the ref bool handled),
+# so PowerShell runs only for session-end queries and theme messages. Both callbacks are built here, in this function's own scope.
 # No WPF type is resolved at dot-source time, only inside function bodies.
 Set-StrictMode -Version 2.0
 
-$script:FastLlmUiHookState = @{}
+# Entries: @{ Window; Source; Hook }. Matched by Window reference, because the handle reads zero after WM_DESTROY.
+$script:FastLlmUiHookEntries = New-Object System.Collections.ArrayList
 
 function Register-FastLlmUiWindowHooks {
     [CmdletBinding()]
@@ -15,38 +17,40 @@ function Register-FastLlmUiWindowHooks {
     )
     $result = @{ hooked = $false; error = '' }
     try {
+        Unregister-FastLlmUiWindowHooks -Window $Window
         $helper = New-Object System.Windows.Interop.WindowInteropHelper($Window)
         $hwnd = $helper.EnsureHandle()
         $source = [System.Windows.Interop.HwndSource]::FromHwnd($hwnd)
         if ($null -eq $source) { throw 'No HwndSource for the window handle.' }
-        $key = [string] $hwnd.ToInt64()
-        if ($script:FastLlmUiHookState.ContainsKey($key)) {
-            $old = $script:FastLlmUiHookState[$key]
-            try { $old.Source.RemoveHook($old.Hook) } catch { $null = $_ }
-            $script:FastLlmUiHookState.Remove($key)
-        }
         $closing = ${function:Invoke-FastLlmUiFormClosing}
-        $dispatcher = $Window.Dispatcher
-        $hookBody = {
-            param([IntPtr] $hwndArg, [int] $msg, [IntPtr] $wParam, [IntPtr] $lParam, $handled)
+        $disp = $Window.Dispatcher
+        $theme = $OnThemeChanged
+        $formRef = $Form
+
+        # Exactly one [bool] out: $true refuses the session end.
+        $refuseBlock = {
             try {
-                if ($msg -eq 0x001A -or $msg -eq 0x0015 -or $msg -eq 0x0320) {
-                    $run = { try { & $OnThemeChanged } catch { $null = $_ } }.GetNewClosure()
-                    [void] $dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action] $run)
-                }
-                elseif ($msg -eq 0x0011) {
-                    $cancel = & $closing -Form $Form -CloseReason ([System.Windows.Forms.CloseReason]::WindowsShutDown)
-                    if ([bool] $cancel) {
-                        if ($handled -is [ref]) { $handled.Value = $true } else { $handled = $true }
-                    }
-                }
+                if ($formRef.FastLlmFormState['Closing'] -eq $true) { return $true }
+                $cancel = & $closing -Form $formRef -CloseReason ([System.Windows.Forms.CloseReason]::WindowsShutDown)
+                return [bool] $cancel
             }
-            catch { $null = $_ }
-            return [IntPtr]::Zero
+            catch {
+                $ex = $_
+                $rethrow = { throw $ex }.GetNewClosure()
+                $null = $disp.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action] $rethrow)
+                return $true
+            }
         }.GetNewClosure()
-        $hook = [System.Windows.Interop.HwndSourceHook] $hookBody
+
+        # Only queues; the theme work runs on the dispatcher and is not wrapped, so a failure reaches Dispatcher.UnhandledException.
+        $themeBlock = {
+            $null = $disp.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action] $theme)
+        }.GetNewClosure()
+
+        $hookObj = New-Object Bitworks.FastLlm.FluentWindowHook(([Func[bool]] $refuseBlock), ([Action] $themeBlock))
+        $hook = $hookObj.CreateHook([System.Windows.Interop.HwndSourceHook])
         $source.AddHook($hook)
-        $script:FastLlmUiHookState[$key] = @{ Source = $source; Hook = $hook }
+        $null = $script:FastLlmUiHookEntries.Add(@{ Window = $Window; Source = $source; Hook = $hook; Obj = $hookObj })
         $result.hooked = $true
     }
     catch {
@@ -59,13 +63,10 @@ function Register-FastLlmUiWindowHooks {
 function Unregister-FastLlmUiWindowHooks {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)] $Window)
-    try {
-        $helper = New-Object System.Windows.Interop.WindowInteropHelper($Window)
-        $key = [string] $helper.Handle.ToInt64()
+    foreach ($entry in @($script:FastLlmUiHookEntries)) {
+        if ([object]::ReferenceEquals($entry.Window, $Window)) {
+            try { $entry.Source.RemoveHook($entry.Hook) } catch { $null = $_ }
+            $script:FastLlmUiHookEntries.Remove($entry)
+        }
     }
-    catch { return }
-    if (-not $script:FastLlmUiHookState.ContainsKey($key)) { return }
-    $state = $script:FastLlmUiHookState[$key]
-    try { $state.Source.RemoveHook($state.Hook) } catch { $null = $_ }
-    $script:FastLlmUiHookState.Remove($key)
 }

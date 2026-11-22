@@ -95,6 +95,7 @@ function Invoke-FastLlmUiFormClosing {
     )
     $state = $Form.FastLlmFormState
     $fcArgs = New-Object System.Windows.Forms.FormClosingEventArgs($CloseReason, $false)
+    $prev = $state['Closing']
     $state['Closing'] = $true
     try {
         foreach ($h in @($state.FormClosing)) { $null = & $h $Form $fcArgs }
@@ -105,7 +106,7 @@ function Invoke-FastLlmUiFormClosing {
         [void] $state.Window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action] $rethrow)
         return $true
     }
-    finally { $state['Closing'] = $false }
+    finally { $state['Closing'] = $prev }
     return [bool] $fcArgs.Cancel
 }
 

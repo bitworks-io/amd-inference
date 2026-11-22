@@ -5,6 +5,7 @@
 Set-StrictMode -Version 2.0
 
 $script:FastLlmUiFluentTrayIconCache = $null
+$script:FastLlmUiFluentTrayIconSize = 0
 
 function New-FastLlmUiAppIconImage {
     [CmdletBinding()]
@@ -42,6 +43,7 @@ function New-FastLlmUiTrayIcon {
         [string] $AccentArgb = '#FF005FB8'
     )
     if ($Size -lt 8) { $Size = 8 }
+    if (-not ('Bitworks.FastLlm.FluentWindowNative' -as [type])) { throw 'The window interop type is not loaded.' }
     $bmp = New-Object System.Drawing.Bitmap($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $h = [IntPtr]::Zero
     $tmp = $null
@@ -85,9 +87,9 @@ function New-FastLlmUiTrayIcon {
         $icon = $tmp.Clone()
     }
     finally {
-        if ($null -ne $tmp) { $tmp.Dispose() }
-        if ($h -ne [IntPtr]::Zero) { [void] [Bitworks.FastLlm.FluentWindowNative]::DestroyIconHandle($h) }
-        $bmp.Dispose()
+        try { $bmp.Dispose() } catch { $null = $_ }
+        if ($null -ne $tmp) { try { $tmp.Dispose() } catch { $null = $_ } }
+        if ($h -ne [IntPtr]::Zero) { try { [void] [Bitworks.FastLlm.FluentWindowNative]::DestroyIconHandle($h) } catch { $null = $_ } }
     }
     return $icon
 }
@@ -95,9 +97,11 @@ function New-FastLlmUiTrayIcon {
 function Get-FastLlmUiFluentTrayIcon {
     [CmdletBinding()]
     param()
+    $size = [System.Windows.Forms.SystemInformation]::SmallIconSize.Width
+    if ($null -ne $script:FastLlmUiFluentTrayIconCache -and $script:FastLlmUiFluentTrayIconSize -ne $size) { Clear-FastLlmUiFluentTrayIcon }
     if ($null -eq $script:FastLlmUiFluentTrayIconCache) {
-        $size = [System.Windows.Forms.SystemInformation]::SmallIconSize.Width
         $script:FastLlmUiFluentTrayIconCache = New-FastLlmUiTrayIcon -Size $size
+        $script:FastLlmUiFluentTrayIconSize = $size
     }
     return $script:FastLlmUiFluentTrayIconCache
 }
