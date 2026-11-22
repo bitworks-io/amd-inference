@@ -351,6 +351,7 @@ jobs:
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
           .\tests\ui-theme-tests.ps1
+          .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
           .\tests\runtime-tests.ps1
           .\tests\model-switch-tests.ps1
@@ -377,6 +378,7 @@ jobs:
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
           .\tests\ui-theme-tests.ps1
+          .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
           .\tests\runtime-tests.ps1
           .\tests\model-switch-tests.ps1

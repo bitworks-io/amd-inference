@@ -447,6 +447,11 @@
       "reason": "The Fluent window interop and WPF theme dictionary on a real STA thread; Windows only, no GPU or bench, runs in test.yml."
     },
     {
+      "suite": "ui-source-safety-tests",
+      "class": "ci",
+      "reason": "Static source rules (constant-only XAML, one parser site, ASCII files) plus pins of the admin refusal and the close guards; pure, no GPU or bench."
+    },
+    {
       "suite": "ui-flow-tests",
       "class": "ci",
       "reason": "Lifecycle, benchmark, selection and UI-flow behaviour against mocks; already wired in test.yml."
