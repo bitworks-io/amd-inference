@@ -57,6 +57,7 @@ function Assert-FastLlmUiXamlSafe {
                     do {
                         & $denyDecoded $reader.Name
                         & $denyDecoded $reader.Value
+                        if (($reader.Prefix -ceq 'xml') -and -not (@('space','lang') -ccontains $reader.LocalName)) { throw ("Unsafe XAML: attribute '"+$reader.Name+"'") }
                         if (($reader.Name -ceq 'xmlns') -or ($reader.Prefix -ceq 'xmlns')) {
                             if (-not ($allowedNamespaces -ccontains $reader.Value)) { throw ("Unsafe XAML: namespace '"+$reader.Value+"'") }
                             continue
@@ -66,6 +67,9 @@ function Assert-FastLlmUiXamlSafe {
                     [void]$reader.MoveToElement()
                 }
                 if (-not $empty) { [void]$parents.Add($local) }
+            } elseif ($reader.NodeType -eq [System.Xml.XmlNodeType]::ProcessingInstruction) {
+                # A mapping instruction can make CLR types reachable without any xmlns the allowlist would see.
+                throw 'Unsafe XAML: processing instruction'
             } elseif ($reader.NodeType -eq [System.Xml.XmlNodeType]::EndElement) {
                 if ($parents.Count -gt 0) { $parents.RemoveAt($parents.Count-1) }
             } elseif (($reader.NodeType -eq [System.Xml.XmlNodeType]::Text) -or ($reader.NodeType -eq [System.Xml.XmlNodeType]::CDATA)) {

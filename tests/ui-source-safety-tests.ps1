@@ -202,6 +202,12 @@ $unsafeCases=[ordered]@{
     'unknown default namespace'='<Grid xmlns="http://example.invalid/x"/>'
     'designer namespaces'='<Grid '+$ns+' xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d"/>'
     'entity-encoded x:Code in text'='<TextBlock '+$ns+'>x&#58;Code</TextBlock>'
+    'mapping instruction before the root'='<?Mapping XmlNamespace="urn:q" ClrNamespace="System" Assembly="mscorlib"?><Grid '+$ns+'/>'
+    'mapping instruction inside the root'='<Grid '+$ns+'><?Mapping XmlNamespace="urn:q" ClrNamespace="System" Assembly="mscorlib"?></Grid>'
+    'arbitrary processing instruction'='<Grid '+$ns+'><?foo bar?></Grid>'
+    'xml:base relative'='<Grid '+$ns+' xml:base="foo/"/>'
+    'unlisted namespace on a nested element'='<Grid '+$ns+'><Button xmlns:z="http://example.invalid/z"/></Grid>'
+    'prefix redeclared to an unlisted uri on a child'='<Grid '+$ns+' xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Button xmlns:x="http://example.invalid/z"/></Grid>'
     'entity-encoded ObjectDataProvider in an attribute'='<Grid '+$ns+' Tag="Object&#68;ataProvider"/>'
 }
 foreach($k in $unsafeCases.Keys){
@@ -209,6 +215,15 @@ foreach($k in $unsafeCases.Keys){
     try{Assert-FastLlmUiXamlSafe -Xaml $unsafeCases[$k]}catch{$threw=$true;$msg=$_.Exception.Message}
     Check ($threw -and $msg.StartsWith('Unsafe XAML:')) "refuses $k"
 }
+$piXaml='<?foo bar?><Grid '+$ns+'/>'
+$baseXaml='<Grid '+$ns+' xml:base="foo/"/>'
+function Test-RefusedWith([string]$Xaml,[string]$Expected){
+    $threw=$false;$msg=''
+    try{Assert-FastLlmUiXamlSafe -Xaml $Xaml}catch{$threw=$true;$msg=$_.Exception.Message}
+    Check ($threw -and $msg -ceq $Expected) ('message: '+$Expected)
+}
+Test-RefusedWith $piXaml 'Unsafe XAML: processing instruction'
+Test-RefusedWith $baseXaml "Unsafe XAML: attribute 'xml:base'"
 $threw=$false;$msg=''
 try{Assert-FastLlmUiXamlSafe -Xaml ('<Grid '+$ns+' xmlns:z="http://example.invalid/evil"/>')}catch{$threw=$true;$msg=$_.Exception.Message}
 Check ($threw -and $msg -ceq "Unsafe XAML: namespace 'http://example.invalid/evil'") 'an unknown namespace is named in the message'
@@ -232,6 +247,9 @@ $allowed=[ordered]@{
     'exact label File:'='<Button '+$ns+' Content="File:"/>'
     'exact label HTTP:'='<Button '+$ns+' Content="HTTP:"/>'
     'label starting with slashes'='<Button '+$ns+' Content="// note"/>'
+    'xml declaration'='<?xml version="1.0" encoding="utf-8"?><Grid '+$ns+'/>'
+    'xml:space'='<Grid '+$ns+' xml:space="preserve"/>'
+    'xml:lang'='<Grid '+$ns+' xml:lang="en-US"/>'
     'x namespace'='<Grid '+$ns+' xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"/>'
     'property element binding'='<Image '+$ns+'><Image.Source>{DynamicResource X}</Image.Source></Image>'
 }
