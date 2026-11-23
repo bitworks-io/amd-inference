@@ -100,5 +100,61 @@ Check ($bare.FlowPhase -ceq '' -and $bare.FailureHeld -eq $false) 'the snapshot 
 $threw=$false;try{[void](New-FastLlmUiStateSnapshot -Busy $false -UpdateKind 'bogus' -ChildActive $false -Step '' -RunReady $false -SideChildActive $false -VcBrokerActive $false -PreviewReady $false -SwitchGap $false -ChatUrlSet $false -BackgroundStopRequested $false -Background $bareReadyBackground)}catch{$threw=$true}
 Check $threw 'an unknown UpdateKind is refused'
 
+
+# Greyed-reason codes: pure codes, '' exactly when the control state is true, over all 2,230 rows.
+$reasonActions=@('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck')
+function Get-ReasonPropertyFailures([string]$Fn,[switch]$First){
+    $bad=New-Object System.Collections.ArrayList
+    foreach($r in $matrix){
+        $snap=New-RowSnapshot $r
+        $states=Get-FastLlmUiControlStates -Snapshot $snap
+        $api=Get-FastLlmUiSnapshotAvailability -Snapshot $snap
+        foreach($a in $reasonActions){
+            foreach($running in @($true,$false)){
+                if($a -ceq 'apiCheck'){$enabled=[bool]($running -and $api.apiCheck)}else{if(-not $running){continue};$enabled=[bool]$states.$a}
+                $code=[string](& $Fn -Action $a -Snapshot $snap -ConnectRunning $running)
+                if(($code -ceq '') -ne $enabled){[void]$bad.Add($r.key+' '+$a+' running='+$running+' code='+$code+' enabled='+$enabled);if($First){return ,$bad}}
+            }
+        }
+    }
+    return ,$bad
+}
+$reasonBad=Get-ReasonPropertyFailures 'Get-FastLlmUiGreyedReason'
+Check ($reasonBad.Count -eq 0) ('a greyed-reason code is empty exactly when the control state is true on every row (first: '+((@($reasonBad)|Select-Object -First 3) -join ' | ')+')')
+$codeSet=@('','microsoft-setup','busy','side-step','attached','no-run','not-running')
+$unknownCodes=@(foreach($r in $matrix){$s=New-RowSnapshot $r;foreach($a in $reasonActions){$c=[string](Get-FastLlmUiGreyedReason -Action $a -Snapshot $s -ConnectRunning $true);if($codeSet -cnotcontains $c){$a+':'+$c}}})
+Check ($unknownCodes.Count -eq 0) 'every greyed-reason code is one of the seven known codes'
+
+function New-ReasonSnapshot([hashtable]$Over=@{},[string]$Background='none'){
+    $p=@{Busy=$false;UpdateKind='';ChildActive=$false;Step='';RunReady=$false;SideChildActive=$false;VcBrokerActive=$false;PreviewReady=$false;SwitchGap=$false;ChatUrlSet=$false;BackgroundStopRequested=$false}
+    foreach($k in $Over.Keys){$p[$k]=$Over[$k]}
+    return New-FastLlmUiStateSnapshot @p -Background (Get-UiBackgroundFixture -Name $Background)
+}
+function Reason([string]$A,$S,[bool]$Run=$false){return [string](Get-FastLlmUiGreyedReason -Action $A -Snapshot $S -ConnectRunning $Run)}
+Check ((Reason 'diagnostics' (New-ReasonSnapshot)) -ceq '') 'idle: diagnostics has no reason'
+Check ((Reason 'backgroundCheck' (New-ReasonSnapshot @{VcBrokerActive=$true;Busy=$true})) -ceq 'microsoft-setup') 'Microsoft setup is the reason while it runs'
+Check ((Reason 'diagnostics' (New-ReasonSnapshot @{Busy=$true})) -ceq 'busy') 'a busy window greys diagnostics with busy'
+Check ((Reason 'backgroundCheck' (New-ReasonSnapshot @{UpdateKind='update'})) -ceq 'busy') 'an update run greys the background check with busy'
+Check ((Reason 'saveBundle' (New-ReasonSnapshot @{Busy=$true})) -ceq 'busy') 'a launch in progress greys the bundle with busy'
+Check ((Reason 'saveBundle' (New-ReasonSnapshot @{SideChildActive=$true})) -ceq 'side-step') 'a running side check greys the bundle with side-step'
+Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true;SideChildActive=$true}) $true) -ceq 'side-step') 'a running side check greys the API check with side-step'
+Check ((Reason 'backgroundAttach' (New-ReasonSnapshot @{} 'ready-attached')) -ceq 'attached') 'an attached run greys Attach with attached'
+Check ((Reason 'backgroundAttach' (New-ReasonSnapshot @{} 'none')) -ceq 'no-run') 'no attachable run greys Attach with no-run'
+Check ((Reason 'backgroundAttach' (New-ReasonSnapshot @{} 'starting-other')) -ceq 'no-run') 'a run for another request greys Attach with no-run'
+Check ((Reason 'backgroundAttach' (New-ReasonSnapshot @{} 'ready-attachable')) -ceq '') 'an attachable run leaves Attach enabled'
+Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true}) $false) -ceq 'not-running') 'Connect not running greys the API check with not-running'
+Check ((Reason 'apiCheck' (New-ReasonSnapshot @{}) $true) -ceq 'not-running') 'a snapshot that is not serving greys the API check with not-running'
+Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true}) $true) -ceq '') 'a serving, running API check has no reason'
+# Mutation: a swapped sub-expression must make the property fail.
+$fnText=${function:Get-FastLlmUiGreyedReason}.ToString()
+function Test-ReasonMutant([string]$From,[string]$To){
+    if(-not $fnText.Contains($From)){throw "FAIL: mutation anchor missing: $From"}
+    Set-Item -Path function:script:Get-ReasonMutant -Value ([scriptblock]::Create($fnText.Replace($From,$To)))
+    return (Get-ReasonPropertyFailures 'Get-ReasonMutant' -First).Count
+}
+Check ((Test-ReasonMutant "if (`$bg.attachedRequestId) { return 'attached' }" "if (`$false) { return 'attached' }") -gt 0) 'mutation: dropping the attached rule fails the property'
+Check ((Test-ReasonMutant 'if ($availability.saveBundle) { return '''' }' 'if (-not $availability.saveBundle) { return '''' }') -gt 0) 'mutation: swapping the bundle availability sub-expression fails the property'
+Check ((Test-ReasonMutant 'if ($busy -or $Snapshot.ChildActive)' 'if ($busy)') -gt 0) 'mutation: dropping ChildActive from the busy rules fails the property'
+
 Write-Host "UI control states tests passed: $checks"
 exit 0
