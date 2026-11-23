@@ -335,7 +335,11 @@ function Update-FastLlmUiFluentConnectContent {
             $link.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
             $link.Margin = New-Object System.Windows.Thickness(0, 6, 0, 0)
             $linkText = [string] $t.Documentation + [string] $docUrl
-            $link.Content = Get-FastLlmUiFluentConnectCaption -Text $linkText
+            # The caption is access text that wraps: a long documentation address wraps inside the page instead of running past its edge.
+            $linkAccess = New-Object System.Windows.Controls.AccessText
+            $linkAccess.TextWrapping = [System.Windows.TextWrapping]::Wrap
+            $linkAccess.Text = Get-FastLlmUiFluentConnectCaption -Text $linkText
+            $link.Content = $linkAccess
             $link.Tag = [string] $docUrl
             [System.Windows.Automation.AutomationProperties]::SetName($link, $linkText)
             $link.Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentConnectDocLink -Sender $sender })

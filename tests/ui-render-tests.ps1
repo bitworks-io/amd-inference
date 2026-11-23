@@ -198,6 +198,23 @@ $script:FastLlmUiXaml['Test.Nested']=@'
 </StackPanel>
 '@
 
+# Two-column tab order with the pane as a region: pane first is clean, a content stop before the pane is flagged.
+$script:FastLlmUiXaml['Test.RegionGood']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <StackPanel x:Name="PaneRoot" Grid.Column="0"><Button x:Name="PaneButton" Content="Pane item" TabIndex="0" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/></StackPanel>
+  <Button x:Name="ContentButton" Grid.Column="1" Content="Content item" TabIndex="1" HorizontalAlignment="Left" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</Grid>
+'@
+
+$script:FastLlmUiXaml['Test.RegionBad']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <StackPanel x:Name="PaneRoot" Grid.Column="0"><Button x:Name="PaneButton" Content="Pane item" TabIndex="1" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/></StackPanel>
+  <Button x:Name="ContentButton" Grid.Column="1" Content="Content item" TabIndex="0" HorizontalAlignment="Left" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</Grid>
+'@
+
 $out=$env:FASTLLM_RENDER_DIR
 if([string]::IsNullOrEmpty($out)){
     if(-not [string]::IsNullOrEmpty($env:RUNNER_TEMP)){$out=Join-Path $env:RUNNER_TEMP 'fastllm-fluent-render'}
@@ -225,6 +242,13 @@ foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside'
     if(-not $ok -and $diag.Count -gt 0){$diagText=' | diag: '+($diag -join '; ')}
     Check $ok ("the harness catches $n (expected '"+$neg[$n]+"', got '"+($found -join '; ')+"')"+$diagText)
 }
+
+# Regions: a pane on the left whose stops come first is a clean two-column order; a content stop before the pane is flagged.
+$regionOk=@();$regionBad=@()
+try{$regionOk=@((Invoke-UiRenderCase -Name 'Test.RegionGood' -Case $base -OutFolder $out -TabRegions @('PaneRoot')).problems)}catch{$regionOk=@('threw: '+$_.Exception.Message)}
+try{$regionBad=@((Invoke-UiRenderCase -Name 'Test.RegionBad' -Case $base -OutFolder $out -TabRegions @('PaneRoot')).problems)}catch{$regionBad=@('threw: '+$_.Exception.Message)}
+Check (@($regionOk|Where-Object{$_ -ceq 'tab-order'}).Count -eq 0 -and $regionOk.Count -eq 0) "a page whose tab order puts the pane region first is clean (got '$($regionOk -join '; ')')"
+Check (@($regionBad|Where-Object{$_ -ceq 'tab-order'}).Count -eq 1) "a content stop before the pane is still flagged tab-order (got '$($regionBad -join '; ')')"
 
 $sw=[Diagnostics.Stopwatch]::StartNew()
 foreach($case in $matrix){
@@ -633,7 +657,7 @@ foreach($pageId in 'Home','Tools','Connect'){
                 $r=$null
                 try{
                     $script:shellRp=New-ShellRenderPage $case $pageId
-                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng
+                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList')
                 }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
                 $diagText=''
                 if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
@@ -659,11 +683,11 @@ foreach($pageId in 'Home','Tools','Connect'){
 }
 Write-Host ('INFO: Shell render of 36 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
 
-# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages. Only files written during this run count, so leftovers cannot inflate a number.
+# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
     return @(Get-ChildItem -LiteralPath $out -Filter ($Prefix+'-*.png') -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart }).Count
 }
-Check ((Get-RenderPngCount 'Test.*') -eq 50) ("the render folder holds 50 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
+Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
     'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12}
 foreach($prefix in $pngExpect.Keys){

@@ -595,9 +595,7 @@ function Add-ConnectWalk($Node, [string]$Marker, [hashtable]$Hits, [hashtable]$S
     }
     if (Test-ConnectHasMarker ([System.Windows.Automation.AutomationProperties]::GetName($base)) $Marker) { $Hits[$label + '.AutomationName'] = $true }
     if (Test-ConnectHasMarker ([System.Windows.Automation.AutomationProperties]::GetHelpText($base)) $Marker) { $Hits[$label + '.HelpText'] = $true }
-    $en = [System.Windows.LogicalTreeHelper]::GetChildren($base)
-    while ($en.MoveNext()) {
-        $child = $en.Current
+    foreach ($child in [System.Windows.LogicalTreeHelper]::GetChildren($base)) {
         if ($child -is [System.Windows.DependencyObject]) { Add-ConnectWalk $child $Marker $Hits $Seen }
         elseif (Test-ConnectHasMarker $child $Marker) { $Hits[$label + '/child'] = $true }
     }

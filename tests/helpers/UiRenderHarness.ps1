@@ -125,6 +125,19 @@ function Get-UiScrollPresenter($Element, $Default) {
     return $Default
 }
 
+# The index of the first region whose root is the element or one of its visual ancestors; the region count when none (the last region).
+function Get-UiTabRegion($Element, $Page, [string[]]$Regions) {
+    for ($i = 0; $i -lt @($Regions).Count; $i++) {
+        $node = $Element
+        while ($null -ne $node) {
+            if ($node -is [System.Windows.FrameworkElement] -and [string]$node.Name -ceq $Regions[$i]) { return $i }
+            if ([object]::ReferenceEquals($node, $Page)) { break }
+            $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
+        }
+    }
+    return @($Regions).Count
+}
+
 function Test-UiAuthored($Element) {
     return ($Element -is [System.Windows.FrameworkElement]) -and ($null -eq $Element.TemplatedParent)
 }
@@ -198,7 +211,9 @@ function Invoke-UiRenderCase {
         # Optional: an element built by the caller, used instead of parsing the registered markup for $Name ($Name then only names the PNG).
         $Element = $null,
         # Optional: names the PNG instead of $Name, so two states of one page (same size, theme and scales) never write the same file.
-        [string]$PngName = ''
+        [string]$PngName = '',
+        # Optional: names of region roots (in order). Stops inside a region are one contiguous block, in that order, each in reading order; the rest come last.
+        [string[]]$TabRegions = @()
     )
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
@@ -276,6 +291,7 @@ function Invoke-UiRenderCase {
         }
     }
 
+    $diagnostics = New-Object System.Collections.ArrayList
     $textBlocksSeen = 0
     $namedControlsSeen = 0
     $unmappedRects = 0
@@ -300,7 +316,14 @@ function Invoke-UiRenderCase {
             }
         }
         if ($isClipped -and $text.TextTrimming -ne [System.Windows.TextTrimming]::None -and [string]$text.ToolTip -ceq [string]$text.Text) { $isClipped = $false }
-        if ($isClipped) { [void]$problems.Add('clipped:' + (Get-UiElementLabel $text)) }
+        if ($isClipped) {
+            [void]$problems.Add('clipped:' + (Get-UiElementLabel $text))
+            $shownText = [string]$text.Text
+            if ($shownText.Length -gt 32) { $shownText = $shownText.Substring(0, 32) }
+            $ident = [string]$text.Name
+            if ([string]::IsNullOrEmpty($ident)) { $ident = "text '" + $shownText + "'" }
+            [void]$diagnostics.Add('clipped: ' + $ident + (' natural {0:N1}x{1:N1} desired {2:N1}x{3:N1} actual {4:N1}x{5:N1}' -f $natural.Width, $natural.Height, $desired.Width, $desired.Height, $aw, $ah))
+        }
     }
 
     # outside: authored elements beyond the page's extent
@@ -320,7 +343,6 @@ function Invoke-UiRenderCase {
 
     # label-mismatch: an input's explicit name must equal the visible text of the label it points at. Each label's existing peer is read
     # first (FromElement never creates one), before any peer is created below, so the diagnostics show what a cold page really has.
-    $diagnostics = New-Object System.Collections.ArrayList
     $labelPeerState = @{}
     $mismatched = @{}
     $labeledInputs = 0
@@ -384,6 +406,7 @@ function Invoke-UiRenderCase {
                     El = $el; Order = $index
                     TabIndex = [int][System.Windows.Input.KeyboardNavigation]::GetTabIndex($el)
                     Row = [double][Math]::Round($rect.Top / 8.0); Left = [double]$rect.Left
+                    Region = (Get-UiTabRegion $el $page $TabRegions)
                 }
             }
         }
@@ -391,7 +414,7 @@ function Invoke-UiRenderCase {
     }
     if ($stops.Count -gt 1) {
         $byTab = @($stops | Sort-Object -Property @{ Expression = 'TabIndex' }, @{ Expression = 'Order' })
-        $byRead = @($stops | Sort-Object -Property @{ Expression = 'Row' }, @{ Expression = 'Left' }, @{ Expression = 'Order' })
+        $byRead = @($stops | Sort-Object -Property @{ Expression = 'Region' }, @{ Expression = 'Row' }, @{ Expression = 'Left' }, @{ Expression = 'Order' })
         $same = $true
         for ($i = 0; $i -lt $stops.Count; $i++) { if (-not [object]::ReferenceEquals($byTab[$i].El, $byRead[$i].El)) { $same = $false; break } }
         if (-not $same) {
