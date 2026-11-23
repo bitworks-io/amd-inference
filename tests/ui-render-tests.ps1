@@ -382,7 +382,8 @@ function New-ShellRenderPage($Case){
     [void](Initialize-FastLlmUiFluentHome -Page $homePage -Els $els)
     $els.PageHost.Child=$homePage
     $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width;ActualHeight=[double]$Case.height};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
-        NavItems=@();LastException=$null;InUnhandled=$false;TickError=''}
+        NavItems=@();LastException=$null;InUnhandled=$false;TickError='';Pages=@{};Current=''}
+    Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     foreach($row in (Get-FastLlmUiFluentBindingTable)){

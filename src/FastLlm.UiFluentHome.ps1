@@ -22,6 +22,18 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     QuickActions     = 'Quick actions'
     Activity         = 'Activity'
     OpenChatWhy      = 'Turn on the local chat page in Settings and start FastLLM'
+    # PR 3a: page headings, the collapsed pane format, the Copy automation name and the greyed-reason lines of Tools and Connect.
+    ToolsTroubleshooting = 'Troubleshooting'
+    ToolsBackgroundRun   = 'Background run'
+    ToolsDownloads       = 'Official downloads'
+    ComingLaterFormat    = '{0}: Coming in a later update'
+    CopyFieldFormat      = 'Copy {0}'
+    WhyBusy              = 'Available when the current task has finished'
+    WhyMicrosoftSetup    = 'Available when Microsoft setup has finished'
+    WhySideStep          = 'Available when the running check has finished'
+    WhyAttached          = 'Already attached to the background run'
+    WhyNoBackgroundRun   = 'No background run is ready to attach'
+    WhyNotRunning        = 'Start FastLLM first'
 }
 
 # Icon glyphs (Segoe Fluent Icons, falling back to Segoe MDL2 Assets: the same code points exist in both). They are drawn, never read.
@@ -148,7 +160,7 @@ function Get-FastLlmUiFluentHomeBindings {
         @{ Name = 'progress';              Element = 'HomeProgress';        Mode = 'Visual';    Event = '';            Flags = @() },
         @{ Name = 'output';                Element = 'ActivityBox';         Mode = 'Output';    Event = '';            Flags = @() },
         @{ Name = 'openChatButton';        Element = 'OpenChatButton';      Mode = 'Content';   Event = 'Click';       Flags = @() },
-        @{ Name = 'connectButton';         Element = 'ConnectButton';       Mode = 'Content';   Event = 'Click';       Flags = @() },
+        @{ Name = 'connectButton';         Element = 'ConnectButton';       Mode = 'Content';   Event = '';            Flags = @() },
         @{ Name = 'switchButton';          Element = 'SwitchButton';        Mode = 'Content';   Event = 'Click';       Flags = @() },
         @{ Name = 'switchLabel';           Element = 'SwitchLine';          Mode = 'TextBlock'; Event = '';            Flags = @() }
     )
@@ -212,10 +224,12 @@ function Connect-FastLlmUiFluentControl {
         [Parameter(Mandatory = $true)] $Element,
         [Parameter(Mandatory = $true)][string] $Mode,
         [string] $Event = '',
-        [string[]] $Flags = @()
+        [string[]] $Flags = @(),
+        [switch] $Also
     )
     $sink = New-FastLlmUiFluentSink -Adapter $Adapter -Element $Element -Mode $Mode -Flags $Flags
-    Set-FastLlmUiAdapterSink -Adapter $Adapter -Sink $sink
+    # Also joins an adapter that is already bound (each element keeps its own Mode and Flags); without it a second bind throws.
+    Add-FastLlmUiAdapterSink -Adapter $Adapter -Sink $sink -Also:$Also
     foreach ($property in 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
     if ($Event) {
         $invoke = ${function:Invoke-FastLlmUiAdapterEvent}
@@ -312,7 +326,24 @@ function Initialize-FastLlmUiFluentHome {
     [System.Windows.Automation.AutomationProperties]::SetName($Els['ActivityBox'], $activity)
     [System.Windows.Automation.AutomationProperties]::SetLabeledBy($Els['ActivityBox'], $Els['ActivityHeader'])
     [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els['OpenChatButton'], $true)
+    # Connect an app: a plain handler (the row has no adapter event), so the page opens once Connect is registered and the dialog stays until then.
+    $Els['ConnectButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentHomeConnect })
     return $Els
+}
+
+# Home's entry in the page registry. Its status line is StatusDetail, whose text the statusLabel adapter writes: the page status keeps only its name.
+function Register-FastLlmUiFluentHomePage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] $Page, [Parameter(Mandatory = $true)][hashtable] $Els)
+    Register-FastLlmUiFluentPage -Id 'Home' -Element $Page -Nav 'NavHome' -Status $Els['StatusDetail'] -StatusKeepsText
+}
+
+# The Connect an app quick action. Once the Connect page is registered it opens that page and puts the focus on its pane item; until then (Task 7
+# registers it) it raises the adapter click, which runs the orchestration's dialog exactly as before. Nothing here changes when Connect registers.
+function Invoke-FastLlmUiFluentHomeConnect {
+    [CmdletBinding()] param()
+    if (Test-FastLlmUiFluentPageRegistered -Id 'Connect') { $null = Set-FastLlmUiFluentPage -Id 'Connect' -FocusNav }
+    else { Invoke-FastLlmUiAdapterEvent -Adapter $script:connectButton -Event 'Click' }
 }
 
 # One 250 ms refresh of the card from the state the window already holds. The text of the detail line comes from the statusLabel adapter's sink.
@@ -353,8 +384,8 @@ function Update-FastLlmUiFluentHome {
     if ($keys['Composed'] -cne $composed) {
         $first = ($null -eq $keys['Composed'])
         $keys['Composed'] = $composed
-        [System.Windows.Automation.AutomationProperties]::SetName($e['StatusDetail'], $composed)
-        if (-not $first) { Send-FastLlmUiFluentLiveRegion -Element $e['StatusDetail'] }
+        # Every page shows the composed line; only the current page announces it.
+        Update-FastLlmUiFluentPageStatus -Composed $composed -Announce (-not $first)
     }
 
     # The main action: the card says which one shows; whether it can be pressed is only the adapter's Enabled (SetBusy).

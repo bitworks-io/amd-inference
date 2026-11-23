@@ -1019,7 +1019,6 @@ function Invoke-S6-Nav {
     $els = $f.Els
     $list = $els.NavList
     $home1 = $els.NavHome
-    $second = $f.NavItems[1]['Item']
     $list.UpdateLayout()
     $bd = $home1.Template.FindName('Bd', $home1)
     $bar = $home1.Template.FindName('Bar', $home1)
@@ -1035,15 +1034,23 @@ function Invoke-S6-Nav {
     catch { $threw = $_.Exception.Message }
     Invoke-Pump 150
     Check ($threw -eq '') 'S6 a Down arrow KeyDown on the nav item raises no exception' $threw
-    # selection moves: the second item is enabled for this check only (all but Home are disabled in this build)
-    $second.IsEnabled = $true
-    $list.SelectedIndex = 1
+    # selection moves: Connect (index 2) is enabled only once its page is registered, so a stand-in page is registered for it when the shell has none
+    # (the real Connect page replaces this stand-in in a later task); Models stays disabled
+    $second = $f.NavItems[2]['Item']
+    $standIn = $false
+    if (-not (Test-FastLlmUiFluentPageRegistered -Id 'Connect')) {
+        $standIn = $true
+        $stub = New-Object System.Windows.Controls.StackPanel
+        $stubStatus = New-Object System.Windows.Controls.TextBlock
+        Register-FastLlmUiFluentPage -Id 'Connect' -Element $stub -Nav 'NavConnect' -Status $stubStatus
+    }
+    $list.SelectedIndex = 2
     Invoke-Pump 150
     $bar2 = $second.Template.FindName('Bar', $second)
-    Check ($second.IsSelected -and -not $home1.IsSelected -and $null -ne $bar2 -and $bar2.Visibility -eq [System.Windows.Visibility]::Visible -and $bar.Visibility -eq [System.Windows.Visibility]::Collapsed) 'S6 a selection change moves the bar from Home to the second item' "second=$($second.IsSelected) home=$($home1.IsSelected) bar2=$($bar2.Visibility) bar=$($bar.Visibility)"
+    Check ($second.IsSelected -and -not $home1.IsSelected -and $null -ne $bar2 -and $bar2.Visibility -eq [System.Windows.Visibility]::Visible -and $bar.Visibility -eq [System.Windows.Visibility]::Collapsed) 'S6 a selection change moves the bar from Home to Connect' "second=$($second.IsSelected) home=$($home1.IsSelected) bar2=$($bar2.Visibility) bar=$($bar.Visibility)"
     $list.SelectedIndex = 0
-    $second.IsEnabled = $false
     Invoke-Pump 100
+    if ($standIn) { $f.Pages.Remove('Connect'); $second.IsEnabled = $false; $f.NavItems[2]['Enabled'] = $false; Set-FastLlmUiFluentNavTip -Nav $f.NavItems[2] }
     Check ($home1.IsSelected) 'S6 Home is selected again' "selected=$($home1.IsSelected)"
     Check-NoExceptions 'S6'
 }
