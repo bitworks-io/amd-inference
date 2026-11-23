@@ -671,7 +671,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     Check (-not $plain.status.PSObject.Properties['apiKey'] -and -not $plain.status.PSObject.Properties['apiKeyId'] -and @($plain.console | Where-Object { $_ -clike 'API key*' }).Count -eq 0) 'no key: the status has no apiKey field and the console says nothing about a key'
     Check (@($plain.status.PSObject.Properties.Name | Where-Object { $_ -match '(?i)apikey' }).Count -eq 0) 'no key: the status has no field about the key at all (the document of a start without the key is the one it always was)'
     Check (@(Find-LeakFiles @($plain.install)).Count -eq 0) 'no key: the inherited variable left no trace in any file'
-    $benchCallers = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1', 'FastLlm.ApiKey.ps1', 'FastLlm.Sidecar.ps1', 'FastLlm.BackgroundHost.ps1', 'FastLlm.ServingSettings.ps1', 'FastLlm.ConnectInfo.ps1', 'FastLlm.UiFlow.ps1', 'FastLlm.SupportBundle.ps1') } | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?<!FastLlm\.)ApiKey|LLAMA_API_KEY' })
+    $benchCallers = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1', 'FastLlm.ApiKey.ps1', 'FastLlm.Sidecar.ps1', 'FastLlm.BackgroundHost.ps1', 'FastLlm.ServingSettings.ps1', 'FastLlm.ConnectInfo.ps1', 'FastLlm.UiFlow.ps1', 'FastLlm.SupportBundle.ps1', 'FastLlm.UiFluentConnect.ps1') } | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?<!FastLlm\.)ApiKey|LLAMA_API_KEY' })
     $benchTools = @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Filter '*.ps1' | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?<!FastLlm\.)ApiKey|LLAMA_API_KEY' })
     $benchRefusal = InModule { try { Assert-FastLlmBenchmarkDefaultSetup -State ([pscustomobject]@{ active = $true; phase = 'ready'; apiKey = 'on'; apiKeyId = '0123abcd' }); 'accepted' } catch { [string]$_.Exception.Message } }
     Check ($benchRefusal -ceq 'Benchmarks measure the default setup. Turn the API key off, start again, then benchmark.') 'bench path: the benchmark tool refuses a run that was started with the API key on'
@@ -1423,9 +1423,9 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $fluentSourceNames = '^(' + (($keyTextSources | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
     # Problems in one fluent-shaped text: a key name at all, a key source reaching a sink on its line, or a key source as a command
     # argument or pipeline input (the same rules as the call-site scan above).
-    function Get-FluentKeyProblems([string]$Label, [string]$Text) {
+    function Get-FluentKeyProblems([string]$Label, [string]$Text, [switch]$AllowNames) {
         $found = New-Object 'System.Collections.Generic.List[string]'
-        foreach ($match in [regex]::Matches($Text, $fluentNamePattern)) { $found.Add("$Label uses $($match.Value)") }
+        if (-not $AllowNames) { foreach ($match in [regex]::Matches($Text, $fluentNamePattern)) { $found.Add("$Label uses $($match.Value)") } }
         foreach ($line in @($Text -split "`r?`n")) { if ($line -cmatch $fluentSourcePattern -and $line -cmatch $fluentSinkPattern) { $found.Add("$Label gives a key source to a sink: $($line.Trim())") } }
         $parseErrors = $null; $parseTokens = $null
         $parsed = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$parseTokens, [ref]$parseErrors)
@@ -1445,7 +1445,12 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         return $found.ToArray()
     }
     $fluentProblems = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($fluentFile in $fluentFiles) { foreach ($problem in @(Get-FluentKeyProblems $fluentFile ([IO.File]::ReadAllText((Join-Path $root $fluentFile))))) { $fluentProblems.Add($problem) } }
+    $connectFile = 'src/FastLlm.UiFluentConnect.ps1'
+    foreach ($fluentFile in $fluentFiles) {
+        # The Connect page is the one file that may use the key names; its exact sites are pinned below. Every other fluent file has none.
+        $allowNames = ($fluentFile -ceq $connectFile)
+        foreach ($problem in @(Get-FluentKeyProblems $fluentFile ([IO.File]::ReadAllText((Join-Path $root $fluentFile))) -AllowNames:$allowNames)) { $fluentProblems.Add($problem) }
+    }
     Check ($fluentFiles.Count -ge 8 -and $fluentProblems.Count -eq 0) "fluent window: the call-site scan covers $($fluentFiles.Count) src/FastLlm.UiFluent*.ps1 files, and no key name (ReadUiApiKey, Get-FastLlmApiKeyForDisplay, Get-FastLlmApiKeyText, Invoke-FastLlmUiKeyCopy, SetUiClipboardPayload, `$shownKey, PasswordBox, SetDataObject) is used in any of them $($fluentProblems -join '; ')"
     $plantDir = Join-Path $temp 'fluent-planted'
     [void](New-Item -ItemType Directory -Path $plantDir -Force)
@@ -1467,6 +1472,29 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         if (@(Get-FluentKeyProblems $plantedName ([IO.File]::ReadAllText($plantPath))).Count -eq 0) { $plantedMissed.Add($plantedName) }
     }
     Check ($plantedMissed.Count -eq 0 -and @(Get-FluentKeyProblems 'clean.ps1' 'function Show-Thing { param($Text) $box.Text = $Text }').Count -eq 0) "fluent window self-check: each of $($plantedFiles.Count) planted fluent-shaped files (a key piped to Out-String, as a command argument, a PasswordBox, a key in .Tag, a script variable, a tooltip, the clipboard, the copy routine, SetDataObject) is flagged, and a clean file is not $($plantedMissed -join ', ')"
+    # The Connect page: the key is read by name at exactly three sites (Show and the two hand-overs to the copy routine). The key box's Ctrl+C, Ctrl+Insert
+    # and context-menu Copy run the key Copy button's own function, so there is no fourth read and no third copy call site.
+    $connectPath = Join-Path $root $connectFile
+    $connectText = ''
+    if (Test-Path -LiteralPath $connectPath) { $connectText = [IO.File]::ReadAllText($connectPath) }
+    $connectNames = @{}
+    foreach ($keyName in $fluentKeyNames) { $connectNames[$keyName] = @([regex]::Matches($connectText, '(?<![A-Za-z0-9_-])' + [regex]::Escape($keyName) + '(?![A-Za-z0-9_-])')).Count }
+    $keyCopyText = '[void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})'
+    $cardCopyText = '[void](Invoke-FastLlmUiKeyCopy -Snippet ([string]$Sender.Tag) -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})'
+    Check ($connectNames['ReadUiApiKey'] -eq 3 -and $connectNames['Invoke-FastLlmUiKeyCopy'] -eq 2 -and $connectNames['SetUiClipboardPayload'] -eq 2 -and $connectNames['shownKey'] -eq 4) "fluent window: Connect reads the key at exactly 3 sites and calls the copy routine at exactly 2, with 2 clipboard hand-overs ($(($fluentKeyNames | ForEach-Object { $_ + '=' + $connectNames[$_] }) -join ', '))"
+    Check ($connectText.Contains($keyCopyText) -and $connectText.Contains($cardCopyText) -and @([regex]::Matches($connectText, 'Invoke-FastLlmUiKeyCopy ')).Count -eq 2) 'fluent window: the Key Copy and the Card Copy hand-overs are the exact texts of the classic window (the two copy sites are the only callers)'
+    $connectReaders = @($connectText -split "`r?`n" | Where-Object { $_ -cmatch '(?<![A-Za-z0-9_-])ReadUiApiKey(?![A-Za-z0-9_-])' } | ForEach-Object { $_.Trim() })
+    Check ($connectReaders.Count -eq 3 -and @($connectReaders | Where-Object { $_ -clike '*Invoke-FastLlmUiKeyCopy*-ReadKey {ReadUiApiKey}*' }).Count -eq 2 -and @($connectReaders | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "fluent window: the key is read in exactly three places - Show, and the two hand-overs ($($connectReaders.Count) lines)"
+    $connectShownUses = @([regex]::Matches($connectText, '\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
+    Check (($connectShownUses -join ' | ') -ceq '$shownKey=ReadUiApiKey | $shownKey) | $shownKey | $shownKey=$null' -and $connectText.Contains('if($shownKey){$keyBox.Text=$shownKey;')) "fluent window: Show puts the key into the key box and nowhere else, then drops it ($($connectShownUses -join ' | '))"
+    $keyBoxMarkup = [regex]::Match($connectText, '<TextBox\b[^>]*x:Name="ConnectKeyBox"[^>]*>').Value
+    Check ($keyBoxMarkup -cmatch 'IsReadOnly="True"' -and $keyBoxMarkup -cmatch 'IsUndoEnabled="False"' -and $keyBoxMarkup -cnotmatch '\bText\s*=') 'fluent window: the key box is a read-only TextBox with undo off and no Text in the markup'
+    $fluentOthers = 0
+    foreach ($fluentFile in $fluentFiles) { $t = [IO.File]::ReadAllText((Join-Path $root $fluentFile)); foreach ($zeroName in @('PasswordBox', 'Get-FastLlmApiKeyForDisplay', 'Get-FastLlmApiKeyText', 'SetDataObject')) { $fluentOthers += @([regex]::Matches($t, [regex]::Escape($zeroName))).Count } }
+    Check ($fluentOthers -eq 0) "fluent window: PasswordBox, Get-FastLlmApiKeyForDisplay, Get-FastLlmApiKeyText and SetDataObject stay at 0 in every fluent file ($fluentOthers)"
+    $clipboardLines = @($connectText -split "`r?`n" | Where-Object { $_ -cmatch 'Set-FastLlmUiFluentClipboardText' -and $_ -cnotmatch '^\s*function ' })
+    Check ($clipboardLines.Count -eq 1 -and $clipboardLines[0] -cmatch '-Text \(\[string\]\$Sender\.Tag\)' -and $clipboardLines[0] -cnotmatch 'ReadUiApiKey|shownKey|keyBox') 'fluent window: the plain clipboard wrapper is called once, with a field Copy button tag, never a key source'
+    Check ($connectText.Contains('ApplicationCommands]::Copy') -and $connectText.Contains('Invoke-FastLlmUiFluentConnectKeyCopy')) 'fluent window: the key box Copy command (Ctrl+C, Ctrl+Insert, context menu) is bound and runs the key Copy function'
     $cliTextForShow = [IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
     Check ($cliTextForShow.Contains('[Console]::Out.WriteLine([string] $apiKeyChange.key)') -and $cliTextForShow -cnotmatch '(?m)^[^#\r\n]*\b(Write-Output|Write-Host|Write-Information|Write-Verbose|Out-String|Out-Host|Out-File|Set-Content|Add-Content|Tee-Object|Set-Clipboard|ConvertTo-Json)\b[^\r\n]*\.key\b') 'M2 static: settings -ApiKey show writes the key straight to standard output; no cmdlet is given it'
     $keySourceText = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.ApiKey.ps1'))

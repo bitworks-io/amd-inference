@@ -141,6 +141,10 @@ function New-ShellClick($Element, $RoutedEvent) {
     return New-Object System.Windows.RoutedEventArgs($RoutedEvent, $Element)
 }
 
+# Stand-ins for the two orchestration functions the Connect page reads when it opens and refreshes (a suite that needs more defines its own after this file).
+function GetUiApiKeyStore { return $null }
+function GetUiActionAvailabilityNow([bool]$Busy) { return Get-FastLlmUiSnapshotAvailability -Snapshot $script:shellSnap }
+
 # The settings, the install folder and a classic-form stand-in (Initialize reads its title and disposes it).
 function Initialize-ShellEnv {
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fastllm-shell-' + [guid]::NewGuid().ToString('N'))
@@ -155,6 +159,10 @@ function Initialize-ShellEnv {
     $classic.Text = 'FastLLM shell check ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     $script:shellTitle = [string]$classic.Text
     $script:form = $classic
+    # The window script's own state variables the page Update hooks read (fast-llm-ui.ps1 defines them; StrictMode 2 throws on a missing one).
+    $script:child = $null
+    $script:vcBroker = $null
+    $script:updateRun = $null
 }
 
 # The peers the UIA ControlViewWalker would reach below a peer: every descendant peer whose IsControlElement() is true (the walk passes through

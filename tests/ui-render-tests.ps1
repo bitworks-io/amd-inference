@@ -386,8 +386,11 @@ function New-ShellRenderPage($Case){
     # The binding table includes the Tools rows, so the Tools page is parsed, initialised and registered as the shell does (before the pane).
     $toolsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
     [void](Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $els)
+    $connectPage=New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
+    [void](Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $els)
     Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
     Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $els
+    Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     foreach($row in (Get-FastLlmUiFluentBindingTable)){

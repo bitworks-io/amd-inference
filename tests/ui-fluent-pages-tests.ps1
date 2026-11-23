@@ -66,7 +66,7 @@ function Check-NoExceptions([string]$Name) {
 $script:shellSnap = $null
 $script:shellFailMsg = ''
 $script:shellOk = $false
-$script:markerKey = 'FLPAGES-MARKER-KEY-0123456789'
+$script:markerKey = 'fl-FLPAGESMARKERKEY0123456789abcdefghijklmnopq'   # a well-formed key, so the copy routine treats it as one
 $script:keyReadCalls = 0
 $script:clipboardPayloads = New-Object System.Collections.ArrayList
 $script:sideSelectionCalls = 0
@@ -77,15 +77,15 @@ function ShowFailure($Message) { $script:shellFailMsg = [string]$Message }
 function GetUiApiKeyStore { return $null }
 function GetUiActionAvailabilityNow([bool]$Busy) { return Get-FastLlmUiSnapshotAvailability -Snapshot $script:shellSnap }
 # Returns the marker key and counts the calls (a step that must never read the key checks the count did not move).
-function ReadUiApiKey { $script:keyReadCalls++; return [string]$script:markerKey }
+$script:keyReadNull = $false
+function ReadUiApiKey { $script:keyReadCalls++; if ($script:keyReadNull) { return $null }; return [string]$script:markerKey }
 function SetUiClipboardPayload($Payload) { [void]$script:clipboardPayloads.Add($Payload) }
 function ReadSideSelection { $script:sideSelectionCalls++ }
-function LaunchSideStep([string]$Step, [object[]]$Arguments) { [void]$script:sideStepCalls.Add([pscustomobject]@{ Step = $Step; Arguments = @($Arguments) }) }
+$script:sideStepThrows = $false
+function LaunchSideStep([string]$Step, [object[]]$Arguments) { if ($script:sideStepThrows) { throw 'side step boom' }; [void]$script:sideStepCalls.Add([pscustomobject]@{ Step = $Step; Arguments = @($Arguments) }) }
 function ShowConnectDialog { $script:connectDialogCalls++ }
-# The window script's own state variables the Tools refresh reads (fast-llm-ui.ps1 defines them; StrictMode throws on a missing one).
-$script:child = $null
-$script:vcBroker = $null
-$script:updateRun = $null
+# $script:child, $script:vcBroker and $script:updateRun are defined by Initialize-ShellEnv (the shared harness).
+$script:selection = @()   # the side-step arguments the API check appends (fast-llm-ui.ps1 defines it)
 
 function Invoke-P0-ShellStart {
     Initialize-ShellEnv
@@ -495,7 +495,315 @@ function Invoke-P5-GreyedReasons {
     Check-NoExceptions 'P5'
 }
 
-# P-SLOT task 7 (Connect page, the API key): later P-steps
+# ---- Task 7: the Connect page ----
+# The orchestration reads the Connect page makes when it opens are shadowed with fixtures, and the clipboard wrapper and Start-Process record instead of acting.
+$script:connectFixture = $null
+$script:connectKeyRow = $null
+$script:connectInfoCalls = 0
+$script:fieldClips = New-Object System.Collections.ArrayList
+$script:fieldClipThrow = $false
+$script:startedProcs = New-Object System.Collections.ArrayList
+function Get-FastLlmConnectionInfo { param($Status, $InstallRoot, $Settings) $script:connectInfoCalls++; return $script:connectFixture }
+function Get-FastLlmUiApiKeyRow { param($Info, $Settings, $ApiKeyStore) return $script:connectKeyRow }
+function Set-FastLlmUiFluentClipboardText { param([string]$Text) if ($script:fieldClipThrow) { throw 'clipboard boom' }; [void]$script:fieldClips.Add($Text) }
+function Start-Process { param([string]$FilePath) [void]$script:startedProcs.Add($FilePath) }
+
+function New-ConnectFixture([hashtable]$O = @{}) {
+    $d = @{ state = 'running'; baseUrl = 'http://127.0.0.1:8123/v1'; anthropicBaseUrl = 'http://127.0.0.1:8123'; modelName = 'probe-model'; contextTokens = 8192; apiKey = 'on'
+        agentWarning = 'Probe agent warning'
+        endpoints = @([pscustomobject]@{ path = '/v1/chat/completions'; label = 'Chat' }, [pscustomobject]@{ path = '/v1/messages'; label = 'Anthropic messages' })
+        clients = @(
+            [pscustomobject]@{ title = 'Probe client A'; snippet = "export K={KEY}`nexport U=http://127.0.0.1:8123"; docUrls = @('https://example.test/a', 'http://example.test/insecure') },
+            [pscustomobject]@{ title = 'Probe client B'; snippet = 'plain snippet without a token'; docUrls = @() }) }
+    foreach ($k in $O.Keys) { $d[$k] = $O[$k] }
+    return [pscustomobject]$d
+}
+function New-ConnectRow([bool]$Visible = $true, [bool]$CanShow = $true, [string]$Note = 'Probe key note') {
+    return [pscustomobject]@{ visible = $Visible; mask = '********'; canShow = $CanShow; note = $Note }
+}
+# Before any step opens Connect (P1 and P2 do), the page reads these defaults.
+$script:connectFixture = New-ConnectFixture
+$script:connectKeyRow = New-ConnectRow
+# Sets the fixtures and opens Connect afresh (Home first, so the page is entered).
+function Open-ConnectPage($Fixture, $Row) {
+    $script:connectFixture = $Fixture
+    $script:connectKeyRow = $Row
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $null = Set-FastLlmUiFluentPage -Id 'Connect'
+    Invoke-Pump 100
+}
+function Invoke-ConnectClick($Element) {
+    $Element.RaiseEvent((New-ShellClick $Element ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 30
+}
+
+# Every place the marker could be: each text, name, help text, tooltip, tag and content in the window and the three pages, every adapter state, and the window's own state.
+function Test-ConnectHasMarker($Value, [string]$Marker) {
+    if ($null -eq $Value) { return $false }
+    if ($Value -isnot [string]) { return $false }
+    return ([string]$Value).Contains($Marker)
+}
+function Add-ConnectDictScan($Obj, [string]$Path, [string]$Marker, [hashtable]$Hits, [int]$Depth) {
+    if ($null -eq $Obj -or $Depth -gt 6) { return }
+    $base = $Obj.psobject.BaseObject
+    if ($base -is [string]) { if (Test-ConnectHasMarker $base $Marker) { $Hits[$Path] = $true }; return }
+    if ($base -is [System.Windows.DependencyObject] -or $base -is [Delegate] -or $base -is [scriptblock]) { return }
+    if ($base -is [System.Collections.IDictionary]) {
+        foreach ($key in @($base.Keys)) { Add-ConnectDictScan $base[$key] ($Path + '/' + [string]$key) $Marker $Hits ($Depth + 1) }
+        return
+    }
+    if ($base -is [System.Collections.IEnumerable]) {
+        $i = 0
+        foreach ($item in $base) { Add-ConnectDictScan $item ($Path + '[' + $i + ']') $Marker $Hits ($Depth + 1); $i++ }
+    }
+}
+function Add-ConnectWalk($Node, [string]$Marker, [hashtable]$Hits, [hashtable]$Seen) {
+    $base = $Node.psobject.BaseObject
+    $id = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($base)
+    if ($Seen.ContainsKey($id)) { return }
+    $Seen[$id] = $true
+    $label = $base.GetType().Name
+    if ($base -is [System.Windows.FrameworkElement]) { $label = $label + ':' + [string]$base.Name }
+    if ($base -is [System.Windows.Controls.TextBlock] -and (Test-ConnectHasMarker $base.Text $Marker)) { $Hits[$label + '.Text'] = $true }
+    if ($base -is [System.Windows.Controls.TextBox] -and (Test-ConnectHasMarker $base.Text $Marker)) { $Hits[$label + '.Text'] = $true }
+    if ($base -is [System.Windows.Controls.ContentControl] -and (Test-ConnectHasMarker $base.Content $Marker)) { $Hits[$label + '.Content'] = $true }
+    if ($base -is [System.Windows.Controls.HeaderedItemsControl] -and (Test-ConnectHasMarker $base.Header $Marker)) { $Hits[$label + '.Header'] = $true }
+    if ($base -is [System.Windows.Window] -and (Test-ConnectHasMarker $base.Title $Marker)) { $Hits[$label + '.Title'] = $true }
+    if ($base -is [System.Windows.FrameworkElement]) {
+        if (Test-ConnectHasMarker $base.ToolTip $Marker) { $Hits[$label + '.ToolTip'] = $true }
+        if (Test-ConnectHasMarker $base.Tag $Marker) { $Hits[$label + '.Tag'] = $true }
+    }
+    if (Test-ConnectHasMarker ([System.Windows.Automation.AutomationProperties]::GetName($base)) $Marker) { $Hits[$label + '.AutomationName'] = $true }
+    if (Test-ConnectHasMarker ([System.Windows.Automation.AutomationProperties]::GetHelpText($base)) $Marker) { $Hits[$label + '.HelpText'] = $true }
+    $en = [System.Windows.LogicalTreeHelper]::GetChildren($base)
+    while ($en.MoveNext()) {
+        $child = $en.Current
+        if ($child -is [System.Windows.DependencyObject]) { Add-ConnectWalk $child $Marker $Hits $Seen }
+        elseif (Test-ConnectHasMarker $child $Marker) { $Hits[$label + '/child'] = $true }
+    }
+}
+function Get-ConnectMarkerHolders([string]$Marker) {
+    $f = $script:FastLlmUiFluent
+    $hits = @{}
+    $seen = @{}
+    foreach ($root in @($f.Window, $f.Pages['Connect']['Element'], $f.Pages['Home']['Element'], $f.Pages['Tools']['Element'])) { Add-ConnectWalk $root $Marker $hits $seen }
+    foreach ($row in (Get-FastLlmUiFluentControlTable)) {
+        $adapter = Get-Variable -Name ([string]$row[0]) -Scope Script -ValueOnly
+        Add-ConnectDictScan $adapter.__state ('adapter ' + [string]$row[0]) $Marker $hits 0
+    }
+    Add-ConnectDictScan $f 'state' $Marker $hits 0
+    return @($hits.Keys | Sort-Object)
+}
+
+function Invoke-P7-ConnectContent {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $t = $script:FastLlmUiFluentConnectText
+    $s = $script:FastLlmUiFluentStrings
+    $fx = New-ConnectFixture
+    Open-ConnectPage $fx (New-ConnectRow)
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Connect' -and [string]$els.ConnectTitle.Text -ceq 'Connect an app') 'P7 Connect is hosted and its title is Connect an app' "current=$(Get-FastLlmUiFluentCurrentPage) title='$($els.ConnectTitle.Text)'"
+    $want = @(
+        @{ P = 'ConnectBaseUrl'; L = 'Base URL'; V = 'http://127.0.0.1:8123/v1' },
+        @{ P = 'ConnectAnthropicUrl'; L = 'Anthropic base URL'; V = 'http://127.0.0.1:8123' },
+        @{ P = 'ConnectModelName'; L = 'Model name'; V = 'probe-model' },
+        @{ P = 'ConnectContextLimit'; L = 'Context limit (tokens)'; V = '8192' })
+    foreach ($w in $want) {
+        $box = $els[$w.P + 'Box']; $copy = $els[$w.P + 'Copy']; $label = $els[$w.P + 'Label']
+        Check ([string]$box.Text -ceq $w.V -and [string]$copy.Tag -ceq $w.V -and $box.IsReadOnly) "P7 $($w.L): the read-only box and the Copy tag hold the value" "box='$($box.Text)' tag='$($copy.Tag)'"
+        Check ([string]$label.Text -ceq $w.L -and [System.Windows.Automation.AutomationProperties]::GetName($box) -ceq $w.L -and [object]::ReferenceEquals([System.Windows.Automation.AutomationProperties]::GetLabeledBy($box), $label)) "P7 $($w.L): the box name and LabeledBy come from the label" ''
+        Check ([string]$copy.Content -ceq 'Copy' -and [System.Windows.Automation.AutomationProperties]::GetName($copy) -ceq (([string]$s.CopyFieldFormat) -f $w.L)) "P7 $($w.L): the Copy button says Copy and is named Copy plus the label" "content='$($copy.Content)' name='$([System.Windows.Automation.AutomationProperties]::GetName($copy))'"
+    }
+    Check ([string]$els.ConnectIntro.Text -ceq [string]$t.IntroRunning) 'P7 the intro follows a running state' "text='$($els.ConnectIntro.Text)'"
+    $endpointWant = 'Endpoints on the base URL:' + [Environment]::NewLine + ((@($fx.endpoints) | ForEach-Object { '  ' + $_.path + ' - ' + $_.label }) -join [Environment]::NewLine)
+    Check ([string]$els.ConnectEndpoints.Text -ceq $endpointWant) 'P7 the endpoint text is the classic formula' "text='$($els.ConnectEndpoints.Text)'"
+    Check ([string]$els.ConnectAgentWarningText.Text -ceq 'Probe agent warning' -and $els.ConnectAgentWarning.Visibility -eq [System.Windows.Visibility]::Visible) 'P7 the agent warning shows in its caution border' ''
+    Check ($els.ConnectKeyRow.Visibility -eq [System.Windows.Visibility]::Visible -and $els.ConnectKeyShow.IsEnabled -and $els.ConnectKeyCopy.IsEnabled -and [string]$els.ConnectKeyNote.Text -ceq 'Probe key note' -and $els.ConnectKeyNote.Visibility -eq [System.Windows.Visibility]::Visible) 'P7 a visible key row enables Show and Copy and shows its note' ''
+    # The cards
+    $cards = @($f.Connect['Cards'])
+    Check ($cards.Count -eq 2 -and $els.ConnectClients.Children.Count -eq 2) 'P7 one card per client' "cards=$($cards.Count) children=$($els.ConnectClients.Children.Count)"
+    $a = $cards[0]
+    $snippetA = [string]$fx.clients[0].snippet
+    $displayA = (Get-FastLlmConnectDisplayText -Snippet $snippetA) -replace "`n", [Environment]::NewLine
+    Check ([string]$a.Copy.Tag -ceq $snippetA -and [string]$a.Copy.Tag -cmatch '\{KEY\}') 'P7 the card Copy keeps the snippet with its key token in Tag' "tag='$($a.Copy.Tag)'"
+    Check ([string]$a.Box.Text -ceq $displayA -and $a.Box.IsReadOnly -and [string]$a.Box.Text -cnotmatch '\{KEY\}') 'P7 the card shows the snippet with the placeholder, read-only' "text='$($a.Box.Text)'"
+    Check ([System.Windows.Automation.AutomationProperties]::GetName($a.Box) -ceq 'Probe client A' -and [object]::ReferenceEquals([System.Windows.Automation.AutomationProperties]::GetLabeledBy($a.Box), $a.Title) -and [System.Windows.Automation.AutomationProperties]::GetName($a.Copy) -ceq 'Copy Probe client A') 'P7 the card box is named and labelled by its title, and its Copy by Copy plus the title' ''
+    Check (@($a.Links).Count -eq 2 -and @($cards[1].Links).Count -eq 0) 'P7 the doc links are one per url, none for a client without any' "links=$(@($a.Links).Count)"
+    $script:startedProcs.Clear()
+    $httpLink = @($a.Links | Where-Object { [string]$_.Tag -ceq 'http://example.test/insecure' })[0]
+    $httpsLink = @($a.Links | Where-Object { [string]$_.Tag -ceq 'https://example.test/a' })[0]
+    Invoke-ConnectClick $httpLink
+    Check ($script:startedProcs.Count -eq 0) 'P7 an http doc link opens nothing' "started=$($script:startedProcs -join ',')"
+    Invoke-ConnectClick $httpsLink
+    Check ($script:startedProcs.Count -eq 1 -and [string]$script:startedProcs[0] -ceq 'https://example.test/a') 'P7 an https doc link opens its url' "started=$($script:startedProcs -join ',')"
+    # Not running: the intro, and the two values that appear only once it runs
+    Open-ConnectPage (New-ConnectFixture @{ state = 'not-running'; modelName = $null; contextTokens = $null; agentWarning = $null }) (New-ConnectRow $false $false '')
+    Check ([string]$els.ConnectIntro.Text -ceq [string]$t.IntroNotRunning) 'P7 the intro follows a not-running state' "text='$($els.ConnectIntro.Text)'"
+    Check ([string]$els.ConnectModelNameBox.Text -ceq '(shown when running)' -and [string]$els.ConnectContextLimitBox.Text -ceq '(shown when running)') 'P7 a model name and context limit that are not known say shown when running' ''
+    Check ($els.ConnectKeyRow.Visibility -eq [System.Windows.Visibility]::Collapsed -and $els.ConnectKeyNote.Visibility -eq [System.Windows.Visibility]::Collapsed -and $els.ConnectAgentWarning.Visibility -eq [System.Windows.Visibility]::Collapsed) 'P7 no key row, note or warning when there is none' ''
+    Open-ConnectPage (New-ConnectFixture) (New-ConnectRow $true $false 'Probe unreadable note')
+    Check ($els.ConnectKeyRow.Visibility -eq [System.Windows.Visibility]::Visible -and -not $els.ConnectKeyShow.IsEnabled -and -not $els.ConnectKeyCopy.IsEnabled) 'P7 a key row that cannot be shown disables Show and Copy' ''
+    Open-ConnectPage (New-ConnectFixture) (New-ConnectRow)
+    Check-NoExceptions 'P7'
+}
+
+function Invoke-P8-ConnectKey {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $marker = [string]$script:markerKey
+    Open-ConnectPage (New-ConnectFixture) (New-ConnectRow)
+    $box = $els.ConnectKeyBox
+    $show = $els.ConnectKeyShow
+    $baseline = $script:keyReadCalls
+    Check ([string]$box.Text -ceq '********' -and [string]$show.Content -ceq 'Show' -and $script:keyReadCalls -eq $baseline) 'P8 the key box starts masked and nothing has read the key' "text='$($box.Text)' reads=$($script:keyReadCalls - $baseline)"
+    Check (($box -is [System.Windows.Controls.TextBox]) -and ($box -isnot [System.Windows.Controls.PasswordBox]) -and $box.IsReadOnly -and -not $box.IsUndoEnabled) 'P8 the key box is a read-only TextBox with undo off, not a PasswordBox' ''
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($box)
+    $valuePattern = $peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Value)
+    Check ((Get-ShellPeerName $box) -ceq 'API key' -and $null -ne $valuePattern -and [bool]$valuePattern.IsReadOnly) 'P8 the key box peer is named API key and has a read-only ValuePattern' "name='$(Get-ShellPeerName $box)'"
+    # Show: one read, the marker in the box, the caption is Hide
+    Invoke-ConnectClick $show
+    Check ($script:keyReadCalls -eq ($baseline + 1) -and [string]$box.Text -ceq $marker -and [string]$show.Content -ceq 'Hide') 'P8 Show reads the key once, the box holds it and the caption becomes Hide' "reads=$($script:keyReadCalls - $baseline) caption='$($show.Content)'"
+    $holders = @(Get-ConnectMarkerHolders $marker)
+    Check ($holders.Count -eq 1 -and $holders[0] -ceq 'TextBox:ConnectKeyBox.Text') 'P8 marker walk while shown: the marker is in the key box text and nowhere else' "holders=$($holders -join '; ')"
+    # The Copy command of the shown box (Ctrl+C, Ctrl+Insert and the context menu are this command) goes through the key copy routine
+    $script:fieldClips.Clear(); $script:clipboardPayloads.Clear()
+    $target = $box.psobject.BaseObject
+    $canCopy = [System.Windows.Input.ApplicationCommands]::Copy.CanExecute($null, $target)
+    [System.Windows.Input.ApplicationCommands]::Copy.Execute($null, $target)
+    Invoke-Pump 30
+    $copied = @($script:clipboardPayloads.ToArray())
+    $formatNames = @(); if ($copied.Count -eq 1) { $formatNames = @($copied[0].formats.Keys | Sort-Object) }
+    Check ($canCopy -and $copied.Count -eq 1 -and [string]$copied[0].text -ceq $marker -and ($formatNames -join ',') -ceq 'CanIncludeInClipboardHistory,CanUploadToCloudClipboard,ExcludeClipboardContentFromMonitorProcessing' -and $script:fieldClips.Count -eq 0) 'P8 the Copy command on the shown box records the marker with the three exclusion formats and never the plain clipboard wrapper' "can=$canCopy payloads=$($copied.Count) formats=$($formatNames -join ',') plain=$($script:fieldClips.Count)"
+    $menuItem = $box.ContextMenu.Items[0]
+    Check ($box.ContextMenu.Items.Count -eq 1 -and [object]::ReferenceEquals($menuItem.Command, [System.Windows.Input.ApplicationCommands]::Copy) -and [object]::ReferenceEquals($menuItem.CommandTarget, $box) -and -not [System.Windows.Input.ApplicationCommands]::Cut.CanExecute($null, $target)) 'P8 the context menu is one Copy item bound to the Copy command, and Cut is blocked' ''
+    # Hide masks without a read
+    $before = $script:keyReadCalls
+    Invoke-ConnectClick $show
+    Check ([string]$box.Text -ceq '********' -and [string]$show.Content -ceq 'Show' -and $script:keyReadCalls -eq $before -and -not $box.CanUndo) 'P8 Hide masks the box without a read and CanUndo is false' "text='$($box.Text)' undo=$($box.CanUndo)"
+    $holders = @(Get-ConnectMarkerHolders $marker)
+    Check ($holders.Count -eq 0) 'P8 marker walk after Hide: the marker is nowhere' "holders=$($holders -join '; ')"
+    # A failed read keeps the mask and says so
+    $script:keyReadNull = $true
+    Invoke-ConnectClick $show
+    Check ([string]$box.Text -ceq '********' -and [string]$show.Content -ceq 'Show' -and ([string]$script:statusLabel.Text) -ceq 'The stored API key cannot be read.') 'P8 a failed read keeps the mask and sets the status text' "text='$($box.Text)' status='$($script:statusLabel.Text)'"
+    $script:keyReadNull = $false
+    # Re-masking: leave, IsVisibleChanged, a running-edge refresh
+    $remask = @(
+        @{ Name = 'leaving the page'; Do = { $null = Set-FastLlmUiFluentPage -Id 'Home' } },
+        @{ Name = 'the page becoming invisible'; Do = { $pageElement = $script:FastLlmUiFluent.Pages['Connect']['Element']; $pageElement.Visibility = [System.Windows.Visibility]::Collapsed; $pageElement.Visibility = [System.Windows.Visibility]::Visible } },
+        @{ Name = 'a running-edge refresh'; Do = { $script:FastLlmUiFluent.Keys['Running'] = (-not [bool]$script:FastLlmUiFluent.Keys['Running']); Update-FastLlmUiFluentConnect } })
+    foreach ($r in $remask) {
+        $null = Set-FastLlmUiFluentPage -Id 'Connect'
+        Invoke-Pump 50
+        Invoke-ConnectClick $show
+        $wasShown = ([string]$box.Text -ceq $marker)
+        & $r.Do
+        Invoke-Pump 50
+        $holders = @(Get-ConnectMarkerHolders $marker)
+        Check ($wasShown -and [string]$box.Text -ceq '********' -and [string]$show.Content -ceq 'Show' -and -not $box.CanUndo -and $holders.Count -eq 0) "P8 $($r.Name) masks a shown key (CanUndo false, the marker nowhere)" "wasShown=$wasShown text='$($box.Text)' undo=$($box.CanUndo) holders=$($holders -join '; ')"
+    }
+    # The refresh reads the content only on a running edge, never on another tick
+    $null = Set-FastLlmUiFluentPage -Id 'Connect'
+    Invoke-Pump 50
+    # Bring the page in step with what the Home refresh will write (not running); that one change is an edge and may read.
+    $f.Keys['Running'] = $false
+    Update-FastLlmUiFluentConnect
+    $calls = $script:connectInfoCalls
+    Update-FastLlmUiFluentConnect
+    Invoke-FastLlmUiFluentTick
+    Update-FastLlmUiFluentConnect
+    Check ($script:connectInfoCalls -eq $calls) 'P8 the connection info is not read again on a tick with no running edge' "calls=$($script:connectInfoCalls - $calls)"
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Check-NoExceptions 'P8'
+}
+
+function Invoke-P9-ConnectCopies {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $marker = [string]$script:markerKey
+    $fx = New-ConnectFixture
+    Open-ConnectPage $fx (New-ConnectRow)
+    # A field Copy goes through the shadowed wrapper
+    $script:fieldClips.Clear(); $script:clipboardPayloads.Clear()
+    Invoke-ConnectClick $els.ConnectBaseUrlCopy
+    Check ($script:fieldClips.Count -eq 1 -and [string]$script:fieldClips[0] -ceq 'http://127.0.0.1:8123/v1' -and $script:clipboardPayloads.Count -eq 0) 'P9 a field Copy sends its value through the plain clipboard wrapper' "clips=$($script:fieldClips -join ',')"
+    $script:fieldClipThrow = $true
+    Invoke-ConnectClick $els.ConnectModelNameCopy
+    $script:fieldClipThrow = $false
+    Check (([string]$script:statusLabel.Text) -ceq 'Could not copy: clipboard boom') 'P9 a failing field Copy sets the status text as the dialog does' "status='$($script:statusLabel.Text)'"
+    # The key Copy: the marker plus the three exclusion formats
+    $script:fieldClips.Clear(); $script:clipboardPayloads.Clear()
+    Invoke-ConnectClick $els.ConnectKeyCopy
+    $p = @($script:clipboardPayloads.ToArray())
+    $names = @(); if ($p.Count -eq 1) { $names = @($p[0].formats.Keys | Sort-Object) }
+    Check ($p.Count -eq 1 -and [string]$p[0].text -ceq $marker -and ($names -join ',') -ceq 'CanIncludeInClipboardHistory,CanUploadToCloudClipboard,ExcludeClipboardContentFromMonitorProcessing' -and $script:fieldClips.Count -eq 0) 'P9 the key Copy records the marker with the three exclusion formats, not through the plain wrapper' "payloads=$($p.Count) formats=$($names -join ',')"
+    # A card Copy replaces the key token (with the key formats), and a card without a token copies plain
+    $script:clipboardPayloads.Clear()
+    $cards = @($f.Connect['Cards'])
+    Invoke-ConnectClick $cards[0].Copy
+    $p = @($script:clipboardPayloads.ToArray())
+    $want = ([string]$fx.clients[0].snippet).Replace('{KEY}', $marker)
+    Check ($p.Count -eq 1 -and [string]$p[0].text -ceq $want -and @($p[0].formats.Keys).Count -eq 3) 'P9 a card Copy replaces {KEY} with the key and carries the exclusion formats' "payloads=$($p.Count)"
+    $script:clipboardPayloads.Clear()
+    $readsBefore = $script:keyReadCalls
+    Invoke-ConnectClick $cards[1].Copy
+    $p = @($script:clipboardPayloads.ToArray())
+    Check ($p.Count -eq 1 -and [string]$p[0].text -ceq 'plain snippet without a token' -and @($p[0].formats.Keys).Count -eq 0 -and $script:keyReadCalls -eq $readsBefore) 'P9 a card with no key token copies its text plain and reads no key' "payloads=$($p.Count) reads=$($script:keyReadCalls - $readsBefore)"
+    # An unreadable key gives today's texts
+    $script:keyReadNull = $true
+    $script:clipboardPayloads.Clear()
+    Invoke-ConnectClick $els.ConnectKeyCopy
+    Check ($script:clipboardPayloads.Count -eq 0 -and ([string]$script:statusLabel.Text) -ceq 'The stored API key cannot be read.') 'P9 an unreadable key: the key Copy copies nothing and says so' "payloads=$($script:clipboardPayloads.Count) status='$($script:statusLabel.Text)'"
+    Invoke-ConnectClick $cards[0].Copy
+    $p = @($script:clipboardPayloads.ToArray())
+    Check (([string]$script:statusLabel.Text) -ceq 'The stored API key cannot be read, so the card was copied without it.' -and $p.Count -eq 1 -and ([string]$p[0].text).Contains($marker) -eq $false) 'P9 an unreadable key: a card is copied without it and says so' "status='$($script:statusLabel.Text)' payloads=$($p.Count)"
+    $script:keyReadNull = $false
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Check-NoExceptions 'P9'
+}
+
+function Invoke-P10-ConnectApiCheck {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $s = $script:FastLlmUiFluentStrings
+    $btn = $els.ConnectCheckButton
+    Check ([string]$btn.Content -ceq 'Check the API formats' -and [System.Windows.Controls.ToolTipService]::GetShowOnDisabled($btn)) 'P10 the check button says Check the API formats and shows its tooltip while disabled' "content='$($btn.Content)'"
+    # Not running: disabled, with its reason
+    $script:shellSnap = New-ShellSnap @{ RunReady = $true }
+    Open-ConnectPage (New-ConnectFixture @{ state = 'not-running' }) (New-ConnectRow)
+    $help = [System.Windows.Automation.AutomationProperties]::GetHelpText($btn)
+    Check ((-not $btn.IsEnabled) -and [string]$btn.ToolTip -ceq [string]$s.WhyNotRunning -and $help -ceq [string]$s.WhyNotRunning) 'P10 not running: the button is disabled and says Start FastLLM first' "enabled=$($btn.IsEnabled) tip='$($btn.ToolTip)'"
+    # Running, a side step in the way
+    $script:shellSnap = New-ShellSnap @{ RunReady = $true; SideChildActive = $true }
+    Open-ConnectPage (New-ConnectFixture) (New-ConnectRow)
+    Check ((-not $btn.IsEnabled) -and [string]$btn.ToolTip -ceq [string]$s.WhySideStep) 'P10 during a side step: the button is disabled with the side-step reason' "enabled=$($btn.IsEnabled) tip='$($btn.ToolTip)'"
+    # The rule is read on every tick: the side step ends, the button comes back and the reason goes
+    $script:shellSnap = New-ShellSnap @{ RunReady = $true }
+    Update-FastLlmUiFluentConnect
+    Check ($btn.IsEnabled -and $null -eq $btn.ToolTip -and [System.Windows.Automation.AutomationProperties]::GetHelpText($btn) -ceq '') 'P10 running and idle: the button is enabled and shows no reason' "enabled=$($btn.IsEnabled) tip='$($btn.ToolTip)'"
+    # A click records ReadSideSelection, then the launch with its arguments
+    $script:selection = @('--probe-selection')
+    $selBefore = $script:sideSelectionCalls
+    $script:sideStepCalls.Clear()
+    Invoke-ConnectClick $btn
+    $call = $null; if ($script:sideStepCalls.Count -eq 1) { $call = $script:sideStepCalls[0] }
+    Check ($script:sideSelectionCalls -eq ($selBefore + 1) -and $null -ne $call -and [string]$call.Step -ceq 'api check' -and (@($call.Arguments) -join ' ') -ceq 'doctor -ApiCheck --probe-selection') 'P10 a click reads the side selection, then launches the api check side step with its arguments' "selection=$($script:sideSelectionCalls - $selBefore) calls=$($script:sideStepCalls.Count) args=$(if ($null -ne $call) { @($call.Arguments) -join ' ' })"
+    # A throw reaches ShowFailure
+    $script:sideStepThrows = $true
+    $script:shellFailMsg = ''
+    Invoke-ConnectClick $btn
+    $script:sideStepThrows = $false
+    Check ([string]$script:shellFailMsg -ceq 'side step boom') 'P10 a throw from the launch reaches ShowFailure' "message='$($script:shellFailMsg)'"
+    $script:selection = @()
+    $script:shellSnap = New-ShellSnap
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Check-NoExceptions 'P10'
+}
+
 # P-SLOT task 8 (Connect page, the remaining actions and first-time dialogs): later P-steps
 
 # Faults are injected last: each Initialize run replaces the shell state, so nothing after this may use the real shell.
@@ -511,6 +819,7 @@ $script:steps = @(
     'Invoke-P0-ShellStart',
     'Invoke-P1-PageHostAndNav', 'Invoke-P2-ConnectAnApp', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
+    'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'
 )

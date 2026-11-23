@@ -18,6 +18,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHooks.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHome.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -705,6 +706,7 @@ function Initialize-FastLlmUiFluentShell {
         # The order from here is fixed: 1 parse every page, 2 initialise each page into Els, 3 register the pages and build the pane, 4 bindings, 5 the form adapter.
         $homePage = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
         $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
+        $connectPage = New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -729,8 +731,10 @@ function Initialize-FastLlmUiFluentShell {
         $f['Current'] = ''
         [void] (Initialize-FastLlmUiFluentHome -Page $homePage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $f['Els'])
         Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
         Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
+        Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $f['Els']
         $f['Current'] = 'Home'
         $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane

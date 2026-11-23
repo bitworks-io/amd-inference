@@ -565,4 +565,42 @@ try{
     Check ($guardCounter.setter -eq 1 -and $guardCounter.dot -eq 1) 'positive control: a fluent start through the same statement dot-sources the shell file and runs the setter'
 }finally{ if(Test-Path -LiteralPath $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force} }
 
+# Connect text drift pin: every value of $script:FastLlmUiFluentConnectText (src/FastLlm.UiFluentConnect.ps1, read by AST, never run) equals a string constant of
+# ShowConnectDialog, and every constant that function assigns to a .Text is in the table or is 'Close'. The copy is temporary: the flip deletes the dialog.
+$connectAst=Get-FileAst (Join-Path $root 'src/FastLlm.UiFluentConnect.ps1')
+$connectAssign=@($connectAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentConnectText'},$true))
+Check ($connectAssign.Count -eq 1) 'the Connect text table is assigned exactly once'
+$connectTable=& ([scriptblock]::Create($connectAssign[0].Right.Extent.Text))
+$connectKeys=@('Title','IntroRunning','IntroNotRunning','BaseUrl','AnthropicBaseUrl','ModelName','ContextLimit','ShownWhenRunning','ApiKey','Show','Hide','Copy','KeyUnreadable','CouldNotCopy','Endpoints','EndpointIndent','EndpointSeparator','Documentation','CheckFormats')
+Check ((@($connectTable.Keys) -join ',') -ceq ($connectKeys -join ',')) 'the Connect text table has the 19 planned keys, in order'
+$dialogFn=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowConnectDialog'},$true))
+Check ($dialogFn.Count -eq 1) 'ShowConnectDialog is found by AST'
+$dialogConstants=@($dialogFn[0].FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true)|ForEach-Object{[string]$_.Value})
+$dialogTextConstants=New-Object System.Collections.ArrayList
+foreach($assignment in @($dialogFn[0].FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and [string]$n.Left.Member.Value -ceq 'Text'},$true))){
+    foreach($k in @($assignment.Right.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){
+        # A member name ([Environment]::NewLine) is not a caption.
+        if($k.Parent -is [System.Management.Automation.Language.MemberExpressionAst] -and [object]::ReferenceEquals($k.Parent.Member,$k)){continue}
+        # Nor is a comparison operand (-ceq 'running') or a command name.
+        if($k.Parent -is [System.Management.Automation.Language.BinaryExpressionAst] -and [string]$k.Parent.Operator -cnotmatch '^(Plus|Format)$'){continue}
+        if($k.Parent -is [System.Management.Automation.Language.CommandAst] -and [object]::ReferenceEquals($k.Parent.CommandElements[0],$k)){continue}
+        if(([string]$k.Value).Trim() -ne ''){[void]$dialogTextConstants.Add([string]$k.Value)}
+    }
+}
+function Get-ConnectDriftProblems($Table,[string[]]$Constants,[string[]]$TextConstants){
+    $problems=New-Object System.Collections.ArrayList
+    foreach($key in @($Table.Keys)){if($Constants -cnotcontains [string]$Table[$key]){[void]$problems.Add("table value $key is not a constant of ShowConnectDialog")}}
+    $allowed=@($Table.Values|ForEach-Object{[string]$_})+@('Close')
+    foreach($text in $TextConstants){if($allowed -cnotcontains $text){[void]$problems.Add("ShowConnectDialog assigns '$text' to a .Text and the table has no such value")}}
+    return ,$problems.ToArray()
+}
+$driftProblems=Get-ConnectDriftProblems $connectTable $dialogConstants $dialogTextConstants
+foreach($pr in $driftProblems){Write-Host "FINDING: $pr"}
+Check ($driftProblems.Count -eq 0 -and $dialogTextConstants.Count -gt 10) "every Connect text value equals a ShowConnectDialog constant, and every constant it assigns to a .Text is in the table or is Close ($($dialogTextConstants.Count) assigned)"
+$mutatedTable=[ordered]@{}
+foreach($key in @($connectTable.Keys)){$mutatedTable[$key]=[string]$connectTable[$key]}
+$mutatedTable['KeyUnreadable']='The stored API key cannot be read'
+Check ((Get-ConnectDriftProblems $mutatedTable $dialogConstants $dialogTextConstants).Count -ge 1) 'mutation check: a changed table value fails the drift pin'
+Check ((Get-ConnectDriftProblems $connectTable $dialogConstants @($dialogTextConstants.ToArray()+'A new caption')).Count -ge 1) 'mutation check: a new .Text constant in the dialog that the table lacks fails the drift pin'
+
 Write-Host "UI fluent member coverage tests passed: $checks"
