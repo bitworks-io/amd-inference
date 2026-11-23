@@ -1498,6 +1498,11 @@ function ShowConnectDialog {
                 $shownKey=$null
             }else{$keyBox.Text=[string]$keyRow.mask;$keyShow.Text='Show'}
         })
+        # Ctrl+C, Ctrl+Insert and the box's own menu would copy the shown key as plain text, with no clipboard-history or cloud-sync exclusion; the
+        # guard turns them off and sends every copy of the box through the same call as the Copy button.
+        Register-FastLlmUiKeyBoxCopyGuard -TextBox $keyBox -Copy {
+            [void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})
+        }
         # Copy goes through the one copy routine: it reads the key for this one copy and hands it to the clipboard only. This handler never
         # holds the key, and the status line is given fixed text only.
         $keyCopy.Add_Click({

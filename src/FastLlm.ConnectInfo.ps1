@@ -479,6 +479,31 @@ function Invoke-FastLlmUiKeyCopy {
     finally { $keyText = $null; $copyText = $null }
 }
 
+# Every copy of a TextBox that can show the key goes through the same routine as the Copy button, so the clipboard-history and cloud-sync
+# exclusion formats always come with it. A TextBox's own copy (Ctrl+C, Ctrl+Insert, its built-in menu) sets plain text with none of them.
+# This turns the native copy off (ShortcutsEnabled = $false) and gives the box the two ways back in: Ctrl+C or Ctrl+Insert, and a menu with one
+# Copy item. Both run -Copy, which the window sets to the Copy button's own call. The block is kept in the Tag of the box and of the item (it
+# holds no key) and the handlers are plain script blocks, not closures, so they see the window's own functions when they run.
+function Register-FastLlmUiKeyBoxCopyGuard {
+    param([Parameter(Mandatory = $true)] $TextBox, [Parameter(Mandatory = $true)][scriptblock] $Copy)
+    $TextBox.ShortcutsEnabled = $false
+    $TextBox.Tag = $Copy
+    $TextBox.Add_KeyDown({
+        param($sender, $e)
+        $name = [string] $e.KeyCode
+        if ($e.Control -and -not $e.Shift -and -not $e.Alt -and ($name -ceq 'C' -or $name -ceq 'Insert')) {
+            $e.Handled = $true
+            $e.SuppressKeyPress = $true
+            $null = & $sender.Tag
+        }
+    })
+    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $item = $menu.Items.Add('Copy')
+    $item.Tag = $Copy
+    $item.Add_Click({ param($sender, $e) $null = & $sender.Tag })
+    $TextBox.ContextMenuStrip = $menu
+}
+
 function Test-FastLlmApiCheckReady {
     param($Status)
     $active = Get-FastLlmConnectProp $Status 'active'
