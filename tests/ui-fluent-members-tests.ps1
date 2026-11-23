@@ -459,6 +459,94 @@ Check ($plantUnbound.Count -eq 1 -and $plantUnbound[0] -ceq 'plantedButton') 'se
 $plantPending=@('statusLabel'|Where-Object{$boundNames -ccontains $_})
 Check ($plantPending.Count -eq 1) 'self-check: the bound-name list would catch a bound adapter put on the pending list'
 
+# Pages (G2, N1): every page registered with Register-FastLlmUiFluentPage passes a -Status element, and that element is a TextBlock with a Polite live
+# setting in the page's registered XAML; the set of registered FastLlm.<Page> markup equals the set of registered ids; and every pane item that is not
+# a registered page is one of the coming-later items. Read by AST and XML, so it runs on every platform.
+$comingLater=@('NavModels','NavSettings')
+function Get-PagePinFindings([string[]]$Texts){
+    $found=New-Object System.Collections.ArrayList
+    $regs=New-Object System.Collections.ArrayList
+    $xaml=@{}
+    $navIds=New-Object System.Collections.ArrayList
+    foreach($t in $Texts){
+        $err=$null
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($t,[ref]$null,[ref]$err)
+        if(@($err).Count -gt 0){[void]$found.Add('a file does not parse: '+@($err)[0].Message);continue}
+        foreach($c in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Register-FastLlmUiFluentPage'},$true))){
+            $r=@{Id='';Nav='';StatusName='';HasStatus=$false}
+            $els=@($c.CommandElements)
+            for($i=1;$i -lt $els.Count;$i++){
+                if($els[$i] -isnot [System.Management.Automation.Language.CommandParameterAst]){continue}
+                $arg=$null; if($i+1 -lt $els.Count -and $els[$i+1] -isnot [System.Management.Automation.Language.CommandParameterAst]){$arg=$els[$i+1]}
+                switch -CaseSensitive ([string]$els[$i].ParameterName){
+                    'Id'{if($null -ne $arg){$r.Id=[string]$arg.Extent.Text.Trim("'")}}
+                    'Nav'{if($null -ne $arg){$r.Nav=[string]$arg.Extent.Text.Trim("'")}}
+                    'Status'{if($null -ne $arg){$r.HasStatus=$true;if($arg.Extent.Text -match "^\`$Els\['([A-Za-z0-9]+)'\]$"){$r.StatusName=$Matches[1]}}}
+                }
+            }
+            [void]$regs.Add([pscustomobject]$r)
+        }
+        foreach($asg in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Left.Target.Extent.Text -ceq '$script:FastLlmUiXaml' -and $n.Left.Index -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $n.Right.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){
+            $xaml[[string]$asg.Left.Index.Value]=[string]$asg.Right.Expression.Value
+        }
+        foreach($h in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
+            foreach($kv in $h.KeyValuePairs){ if([string]$kv.Item1.Extent.Text -ceq 'Id' -and $kv.Item2.Extent.Text -match "^'(Nav[A-Za-z]+)'$"){[void]$navIds.Add($Matches[1])} }
+        }
+    }
+    $pageNames=@($xaml.Keys|Where-Object{$_ -cmatch '^FastLlm\.' -and $_ -cne 'FastLlm.Shell'}|ForEach-Object{$_.Substring(8)}|Sort-Object)
+    $ids=@($regs|ForEach-Object{[string]$_.Id}|Sort-Object)
+    if(($pageNames -join ',') -cne ($ids -join ',')){[void]$found.Add("the registered page markup ($($pageNames -join ',')) differs from the registered page ids ($($ids -join ','))")}
+    foreach($r in $regs){
+        if(-not $r.HasStatus -or $r.StatusName -ceq ''){[void]$found.Add("page '$($r.Id)' is registered without a -Status element taken from `$Els");continue}
+        if(-not $xaml.ContainsKey('FastLlm.'+$r.Id)){continue}
+        $doc=New-Object System.Xml.XmlDocument
+        try{$doc.LoadXml($xaml['FastLlm.'+$r.Id])}catch{[void]$found.Add("the markup of page '$($r.Id)' does not parse");continue}
+        $node=@($doc.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name','http://schemas.microsoft.com/winfx/2006/xaml') -ceq $r.StatusName})
+        if($node.Count -ne 1){[void]$found.Add("page '$($r.Id)': the status element '$($r.StatusName)' is not in its markup exactly once");continue}
+        if($node[0].LocalName -cne 'TextBlock' -or $node[0].GetAttribute('AutomationProperties.LiveSetting') -cne 'Polite'){[void]$found.Add("page '$($r.Id)': the status element '$($r.StatusName)' is not a TextBlock with AutomationProperties.LiveSetting Polite")}
+    }
+    $registeredNav=@($regs|ForEach-Object{[string]$_.Nav})
+    foreach($n in $registeredNav){ if($navIds -cnotcontains $n){[void]$found.Add("page nav item '$n' is not a pane item")} }
+    foreach($n in @($navIds|Select-Object -Unique)){
+        if($registeredNav -cnotcontains $n -and $comingLater -cnotcontains $n){[void]$found.Add("pane item '$n' is neither a registered page nor a coming-later item")}
+    }
+    return ,@($found.ToArray())
+}
+$pageTexts=@($fluentSrcFiles|ForEach-Object{[IO.File]::ReadAllText($_)})
+# Registering a page refuses a status line that is not a Polite live region: the guard is an if on GetLiveSetting of the status element, with a throw.
+function Get-RegisterGuardFindings([string]$ShellText){
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$null)
+    $fn=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Register-FastLlmUiFluentPage'},$true))
+    if($fn.Count -ne 1){return ,@('Register-FastLlmUiFluentPage is not defined exactly once')}
+    $ok=$false
+    foreach($i in @($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst]},$true))){
+        $cond=[string]$i.Clauses[0].Item1.Extent.Text
+        $throws=@($i.Clauses[0].Item2.FindAll({param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst]},$true)).Count -gt 0
+        if($cond.Contains('GetLiveSetting($Status)') -and $cond.Contains('AutomationLiveSetting]::Polite') -and $throws){$ok=$true}
+    }
+    if($ok){return ,@()}
+    return ,@('Register-FastLlmUiFluentPage does not throw for a status line that is not Polite')
+}
+$shellText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
+Check ((Get-RegisterGuardFindings $shellText).Count -eq 0) 'Register-FastLlmUiFluentPage throws when the status line is not a Polite live region'
+Check ((Get-RegisterGuardFindings $shellText.Replace('GetLiveSetting($Status) -ne','$false -ne')).Count -eq 1) 'self-check: a registration guard that no longer reads the live setting is flagged'
+$pageFindings=Get-PagePinFindings $pageTexts
+foreach($pf in $pageFindings){Write-Host "FINDING: $pf"}
+Check ($pageFindings.Count -eq 0 -and $pageTexts.Count -ge 8) "every registered page has a Polite TextBlock status line, the page markup equals the registered ids, and every other pane item is coming later ($($pageFindings -join '; '))"
+$plantXamlOpen="`$script:FastLlmUiXaml['FastLlm.Plant'] = @'"
+$plantXamlClose="'@"
+$plantNs='xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"'
+$plantXaml=($plantXamlOpen,"<TextBlock $plantNs x:Name=`"PlantStatus`"/>",$plantXamlClose) -join "`n"
+$planted=("function Register-Plant { Register-FastLlmUiFluentPage -Id 'Plant' -Element `$Page -Nav 'NavPlant' }",$plantXaml) -join "`n"
+$plantedBad=Get-PagePinFindings (@($pageTexts)+@($planted))
+Check (@($plantedBad|Where-Object{$_ -like "*Plant*without a -Status*"}).Count -eq 1) 'self-check: a page registered without -Status is flagged'
+$plantedXaml=("function Register-Plant { Register-FastLlmUiFluentPage -Id 'Plant' -Element `$Page -Nav 'NavTools' -Status `$Els['PlantStatus'] }",$plantXaml) -join "`n"
+Check (@((Get-PagePinFindings (@($pageTexts)+@($plantedXaml)))|Where-Object{$_ -like "*PlantStatus*not a TextBlock with*Polite*"}).Count -eq 1) 'self-check: a status element without a Polite live setting is flagged'
+$plantedIdOnly=($plantXamlOpen,"<Grid $plantNs/>",$plantXamlClose) -join "`n"
+Check (@((Get-PagePinFindings (@($pageTexts)+@($plantedIdOnly)))|Where-Object{$_ -like "*differs from the registered page ids*"}).Count -eq 1) 'self-check: page markup that is not a registered page is flagged'
+$dropHome=@($pageTexts|ForEach-Object{$_ -replace "Register-FastLlmUiFluentPage -Id 'Tools'","Register-FastLlmUiFluentPageGone -Id 'Tools'"})
+Check (@((Get-PagePinFindings $dropHome)|Where-Object{$_ -like "*differs from the registered page ids*" -or $_ -like "*neither a registered page nor*"}).Count -ge 1) 'self-check: a page left out of the registry is flagged'
+
 # Initialize-FastLlmUiFluentBindings rebinds with Set-Variable -Scope Script. The bindings file is dot-sourced into the window script, so
 # "Script" is that script's own scope: proven with a scratch script that dot-sources it the same way and reads the names there.
 $scratchDir=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-bindings-' + [guid]::NewGuid().ToString('N'))
