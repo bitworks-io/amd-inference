@@ -544,7 +544,14 @@ try {
     Check (-not (Get-FastLlmConnectionInfo -Status $on.final).PSObject.Properties['embeddings']) 'connect an app: after the stop there is no embeddings row'
 
     # ================= a sidecar failure never fails, stops or degrades the text model; it is recorded with a typed code; no retry =================
-    InModule { $script:FastLlmSidecarLoadTimeoutSeconds = 4 }
+    # Each case's sidecar load timeout must outlast the mock engine's own start: the mock is a PowerShell host that compiles its C# helper
+    # (helpers/MockEmbeddingServer.cs) before it records its start or does what its mode says. That start can take several seconds on a
+    # loaded host (4.6 to 7.5 s seen on macOS), and a shorter timeout ends the case before the mock has acted: the product then reports
+    # embeddings-load-timeout, as it should, and the case never sees the code it checks. Every case but 'nohealth' ends at the mock's own
+    # behaviour (it exits, prints its placement or answers the canary), so its long ceiling costs no time. 'nohealth' ends at the timeout
+    # itself, so it gets one that is still short but well past the mock's start (its one-start check needs the start recorded).
+    $failureLoadTimeoutSeconds = 60
+    $neverHealthyLoadTimeoutSeconds = 20
     $failureCases = [ordered] @{
         'exit' = @{ Code = 'embeddings-server-exited'; What = 'a sidecar that exits at once (a start failure)' }
         'nohealth' = @{ Code = 'embeddings-load-timeout'; What = 'a sidecar that never becomes healthy' }
@@ -559,6 +566,9 @@ try {
     }
     foreach ($mode in $failureCases.Keys) {
         $case = $failureCases[$mode]
+        $loadSeconds = $failureLoadTimeoutSeconds
+        if ($mode -ceq 'nohealth') { $loadSeconds = $neverHealthyLoadTimeoutSeconds }
+        InModule { param($Seconds) $script:FastLlmSidecarLoadTimeoutSeconds = $Seconds } @($loadSeconds)
         $world = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label ("fail-$mode") -SidecarMode $mode
         Use-SidecarWorld -Module $module -State $st -World $world
         $failedRun = Invoke-SidecarScenario -Label "fail-$mode" -World $world -Steps @((New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'sleep' @{ milliseconds = 1500 }), (New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'request'), (New-Step @{ phase = 'ready' } 'stop'))
