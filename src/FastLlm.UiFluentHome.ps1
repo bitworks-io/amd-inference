@@ -383,9 +383,9 @@ function Update-FastLlmUiFluentHome {
     $composed = if ($detail.StartsWith([string] $card.headline, [System.StringComparison]::OrdinalIgnoreCase)) { $detail } else { [string] $card.headline + '. ' + $detail }
     if ($keys['Composed'] -cne $composed) {
         $first = ($null -eq $keys['Composed'])
-        $keys['Composed'] = $composed
-        # Every page shows the composed line; only the current page announces it.
+        # Every page shows the composed line; only the current page announces it. The key is written only after the loop succeeded.
         Update-FastLlmUiFluentPageStatus -Composed $composed -Announce (-not $first)
+        $keys['Composed'] = $composed
     }
 
     # The main action: the card says which one shows; whether it can be pressed is only the adapter's Enabled (SetBusy).

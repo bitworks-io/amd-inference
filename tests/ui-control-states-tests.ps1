@@ -145,6 +145,28 @@ Check ((Reason 'backgroundAttach' (New-ReasonSnapshot @{} 'ready-attachable')) -
 Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true}) $false) -ceq 'not-running') 'Connect not running greys the API check with not-running'
 Check ((Reason 'apiCheck' (New-ReasonSnapshot @{}) $true) -ceq 'not-running') 'a snapshot that is not serving greys the API check with not-running'
 Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true}) $true) -ceq '') 'a serving, running API check has no reason'
+# The greyed-reason function copies the attachable and requestMatches expressions of the control-state function; the copies must stay text-identical.
+$uiStateAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'src/FastLlm.UiState.ps1'),[ref]$null,[ref]$null)
+function Get-UiStateExpression([string]$Function,[string]$Variable){
+    $fn=@($uiStateAst.FindAll({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Function},$true))
+    if($fn.Count -ne 1){throw "FAIL: function $Function not found once"}
+    $as=@($fn[0].FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq ('$'+$Variable)},$true))
+    if($as.Count -ne 1){throw "FAIL: $Function does not assign `$$Variable exactly once"}
+    return ([regex]::Replace($as[0].Right.Extent.Text,'\s+',' ')).Trim()
+}
+foreach($v in 'attachable','requestMatches'){
+    $a=Get-UiStateExpression 'Get-FastLlmUiControlStates' $v
+    $b=Get-UiStateExpression 'Get-FastLlmUiGreyedReason' $v
+    Check ($a.Length -gt 20 -and $a -ceq $b) "the greyed-reason $v expression is text-identical to the control-state one"
+}
+# A pending request id that differs only by case is a different request: Attach is disabled and says no-run (the comparison is case-sensitive).
+$caseSnap=New-ReasonSnapshot @{} 'ready-attachable'
+$caseSnap.Background.pendingRequestId=([string]$caseSnap.Background.observation.requestId).ToUpper()
+Check (([string]$caseSnap.Background.pendingRequestId) -cne ([string]$caseSnap.Background.observation.requestId)) 'the case row has a pending id that differs only by case'
+Check ((Reason 'backgroundAttach' $caseSnap) -ceq 'no-run') 'a pending request id that differs only by case greys Attach with no-run'
+Check (-not (Get-FastLlmUiControlStates -Snapshot $caseSnap).backgroundAttach) 'a pending request id that differs only by case leaves the Attach state disabled'
+$badAction=$false;try{[void](Get-FastLlmUiGreyedReason -Action 'DIAGNOSTICS' -Snapshot (New-ReasonSnapshot))}catch{$badAction=($_.Exception.Message -like "Unknown action*")}
+Check $badAction 'an action in another case is refused, not silently treated as enabled'
 # Mutation: a swapped sub-expression must make the property fail.
 $fnText=${function:Get-FastLlmUiGreyedReason}.ToString()
 function Test-ReasonMutant([string]$From,[string]$To){
@@ -155,6 +177,12 @@ function Test-ReasonMutant([string]$From,[string]$To){
 Check ((Test-ReasonMutant "if (`$bg.attachedRequestId) { return 'attached' }" "if (`$false) { return 'attached' }") -gt 0) 'mutation: dropping the attached rule fails the property'
 Check ((Test-ReasonMutant 'if ($availability.saveBundle) { return '''' }' 'if (-not $availability.saveBundle) { return '''' }') -gt 0) 'mutation: swapping the bundle availability sub-expression fails the property'
 Check ((Test-ReasonMutant 'if ($busy -or $Snapshot.ChildActive)' 'if ($busy)') -gt 0) 'mutation: dropping ChildActive from the busy rules fails the property'
+
+# The matrix has no attachable run with a case-different pending id, so this mutant is caught by the direct case row.
+$ceqFrom='-ceq [string]$bg.pendingRequestId'
+Check ($fnText.Contains($ceqFrom)) 'the case-sensitive request comparison anchor is present'
+Set-Item -Path function:script:Get-ReasonMutant -Value ([scriptblock]::Create($fnText.Replace($ceqFrom,'-eq [string]$bg.pendingRequestId')))
+Check ((Get-ReasonMutant -Action 'backgroundAttach' -Snapshot $caseSnap) -cne 'no-run') 'mutation: a case-insensitive request comparison fails the case row'
 
 Write-Host "UI control states tests passed: $checks"
 exit 0

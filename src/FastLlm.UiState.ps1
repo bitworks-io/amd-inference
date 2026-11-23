@@ -113,7 +113,8 @@ function Get-FastLlmUiControlStates {
 
 # Why an action is greyed, as a code only (never text; the view maps each code to its string). '' means the
 # action is enabled. Codes: microsoft-setup, busy, side-step, attached, no-run, not-running. First match wins.
-# Built from the same sub-expressions as Get-FastLlmUiControlStates, so the two cannot drift apart silently.
+# The attachable and requestMatches expressions are copies of the ones in Get-FastLlmUiControlStates; the control-states suite pins them
+# text-identical and checks that a code is empty exactly when the control state is true, so a drift between the two fails there.
 # ConnectRunning is the Connect page's own "is FastLLM serving" flag and is read by apiCheck only.
 function Get-FastLlmUiGreyedReason {
     param(
@@ -161,6 +162,7 @@ function Get-FastLlmUiGreyedReason {
             if ($Snapshot.SideChildActive) { return 'side-step' }
             return 'not-running'
         }
+        default { throw "Unknown action '$Action'" }
     }
 }
 

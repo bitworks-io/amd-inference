@@ -290,7 +290,8 @@ if($env:OS -eq 'Windows_NT'){
 
 # No event attribute in registered XAML: handlers are attached in code (the handler-by-name form needs a code-behind class the window does not have,
 # and an attribute would run before the shell's own wiring). The names are the routed and CLR events of the controls the pages use.
-$eventAttributeNames='Click|DoubleClick|Checked|Unchecked|Indeterminate|SelectionChanged|TextChanged|ValueChanged|Loaded|Unloaded|Initialized|KeyDown|KeyUp|TextInput|GotFocus|LostFocus|GotKeyboardFocus|LostKeyboardFocus|MouseDown|MouseUp|MouseMove|MouseEnter|MouseLeave|MouseLeftButtonDown|MouseLeftButtonUp|MouseRightButtonDown|MouseRightButtonUp|MouseWheel|TouchDown|TouchUp|Drop|DragEnter|DragLeave|DragOver|SizeChanged|IsEnabledChanged|IsVisibleChanged|DropDownOpened|DropDownClosed|Opened|Closed|Closing|Expanded|Collapsed|Executed|CanExecute|RequestNavigate|Navigated|Navigating|SourceUpdated|TargetUpdated|ContextMenuOpening|ToolTipOpening|ToolTipClosing|Activated|Deactivated|Tick|Scroll|ScrollChanged|Hyperlink\.RequestNavigate'
+$eventAttributeNames='Click|DoubleClick|Checked|Unchecked|Indeterminate|SelectionChanged|TextChanged|ValueChanged|Loaded|Unloaded|Initialized|KeyDown|KeyUp|TextInput|GotFocus|LostFocus|GotKeyboardFocus|LostKeyboardFocus|MouseDown|MouseUp|MouseMove|MouseEnter|MouseLeave|MouseLeftButtonDown|MouseLeftButtonUp|MouseRightButtonDown|MouseRightButtonUp|MouseWheel|TouchDown|TouchUp|Drop|DragEnter|DragLeave|DragOver|SizeChanged|IsEnabledChanged|IsVisibleChanged|DropDownOpened|DropDownClosed|Opened|Closed|Closing|Expanded|Collapsed|Executed|CanExecute|RequestNavigate|Navigated|Navigating|SourceUpdated|TargetUpdated|ContextMenuOpening|ToolTipOpening|ToolTipClosing|Activated|Deactivated|Tick|Scroll|ScrollChanged|Selected|Unselected|PasswordChanged|DataContextChanged|LayoutUpdated|DragDelta|Manipulation[A-Za-z]*|Stylus[A-Za-z]*'
+# An attached form (Button.Click, TextBoxBase.TextChanged) is judged by the segment after its last dot; Validation.Error is the one event named Error; an EventSetter element is refused.
 function Get-XamlEventAttributeFindings([string]$Xaml){
     $found=New-Object System.Collections.ArrayList
     $settings=New-Object System.Xml.XmlReaderSettings
@@ -301,9 +302,12 @@ function Get-XamlEventAttributeFindings([string]$Xaml){
         while($reader.Read()){
             if($reader.NodeType -ne [System.Xml.XmlNodeType]::Element -or -not $reader.HasAttributes){continue}
             $element=$reader.LocalName
+            if($element -ceq 'EventSetter'){[void]$found.Add('EventSetter')}
             for($i=0;$i -lt $reader.AttributeCount;$i++){
                 $reader.MoveToAttribute($i)|Out-Null
-                if($reader.Prefix -ceq '' -and $reader.LocalName -cmatch ('^(Preview)?('+$eventAttributeNames+')$')){[void]$found.Add($element+'.'+$reader.LocalName)}
+                $attributeName=$reader.LocalName
+                $segment=$attributeName.Substring($attributeName.LastIndexOf('.')+1)
+                if($reader.Prefix -ceq '' -and ($segment -cmatch ('^(Preview)?('+$eventAttributeNames+')$') -or $attributeName -ceq 'Validation.Error')){[void]$found.Add($element+'.'+$attributeName)}
             }
             $reader.MoveToElement()|Out-Null
         }
@@ -327,12 +331,17 @@ Check ($eventBad.Count -eq 0) ('no registered XAML carries an event attribute ('
 Check ((Get-XamlEventAttributeFindings ('<Button '+$ns+' Click="OnClick"/>')).Count -eq 1) 'self-check: Click="..." is flagged'
 Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><TextBox TextChanged="T" KeyDown="K"/><CheckBox Checked="C" IsChecked="True"/></Grid>')).Count -eq 3) 'self-check: TextChanged, KeyDown and Checked are flagged, the IsChecked property is not'
 Check ((Get-XamlEventAttributeFindings ('<Window '+$ns+' Loaded="L" Title="t"/>')).Count -eq 1) 'self-check: Loaded="..." is flagged'
+Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><Button Button.Click="B"/></Grid>')).Count -eq 1) 'self-check: the attached form Button.Click="..." is flagged'
+Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><TextBox PreviewKeyDown="K"/></Grid>')).Count -eq 1) 'self-check: PreviewKeyDown="..." is flagged'
+Check ((Get-XamlEventAttributeFindings ('<Style '+$ns+'><EventSetter Event="Click" Handler="H"/></Style>')).Count -eq 1) 'self-check: an EventSetter element is refused'
+Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><TextBox TextBoxBase.TextChanged="T"/></Grid>')).Count -eq 1) 'self-check: TextBoxBase.TextChanged="..." is flagged'
+Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><PasswordBox PasswordChanged="P" Validation.Error="E" ManipulationDelta="M" StylusDown="S" LayoutUpdated="L" Selected="S2"/></Grid>')).Count -eq 6) 'self-check: PasswordChanged, Validation.Error, Manipulation, Stylus, LayoutUpdated and Selected are flagged'
 Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><Button x:Name="B" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Content="Click" AutomationProperties.Name="Click"/></Grid>')).Count -eq 0) 'self-check: a property or content that only says Click is not flagged'
 
 # ASCII
 $asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/FastLlm.UiFluentTools.ps1','src/FastLlm.UiFluentConnect.ps1','tests/helpers/UiFluentShellHarness.ps1','src/WindowsFluentWindow.cs','src/WindowsFluentAutomation.cs',
     'tests/ui-fluent-members-tests.ps1','tests/ui-fluent-parity-tests.ps1',
-    'tests/ui-fluent-shell-tests.ps1','tests/helpers/FluentHostNative.cs',
+    'tests/ui-fluent-shell-tests.ps1','tests/ui-fluent-pages-tests.ps1','tests/helpers/FluentHostNative.cs',
     'tests/helpers/UiControlStatesMatrix.ps1','tests/helpers/New-UiControlStatesGolden.ps1','tests/ui-control-states-tests.ps1',
     'tests/ui-card-state-tests.ps1','tests/ui-fluent-adapter-tests.ps1','tests/ui-fluent-support-tests.ps1','tests/ui-theme-tests.ps1','tests/ui-window-tests.ps1','tests/ui-source-safety-tests.ps1',
     'tests/helpers/UiRenderHarness.ps1','tests/ui-render-tests.ps1'

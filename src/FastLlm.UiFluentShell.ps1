@@ -376,7 +376,17 @@ function Register-FastLlmUiFluentPage {
     )
     $f = $script:FastLlmUiFluent
     if ($null -eq $f['Pages']) { $f['Pages'] = @{} }
+    # The status line is a polite live region on every page; a page without that would announce nothing (or too much), so it is refused.
+    if ([System.Windows.Automation.AutomationProperties]::GetLiveSetting($Status) -ne [System.Windows.Automation.AutomationLiveSetting]::Polite) {
+        throw ("The status line of page '" + $Id + "' must have AutomationProperties.LiveSetting Polite.")
+    }
     $f['Pages'][$Id] = @{ Element = $Element; Nav = $Nav; Status = $Status; Enter = $Enter; Leave = $Leave; Update = $Update; KeepsText = [bool] $StatusKeepsText }
+    # A page registered after the first composed line is seeded with it, so it never shows an empty status line.
+    $seed = $f['Keys']['Composed']
+    if ($null -ne $seed) {
+        if (-not [bool] $StatusKeepsText -and $Status.Text -cne [string] $seed) { $Status.Text = [string] $seed }
+        [System.Windows.Automation.AutomationProperties]::SetName($Status, [string] $seed)
+    }
     # A page that registers after the pane was built (a test-only page, or a late page) enables its item now.
     foreach ($nav in @($f['NavItems'])) {
         if ([string] $nav['Id'] -ceq $Nav -and -not [bool] $nav['Enabled']) {
@@ -580,7 +590,7 @@ function Update-FastLlmUiFluentPane {
 # Writes the card's composed status line to every registered page and announces it only on the current page (a page swap raises nothing).
 function Update-FastLlmUiFluentPageStatus {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $Composed, [bool] $Announce = $true)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $Composed, [bool] $Announce = $false)
     $f = $script:FastLlmUiFluent
     $pages = $f['Pages']
     if ($null -eq $pages) { return }
@@ -723,6 +733,8 @@ function Initialize-FastLlmUiFluentShell {
         try { $win.Icon = New-FastLlmUiAppIconImage } catch { $null = $_ }
 
         # The named elements of the shell and of Home, the Home static text and the split button, then the adapters.
+        # A second startup in the same process (the shell suite) starts from an empty element map, so no page name is a duplicate.
+        $f['Els'] = @{}
         foreach ($name in 'PaneColumn', 'NavList', 'NavSettingsList', 'MessageScroll', 'UpdateBar', 'UpdateText', 'UpdateNotesButton', 'UpdateButton', 'ReinstallButton',
             'FailureBar', 'FailureText', 'FailureCopyButton', 'PageHost') {
             $f['Els'][$name] = Get-FastLlmUiFluentElement -Root $win -Name $name

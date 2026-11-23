@@ -355,7 +355,7 @@ foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
 Check ($undone.Problems.Count -eq 0) 'every named change is present exactly once'
 $computedHash=Get-Sha256Text $undone.Text
 if($computedHash -cne $classicPinnedSha256){
-    Write-Host "FINDING: the classic window hash is $computedHash (pinned $classicPinnedSha256), computed against base 6436d2c (PR 2 merge) with the named changes undone."
+    Write-Host "FINDING: the classic window hash is $computedHash (pinned $classicPinnedSha256), computed against base 6436d2c (PR 1, #85) with the named changes undone."
     Write-Host 'FINDING: if the change is a deliberate fluent-only edit of fast-llm-ui.ps1, add a named pair @{Name=...;Cur=...;Orig=...} to $namedChanges (Cur is the new text, Orig is the base text) and update the pair-count check; if the classic window itself was intentionally changed, re-pin $classicPinnedSha256 to the computed hash.'
 }
 Check ($computedHash -ceq $classicPinnedSha256) 'with the named changes undone, the window script is byte-identical to the classic window on main'
@@ -381,11 +381,34 @@ $pendingAdapters=@{
     # Never: the tooltip text is on the card.
     'statusTip'='never (its text is on the card)'
 }
-function Get-BoundAdapterNames([string[]]$Files){
-    $names=New-Object System.Collections.ArrayList
+# A binding function counts only when Get-FastLlmUiFluentBindingTable calls it: one the table never calls binds nothing at run time.
+function Get-CalledBindingFunctions([string[]]$Files){
+    $called=New-Object System.Collections.ArrayList
     foreach($f in $Files){
         $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
-        $fns=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ($n.Name -cmatch '^Get-FastLlmUiFluent\w*Bindings$' -or $n.Name -ceq 'Get-FastLlmUiFluentBindingTable')},$true))
+        foreach($table in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-FastLlmUiFluentBindingTable'},$true))){
+            foreach($c in @($table.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true))){[void]$called.Add([string]$c.GetCommandName())}
+        }
+    }
+    return ,$called.ToArray()
+}
+function Get-UncalledBindingFunctions([string[]]$Files){
+    $called=Get-CalledBindingFunctions $Files
+    $bad=New-Object System.Collections.ArrayList
+    foreach($f in $Files){
+        $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
+        foreach($fn in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -cmatch '^Get-FastLlmUiFluent\w*Bindings$'},$true))){
+            if($called -cnotcontains $fn.Name){[void]$bad.Add($fn.Name)}
+        }
+    }
+    return ,$bad.ToArray()
+}
+function Get-BoundAdapterNames([string[]]$Files){
+    $names=New-Object System.Collections.ArrayList
+    $called=Get-CalledBindingFunctions $Files
+    foreach($f in $Files){
+        $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
+        $fns=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and (($n.Name -cmatch '^Get-FastLlmUiFluent\w*Bindings$' -and $called -ccontains $n.Name) -or $n.Name -ceq 'Get-FastLlmUiFluentBindingTable')},$true))
         foreach($fn in $fns){
             foreach($h in @($fn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
                 foreach($kv in $h.KeyValuePairs){
@@ -401,6 +424,24 @@ function Get-UnboundAdapters([string[]]$Bound,[string[]]$Table,[hashtable]$Pendi
 }
 $fluentSrcFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter 'FastLlm.UiFluent*.ps1' -File|ForEach-Object{$_.FullName})
 $boundNames=Get-BoundAdapterNames $fluentSrcFiles
+$uncalled=Get-UncalledBindingFunctions $fluentSrcFiles
+foreach($u in $uncalled){Write-Host "FINDING: $u is a binding function the binding table never calls"}
+Check ($uncalled.Count -eq 0) 'every Get-FastLlmUiFluent*Bindings function is called from Get-FastLlmUiFluentBindingTable'
+# Self-check: a planted binding function the table does not call is reported, and its rows are not counted as bound.
+$plantBindDir=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-uncalled-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $plantBindDir)
+$plantBindFile=Join-Path $plantBindDir 'FastLlm.UiFluentPlant.ps1'
+$plantBindText=@'
+function Get-FastLlmUiFluentCalledBindings { return @(@{ Name = 'plantCalledAdapter'; Element = 'X' }) }
+function Get-FastLlmUiFluentUncalledBindings { return @(@{ Name = 'plantUncalledAdapter'; Element = 'Y' }) }
+function Get-FastLlmUiFluentBindingTable { return @(Get-FastLlmUiFluentCalledBindings) }
+'@
+[IO.File]::WriteAllText($plantBindFile,$plantBindText)
+$plantUncalled=Get-UncalledBindingFunctions @($plantBindFile)
+$plantBound=Get-BoundAdapterNames @($plantBindFile)
+Remove-Item -LiteralPath $plantBindFile -Force
+Remove-Item -LiteralPath $plantBindDir -Force
+Check ($plantUncalled.Count -eq 1 -and $plantUncalled[0] -ceq 'Get-FastLlmUiFluentUncalledBindings' -and $plantBound -ccontains 'plantCalledAdapter' -and $plantBound -cnotcontains 'plantUncalledAdapter') 'self-check: a planted binding function the table never calls is reported and binds nothing'
 $tableNames=@(Get-FastLlmUiFluentControlTable|ForEach-Object{[string]$_[0]})
 Check ($boundNames.Count -gt 20) "the bound-name scan sees the shell and Home binding rows ($($boundNames.Count))"
 Check ($boundNames -ccontains 'backgroundAttachButton') 'backgroundAttachButton is bound on Home (by AST)'

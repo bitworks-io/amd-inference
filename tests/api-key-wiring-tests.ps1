@@ -1192,9 +1192,9 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     Check ($uiSource.Contains('$copy.Tag=[string]$client.snippet') -and $uiSource.Contains('[void](Invoke-FastLlmUiKeyCopy -Snippet ([string]$sender.Tag) -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})') -and $uiSource.Contains('$snippetBox.Text=(Get-FastLlmConnectDisplayText -Snippet ([string]$client.snippet))')) 'window: a card shows the placeholder, keeps only the {KEY} token, and its Copy goes through the one copy routine'
     Check ($uiSource.Contains('[void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})') -and @([regex]::Matches($uiSource, 'Invoke-FastLlmUiKeyCopy ')).Count -eq 3 -and @([regex]::Matches($uiSource, 'Invoke-FastLlmUiKeyCopy -KeyOnly ')).Count -eq 2) 'window: the API key row''s Copy goes through the same routine (the callers are the card Copy, the key Copy button and the key box copy guard, which carries the same key-only call)'
     # Where the window touches the key at all: the reader, the two hand-overs to the copy routine, and Show (which fills the key box only).
-    $readerUses = @([regex]::Matches($uiSource, '(?<![A-Za-z])ReadUiApiKey(?![A-Za-z])') | ForEach-Object { $lineStart = $uiSource.LastIndexOf("`n", $_.Index) + 1; $lineEnd = $uiSource.IndexOf("`n", $_.Index); $uiSource.Substring($lineStart, $lineEnd - $lineStart).Trim() })
+    $readerUses = @([regex]::Matches($uiSource, '(?i)(?<![A-Za-z])ReadUiApiKey(?![A-Za-z])') | ForEach-Object { $lineStart = $uiSource.LastIndexOf("`n", $_.Index) + 1; $lineEnd = $uiSource.IndexOf("`n", $_.Index); $uiSource.Substring($lineStart, $lineEnd - $lineStart).Trim() })
     Check ($readerUses.Count -eq 5 -and @($readerUses | Where-Object { $_ -clike 'function ReadUiApiKey*' }).Count -eq 1 -and @($readerUses | Where-Object { $_ -clike '*Invoke-FastLlmUiKeyCopy*-ReadKey {ReadUiApiKey}*' }).Count -eq 3 -and @($readerUses | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "window: the key is read in exactly four places - Show, and the three hand-overs to the copy routine (card Copy, key Copy button, key box copy guard) ($($readerUses.Count) uses)"
-    $shownKeyUses = @([regex]::Matches($uiSource, '\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
+    $shownKeyUses = @([regex]::Matches($uiSource, '(?i)\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
     Check (($shownKeyUses -join ' | ') -ceq '$shownKey=ReadUiApiKey | $shownKey) | $shownKey | $shownKey=$null' -and $uiSource.Contains('if($shownKey){$keyBox.Text=$shownKey;$keyShow.Text=''Hide''}')) "window: Show puts the key into the key box and nowhere else, then drops it ($($shownKeyUses -join ' | '))"
     # The window's part of the clipboard is one function of one statement: the tested routine, a real data object and the real clipboard
     # (kept after the window closes). It is pinned whole, so nothing can be added to it or left out of it unnoticed.
@@ -1203,7 +1203,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $clipboardStatements = @()
     if ($clipboardFunction.Count -eq 1) { $clipboardStatements = @($clipboardFunction[0].Body.EndBlock.Statements | ForEach-Object { [string]$_.Extent.Text }) }
     Check ($clipboardFunction.Count -eq 1 -and $clipboardStatements.Count -eq 1 -and $clipboardStatements[0] -ceq 'Set-FastLlmUiClipboard -Payload $Payload -NewDataObject {New-Object Windows.Forms.DataObject} -Publish {param($ClipboardData) [Windows.Forms.Clipboard]::SetDataObject($ClipboardData,$true)}' -and (@($clipboardFunction[0].Parameters | ForEach-Object { [string]$_.Extent.Text }) -join ',') -ceq '$Payload') "window (L3): SetUiClipboardPayload is exactly one statement - the tested routine with a Windows.Forms.DataObject and Clipboard.SetDataObject(data, keep after exit) ($($clipboardStatements -join ' | '))"
-    Check ($uiSource -cnotmatch 'Clipboard\]::SetText\([^)]*(Key|ReadUiApiKey)' -and @([regex]::Matches($uiSource, 'Clipboard\]::SetDataObject\(')).Count -eq 1 -and @([regex]::Matches($uiSource, '(?<![A-Za-z])SetUiClipboardPayload(?![A-Za-z])')).Count -eq 4) 'window (L3): no handler copies the key as plain text; the three copy sites (card Copy, key Copy button, key box copy guard) hand their payload to that one function'
+    Check ($uiSource -notmatch '(?i)Clipboard\]::SetText\([^)]*(Key|ReadUiApiKey)' -and @([regex]::Matches($uiSource, 'Clipboard\]::SetDataObject\(')).Count -eq 1 -and @([regex]::Matches($uiSource, '(?i)(?<![A-Za-z])SetUiClipboardPayload(?![A-Za-z])')).Count -eq 4) 'window (L3): no handler copies the key as plain text; the three copy sites (card Copy, key Copy button, key box copy guard) hand their payload to that one function'
     Check ($uiSource.Contains('$keyBoxState=Get-FastLlmUiApiKeyBoxState -Settings $current') -and $uiSource.Contains("if(`$keyBoxState -ceq 'indeterminate'){`$keyBox.ThreeState=`$true;`$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate") -and $uiSource.Contains('$keyAction=Get-FastLlmUiApiKeySaveAction -Current ([string]$current.apiKey) -Undetermined ([bool]$current.apiKeyUndetermined) -BoxState ([string]$keyBox.CheckState).ToLowerInvariant() -Touched ([bool]$script:settingsKeyTouched)') -and $uiSource.Contains("if(`$keyAction -ceq 'ask'){throw (Get-FastLlmUiApiKeyChoiceText)}") -and $uiSource.IndexOf("if(`$keyAction -ceq 'ask'){throw") -lt $uiSource.IndexOf('Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort')) 'window (L4): Settings shows an unknown flag as neither ticked nor clear, and Save is refused (before anything is written) until the user picks'
     # The key box copy guard: the key box is the one TextBox the guard is given, and the guard's -Copy is the Copy button's own key-only call.
     $connectFunction = @($uiTree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'ShowConnectDialog' }, $true))
@@ -1266,7 +1266,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         Check ($buttonPayloads.Count -eq 1 -and ($script:guardPayloads | ForEach-Object { (& $describe $_) -ceq $buttonShape }) -notcontains $false -and [string]$buttonPayloads[0].text -ceq $marker -and (@($buttonPayloads[0].formats.Keys) -join ',') -ceq 'ExcludeClipboardContentFromMonitorProcessing,CanIncludeInClipboardHistory,CanUploadToCloudClipboard' -and (@($buttonPayloads[0].formats['ExcludeClipboardContentFromMonitorProcessing']) -join ',') -ceq '1,0,0,0') 'copy guard (Windows): Ctrl+C, Ctrl+Insert, the menu and the Copy button put the same payload on the clipboard - the key with the three exclusion formats'
         $guardBox.Dispose()
     }
-    Check ($uiSource -cnotmatch '\.Tag\s*=[^;\r\n]*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)' -and $uiSource -cnotmatch '\$script:[A-Za-z]*\s*=\s*\(?\s*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)') 'window: the key is never kept in a control tag or a window-wide variable'
+    Check ($uiSource -notmatch '(?i)\.Tag\s*=[^;\r\n]*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)' -and $uiSource -notmatch '(?i)\$script:[A-Za-z]*\s*=\s*\(?\s*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)') 'window: the key is never kept in a control tag or a window-wide variable'
     $apiKeyFailureAt = $uiSource.IndexOf('if(Test-FastLlmUiApiKeyFailure -Code $failureCode){')
     $retryAt = $uiSource.IndexOf("`$script:flow=Move-FastLlmUiFlow -Flow `$script:flow -Event 'serving-failed'")
     Check ($apiKeyFailureAt -gt 0 -and $retryAt -gt $apiKeyFailureAt) 'window: an API key failure is handled before the retry path of a failed start (it is never retried)'
@@ -1389,7 +1389,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
                 # The argument after the named parameter must be ([ref] $variable): a parenthesised conversion to [ref].
                 $elements = @($command.CommandElements)
                 for ($index = 1; $index -lt $elements.Count; $index++) {
-                    if ($elements[$index] -is [Management.Automation.Language.CommandParameterAst] -and $elements[$index].ParameterName -ceq $byReference[$commandName]) {
+                    if ($elements[$index] -is [Management.Automation.Language.CommandParameterAst] -and $elements[$index].ParameterName -ieq $byReference[$commandName]) {
                         $referenceCalls++
                         $argument = $null
                         if ($index + 1 -lt $elements.Count) { $argument = $elements[$index + 1] }
@@ -1398,7 +1398,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
                     }
                 }
             }
-            if ($keyTextSources -ccontains $commandName) {
+            if ($keyTextSources -icontains $commandName) {
                 # What these return is the key as text. It may be assigned, returned or handed to a .NET method; it must never be an
                 # argument of another command, nor flow on through a pipeline (a cmdlet's input is logged).
                 $sourceCalls++
@@ -1417,29 +1417,77 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     # The fluent window block. Every key name starts at zero uses in every fluent file; the Connect page's exact read sites are set (RED
     # first) when that page is written. The classic window: checks read only fast-llm-ui.ps1 and are not changed here.
     $fluentKeyNames = @('ReadUiApiKey', 'Get-FastLlmApiKeyForDisplay', 'Get-FastLlmApiKeyText', 'Invoke-FastLlmUiKeyCopy', 'SetUiClipboardPayload', 'shownKey', 'PasswordBox', 'SetDataObject')
-    $fluentNamePattern = '(?<![A-Za-z0-9_-])(' + (($fluentKeyNames | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(?![A-Za-z0-9_-])'
-    $fluentSourcePattern = '(?<![A-Za-z0-9_-])(ReadUiApiKey|Get-FastLlmApiKeyForDisplay|Get-FastLlmApiKeyText)(?![A-Za-z0-9_-])'
-    $fluentSinkPattern = '(\.Tag\s*=|\$script:[A-Za-z_][A-Za-z0-9_]*\s*=|SetName|SetHelpText|\.ToolTip\s*=|Clipboard\]::SetText\s*\()'
-    $fluentSourceNames = '^(' + (($keyTextSources | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
-    # Problems in one fluent-shaped text: a key name at all, a key source reaching a sink on its line, or a key source as a command
-    # argument or pipeline input (the same rules as the call-site scan above).
-    function Get-FluentKeyProblems([string]$Label, [string]$Text, [switch]$AllowNames) {
+    # Every key-name pattern is case-insensitive: PowerShell command and variable names are, so a lower-case spelling is the same use.
+    $fluentNamePattern = '(?i)(?<![A-Za-z0-9_-])(' + (($fluentKeyNames | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(?![A-Za-z0-9_-])'
+    $fluentSourcePattern = '(?i)(?<![A-Za-z0-9_-])(ReadUiApiKey|Get-FastLlmApiKeyForDisplay|Get-FastLlmApiKeyText)(?![A-Za-z0-9_-])'
+    $fluentSinkPattern = '(?i)(\.Tag\s*=|\$script:[A-Za-z_][A-Za-z0-9_]*\s*=|SetName|SetHelpText|\.ToolTip\s*=|Clipboard\]::SetText\s*\()'
+    $fluentSourceNames = '(?i)^(' + (($keyTextSources | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
+    $fluentWordPattern = { param([string]$Word) '(?i)(?<![A-Za-z0-9_-])' + [regex]::Escape($Word) + '(?![A-Za-z0-9_-])' }
+    # Problems in one fluent-shaped text, each starting with its kind in brackets, so a self-check can name the rule that caught it:
+    #   name        a key name at all (skipped with -NoNameRule, and with -AllowNames for the Connect page)
+    #   sink        a key source and a sink on one line
+    #   argument    a key source as a command argument
+    #   pipeline    a key source as pipeline input
+    #   method      a key source (or a variable holding one) as a method argument, such as SetValue(...)
+    #   flow        a variable that holds a key source reaching a command, method, pipeline, sink variable or any control but the key box
+    #   textcopy    a read of the key box's Text (a Text to Text copy)
+    #   passwordbox a PasswordBox; copy the copy routine or the clipboard hand-over (skipped with -AllowNames); setdataobject SetDataObject
+    function Get-FluentKeyProblems([string]$Label, [string]$Text, [switch]$AllowNames, [switch]$NoNameRule) {
         $found = New-Object 'System.Collections.Generic.List[string]'
-        if (-not $AllowNames) { foreach ($match in [regex]::Matches($Text, $fluentNamePattern)) { $found.Add("$Label uses $($match.Value)") } }
-        foreach ($line in @($Text -split "`r?`n")) { if ($line -cmatch $fluentSourcePattern -and $line -cmatch $fluentSinkPattern) { $found.Add("$Label gives a key source to a sink: $($line.Trim())") } }
+        if (-not ($AllowNames -or $NoNameRule)) { foreach ($match in [regex]::Matches($Text, $fluentNamePattern)) { $found.Add("[name] $Label uses $($match.Value)") } }
+        if ($Text -match (& $fluentWordPattern 'PasswordBox')) { $found.Add("[passwordbox] $Label has a PasswordBox") }
+        if ($Text -match (& $fluentWordPattern 'SetDataObject')) { $found.Add("[setdataobject] $Label uses SetDataObject") }
+        if (-not $AllowNames -and ($Text -match (& $fluentWordPattern 'Invoke-FastLlmUiKeyCopy') -or $Text -match (& $fluentWordPattern 'SetUiClipboardPayload'))) { $found.Add("[copy] $Label uses the key copy routine or the clipboard hand-over") }
+        foreach ($line in @($Text -split "`r?`n")) { if ($line -match $fluentSourcePattern -and $line -match $fluentSinkPattern) { $found.Add("[sink] $Label gives a key source to a sink: $($line.Trim())") } }
         $parseErrors = $null; $parseTokens = $null
         $parsed = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$parseTokens, [ref]$parseErrors)
         if (@($parseErrors).Count -eq 0) {
-            foreach ($command in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true))) {
-                if ([string]$command.GetCommandName() -cnotmatch $fluentSourceNames) { continue }
+            $isSource = { param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -match $fluentSourceNames }
+            foreach ($command in @($parsed.FindAll($isSource, $true))) {
                 $node = $command
                 while ($null -ne $node.Parent) {
                     $parent = $node.Parent
-                    if ($parent -is [Management.Automation.Language.PipelineAst] -and @($parent.PipelineElements).Count -gt 1) { $found.Add("$Label key source flows through a pipeline"); break }
-                    if ($parent -is [Management.Automation.Language.CommandAst]) { $found.Add("$Label key source is an argument of $($parent.GetCommandName())"); break }
+                    if ($parent -is [Management.Automation.Language.PipelineAst] -and @($parent.PipelineElements).Count -gt 1) { $found.Add("[pipeline] $Label key source flows through a pipeline"); break }
+                    if ($parent -is [Management.Automation.Language.CommandAst]) { $found.Add("[argument] $Label key source is an argument of $($parent.GetCommandName())"); break }
+                    if ($parent -is [Management.Automation.Language.InvokeMemberExpressionAst] -and @($parent.Arguments) -contains $node) { $found.Add("[method] $Label key source is an argument of the method $($parent.Member.Extent.Text)"); break }
                     if ($parent -is [Management.Automation.Language.ScriptBlockAst] -or $parent -is [Management.Automation.Language.NamedBlockAst] -or $parent -is [Management.Automation.Language.StatementBlockAst]) { break }
                     $node = $parent
                 }
+            }
+            # Variables that hold a key source (a source command not inside a script block on the right of an assignment), then every use of them.
+            $held = @{}
+            $assignments = @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] }, $true))
+            for ($round = 0; $round -lt 4; $round++) {
+                foreach ($assignment in $assignments) {
+                    if ($assignment.Left -isnot [Management.Automation.Language.VariableExpressionAst]) { continue }
+                    $name = $assignment.Left.VariablePath.UserPath.ToLowerInvariant()
+                    $carries = @($assignment.Right.FindAll({ param($node) (& $isSource $node) -or ($node -is [Management.Automation.Language.VariableExpressionAst] -and $held.ContainsKey($node.VariablePath.UserPath.ToLowerInvariant())) }, $true)).Count -gt 0
+                    if ($carries) { $held[$name] = $true }
+                }
+            }
+            foreach ($use in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and $held.ContainsKey($node.VariablePath.UserPath.ToLowerInvariant()) }, $true))) {
+                $node = $use
+                while ($null -ne $node.Parent) {
+                    $parent = $node.Parent
+                    if ($parent -is [Management.Automation.Language.AssignmentStatementAst]) {
+                        if ([object]::ReferenceEquals($parent.Left, $node)) { break }
+                        if ($parent.Left -is [Management.Automation.Language.VariableExpressionAst]) {
+                            if ($parent.Left.VariablePath.UserPath -match '^(?i)(script|global):') { $found.Add("[flow] $Label a variable holding the key reaches a window-wide variable: $($parent.Extent.Text.Trim())") }
+                        }
+                        elseif ($parent.Left.Extent.Text -notmatch '^(?i)\$keyBox\.Text$') { $found.Add("[flow] $Label a variable holding the key reaches $($parent.Left.Extent.Text)") }
+                        break
+                    }
+                    if ($parent -is [Management.Automation.Language.CommandAst]) { $found.Add("[flow] $Label a variable holding the key is an argument of $($parent.GetCommandName())"); break }
+                    if ($parent -is [Management.Automation.Language.InvokeMemberExpressionAst] -and @($parent.Arguments) -contains $node) { $found.Add("[method] $Label a variable holding the key is an argument of the method $($parent.Member.Extent.Text)"); break }
+                    if ($parent -is [Management.Automation.Language.PipelineAst] -and @($parent.PipelineElements).Count -gt 1) { $found.Add("[flow] $Label a variable holding the key flows through a pipeline"); break }
+                    if ($parent -is [Management.Automation.Language.ScriptBlockAst] -or $parent -is [Management.Automation.Language.NamedBlockAst] -or $parent -is [Management.Automation.Language.StatementBlockAst]) { break }
+                    $node = $parent
+                }
+            }
+            # A read of the key box's Text (not the write of it) copies the key to wherever the value goes.
+            foreach ($member in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.MemberExpressionAst] -and $node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Extent.Text -ieq 'Text' -and $node.Expression.Extent.Text -match '(?i)keybox|shownkey' }, $true))) {
+                if ($member.Parent -is [Management.Automation.Language.AssignmentStatementAst] -and [object]::ReferenceEquals($member.Parent.Left, $member)) { continue }
+                $found.Add("[textcopy] $Label reads the key box text: $($member.Parent.Extent.Text.Trim())")
             }
         }
         return $found.ToArray()
@@ -1452,41 +1500,67 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         foreach ($problem in @(Get-FluentKeyProblems $fluentFile ([IO.File]::ReadAllText((Join-Path $root $fluentFile))) -AllowNames:$allowNames)) { $fluentProblems.Add($problem) }
     }
     Check ($fluentFiles.Count -ge 8 -and $fluentProblems.Count -eq 0) "fluent window: the call-site scan covers $($fluentFiles.Count) src/FastLlm.UiFluent*.ps1 files, and no key name (ReadUiApiKey, Get-FastLlmApiKeyForDisplay, Get-FastLlmApiKeyText, Invoke-FastLlmUiKeyCopy, SetUiClipboardPayload, `$shownKey, PasswordBox, SetDataObject) is used in any of them $($fluentProblems -join '; ')"
+    # Each planted file is scanned with the name rule OFF and must be caught by its own specific rule (the kind in the brackets). The last
+    # plants are the shapes a name-only scan would miss on its own: two-line flows, SetValue, a Text to Text copy and lower-case spellings.
     $plantDir = Join-Path $temp 'fluent-planted'
     [void](New-Item -ItemType Directory -Path $plantDir -Force)
     $plantedFiles = [ordered]@{
-        'pipeline.ps1'    = '$x=ReadUiApiKey | Out-String'
-        'argument.ps1'    = 'Foo (ReadUiApiKey)'
-        'passwordbox.ps1' = '<PasswordBox x:Name="K"/>'
-        'tag.ps1'         = '$box.Tag = ReadUiApiKey'
-        'scriptvar.ps1'   = '$script:held = (Get-FastLlmApiKeyForDisplay -InstallRoot $r)'
-        'tooltip.ps1'     = '$box.ToolTip = (Get-FastLlmApiKeyText)'
-        'clipboard.ps1'   = '[Windows.Clipboard]::SetText($shown)  # $k = ReadUiApiKey'
-        'copy.ps1'        = '[void](Invoke-FastLlmUiKeyCopy -KeyOnly)'
-        'dataobject.ps1'  = '[Windows.Clipboard]::SetDataObject($d)'
+        'pipeline.ps1'     = @('pipeline', '$x=ReadUiApiKey | Out-String')
+        'pipeline-lc.ps1'  = @('pipeline', '$x = readuiapikey | Out-String')
+        'argument.ps1'     = @('argument', 'Foo (ReadUiApiKey)')
+        'argument-lc.ps1'  = @('argument', 'Foo (get-fastllmapikeytext)')
+        'passwordbox.ps1'  = @('passwordbox', '<PasswordBox x:Name="K"/>')
+        'tag.ps1'          = @('sink', '$box.Tag = ReadUiApiKey')
+        'scriptvar.ps1'    = @('sink', '$script:held = (Get-FastLlmApiKeyForDisplay -InstallRoot $r)')
+        'tooltip.ps1'      = @('sink', '$box.ToolTip = (Get-FastLlmApiKeyText)')
+        'clipboard.ps1'    = @('sink', '[Windows.Clipboard]::SetText((ReadUiApiKey))')
+        'copy.ps1'         = @('copy', '[void](Invoke-FastLlmUiKeyCopy -KeyOnly)')
+        'handover.ps1'     = @('copy', '$h = { param($Payload) SetUiClipboardPayload $Payload }')
+        'dataobject.ps1'   = @('setdataobject', '[Windows.Clipboard]::SetDataObject($d)')
+        'twoline.ps1'      = @('flow', ('$k = ReadUiApiKey' + "`n" + '$box.Tag = $k'))
+        'twoline-var.ps1'  = @('flow', ('$k = Get-FastLlmApiKeyText' + "`n" + '$script:held = $k'))
+        'twoline-cmd.ps1'  = @('flow', ('$k = ReadUiApiKey' + "`n" + 'Set-Thing -Value $k'))
+        'twoline-text.ps1' = @('flow', ('$k = ReadUiApiKey' + "`n" + '$other.Text = $k'))
+        'setvalue.ps1'     = @('method', '$el.SetValue($prop, (ReadUiApiKey))')
+        'setvalue2.ps1'    = @('method', ('$k = ReadUiApiKey' + "`n" + '$el.SetValue($prop, $k)'))
+        'textcopy.ps1'     = @('textcopy', '$other.Text = $keyBox.Text')
+        'textcopy2.ps1'    = @('textcopy', '$a.Text = $e[''ConnectKeyBox''].Text')
+        'lowercase.ps1'    = @('flow', ('$k = readuiapikey' + "`n" + '$box.tag = $k; set-thing $k'))
     }
     $plantedMissed = New-Object 'System.Collections.Generic.List[string]'
     foreach ($plantedName in $plantedFiles.Keys) {
         $plantPath = Join-Path $plantDir $plantedName
-        [IO.File]::WriteAllText($plantPath, [string]$plantedFiles[$plantedName])
-        if (@(Get-FluentKeyProblems $plantedName ([IO.File]::ReadAllText($plantPath))).Count -eq 0) { $plantedMissed.Add($plantedName) }
+        $plantKind = [string]$plantedFiles[$plantedName][0]
+        [IO.File]::WriteAllText($plantPath, [string]$plantedFiles[$plantedName][1])
+        $plantFindings = @(Get-FluentKeyProblems $plantedName ([IO.File]::ReadAllText($plantPath)) -NoNameRule)
+        if (@($plantFindings | Where-Object { $_.StartsWith("[$plantKind] ", [StringComparison]::Ordinal) }).Count -eq 0) { $plantedMissed.Add("$plantedName (wanted $plantKind, got: $($plantFindings -join ' / '))") }
     }
-    Check ($plantedMissed.Count -eq 0 -and @(Get-FluentKeyProblems 'clean.ps1' 'function Show-Thing { param($Text) $box.Text = $Text }').Count -eq 0) "fluent window self-check: each of $($plantedFiles.Count) planted fluent-shaped files (a key piped to Out-String, as a command argument, a PasswordBox, a key in .Tag, a script variable, a tooltip, the clipboard, the copy routine, SetDataObject) is flagged, and a clean file is not $($plantedMissed -join ', ')"
+    $nameRuleOn = @(Get-FluentKeyProblems 'name.ps1' '$x = readuiapikey')
+    Check ($plantedMissed.Count -eq 0 -and $nameRuleOn.Count -eq 1 -and $nameRuleOn[0].StartsWith('[name] ', [StringComparison]::Ordinal) -and @(Get-FluentKeyProblems 'clean.ps1' 'function Show-Thing { param($Text) $box.Text = $Text }').Count -eq 0) "fluent window self-check: each of $($plantedFiles.Count) planted fluent-shaped files is flagged by its own specific rule with the name rule off (a key piped, as an argument, a PasswordBox, a sink, the clipboard, the copy routine, SetDataObject, two-line flows, SetValue, a Text to Text copy, lower-case spellings), a lower-case name is caught by the name rule, and a clean file is not $($plantedMissed -join '; ')"
     # The Connect page: the key is read by name at exactly three sites (Show and the two hand-overs to the copy routine). The key box's Ctrl+C, Ctrl+Insert
     # and context-menu Copy run the key Copy button's own function, so there is no fourth read and no third copy call site.
     $connectPath = Join-Path $root $connectFile
     $connectText = ''
     if (Test-Path -LiteralPath $connectPath) { $connectText = [IO.File]::ReadAllText($connectPath) }
     $connectNames = @{}
-    foreach ($keyName in $fluentKeyNames) { $connectNames[$keyName] = @([regex]::Matches($connectText, '(?<![A-Za-z0-9_-])' + [regex]::Escape($keyName) + '(?![A-Za-z0-9_-])')).Count }
+    foreach ($keyName in $fluentKeyNames) { $connectNames[$keyName] = @([regex]::Matches($connectText, '(?i)(?<![A-Za-z0-9_-])' + [regex]::Escape($keyName) + '(?![A-Za-z0-9_-])')).Count }
     $keyCopyText = '[void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})'
     $cardCopyText = '[void](Invoke-FastLlmUiKeyCopy -Snippet ([string]$Sender.Tag) -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})'
     Check ($connectNames['ReadUiApiKey'] -eq 3 -and $connectNames['Invoke-FastLlmUiKeyCopy'] -eq 2 -and $connectNames['SetUiClipboardPayload'] -eq 2 -and $connectNames['shownKey'] -eq 4) "fluent window: Connect reads the key at exactly 3 sites and calls the copy routine at exactly 2, with 2 clipboard hand-overs ($(($fluentKeyNames | ForEach-Object { $_ + '=' + $connectNames[$_] }) -join ', '))"
     Check ($connectText.Contains($keyCopyText) -and $connectText.Contains($cardCopyText) -and @([regex]::Matches($connectText, 'Invoke-FastLlmUiKeyCopy ')).Count -eq 2) 'fluent window: the Key Copy and the Card Copy hand-overs are the exact texts of the classic window (the two copy sites are the only callers)'
-    $connectReaders = @($connectText -split "`r?`n" | Where-Object { $_ -cmatch '(?<![A-Za-z0-9_-])ReadUiApiKey(?![A-Za-z0-9_-])' } | ForEach-Object { $_.Trim() })
-    Check ($connectReaders.Count -eq 3 -and @($connectReaders | Where-Object { $_ -clike '*Invoke-FastLlmUiKeyCopy*-ReadKey {ReadUiApiKey}*' }).Count -eq 2 -and @($connectReaders | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "fluent window: the key is read in exactly three places - Show, and the two hand-overs ($($connectReaders.Count) lines)"
-    $connectShownUses = @([regex]::Matches($connectText, '\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
+    $connectReaders = @($connectText -split "`r?`n" | Where-Object { $_ -match '(?i)(?<![A-Za-z0-9_-])ReadUiApiKey(?![A-Za-z0-9_-])' } | ForEach-Object { $_.Trim() })
+    Check ($connectReaders.Count -eq 3 -and @($connectReaders | Where-Object { $_ -ceq $keyCopyText }).Count -eq 1 -and @($connectReaders | Where-Object { $_ -ceq $cardCopyText }).Count -eq 1 -and @($connectReaders | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "fluent window: the key is read in exactly three places, each an exact line - Show, and the two hand-overs ($($connectReaders.Count) lines)"
+    $connectShownUses = @([regex]::Matches($connectText, '(?i)\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
     Check (($connectShownUses -join ' | ') -ceq '$shownKey=ReadUiApiKey | $shownKey) | $shownKey | $shownKey=$null' -and $connectText.Contains('if($shownKey){$keyBox.Text=$shownKey;')) "fluent window: Show puts the key into the key box and nowhere else, then drops it ($($connectShownUses -join ' | '))"
+    # The clipboard hand-over: each -SetClipboard block is one statement, the command SetUiClipboardPayload with the payload; the window's function stays the only one that
+    # touches the clipboard object, and the Connect page has no SetDataObject.
+    $connectParse = [Management.Automation.Language.Parser]::ParseInput($connectText, [ref]$null, [ref]$null)
+    $handOvers = @($connectParse.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -ieq 'Invoke-FastLlmUiKeyCopy' }, $true) | ForEach-Object {
+        $elements = @($_.CommandElements); $block = $null
+        for ($i = 0; $i -lt $elements.Count - 1; $i++) { if ($elements[$i] -is [Management.Automation.Language.CommandParameterAst] -and $elements[$i].ParameterName -ieq 'SetClipboard') { $block = $elements[$i + 1] } }
+        if ($block -is [Management.Automation.Language.ScriptBlockExpressionAst]) { @($block.ScriptBlock.EndBlock.Statements | ForEach-Object { [string]$_.Extent.Text }) -join ' || ' } else { 'not a script block' }
+    })
+    Check ($handOvers.Count -eq 2 -and @($handOvers | Where-Object { $_ -ceq 'SetUiClipboardPayload $Payload' }).Count -eq 2 -and $connectNames['SetUiClipboardPayload'] -eq 2 -and $connectNames['SetDataObject'] -eq 0) "fluent window: SetUiClipboardPayload is the one statement of each of the 2 clipboard hand-overs (2 payload uses), with no SetDataObject in the Connect page (the plain-text wrapper for field Copy buttons is pinned below) ($($handOvers -join ' | '))"
     $keyBoxMarkup = [regex]::Match($connectText, '<TextBox\b[^>]*x:Name="ConnectKeyBox"[^>]*>').Value
     Check ($keyBoxMarkup -cmatch 'IsReadOnly="True"' -and $keyBoxMarkup -cmatch 'IsUndoEnabled="False"' -and $keyBoxMarkup -cnotmatch '\bText\s*=') 'fluent window: the key box is a read-only TextBox with undo off and no Text in the markup'
     $fluentOthers = 0

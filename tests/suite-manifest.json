@@ -462,6 +462,11 @@
       "reason": "Member coverage of the Fluent window: every member the window script uses on a control after the rebinding seam exists on its adapter kind, with a self-check, the UpdateActive kind rule and the bindings scope proof; pure AST, no WPF, GPU or bench."
     },
     {
+      "suite": "ui-fluent-pages-tests",
+      "class": "ci",
+      "reason": "Windows-only checks of the Fluent window pages (the page host, Tools and Connect) in the real shell on a real STA dispatcher: navigation, status line, greyed reasons, the key box and its guarded Copy; skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
+    },
+    {
       "suite": "ui-fluent-parity-tests",
       "class": "ci",
       "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
