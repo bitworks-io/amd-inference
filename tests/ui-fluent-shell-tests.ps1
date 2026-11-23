@@ -688,6 +688,7 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.Update.ps1')
 . (Join-Path $root 'src/FastLlm.Components.ps1')
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
 
 # The real stop function exits the process, so a startup fault would end the suite silently: keep its text for one check, then stand a throwing one in.
@@ -735,7 +736,10 @@ function Get-ShellLiveCount([string]$Name) {
     return $n
 }
 function GetUiBackgroundRunStatus { return $null }
-function ShowFailure($Message) { $script:shellFailMsg = [string]$Message }
+$script:shellFailCalls = New-Object System.Collections.ArrayList
+function ShowFailure($Message) { $script:shellFailMsg = [string]$Message; [void]$script:shellFailCalls.Add([string]$Message) }
+# The real Connect page opens in S6; its key row comes from the window's flow file, which this suite does not load.
+function Get-FastLlmUiApiKeyRow { param($Info, $Settings, $ApiKeyStore) return [pscustomobject]@{ visible = $false; mask = '********'; canShow = $false; note = '' } }
 
 function Invoke-S0-ShellStart {
     Initialize-ShellEnv
@@ -1034,23 +1038,16 @@ function Invoke-S6-Nav {
     catch { $threw = $_.Exception.Message }
     Invoke-Pump 150
     Check ($threw -eq '') 'S6 a Down arrow KeyDown on the nav item raises no exception' $threw
-    # selection moves: Connect (index 2) is enabled only once its page is registered, so a stand-in page is registered for it when the shell has none
-    # (the real Connect page replaces this stand-in in a later task); Models stays disabled
+    # selection moves: Connect (index 2) is a real registered page; Models stays disabled
     $second = $f.NavItems[2]['Item']
-    $standIn = $false
-    if (-not (Test-FastLlmUiFluentPageRegistered -Id 'Connect')) {
-        $standIn = $true
-        $stub = New-Object System.Windows.Controls.StackPanel
-        $stubStatus = New-Object System.Windows.Controls.TextBlock
-        Register-FastLlmUiFluentPage -Id 'Connect' -Element $stub -Nav 'NavConnect' -Status $stubStatus
-    }
+    $script:shellFailCalls.Clear()
     $list.SelectedIndex = 2
     Invoke-Pump 150
     $bar2 = $second.Template.FindName('Bar', $second)
     Check ($second.IsSelected -and -not $home1.IsSelected -and $null -ne $bar2 -and $bar2.Visibility -eq [System.Windows.Visibility]::Visible -and $bar.Visibility -eq [System.Windows.Visibility]::Collapsed) 'S6 a selection change moves the bar from Home to Connect' "second=$($second.IsSelected) home=$($home1.IsSelected) bar2=$($bar2.Visibility) bar=$($bar.Visibility)"
     $list.SelectedIndex = 0
     Invoke-Pump 100
-    if ($standIn) { $f.Pages.Remove('Connect'); $second.IsEnabled = $false; $f.NavItems[2]['Enabled'] = $false; Set-FastLlmUiFluentNavTip -Nav $f.NavItems[2] }
+    Check ($script:shellFailCalls.Count -eq 0) 'S6 opening the real Connect page shows no failure (its Enter ran cleanly)' ($script:shellFailCalls -join ' | ')
     Check ($home1.IsSelected) 'S6 Home is selected again' "selected=$($home1.IsSelected)"
     Check-NoExceptions 'S6'
 }

@@ -126,7 +126,7 @@ function Get-FastLlmUiGreyedReason {
     $bg = $Snapshot.Background
     $observation = $bg.observation
     $vc = [bool]$Snapshot.VcBrokerActive
-    switch ($Action) {
+    switch -CaseSensitive ($Action) {
         { $_ -ceq 'diagnostics' -or $_ -ceq 'driverGuidance' } {
             if ($busy) { if ($vc) { return 'microsoft-setup' }; return 'busy' }
             return ''

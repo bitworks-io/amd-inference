@@ -359,12 +359,14 @@ function Update-FastLlmUiFluentConnectCheck {
     $info = $c['Info']
     if ($null -eq $info) { return }
     $running = ([string] $info.state -ceq 'running')
-    $available = [bool] (GetUiActionAvailabilityNow ([bool]($script:child -or $script:vcBroker -or $script:updateRun))).apiCheck
+    $busyNow = [bool]($script:child -or $script:vcBroker -or $script:updateRun)
+    $available = [bool] (GetUiActionAvailabilityNow $busyNow).apiCheck
     $enabled = ($running -and $available)
     $button = $e['ConnectCheckButton']
     if ($button.IsEnabled -ne $enabled) { $button.IsEnabled = $enabled }
     $code = ''
-    if (-not $enabled) { $code = $(if (-not $running) { 'not-running' } else { 'side-step' }) }
+    # The reason is the tested pure function's code (not-running, or side-step only while a side step runs), never a code of this page's own.
+    if (-not $enabled) { $code = [string] (Get-FastLlmUiGreyedReason -Action 'apiCheck' -Snapshot (GetUiStateSnapshot $busyNow) -ConnectRunning $running) }
     if ($c['Why'] -ceq $code) { return }
     $c['Why'] = $code
     $text = Get-FastLlmUiFluentToolsReasonText -Code $code
@@ -433,12 +435,14 @@ function Invoke-FastLlmUiFluentConnectKeyCopy {
 function Invoke-FastLlmUiFluentConnectKeyCommand {
     [CmdletBinding()] param($Routed)
     $Routed.Handled = $true
-    if ([bool] $script:FastLlmUiFluent['Els']['ConnectKeyCopy'].IsEnabled) { Invoke-FastLlmUiFluentConnectKeyCopy }
+    $copyButton = $script:FastLlmUiFluent['Els']['ConnectKeyCopy']
+    if ($null -ne $copyButton -and [bool] $copyButton.IsEnabled) { Invoke-FastLlmUiFluentConnectKeyCopy }
 }
 
 function Invoke-FastLlmUiFluentConnectKeyCanCopy {
     [CmdletBinding()] param($Routed)
-    $Routed.CanExecute = [bool] $script:FastLlmUiFluent['Els']['ConnectKeyCopy'].IsEnabled
+    $copyButton = $script:FastLlmUiFluent['Els']['ConnectKeyCopy']
+    $Routed.CanExecute = ($null -ne $copyButton -and [bool] $copyButton.IsEnabled)
     $Routed.Handled = $true
 }
 

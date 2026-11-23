@@ -234,13 +234,6 @@ function Invoke-P1-PageHostAndNav {
         Check ((-not $item.IsEnabled) -and [string]$item.ToolTip -ceq [string]$s.ComingLater -and $help -ceq [string]$s.ComingLater) "P1 $id is disabled with the ComingLater tooltip and help text" "enabled=$($item.IsEnabled) tip='$($item.ToolTip)' help='$help'"
     }
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Home' -and [object]::ReferenceEquals($els.PageHost.Child, $f.Pages['Home']['Element']) -and $els.NavHome.IsSelected) 'P1 Home is hosted and selected by default' "current=$(Get-FastLlmUiFluentCurrentPage)"
-    # Home's Connect an app before the Connect page exists: the adapter click (today's dialog path), the page stays Home
-    if (-not (Test-FastLlmUiFluentPageRegistered -Id 'Connect')) {
-        $script:connectButton.Add_Click({ $script:connectAdapterClicks++ })
-        $els.ConnectButton.RaiseEvent((New-ShellClick $els.ConnectButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
-        Invoke-Pump 100
-        Check ($script:connectAdapterClicks -eq 1 -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Home') 'P1 with no Connect page registered, Connect an app raises the adapter click once and stays on Home' "clicks=$($script:connectAdapterClicks) current=$(Get-FastLlmUiFluentCurrentPage)"
-    }
     # A duplicate element name throws
     $dupThrew = ''
     try { Add-FastLlmUiFluentElements -Els $els -Root $win -Names @('PageHost') } catch { $dupThrew = $_.Exception.Message }
@@ -575,6 +568,10 @@ function Add-ConnectDictScan($Obj, [string]$Path, [string]$Marker, [hashtable]$H
         foreach ($key in @($base.Keys)) { Add-ConnectDictScan $base[$key] ($Path + '/' + [string]$key) $Marker $Hits ($Depth + 1) }
         return
     }
+    if ($base -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($prop in @($base.psobject.Properties)) { Add-ConnectDictScan $prop.Value ($Path + '.' + [string]$prop.Name) $Marker $Hits ($Depth + 1) }
+        return
+    }
     if ($base -is [System.Collections.IEnumerable]) {
         $i = 0
         foreach ($item in $base) { Add-ConnectDictScan $item ($Path + '[' + $i + ']') $Marker $Hits ($Depth + 1); $i++ }
@@ -701,6 +698,29 @@ function Invoke-P8-ConnectKey {
     Check ($canCopy -and $copied.Count -eq 1 -and [string]$copied[0].text -ceq $marker -and ($formatNames -join ',') -ceq 'CanIncludeInClipboardHistory,CanUploadToCloudClipboard,ExcludeClipboardContentFromMonitorProcessing' -and $script:fieldClips.Count -eq 0) 'P8 the Copy command on the shown box records the marker with the three exclusion formats and never the plain clipboard wrapper' "can=$canCopy payloads=$($copied.Count) formats=$($formatNames -join ',') plain=$($script:fieldClips.Count)"
     $menuItem = $box.ContextMenu.Items[0]
     Check ($box.ContextMenu.Items.Count -eq 1 -and [object]::ReferenceEquals($menuItem.Command, [System.Windows.Input.ApplicationCommands]::Copy) -and [object]::ReferenceEquals($menuItem.CommandTarget, $box) -and -not [System.Windows.Input.ApplicationCommands]::Cut.CanExecute($null, $target)) 'P8 the context menu is one Copy item bound to the Copy command, and Cut is blocked' ''
+    # The context-menu Copy item itself is invoked (through its automation peer, the way a screen reader or a click runs it): the same key payload
+    $script:fieldClips.Clear(); $script:clipboardPayloads.Clear()
+    $menuPeer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($menuItem)
+    $menuPeer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Invoke).Invoke()
+    Invoke-Pump 100
+    $menuCopied = @($script:clipboardPayloads.ToArray())
+    $menuFormats = @(); if ($menuCopied.Count -eq 1) { $menuFormats = @($menuCopied[0].formats.Keys | Sort-Object) }
+    Check ($menuCopied.Count -eq 1 -and [string]$menuCopied[0].text -ceq $marker -and ($menuFormats -join ',') -ceq 'CanIncludeInClipboardHistory,CanUploadToCloudClipboard,ExcludeClipboardContentFromMonitorProcessing' -and $script:fieldClips.Count -eq 0) 'P8 invoking the context-menu Copy item copies the key with the exclusion formats and nothing as plain text' "payloads=$($menuCopied.Count) formats=$($menuFormats -join ',')"
+    # A drag of the key text: the DataObject.Copying event is raised with a constructed DataObjectCopyingEventArgs (a drag) and the handler cancels it
+    $dragArgs = New-Object System.Windows.DataObjectCopyingEventArgs((New-Object System.Windows.DataObject), $true)
+    $dragArgs.RoutedEvent = [System.Windows.DataObject]::CopyingEvent
+    $dragArgs.Source = $box
+    $box.RaiseEvent($dragArgs)
+    Check ($dragArgs.CommandCancelled) 'P8 a drag of the key text (DataObject.Copying raised with a drag argument) is cancelled' ''
+    # Select all, then copy: the page binding runs, not the TextBox's own copy (one key payload, no plain text)
+    $script:fieldClips.Clear(); $script:clipboardPayloads.Clear()
+    $null = $box.Focus()
+    $box.SelectAll()
+    [System.Windows.Input.ApplicationCommands]::Copy.Execute($null, $target)
+    Invoke-Pump 50
+    $selCopied = @($script:clipboardPayloads.ToArray())
+    Check ($selCopied.Count -eq 1 -and [string]$selCopied[0].text -ceq $marker -and @($selCopied[0].formats.Keys).Count -eq 3 -and $script:fieldClips.Count -eq 0) 'P8 Copy after SelectAll still runs the page binding (the key payload with its formats, no plain text)' "payloads=$($selCopied.Count)"
+    $box.Select(0, 0)
     # Hide masks without a read
     $before = $script:keyReadCalls
     Invoke-ConnectClick $show
@@ -716,6 +736,7 @@ function Invoke-P8-ConnectKey {
     $remask = @(
         @{ Name = 'leaving the page'; Do = { $null = Set-FastLlmUiFluentPage -Id 'Home' } },
         @{ Name = 'the page becoming invisible'; Do = { $pageElement = $script:FastLlmUiFluent.Pages['Connect']['Element']; $pageElement.Visibility = [System.Windows.Visibility]::Collapsed; $pageElement.Visibility = [System.Windows.Visibility]::Visible } },
+        @{ Name = 'the tray path (form Hide)'; Do = { $script:form.Hide(); Invoke-Pump 100; $script:form.Show(); $script:form.Activate() } },
         @{ Name = 'a running-edge refresh'; Do = { $script:FastLlmUiFluent.Keys['Running'] = (-not [bool]$script:FastLlmUiFluent.Keys['Running']); Update-FastLlmUiFluentConnect } })
     foreach ($r in $remask) {
         $null = Set-FastLlmUiFluentPage -Id 'Connect'
@@ -808,6 +829,14 @@ function Invoke-P10-ConnectApiCheck {
     $script:shellSnap = New-ShellSnap @{ RunReady = $true }
     Update-FastLlmUiFluentConnect
     Check ($btn.IsEnabled -and $null -eq $btn.ToolTip -and [System.Windows.Automation.AutomationProperties]::GetHelpText($btn) -ceq '') 'P10 running and idle: the button is enabled and shows no reason' "enabled=$($btn.IsEnabled) tip='$($btn.ToolTip)'"
+    # Running with no run ready and no side step (a model load, an unattached background run): the reason is the tested function's code, never side-step
+    $script:shellSnap = New-ShellSnap @{ RunReady = $false }
+    Open-ConnectPage (New-ConnectFixture) (New-ConnectRow)
+    $wantCode = [string](Get-FastLlmUiGreyedReason -Action 'apiCheck' -Snapshot $script:shellSnap -ConnectRunning $true)
+    $wantText = [string](Get-FastLlmUiFluentToolsReasonText -Code $wantCode)
+    Check ($wantCode -cne 'side-step' -and (-not $btn.IsEnabled) -and [string]$btn.ToolTip -ceq $wantText -and [string]$btn.ToolTip -cne [string]$s.WhySideStep) 'P10 running but no run ready and no side step: the shown reason is the function code, not the side-step reason' "code='$wantCode' tip='$($btn.ToolTip)'"
+    $script:shellSnap = New-ShellSnap @{ RunReady = $true }
+    Update-FastLlmUiFluentConnect
     # A click records ReadSideSelection, then the launch with its arguments
     $script:selection = @('--probe-selection')
     $selBefore = $script:sideSelectionCalls
@@ -1091,14 +1120,15 @@ function Invoke-P99-StartupFaults {
     Check (($textXaml -ceq $textTheme) -and $textXaml -match 'a fault in FastLLM') 'P99 a xaml-parse fault shows text C, the same as a theme-init fault' "xaml-parse='$textXaml'"
     Check ($script:realStopText -match 'Show-FastLlmUiUnsupported\s+-Reason\s+\$Reason' -and $script:realStopText -match 'exit 3') 'P99 the real Stop-FastLlmUiFluentStartup passes its reason to Show-FastLlmUiUnsupported and exits 3' $script:realStopText
     # An injected Tools markup fault: the Tools page does not parse, so the startup stops with xaml-parse (the suite's throwing double stands in for the exit)
-    $goodTools = $script:FastLlmUiXaml['FastLlm.Tools']
-    $script:FastLlmUiXaml['FastLlm.Tools'] = '<ScrollViewer xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><StackPanel></ScrollViewer>'
+    # The loader is shadowed for the one name (the XAML table is never written from a test): it throws the way a markup parse fault does.
+    $script:realXamlLoader = ${function:New-FastLlmUiXamlElement}
+    function New-FastLlmUiXamlElement { param([string]$Name) if ($Name -ceq 'FastLlm.Tools') { throw 'Exception calling "Parse" with "1" argument(s): injected Tools markup fault' }; return (& $script:realXamlLoader -Name $Name) }
     Initialize-ShellEnv
     $err = ''
     try { Initialize-FastLlmUiFluentShell } catch { $err = $_.Exception.Message }
-    finally { $script:FastLlmUiXaml['FastLlm.Tools'] = $goodTools }
+    finally { Set-Item -Path Function:\New-FastLlmUiXamlElement -Value $script:realXamlLoader }
     Check ($err -ceq 'startup stopped: xaml-parse') 'P99 an injected Tools markup fault stops the startup with xaml-parse (text C, exit 3)' "error='$err'"
-    Check ($script:FastLlmUiXaml['FastLlm.Tools'] -ceq $goodTools) 'P99 the Tools markup is back to the registered text' ''
+    Check ((${function:New-FastLlmUiXamlElement}).ToString() -ceq $script:realXamlLoader.ToString()) 'P99 the real XAML loader is restored' ''
     Check-NoExceptions 'P99'
 }
 

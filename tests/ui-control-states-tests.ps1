@@ -167,6 +167,8 @@ Check ((Reason 'backgroundAttach' $caseSnap) -ceq 'no-run') 'a pending request i
 Check (-not (Get-FastLlmUiControlStates -Snapshot $caseSnap).backgroundAttach) 'a pending request id that differs only by case leaves the Attach state disabled'
 $badAction=$false;try{[void](Get-FastLlmUiGreyedReason -Action 'DIAGNOSTICS' -Snapshot (New-ReasonSnapshot))}catch{$badAction=($_.Exception.Message -like "Unknown action*")}
 Check $badAction 'an action in another case is refused, not silently treated as enabled'
+$badAction2=$false;try{[void](Get-FastLlmUiGreyedReason -Action 'SAVEBUNDLE' -Snapshot (New-ReasonSnapshot @{Busy=$true}))}catch{$badAction2=($_.Exception.Message -like "Unknown action*")}
+Check $badAction2 'a string-case action (SAVEBUNDLE) is refused, not matched case-insensitively'
 # Mutation: a swapped sub-expression must make the property fail.
 $fnText=${function:Get-FastLlmUiGreyedReason}.ToString()
 function Test-ReasonMutant([string]$From,[string]$To){

@@ -98,7 +98,13 @@ function Initialize-FastLlmUiFluentTools {
 function Register-FastLlmUiFluentToolsPage {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)] $Page, [Parameter(Mandatory = $true)][hashtable] $Els)
-    Register-FastLlmUiFluentPage -Id 'Tools' -Element $Page -Nav 'NavTools' -Status $Els['ToolsStatusText'] -Update 'Update-FastLlmUiFluentTools'
+    Register-FastLlmUiFluentPage -Id 'Tools' -Element $Page -Nav 'NavTools' -Status $Els['ToolsStatusText'] -Enter 'Enter-FastLlmUiFluentTools' -Update 'Update-FastLlmUiFluentTools'
+}
+
+# Returning to the page refreshes the reasons at once, so no stale reason shows until the next tick.
+function Enter-FastLlmUiFluentTools {
+    [CmdletBinding()] param()
+    Update-FastLlmUiFluentTools
 }
 
 # Once per tick while Tools shows: every disabled button says why, written to its ToolTip and HelpText only when the code changes. An enabled button, or a
