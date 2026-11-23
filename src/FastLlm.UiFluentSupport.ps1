@@ -182,3 +182,95 @@ function Show-FastLlmUiUnsupported {
     }
     try { [void] (Write-FastLlmRunLogEvent -InstallRoot $InstallRoot -RunId ([guid]::NewGuid().ToString('N')) -Event 'window-unsupported' -Fields @{ reason = $Reason }) } catch { }
 }
+
+# --- doctor: the window accessibility mode on this PC ---
+# The check runs in a fresh child process of the same shell, so doctor's own process never has its switches touched. The child prints one JSON
+# line; only field names leave this function (no path, no value, no exception text). Failures map to a reason code:
+# not-windows, wpf-load-failed, timeout, child-failed.
+
+# The child's whole body: sets the switches first, loads WPF, writes exactly one JSON line and returns the exit code (0 read, 1 fault).
+function Invoke-FastLlmUiFluentAccessibilityProbe {
+    [CmdletBinding()] param()
+    try {
+        Set-FastLlmUiFluentAccessibilitySwitches
+        $loaded = $true
+        try { Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase -ErrorAction Stop } catch { $loaded = $false }
+        if (-not $loaded) { [Console]::Out.WriteLine('{"loadFailed":true}'); return 0 }
+        $state = Get-FastLlmUiFluentAccessibilityState
+        [Console]::Out.WriteLine((@{ typeFound = [bool] $state.typeFound; legacy = @($state.legacy) } | ConvertTo-Json -Compress))
+        return 0
+    }
+    catch { return 1 }
+}
+
+# Runs the child and returns @{ timedOut; exitCode; stdout }. Kills only its own Process object.
+function Invoke-FastLlmDoctorAccessibilityChild {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SupportScript,
+        [int] $TimeoutSeconds = 30
+    )
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    # The path travels in an environment variable, so the literal $env: below reaches the child unexpanded.
+    $info.Arguments = '-NoProfile -NonInteractive -Command "& { . $env:FASTLLM_DOCTOR_A11Y_SUPPORT; exit (Invoke-FastLlmUiFluentAccessibilityProbe) }"'
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.EnvironmentVariables['FASTLLM_DOCTOR_A11Y_SUPPORT'] = $SupportScript
+    $process = [System.Diagnostics.Process]::Start($info)
+    try {
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill() } catch { $null = $_ }
+            try { [void] $process.WaitForExit(5000) } catch { $null = $_ }
+            return @{ timedOut = $true; exitCode = -1; stdout = '' }
+        }
+        $process.WaitForExit()
+        return @{ timedOut = $false; exitCode = [int] $process.ExitCode; stdout = [string] $outTask.Result }
+    }
+    finally { $process.Dispose() }
+}
+
+# Returns [pscustomobject] status (modern|legacy|not-checked), fields (names), reason (code or ''), summary (the plain line).
+# -ChildRunner, -Windows and -CoreClr are seams for tests; the runner returns @{ timedOut; exitCode; stdout }.
+function Get-FastLlmDoctorWindowAccessibility {
+    [CmdletBinding()]
+    param(
+        [string] $SupportScript = (Join-Path $PSScriptRoot 'FastLlm.UiFluentSupport.ps1'),
+        [scriptblock] $ChildRunner,
+        [bool] $Windows = ($env:OS -eq 'Windows_NT'),
+        [bool] $CoreClr = ($PSVersionTable.PSEdition -eq 'Core')
+    )
+    function New-Result([string] $Status, [string[]] $Fields, [string] $Reason) {
+        $summary = switch ($Status) {
+            'modern' { 'Window accessibility: modern' }
+            'legacy' { 'Window accessibility: legacy (fields: ' + (@($Fields) -join ', ') + ')' }
+            default { 'Window accessibility: not checked (' + $Reason + ')' }
+        }
+        return [pscustomobject] @{ status = $Status; fields = @($Fields); reason = $Reason; summary = $summary }
+    }
+    if (-not $Windows) { return New-Result 'not-checked' @() 'not-windows' }
+    if ($null -eq $ChildRunner) { $ChildRunner = { param($Script) Invoke-FastLlmDoctorAccessibilityChild -SupportScript $Script -TimeoutSeconds 30 } }
+    try { $run = & $ChildRunner $SupportScript } catch { return New-Result 'not-checked' @() 'child-failed' }
+    if ($null -eq $run -or $run -isnot [System.Collections.IDictionary]) { return New-Result 'not-checked' @() 'child-failed' }
+    if ($run['timedOut'] -eq $true) { return New-Result 'not-checked' @() 'timeout' }
+    if ($run['exitCode'] -ne 0) { return New-Result 'not-checked' @() 'child-failed' }
+    $lines = @(([string] $run['stdout']) -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 })
+    if ($lines.Count -ne 1) { return New-Result 'not-checked' @() 'child-failed' }
+    try { $parsed = $lines[0] | ConvertFrom-Json } catch { return New-Result 'not-checked' @() 'child-failed' }
+    if ($null -eq $parsed) { return New-Result 'not-checked' @() 'child-failed' }
+    if ($parsed.PSObject.Properties['loadFailed'] -and $parsed.loadFailed -eq $true) { return New-Result 'not-checked' @() 'wpf-load-failed' }
+    if (-not $parsed.PSObject.Properties['typeFound'] -or $parsed.typeFound -isnot [bool] -or -not $parsed.PSObject.Properties['legacy']) { return New-Result 'not-checked' @() 'child-failed' }
+    $names = @()
+    foreach ($item in @($parsed.legacy)) {
+        if ($item -isnot [string] -or $item -cnotmatch '^[A-Za-z0-9]{1,40}\.[A-Za-z0-9]{1,60}$') { return New-Result 'not-checked' @() 'child-failed' }
+        $names += $item
+    }
+    # A missing switch type is legacy on Windows PowerShell 5.1 and nothing on pwsh 7, as in the window's own check.
+    if (-not $parsed.typeFound -and -not $CoreClr) { $names = @('type-missing') }
+    if ($names.Count -eq 0) { return New-Result 'modern' @() '' }
+    return New-Result 'legacy' $names ''
+}
