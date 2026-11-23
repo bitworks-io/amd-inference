@@ -1190,10 +1190,10 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     Check ($uiSource.Contains("'Require an API key (off by default)'") -and $uiSource.Contains("Invoke-FastLlmApiKeySetting -InstallRoot `$script:installPath -Action on") -and $uiSource.Contains("Invoke-FastLlmApiKeySetting -InstallRoot `$script:installPath -Action off")) 'window: Settings has the Require an API key box and saves it through the same action as the command line'
     Check ($uiSource.Contains("'Create a new key'") -and $uiSource.Contains('Get-FastLlmUiNewKeyConfirmText') -and @([regex]::Matches($uiSource, '-Action rotate')).Count -eq 1) 'window: Create a new key is one action, asked before it runs'
     Check ($uiSource.Contains('$copy.Tag=[string]$client.snippet') -and $uiSource.Contains('[void](Invoke-FastLlmUiKeyCopy -Snippet ([string]$sender.Tag) -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})') -and $uiSource.Contains('$snippetBox.Text=(Get-FastLlmConnectDisplayText -Snippet ([string]$client.snippet))')) 'window: a card shows the placeholder, keeps only the {KEY} token, and its Copy goes through the one copy routine'
-    Check ($uiSource.Contains('[void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})') -and @([regex]::Matches($uiSource, 'Invoke-FastLlmUiKeyCopy ')).Count -eq 2) 'window: the API key row''s Copy goes through the same routine (the two copy sites are the only callers)'
+    Check ($uiSource.Contains('[void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})') -and @([regex]::Matches($uiSource, 'Invoke-FastLlmUiKeyCopy ')).Count -eq 3 -and @([regex]::Matches($uiSource, 'Invoke-FastLlmUiKeyCopy -KeyOnly ')).Count -eq 2) 'window: the API key row''s Copy goes through the same routine (the callers are the card Copy, the key Copy button and the key box copy guard, which carries the same key-only call)'
     # Where the window touches the key at all: the reader, the two hand-overs to the copy routine, and Show (which fills the key box only).
     $readerUses = @([regex]::Matches($uiSource, '(?<![A-Za-z])ReadUiApiKey(?![A-Za-z])') | ForEach-Object { $lineStart = $uiSource.LastIndexOf("`n", $_.Index) + 1; $lineEnd = $uiSource.IndexOf("`n", $_.Index); $uiSource.Substring($lineStart, $lineEnd - $lineStart).Trim() })
-    Check ($readerUses.Count -eq 4 -and @($readerUses | Where-Object { $_ -clike 'function ReadUiApiKey*' }).Count -eq 1 -and @($readerUses | Where-Object { $_ -clike '*Invoke-FastLlmUiKeyCopy*-ReadKey {ReadUiApiKey}*' }).Count -eq 2 -and @($readerUses | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "window: the key is read in exactly three places - Show, and the two hand-overs to the copy routine ($($readerUses.Count) uses)"
+    Check ($readerUses.Count -eq 5 -and @($readerUses | Where-Object { $_ -clike 'function ReadUiApiKey*' }).Count -eq 1 -and @($readerUses | Where-Object { $_ -clike '*Invoke-FastLlmUiKeyCopy*-ReadKey {ReadUiApiKey}*' }).Count -eq 3 -and @($readerUses | Where-Object { $_ -ceq '$shownKey=ReadUiApiKey' }).Count -eq 1) "window: the key is read in exactly four places - Show, and the three hand-overs to the copy routine (card Copy, key Copy button, key box copy guard) ($($readerUses.Count) uses)"
     $shownKeyUses = @([regex]::Matches($uiSource, '\$shownKey\b[^\r\n;{}]*') | ForEach-Object { $_.Value.Trim() })
     Check (($shownKeyUses -join ' | ') -ceq '$shownKey=ReadUiApiKey | $shownKey) | $shownKey | $shownKey=$null' -and $uiSource.Contains('if($shownKey){$keyBox.Text=$shownKey;$keyShow.Text=''Hide''}')) "window: Show puts the key into the key box and nowhere else, then drops it ($($shownKeyUses -join ' | '))"
     # The window's part of the clipboard is one function of one statement: the tested routine, a real data object and the real clipboard
@@ -1203,8 +1203,64 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $clipboardStatements = @()
     if ($clipboardFunction.Count -eq 1) { $clipboardStatements = @($clipboardFunction[0].Body.EndBlock.Statements | ForEach-Object { [string]$_.Extent.Text }) }
     Check ($clipboardFunction.Count -eq 1 -and $clipboardStatements.Count -eq 1 -and $clipboardStatements[0] -ceq 'Set-FastLlmUiClipboard -Payload $Payload -NewDataObject {New-Object Windows.Forms.DataObject} -Publish {param($ClipboardData) [Windows.Forms.Clipboard]::SetDataObject($ClipboardData,$true)}' -and (@($clipboardFunction[0].Parameters | ForEach-Object { [string]$_.Extent.Text }) -join ',') -ceq '$Payload') "window (L3): SetUiClipboardPayload is exactly one statement - the tested routine with a Windows.Forms.DataObject and Clipboard.SetDataObject(data, keep after exit) ($($clipboardStatements -join ' | '))"
-    Check ($uiSource -cnotmatch 'Clipboard\]::SetText\([^)]*(Key|ReadUiApiKey)' -and @([regex]::Matches($uiSource, 'Clipboard\]::SetDataObject\(')).Count -eq 1 -and @([regex]::Matches($uiSource, '(?<![A-Za-z])SetUiClipboardPayload(?![A-Za-z])')).Count -eq 3) 'window (L3): no handler copies the key as plain text; the two copy sites hand their payload to that one function'
+    Check ($uiSource -cnotmatch 'Clipboard\]::SetText\([^)]*(Key|ReadUiApiKey)' -and @([regex]::Matches($uiSource, 'Clipboard\]::SetDataObject\(')).Count -eq 1 -and @([regex]::Matches($uiSource, '(?<![A-Za-z])SetUiClipboardPayload(?![A-Za-z])')).Count -eq 4) 'window (L3): no handler copies the key as plain text; the three copy sites (card Copy, key Copy button, key box copy guard) hand their payload to that one function'
     Check ($uiSource.Contains('$keyBoxState=Get-FastLlmUiApiKeyBoxState -Settings $current') -and $uiSource.Contains("if(`$keyBoxState -ceq 'indeterminate'){`$keyBox.ThreeState=`$true;`$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate") -and $uiSource.Contains('$keyAction=Get-FastLlmUiApiKeySaveAction -Current ([string]$current.apiKey) -Undetermined ([bool]$current.apiKeyUndetermined) -BoxState ([string]$keyBox.CheckState).ToLowerInvariant() -Touched ([bool]$script:settingsKeyTouched)') -and $uiSource.Contains("if(`$keyAction -ceq 'ask'){throw (Get-FastLlmUiApiKeyChoiceText)}") -and $uiSource.IndexOf("if(`$keyAction -ceq 'ask'){throw") -lt $uiSource.IndexOf('Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort')) 'window (L4): Settings shows an unknown flag as neither ticked nor clear, and Save is refused (before anything is written) until the user picks'
+    # The key box copy guard: the key box is the one TextBox the guard is given, and the guard's -Copy is the Copy button's own key-only call.
+    $connectFunction = @($uiTree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'ShowConnectDialog' }, $true))
+    $guardCalls = @(); $keyBoxCreations = @(); $shownKeyAssigns = @()
+    if ($connectFunction.Count -eq 1) {
+        $guardCalls = @($connectFunction[0].FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Register-FastLlmUiKeyBoxCopyGuard' }, $true))
+        $keyBoxCreations = @($connectFunction[0].FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$keyBox' -and $node.Right.Extent.Text -ceq 'New-Object Windows.Forms.TextBox' }, $true))
+        $shownKeyAssigns = @($connectFunction[0].FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Right.Extent.Text -ceq '$shownKey' }, $true))
+    }
+    $guardTextBox = ''; $guardCopyText = ''
+    if ($guardCalls.Count -eq 1) {
+        $guardElements = @($guardCalls[0].CommandElements)
+        for ($ge = 0; $ge -lt $guardElements.Count - 1; $ge++) {
+            if ($guardElements[$ge] -is [Management.Automation.Language.CommandParameterAst]) {
+                if ($guardElements[$ge].ParameterName -ceq 'TextBox') { $guardTextBox = $guardElements[$ge + 1].Extent.Text }
+                if ($guardElements[$ge].ParameterName -ceq 'Copy' -and $guardElements[$ge + 1] -is [Management.Automation.Language.ScriptBlockExpressionAst]) { $guardCopyText = ($guardElements[$ge + 1].ScriptBlock.EndBlock.Statements | ForEach-Object { [string]$_.Extent.Text }) -join ' | ' }
+            }
+        }
+    }
+    $keyCopyLine = '[void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})'
+    Check ($connectFunction.Count -eq 1 -and $guardCalls.Count -eq 1 -and $keyBoxCreations.Count -eq 1 -and $guardTextBox -ceq '$keyBox' -and @($shownKeyAssigns | Where-Object { $_.Left.Extent.Text -ceq '$keyBox.Text' }).Count -eq 1 -and @([regex]::Matches($uiSource, 'Register-FastLlmUiKeyBoxCopyGuard')).Count -eq 1) 'window (copy guard): the key box - the one text box Show fills with the key - is passed to Register-FastLlmUiKeyBoxCopyGuard, once, and nothing else is'
+    Check ($guardCopyText -ceq $keyCopyLine -and @([regex]::Matches($uiSource, [regex]::Escape($keyCopyLine))).Count -eq 2) 'window (copy guard): the guard copies through the exclusion path - its -Copy is exactly the Copy button''s own key-only call, and there are no other key copies'
+    $guardTree = Get-SourceTree 'src/FastLlm.ConnectInfo.ps1'
+    $guardFunction = @($guardTree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Register-FastLlmUiKeyBoxCopyGuard' }, $true))
+    $guardBody = ''; if ($guardFunction.Count -eq 1) { $guardBody = [string]$guardFunction[0].Body.Extent.Text }
+    Check ($guardFunction.Count -eq 1 -and $guardBody.Contains('$TextBox.ShortcutsEnabled = $false') -and $guardBody -cnotmatch 'Clipboard|SetText|GetNewClosure' -and @([regex]::Matches($guardBody, '& \$sender\.Tag')).Count -eq 2 -and $guardBody.Contains('$e.SuppressKeyPress = $true') -and $guardBody.Contains("-ceq 'C'") -and $guardBody.Contains("-ceq 'Insert'")) 'window (copy guard): the guard turns the native copy off (ShortcutsEnabled = $false), writes nothing to the clipboard itself and only runs the block it was given (Ctrl+C, Ctrl+Insert, its menu item)'
+    if ($isWindowsHost) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $guardBox = New-Object System.Windows.Forms.TextBox
+        $script:guardPayloads = New-Object 'System.Collections.Generic.List[object]'
+        $guardCopy = { [void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey { $marker } -SetClipboard { param($Payload) $script:guardPayloads.Add($Payload) } -SetStatus { param($Text) }) }
+        Check ($guardBox.ShortcutsEnabled -eq $true) 'copy guard (Windows): a new text box has its native copy on'
+        Register-FastLlmUiKeyBoxCopyGuard -TextBox $guardBox -Copy $guardCopy
+        $keyDownMethod = [System.Windows.Forms.Control].GetMethod('OnKeyDown', [Reflection.BindingFlags]'NonPublic,Instance')
+        function Send-GuardKey($Keys) { $keyArgs = New-Object System.Windows.Forms.KeyEventArgs($Keys); [void]$keyDownMethod.Invoke($guardBox, @($keyArgs)); return $keyArgs }
+        $ctrl = [System.Windows.Forms.Keys]::Control
+        Check ($guardBox.ShortcutsEnabled -eq $false) 'copy guard (Windows): the guard turns the text box''s native copy off (ShortcutsEnabled is false)'
+        $guardArgs = Send-GuardKey ($ctrl -bor [System.Windows.Forms.Keys]::C)
+        Check ($script:guardPayloads.Count -eq 1 -and $guardArgs.Handled -and $guardArgs.SuppressKeyPress) 'copy guard (Windows): Ctrl+C runs the copy once and is handled and suppressed'
+        $guardArgs = Send-GuardKey ($ctrl -bor [System.Windows.Forms.Keys]::Insert)
+        Check ($script:guardPayloads.Count -eq 2 -and $guardArgs.Handled -and $guardArgs.SuppressKeyPress) 'copy guard (Windows): Ctrl+Insert runs the copy once and is handled and suppressed'
+        $guardArgs = Send-GuardKey ([System.Windows.Forms.Keys]::C)
+        $guardArgs2 = Send-GuardKey ($ctrl -bor [System.Windows.Forms.Keys]::V)
+        $guardArgs3 = Send-GuardKey ($ctrl -bor [System.Windows.Forms.Keys]::Shift -bor [System.Windows.Forms.Keys]::C)
+        Check ($script:guardPayloads.Count -eq 2 -and -not $guardArgs.Handled -and -not $guardArgs2.Handled -and -not $guardArgs3.Handled) 'copy guard (Windows): C alone, Ctrl+V and Ctrl+Shift+C do not copy'
+        $guardMenu = $guardBox.ContextMenuStrip
+        Check ($null -ne $guardMenu -and $guardMenu.Items.Count -eq 1 -and [string]$guardMenu.Items[0].Text -ceq 'Copy') 'copy guard (Windows): the box has its own menu, with one Copy item'
+        $guardMenu.Items[0].PerformClick()
+        Check ($script:guardPayloads.Count -eq 3) 'copy guard (Windows): the menu''s Copy item runs the copy once'
+        # The Copy button's path: the same call, so the same payload. All three copies carry the key and the three exclusion formats.
+        $buttonPayloads = New-Object 'System.Collections.Generic.List[object]'
+        [void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey { $marker } -SetClipboard { param($Payload) $buttonPayloads.Add($Payload) } -SetStatus { param($Text) })
+        $describe = { param($Payload) (([string]$Payload.text) + '|' + ((@($Payload.formats.Keys) | ForEach-Object { $_ + '=' + (@($Payload.formats[$_]) -join ',') }) -join ';')) }
+        $buttonShape = & $describe $buttonPayloads[0]
+        Check ($buttonPayloads.Count -eq 1 -and ($script:guardPayloads | ForEach-Object { (& $describe $_) -ceq $buttonShape }) -notcontains $false -and [string]$buttonPayloads[0].text -ceq $marker -and (@($buttonPayloads[0].formats.Keys) -join ',') -ceq 'ExcludeClipboardContentFromMonitorProcessing,CanIncludeInClipboardHistory,CanUploadToCloudClipboard' -and (@($buttonPayloads[0].formats['ExcludeClipboardContentFromMonitorProcessing']) -join ',') -ceq '1,0,0,0') 'copy guard (Windows): Ctrl+C, Ctrl+Insert, the menu and the Copy button put the same payload on the clipboard - the key with the three exclusion formats'
+        $guardBox.Dispose()
+    }
     Check ($uiSource -cnotmatch '\.Tag\s*=[^;\r\n]*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)' -and $uiSource -cnotmatch '\$script:[A-Za-z]*\s*=\s*\(?\s*(ReadUiApiKey|Get-FastLlmApiKeyForDisplay)') 'window: the key is never kept in a control tag or a window-wide variable'
     $apiKeyFailureAt = $uiSource.IndexOf('if(Test-FastLlmUiApiKeyFailure -Code $failureCode){')
     $retryAt = $uiSource.IndexOf("`$script:flow=Move-FastLlmUiFlow -Flow `$script:flow -Event 'serving-failed'")
