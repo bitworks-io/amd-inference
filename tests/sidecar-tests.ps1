@@ -544,7 +544,6 @@ try {
     Check (-not (Get-FastLlmConnectionInfo -Status $on.final).PSObject.Properties['embeddings']) 'connect an app: after the stop there is no embeddings row'
 
     # ================= a sidecar failure never fails, stops or degrades the text model; it is recorded with a typed code; no retry =================
-    InModule { $script:FastLlmSidecarLoadTimeoutSeconds = 4 }
     $failureCases = [ordered] @{
         'exit' = @{ Code = 'embeddings-server-exited'; What = 'a sidecar that exits at once (a start failure)' }
         'nohealth' = @{ Code = 'embeddings-load-timeout'; What = 'a sidecar that never becomes healthy' }
@@ -559,6 +558,13 @@ try {
     }
     foreach ($mode in $failureCases.Keys) {
         $case = $failureCases[$mode]
+        # Windows keeps the short 4 s load timeout for every case. Elsewhere the mock is a PowerShell host that compiles its helper first (about
+        # 5 s on a loaded macOS machine), so 4 s ends a case before the mock has done anything: a sidecar that exits at once is then seen as slow,
+        # and a never-healthy one is stopped before it has even recorded its start. The cases that end at the mock's own behaviour get a long
+        # timeout (no extra time), and the never-healthy case, which ends at the timeout, gets one that is still short but past the compile.
+        $loadSeconds = 4
+        if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { $loadSeconds = 60; if ($mode -ceq 'nohealth') { $loadSeconds = 20 } }
+        InModule { param($Seconds) $script:FastLlmSidecarLoadTimeoutSeconds = $Seconds } @($loadSeconds)
         $world = New-SidecarWorld -Module $module -Root $root -Temp $temp -Label ("fail-$mode") -SidecarMode $mode
         Use-SidecarWorld -Module $module -State $st -World $world
         $failedRun = Invoke-SidecarScenario -Label "fail-$mode" -World $world -Steps @((New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'sleep' @{ milliseconds = 1500 }), (New-Step @{ phase = 'ready'; sidecarPhase = 'failed' } 'request'), (New-Step @{ phase = 'ready' } 'stop'))
