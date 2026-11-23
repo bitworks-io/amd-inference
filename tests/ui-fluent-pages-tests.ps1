@@ -137,11 +137,21 @@ function Get-LiveCount($Element) {
     return $n
 }
 
+$script:FastLlmUiXaml['Test.PagesPage.Tools'] = @'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <TextBlock x:Name="ToolsStatusText" AutomationProperties.LiveSetting="Polite"/>
+</StackPanel>
+'@
+$script:FastLlmUiXaml['Test.PagesPage.Connect'] = @'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <TextBlock x:Name="ConnectStatusText" AutomationProperties.LiveSetting="Polite"/>
+</StackPanel>
+'@
+
 function Add-PagesTestPage([string]$Id, [string]$Nav, [string]$StatusName) {
     if (Test-FastLlmUiFluentPageRegistered -Id $Id) { return }
-    # Registered XAML, parsed by the one loader (the source-safety scan allows no other parse)
-    $script:FastLlmUiXaml['Test.PagesPage.' + $Id] = '<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><TextBlock x:Name="' + $StatusName + '" AutomationProperties.LiveSetting="Polite"/></StackPanel>'
-    $page = New-FastLlmUiXamlElement -Name ('Test.PagesPage.' + $Id)
+    # Registered XAML (literal here-strings), parsed by the one loader: the source-safety scan allows no other parse
+    if ($Id -ceq 'Tools') { $page = New-FastLlmUiXamlElement -Name 'Test.PagesPage.Tools' } else { $page = New-FastLlmUiXamlElement -Name 'Test.PagesPage.Connect' }
     $els = $script:FastLlmUiFluent.Els
     Add-FastLlmUiFluentElements -Els $els -Root $page -Names @($StatusName)
     Register-FastLlmUiFluentPage -Id $Id -Element $page -Nav $Nav -Status $els[$StatusName] -Enter 'Test-PagesEnter' -Leave 'Test-PagesLeave' -Update 'Test-PagesUpdate'
