@@ -38,9 +38,11 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.Update.ps1')
 . (Join-Path $root 'src/FastLlm.Components.ps1')
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
 
-# The real stop function exits the process, so a startup fault would end the suite silently: a throwing one stands in.
+# The real stop function exits the process, so a startup fault would end the suite silently: its text is kept for one check (P99), then a throwing one stands in.
+$script:realStopText = [string](Get-Command Stop-FastLlmUiFluentStartup -CommandType Function).Definition
 function Stop-FastLlmUiFluentStartup {
     param([string]$Reason)
     throw "startup stopped: $Reason"
@@ -84,6 +86,20 @@ function ReadSideSelection { $script:sideSelectionCalls++ }
 $script:sideStepThrows = $false
 function LaunchSideStep([string]$Step, [object[]]$Arguments) { if ($script:sideStepThrows) { throw 'side step boom' }; [void]$script:sideStepCalls.Add([pscustomobject]@{ Step = $Step; Arguments = @($Arguments) }) }
 function ShowConnectDialog { $script:connectDialogCalls++ }
+# The tray menu and reveal calls the driver-guidance dialog makes (fast-llm-ui.ps1 defines them); the suite records the tray calls.
+$script:trayAvailability = New-Object System.Collections.ArrayList
+function RevealUiForAction { }
+function SetTrayMenuAvailable([bool]$Available) { [void]$script:trayAvailability.Add($Available) }
+# The two first-time dialogs P13 checks are the real ones: their definitions are taken by name from fast-llm-ui.ps1 with the PowerShell parser (nothing is run
+# from that file but these two functions), so the owner they pass is the one that ships. A missing function is a FAIL in P13.
+$script:p13Missing = @()
+$uiAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'), [ref]$null, [ref]$null)
+foreach ($fnName in 'ShowUiSideResult', 'ShowDriverGuidance') {
+    $script:p13Want = $fnName
+    $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $script:p13Want }, $true)
+    if ($null -eq $def) { $script:p13Missing += $fnName; continue }
+    . ([scriptblock]::Create([string]$def.Extent.Text))
+}
 # $script:child, $script:vcBroker and $script:updateRun are defined by Initialize-ShellEnv (the shared harness).
 $script:selection = @()   # the side-step arguments the API check appends (fast-llm-ui.ps1 defines it)
 
@@ -104,6 +120,9 @@ function Invoke-P0-ShellStart {
     Check ($null -ne $script:form.FastLlmFormState) 'P0 the orchestration form is now the form adapter' 'form has no FastLlmFormState'
     $script:scns.Add([pscustomobject]@{ Window = $win; Form = $script:form; Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($win).Handle; Closed = @{ n = 0 }; Title = $win.Title })
     Check-NoExceptions 'P0'
+    # The real wiring of fast-llm-ui.ps1 (its `$connectButton.Add_Click` line), a plain scriptblock that calls the file-level stub. Home's Connect an app row has no
+    # Event, so only a raised adapter Click can reach it: P2 asserts it stays at 0 while the page is registered, and proves with a control that the counter can move.
+    $script:connectButton.Add_Click({ try { ShowConnectDialog } catch { ShowFailure $_.Exception.Message } })
     # From here the loop owns the thread. A DispatcherTimer re-queues itself only after its Tick returns, and P0 does not return until the loop ends:
     # re-arm the step timer by hand so P1 onward run in the nested frame. The loop ends when the last step calls Stop-ShellLoop, so no step may follow that.
     $script:busy = $false
@@ -309,7 +328,11 @@ function Invoke-P2-ConnectAnApp {
     $hasFocus = ([object]::ReferenceEquals($focused, $els.NavConnect) -or $els.NavConnect.IsKeyboardFocused)
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Connect' -and $els.NavConnect.IsSelected) 'P2 Connect an app hosts the Connect page' "current=$(Get-FastLlmUiFluentCurrentPage)"
     Check $hasFocus 'P2 Connect an app puts the focus on the Connect pane item' "focused=$(if ($null -ne $focused) { $focused.GetType().Name } else { 'nothing' })"
-    Check ($script:connectDialogCalls -eq 0) 'P2 ShowConnectDialog stays at 0' "calls=$($script:connectDialogCalls)"
+    Check ($script:connectDialogCalls -eq 0 -and (Test-FastLlmUiFluentPageRegistered -Id 'Connect')) 'P2 ShowConnectDialog stays at 0 while the Connect page is registered' "calls=$($script:connectDialogCalls)"
+    # Control: the counter can move. The adapter event raised directly reaches the real wiring once; then the counter is put back.
+    Invoke-FastLlmUiAdapterEvent -Adapter $script:connectButton -Event 'Click'
+    Check ($script:connectDialogCalls -eq 1) 'P2 control: a raised adapter Click reaches the wired ShowConnectDialog stub once (the counter can move)' "calls=$($script:connectDialogCalls)"
+    $script:connectDialogCalls = 0
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Check-NoExceptions 'P2'
 }
@@ -804,13 +827,278 @@ function Invoke-P10-ConnectApiCheck {
     Check-NoExceptions 'P10'
 }
 
-# P-SLOT task 8 (Connect page, the remaining actions and first-time dialogs): later P-steps
+# ---- Task 8: the keyboard, the control view and the first-time dialogs ----
+function Get-PagesTabWalk($NavItem) {
+    $win = $script:FastLlmUiFluent.Window
+    $null = $win.Activate()
+    $null = $NavItem.Focus()
+    Invoke-Pump 200
+    $cur = [System.Windows.Input.Keyboard]::FocusedElement
+    $started = ($null -ne $cur) -and [object]::ReferenceEquals($cur, $NavItem)
+    $stops = New-Object System.Collections.ArrayList
+    if ($started) {
+        for ($i = 0; $i -lt 60; $i++) {
+            $null = $cur.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Next)))
+            $cur = [System.Windows.Input.Keyboard]::FocusedElement
+            if ($null -eq $cur) { break }
+            if ([object]::ReferenceEquals($cur, $NavItem)) { break }
+            $name = ''
+            if ($cur -is [System.Windows.UIElement]) { $name = Get-ShellPeerName $cur }
+            [void]$stops.Add([pscustomobject]@{ Element = $cur; Type = $cur.GetType().Name; Name = $name })
+        }
+    }
+    return [pscustomobject]@{ Started = $started; Stops = $stops.ToArray() }
+}
+
+function Get-PagesStopsIn($Walk, $PageElement) {
+    $in = New-Object System.Collections.ArrayList
+    foreach ($stop in @($Walk.Stops)) {
+        if ($stop.Element -is [System.Windows.DependencyObject] -and $PageElement.IsAncestorOf($stop.Element)) { [void]$in.Add($stop) }
+    }
+    return $in.ToArray()
+}
+
+# P11 walks the real window from a pane item with Tab: every stop has a readable name, and Connect's Copy buttons have distinct names.
+function Invoke-P11-TabWalk {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $script:shellSnap = New-ShellSnap
+    # Tools
+    $null = Set-FastLlmUiFluentPage -Id 'Tools'
+    Invoke-Pump 150
+    $walk = Get-PagesTabWalk $els.NavTools
+    $stops = @($walk.Stops)
+    $unnamed = @($stops | Where-Object { -not (Test-ShellNameReadable ([string]$_.Name)) } | ForEach-Object { [string]$_.Type })
+    $inPage = @(Get-PagesStopsIn $walk $f.Pages['Tools']['Element'])
+    Write-Host ("INFO: P11 Tools tab stops: " + (($stops | ForEach-Object { [string]$_.Type + ':' + [string]$_.Name }) -join ' > '))
+    Check ($walk.Started) 'P11 the focus can be placed on the Tools pane item (the window must be active for the walk)' "focused=$([System.Windows.Input.Keyboard]::FocusedElement)"
+    Check ($inPage.Count -ge 3 -and $unnamed.Count -eq 0) 'P11 the Tools walk reaches the page and every tab stop has a readable name' "inPage=$($inPage.Count) stops=$($stops.Count) unnamed=[$($unnamed -join ',')]"
+    # Connect: the field, key and card Copy buttons
+    Open-ConnectPage (New-ConnectFixture) (New-ConnectRow)
+    Invoke-Pump 150
+    $walk = Get-PagesTabWalk $els.NavConnect
+    $stops = @($walk.Stops)
+    $unnamed = @($stops | Where-Object { -not (Test-ShellNameReadable ([string]$_.Name)) } | ForEach-Object { [string]$_.Type })
+    $inPage = @(Get-PagesStopsIn $walk $f.Pages['Connect']['Element'])
+    Write-Host ("INFO: P11 Connect tab stops: " + (($stops | ForEach-Object { [string]$_.Type + ':' + [string]$_.Name }) -join ' > '))
+    Check ($walk.Started) 'P11 the focus can be placed on the Connect pane item' "focused=$([System.Windows.Input.Keyboard]::FocusedElement)"
+    Check ($inPage.Count -ge 12 -and $unnamed.Count -eq 0) 'P11 the Connect walk reaches the page and every tab stop has a readable name' "inPage=$($inPage.Count) stops=$($stops.Count) unnamed=[$($unnamed -join ',')]"
+    $copyNames = @($stops | Where-Object { $_.Element -is [System.Windows.Controls.Button] -and [string]$_.Element.Content -ceq 'Copy' } | ForEach-Object { [string]$_.Name })
+    $distinct = @($copyNames | Sort-Object -Unique)
+    Check ($copyNames.Count -eq 7 -and $distinct.Count -eq $copyNames.Count) 'P11 the seven Copy buttons (four fields, the key, two cards) have seven distinct names' "names=[$($copyNames -join ' | ')]"
+    Check (@($copyNames | Where-Object { $_ -notmatch '^Copy ' }).Count -eq 0) 'P11 each Copy name says what it copies' "names=[$($copyNames -join ' | ')]"
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Check-NoExceptions 'P11'
+}
+
+function Get-PagesNearestPeer($Element) {
+    $up = $Element
+    while ($null -ne $up) {
+        if ($up -is [System.Windows.UIElement]) {
+            $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($up)
+            if ($null -ne $peer) { return $peer }
+        }
+        $up = [System.Windows.Media.VisualTreeHelper]::GetParent($up)
+    }
+    return $null
+}
+
+function Test-PagesPuaText([string]$Text) {
+    if ($Text.Length -eq 0) { return $false }
+    foreach ($c in $Text.ToCharArray()) { if ([int]$c -lt 0xE000 -or [int]$c -gt 0xF8FF) { return $false } }
+    return $true
+}
+
+# One pane item: its glyph is in the visual tree and visible, is not among the control-view peers, and the item still has a readable name.
+function Test-PagesNavGlyphHidden([string]$CheckName, $Element) {
+    $glyph = $null
+    foreach ($n in @(Get-ShellVisuals $Element)) { if ($n -is [System.Windows.Controls.TextBlock] -and (Test-PagesPuaText ([string]$n.Text))) { $glyph = $n; break } }
+    $peer = Get-PagesNearestPeer $Element
+    if ($null -eq $peer) { Check $false $CheckName 'no automation peer for the element or any ancestor'; return }
+    $name = [string]$peer.GetName()
+    $bad = New-Object System.Collections.ArrayList
+    foreach ($k in @(Get-ShellControlViewPeers $peer)) {
+        if ($k -is [System.Windows.Automation.Peers.UIElementAutomationPeer]) {
+            $o = $k.Owner
+            if ($o -is [System.Windows.Controls.TextBlock] -and ((Test-PagesPuaText ([string]$o.Text)) -or ($null -ne $glyph -and [object]::ReferenceEquals($o, $glyph)))) { [void]$bad.Add($k.GetType().Name + ':' + [string]$o.Text) }
+        }
+    }
+    $ok = ($null -ne $glyph) -and [bool]$glyph.IsVisible -and ($bad.Count -eq 0) -and (Test-ShellNameReadable $name)
+    Check $ok $CheckName "glyphFound=$($null -ne $glyph) glyphVisible=$(if ($null -ne $glyph) { $glyph.IsVisible } else { 'n/a' }) glyphPeersInControlView=[$($bad -join ',')] name='$name'"
+}
+
+# The TextBlocks below a root whose text is only private-use glyphs and that are not the decorative type. A glyph that is a part of a named control's own template
+# or content presenter (an Expander arrow, a glyph button's content) has a TemplatedParent: the control carries the name, so those are listed, not failed.
+function Get-PagesPuaTextBlocks($Root) {
+    $loose = New-Object System.Collections.ArrayList
+    $templated = New-Object System.Collections.ArrayList
+    foreach ($n in @(Get-ShellVisuals $Root)) {
+        if ($n -isnot [System.Windows.Controls.TextBlock]) { continue }
+        if ($n -is [Bitworks.FastLlm.DecorativeTextBlock]) { continue }
+        if (-not (Test-PagesPuaText ([string]$n.Text))) { continue }
+        if ($null -ne $n.TemplatedParent) { [void]$templated.Add($n) } else { [void]$loose.Add($n) }
+    }
+    return [pscustomobject]@{ Loose = $loose.ToArray(); Templated = $templated.ToArray() }
+}
+
+function Invoke-P12-ControlView {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 150
+    $f.Window.UpdateLayout()
+    # Every pane item, the disabled ones too (S9 covers Home only)
+    foreach ($nav in @($f.NavItems)) { Test-PagesNavGlyphHidden ('P12 nav item ' + [string]$nav['Id'] + ': glyph not in the UIA control view; name present') $nav['Item'] }
+    # No loose glyph TextBlock on any page or in the shell
+    foreach ($pageId in 'Home', 'Tools', 'Connect') {
+        $null = Set-FastLlmUiFluentPage -Id $pageId
+        Invoke-Pump 150
+        $f.Window.UpdateLayout()
+        $found = Get-PagesPuaTextBlocks $f.Window
+        foreach ($t in @($found.Templated)) { Write-Host ("INFO: P12 $pageId templated glyph TextBlock in a " + $t.TemplatedParent.GetType().Name) }
+        Check (@($found.Loose).Count -eq 0) "P12 no non-decorative TextBlock holds a private-use glyph with $pageId hosted" ("loose=" + ((@($found.Loose) | ForEach-Object { [string]$_.Name + ':' + [string]$_.Text.Length }) -join ','))
+    }
+    # Negative control: a plain TextBlock with a glyph is found by the scan and IS in the control view
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $plain = New-Object System.Windows.Controls.TextBlock
+    $plain.Text = [string][char]0xE80F
+    [void]$els.QuickPanel.Children.Add($plain)
+    try {
+        Invoke-Pump 150
+        $els.QuickPanel.UpdateLayout()
+        $scan = Get-PagesPuaTextBlocks $f.Window
+        $scanned = $false
+        foreach ($t in @($scan.Loose)) { if ([object]::ReferenceEquals($t, $plain)) { $scanned = $true } }
+        $holder = Get-PagesNearestPeer $els.QuickPanel
+        $inView = $false
+        if ($null -ne $holder) {
+            foreach ($k in @(Get-ShellControlViewPeers $holder)) {
+                if ($k -is [System.Windows.Automation.Peers.UIElementAutomationPeer] -and [object]::ReferenceEquals($k.Owner, $plain)) { $inView = $true }
+            }
+        }
+        Check ($scanned -and $inView -and [bool]$plain.IsVisible) 'P12 negative control: a plain TextBlock glyph is found by the scan and IS in the UIA control view' "scanned=$scanned inView=$inView visible=$($plain.IsVisible)"
+    }
+    finally { $els.QuickPanel.Children.Remove($plain) }
+    Check-NoExceptions 'P12'
+}
+
+# A dialog or box shown over the real window: its owner (GW_OWNER) must be the WPF window handle, the window is disabled while it is up, and the box ladder closes it.
+function Invoke-PagesOwnerProbe([string]$Tag, [string]$Caption, [scriptblock]$Show) {
+    $hwnd = [System.Windows.Interop.WindowInteropHelper]::new($script:FastLlmUiFluent.Window).Handle
+    $box = @{}
+    $t = Start-BoxAnswer $Caption 2 $hwnd $box
+    $err = ''
+    try { $null = & $Show } catch { $err = $_.Exception.Message } finally { $t.Stop() }
+    Invoke-Pump 100
+    Write-Host ("INFO: P13 $Tag closed by rung: " + [string]$box.rung)
+    Check ($err -eq '' -and $box.found -and -not $box.timedOut -and -not $box.hardStop) "P13 $Tag appeared and the box ladder closed it within 6 s" "error=$err found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) lastRung=$($box.rung)"
+    Check ($box.owner -eq $hwnd.ToInt64()) "P13 $Tag is owned by the WPF window handle" "GW_OWNER=$($box.owner) expected=$($hwnd.ToInt64())"
+    Check ($box.during -eq $false) "P13 the WPF window is disabled while $Tag is up" "IsWindowEnabled during=$($box.during)"
+}
+
+function Invoke-P13-DialogOwners {
+    if (-not $script:shellOk) { return }
+    Check (@($script:p13Missing).Count -eq 0) 'P13 ShowUiSideResult and ShowDriverGuidance were found in fast-llm-ui.ps1' ("missing=" + (@($script:p13Missing) -join ','))
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $win = $script:FastLlmUiFluent.Window
+    $null = $win.Activate()
+    Invoke-Pump 100
+    # SaveFileDialog.ShowDialog($form): a CommonDialog (the support bundle's save dialog), never confirmed
+    $script:p13Caption = 'FastLLM pages save ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Invoke-PagesOwnerProbe 'SaveFileDialog.ShowDialog($form)' $script:p13Caption {
+        $dialog = New-Object System.Windows.Forms.SaveFileDialog
+        try {
+            $dialog.Title = $script:p13Caption
+            $dialog.Filter = 'Zip file (*.zip)|*.zip'
+            $dialog.DefaultExt = 'zip'
+            $dialog.OverwritePrompt = $false
+            [void]$dialog.ShowDialog($script:form)
+        }
+        finally { $dialog.Dispose() }
+    }
+    # The driver-guidance form: the real ShowDriverGuidance
+    $script:trayAvailability.Clear()
+    $script:p13Diagnostic = [pscustomobject]@{ windows = $true; driverGuidance = @([pscustomobject]@{ inputGpuName = 'Probe display device'; knownFocusModel = $false }) }
+    Invoke-PagesOwnerProbe 'the driver-guidance form' 'AMD driver guidance - read-only' { ShowDriverGuidance $script:p13Diagnostic }
+    Check (($script:trayAvailability.ToArray() -join ',') -ceq 'False,True') 'P13 the driver-guidance form turned the tray menu off while open and on again after' "calls=$($script:trayAvailability.ToArray() -join ',')"
+    # ShowUiSideResult
+    $script:p13Caption = 'FastLLM pages result ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Invoke-PagesOwnerProbe 'ShowUiSideResult' $script:p13Caption { ShowUiSideResult $script:p13Caption 'Probe result text' }
+    Check ($win.IsVisible -and $script:native::IsWindowEnabled([System.Windows.Interop.WindowInteropHelper]::new($win).Handle)) 'P13 the window is open and enabled again after the three dialogs' "visible=$($win.IsVisible)"
+    Check-NoExceptions 'P13'
+}
+
+# The binding table's order is part of its contract: Home, then the shell, then the pages. The REAL table is bound to scratch elements of the same types, in order
+# (no throw), and then with the Tools rows first: ToolsAttachButton (Also) binds the Attach adapter, so Home's own Attach row finds it bound and throws loudly.
+function New-PagesScratchElements([object[]]$Rows) {
+    $scratch = @{}
+    foreach ($row in $Rows) {
+        $type = $script:FastLlmUiFluent.Els[[string]$row.Element].GetType()
+        $scratch[[string]$row.Element] = New-Object -TypeName $type.FullName
+    }
+    return $scratch
+}
+function Invoke-PagesBindRows([object[]]$Rows, [hashtable]$Scratch) {
+    foreach ($row in $Rows) {
+        $adapter = Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
+        $also = ($row.ContainsKey('Also') -and [bool]$row['Also'])
+        try { Connect-FastLlmUiFluentControl -Adapter $adapter -Element $Scratch[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags) -Also:$also }
+        catch { return [pscustomobject]@{ Error = $_.Exception.Message; Element = [string]$row.Element } }
+    }
+    return [pscustomobject]@{ Error = ''; Element = '' }
+}
+function Invoke-P15-RealTableOrder {
+    if (-not $script:shellOk) { return }
+    $homeRows = @(Get-FastLlmUiFluentHomeBindings)
+    $table = @(Get-FastLlmUiFluentBindingTable)
+    $toolRows = @(Get-FastLlmUiFluentToolsBindings)
+    # The shell rows are what lies between the two groups in the table (its order is the contract this step pins)
+    $shellRows = @($table | Select-Object -Skip $homeRows.Count -First ($table.Count - $homeRows.Count - $toolRows.Count))
+    $reversed = @($toolRows) + @($shellRows) + @($homeRows)
+    $adapterNames = @(Get-FastLlmUiFluentControlTable | ForEach-Object { [string]$_[0] })
+    $saved = @{}
+    foreach ($n in $adapterNames) { $saved[$n] = Get-Variable -Name $n -Scope Script -ValueOnly }
+    try {
+        Check ($table.Count -eq ($homeRows.Count + $shellRows.Count + $toolRows.Count) -and $toolRows.Count -eq 8 -and @($toolRows | Where-Object { $_.ContainsKey('Also') -and [bool]$_['Also'] }).Count -ge 1) 'P15 the real table is the Home rows, then the shell rows, then the Tools rows, and the Tools rows carry an Also row' "table=$($table.Count) home=$($homeRows.Count) shell=$($shellRows.Count) tools=$($toolRows.Count)"
+        # In order: every row binds
+        $null = Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:catalog -UiSettings $script:uiSettings
+        $scratch = New-PagesScratchElements $table
+        $ok = Invoke-PagesBindRows $table $scratch
+        Check ($ok.Error -eq '') 'P15 control: the real table in its pinned order binds every row without a throw' "error=$($ok.Error) at=$($ok.Element)"
+        # Reversed by group: the Tools rows first
+        $null = Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:catalog -UiSettings $script:uiSettings
+        $scratch = New-PagesScratchElements $reversed
+        $bad = Invoke-PagesBindRows $reversed $scratch
+        Check ($bad.Error -match 'is bound twice' -and $bad.Element -ceq 'AttachButton') 'P15 the Tools rows bound before Home throw loudly: Home Attach row finds its adapter already bound' "error=$($bad.Error) at=$($bad.Element)"
+    }
+    finally {
+        foreach ($n in $adapterNames) { Set-Variable -Name $n -Value $saved[$n] -Scope Script }
+    }
+    Check-NoExceptions 'P15'
+}
 
 # Faults are injected last: each Initialize run replaces the shell state, so nothing after this may use the real shell.
 function Invoke-P99-StartupFaults {
     if (-not $script:shellOk) { return }
     try { $script:FastLlmUiFluent.Timer.Stop() } catch { $null = $_ }
     Check ($script:connectDialogCalls -eq 0) 'P99 ShowConnectDialog was never called in fluent mode' "calls=$($script:connectDialogCalls)"
+    # Text C is the same for a markup fault as for a theme fault, and the real stop function passes its reason on and exits 3
+    $textXaml = Get-FastLlmUiUnsupportedText -Reason 'xaml-parse' -Folder 'C:\example'
+    $textTheme = Get-FastLlmUiUnsupportedText -Reason 'theme-init' -Folder 'C:\example'
+    Check (($textXaml -ceq $textTheme) -and $textXaml -match 'a fault in FastLLM') 'P99 a xaml-parse fault shows text C, the same as a theme-init fault' "xaml-parse='$textXaml'"
+    Check ($script:realStopText -match 'Show-FastLlmUiUnsupported\s+-Reason\s+\$Reason' -and $script:realStopText -match 'exit 3') 'P99 the real Stop-FastLlmUiFluentStartup passes its reason to Show-FastLlmUiUnsupported and exits 3' $script:realStopText
+    # An injected Tools markup fault: the Tools page does not parse, so the startup stops with xaml-parse (the suite's throwing double stands in for the exit)
+    $goodTools = $script:FastLlmUiXaml['FastLlm.Tools']
+    $script:FastLlmUiXaml['FastLlm.Tools'] = '<ScrollViewer xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><StackPanel></ScrollViewer>'
+    Initialize-ShellEnv
+    $err = ''
+    try { Initialize-FastLlmUiFluentShell } catch { $err = $_.Exception.Message }
+    finally { $script:FastLlmUiXaml['FastLlm.Tools'] = $goodTools }
+    Check ($err -ceq 'startup stopped: xaml-parse') 'P99 an injected Tools markup fault stops the startup with xaml-parse (text C, exit 3)' "error='$err'"
+    Check ($script:FastLlmUiXaml['FastLlm.Tools'] -ceq $goodTools) 'P99 the Tools markup is back to the registered text' ''
     Check-NoExceptions 'P99'
 }
 
@@ -820,6 +1108,7 @@ $script:steps = @(
     'Invoke-P1-PageHostAndNav', 'Invoke-P2-ConnectAnApp', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
+    'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'
 )
