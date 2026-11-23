@@ -374,9 +374,6 @@ Check ((Undo-NamedChanges $broken).Problems.Count -ge 1) 'mutation check: an alt
 # of the shell's binding table) or is on the pending list with its PR. The suite does not load the shell or Home off Windows, so the bound names are read by AST.
 # A later task removes an entry from the pending list when it binds the adapter.
 $pendingAdapters=@{
-    # PR 3a Task 6: the Tools page binds these.
-    'doctorButton'='3a Task 6 (Tools)';'driverButton'='3a Task 6 (Tools)';'bundleButton'='3a Task 6 (Tools)';'logsButton'='3a Task 6 (Tools)'
-    'backgroundCheckButton'='3a Task 6 (Tools)';'vc'='3a Task 6 (Tools)';'amd'='3a Task 6 (Tools)'
     # PR 3b: Models.
     'componentsButton'='3b';'chooseButton'='3b';'modelsButton'='3b';'modelBox'='3b';'barBox'='3b';'contextBox'='3b';'pathBox'='3b'
     # PR 3c: Settings.

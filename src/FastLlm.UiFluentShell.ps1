@@ -17,6 +17,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentIcon.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHooks.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHome.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -237,7 +238,7 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'reinstallButton';   Element = 'ReinstallButton';   Mode = 'Content';   Event = 'Click';       Flags = @() },
         @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() }
     )
-    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell)
+    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings))
 }
 
 # An unsupported-at-initialisation window (the theme or the markup failed) is a fault in FastLLM: the approved text, the run-log reason, exit code 3.
@@ -703,6 +704,7 @@ function Initialize-FastLlmUiFluentShell {
         $win = New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
         # The order from here is fixed: 1 parse every page, 2 initialise each page into Els, 3 register the pages and build the pane, 4 bindings, 5 the form adapter.
         $homePage = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
+        $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -726,7 +728,9 @@ function Initialize-FastLlmUiFluentShell {
         $f['Pages'] = @{}
         $f['Current'] = ''
         [void] (Initialize-FastLlmUiFluentHome -Page $homePage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
         Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
+        Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
         $f['Current'] = 'Home'
         $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane

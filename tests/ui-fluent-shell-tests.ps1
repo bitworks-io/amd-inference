@@ -1531,7 +1531,8 @@ function Invoke-S16-PaneCollapse {
     $homeTip = [string]$f.NavItems[0]['Item'].ToolTip
     $homeText = [string]$f.NavItems[0]['Text']
     $disabledTip = [string]$f.NavItems[1]['Item'].ToolTip
-    Check ($col -lt 100 -and $labelsHidden -and $homeTip -ceq $homeText -and $disabledTip -ceq $later) 'S16 below 900 wide the pane collapses: narrow column, labels hidden, Home tooltip is its label, disabled items keep their tooltip' "column=$col labelsHidden=$labelsHidden homeTip='$homeTip' (expected '$homeText') disabledTip='$disabledTip' (expected '$later') width=$($win.ActualWidth)"
+    $laterCollapsed = ([string]$script:FastLlmUiFluentStrings.ComingLaterFormat) -f [string]$f.NavItems[1]['Text']
+    Check ($col -lt 100 -and $labelsHidden -and $homeTip -ceq $homeText -and $disabledTip -ceq $laterCollapsed) 'S16 below 900 wide the pane collapses: narrow column, labels hidden, Home tooltip is its label, disabled items keep their tooltip' "column=$col labelsHidden=$labelsHidden homeTip='$homeTip' (expected '$homeText') disabledTip='$disabledTip' (expected '$laterCollapsed') width=$($win.ActualWidth)"
     $win.Width = 1000
     Invoke-Pump 800 ({ [double]$script:FastLlmUiFluent.Els.PaneColumn.Width.Value -gt 100 })
     $col2 = [double]$els.PaneColumn.Width.Value

@@ -82,6 +82,10 @@ function SetUiClipboardPayload($Payload) { [void]$script:clipboardPayloads.Add($
 function ReadSideSelection { $script:sideSelectionCalls++ }
 function LaunchSideStep([string]$Step, [object[]]$Arguments) { [void]$script:sideStepCalls.Add([pscustomobject]@{ Step = $Step; Arguments = @($Arguments) }) }
 function ShowConnectDialog { $script:connectDialogCalls++ }
+# The window script's own state variables the Tools refresh reads (fast-llm-ui.ps1 defines them; StrictMode throws on a missing one).
+$script:child = $null
+$script:vcBroker = $null
+$script:updateRun = $null
 
 function Invoke-P0-ShellStart {
     Initialize-ShellEnv
@@ -148,8 +152,36 @@ $script:FastLlmUiXaml['Test.PagesPage.Connect'] = @'
 </StackPanel>
 '@
 
+# A page the shell registered for real keeps its own hooks: they run through these recorders (the host tests count Enter, Leave and Update).
+$script:pagesRealHooks = @{}
+function Test-PagesEnterReal {
+    [void]$script:pageEvents.Add('enter')
+    $orig = $script:pagesRealHooks[(Get-FastLlmUiFluentCurrentPage)]
+    if ([string]$orig['Enter'] -ne '') { $null = & ([string]$orig['Enter']) }
+}
+function Test-PagesLeaveReal {
+    [void]$script:pageEvents.Add('leave')
+    $orig = $script:pagesRealHooks[(Get-FastLlmUiFluentCurrentPage)]
+    $answer = [bool]$script:pagesLeaveAnswer
+    if ([string]$orig['Leave'] -ne '') { foreach ($a in @(& ([string]$orig['Leave']))) { if ($a -is [bool] -and -not $a) { $answer = $false } } }
+    return $answer
+}
+function Test-PagesUpdateReal {
+    [void]$script:pageEvents.Add('update')
+    $orig = $script:pagesRealHooks[(Get-FastLlmUiFluentCurrentPage)]
+    if ([string]$orig['Update'] -ne '') { $null = & ([string]$orig['Update']) }
+}
+
 function Add-PagesTestPage([string]$Id, [string]$Nav, [string]$StatusName) {
-    if (Test-FastLlmUiFluentPageRegistered -Id $Id) { return }
+    if (Test-FastLlmUiFluentPageRegistered -Id $Id) {
+        # The real page steps aside for a test one: only its hooks are wrapped so the host checks can count them
+        $entry = $script:FastLlmUiFluent.Pages[$Id]
+        if (-not $script:pagesRealHooks.ContainsKey($Id)) {
+            $script:pagesRealHooks[$Id] = @{ Enter = [string]$entry['Enter']; Leave = [string]$entry['Leave']; Update = [string]$entry['Update'] }
+            $entry['Enter'] = 'Test-PagesEnterReal'; $entry['Leave'] = 'Test-PagesLeaveReal'; $entry['Update'] = 'Test-PagesUpdateReal'
+        }
+        return
+    }
     # Registered XAML (literal here-strings), parsed by the one loader: the source-safety scan allows no other parse
     if ($Id -ceq 'Tools') { $page = New-FastLlmUiXamlElement -Name 'Test.PagesPage.Tools' } else { $page = New-FastLlmUiXamlElement -Name 'Test.PagesPage.Connect' }
     $els = $script:FastLlmUiFluent.Els
@@ -341,7 +373,128 @@ function Invoke-P14-TrayRestore {
     Check-NoExceptions 'P14'
 }
 
-# P-SLOT task 6 (Tools page): later P-steps
+# ---- Task 6: the Tools page ----
+$script:toolsClicks = New-Object System.Collections.ArrayList
+function Add-ToolsClick([string]$Name) { [void]$script:toolsClicks.Add($Name) }
+function Get-ToolsClickCount([string]$Name) { return @($script:toolsClicks.ToArray() | Where-Object { $_ -ceq $Name }).Count }
+
+function Invoke-P3-ToolsBindings {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $null = Set-FastLlmUiFluentPage -Id 'Tools'
+    Invoke-Pump 100
+    $rows = @(Get-FastLlmUiFluentToolsBindings)
+    Check ($rows.Count -eq 8) 'P3 the Tools table has its 8 rows' "rows=$($rows.Count)"
+    foreach ($row in $rows) {
+        $adapter = Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
+        $el = $els[[string]$row.Element]
+        $tag = [string]$row.Element
+        $origText = [string]$adapter.Text
+        $origEnabled = [bool]$adapter.Enabled
+        $origVisible = [bool]$adapter.Visible
+        # Text: the sink writes the access text of the adapter caption
+        $adapter.Text = 'Probe &caption'
+        $want = ConvertTo-FastLlmUiAccessText -Text 'Probe &caption' -UseMnemonic ([bool]$adapter.UseMnemonic)
+        Check ([string]$el.Content -ceq [string]$want) "P3 $tag Text reaches the element as access text" "content='$($el.Content)' want='$want'"
+        $adapter.Text = $origText
+        # Enabled and Visible
+        $adapter.Enabled = $false
+        $offOk = (-not $el.IsEnabled)
+        $adapter.Enabled = $true
+        Check ($offOk -and $el.IsEnabled) "P3 $tag Enabled reaches the element both ways" "offOk=$offOk now=$($el.IsEnabled)"
+        $adapter.Visible = $false
+        $hidden = ($el.Visibility -eq [System.Windows.Visibility]::Collapsed)
+        $adapter.Visible = $true
+        Check ($hidden -and $el.Visibility -eq [System.Windows.Visibility]::Visible) "P3 $tag Visible reaches the element both ways" "hidden=$hidden now=$($el.Visibility)"
+        $adapter.Enabled = $origEnabled
+        $adapter.Visible = $origVisible
+        # A real-shaped plain handler (a scriptblock that calls a file-level function, no closure) runs once per click
+        $event = [string]$row.Event
+        $handler = [scriptblock]::Create("Add-ToolsClick '" + [string]$row.Name + "'")
+        [void]$adapter.PSObject.Methods[('Add_' + $event)].Invoke($handler)
+        $el.RaiseEvent((New-ShellClick $el ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 50
+        $expected = 1
+        if ([string]$row.Name -ceq 'backgroundAttachButton') { $expected = 1 }
+        Check ((Get-ToolsClickCount ([string]$row.Name)) -eq $expected) "P3 a click on $tag runs the plain handler once" "count=$(Get-ToolsClickCount ([string]$row.Name))"
+    }
+    Check ([string]$els.ToolsTitle.Text -ceq [string]$script:FastLlmUiFluentStrings.NavTools) 'P3 the page title is the Tools label' "title='$($els.ToolsTitle.Text)'"
+    Check-NoExceptions 'P3'
+}
+
+function Invoke-P4-AttachFanOut {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $adapter = $script:backgroundAttachButton
+    $origEnabled = [bool]$adapter.Enabled
+    $origVisible = [bool]$adapter.Visible
+    $homeVis = $els.AttachButton.Visibility
+    $adapter.Enabled = $false
+    Check ((-not $els.ToolsAttachButton.IsEnabled) -and (-not $els.AttachButton.IsEnabled)) 'P4 Enabled false reaches both the Tools and the Home Attach buttons' "tools=$($els.ToolsAttachButton.IsEnabled) home=$($els.AttachButton.IsEnabled)"
+    $adapter.Enabled = $true
+    Check ($els.ToolsAttachButton.IsEnabled -and $els.AttachButton.IsEnabled) 'P4 Enabled true reaches both' "tools=$($els.ToolsAttachButton.IsEnabled) home=$($els.AttachButton.IsEnabled)"
+    $adapter.Visible = $false
+    Check ($els.ToolsAttachButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and $els.AttachButton.Visibility -eq $homeVis) 'P4 Visible follows the adapter on Tools while Home keeps the card visibility' "tools=$($els.ToolsAttachButton.Visibility) home=$($els.AttachButton.Visibility) (was $homeVis)"
+    $adapter.Visible = $true
+    Check ($els.AttachButton.Visibility -eq $homeVis) 'P4 Home Attach visibility is still the card own after the adapter shows' "home=$($els.AttachButton.Visibility) (was $homeVis)"
+    # One click, one event, from either element (the P3 handler counts 'backgroundAttachButton')
+    $before = Get-ToolsClickCount 'backgroundAttachButton'
+    $els.ToolsAttachButton.RaiseEvent((New-ShellClick $els.ToolsAttachButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 50
+    $afterTools = Get-ToolsClickCount 'backgroundAttachButton'
+    $els.AttachButton.RaiseEvent((New-ShellClick $els.AttachButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 50
+    $afterHome = Get-ToolsClickCount 'backgroundAttachButton'
+    Check (($afterTools - $before) -eq 1 -and ($afterHome - $afterTools) -eq 1) 'P4 one click on either Attach button raises exactly one adapter event' "tools=$($afterTools - $before) home=$($afterHome - $afterTools)"
+    $adapter.Enabled = $origEnabled
+    $adapter.Visible = $origVisible
+    Check-NoExceptions 'P4'
+}
+
+function Invoke-P5-GreyedReasons {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $s = $script:FastLlmUiFluentStrings
+    $null = Set-FastLlmUiFluentPage -Id 'Tools'
+    $doctor = $script:doctorButton
+    $origEnabled = [bool]$doctor.Enabled
+    $btn = $els.ToolsDiagnosticsButton
+    Check ([System.Windows.Controls.ToolTipService]::GetShowOnDisabled($btn)) 'P5 the Diagnostics button shows its tooltip while disabled' ''
+    # Busy: a disabled Diagnostics button says why
+    $script:shellSnap = New-ShellSnap @{ Busy = $true }
+    $doctor.Enabled = $false
+    Invoke-FastLlmUiFluentTick
+    $help = [System.Windows.Automation.AutomationProperties]::GetHelpText($btn)
+    Check ([string]$btn.ToolTip -ceq [string]$s.WhyBusy -and $help -ceq [string]$s.WhyBusy) 'P5 a busy state shows WhyBusy as ToolTip and HelpText on Diagnostics' "tip='$($btn.ToolTip)' help='$help'"
+    # Microsoft setup changes the code
+    $script:shellSnap = New-ShellSnap @{ Busy = $true; VcBrokerActive = $true }
+    Invoke-FastLlmUiFluentTick
+    Check ([string]$btn.ToolTip -ceq [string]$s.WhyMicrosoftSetup) 'P5 Microsoft setup shows WhyMicrosoftSetup' "tip='$($btn.ToolTip)'"
+    # Written on change only: a tooltip set by hand survives a tick with the same code
+    $btn.ToolTip = 'hand-set'
+    Invoke-FastLlmUiFluentTick
+    Check ([string]$btn.ToolTip -ceq 'hand-set') 'P5 an unchanged code does not rewrite the tooltip' "tip='$($btn.ToolTip)'"
+    # Idle with the button still disabled: an empty code shows nothing
+    $script:shellSnap = New-ShellSnap
+    Invoke-FastLlmUiFluentTick
+    $help2 = [System.Windows.Automation.AutomationProperties]::GetHelpText($btn)
+    Check ($null -eq $btn.ToolTip -and $help2 -ceq '') 'P5 an empty code (idle, still disabled) clears the reason and shows nothing' "tip='$($btn.ToolTip)' help='$help2'"
+    # Enabled button shows nothing even when busy
+    $doctor.Enabled = $true
+    $script:shellSnap = New-ShellSnap @{ Busy = $true }
+    Invoke-FastLlmUiFluentTick
+    Check ($null -eq $btn.ToolTip) 'P5 an enabled button shows no reason' "tip='$($btn.ToolTip)'"
+    $script:shellSnap = New-ShellSnap
+    $doctor.Enabled = $origEnabled
+    Invoke-FastLlmUiFluentTick
+    Check ($null -eq $btn.ToolTip -and [System.Windows.Automation.AutomationProperties]::GetHelpText($btn) -ceq '') 'P5 idle clears the reason' "tip='$($btn.ToolTip)'"
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Check-NoExceptions 'P5'
+}
+
 # P-SLOT task 7 (Connect page, the API key): later P-steps
 # P-SLOT task 8 (Connect page, the remaining actions and first-time dialogs): later P-steps
 
@@ -357,6 +510,7 @@ $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
     'Invoke-P1-PageHostAndNav', 'Invoke-P2-ConnectAnApp', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
+    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'
 )

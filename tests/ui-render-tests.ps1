@@ -383,12 +383,17 @@ function New-ShellRenderPage($Case){
     $els.PageHost.Child=$homePage
     $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width;ActualHeight=[double]$Case.height};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
         NavItems=@();LastException=$null;InUnhandled=$false;TickError='';Pages=@{};Current=''}
+    # The binding table includes the Tools rows, so the Tools page is parsed, initialised and registered as the shell does (before the pane).
+    $toolsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
+    [void](Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $els)
     Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
+    Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     foreach($row in (Get-FastLlmUiFluentBindingTable)){
         $adapter=Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
-        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
+        $also=($row.ContainsKey('Also') -and [bool]$row['Also'])
+        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags) -Also:$also
     }
     $long=('Engine start failed while loading the model. '*10).Substring(0,400)
     $script:bannerLabel.Text='An update to FastLLM is available.'
