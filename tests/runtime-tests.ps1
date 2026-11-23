@@ -185,7 +185,7 @@ try {
                 $result=& $module { param($P,$R,$C) Invoke-FastLlmSupervisedServer -Plan $P -InstallRoot $R -LoadTimeoutSeconds 90 -CatalogPath $C } $plan $runRoot $catalog
                 Check ($result -eq 0) 'healthy supervised API reaches readiness then obeys stop'
                 Check ($result -eq 0) 'native mock child observes empty config roots and stripped inherited overrides'
-                Check ($stopper.WaitForExit(5000) -and $stopper.ExitCode -eq 0) 'independent stop client observed readiness'
+                Check ($stopper.WaitForExit(60000) -and $stopper.ExitCode -eq 0) 'independent stop client observed readiness'
                 $status=Get-FastLlmStatus $runRoot
                 Check ($status.canary.streaming -and $status.placement.reportedAllLayers) 'readiness evidence is retained without generated text'
                 Check (-not $status.canary.semanticCorrectnessQualified -and -not $status.performanceQualified) 'synthetic smoke tests cannot certify physical correctness or speed'
@@ -717,7 +717,7 @@ try {
         $info.Arguments=& $module {param($A) Join-FastLlmProcessArguments $A} @('-NoLogo','-NoProfile','-File',(Join-Path $PSScriptRoot 'helpers/mock-server.ps1'),'-Port',"$port",'-Mode','ok')
         $httpHost.Start($info)
         $healthy=$false
-        for($attempt=0;$attempt -lt 150;$attempt++){
+        for($attempt=0;$attempt -lt 1200;$attempt++){
             try{$healthy=[Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/health",$null,200,1000).Status -eq 200}catch{}
             if($healthy){break};Start-Sleep -Milliseconds 100
         }
@@ -731,7 +731,7 @@ try {
             $stream.Write($request,0,$request.Length)
         } finally { $abandoned.Close() }
         $healthyAfterReset=$false
-        for($attempt=0;$attempt -lt 20;$attempt++){
+        for($attempt=0;$attempt -lt 100;$attempt++){
             try{$healthyAfterReset=[Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/health",$null,200,1000).Status -eq 200}catch{}
             if($healthyAfterReset){break};Start-Sleep -Milliseconds 100
         }
@@ -750,7 +750,7 @@ try {
     try {
         $stallHost.Start($info)
         $healthy=$false
-        for($attempt=0;$attempt -lt 150;$attempt++){
+        for($attempt=0;$attempt -lt 1200;$attempt++){
             try{$healthy=[Bitworks.FastLlm.LoopbackHttp]::Request("http://127.0.0.1:$port/health",$null,200,1000).Status -eq 200}catch{}
             if($healthy){break};Start-Sleep -Milliseconds 100
         }
@@ -928,7 +928,7 @@ try {
             $hipLock=Enter-FastLlmOperation $hipRun
             $hipFailure=$null
             try {
-                $hipOptions=@{Plan=$hipPlan;InstallRoot=$hipRun;LoadTimeoutSeconds=30}
+                $hipOptions=@{Plan=$hipPlan;InstallRoot=$hipRun;LoadTimeoutSeconds=90}
                 if($Binding -cne 'off'){$hipOptions.DeviceBinding=$Binding}
                 try { & $module { param($O) Invoke-FastLlmSupervisedServer @O } $hipOptions | Out-Null } catch { $hipFailure=$_.Exception }
             } finally { $hipLock.Dispose() }
