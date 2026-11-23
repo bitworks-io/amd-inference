@@ -434,8 +434,9 @@ Check ($proof.install -ceq 'Install && start') 'a button keeps its classic text 
 [void](Remove-Item -LiteralPath $wrapperFile -Force)
 [void](Remove-Item -LiteralPath $scratchDir -Force)
 
-# Classic untouched: the accessibility switches have exactly two call sites (the top of the shell file, which runs when the shell is dot-sourced, and
-# Test-FastLlmUiFluentHost), and both files are reachable only through the fluent guard of the support-check statement.
+# Classic untouched: the accessibility switches have exactly three call sites (the top of the shell file, which runs when the shell is dot-sourced,
+# Test-FastLlmUiFluentHost, and Invoke-FastLlmUiFluentAccessibilityProbe, the body of doctor's child process); the first two are reachable only
+# through the fluent guard of the support-check statement, and the probe is never called in-process (checked below).
 function Get-FileAst([string]$Path){ return [System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$null) }
 function Get-CommandCalls($Ast,[string]$CommandName){ return ,@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $CommandName},$true)) }
 function Get-Ancestor($Node,[type]$Type){ $a=$Node.Parent; while($null -ne $a -and $a -isnot $Type){$a=$a.Parent}; return $a }
@@ -448,12 +449,26 @@ foreach($f in $scanFiles){
     foreach($c in (Get-CommandCalls $ast 'Set-FastLlmUiFluentAccessibilitySwitches')){$setCalls+=[pscustomobject]@{File=$f;Node=$c}}
     foreach($c in (Get-CommandCalls $ast 'Test-FastLlmUiFluentHost')){$hostCalls+=[pscustomobject]@{File=$f;Node=$c}}
 }
-Check ($setCalls.Count -eq 2) 'the accessibility switches are set at exactly two call sites'
+Check ($setCalls.Count -eq 3) 'the accessibility switches are set at exactly three call sites'
 $inSupport=@($setCalls|Where-Object{$_.File.EndsWith('FastLlm.UiFluentSupport.ps1')})
 $inShell=@($setCalls|Where-Object{$_.File.EndsWith('FastLlm.UiFluentShell.ps1')})
-Check ($inSupport.Count -eq 1 -and $inShell.Count -eq 1) 'one call site in the support file and one in the shell file, nowhere else'
-$fnOwner=Get-Ancestor $inSupport[0].Node ([System.Management.Automation.Language.FunctionDefinitionAst])
-Check ($null -ne $fnOwner -and $fnOwner.Name -ceq 'Test-FastLlmUiFluentHost') 'the support-file call is inside Test-FastLlmUiFluentHost'
+Check ($inSupport.Count -eq 2 -and $inShell.Count -eq 1) 'two call sites in the support file and one in the shell file, nowhere else'
+$supportOwners=@($inSupport|ForEach-Object{ $o=Get-Ancestor $_.Node ([System.Management.Automation.Language.FunctionDefinitionAst]); if($null -ne $o){$o.Name}else{''} }|Sort-Object)
+Check (($supportOwners -join ',') -ceq 'Invoke-FastLlmUiFluentAccessibilityProbe,Test-FastLlmUiFluentHost') 'the support-file calls are inside Test-FastLlmUiFluentHost and Invoke-FastLlmUiFluentAccessibilityProbe'
+# The probe is never invoked in any process but doctor's child: no command call anywhere, and its only mention outside its definition is the launch string.
+$probeCalls=0;$probeMentions=@()
+foreach($f in $scanFiles){
+    if(-not (Test-Path -LiteralPath $f)){continue}
+    foreach($pc in (Get-CommandCalls (Get-FileAst $f) 'Invoke-FastLlmUiFluentAccessibilityProbe')){$probeCalls++}
+    $text=Get-Content -LiteralPath $f -Raw
+    $probeMentions+=@([regex]::Matches($text,'Invoke-FastLlmUiFluentAccessibilityProbe')|ForEach-Object{ [pscustomobject]@{File=$f;Index=$_.Index} })
+}
+Check ($probeCalls -eq 0) 'Invoke-FastLlmUiFluentAccessibilityProbe is never invoked by AST in any script'
+$probeSupport=Join-Path $root 'src/FastLlm.UiFluentSupport.ps1'
+$probeOutside=@($probeMentions|Where-Object{ -not $_.File.EndsWith('FastLlm.UiFluentSupport.ps1') })
+$supText=Get-Content -LiteralPath $probeSupport -Raw
+$launchLine=@($supText -split "`r?`n"|Where-Object{$_ -match 'Invoke-FastLlmUiFluentAccessibilityProbe' -and $_ -notmatch '^\s*function ' -and $_ -notmatch '^\s*#'})
+Check ($probeOutside.Count -eq 0 -and $launchLine.Count -eq 1 -and $launchLine[0].Contains('-Command') -and $launchLine[0].Contains('$info.Arguments')) 'the probe is mentioned outside its definition only in the doctor child launch string'
 Check ($null -eq (Get-Ancestor $inShell[0].Node ([System.Management.Automation.Language.FunctionDefinitionAst]))) 'the shell-file call runs at dot-source time (top level)'
 Check ($hostCalls.Count -eq 1 -and $hostCalls[0].File.EndsWith('fast-llm-ui.ps1')) 'Test-FastLlmUiFluentHost is called only from fast-llm-ui.ps1, once'
 function Test-InFluentGuard($Node){
