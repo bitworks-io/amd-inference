@@ -597,6 +597,9 @@ function Add-ConnectWalk($Node, [string]$Marker, [hashtable]$Hits, [hashtable]$S
     if (Test-ConnectHasMarker ([System.Windows.Automation.AutomationProperties]::GetHelpText($base)) $Marker) { $Hits[$label + '.HelpText'] = $true }
     foreach ($child in [System.Windows.LogicalTreeHelper]::GetChildren($base)) {
         if ($child -is [System.Windows.DependencyObject]) { Add-ConnectWalk $child $Marker $Hits $Seen }
+        # A TextBox's one non-element logical child is its own Text (already checked above as '.Text'); counting it again would report
+        # the key box twice. Every other node's string child is still a holder.
+        elseif ($base -is [System.Windows.Controls.TextBox]) { continue }
         elseif (Test-ConnectHasMarker $child $Marker) { $Hits[$label + '/child'] = $true }
     }
 }
