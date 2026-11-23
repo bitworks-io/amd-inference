@@ -1238,7 +1238,12 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         Check ($guardBox.ShortcutsEnabled -eq $true) 'copy guard (Windows): a new text box has its native copy on'
         Register-FastLlmUiKeyBoxCopyGuard -TextBox $guardBox -Copy $guardCopy
         $keyDownMethod = [System.Windows.Forms.Control].GetMethod('OnKeyDown', [Reflection.BindingFlags]'NonPublic,Instance')
-        function Send-GuardKey($Keys) { $keyArgs = New-Object System.Windows.Forms.KeyEventArgs($Keys); [void]$keyDownMethod.Invoke($guardBox, @($keyArgs)); return $keyArgs }
+        # Reflection's Invoke needs the raw objects: New-Object output and array elements stay PSObject-wrapped and do not convert.
+        function Send-GuardKey($Keys) {
+            $keyArgs = [System.Windows.Forms.KeyEventArgs]::new([System.Windows.Forms.Keys]$Keys)
+            [void]$keyDownMethod.Invoke($guardBox.psobject.BaseObject, [object[]]@($keyArgs.psobject.BaseObject))
+            return $keyArgs
+        }
         $ctrl = [System.Windows.Forms.Keys]::Control
         Check ($guardBox.ShortcutsEnabled -eq $false) 'copy guard (Windows): the guard turns the text box''s native copy off (ShortcutsEnabled is false)'
         $guardArgs = Send-GuardKey ($ctrl -bor [System.Windows.Forms.Keys]::C)
