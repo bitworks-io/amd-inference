@@ -288,6 +288,47 @@ if($env:OS -eq 'Windows_NT'){
     Write-Host 'SKIP: parsing a registered sample needs Windows and WPF'
 }
 
+# No event attribute in registered XAML: handlers are attached in code (the handler-by-name form needs a code-behind class the window does not have,
+# and an attribute would run before the shell's own wiring). The names are the routed and CLR events of the controls the pages use.
+$eventAttributeNames='Click|DoubleClick|Checked|Unchecked|Indeterminate|SelectionChanged|TextChanged|ValueChanged|Loaded|Unloaded|Initialized|KeyDown|KeyUp|TextInput|GotFocus|LostFocus|GotKeyboardFocus|LostKeyboardFocus|MouseDown|MouseUp|MouseMove|MouseEnter|MouseLeave|MouseLeftButtonDown|MouseLeftButtonUp|MouseRightButtonDown|MouseRightButtonUp|MouseWheel|TouchDown|TouchUp|Drop|DragEnter|DragLeave|DragOver|SizeChanged|IsEnabledChanged|IsVisibleChanged|DropDownOpened|DropDownClosed|Opened|Closed|Closing|Expanded|Collapsed|Executed|CanExecute|RequestNavigate|Navigated|Navigating|SourceUpdated|TargetUpdated|ContextMenuOpening|ToolTipOpening|ToolTipClosing|Activated|Deactivated|Tick|Scroll|ScrollChanged|Hyperlink\.RequestNavigate'
+function Get-XamlEventAttributeFindings([string]$Xaml){
+    $found=New-Object System.Collections.ArrayList
+    $settings=New-Object System.Xml.XmlReaderSettings
+    $settings.DtdProcessing=[System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver=$null
+    $reader=[System.Xml.XmlReader]::Create((New-Object System.IO.StringReader $Xaml),$settings)
+    try{
+        while($reader.Read()){
+            if($reader.NodeType -ne [System.Xml.XmlNodeType]::Element -or -not $reader.HasAttributes){continue}
+            $element=$reader.LocalName
+            for($i=0;$i -lt $reader.AttributeCount;$i++){
+                $reader.MoveToAttribute($i)|Out-Null
+                if($reader.Prefix -ceq '' -and $reader.LocalName -cmatch ('^(Preview)?('+$eventAttributeNames+')$')){[void]$found.Add($element+'.'+$reader.LocalName)}
+            }
+            $reader.MoveToElement()|Out-Null
+        }
+    }finally{$reader.Close()}
+    return ,@($found.ToArray())
+}
+$registeredXaml=New-Object System.Collections.ArrayList
+foreach($f in $files){
+    $pf=Get-ParsedFile $f
+    foreach($a in @($pf.ast.FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and (Test-TableVariable $n.Left.Target) -and $n.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $n.Right.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){
+        [void]$registeredXaml.Add([pscustomobject]@{File=(Get-RepoRelativePath $f);Xaml=[string]$a.Right.Expression.Value})
+    }
+}
+Check ($registeredXaml.Count -ge 2) "the event-attribute rule sees the registered XAML ($($registeredXaml.Count) entries)"
+$eventBad=New-Object System.Collections.ArrayList
+foreach($r in $registeredXaml){
+    # The synthetic Test.SourceSafetyGrid entry of this suite is a registered entry too; it has no attribute either.
+    foreach($b in (Get-XamlEventAttributeFindings $r.Xaml)){[void]$eventBad.Add($r.File+': '+$b)}
+}
+Check ($eventBad.Count -eq 0) ('no registered XAML carries an event attribute ('+(($eventBad|Select-Object -First 3) -join ' | ')+')')
+Check ((Get-XamlEventAttributeFindings ('<Button '+$ns+' Click="OnClick"/>')).Count -eq 1) 'self-check: Click="..." is flagged'
+Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><TextBox TextChanged="T" KeyDown="K"/><CheckBox Checked="C" IsChecked="True"/></Grid>')).Count -eq 3) 'self-check: TextChanged, KeyDown and Checked are flagged, the IsChecked property is not'
+Check ((Get-XamlEventAttributeFindings ('<Window '+$ns+' Loaded="L" Title="t"/>')).Count -eq 1) 'self-check: Loaded="..." is flagged'
+Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><Button x:Name="B" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Content="Click" AutomationProperties.Name="Click"/></Grid>')).Count -eq 0) 'self-check: a property or content that only says Click is not flagged'
+
 # ASCII
 $asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/WindowsFluentWindow.cs','src/WindowsFluentAutomation.cs',
     'tests/ui-fluent-members-tests.ps1','tests/ui-fluent-parity-tests.ps1',

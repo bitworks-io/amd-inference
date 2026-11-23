@@ -96,7 +96,7 @@ Check ($seamLines.Count -eq 1) 'the rebinding seam line appears exactly once'
 $seam=[int]$seamLines[0]
 
 # Every control the inventory names is bound to a kind the table knows.
-foreach($k in $kinds.Keys){Check (($k -ceq 'form') -or $table.Contains($kinds[$k])) "control $k has a known adapter kind"}
+foreach($k in $kinds.Keys){Check (($k -ieq 'form') -or $table.Contains($kinds[$k])) "control $k has a known adapter kind"}
 $uses=Get-MemberUses -Tree $tree -AfterLine $seam
 Check ($uses.Count -gt 100) "the scan sees the orchestration's member uses ($($uses.Count))"
 foreach($need in 'statusLabel','output','modelBox','installButton','bannerLabel','form','failureCopyLink','licenseBox'){
@@ -174,7 +174,7 @@ function Get-OwnerKind($Node){
 }
 function Get-FormBareUses([System.Management.Automation.Language.Ast]$Tree,[int]$AfterLine){
     $result=New-Object System.Collections.ArrayList
-    $vars=$Tree.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and (([string]$n.VariablePath.UserPath) -replace '^script:','') -ceq 'form'},$true)
+    $vars=$Tree.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and (([string]$n.VariablePath.UserPath) -replace '^script:','') -ieq 'form'},$true)
     foreach($v in $vars){
         $fn=$v.Parent
         while($null -ne $fn -and $fn -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$fn=$fn.Parent}
@@ -198,11 +198,15 @@ Check (@($formUses|Where-Object{$_.Kind -ceq 'finding'}).Count -eq 0) '$form is 
 $ownerCounts=@{}; foreach($u in $formUses){if(-not $ownerCounts.ContainsKey($u.Kind)){$ownerCounts[$u.Kind]=0};$ownerCounts[$u.Kind]++}
 Write-Host ('$form owner and allowlisted uses by kind: '+(($ownerCounts.Keys|Sort-Object|ForEach-Object{"$_=$($ownerCounts[$_])"}) -join ', '))
 Check ($ownerCounts['ShowDialog'] -gt 0 -and $ownerCounts['MessageBox.Show'] -gt 0) 'the scan sees ShowDialog and MessageBox owner uses'
-Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Count) 'each allowlisted bare use appears exactly once (the allowlist has no dead entry)'
+foreach($allowKey in $bareAllow.Keys){
+    $allowHits=@($formUses|Where-Object{$_.Kind -ceq 'allowed' -and $_.Text -ceq $allowKey}).Count
+    Check ($allowHits -eq 1) "allowlisted bare use appears exactly once (no dead entry): $allowKey (found $allowHits)"
+}
+Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Count) 'every allowlisted bare use is accounted for'
 # NewUiApiKey takes the owner as a parameter and may only pass it on as a MessageBox owner.
 $keyFn=$tree.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'NewUiApiKey'},$true)
 Check ($null -ne $keyFn) 'NewUiApiKey is defined'
-$ownerVars=@($keyFn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ceq 'Owner'},$true))
+$ownerVars=@($keyFn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ieq 'Owner'},$true))
 Check ($ownerVars.Count -ge 2 -and @($ownerVars|Where-Object{(Get-OwnerKind $_) -ceq 'MessageBox.Show'}).Count -eq $ownerVars.Count) 'NewUiApiKey uses its Owner only as a MessageBox owner'
 # Self-check.
 $bareSyn=@'
@@ -349,7 +353,12 @@ $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
 Check ($undone.Problems.Count -eq 0) 'every named change is present exactly once'
-Check ((Get-Sha256Text $undone.Text) -ceq $classicPinnedSha256) 'with the named changes undone, the window script is byte-identical to the classic window on main'
+$computedHash=Get-Sha256Text $undone.Text
+if($computedHash -cne $classicPinnedSha256){
+    Write-Host "FINDING: the classic window hash is $computedHash (pinned $classicPinnedSha256), computed against base 6436d2c (PR 2 merge) with the named changes undone."
+    Write-Host 'FINDING: if the change is a deliberate fluent-only edit of fast-llm-ui.ps1, add a named pair @{Name=...;Cur=...;Orig=...} to $namedChanges (Cur is the new text, Orig is the base text) and update the pair-count check; if the classic window itself was intentionally changed, re-pin $classicPinnedSha256 to the computed hash.'
+}
+Check ($computedHash -ceq $classicPinnedSha256) 'with the named changes undone, the window script is byte-identical to the classic window on main'
 # Mutation: one changed character anywhere else must break the pin.
 $mut=$currentText.Replace("'Bitworks FastLLM (Preview)'","'Bitworks FastLLM (Preview!'")
 Check ($mut -cne $currentText) 'the mutation changed the text'
@@ -360,6 +369,57 @@ Check ($mut2 -cne $currentText -and (Get-Sha256Text (Undo-NamedChanges $mut2).Te
 # A damaged named change is a finding, not a silent pass.
 $broken=$currentText.Replace("if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }","if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell2 }")
 Check ((Undo-NamedChanges $broken).Problems.Count -ge 1) 'mutation check: an altered named change is reported'
+
+# Structural T2: every adapter in the control table is bound by a binding row (a `Name = '...'` row of a Get-FastLlmUiFluent*Bindings function or
+# of the shell's binding table) or is on the pending list with its PR. The suite does not load the shell or Home off Windows, so the bound names are read by AST.
+# A later task removes an entry from the pending list when it binds the adapter.
+$pendingAdapters=@{
+    # PR 3a Task 6: the Tools page binds these.
+    'doctorButton'='3a Task 6 (Tools)';'driverButton'='3a Task 6 (Tools)';'bundleButton'='3a Task 6 (Tools)';'logsButton'='3a Task 6 (Tools)'
+    'backgroundCheckButton'='3a Task 6 (Tools)';'vc'='3a Task 6 (Tools)';'amd'='3a Task 6 (Tools)'
+    # PR 3b: Models.
+    'componentsButton'='3b';'chooseButton'='3b';'modelsButton'='3b';'modelBox'='3b';'barBox'='3b';'contextBox'='3b';'pathBox'='3b'
+    # PR 3c: Settings.
+    'settingsButton'='3c';'updateBox'='3c';'experimentalBox'='3c';'licenseBox'='3c'
+    # Never: the tooltip text is on the card.
+    'statusTip'='never (its text is on the card)'
+}
+function Get-BoundAdapterNames([string[]]$Files){
+    $names=New-Object System.Collections.ArrayList
+    foreach($f in $Files){
+        $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
+        $fns=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ($n.Name -cmatch '^Get-FastLlmUiFluent\w*Bindings$' -or $n.Name -ceq 'Get-FastLlmUiFluentBindingTable')},$true))
+        foreach($fn in $fns){
+            foreach($h in @($fn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
+                foreach($kv in $h.KeyValuePairs){
+                    if([string]$kv.Item1.Extent.Text -ceq 'Name' -and $kv.Item2.Extent.Text -match "^'([^']+)'$"){[void]$names.Add($Matches[1])}
+                }
+            }
+        }
+    }
+    return ,$names.ToArray()
+}
+function Get-UnboundAdapters([string[]]$Bound,[string[]]$Table,[hashtable]$Pending){
+    return ,@($Table|Where-Object{($Bound -cnotcontains $_) -and (-not $Pending.ContainsKey($_))})
+}
+$fluentSrcFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter 'FastLlm.UiFluent*.ps1' -File|ForEach-Object{$_.FullName})
+$boundNames=Get-BoundAdapterNames $fluentSrcFiles
+$tableNames=@(Get-FastLlmUiFluentControlTable|ForEach-Object{[string]$_[0]})
+Check ($boundNames.Count -gt 20) "the bound-name scan sees the shell and Home binding rows ($($boundNames.Count))"
+Check ($boundNames -ccontains 'backgroundAttachButton') 'backgroundAttachButton is bound on Home (by AST)'
+Check ($boundNames -ccontains 'bannerLabel' -and $boundNames -ccontains 'statusLabel') 'both the shell rows and the Home rows are read'
+$unbound=Get-UnboundAdapters $boundNames $tableNames $pendingAdapters
+foreach($u in $unbound){Write-Host "FINDING: adapter $u is neither bound by a binding row nor on the pending list"}
+Check ($unbound.Count -eq 0) 'every adapter is bound or pending with its PR'
+foreach($pk in $pendingAdapters.Keys){
+    Check ($tableNames -ccontains $pk) "pending adapter $pk is in the control table"
+    Check ($boundNames -cnotcontains $pk) "pending adapter $pk is not also bound (remove it from the pending list when it is bound)"
+}
+# Self-check: a planted unbound adapter is flagged, and a bound one on the pending list is a finding.
+$plantUnbound=Get-UnboundAdapters $boundNames ($tableNames+'plantedButton') $pendingAdapters
+Check ($plantUnbound.Count -eq 1 -and $plantUnbound[0] -ceq 'plantedButton') 'self-check: a planted unbound adapter is flagged'
+$plantPending=@('statusLabel'|Where-Object{$boundNames -ccontains $_})
+Check ($plantPending.Count -eq 1) 'self-check: the bound-name list would catch a bound adapter put on the pending list'
 
 # Initialize-FastLlmUiFluentBindings rebinds with Set-Variable -Scope Script. The bindings file is dot-sourced into the window script, so
 # "Script" is that script's own scope: proven with a scratch script that dot-sources it the same way and reads the names there.

@@ -50,7 +50,7 @@ $starts = @($tree.FindAll({ param($n) $n -is [System.Management.Automation.Langu
 Check ($starts.Count -eq 1) 'the script creates the main form once'
 $ends = @($tree.FindAll({ param($n) $n -is [System.Management.Automation.Language.StatementAst] -and $n.Extent.Text -ceq '$form.Controls.Add($reinstallButton)' }, $true))
 Check ($ends.Count -ge 1) 'the script adds the reinstall button to the form'
-# Each match comes twice (the PipelineAst and its CommandExpressionAst on the same line), and a later pair is inside the update handler;
+# Each match comes twice: the PipelineAst and its CommandExpressionAst are the two matches for one statement (there is no update-handler pair);
 # the smallest end after the form is the creation line's.
 $startOffset = $starts[0].Extent.StartOffset
 $endOffset = ($ends | Where-Object { $_.Extent.StartOffset -gt $startOffset } | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Minimum).Minimum
