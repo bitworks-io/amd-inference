@@ -393,6 +393,7 @@ jobs:
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
+          .\tests\update-download-runspace-tests.ps1
           .\tests\semantic-smoke-tests.ps1
       - name: Behavioral lifecycle and benchmark tests in PowerShell 7
         shell: pwsh
@@ -423,6 +424,7 @@ jobs:
           .\tests\selftest-tests.ps1
           .\tests\trust-tests.ps1
           .\tests\update-tests.ps1
+          .\tests\update-download-runspace-tests.ps1
           .\tests\semantic-smoke-tests.ps1
       # Builds the real Settings dialog (never on a screen) and saves PNGs at 100%, 150% and two small-screen caps for a person to look at.
       - name: Settings dialog render tests in Windows PowerShell 5.1 (off-screen)

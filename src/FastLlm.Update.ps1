@@ -536,7 +536,11 @@ function Save-FastLlmUpdateCappedFile {
     if (-not $curlPath) { throw 'The trusted Windows System32 curl.exe is required for HTTPS-only downloads.' }
     $curlArguments = @('--disable', '--silent', '--show-error', '--location', '--fail', '--max-time', '60',
         '--max-filesize', [string]$MaxBytes, '--proto', '=https', '--proto-redir', '=https', '--output', $Destination, $Url)
-    & $curlPath @curlArguments
+    # A failed download makes curl write "curl: (N) ..." on stderr. In a hosted runspace (the window runs the update and the
+    # reinstall in one, under Stop), Windows PowerShell 5.1 turns that line into a terminating RemoteException, which replaced the
+    # designed message below. So curl runs with a local Continue and its stderr captured and dropped (never shown, never put in a
+    # message); the exit code alone decides, exactly as before.
+    $null = & { $ErrorActionPreference = 'Continue'; & $curlPath @curlArguments 2>&1 }
     if ($LASTEXITCODE -ne 0) { throw "Download failed with curl exit code $LASTEXITCODE." }
     if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { throw 'The download produced no file.' }
     if ((Get-Item -LiteralPath $Destination).Length -gt $MaxBytes) { throw 'The download is over the size cap.' }
