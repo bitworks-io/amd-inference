@@ -532,6 +532,11 @@
       "reason": "Release trust and update logic (Plan C) against fixtures; already wired in test.yml."
     },
     {
+      "suite": "update-download-runspace-tests",
+      "class": "ci",
+      "reason": "The real update download (Save-FastLlmUpdateCappedFile) failing against a closed local port, in a hosted runspace under Stop as the window runs it and in the script's own scope: both must give the designed 'Download failed with curl exit code N.' message. Needs curl (System32 curl.exe on Windows); wired in test.yml under 5.1 and PS 7."
+    },
+    {
       "suite": "vc-redist-install-tests",
       "class": "ci",
       "reason": "Driver and prerequisite guidance over fixtures; already wired in test.yml."
