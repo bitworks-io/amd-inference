@@ -1067,7 +1067,16 @@ try {
         }
         finally { if (-not $worker.HasExited) { try { $worker.Kill() } catch { $null = $_ } }; $worker.Dispose() }
     }
-    else { Write-Host 'SKIP: supervisor exit by a killed supervisor process needs the Windows kill-on-close job; it runs on Windows.' }
+    else {
+        # The skipped checks, counted from this file's own syntax tree: the Check calls written in the Windows branch above, so the count
+        # can't drift from that branch. The branch must be found, so the count can't silently drop to zero.
+        $jobSelfAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref] $null, [ref] $null)
+        $jobGates = @($jobSelfAst.FindAll({ param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses.Count -eq 1 -and $n.Clauses[0].Item1.Extent.Text -ceq '$isWindowsHost' -and $null -ne $n.ElseClause -and $n.ElseClause.Extent.Text.Contains('SKIP: supervisor exit by a killed supervisor process') }, $true))
+        $jobSkipped = 0
+        foreach ($jobGate in $jobGates) { $jobSkipped += @($jobGate.Clauses[0].Item2.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Check' }, $true)).Count }
+        Check ($jobGates.Count -eq 1 -and $jobSkipped -gt 0) 'supervisor exit: off Windows, the skip count finds the Windows-only case and its checks'
+        Write-Host "SKIP: supervisor exit by a killed supervisor process needs the Windows kill-on-close job; it runs on Windows ($jobSkipped checks)."
+    }
     # On every host: the sidecar runs in the same process host class as the text server, which is what carries that job.
     $sidecarSource = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.Sidecar.ps1'))
     Check ($sidecarSource.Contains('New-Object Bitworks.FastLlm.ProcessHost') -and $sidecarSource -cnotmatch 'Start-Process|\[Diagnostics\.Process\]::Start|System\.Diagnostics\.Process\]::Start') 'supervisor exit: the sidecar is started through the process host (the kill-on-close job) and through nothing else'
