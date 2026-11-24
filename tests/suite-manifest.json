@@ -317,6 +317,11 @@
       "reason": "Parses every tracked PowerShell file with the language parser and fails on a call that splats a literal hashtable and also names one of its keys (a ParameterAlreadyBound error on Windows PowerShell 5.1 that PowerShell 7 hides), after self-tests over fixture files; parsing only; no engine, GPU or network. Wired in test.yml."
     },
     {
+      "suite": "block-comma-argument-tests",
+      "class": "ci",
+      "reason": "Parses every tracked PowerShell file with the language parser and fails on a command argument that joins a script block and another value with a bare comma (one array that cannot bind to a [scriptblock] parameter on any PowerShell version), after self-tests over fixture files; parsing only; no engine, GPU or network. Wired in test.yml."
+    },
+    {
       "suite": "model-switch-tests",
       "class": "ci",
       "reason": "Supervised model switch (request file, in-supervisor restart, restore-once, status block) through the real start and supervisor against the native mock server, with the catalog, planner, inventory, hash and consent boundaries replaced; no Radeon adapter, engine or network required. Wired in test.yml."
