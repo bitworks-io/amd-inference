@@ -171,4 +171,36 @@ Check ((ConvertTo-FastLlmUiDisplayText -Text 'Tail &' -UseMnemonic $true) -ceq '
 Check ((ConvertTo-FastLlmUiDisplayText -Text 'a && b_c &x' -UseMnemonic $false) -ceq 'a && b_c &x') 'display: no mnemonic unchanged'
 Check ((ConvertTo-FastLlmUiDisplayText -Text '' -UseMnemonic $true) -ceq '') 'display: empty'
 
+
+# Joined sinks (one adapter on two elements): both run, in order, with the same property and value
+$log=New-Object System.Collections.ArrayList
+$s1={param($Property,$Value) [void]$log.Add("1:${Property}=$Value")}.GetNewClosure()
+$s2={param($Property,$Value) [void]$log.Add("2:${Property}=$Value")}.GetNewClosure()
+$joined=Join-FastLlmUiFluentSinks -First $s1 -Second $s2
+& $joined 'Text' 'abc'
+Check (($log -join '|') -ceq '1:Text=abc|2:Text=abc') 'joined sinks run in order'
+$tri=Join-FastLlmUiFluentSinks -First $joined -Second {param($Property,$Value) [void]$log.Add("3:$Property")}.GetNewClosure()
+$log.Clear(); & $tri 'Enabled' $true
+Check (($log -join '|') -ceq '1:Enabled=True|2:Enabled=True|3:Enabled') 'a joined sink joins again, in order'
+
+# Add-FastLlmUiAdapterSink: the first bind sets, -Also joins, a bind without -Also on a bound adapter throws
+$j=New-FastLlmUiAdapter -Kind Button -Name 'j'
+$log.Clear()
+Add-FastLlmUiAdapterSink -Adapter $j -Sink $s1
+Add-FastLlmUiAdapterSink -Adapter $j -Sink $s2 -Also
+$j.Text='x'
+Check (($log -join '|') -ceq '1:Text=x|2:Text=x') 'Also joins the second sink to the first: one write reaches both, in order'
+$j.Enabled=$false
+Check ($log.Count -eq 4 -and $log[3] -ceq '2:Enabled=False') 'the joined adapter keeps writing to both sinks'
+Throws { Add-FastLlmUiAdapterSink -Adapter $j -Sink $s1 } 'bound twice' 'a second bind without Also throws'
+$k2=New-FastLlmUiAdapter -Kind Button -Name 'k2'
+$log.Clear()
+Add-FastLlmUiAdapterSink -Adapter $k2 -Sink $s2 -Also
+$k2.Text='y'
+Check (($log -join '|') -ceq '2:Text=y') 'Also on an unbound adapter binds (join if bound, else bind)'
+# A reversed table (the page row with Also first, then the Home row without it) fails loudly.
+$rev=New-FastLlmUiAdapter -Kind Button -Name 'rev'
+Add-FastLlmUiAdapterSink -Adapter $rev -Sink $s2 -Also
+Throws { Add-FastLlmUiAdapterSink -Adapter $rev -Sink $s1 } 'rev' 'a reversed table throws at the row without Also'
+
 Write-Host "UI fluent adapter tests passed: $checks"

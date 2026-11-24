@@ -17,11 +17,13 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentIcon.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHooks.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHome.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
 $script:FastLlmUiFluent = @{ Window = $null; Els = @{}; Keys = @{}; Timer = $null; Tick = 0; Theme = ''; ThemeKey = ''; Interop = $false; Hooks = $null
-    NavItems = @(); LastException = $null; InUnhandled = $false; TickError = '' }
+    NavItems = @(); LastException = $null; InUnhandled = $false; TickError = ''; Pages = @{}; Current = '' }
 
 # Window size in epx (spec 6.5). Set BEFORE the form adapter exists: creating it calls EnsureHandle(), after which some properties lock.
 $script:FastLlmUiFluentWindowSize = @{ Width = 1000; Height = 680; MinWidth = 640; MinHeight = 480 }
@@ -226,6 +228,8 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
 '@
 
 # The shell rows of the binding table (the Home rows are in FastLlm.UiFluentHome.ps1). The bars' own visibility is the refresh's, not an adapter's.
+# The table order is pinned: Home, then the shell, then the pages. A row with Also = $true joins an adapter that is already bound (a second element
+# on one adapter); a row without it on a bound adapter throws, so a reordered table fails loudly.
 function Get-FastLlmUiFluentBindingTable {
     [CmdletBinding()] param()
     $shell = @(
@@ -235,7 +239,7 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'reinstallButton';   Element = 'ReinstallButton';   Mode = 'Content';   Event = 'Click';       Flags = @() },
         @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() }
     )
-    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell)
+    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings))
 }
 
 # An unsupported-at-initialisation window (the theme or the markup failed) is a fault in FastLLM: the approved text, the run-log reason, exit code 3.
@@ -356,7 +360,163 @@ function Update-FastLlmUiFluentTheme {
     Set-FastLlmUiFluentWindowLook -ThemeState $state
 }
 
+# The page registry ($f['Pages']): page id -> @{Element; Nav; Status; Enter; Leave; Update; KeepsText}. Element is the page root, Nav the id of its pane item,
+# Status the page's status TextBlock, and Enter/Leave/Update function names called with &. A page is enabled in the pane exactly when it is registered.
+function Register-FastLlmUiFluentPage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Id,
+        [Parameter(Mandatory = $true)] $Element,
+        [Parameter(Mandatory = $true)][string] $Nav,
+        [Parameter(Mandatory = $true)] $Status,
+        [string] $Enter = '',
+        [string] $Leave = '',
+        [string] $Update = '',
+        [switch] $StatusKeepsText
+    )
+    $f = $script:FastLlmUiFluent
+    if ($null -eq $f['Pages']) { $f['Pages'] = @{} }
+    # The status line is a polite live region on every page; a page without that would announce nothing (or too much), so it is refused.
+    if ([System.Windows.Automation.AutomationProperties]::GetLiveSetting($Status) -ne [System.Windows.Automation.AutomationLiveSetting]::Polite) {
+        throw ("The status line of page '" + $Id + "' must have AutomationProperties.LiveSetting Polite.")
+    }
+    $f['Pages'][$Id] = @{ Element = $Element; Nav = $Nav; Status = $Status; Enter = $Enter; Leave = $Leave; Update = $Update; KeepsText = [bool] $StatusKeepsText }
+    # A page registered after the first composed line is seeded with it, so it never shows an empty status line.
+    $seed = $f['Keys']['Composed']
+    if ($null -ne $seed) {
+        if (-not [bool] $StatusKeepsText -and $Status.Text -cne [string] $seed) { $Status.Text = [string] $seed }
+        [System.Windows.Automation.AutomationProperties]::SetName($Status, [string] $seed)
+    }
+    # A page that registers after the pane was built (a test-only page, or a late page) enables its item now.
+    foreach ($nav in @($f['NavItems'])) {
+        if ([string] $nav['Id'] -ceq $Nav -and -not [bool] $nav['Enabled']) {
+            $nav['Enabled'] = $true
+            $nav['Item'].IsEnabled = $true
+            Set-FastLlmUiFluentNavTip -Nav $nav
+        }
+    }
+}
+
+function Test-FastLlmUiFluentPageRegistered {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Id)
+    $pages = $script:FastLlmUiFluent['Pages']
+    return ($null -ne $pages -and $pages.ContainsKey($Id))
+}
+
+function Get-FastLlmUiFluentCurrentPage {
+    [CmdletBinding()] param()
+    $current = $script:FastLlmUiFluent['Current']
+    if ($null -eq $current) { return '' }
+    return [string] $current
+}
+
+# The id of the registered page whose pane item is $NavId, or '' when none is registered for it.
+function Get-FastLlmUiFluentPageIdByNav {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $NavId)
+    $pages = $script:FastLlmUiFluent['Pages']
+    if ($null -eq $pages) { return '' }
+    foreach ($id in @($pages.Keys)) { if ([string] $pages[$id]['Nav'] -ceq $NavId) { return [string] $id } }
+    return ''
+}
+
+# Adds named elements found under $Root to the one flat Els map. A duplicate name throws, so pages prefix their names.
+function Add-FastLlmUiFluentElements {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][hashtable] $Els, [Parameter(Mandatory = $true)] $Root, [Parameter(Mandatory = $true)][string[]] $Names)
+    foreach ($name in $Names) {
+        if ($Els.ContainsKey($name)) { throw ("The Fluent window already has an element named '" + $name + "'.") }
+        $Els[$name] = Get-FastLlmUiFluentElement -Root $Root -Name $name
+    }
+}
+
+# Hosts a page: leaves the current one (its Leave may refuse), shows the page, selects its pane item, runs Enter. Returns exactly one [bool]:
+# $true when the page is now current, $false when the id is not registered or the current page refused to be left.
+function Set-FastLlmUiFluentPage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Id, [switch] $FocusNav)
+    $f = $script:FastLlmUiFluent
+    $pages = $f['Pages']
+    if ($null -eq $pages -or -not $pages.ContainsKey($Id)) { return $false }
+    $current = Get-FastLlmUiFluentCurrentPage
+    if ($current -ceq $Id) { return $true }
+    if ($pages.ContainsKey($current) -and [string] $pages[$current]['Leave'] -ne '') {
+        $leaveName = [string] $pages[$current]['Leave']
+        foreach ($answer in @(& $leaveName)) { if ($answer -is [bool] -and -not $answer) { return $false } }
+    }
+    $page = $pages[$Id]
+    $f['Current'] = $Id
+    $pageHost = $f['Els']['PageHost']
+    $pageHost.Child = $null
+    $pageHost.Child = $page['Element']
+    $item = $null
+    foreach ($nav in @($f['NavItems'])) { if ([string] $nav['Id'] -ceq [string] $page['Nav']) { $item = $nav['Item'] } }
+    if ($null -ne $item) {
+        # Selecting the item raises the NavList handler, which must not navigate again.
+        $keys = $f['Keys']
+        $previous = [bool] $keys['NavGuard']
+        $keys['NavGuard'] = $true
+        try { $item.IsSelected = $true } finally { $keys['NavGuard'] = $previous }
+    }
+    if ([string] $page['Enter'] -ne '') { $enterName = [string] $page['Enter']; $null = & $enterName }
+    if ($FocusNav -and $null -ne $item) { $null = $item.Focus() }
+    return $true
+}
+
+# The NavList SelectionChanged handler. A registered item navigates; a null selection, an item with no page or a refused Leave puts the selection
+# back on the current page's item. NavGuard stops the re-selection from running this again.
+function Invoke-FastLlmUiFluentNavSelection {
+    [CmdletBinding()] param()
+    $f = $script:FastLlmUiFluent
+    $keys = $f['Keys']
+    if ([bool] $keys['NavGuard']) { return }
+    $keys['NavGuard'] = $true
+    try {
+        $selected = $f['Els']['NavList'].SelectedItem
+        $target = ''
+        if ($null -ne $selected) {
+            foreach ($nav in @($f['NavItems'])) {
+                if ([object]::ReferenceEquals($nav['Item'], $selected)) { $target = Get-FastLlmUiFluentPageIdByNav -NavId ([string] $nav['Id']) }
+            }
+        }
+        $moved = $false
+        if ($target -ne '') {
+            # Set-FastLlmUiFluentPage sets the guard again around its own selection and restores it.
+            $moved = [bool] (Set-FastLlmUiFluentPage -Id $target)
+        }
+        if (-not $moved) {
+            $current = Get-FastLlmUiFluentCurrentPage
+            if ($current -ne '' -and $f['Pages'].ContainsKey($current)) {
+                foreach ($nav in @($f['NavItems'])) {
+                    if ([string] $nav['Id'] -ceq [string] $f['Pages'][$current]['Nav']) { $nav['Item'].IsSelected = $true }
+                }
+            }
+        }
+    }
+    finally { $keys['NavGuard'] = $false }
+}
+
+# The tooltip and help text of one pane item: enabled items show their label as a tooltip only while collapsed; a disabled item says it is coming.
+function Set-FastLlmUiFluentNavTip {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][hashtable] $Nav)
+    $s = $script:FastLlmUiFluentStrings
+    $collapsed = [bool] $script:FastLlmUiFluent['Keys']['PaneCollapsed']
+    $item = $Nav['Item']
+    if ([bool] $Nav['Enabled']) {
+        $item.ToolTip = $(if ($collapsed) { [string] $Nav['Text'] } else { $null })
+        [System.Windows.Automation.AutomationProperties]::SetHelpText($item, '')
+    }
+    else {
+        $item.ToolTip = $(if ($collapsed) { ([string] $s.ComingLaterFormat) -f [string] $Nav['Text'] } else { [string] $s.ComingLater })
+        [System.Windows.Automation.AutomationProperties]::SetHelpText($item, [string] $s.ComingLater)
+        [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($item, $true)
+    }
+}
+
 # The navigation pane: expanded below the breakpoints it shows icons and labels; under about 900 epx only icons (the label is then the tooltip).
+# An item is enabled exactly when a page is registered for it (pages register before the pane is built).
 function Initialize-FastLlmUiFluentPane {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
@@ -364,14 +524,15 @@ function Initialize-FastLlmUiFluentPane {
     $g = $script:FastLlmUiFluentGlyphs
     [System.Windows.Automation.AutomationProperties]::SetName($f['Els']['NavList'], [string] $s.NavPane)
     $rows = @(
-        @{ List = 'NavList';         Id = 'NavHome';     Label = $s.NavHome;     Glyph = $g.Home;     Enabled = $true },
-        @{ List = 'NavList';         Id = 'NavModels';   Label = $s.NavModels;   Glyph = $g.Models;   Enabled = $false },
-        @{ List = 'NavList';         Id = 'NavConnect';  Label = $s.NavConnect;  Glyph = $g.Connect;  Enabled = $false },
-        @{ List = 'NavList';         Id = 'NavTools';    Label = $s.NavTools;    Glyph = $g.Tools;    Enabled = $false },
-        @{ List = 'NavSettingsList'; Id = 'NavSettings'; Label = $s.NavSettings; Glyph = $g.Settings; Enabled = $false }
+        @{ List = 'NavList';         Id = 'NavHome';     Label = $s.NavHome;     Glyph = $g.Home },
+        @{ List = 'NavList';         Id = 'NavModels';   Label = $s.NavModels;   Glyph = $g.Models },
+        @{ List = 'NavList';         Id = 'NavConnect';  Label = $s.NavConnect;  Glyph = $g.Connect },
+        @{ List = 'NavList';         Id = 'NavTools';    Label = $s.NavTools;    Glyph = $g.Tools },
+        @{ List = 'NavSettingsList'; Id = 'NavSettings'; Label = $s.NavSettings; Glyph = $g.Settings }
     )
     $items = New-Object System.Collections.ArrayList
     foreach ($row in $rows) {
+        $enabled = ((Get-FastLlmUiFluentPageIdByNav -NavId ([string] $row.Id)) -ne '')
         $item = New-Object System.Windows.Controls.ListBoxItem
         $item.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.NavItemStyle')
         $panel = New-Object System.Windows.Controls.StackPanel
@@ -390,26 +551,26 @@ function Initialize-FastLlmUiFluentPane {
         [void] $panel.Children.Add($label)
         $item.Content = $panel
         [System.Windows.Automation.AutomationProperties]::SetName($item, [string] $row.Label)
-        $item.IsEnabled = [bool] $row.Enabled
-        if (-not $row.Enabled) {
-            $item.ToolTip = [string] $s.ComingLater
-            [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($item, $true)
-        }
+        $item.IsEnabled = $enabled
+        $nav = @{ Item = $item; Label = $label; Text = [string] $row.Label; Enabled = $enabled; Id = [string] $row.Id }
+        Set-FastLlmUiFluentNavTip -Nav $nav
         [void] $f['Els'][$row.List].Items.Add($item)
-        [void] $items.Add(@{ Item = $item; Label = $label; Text = [string] $row.Label; Enabled = [bool] $row.Enabled })
+        [void] $items.Add($nav)
     }
     $f['Els']['NavHome'] = $items[0].Item
-    $f['Els']['NavHome'].IsSelected = $true
+    $f['Els']['NavConnect'] = $items[2].Item
+    $f['Els']['NavTools'] = $items[3].Item
     # The Settings list has one item, disabled for now: it is named so it is never an anonymous list. Home stays selected (Ctrl+Click cannot empty it).
     [System.Windows.Automation.AutomationProperties]::SetName($f['Els']['NavSettingsList'], [string] $s.NavSettings)
-    $f['Els']['NavList'].Add_SelectionChanged({
-            $nav = $script:FastLlmUiFluent['Els']
-            if ($null -eq $nav['NavList'].SelectedItem) { $nav['NavHome'].IsSelected = $true }
-        })
     $f['NavItems'] = $items.ToArray()
+    if ((Get-FastLlmUiFluentCurrentPage) -ceq '') { $f['Current'] = 'Home' }
+    $keys = $f['Keys']
+    $keys['NavGuard'] = $true
+    try { $f['Els']['NavHome'].IsSelected = $true } finally { $keys['NavGuard'] = $false }
+    $f['Els']['NavList'].Add_SelectionChanged({ Invoke-FastLlmUiFluentNavSelection })
 }
 
-# Expanded or collapsed by the window width; the Home item shows its label as a tooltip only while collapsed.
+# Expanded or collapsed by the window width; an enabled item shows its label as a tooltip only while collapsed, a disabled one says it is coming.
 function Update-FastLlmUiFluentPane {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
@@ -422,8 +583,38 @@ function Update-FastLlmUiFluentPane {
     $f['Els']['PaneColumn'].Width = New-Object System.Windows.GridLength($(if ($collapsed) { 64 } else { 220 }))
     foreach ($nav in $f['NavItems']) {
         $nav['Label'].Visibility = if ($collapsed) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
-        if ($nav['Enabled']) { $nav['Item'].ToolTip = $(if ($collapsed) { [string] $nav['Text'] } else { $null }) }
+        Set-FastLlmUiFluentNavTip -Nav $nav
     }
+}
+
+# Writes the card's composed status line to every registered page and announces it only on the current page (a page swap raises nothing).
+function Update-FastLlmUiFluentPageStatus {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string] $Composed, [bool] $Announce = $false)
+    $f = $script:FastLlmUiFluent
+    $pages = $f['Pages']
+    if ($null -eq $pages) { return }
+    foreach ($id in @($pages.Keys)) {
+        $page = $pages[$id]
+        $status = $page['Status']
+        if ($null -eq $status) { continue }
+        if (-not [bool] $page['KeepsText'] -and $status.Text -cne $Composed) { $status.Text = $Composed }
+        [System.Windows.Automation.AutomationProperties]::SetName($status, $Composed)
+    }
+    $current = Get-FastLlmUiFluentCurrentPage
+    if ($Announce -and $current -ne '' -and $pages.ContainsKey($current) -and $null -ne $pages[$current]['Status']) {
+        Send-FastLlmUiFluentLiveRegion -Element $pages[$current]['Status']
+    }
+}
+
+# The current page's Update hook, once per tick.
+function Update-FastLlmUiFluentPages {
+    [CmdletBinding()] param()
+    $f = $script:FastLlmUiFluent
+    $current = Get-FastLlmUiFluentCurrentPage
+    if ($current -eq '' -or $null -eq $f['Pages'] -or -not $f['Pages'].ContainsKey($current)) { return }
+    $hook = [string] $f['Pages'][$current]['Update']
+    if ($hook -ne '') { $null = & $hook }
 }
 
 # The message area: the update or reinstall offer and the held failure. An announcement is raised only when the composed text changes.
@@ -475,6 +666,7 @@ function Invoke-FastLlmUiFluentTick {
     $f = $script:FastLlmUiFluent
     $f['Tick'] = [int] $f['Tick'] + 1
     try { Update-FastLlmUiFluentHome } catch { $f['TickError'] = [string] $_.Exception.Message }
+    try { Update-FastLlmUiFluentPages } catch { $f['TickError'] = [string] $_.Exception.Message }
     try { Update-FastLlmUiFluentMessages } catch { $f['TickError'] = [string] $_.Exception.Message }
     try { Update-FastLlmUiFluentPane } catch { $f['TickError'] = [string] $_.Exception.Message }
 }
@@ -521,7 +713,10 @@ function Initialize-FastLlmUiFluentShell {
         # The decorative text type (src/WindowsFluentAutomation.cs).
         Initialize-FastLlmUiFluentAutomation -SourceRoot $script:FastLlmUiFluentSourceRoot
         $win = New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
-        $page = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
+        # The order from here is fixed: 1 parse every page, 2 initialise each page into Els, 3 register the pages and build the pane, 4 bindings, 5 the form adapter.
+        $homePage = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
+        $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
+        $connectPage = New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -538,18 +733,29 @@ function Initialize-FastLlmUiFluentShell {
         try { $win.Icon = New-FastLlmUiAppIconImage } catch { $null = $_ }
 
         # The named elements of the shell and of Home, the Home static text and the split button, then the adapters.
+        # A second startup in the same process (the shell suite) starts from an empty element map, so no page name is a duplicate.
+        $f['Els'] = @{}
         foreach ($name in 'PaneColumn', 'NavList', 'NavSettingsList', 'MessageScroll', 'UpdateBar', 'UpdateText', 'UpdateNotesButton', 'UpdateButton', 'ReinstallButton',
             'FailureBar', 'FailureText', 'FailureCopyButton', 'PageHost') {
             $f['Els'][$name] = Get-FastLlmUiFluentElement -Root $win -Name $name
         }
-        [void] (Initialize-FastLlmUiFluentHome -Page $page -Els $f['Els'])
-        $f['Els']['PageHost'].Child = $page
+        $f['Pages'] = @{}
+        $f['Current'] = ''
+        [void] (Initialize-FastLlmUiFluentHome -Page $homePage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $f['Els'])
+        Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
+        Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
+        Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $f['Els']
+        $f['Current'] = 'Home'
+        $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane
 
         $null = Initialize-FastLlmUiFluentBindings -InstallRoot $InstallRoot -Catalog $catalog -UiSettings $script:uiSettings
         foreach ($row in (Get-FastLlmUiFluentBindingTable)) {
             $adapter = Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
-            Connect-FastLlmUiFluentControl -Adapter $adapter -Element $f['Els'][[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
+            $also = ($row.ContainsKey('Also') -and [bool]$row['Also'])
+            Connect-FastLlmUiFluentControl -Adapter $adapter -Element $f['Els'][[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags) -Also:$also
         }
         # The failure link names itself as the classic one does.
         [System.Windows.Automation.AutomationProperties]::SetName($f['Els']['FailureCopyButton'], [string] $script:failureCopyLink.Text)

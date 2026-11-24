@@ -151,6 +151,9 @@ namespace Bitworks.FastLlm {
         private readonly Func<bool> refuseSessionEnd;
         private readonly Action themeChanged;
 
+        // The last exception a callback threw (the hook swallows it so the message loop is never broken); null when none.
+        public Exception LastError { get; private set; }
+
         public FluentWindowHook(Func<bool> refuseSessionEnd, Action themeChanged) {
             this.refuseSessionEnd = refuseSessionEnd;
             this.themeChanged = themeChanged;
@@ -159,12 +162,12 @@ namespace Bitworks.FastLlm {
         public IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
             if (msg == 0x0011) {
                 bool refuse;
-                try { refuse = refuseSessionEnd(); } catch { refuse = true; }
+                try { refuse = refuseSessionEnd(); } catch (Exception ex) { LastError = ex; refuse = true; }
                 if (refuse) { handled = true; }
                 return IntPtr.Zero;
             }
             if (msg == 0x001A || msg == 0x0015 || msg == 0x0320) {
-                try { themeChanged(); } catch { }
+                try { themeChanged(); } catch (Exception ex) { LastError = ex; }
             }
             return IntPtr.Zero;
         }

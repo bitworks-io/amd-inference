@@ -110,6 +110,34 @@ function Get-UiVisibleRect($Text, $Stop) {
     return $visible
 }
 
+# The scroll presenter an element scrolls in: the nearest ScrollContentPresenter above it that belongs to an authored ScrollViewer (one that is not a part of
+# another control's template, as a TextBox's own is), else $Default. A page with a ScrollViewer of its own is judged against that viewer's content, not the
+# harness wrapper's. The ScrollViewer is the presenter's TemplatedParent.
+function Get-UiScrollPresenter($Element, $Default) {
+    $node = [System.Windows.Media.VisualTreeHelper]::GetParent($Element)
+    while ($null -ne $node) {
+        if ($node -is [System.Windows.Controls.ScrollContentPresenter]) {
+            $owner = $node.TemplatedParent
+            if ($owner -is [System.Windows.Controls.ScrollViewer] -and $null -eq $owner.TemplatedParent) { return $node }
+        }
+        $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
+    }
+    return $Default
+}
+
+# The index of the first region whose root is the element or one of its visual ancestors; the region count when none (the last region).
+function Get-UiTabRegion($Element, $Page, [string[]]$Regions) {
+    for ($i = 0; $i -lt @($Regions).Count; $i++) {
+        $node = $Element
+        while ($null -ne $node) {
+            if ($node -is [System.Windows.FrameworkElement] -and [string]$node.Name -ceq $Regions[$i]) { return $i }
+            if ([object]::ReferenceEquals($node, $Page)) { break }
+            $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
+        }
+    }
+    return @($Regions).Count
+}
+
 function Test-UiAuthored($Element) {
     return ($Element -is [System.Windows.FrameworkElement]) -and ($null -eq $Element.TemplatedParent)
 }
@@ -181,7 +209,11 @@ function Invoke-UiRenderCase {
         # Optional: runs once on the page (after its theme dictionary is set, before it is measured), e.g. to bind adapters and apply a state.
         [scriptblock]$Prepare = $null,
         # Optional: an element built by the caller, used instead of parsing the registered markup for $Name ($Name then only names the PNG).
-        $Element = $null
+        $Element = $null,
+        # Optional: names the PNG instead of $Name, so two states of one page (same size, theme and scales) never write the same file.
+        [string]$PngName = '',
+        # Optional: names of region roots (in order). Stops inside a region are one contiguous block, in that order, each in reading order; the rest come last.
+        [string[]]$TabRegions = @()
     )
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
@@ -223,15 +255,14 @@ function Invoke-UiRenderCase {
         $rtb.Render($sv)
         $encoder = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
         $encoder.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($rtb))
-        $fileName = [string]::Format($inv, '{0}-{1}-{2}-{3}-{4}x{5}.png', $Name, $theme, $scale.ToString('0.0#', $inv), $textScale.ToString('0.0#', $inv), $width, $height)
+        $pngBase = $Name
+        if (-not [string]::IsNullOrEmpty($PngName)) { $pngBase = $PngName }
+        $fileName = [string]::Format($inv, '{0}-{1}-{2}-{3}-{4}x{5}.png', $pngBase, $theme, $scale.ToString('0.0#', $inv), $textScale.ToString('0.0#', $inv), $width, $height)
         $png = Join-Path $OutFolder $fileName
         $fs = [System.IO.File]::Create($png)
         try { $encoder.Save($fs) } finally { $fs.Dispose() }
     }
 
-    $viewportWidth = [double]$sv.ViewportWidth
-    # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
-    $bottomLimit = [Math]::Max([double]$sv.ExtentHeight, [double]$sv.ViewportHeight)
     $presenter = [System.Windows.Media.VisualTreeHelper]::GetParent($page)
     if ($presenter -isnot [System.Windows.Controls.ScrollContentPresenter]) {
         $got = if ($null -eq $presenter) { 'null' } else { $presenter.GetType().FullName }
@@ -260,6 +291,7 @@ function Invoke-UiRenderCase {
         }
     }
 
+    $diagnostics = New-Object System.Collections.ArrayList
     $textBlocksSeen = 0
     $namedControlsSeen = 0
     $unmappedRects = 0
@@ -277,28 +309,40 @@ function Invoke-UiRenderCase {
         $mh = [double]$text.Margin.Top + [double]$text.Margin.Bottom
         $isClipped = ($natural.Width -gt ($desired.Width - $mw + 0.5)) -or ($natural.Height -gt ($desired.Height - $mh + 0.5))
         if (-not $isClipped) {
-            $vis = Get-UiVisibleRect $text $presenter
+            $vis = Get-UiVisibleRect $text (Get-UiScrollPresenter $text $presenter)
             if ($null -ne $vis) {
                 if ($vis.IsEmpty) { $isClipped = $true }
                 else { $isClipped = ($natural.Width -gt ($vis.Width + 0.5)) -or ($natural.Height -gt ($vis.Height + 0.5)) }
             }
         }
         if ($isClipped -and $text.TextTrimming -ne [System.Windows.TextTrimming]::None -and [string]$text.ToolTip -ceq [string]$text.Text) { $isClipped = $false }
-        if ($isClipped) { [void]$problems.Add('clipped:' + (Get-UiElementLabel $text)) }
+        if ($isClipped) {
+            [void]$problems.Add('clipped:' + (Get-UiElementLabel $text))
+            $shownText = [string]$text.Text
+            if ($shownText.Length -gt 32) { $shownText = $shownText.Substring(0, 32) }
+            $ident = [string]$text.Name
+            if ([string]::IsNullOrEmpty($ident)) { $ident = "text '" + $shownText + "'" }
+            [void]$diagnostics.Add('clipped: ' + $ident + (' natural {0:N1}x{1:N1} desired {2:N1}x{3:N1} actual {4:N1}x{5:N1}' -f $natural.Width, $natural.Height, $desired.Width, $desired.Height, $aw, $ah))
+        }
     }
 
     # outside: authored elements beyond the page's extent
     foreach ($el in $authored) {
-        $r = Get-UiRelativeRect $el $presenter
+        # Judged against the nearest scroll content: an element below the fold of a viewer inside the page is scrolled, not outside.
+        $scroller = Get-UiScrollPresenter $el $presenter
+        $scrollOwner = $scroller.TemplatedParent
+        $elViewportWidth = [double]$scrollOwner.ViewportWidth
+        # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
+        $elBottomLimit = [Math]::Max([double]$scrollOwner.ExtentHeight, [double]$scrollOwner.ViewportHeight)
+        $r = Get-UiRelativeRect $el $scroller
         if ($null -eq $r) { $unmappedRects++; continue }
-        if ($r.Left -lt -0.5 -or $r.Right -gt ($viewportWidth + 0.5) -or $r.Bottom -gt ($bottomLimit + 0.5)) {
+        if ($r.Left -lt -0.5 -or $r.Right -gt ($elViewportWidth + 0.5) -or $r.Bottom -gt ($elBottomLimit + 0.5)) {
             [void]$problems.Add('outside:' + (Get-UiElementLabel $el))
         }
     }
 
     # label-mismatch: an input's explicit name must equal the visible text of the label it points at. Each label's existing peer is read
     # first (FromElement never creates one), before any peer is created below, so the diagnostics show what a cold page really has.
-    $diagnostics = New-Object System.Collections.ArrayList
     $labelPeerState = @{}
     $mismatched = @{}
     $labeledInputs = 0
@@ -362,6 +406,7 @@ function Invoke-UiRenderCase {
                     El = $el; Order = $index
                     TabIndex = [int][System.Windows.Input.KeyboardNavigation]::GetTabIndex($el)
                     Row = [double][Math]::Round($rect.Top / 8.0); Left = [double]$rect.Left
+                    Region = (Get-UiTabRegion $el $page $TabRegions)
                 }
             }
         }
@@ -369,7 +414,7 @@ function Invoke-UiRenderCase {
     }
     if ($stops.Count -gt 1) {
         $byTab = @($stops | Sort-Object -Property @{ Expression = 'TabIndex' }, @{ Expression = 'Order' })
-        $byRead = @($stops | Sort-Object -Property @{ Expression = 'Row' }, @{ Expression = 'Left' }, @{ Expression = 'Order' })
+        $byRead = @($stops | Sort-Object -Property @{ Expression = 'Region' }, @{ Expression = 'Row' }, @{ Expression = 'Left' }, @{ Expression = 'Order' })
         $same = $true
         for ($i = 0; $i -lt $stops.Count; $i++) { if (-not [object]::ReferenceEquals($byTab[$i].El, $byRead[$i].El)) { $same = $false; break } }
         if (-not $same) {

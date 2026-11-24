@@ -96,7 +96,7 @@ Check ($seamLines.Count -eq 1) 'the rebinding seam line appears exactly once'
 $seam=[int]$seamLines[0]
 
 # Every control the inventory names is bound to a kind the table knows.
-foreach($k in $kinds.Keys){Check (($k -ceq 'form') -or $table.Contains($kinds[$k])) "control $k has a known adapter kind"}
+foreach($k in $kinds.Keys){Check (($k -ieq 'form') -or $table.Contains($kinds[$k])) "control $k has a known adapter kind"}
 $uses=Get-MemberUses -Tree $tree -AfterLine $seam
 Check ($uses.Count -gt 100) "the scan sees the orchestration's member uses ($($uses.Count))"
 foreach($need in 'statusLabel','output','modelBox','installButton','bannerLabel','form','failureCopyLink','licenseBox'){
@@ -174,7 +174,7 @@ function Get-OwnerKind($Node){
 }
 function Get-FormBareUses([System.Management.Automation.Language.Ast]$Tree,[int]$AfterLine){
     $result=New-Object System.Collections.ArrayList
-    $vars=$Tree.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and (([string]$n.VariablePath.UserPath) -replace '^script:','') -ceq 'form'},$true)
+    $vars=$Tree.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and (([string]$n.VariablePath.UserPath) -replace '^script:','') -ieq 'form'},$true)
     foreach($v in $vars){
         $fn=$v.Parent
         while($null -ne $fn -and $fn -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$fn=$fn.Parent}
@@ -198,11 +198,15 @@ Check (@($formUses|Where-Object{$_.Kind -ceq 'finding'}).Count -eq 0) '$form is 
 $ownerCounts=@{}; foreach($u in $formUses){if(-not $ownerCounts.ContainsKey($u.Kind)){$ownerCounts[$u.Kind]=0};$ownerCounts[$u.Kind]++}
 Write-Host ('$form owner and allowlisted uses by kind: '+(($ownerCounts.Keys|Sort-Object|ForEach-Object{"$_=$($ownerCounts[$_])"}) -join ', '))
 Check ($ownerCounts['ShowDialog'] -gt 0 -and $ownerCounts['MessageBox.Show'] -gt 0) 'the scan sees ShowDialog and MessageBox owner uses'
-Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Count) 'each allowlisted bare use appears exactly once (the allowlist has no dead entry)'
+foreach($allowKey in $bareAllow.Keys){
+    $allowHits=@($formUses|Where-Object{$_.Kind -ceq 'allowed' -and $_.Text -ceq $allowKey}).Count
+    Check ($allowHits -eq 1) "allowlisted bare use appears exactly once (no dead entry): $allowKey (found $allowHits)"
+}
+Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Count) 'every allowlisted bare use is accounted for'
 # NewUiApiKey takes the owner as a parameter and may only pass it on as a MessageBox owner.
 $keyFn=$tree.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'NewUiApiKey'},$true)
 Check ($null -ne $keyFn) 'NewUiApiKey is defined'
-$ownerVars=@($keyFn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ceq 'Owner'},$true))
+$ownerVars=@($keyFn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ieq 'Owner'},$true))
 Check ($ownerVars.Count -ge 2 -and @($ownerVars|Where-Object{(Get-OwnerKind $_) -ceq 'MessageBox.Show'}).Count -eq $ownerVars.Count) 'NewUiApiKey uses its Owner only as a MessageBox owner'
 # Self-check.
 $bareSyn=@'
@@ -349,7 +353,12 @@ $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
 Check ($undone.Problems.Count -eq 0) 'every named change is present exactly once'
-Check ((Get-Sha256Text $undone.Text) -ceq $classicPinnedSha256) 'with the named changes undone, the window script is byte-identical to the classic window on main'
+$computedHash=Get-Sha256Text $undone.Text
+if($computedHash -cne $classicPinnedSha256){
+    Write-Host "FINDING: the classic window hash is $computedHash (pinned $classicPinnedSha256), computed against base 6436d2c (PR 1, #85) with the named changes undone."
+    Write-Host 'FINDING: if the change is a deliberate fluent-only edit of fast-llm-ui.ps1, add a named pair @{Name=...;Cur=...;Orig=...} to $namedChanges (Cur is the new text, Orig is the base text) and update the pair-count check; if the classic window itself was intentionally changed, re-pin $classicPinnedSha256 to the computed hash.'
+}
+Check ($computedHash -ceq $classicPinnedSha256) 'with the named changes undone, the window script is byte-identical to the classic window on main'
 # Mutation: one changed character anywhere else must break the pin.
 $mut=$currentText.Replace("'Bitworks FastLLM (Preview)'","'Bitworks FastLLM (Preview!'")
 Check ($mut -cne $currentText) 'the mutation changed the text'
@@ -360,6 +369,183 @@ Check ($mut2 -cne $currentText -and (Get-Sha256Text (Undo-NamedChanges $mut2).Te
 # A damaged named change is a finding, not a silent pass.
 $broken=$currentText.Replace("if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }","if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell2 }")
 Check ((Undo-NamedChanges $broken).Problems.Count -ge 1) 'mutation check: an altered named change is reported'
+
+# Structural T2: every adapter in the control table is bound by a binding row (a `Name = '...'` row of a Get-FastLlmUiFluent*Bindings function or
+# of the shell's binding table) or is on the pending list with its PR. The suite does not load the shell or Home off Windows, so the bound names are read by AST.
+# A later task removes an entry from the pending list when it binds the adapter.
+$pendingAdapters=@{
+    # PR 3b: Models.
+    'componentsButton'='3b';'chooseButton'='3b';'modelsButton'='3b';'modelBox'='3b';'barBox'='3b';'contextBox'='3b';'pathBox'='3b'
+    # PR 3c: Settings.
+    'settingsButton'='3c';'updateBox'='3c';'experimentalBox'='3c';'licenseBox'='3c'
+    # Never: the tooltip text is on the card.
+    'statusTip'='never (its text is on the card)'
+}
+# A binding function counts only when Get-FastLlmUiFluentBindingTable calls it: one the table never calls binds nothing at run time.
+function Get-CalledBindingFunctions([string[]]$Files){
+    $called=New-Object System.Collections.ArrayList
+    foreach($f in $Files){
+        $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
+        foreach($table in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-FastLlmUiFluentBindingTable'},$true))){
+            foreach($c in @($table.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true))){[void]$called.Add([string]$c.GetCommandName())}
+        }
+    }
+    return ,$called.ToArray()
+}
+function Get-UncalledBindingFunctions([string[]]$Files){
+    $called=Get-CalledBindingFunctions $Files
+    $bad=New-Object System.Collections.ArrayList
+    foreach($f in $Files){
+        $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
+        foreach($fn in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -cmatch '^Get-FastLlmUiFluent\w*Bindings$'},$true))){
+            if($called -cnotcontains $fn.Name){[void]$bad.Add($fn.Name)}
+        }
+    }
+    return ,$bad.ToArray()
+}
+function Get-BoundAdapterNames([string[]]$Files){
+    $names=New-Object System.Collections.ArrayList
+    $called=Get-CalledBindingFunctions $Files
+    foreach($f in $Files){
+        $a=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$null)
+        $fns=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and (($n.Name -cmatch '^Get-FastLlmUiFluent\w*Bindings$' -and $called -ccontains $n.Name) -or $n.Name -ceq 'Get-FastLlmUiFluentBindingTable')},$true))
+        foreach($fn in $fns){
+            foreach($h in @($fn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
+                foreach($kv in $h.KeyValuePairs){
+                    if([string]$kv.Item1.Extent.Text -ceq 'Name' -and $kv.Item2.Extent.Text -match "^'([^']+)'$"){[void]$names.Add($Matches[1])}
+                }
+            }
+        }
+    }
+    return ,$names.ToArray()
+}
+function Get-UnboundAdapters([string[]]$Bound,[string[]]$Table,[hashtable]$Pending){
+    return ,@($Table|Where-Object{($Bound -cnotcontains $_) -and (-not $Pending.ContainsKey($_))})
+}
+$fluentSrcFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter 'FastLlm.UiFluent*.ps1' -File|ForEach-Object{$_.FullName})
+$boundNames=Get-BoundAdapterNames $fluentSrcFiles
+$uncalled=Get-UncalledBindingFunctions $fluentSrcFiles
+foreach($u in $uncalled){Write-Host "FINDING: $u is a binding function the binding table never calls"}
+Check ($uncalled.Count -eq 0) 'every Get-FastLlmUiFluent*Bindings function is called from Get-FastLlmUiFluentBindingTable'
+# Self-check: a planted binding function the table does not call is reported, and its rows are not counted as bound.
+$plantBindDir=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-uncalled-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $plantBindDir)
+$plantBindFile=Join-Path $plantBindDir 'FastLlm.UiFluentPlant.ps1'
+$plantBindText=@'
+function Get-FastLlmUiFluentCalledBindings { return @(@{ Name = 'plantCalledAdapter'; Element = 'X' }) }
+function Get-FastLlmUiFluentUncalledBindings { return @(@{ Name = 'plantUncalledAdapter'; Element = 'Y' }) }
+function Get-FastLlmUiFluentBindingTable { return @(Get-FastLlmUiFluentCalledBindings) }
+'@
+[IO.File]::WriteAllText($plantBindFile,$plantBindText)
+$plantUncalled=Get-UncalledBindingFunctions @($plantBindFile)
+$plantBound=Get-BoundAdapterNames @($plantBindFile)
+Remove-Item -LiteralPath $plantBindFile -Force
+Remove-Item -LiteralPath $plantBindDir -Force
+Check ($plantUncalled.Count -eq 1 -and $plantUncalled[0] -ceq 'Get-FastLlmUiFluentUncalledBindings' -and $plantBound -ccontains 'plantCalledAdapter' -and $plantBound -cnotcontains 'plantUncalledAdapter') 'self-check: a planted binding function the table never calls is reported and binds nothing'
+$tableNames=@(Get-FastLlmUiFluentControlTable|ForEach-Object{[string]$_[0]})
+Check ($boundNames.Count -gt 20) "the bound-name scan sees the shell and Home binding rows ($($boundNames.Count))"
+Check ($boundNames -ccontains 'backgroundAttachButton') 'backgroundAttachButton is bound on Home (by AST)'
+Check ($boundNames -ccontains 'bannerLabel' -and $boundNames -ccontains 'statusLabel') 'both the shell rows and the Home rows are read'
+$unbound=Get-UnboundAdapters $boundNames $tableNames $pendingAdapters
+foreach($u in $unbound){Write-Host "FINDING: adapter $u is neither bound by a binding row nor on the pending list"}
+Check ($unbound.Count -eq 0) 'every adapter is bound or pending with its PR'
+foreach($pk in $pendingAdapters.Keys){
+    Check ($tableNames -ccontains $pk) "pending adapter $pk is in the control table"
+    Check ($boundNames -cnotcontains $pk) "pending adapter $pk is not also bound (remove it from the pending list when it is bound)"
+}
+# Self-check: a planted unbound adapter is flagged, and a bound one on the pending list is a finding.
+$plantUnbound=Get-UnboundAdapters $boundNames ($tableNames+'plantedButton') $pendingAdapters
+Check ($plantUnbound.Count -eq 1 -and $plantUnbound[0] -ceq 'plantedButton') 'self-check: a planted unbound adapter is flagged'
+$plantPending=@('statusLabel'|Where-Object{$boundNames -ccontains $_})
+Check ($plantPending.Count -eq 1) 'self-check: the bound-name list would catch a bound adapter put on the pending list'
+
+# Pages (G2, N1): every page registered with Register-FastLlmUiFluentPage passes a -Status element, and that element is a TextBlock with a Polite live
+# setting in the page's registered XAML; the set of registered FastLlm.<Page> markup equals the set of registered ids; and every pane item that is not
+# a registered page is one of the coming-later items. Read by AST and XML, so it runs on every platform.
+$comingLater=@('NavModels','NavSettings')
+function Get-PagePinFindings([string[]]$Texts){
+    $found=New-Object System.Collections.ArrayList
+    $regs=New-Object System.Collections.ArrayList
+    $xaml=@{}
+    $navIds=New-Object System.Collections.ArrayList
+    foreach($t in $Texts){
+        $err=$null
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($t,[ref]$null,[ref]$err)
+        if(@($err).Count -gt 0){[void]$found.Add('a file does not parse: '+@($err)[0].Message);continue}
+        foreach($c in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Register-FastLlmUiFluentPage'},$true))){
+            $r=@{Id='';Nav='';StatusName='';HasStatus=$false}
+            $els=@($c.CommandElements)
+            for($i=1;$i -lt $els.Count;$i++){
+                if($els[$i] -isnot [System.Management.Automation.Language.CommandParameterAst]){continue}
+                $arg=$null; if($i+1 -lt $els.Count -and $els[$i+1] -isnot [System.Management.Automation.Language.CommandParameterAst]){$arg=$els[$i+1]}
+                switch -CaseSensitive ([string]$els[$i].ParameterName){
+                    'Id'{if($null -ne $arg){$r.Id=[string]$arg.Extent.Text.Trim("'")}}
+                    'Nav'{if($null -ne $arg){$r.Nav=[string]$arg.Extent.Text.Trim("'")}}
+                    'Status'{if($null -ne $arg){$r.HasStatus=$true;if($arg.Extent.Text -match "^\`$Els\['([A-Za-z0-9]+)'\]$"){$r.StatusName=$Matches[1]}}}
+                }
+            }
+            [void]$regs.Add([pscustomobject]$r)
+        }
+        foreach($asg in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Left.Target.Extent.Text -ceq '$script:FastLlmUiXaml' -and $n.Left.Index -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $n.Right.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){
+            $xaml[[string]$asg.Left.Index.Value]=[string]$asg.Right.Expression.Value
+        }
+        foreach($h in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
+            foreach($kv in $h.KeyValuePairs){ if([string]$kv.Item1.Extent.Text -ceq 'Id' -and $kv.Item2.Extent.Text -match "^'(Nav[A-Za-z]+)'$"){[void]$navIds.Add($Matches[1])} }
+        }
+    }
+    $pageNames=@($xaml.Keys|Where-Object{$_ -cmatch '^FastLlm\.' -and $_ -cne 'FastLlm.Shell'}|ForEach-Object{$_.Substring(8)}|Sort-Object)
+    $ids=@($regs|ForEach-Object{[string]$_.Id}|Sort-Object)
+    if(($pageNames -join ',') -cne ($ids -join ',')){[void]$found.Add("the registered page markup ($($pageNames -join ',')) differs from the registered page ids ($($ids -join ','))")}
+    foreach($r in $regs){
+        if(-not $r.HasStatus -or $r.StatusName -ceq ''){[void]$found.Add("page '$($r.Id)' is registered without a -Status element taken from `$Els");continue}
+        if(-not $xaml.ContainsKey('FastLlm.'+$r.Id)){continue}
+        $doc=New-Object System.Xml.XmlDocument
+        try{$doc.LoadXml($xaml['FastLlm.'+$r.Id])}catch{[void]$found.Add("the markup of page '$($r.Id)' does not parse");continue}
+        $node=@($doc.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name','http://schemas.microsoft.com/winfx/2006/xaml') -ceq $r.StatusName})
+        if($node.Count -ne 1){[void]$found.Add("page '$($r.Id)': the status element '$($r.StatusName)' is not in its markup exactly once");continue}
+        if($node[0].LocalName -cne 'TextBlock' -or $node[0].GetAttribute('AutomationProperties.LiveSetting') -cne 'Polite'){[void]$found.Add("page '$($r.Id)': the status element '$($r.StatusName)' is not a TextBlock with AutomationProperties.LiveSetting Polite")}
+    }
+    $registeredNav=@($regs|ForEach-Object{[string]$_.Nav})
+    foreach($n in $registeredNav){ if($navIds -cnotcontains $n){[void]$found.Add("page nav item '$n' is not a pane item")} }
+    foreach($n in @($navIds|Select-Object -Unique)){
+        if($registeredNav -cnotcontains $n -and $comingLater -cnotcontains $n){[void]$found.Add("pane item '$n' is neither a registered page nor a coming-later item")}
+    }
+    return ,@($found.ToArray())
+}
+$pageTexts=@($fluentSrcFiles|ForEach-Object{[IO.File]::ReadAllText($_)})
+# Registering a page refuses a status line that is not a Polite live region: the guard is an if on GetLiveSetting of the status element, with a throw.
+function Get-RegisterGuardFindings([string]$ShellText){
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$null)
+    $fn=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Register-FastLlmUiFluentPage'},$true))
+    if($fn.Count -ne 1){return ,@('Register-FastLlmUiFluentPage is not defined exactly once')}
+    $ok=$false
+    foreach($i in @($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst]},$true))){
+        $cond=[string]$i.Clauses[0].Item1.Extent.Text
+        $throws=@($i.Clauses[0].Item2.FindAll({param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst]},$true)).Count -gt 0
+        if($cond.Contains('GetLiveSetting($Status)') -and $cond.Contains('AutomationLiveSetting]::Polite') -and $throws){$ok=$true}
+    }
+    if($ok){return ,@()}
+    return ,@('Register-FastLlmUiFluentPage does not throw for a status line that is not Polite')
+}
+$shellText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
+Check ((Get-RegisterGuardFindings $shellText).Count -eq 0) 'Register-FastLlmUiFluentPage throws when the status line is not a Polite live region'
+Check ((Get-RegisterGuardFindings $shellText.Replace('GetLiveSetting($Status) -ne','$false -ne')).Count -eq 1) 'self-check: a registration guard that no longer reads the live setting is flagged'
+$pageFindings=Get-PagePinFindings $pageTexts
+foreach($pf in $pageFindings){Write-Host "FINDING: $pf"}
+Check ($pageFindings.Count -eq 0 -and $pageTexts.Count -ge 8) "every registered page has a Polite TextBlock status line, the page markup equals the registered ids, and every other pane item is coming later ($($pageFindings -join '; '))"
+$plantXamlOpen="`$script:FastLlmUiXaml['FastLlm.Plant'] = @'"
+$plantXamlClose="'@"
+$plantNs='xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"'
+$plantXaml=($plantXamlOpen,"<TextBlock $plantNs x:Name=`"PlantStatus`"/>",$plantXamlClose) -join "`n"
+$planted=("function Register-Plant { Register-FastLlmUiFluentPage -Id 'Plant' -Element `$Page -Nav 'NavPlant' }",$plantXaml) -join "`n"
+$plantedBad=Get-PagePinFindings (@($pageTexts)+@($planted))
+Check (@($plantedBad|Where-Object{$_ -like "*Plant*without a -Status*"}).Count -eq 1) 'self-check: a page registered without -Status is flagged'
+$plantedXaml=("function Register-Plant { Register-FastLlmUiFluentPage -Id 'Plant' -Element `$Page -Nav 'NavTools' -Status `$Els['PlantStatus'] }",$plantXaml) -join "`n"
+Check (@((Get-PagePinFindings (@($pageTexts)+@($plantedXaml)))|Where-Object{$_ -like "*PlantStatus*not a TextBlock with*Polite*"}).Count -eq 1) 'self-check: a status element without a Polite live setting is flagged'
+$plantedIdOnly=($plantXamlOpen,"<Grid $plantNs/>",$plantXamlClose) -join "`n"
+Check (@((Get-PagePinFindings (@($pageTexts)+@($plantedIdOnly)))|Where-Object{$_ -like "*differs from the registered page ids*"}).Count -eq 1) 'self-check: page markup that is not a registered page is flagged'
+$dropHome=@($pageTexts|ForEach-Object{$_ -replace "Register-FastLlmUiFluentPage -Id 'Tools'","Register-FastLlmUiFluentPageGone -Id 'Tools'"})
+Check (@((Get-PagePinFindings $dropHome)|Where-Object{$_ -like "*differs from the registered page ids*" -or $_ -like "*neither a registered page nor*"}).Count -ge 1) 'self-check: a page left out of the registry is flagged'
 
 # Initialize-FastLlmUiFluentBindings rebinds with Set-Variable -Scope Script. The bindings file is dot-sourced into the window script, so
 # "Script" is that script's own scope: proven with a scratch script that dot-sources it the same way and reads the names there.
@@ -507,5 +693,43 @@ try{
     & { $Window='fluent'; Invoke-Expression $statement }
     Check ($guardCounter.setter -eq 1 -and $guardCounter.dot -eq 1) 'positive control: a fluent start through the same statement dot-sources the shell file and runs the setter'
 }finally{ if(Test-Path -LiteralPath $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force} }
+
+# Connect text drift pin: every value of $script:FastLlmUiFluentConnectText (src/FastLlm.UiFluentConnect.ps1, read by AST, never run) equals a string constant of
+# ShowConnectDialog, and every constant that function assigns to a .Text is in the table or is 'Close'. The copy is temporary: the flip deletes the dialog.
+$connectAst=Get-FileAst (Join-Path $root 'src/FastLlm.UiFluentConnect.ps1')
+$connectAssign=@($connectAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentConnectText'},$true))
+Check ($connectAssign.Count -eq 1) 'the Connect text table is assigned exactly once'
+$connectTable=& ([scriptblock]::Create($connectAssign[0].Right.Extent.Text))
+$connectKeys=@('Title','IntroRunning','IntroNotRunning','BaseUrl','AnthropicBaseUrl','ModelName','ContextLimit','ShownWhenRunning','ApiKey','Show','Hide','Copy','KeyUnreadable','CouldNotCopy','Endpoints','EndpointIndent','EndpointSeparator','Documentation','CheckFormats')
+Check ((@($connectTable.Keys) -join ',') -ceq ($connectKeys -join ',')) 'the Connect text table has the 19 planned keys, in order'
+$dialogFn=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowConnectDialog'},$true))
+Check ($dialogFn.Count -eq 1) 'ShowConnectDialog is found by AST'
+$dialogConstants=@($dialogFn[0].FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true)|ForEach-Object{[string]$_.Value})
+$dialogTextConstants=New-Object System.Collections.ArrayList
+foreach($assignment in @($dialogFn[0].FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and [string]$n.Left.Member.Value -ceq 'Text'},$true))){
+    foreach($k in @($assignment.Right.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){
+        # A member name ([Environment]::NewLine) is not a caption.
+        if($k.Parent -is [System.Management.Automation.Language.MemberExpressionAst] -and [object]::ReferenceEquals($k.Parent.Member,$k)){continue}
+        # Nor is a comparison operand (-ceq 'running') or a command name.
+        if($k.Parent -is [System.Management.Automation.Language.BinaryExpressionAst] -and [string]$k.Parent.Operator -cnotmatch '^(Plus|Format)$'){continue}
+        if($k.Parent -is [System.Management.Automation.Language.CommandAst] -and [object]::ReferenceEquals($k.Parent.CommandElements[0],$k)){continue}
+        if(([string]$k.Value).Trim() -ne ''){[void]$dialogTextConstants.Add([string]$k.Value)}
+    }
+}
+function Get-ConnectDriftProblems($Table,[string[]]$Constants,[string[]]$TextConstants){
+    $problems=New-Object System.Collections.ArrayList
+    foreach($key in @($Table.Keys)){if($Constants -cnotcontains [string]$Table[$key]){[void]$problems.Add("table value $key is not a constant of ShowConnectDialog")}}
+    $allowed=@($Table.Values|ForEach-Object{[string]$_})+@('Close')
+    foreach($text in $TextConstants){if($allowed -cnotcontains $text){[void]$problems.Add("ShowConnectDialog assigns '$text' to a .Text and the table has no such value")}}
+    return ,$problems.ToArray()
+}
+$driftProblems=Get-ConnectDriftProblems $connectTable $dialogConstants $dialogTextConstants
+foreach($pr in $driftProblems){Write-Host "FINDING: $pr"}
+Check ($driftProblems.Count -eq 0 -and $dialogTextConstants.Count -gt 10) "every Connect text value equals a ShowConnectDialog constant, and every constant it assigns to a .Text is in the table or is Close ($($dialogTextConstants.Count) assigned)"
+$mutatedTable=[ordered]@{}
+foreach($key in @($connectTable.Keys)){$mutatedTable[$key]=[string]$connectTable[$key]}
+$mutatedTable['KeyUnreadable']='The stored API key cannot be read'
+Check ((Get-ConnectDriftProblems $mutatedTable $dialogConstants $dialogTextConstants).Count -ge 1) 'mutation check: a changed table value fails the drift pin'
+Check ((Get-ConnectDriftProblems $connectTable $dialogConstants @($dialogTextConstants.ToArray()+'A new caption')).Count -ge 1) 'mutation check: a new .Text constant in the dialog that the table lacks fails the drift pin'
 
 Write-Host "UI fluent member coverage tests passed: $checks"

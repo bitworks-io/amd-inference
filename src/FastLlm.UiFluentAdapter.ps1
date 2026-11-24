@@ -135,6 +135,28 @@ function Set-FastLlmUiAdapterSink {
     $Adapter.__sink=$Sink
 }
 
+# One sink that runs two sinks in order (a second element on the same adapter). A closure over the two scriptblocks only.
+function Join-FastLlmUiFluentSinks {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][scriptblock]$First,[Parameter(Mandatory)][scriptblock]$Second)
+    return {
+        param($Property,$Value)
+        & $First $Property $Value
+        & $Second $Property $Value
+    }.GetNewClosure()
+}
+
+# Binds a sink to an adapter that has none, or (-Also) joins it to the sink the adapter already has. Without -Also, a second bind throws:
+# the binding table must say, row by row, which elements share an adapter, so a reordered table fails loudly.
+function Add-FastLlmUiAdapterSink {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Adapter,[Parameter(Mandatory)][scriptblock]$Sink,[switch]$Also)
+    $existing=$Adapter.__sink
+    if($null -eq $existing){$Adapter.__sink=$Sink;return}
+    if(-not $Also){throw "Adapter '$($Adapter.__name)' is bound twice (a row for a second element needs Also)."}
+    $Adapter.__sink=Join-FastLlmUiFluentSinks -First $existing -Second $Sink
+}
+
 function Invoke-FastLlmUiAdapterEvent {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Adapter,[Parameter(Mandatory)][string]$Event,$EventArgs)

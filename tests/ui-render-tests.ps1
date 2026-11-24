@@ -180,6 +180,41 @@ $script:FastLlmUiXaml['Test.LabelMismatch']=@'
 </StackPanel>
 '@
 
+# A viewer inside the page: its content below the fold is scrolled, not outside or clipped (the rules measure against the nearest scroll content).
+# Only the element beyond the viewer's own width is a problem.
+$script:FastLlmUiXaml['Test.Nested']=@'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <ScrollViewer x:Name="InnerScroll" Height="60" Focusable="False" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel>
+      <TextBlock x:Name="UpperText" Text="Inside the inner viewer." TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Border Height="700"/>
+      <TextBlock x:Name="DeepText" Text="Text far below the inner fold. It is scrolled, not clipped." TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Button x:Name="DeepButton" Content="Deep action" HorizontalAlignment="Left" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Canvas Height="20">
+        <Border x:Name="InnerFar" Canvas.Left="2000" Canvas.Top="0" Width="50" Height="20" Background="{DynamicResource FastLlm.AccentFillBrush}"/>
+      </Canvas>
+    </StackPanel>
+  </ScrollViewer>
+</StackPanel>
+'@
+
+# Two-column tab order with the pane as a region: pane first is clean, a content stop before the pane is flagged.
+$script:FastLlmUiXaml['Test.RegionGood']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <StackPanel x:Name="PaneRoot" Grid.Column="0"><Button x:Name="PaneButton" Content="Pane item" TabIndex="0" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/></StackPanel>
+  <Button x:Name="ContentButton" Grid.Column="1" Content="Content item" TabIndex="1" HorizontalAlignment="Left" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</Grid>
+'@
+
+$script:FastLlmUiXaml['Test.RegionBad']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <StackPanel x:Name="PaneRoot" Grid.Column="0"><Button x:Name="PaneButton" Content="Pane item" TabIndex="1" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/></StackPanel>
+  <Button x:Name="ContentButton" Grid.Column="1" Content="Content item" TabIndex="0" HorizontalAlignment="Left" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+</Grid>
+'@
+
 $out=$env:FASTLLM_RENDER_DIR
 if([string]::IsNullOrEmpty($out)){
     if(-not [string]::IsNullOrEmpty($env:RUNNER_TEMP)){$out=Join-Path $env:RUNNER_TEMP 'fastllm-fluent-render'}
@@ -190,9 +225,9 @@ if([string]::IsNullOrEmpty($out)){
 $matrix=@(Get-UiRenderMatrix)
 
 # Each negative page shows exactly its own problem.
-$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox'}
+$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox';Nested='outside:InnerFar'}
 $base=@{theme='light';scale=[double]1.0;textScale=[double]1.0;width=640;height=480}
-foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch'){
+foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch','Nested'){
     $found=@()
     $diag=@()
     try{$res=Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out;$found=@($res.problems);$diag=@($res.diagnostics)}catch{$found=@('threw: '+$_.Exception.Message)}
@@ -207,6 +242,13 @@ foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside'
     if(-not $ok -and $diag.Count -gt 0){$diagText=' | diag: '+($diag -join '; ')}
     Check $ok ("the harness catches $n (expected '"+$neg[$n]+"', got '"+($found -join '; ')+"')"+$diagText)
 }
+
+# Regions: a pane on the left whose stops come first is a clean two-column order; a content stop before the pane is flagged.
+$regionOk=@();$regionBad=@()
+try{$regionOk=@((Invoke-UiRenderCase -Name 'Test.RegionGood' -Case $base -OutFolder $out -TabRegions @('PaneRoot')).problems)}catch{$regionOk=@('threw: '+$_.Exception.Message)}
+try{$regionBad=@((Invoke-UiRenderCase -Name 'Test.RegionBad' -Case $base -OutFolder $out -TabRegions @('PaneRoot')).problems)}catch{$regionBad=@('threw: '+$_.Exception.Message)}
+Check (@($regionOk|Where-Object{$_ -ceq 'tab-order'}).Count -eq 0 -and $regionOk.Count -eq 0) "a page whose tab order puts the pane region first is clean (got '$($regionOk -join '; ')')"
+Check (@($regionBad|Where-Object{$_ -ceq 'tab-order'}).Count -eq 1) "a content stop before the pane is still flagged tab-order (got '$($regionBad -join '; ')')"
 
 $sw=[Diagnostics.Stopwatch]::StartNew()
 foreach($case in $matrix){
@@ -250,6 +292,7 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.Update.ps1')
 . (Join-Path $root 'src/FastLlm.Components.ps1')
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
+. (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentAdapter.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentBindings.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
@@ -263,8 +306,19 @@ $script:homeSettings=Read-FastLlmUiSettings -InstallRoot $script:homeDir -AppRoo
 $script:homeSnap=$null
 $script:homeCaseTheme='light'
 $script:homeState='not-running'
+# What the pages read from the orchestration (fast-llm-ui.ps1): the snapshot, the background run status, the key store and the action availability.
+# A Connect case sets the status and the store so the real Get-FastLlmConnectionInfo and Get-FastLlmUiApiKeyRow produce its facts.
+$script:renderRunStatus=$null
+$script:renderKeyStore=$null
+$script:renderFail=''
+$script:child=$null
+$script:vcBroker=$null
+$script:updateRun=$null
 function GetUiStateSnapshot([bool]$Busy){return $script:homeSnap}
-function GetUiBackgroundRunStatus{return $null}
+function GetUiBackgroundRunStatus{return $script:renderRunStatus}
+function GetUiApiKeyStore{return $script:renderKeyStore}
+function GetUiActionAvailabilityNow([bool]$Busy){return Get-FastLlmUiSnapshotAvailability -Snapshot $script:homeSnap}
+function ShowFailure($Message){$script:renderFail=[string]$Message}
 function New-HomeSnap([hashtable]$O=@{}){
     $d=@{Busy=$false;UpdateKind='';ChildActive=$false;Step='';RunReady=$false;SideChildActive=$false;VcBrokerActive=$false;PreviewReady=$false
         SwitchGap=$false;ChatUrlSet=$false;BackgroundStopRequested=$false;Background='absent';FlowPhase='';FailureHeld=$false}
@@ -291,14 +345,20 @@ $homeStatusText=@{
     'background-found'='A FastLLM run is already active in the background. Attach to use it.'
     'waiting-microsoft'='Microsoft setup is still running. Complete or cancel it in the Microsoft window.'
 }
+# The ONE binding loop of the render test. It mirrors the shell's loop in Initialize-FastLlmUiFluentShell (the same Mode, Event, Flags and Also handling),
+# so a table row is bound here exactly as the window binds it.
+function Connect-RenderBindingRows([object[]]$Rows,[hashtable]$Els){
+    foreach($row in $Rows){
+        $adapter=Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
+        $also=($row.ContainsKey('Also') -and [bool]$row['Also'])
+        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $Els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags) -Also:$also
+    }
+}
 function Initialize-HomeRenderPage($Page){
     $els=@{}
     [void](Initialize-FastLlmUiFluentHome -Page $Page -Els $els)
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
-    foreach($row in (Get-FastLlmUiFluentHomeBindings)){
-        $adapter=Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
-        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
-    }
+    Connect-RenderBindingRows @(Get-FastLlmUiFluentHomeBindings) $els
     $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme}
     $script:statusLabel.Text=[string]$homeStatusText[$script:homeState]
     $script:homeSnap=New-HomeSnap $homeSnaps[$script:homeState]
@@ -364,11 +424,171 @@ foreach($text in 1.0,2.0,2.25){
     Check ($treeNames -ceq $readNames -and $rows.Count -eq $stops.Count) "the Home tab sequence is the reading order at text ${text}"
 }
 
+# ---- The Tools page: idle across the 40-case matrix, and busy (every disabled button with its reason) at 640x480 x 3 themes x text 1.0 and 2.25.
+# The prepare step is what the shell does for the page: Initialize-FastLlmUiFluentTools, the page's rows of the binding table, then one reasons refresh.
+$script:toolsBusy=$false
+$script:toolsEls=$null
+function Initialize-ToolsRenderPage($Page){
+    $els=@{}
+    $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme;Pages=@{};Current=''}
+    [void](Initialize-FastLlmUiFluentTools -Page $Page -Els $els)
+    $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
+    Connect-RenderBindingRows @(Get-FastLlmUiFluentToolsBindings) $els
+    $els['ToolsStatusText'].Text='Not running. Install & start sets up and starts the best setup for your card.'
+    if($script:toolsBusy){
+        $script:homeSnap=New-HomeSnap @{Busy=$true;ChildActive=$true;Step='model download'}
+        foreach($row in (Get-FastLlmUiFluentToolsReasonRows)){(Get-Variable -Name ([string]$row.Adapter) -Scope Script -ValueOnly).Enabled=$false}
+        Update-FastLlmUiFluentTools
+    }else{$script:homeSnap=New-HomeSnap @{}}
+    $script:toolsEls=$els
+}
+$toolsPrepare={param($page) Initialize-ToolsRenderPage $page}
+function Test-ToolsCase([bool]$Busy,$case){
+    $script:toolsBusy=$Busy
+    $script:homeCaseTheme=[string]$case.theme
+    $kind='idle'
+    $pngName='FastLlm.Tools'
+    if($Busy){$kind='busy';$pngName='FastLlm.ToolsBusy'}
+    $label="Tools $kind $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Tools' -Case $case -OutFolder $out -Prepare $toolsPrepare -PngName $pngName}catch{Check $false "Tools renders at ${label}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "Tools clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+    $real=$false
+    if($r.png -and (Test-Path -LiteralPath $r.png)){$info=Get-UiPngInfo -Path $r.png;$real=$info.hasContent}
+    Check $real "the Tools render is real at $label"
+    $e=$script:toolsEls
+    Check (@(@('ToolsDiagnosticsButton','ToolsDriverButton','ToolsBundleButton','ToolsLogsButton','ToolsRecheckButton','ToolsAttachButton')|Where-Object{[string]$e[$_].Content -eq ''}).Count -eq 0) "every Tools button has its adapter caption at $label"
+    if($Busy){
+        $noReason=@(Get-FastLlmUiFluentToolsReasonRows|Where-Object{-not $e[[string]$_.Element].IsEnabled -and [string]::IsNullOrEmpty([string]$e[[string]$_.Element].ToolTip)}|ForEach-Object{[string]$_.Element})
+        Check ($noReason.Count -eq 0) "every disabled Tools button says why at ${label}: no reason on $($noReason -join ', ')"
+    }
+}
+$toolsSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($case in $matrix){Test-ToolsCase $false $case}
+foreach($theme in 'light','dark','high-contrast'){
+    foreach($text in 1.0,2.25){Test-ToolsCase $true @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
+}
+Write-Host ('INFO: Tools render of {0} cases took {1:N1} s' -f ($matrix.Count+6),$toolsSw.Elapsed.TotalSeconds)
+
+# ---- The Connect page. The facts come from the real Get-FastLlmConnectionInfo (a run status in) and the real Get-FastLlmUiApiKeyRow (the store state in).
+# Running with the key on shows every client card, the agent warning (a 16K context) and the key row; "not running" has no key row; "key unreadable"
+# is running with the key on and a store this user cannot read.
+function New-ConnectRunStatus{
+    return [pscustomobject]@{phase='ready';active=$true;runId='aabbccdd11223344aabbccdd11223344';modelId='render-model-q4';endpoint='http://127.0.0.1:8123/v1';apiKey='on';apiKeyId='0123abcd'
+        recipe=[pscustomobject]@{catalogVersion='1';contextSize=16384;id=$null}}
+}
+function Set-ConnectRenderState([string]$State){
+    switch -CaseSensitive ($State){
+        'running'{
+            $script:renderRunStatus=New-ConnectRunStatus
+            $script:renderKeyStore=[pscustomobject]@{exists=$true;available=$true;apiKeyId='0123abcd'}
+            $script:homeSnap=New-HomeSnap @{RunReady=$true;ChildActive=$true;Step='serving'}
+        }
+        'not-running'{
+            $script:renderRunStatus=$null
+            $script:renderKeyStore=[pscustomobject]@{exists=$false;available=$false;apiKeyId=$null}
+            $script:homeSnap=New-HomeSnap @{}
+        }
+        'key-unreadable'{
+            $script:renderRunStatus=New-ConnectRunStatus
+            $script:renderKeyStore=[pscustomobject]@{exists=$true;available=$false;apiKeyId=$null}
+            $script:homeSnap=New-HomeSnap @{RunReady=$true;ChildActive=$true;Step='serving'}
+        }
+        default{throw "unknown Connect render state $State"}
+    }
+}
+$script:connectState='running'
+$script:connectEls=$null
+function Initialize-ConnectRenderPage($Page){
+    $els=@{}
+    $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme;Pages=@{};Current=''}
+    [void](Initialize-FastLlmUiFluentConnect -Page $Page -Els $els)
+    Set-ConnectRenderState $script:connectState
+    $els['ConnectStatusText'].Text='Running. Connect an app with the address below.'
+    $script:renderFail=''
+    Enter-FastLlmUiFluentConnect
+    $script:connectEls=$els
+}
+$connectPrepare={param($page) Initialize-ConnectRenderPage $page}
+function Test-ConnectCase([string]$State,$case){
+    $script:connectState=$State
+    $script:homeCaseTheme=[string]$case.theme
+    $pngName='FastLlm.Connect'
+    if($State -ceq 'not-running'){$pngName='FastLlm.ConnectNotRunning'}
+    elseif($State -ceq 'key-unreadable'){$pngName='FastLlm.ConnectKeyUnreadable'}
+    $label="Connect $State $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Connect' -Case $case -OutFolder $out -Prepare $connectPrepare -PngName $pngName}catch{Check $false "Connect renders at ${label}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "Connect clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+    $real=$false
+    if($r.png -and (Test-Path -LiteralPath $r.png)){$info=Get-UiPngInfo -Path $r.png;$real=$info.hasContent}
+    Check $real "the Connect render is real at $label"
+    $e=$script:connectEls
+    Check ($script:renderFail -ceq '') "the Connect page filled without a failure at ${label}: '$($script:renderFail)'"
+    $running=($State -cne 'not-running')
+    $keyRow=($e['ConnectKeyRow'].Visibility -eq [System.Windows.Visibility]::Visible)
+    Check ($keyRow -eq $running) "the Connect key row is shown exactly when the key is on at $label"
+    if($State -ceq 'key-unreadable'){Check (-not $e['ConnectKeyShow'].IsEnabled -and -not $e['ConnectKeyCopy'].IsEnabled) "an unreadable key disables Show and Copy at $label"}
+    if($State -ceq 'running'){
+        Check ([string]$e['ConnectBaseUrlBox'].Text -ceq 'http://127.0.0.1:8123/v1' -and $e['ConnectClients'].Children.Count -ge 2 -and $e['ConnectAgentWarning'].Visibility -eq [System.Windows.Visibility]::Visible) "a running Connect page shows its address, the client cards and the agent warning at $label"
+    }
+}
+$connectSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($case in $matrix){Test-ConnectCase 'running' $case}
+foreach($state in 'not-running','key-unreadable'){
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($text in 1.0,2.25){Test-ConnectCase $state @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
+    }
+}
+Write-Host ('INFO: Connect render of {0} cases took {1:N1} s' -f ($matrix.Count+12),$connectSw.Elapsed.TotalSeconds)
+
+# ---- Reading order of the Tools and Connect pages at text 1.0, 2.0 and 2.25: no overlap, and the whole tab sequence is the reading order.
+function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops){
+    foreach($text in 1.0,2.0,2.25){
+        $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+        $script:homeCaseTheme='light'
+        $script:pinPage=$null
+        # A plain scriptblock (not a closure), so $script: is this file's scope; the page's own prepare step is handed over in $script:pinInner.
+        $script:pinInner=$Prepare
+        $pinPrepare={param($page) $script:pinPage=$page; & $script:pinInner $page}
+        $r=$null
+        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
+        $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
+        Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
+        $stops=New-Object System.Collections.ArrayList
+        foreach($el in (Get-UiVisualElements $script:pinPage)){
+            if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $script:pinPage)){[void]$stops.Add($el)}
+        }
+        $rows=@()
+        $order=0
+        foreach($el in $stops){
+            $rect=Get-UiRelativeRect $el $script:pinPage
+            if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+            $order++
+        }
+        $byRead=@($rows|Sort-Object -Property @{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
+        $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
+        $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
+        Write-Host "INFO: $Label tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
+        Check ($treeNames -ceq $readNames -and $rows.Count -eq $stops.Count -and $stops.Count -ge $MinStops) "the $Label tab sequence is the reading order at text ${text} ($($stops.Count) stops, at least $MinStops)"
+    }
+}
+$orderSw=[Diagnostics.Stopwatch]::StartNew()
+$script:toolsBusy=$false
+Test-PageReadingOrder 'Tools' 'FastLlm.Tools' 'FastLlm.ToolsReading' $toolsPrepare 6
+$script:connectState='running'
+Test-PageReadingOrder 'Connect' 'FastLlm.Connect' 'FastLlm.ConnectReading' $connectPrepare 10
+Write-Host ('INFO: Tools and Connect reading order of 6 cases took {0:N1} s' -f $orderSw.Elapsed.TotalSeconds)
+
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
 # The update bar is visible and the failure bar holds 400 characters in every case.
 $script:shellRp=$null
-function New-ShellRenderPage($Case){
+function New-ShellRenderPage($Case,[string]$PageId='Home'){
     $sw=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
     $homePage=New-FastLlmUiXamlElement -Name 'FastLlm.Home'
     $els=@{}
@@ -382,13 +602,18 @@ function New-ShellRenderPage($Case){
     [void](Initialize-FastLlmUiFluentHome -Page $homePage -Els $els)
     $els.PageHost.Child=$homePage
     $script:FastLlmUiFluent=@{Window=[pscustomobject]@{ActualWidth=[double]$Case.width;ActualHeight=[double]$Case.height};Els=$els;Keys=@{};Timer=$null;Tick=1;Theme=[string]$Case.theme;ThemeKey='';Interop=$false;Hooks=$null
-        NavItems=@();LastException=$null;InUnhandled=$false;TickError=''}
+        NavItems=@();LastException=$null;InUnhandled=$false;TickError='';Pages=@{};Current=''}
+    # The binding table includes the Tools rows, so the Tools page is parsed, initialised and registered as the shell does (before the pane).
+    $toolsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
+    [void](Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $els)
+    $connectPage=New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
+    [void](Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $els)
+    Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
+    Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $els
+    Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
-    foreach($row in (Get-FastLlmUiFluentBindingTable)){
-        $adapter=Get-Variable -Name ([string]$row.Name) -Scope Script -ValueOnly
-        Connect-FastLlmUiFluentControl -Adapter $adapter -Element $els[[string]$row.Element] -Mode ([string]$row.Mode) -Event ([string]$row.Event) -Flags @($row.Flags)
-    }
+    Connect-RenderBindingRows @(Get-FastLlmUiFluentBindingTable) $els
     $long=('Engine start failed while loading the model. '*10).Substring(0,400)
     $script:bannerLabel.Text='An update to FastLLM is available.'
     $script:bannerLabel.Visible=$true
@@ -402,6 +627,12 @@ function New-ShellRenderPage($Case){
     Update-FastLlmUiFluentHome
     Update-FastLlmUiFluentMessages
     Update-FastLlmUiFluentPane
+    # The page under test is hosted the way the window hosts it (Leave, host, nav selection, Enter).
+    if($PageId -cne 'Home'){
+        $script:renderFail=''
+        $hosted=Set-FastLlmUiFluentPage -Id $PageId
+        if(-not [bool]$hosted -or $script:renderFail -cne ''){throw ("the shell could not host $PageId (hosted=$hosted, failure='$($script:renderFail)')")}
+    }
     $res=$sw.Resources
     $content=$sw.Content
     $sw.Content=$null
@@ -412,38 +643,58 @@ $shellPrepare={
     foreach($k in @($script:shellRp.Resources.Keys)){$page.Resources[$k]=([object]$script:shellRp.Resources[$k]).psobject.BaseObject}
 }
 $shellSw=[Diagnostics.Stopwatch]::StartNew()
-foreach($theme in 'light','dark','high-contrast'){
-    foreach($size in @(@(640,480),@(1000,680))){
-        foreach($text in 1.0,2.25){
-            $case=@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=[int]$size[0];height=[int]$size[1]}
-            $label="Shell $theme $($case.scale) $text $($case.width)x$($case.height)"
-            $script:homeCaseTheme=$theme
-            $r=$null
-            try{
-                $script:shellRp=New-ShellRenderPage $case
-                $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare
-            }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
-            $diagText=''
-            if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
-            Check (@($r.problems).Count -eq 0) "Shell clean at ${label}: $(@($r.problems) -join '; ')$diagText"
-            $badBars=@()
-            foreach($ln in 'NavList','NavSettingsList'){
-                $lb=$script:shellRp.Els[$ln]
-                $mode=[System.Windows.Controls.ScrollViewer]::GetHorizontalScrollBarVisibility($lb)
-                if($mode -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled){$badBars+="$ln mode=$mode"}
-                foreach($v in (Get-UiVisualElements $lb)){
-                    if($v -is [System.Windows.Controls.Primitives.ScrollBar] -and $v.Orientation -eq [System.Windows.Controls.Orientation]::Horizontal -and $v.Visibility -eq [System.Windows.Visibility]::Visible){$badBars+="$ln horizontal bar visible"}
+foreach($pageId in 'Home','Tools','Connect'){
+    $pageSw=[Diagnostics.Stopwatch]::StartNew()
+    $shellPng='FastLlm.Shell'
+    if($pageId -cne 'Home'){$shellPng='FastLlm.Shell'+$pageId}
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($size in @(@(640,480),@(1000,680))){
+            foreach($text in 1.0,2.25){
+                $case=@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=[int]$size[0];height=[int]$size[1]}
+                $label="Shell $pageId $theme $($case.scale) $text $($case.width)x$($case.height)"
+                $script:homeCaseTheme=$theme
+                Set-ConnectRenderState 'running'
+                $r=$null
+                try{
+                    $script:shellRp=New-ShellRenderPage $case $pageId
+                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList')
+                }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
+                $diagText=''
+                if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+                Check (@($r.problems).Count -eq 0) "Shell clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+                $badBars=@()
+                foreach($ln in 'NavList','NavSettingsList'){
+                    $lb=$script:shellRp.Els[$ln]
+                    $mode=[System.Windows.Controls.ScrollViewer]::GetHorizontalScrollBarVisibility($lb)
+                    if($mode -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled){$badBars+="$ln mode=$mode"}
+                    foreach($v in (Get-UiVisualElements $lb)){
+                        if($v -is [System.Windows.Controls.Primitives.ScrollBar] -and $v.Orientation -eq [System.Windows.Controls.Orientation]::Horizontal -and $v.Visibility -eq [System.Windows.Visibility]::Visible){$badBars+="$ln horizontal bar visible"}
+                    }
                 }
+                Check ($badBars.Count -eq 0) "the navigation lists have no horizontal scrolling at ${label}: $($badBars -join '; ')"
+                $hostedChild=$script:shellRp.Els['PageHost'].Child
+                $hostedOk=$false
+                if($null -ne $hostedChild){$hostedOk=[object]::ReferenceEquals($hostedChild,$script:FastLlmUiFluent['Pages'][$pageId]['Element'])}
+                Check $hostedOk "the shell hosts the $pageId page at $label"
             }
-            Check ($badBars.Count -eq 0) "the navigation lists have no horizontal scrolling at ${label}: $($badBars -join '; ')"
         }
     }
+    Write-Host ('INFO: Shell with {0} render of 12 cases took {1:N1} s' -f $pageId,$pageSw.Elapsed.TotalSeconds)
 }
-Write-Host ('INFO: Shell render of 12 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
+Write-Host ('INFO: Shell render of 36 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
 
-# 49 PNGs per run: 40 sample cases plus 9 negative pages. Only files written during this run count, so leftovers cannot inflate the number.
-$written=@(Get-ChildItem -LiteralPath $out -Filter 'Test.*.png' -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart })
-Check ($written.Count -eq 49) ("the render folder holds 49 PNGs written by this run (got $($written.Count))")
+# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
+function Get-RenderPngCount([string]$Prefix){
+    return @(Get-ChildItem -LiteralPath $out -Filter ($Prefix+'-*.png') -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart }).Count
+}
+Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
+$pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
+    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12}
+foreach($prefix in $pngExpect.Keys){
+    $got=Get-RenderPngCount $prefix
+    Check ($got -eq $pngExpect[$prefix]) ("the render folder holds $($pngExpect[$prefix]) $prefix PNGs written by this run (got $got)")
+}
+Write-Host ('INFO: render PNG counts: Test.* {0}; {1}' -f (Get-RenderPngCount 'Test.*'),((@($pngExpect.Keys|ForEach-Object{$_+' '+(Get-RenderPngCount $_)})) -join '; '))
 
 if($script:failures.Count -gt 0){throw ("FAIL: $($script:failures.Count) check(s) failed: "+($script:failures -join ' | '))}
 Write-Host "PASS: ui render tests ($($script:checks) checks)"

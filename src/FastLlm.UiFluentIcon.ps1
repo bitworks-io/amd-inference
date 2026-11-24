@@ -97,6 +97,7 @@ function New-FastLlmUiTrayIcon {
 function Get-FastLlmUiFluentTrayIcon {
     [CmdletBinding()]
     param()
+    # The cache is keyed by size: a changed small-icon size (a DPI or display change) redraws the icon on the next refresh.
     $size = [System.Windows.Forms.SystemInformation]::SmallIconSize.Width
     if ($null -ne $script:FastLlmUiFluentTrayIconCache -and $script:FastLlmUiFluentTrayIconSize -ne $size) { Clear-FastLlmUiFluentTrayIcon }
     if ($null -eq $script:FastLlmUiFluentTrayIconCache) {
