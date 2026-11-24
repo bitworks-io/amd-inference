@@ -10,6 +10,10 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 $module=Get-Module FastLlm
 . (Join-Path $root 'tools/collect-vulkan-luid-join.ps1') -OutputPath 'unused.json' -LibraryOnly
 $count=0
+# Device binding runs only on Windows: elsewhere the product records unavailable / unsupported-platform and runs no collector.
+# Read once here, because the orchestrator checks below set OS to Linux for a moment. The two Windows-only sections are gated on it
+# without re-indenting, so every Windows line stays byte-identical; off Windows a real check runs instead and one SKIP line counts the rest.
+$onWindows=($env:OS -eq 'Windows_NT')
 function Check($Condition,[string]$Message){if(-not [bool]$Condition){Write-Host "FAIL: $Message";throw "FAIL: $Message"};$script:count++;Write-Host "PASS: $Message"}
 $MiB=[long]1048576;$GiB=[long]1073741824
 # Every fast-llm-devbind-* scratch folder of THIS run is tracked here and removed in a finally, on success and on failure.
@@ -413,7 +417,7 @@ function Restore-Mocks{foreach($name in $saved.Keys){& $module {param($N,$B) Set
     }
 } $bt
 function Run-Binding($Plan,[string]$Dir,$Bar=$null){& $module {param($P,$D,$B) Invoke-FastLlmDeviceBinding -Plan $P -InstallRoot $D -BarDecision $B} $Plan $Dir $Bar}
-if($true){
+if($onWindows){
     $bt.report=New-XtReport
     $o=Run-Binding (New-Plan $xt 20464) $corrupt
     Check ($o.record.mode -ceq 'record' -and $o.record.status -ceq 'bound' -and $bt.probeCalls -eq 1) 'the orchestrator runs the bounded collector child exactly once and binds'
@@ -453,6 +457,12 @@ if($true){
     $bt.report=New-XtReport -Version '32.0.2.2'
     $o=Run-Binding (New-Plan $xt 20464) $idRoot
     Check ($o.change.driver -and @($o.lines).Count -eq 1 -and $o.lines[0] -ceq "Driver updated since the last recorded start: $xt 32.0.1.1 -> 32.0.2.2") 'the orchestrator compares with the stored record before launch'
+}
+if(-not $onWindows){
+    # Off Windows: this host's real outcome (OS is not changed here). The Windows-only orchestrator checks above are counted in the SKIP line.
+    $bt.report=New-XtReport;$before=$bt.probeCalls
+    $o=Run-Binding (New-Plan $xt 20464) $corrupt
+    Check ($o.record.status -ceq 'unavailable' -and $o.record.reason -ceq 'unsupported-platform' -and $bt.probeCalls -eq $before -and $null -eq $o.identity -and @($o.lines).Count -eq 0) 'off Windows, this host runs no collector child: unavailable / unsupported-platform, with no identity and no line'
 }
 Check (@(Get-ChildItem -LiteralPath (Join-Path $idRoot 'state') -Filter '*.tmp' -ErrorAction SilentlyContinue).Count -eq 0) 'no temporary file is left next to the identity record'
 
@@ -608,6 +618,8 @@ function Get-ProbeOrder($Run){
     [pscustomobject]@{count=$probes.Count;launched=($launch -ge 0);before=@($probes | Where-Object { $launch -lt 0 -or $_ -lt $launch }).Count;afterLaunch=$afterLaunch;afterPost=$afterPost;text=($o -join '>')}
 }
 function Set-RealProbe($Report){$bt.report=$Report;$bt.probeCalls=0;$bt.probeThrow=$null}
+# Windows only: every start below binds (or fails to bind) a device. Not re-indented, so the Windows lines stay byte-identical.
+if($onWindows){
 try {
     $bt.collectorCalls=0
     Set-RealProbe $xtxReport
@@ -1112,6 +1124,10 @@ try {
     # The scratch is removed on success AND on failure (the failure itself is reported by the throw, never by leftover folders).
     Remove-DevbindFolders
 }
+}
+# Off Windows the section above is skipped (counted in the SKIP line), so its finally's work runs here: restore the module mocks and
+# remove the scratch folders (no lock was taken).
+if(-not $onWindows){Restore-Mocks;Remove-DevbindFolders}
 
 # ---------- usage ----------
 $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
@@ -1134,4 +1150,14 @@ Check (@($devbindFolders | Where-Object { Test-Path -LiteralPath $_ }).Count -eq
     Remove-DevbindFolders
 }
 
+if(-not $onWindows){
+    # The skipped checks, counted from this file's own AST: the Check and Expect-Item calls written inside each if($onWindows) body.
+    # Static: on Windows, loops and helpers run some of them more than once, so this is a count of call sites, not of PASS lines.
+    $selfAst=[Management.Automation.Language.Parser]::ParseFile($PSCommandPath,[ref]$null,[ref]$null)
+    $gates=@($selfAst.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses.Count -eq 1 -and $n.Clauses[0].Item1.Extent.Text -ceq '$onWindows'},$true))
+    $skippedSites=0
+    foreach($gate in $gates){$skippedSites+=@($gate.Clauses[0].Item2.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and @('Check','Expect-Item') -ccontains $n.GetCommandName()},$true)).Count}
+    Check ($gates.Count -eq 2 -and $skippedSites -gt 0) 'off Windows, the skip count finds both Windows-only sections'
+    Write-Host "SKIP: $($gates.Count) Windows-only sections were not run on this host (device binding is Windows-only; this host is unavailable / unsupported-platform, checked above): $skippedSites check call sites skipped (a static count; loops and helpers run some of them more than once on Windows)."
+}
 Write-Host "$count device-binding checks passed. Mock services only; record observes and gates nothing, enforce fails a start only with a typed, never-recovered failure, and every default stays off."
