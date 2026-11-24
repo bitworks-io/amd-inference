@@ -1045,7 +1045,7 @@ try {
             Check ((& $Expect $Result.redirected) -and $Result.redirectedStray.Count -eq 0) ($Message+' (redirected)')
         }
         $printResult=& $runCliPrint $cliRecord
-        & $checkPrintBoth $printResult {param($p) $p.Count -eq 1 -and $p[0].StartsWith('device-binding-unavailable: ',[StringComparison]::Ordinal) -and $p[0] -notmatch 'rawtoken-zq7' -and $p[0] -notmatch 'bad code' -and $p[0] -notmatch 'secret\.txt'},'item 1 (b): the CLI prints the sanitised code and none of the raw token for a device-binding failure whose message carries a raw code'
+        & $checkPrintBoth $printResult {param($p) $p.Count -eq 1 -and $p[0].StartsWith('device-binding-unavailable: ',[StringComparison]::Ordinal) -and $p[0] -notmatch 'rawtoken-zq7' -and $p[0] -notmatch 'bad code' -and $p[0] -notmatch 'secret\.txt'} 'item 1 (b): the CLI prints the sanitised code and none of the raw token for a device-binding failure whose message carries a raw code'
         # Discrimination: the same message and Data code without FastLlmReason prints unchanged (the raw prefix is not touched).
         $plainFailure=New-Object System.InvalidOperationException -ArgumentList $rawRun.failure.Message
         $plainFailure.Data['FastLlmFailureCode']='device-binding-unavailable'
