@@ -91,6 +91,51 @@ class CatalogTests(unittest.TestCase):
         iq3 = next(m for m in self.catalog["models"] if m["id"] == "qwen3.8-27b-ud-iq3-xxs")
         self.assertFalse(iq3["autoEligible"])
 
+    def test_notes_when_present_is_a_non_empty_string(self):
+        noted = [m for m in self.catalog["models"] if "notes" in m]
+        self.assertTrue(noted)
+        for model in self.catalog["models"]:
+            if "notes" in model:
+                with self.subTest(model=model["id"]):
+                    self.assertIsInstance(model["notes"], str)
+                    self.assertTrue(model["notes"].strip())
+
+    def test_superseded_by_names_one_current_entry_of_the_same_model_and_quantization(self):
+        by_id = {m["id"]: m for m in self.catalog["models"]}
+        superseded = [m for m in self.catalog["models"] if "supersededBy" in m]
+        self.assertEqual(
+            {"qwen3.8-27b-ud-iq4-xs", "qwen3.8-27b-ud-q4-k-m", "qwen3.8-27b-ud-q5-k-m", "qwen3.8-27b-ud-q6-k-m"},
+            {m["id"] for m in superseded})
+        for model in superseded:
+            with self.subTest(model=model["id"]):
+                self.assertIsInstance(model["supersededBy"], str)
+                replacement = by_id[model["supersededBy"]]
+                self.assertNotEqual(model["id"], replacement["id"])
+                self.assertNotIn("supersededBy", replacement)
+                for field in ("family", "parameters", "quantization"):
+                    self.assertEqual(model[field], replacement[field])
+                self.assertEqual(model["upstreamRevision"], replacement["upstreamRevision"])
+                self.assertNotEqual(model["revision"], replacement["revision"])
+                self.assertNotEqual(model["sha256"], replacement["sha256"])
+                # The local file name carries the revision suffix; the download URL keeps the upstream name.
+                self.assertNotEqual(model["file"], replacement["file"])
+                self.assertTrue(replacement["file"].endswith("-" + replacement["revision"][:8] + ".gguf"))
+                self.assertTrue(replacement["url"].endswith("/" + model["file"] + "?download=true"))
+
+    def test_republished_entries_keep_the_upstream_provenance_and_say_what_was_verified(self):
+        by_id = {m["id"]: m for m in self.catalog["models"]}
+        for old_id in ("qwen3.8-27b-ud-q5-k-m", "qwen3.8-27b-ud-q6-k-m"):
+            new = by_id[by_id[old_id]["supersededBy"]]
+            with self.subTest(model=new["id"]):
+                self.assertIn("not bench-verified", new["notes"])
+        for old_id in ("qwen3.8-27b-ud-iq4-xs", "qwen3.8-27b-ud-q4-k-m"):
+            self.assertNotIn("notes", by_id[by_id[old_id]["supersededBy"]])
+        for model in self.catalog["models"]:
+            if "supersededBy" in model:
+                new = by_id[model["supersededBy"]]
+                self.assertEqual(model["upstreamLicenseSha256"], new["upstreamLicenseSha256"])
+                self.assertEqual(model["upstreamLicenseUrl"], new["upstreamLicenseUrl"])
+
     def test_catalog_digest_is_stable_for_release_tooling(self):
         digest = hashlib.sha256(self.raw).hexdigest()
         expected, filename = CATALOG_DIGEST_PATH.read_text(encoding="utf-8").strip().split()

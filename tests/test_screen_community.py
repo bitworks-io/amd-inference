@@ -62,9 +62,9 @@ class ScreenTests(unittest.TestCase):
     def test_baseline_is_the_fastest_generation_entry_including_the_measured_hip_setups(self):
         best = sc.best_by_variant(RECIPES)
         # XT: the Vulkan entry still generates faster than the measured HIP entry, so it stays the baseline.
-        self.assertEqual(best[("rx-7900-xt", 1)]["id"], "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k")
+        self.assertEqual(best[("rx-7900-xt", 1)]["id"], "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k")
         # XTX: the measured HIP entry generates faster and becomes the baseline.
-        self.assertEqual(best[("rx-7900-xtx", 1)]["id"], "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip")
+        self.assertEqual(best[("rx-7900-xtx", 1)]["id"], "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip")
         self.assertEqual((best[("rx-7900-xtx", 1)]["generationTokS"], best[("rx-7900-xtx", 1)]["promptTokS"]), (33.72, 876.3))
 
 
@@ -219,7 +219,7 @@ class PerMetricBaselineTests(unittest.TestCase):
         row = self.screened(30.0, 780.0)  # +53.8% over the Vulkan prompt rate (it was compelling before), +/-0 over the HIP one
         comp = row["compellingOnPaper"]
         self.assertEqual((comp["baselineGeneration"], comp["baselinePrompt"], comp["baseline"]),
-                         ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k"))
+                         ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k.hip", "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k"))
         self.assertFalse(comp["compelling"])
         self.assertFalse(row["candidate"])
         self.assertIn("not-compelling", row["reasons"])

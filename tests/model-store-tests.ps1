@@ -55,7 +55,7 @@ try {
     $fs=[IO.File]::Open((ModelPath $r $idB),'Open','ReadWrite'); try { $fs.SetLength(10) } finally { $fs.Dispose() }
     $rows=@(Get-FastLlmInstalledModels -InstallRoot $r -CatalogPath $smallCatalog)
     Check ($rows.Count -eq 2) 'list-installed-rows: only models whose file is present are listed'
-    Check ((@($rows[0].PSObject.Properties.Name) -join ',') -eq 'id,file,sizeBytes,present,sizeMatches,consent,inUse,inUseReason') 'list-installed-rows: row property names'
+    Check ((@($rows[0].PSObject.Properties.Name) -join ',') -eq 'id,file,sizeBytes,present,sizeMatches,consent,inUse,inUseReason,supersededBy') 'list-installed-rows: row property names'
     $ra=@($rows | Where-Object { $_.id -eq $idA })[0]; $rb=@($rows | Where-Object { $_.id -eq $idB })[0]
     Check ($ra.present -and $ra.sizeMatches -and $ra.consent -and -not $ra.inUse -and $ra.inUseReason -eq '') 'list-installed-rows: a healthy model'
     Check ($rb.present -and -not $rb.sizeMatches -and -not $rb.consent -and -not $rb.inUse) 'list-installed-rows: a short, receipt-less file is reported, not hidden'
@@ -146,7 +146,7 @@ try {
     Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false) 'switch-target: pending = false protects nothing'
     Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='ready';modelId=$idA})
     $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
-    Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false -and @($swRows | Where-Object { $_.id -eq $idA })[0].inUseReason -eq 'serving' -and ((@($swRows[0].PSObject.Properties.Name) -join ',') -eq 'id,file,sizeBytes,present,sizeMatches,consent,inUse,inUseReason')) 'switch-target: with no switch block the rows are what they were'
+    Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false -and @($swRows | Where-Object { $_.id -eq $idA })[0].inUseReason -eq 'serving' -and ((@($swRows[0].PSObject.Properties.Name) -join ',') -eq 'id,file,sizeBytes,present,sizeMatches,consent,inUse,inUseReason,supersededBy')) 'switch-target: with no switch block the rows are what they were'
     Write-FastLlmState -InstallRoot $rsw -State ([ordered]@{schemaVersion=1;runId=$switchRun;phase='stopped';modelId=$idA;'switch'='not-a-block'})
     $swRows=@(Get-FastLlmInstalledModels -InstallRoot $rsw -CatalogPath $smallCatalog)
     Check (@($swRows | Where-Object { $_.id -eq $idB })[0].inUse -eq $false) 'switch-target: a switch value that is not a block protects nothing'

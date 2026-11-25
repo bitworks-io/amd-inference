@@ -1317,21 +1317,21 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     $xtHardware | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @([pscustomobject] @{ vendorId = 4098; deviceId = 29772; revision = 204; dedicatedVideoMiB = 20464 })
     # Recorded expectation: the engine path and the full argument list the plan produced before engine components existed (MODEL is the verified model path).
     $commonTail = @('--host', '127.0.0.1', '--port', '8080', '--cors-origins', 'localhost', '--no-cors-credentials')
-    $expectedXtx = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-q4-k-m') + $commonTail + @(
+    $expectedXtx = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-q4-k-m-4af51b35') + $commonTail + @(
         '--ctx-size', '32768', '--parallel', '1', '--n-gpu-layers', 'all', '--fit', 'on', '--fit-target', '768', '--device', 'Vulkan0', '--split-mode', 'none',
         '--flash-attn', 'auto', '--cache-type-k', 'f16', '--cache-type-v', 'f16', '--jinja', '--metrics', '--log-verbosity', '4', '--no-agent', '--no-ui')
-    $expectedXt = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-iq4-xs') + $commonTail + @(
+    $expectedXt = @('--model', 'MODEL', '--offline', '--no-mmproj', '--spec-type', 'none', '--alias', 'qwen3.8-27b-ud-iq4-xs-4af51b35') + $commonTail + @(
         '--ctx-size', '16384', '--parallel', '1', '--n-gpu-layers', 'all', '--fit', 'on', '--fit-target', '512', '--device', 'ROCm0', '--split-mode', 'none',
         '--flash-attn', 'auto', '--cache-type-k', 'f16', '--cache-type-v', 'f16', '--jinja', '--metrics', '--log-verbosity', '4', '--no-agent', '--no-ui')
     $expectedFields = 'schemaVersion,catalogVersion,hardwareFingerprint,fingerprintKind,selectionMode,requestedModelId,requestedRecipeId,recovered,requestedContextSize,requestedServerPort,requestedThinking,requestedChatPage,allowExperimentalModel,catalogContextSize,performanceQualified,candidatePlacementCount,profile,backend,engineVersion,enginePath,capacity,selectedAdapters,model,modelPath,requestedAllGpuLayers,placementVerified,splitMode,tensorSplit,endpoint,serverArguments,recipe,warnings'
     $shippedCases = @(
-        @{ Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; Args = $expectedXtx; EnginePath = 'C:\FastLLM\vulkan\llama-server.exe' },
-        @{ Hardware = $xtHardware; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k'; Args = $expectedXt; EnginePath = 'C:\FastLLM\rocm\llama-server.exe' })
+        @{ Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k'; Args = $expectedXtx; EnginePath = 'C:\FastLLM\vulkan\llama-server.exe' },
+        @{ Hardware = $xtHardware; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k'; Args = $expectedXt; EnginePath = 'C:\FastLLM\rocm\llama-server.exe' })
     # The plan reports the identified card in recipe.variant even when no recipe was picked (estimated and manual plans), $null when it is not identified.
     $noIdentityHardware = Read-FastLlmJson -Path (Join-Path $fixtureDir 'rx-7900-xtx-24gb.json')
     $identityCases = @(
         @{ Name = 'estimated xtx'; Hardware = $xtxHardware; Extra = @{ Profile = 'fast' }; Variant = 'rx-7900-xtx'; Origin = 'estimated' },
-        @{ Name = 'manual xtx'; Hardware = $xtxHardware; Extra = @{ ModelId = 'qwen3.8-27b-ud-q4-k-m' }; Variant = 'rx-7900-xtx'; Origin = 'manual' },
+        @{ Name = 'manual xtx'; Hardware = $xtxHardware; Extra = @{ ModelId = 'qwen3.8-27b-ud-q4-k-m-4af51b35' }; Variant = 'rx-7900-xtx'; Origin = 'manual' },
         @{ Name = 'estimated xt'; Hardware = $xtHardware; Extra = @{ Profile = 'fast' }; Variant = 'rx-7900-xt'; Origin = 'estimated' },
         @{ Name = 'recipe xtx'; Hardware = $xtxHardware; Extra = @{}; Variant = 'rx-7900-xtx'; Origin = 'bitworks' },
         @{ Name = 'no card identity'; Hardware = $noIdentityHardware; Extra = @{ Profile = 'fast' }; Variant = $null; Origin = 'estimated' })
@@ -1366,7 +1366,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Copy-Item -LiteralPath $shippedCatalogPath -Destination (Join-Path $fxPlan.Dir 'catalog.json') -Force
     $planCatalogPath = Join-Path $fxPlan.Dir 'catalog.json'
     $componentRecipeDocument = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
-    $componentRecipeEntry = @($componentRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' })[0]
+    $componentRecipeEntry = @($componentRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k' })[0]
     $componentRecipeEntry.id = 'fixture.component-engine'
     $componentRecipeEntry.components.engine = 'test-engine-1'
     $componentRecipeEntry.engineBuild = 'v1'
@@ -1409,9 +1409,9 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($null -ne $noRootFailure -and $noRootFailure.Data['FastLlmFailureCode'] -ceq 'recipe-engine-needs-install-root') 'a component-engine recipe named with -Recipe and planned without -InstallRoot fails typed with recipe-engine-needs-install-root'
     $noRootAuto = Get-FastLlmPlan @noRootParams
     Check ($noRootAuto.fallback.reason -ceq 'recipe-engine-needs-install-root' -and $noRootAuto.fallback.applied -eq $true -and $noRootAuto.fallback.fromRecipe -ceq 'fixture.component-engine') 'the same recipe picked automatically falls back to the estimated plan, stamped with the typed reason'
-    $builtInNoRootParams = @{ Hardware = $xtxHardware; CatalogPath = $shippedCatalogPath; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' }
+    $builtInNoRootParams = @{ Hardware = $xtxHardware; CatalogPath = $shippedCatalogPath; RecipesPath = $shippedRecipesPath; GpuVariantsPath = $shippedVariantsPath; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k' }
     $builtInNoRoot = Get-FastLlmPlan @builtInNoRootParams
-    Check ($builtInNoRoot.recipe.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' -and -not $builtInNoRoot.PSObject.Properties['engineComponentId']) 'a built-in-engine recipe still plans without -InstallRoot'
+    Check ($builtInNoRoot.recipe.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k' -and -not $builtInNoRoot.PSObject.Properties['engineComponentId']) 'a built-in-engine recipe still plans without -InstallRoot'
 
     # ---- a HIP engine that requires a runtime. Resolution, the plan (device probe, ROCm<N>), and the shipped HIP engine's manifest ----
     $hipShippedEngine = @($shipped | Where-Object { [string] $_.id -ceq 'llama.cpp-hip-b11658' })[0]
@@ -1440,7 +1440,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Copy-Item -LiteralPath $shippedCatalogPath -Destination (Join-Path $hipPlanDir 'catalog.json') -Force
     Copy-Item -LiteralPath $hipFx.ComponentsPath -Destination (Join-Path $hipPlanDir 'components.json') -Force
     $hipRecipeDocument = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
-    $hipRecipeEntry = @($hipRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' })[0]
+    $hipRecipeEntry = @($hipRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k' })[0]
     $hipRecipeEntry.id = 'fixture.hip-engine'
     $hipRecipeEntry.components.engine = 'eng-hip'
     $hipRecipeEntry.engineBuild = '1.0'
@@ -1478,7 +1478,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         Check ($hipProbe.calls.Count -eq 0 -and $vulkanAgain.backend -ceq 'Vulkan' -and -not $vulkanAgain.PSObject.Properties['runtimeRoots'] -and -not $vulkanAgain.PSObject.Properties['engineComponentId']) 'a shipped Vulkan recipe plans without any HIP probe, with backend Vulkan and no HIP fields'
         # A named shipped-shape HIP recipe plans on the HIP engine with no Vulkan-only argument.
         $hipRecipeDoc2 = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
-        $hipNamedEntry = @($hipRecipeDoc2.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
+        $hipNamedEntry = @($hipRecipeDoc2.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip' })[0]
         $hipNamedEntry.components.engine = 'eng-hip'
         $hipNamedEntry.engineBuild = '1.0'
         $hipRecipeDoc2.recipes = @($hipNamedEntry)
@@ -1488,7 +1488,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $hipNamedParams = @{ Hardware = $xtxHardware; CatalogPath = (Join-Path $hipPlanDir 'catalog.json'); InstallRoot = $hipInstallRoot; RecipesPath = $hipRecipesPath2; GpuVariantsPath = $shippedVariantsPath }
         $hipAutoPlan = Get-FastLlmPlan @hipNamedParams
         Check ($hipAutoPlan.recipe.origin -ceq 'bitworks' -and $hipAutoPlan.backend -ceq 'hip' -and $hipAutoPlan.engineComponentId -ceq 'eng-hip' -and -not $hipAutoPlan.PSObject.Properties['setup'] -and -not $hipAutoPlan.PSObject.Properties['fallback']) 'without -Recipe the recommended HIP recipe is picked once its components are installed and verified: a HIP plan with no setup or fallback fields'
-        $hipNamedPlan = Get-FastLlmPlan @hipNamedParams -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'
+        $hipNamedPlan = Get-FastLlmPlan @hipNamedParams -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip'
         Check ($hipNamedPlan.recipe.origin -ceq 'bitworks' -and $hipNamedPlan.backend -ceq 'hip' -and $hipNamedPlan.engineComponentId -ceq 'eng-hip' -and $hipNamedPlan.selectionMode -ceq 'recipe') 'naming the HIP recipe yields a HIP plan on the engine component'
         $vulkanFlagText = (@($hipNamedPlan.serverArguments) -join ' ')
         Check ($vulkanFlagText -cnotmatch '(?i)vulkan|GGML_VK|--vk' -and @($hipNamedPlan.serverArguments) -cnotcontains 'Vulkan0') 'the HIP plan arguments contain nothing Vulkan-specific'
@@ -1572,7 +1572,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     }
 
     # ---- An automatically picked HIP recipe: pending components, the visible fallback, plan-time typed failures ----
-    $autoVulkanId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'
+    $autoVulkanId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k'
     $autoHipId = $autoVulkanId + '.hip'
     $autoDocument = Get-Content -LiteralPath $shippedRecipesPath -Raw | ConvertFrom-Json
     $autoVulkanEntry = @($autoDocument.recipes | Where-Object { $_.id -ceq $autoVulkanId })[0]
@@ -1726,7 +1726,7 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
         $forcedPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -FallbackFromRecipe $autoHipId -FallbackReason 'components-declined'
         Check ($forcedPlan.recipe.id -ceq $autoVulkanId -and $forcedPlan.fallback.applied -eq $true -and $forcedPlan.fallback.fromRecipe -ceq $autoHipId -and $forcedPlan.fallback.reason -ceq 'components-declined' -and $forcedPlan.fallback.toRecipe -ceq $autoVulkanId) '-FallbackFromRecipe/-FallbackReason forces the fallback even with components installed, stamped applied'
         # -ModelId plans are unchanged.
-        $modelIdPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -ModelId 'qwen3.8-27b-ud-q4-k-m'
+        $modelIdPlan = Get-FastLlmPlan @autoBase -InstallRoot $autoOkRoot -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35'
         Check ($modelIdPlan.recipe.origin -ceq 'manual' -and -not $modelIdPlan.PSObject.Properties['fallback'] -and -not $modelIdPlan.PSObject.Properties['setup'] -and (@($modelIdPlan.PSObject.Properties.Name) -join ',') -ceq $expectedFields) '-ModelId plans are unchanged (no recipe, no fallback or setup fields)'
         # With no license-free recipe at all, the fallback is the estimated plan (toRecipe is null).
         $onlyHipDocument = Get-Content -LiteralPath $autoRecipesPath -Raw | ConvertFrom-Json
@@ -2236,17 +2236,17 @@ catch { Write-Output ('RESULT=' + $_.Exception.Data['FastLlmFailureCode']) }
     Check ($null -ne $hipGateNoAccept -and $hipGateNoAccept -like '*-AcceptExperimental was not given*' -and $hipGateNoAccept -like "*runtime rt-hip ($($hipFx.Part1Url)*" -and $hipGateNoAccept -like "*engine eng-hip ($($hipFx.EngineUrl)*") 'switch on without -AcceptExperimental is refused and still lists the whole chain'
     Check ($null -eq (Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot $hipGateRoot -RecipeId 'x2' -Recipes @($hipGateRecipe) -Components $acceptList -AcceptExperimental })) 'switch on plus -AcceptExperimental passes the gate for a bitworks-experimental recipe'
     $shippedRecipeDocument = Get-Content -LiteralPath (Join-Path $repoRoot 'config/recipes.json') -Raw | ConvertFrom-Json
-    $shippedHipGate = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })
+    $shippedHipGate = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip' })
     # The shipped HIP recipes are Bitworks-measured, so the experimental gate lets them through (the components and licenses are still needed).
-    $shippedHipGateOff = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot (New-TestRoot) -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' -Recipes $shippedHipGate -Components $shipped }
+    $shippedHipGateOff = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot (New-TestRoot) -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip' -Recipes $shippedHipGate -Components $shipped }
     Check ($null -eq $shippedHipGateOff) 'the shipped HIP recipe is not experimental: naming it without -AcceptExperimental and with the switch off passes the gate'
     # The refusal text for the same chain is still pinned, on a copy switched to the experimental origin.
     $shippedHipExperimental = @($shippedHipGate | ForEach-Object { $copy = $_ | ConvertTo-Json -Depth 12 | ConvertFrom-Json; $copy.origin = 'bitworks-experimental'; $copy })
-    $shippedHipRefusal = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot (New-TestRoot) -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' -Recipes $shippedHipExperimental -Components $shipped }
+    $shippedHipRefusal = Get-ThrownMessage { Assert-FastLlmExperimentalRecipeAllowed -InstallRoot (New-TestRoot) -RecipeId 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip' -Recipes $shippedHipExperimental -Components $shipped }
     Check ($null -ne $shippedHipRefusal -and $shippedHipRefusal -like '*runtime amd-rocm-gfx1100-10.0.0 (https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-libraries/*, https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1100/*' -and $shippedHipRefusal -like '*engine llama.cpp-hip-b11658 (https://github.com/ggml-org/llama.cpp/releases/download/b11658/*release-assets.githubusercontent.com*') 'the shipped HIP recipe refusal lists the AMD runtime (both wheels) and the engine, with the redirect hosts'
 
     # The shipped HIP recipes: the Vulkan recipe of each card with the HIP engine, measured by Bitworks, and recommended over its Vulkan twin.
-    foreach ($hipPair in @(@('rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k', 'rx-7900-xt'), @('rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k', 'rx-7900-xtx'))) {
+    foreach ($hipPair in @(@('rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k', 'rx-7900-xt'), @('rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k', 'rx-7900-xtx'))) {
         $vulkanTwin = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq $hipPair[0] })[0]
         $hipTwin = @($shippedRecipeDocument.recipes | Where-Object { $_.id -ceq ($hipPair[0] + '.hip') })
         Check ($hipTwin.Count -eq 1) "the shipped list has $($hipPair[0]).hip"

@@ -76,7 +76,7 @@ function Initialize-FastLlmUiFluentBindings {
 
     $modelBox=$made['modelBox']
     [void]$modelBox.Items.Add('Recommended for installed GPU')
-    foreach($model in $Catalog.models){ if(-not $model.PSObject.Properties['autoEligible'] -or $model.autoEligible){[void]$modelBox.Items.Add([string]$model.id)} }
+    foreach($model in $Catalog.models){ if((-not $model.PSObject.Properties['autoEligible'] -or $model.autoEligible) -and -not $model.PSObject.Properties['supersededBy']){[void]$modelBox.Items.Add([string]$model.id)} }
     $modelBox.SelectedIndex=0
     $made['contextBox'].Maximum=32768
     $made['contextBox'].Increment=1024

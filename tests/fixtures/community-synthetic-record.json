@@ -36,7 +36,7 @@
     "origin": "community-experimental",
     "variant": "rx-7900-xt",
     "gpuCount": 1,
-    "model": "qwen3.8-27b-ud-iq4-xs",
+    "model": "qwen3.8-27b-ud-iq4-xs-4af51b35",
     "runtime": {
       "contextSize": 16384,
       "parallel": 1,
@@ -73,7 +73,7 @@
     },
     "components": {
       "engine": "llama.cpp-b10698-vulkan",
-      "model": "qwen3.8-27b-ud-iq4-xs"
+      "model": "qwen3.8-27b-ud-iq4-xs-4af51b35"
     },
     "runtime": {
       "contextSize": 16384,
@@ -101,9 +101,9 @@
       "recordId": "synthetic-rehearsal-1"
     },
     "compelling": {
-      "baselineRecipe": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
-      "baselineGeneration": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
-      "baselinePrompt": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
+      "baselineRecipe": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k",
+      "baselineGeneration": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k",
+      "baselinePrompt": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k.hip",
       "generationGainPct": 205.3,
       "promptGainPct": 87.7,
       "isCompelling": true

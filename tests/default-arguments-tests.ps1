@@ -56,10 +56,10 @@ try {
     # HIP recipe fallback coverage: the Vulkan recipe rows equal the arrays pinned in tests/components-tests.ps1.
     Check ($golden.hipRecipeCoverage -like 'fallback-vulkan-rows-pinned-to-components-tests*') 'hipRecipeCoverage path recorded'
     $commonTail=@('--host','127.0.0.1','--port','8080','--cors-origins','localhost','--no-cors-credentials')
-    $expectedXtx=@('--model','MODEL','--offline','--no-mmproj','--spec-type','none','--alias','qwen3.8-27b-ud-q4-k-m')+$commonTail+@(
+    $expectedXtx=@('--model','MODEL','--offline','--no-mmproj','--spec-type','none','--alias','qwen3.8-27b-ud-q4-k-m-4af51b35')+$commonTail+@(
         '--ctx-size','32768','--parallel','1','--n-gpu-layers','all','--fit','on','--fit-target','768','--device','Vulkan0','--split-mode','none',
         '--flash-attn','auto','--cache-type-k','f16','--cache-type-v','f16','--jinja','--metrics','--log-verbosity','4','--no-agent','--no-ui')
-    $expectedXt=@('--model','MODEL','--offline','--no-mmproj','--spec-type','none','--alias','qwen3.8-27b-ud-iq4-xs')+$commonTail+@(
+    $expectedXt=@('--model','MODEL','--offline','--no-mmproj','--spec-type','none','--alias','qwen3.8-27b-ud-iq4-xs-4af51b35')+$commonTail+@(
         '--ctx-size','16384','--parallel','1','--n-gpu-layers','all','--fit','on','--fit-target','512','--device','ROCm0','--split-mode','none',
         '--flash-attn','auto','--cache-type-k','f16','--cache-type-v','f16','--jinja','--metrics','--log-verbosity','4','--no-agent','--no-ui')
     foreach($case in @(@{Name='rx-7900-xtx-24gb';Expected=$expectedXtx},@{Name='rx-7900-xt-20gb-identified';Expected=$expectedXt})){

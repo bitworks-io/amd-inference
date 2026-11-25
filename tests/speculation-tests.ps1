@@ -31,7 +31,7 @@ try {
         return [pscustomobject]@{schemaVersion=1;source='spec-test';backend='Vulkan';enginePath='C:\FastLLM\vulkan\llama-server.exe';adapters=@($adapter)}
     }
     $card=New-Card 23552
-    $common=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles;ModelId='qwen3.8-27b-ud-q4-k-m'}
+    $common=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles;ModelId='qwen3.8-27b-ud-q4-k-m-4af51b35'}
     # A splat plus a named argument for the same key throws ParameterAlreadyBound on Windows PowerShell 5.1 (PowerShell 7 lets the named one win), so a call
     # that needs another value for a key uses a splat without that key.
     function Get-SplatWithout($Base,[string[]]$Keys){ $copy=$Base.Clone(); foreach($key in $Keys){ $copy.Remove($key) }; return $copy }
@@ -172,7 +172,7 @@ try {
     Check ($r3b.threw -and $r3b.code -ceq 'speculation-combination-not-offered' -and $r3b.message -like '*-Vision*') 'speculation refusal 3: speculation with -Vision on is refused'
     $r3c=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -KvContextProfile 'long' -KvSlots 2 -ModelId 'qwen3.8-27b-q8-0' -Speculation 'ngram' }
     Check ($r3c.threw -and $r3c.code -ceq 'speculation-not-measured') 'speculation order: with no row AND 2 slots, refusal 1 (no row) comes before refusal 3 (the combination)'
-    $tightSlots=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-Card 21530) -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $specProfiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
+    $tightSlots=Get-RefusalCode { Get-FastLlmPlan -Hardware (New-Card 21530) -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvProfilesPath $specProfiles -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
     Check ($tightSlots.threw -and $tightSlots.code -ceq 'speculation-combination-not-offered') 'speculation refusal 3: the combination is named even when the plan would not fit the card anyway (no fit refusal hides it)'
     $noServingRow=Get-RefusalCode { Get-FastLlmPlan @commonNoModel -ModelId 'qwen3.5-9b-q6-k' -KvContextProfile 'long' -KvSlots 2 -Speculation 'ngram' }
     Check ($noServingRow.threw -and $noServingRow.code -ceq 'speculation-combination-not-offered') 'speculation refusal 3: the combination is named when the profile row does not allow 2 slots either (no serving-row refusal hides it)'
@@ -180,7 +180,7 @@ try {
     Check ($r3d.threw -and $r3d.code -ceq 'speculation-profile-not-measured') 'speculation order: with no value for the profile AND 2 slots, refusal 2 comes before refusal 3'
     # Fit: the extra memory is the row's, added to the profile's requirement. Nothing is derived.
     $tight=New-Card 21530
-    $fitCommon=@{Hardware=$tight;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+    $fitCommon=@{Hardware=$tight;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$specProfiles;ModelId='qwen3.8-27b-ud-q4-k-m-4af51b35';KvContextProfile='long'}
     $fitCommonNoProfiles=Get-SplatWithout $fitCommon @('KvProfilesPath')
     Check ([string](Get-FastLlmPlan @fitCommon).servingProfile.id -ceq 'long') 'speculation fit: with 21530 MiB free the long row alone (21500) fits'
     $rFit=Get-RefusalCode { Get-FastLlmPlan @fitCommon -Speculation 'ngram' }
@@ -434,14 +434,14 @@ try {
         # A world whose plan was made from the test rows, and whose rows file is then replaced (the rows changed between the plan and the start).
         function New-ChangedStart([string]$Label,$ChangedDocument,[switch]$Remove){
             $w=New-StartWorld $Label $null
-            $pl=Get-FastLlmPlan -Hardware $card -CatalogPath $w.catalog -Profile balanced -NoEngineExecution -InstallRoot $w.install -KvProfilesPath $w.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -Speculation 'ngram'
+            $pl=Get-FastLlmPlan -Hardware $card -CatalogPath $w.catalog -Profile balanced -NoEngineExecution -InstallRoot $w.install -KvProfilesPath $w.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -KvContextProfile 'long' -Speculation 'ngram'
             New-Item -ItemType Directory -Path (Split-Path -Parent $pl.modelPath) -Force | Out-Null
             [IO.File]::WriteAllText($pl.modelPath,'x')
             Write-Utf8 $w.profiles ($ChangedDocument | ConvertTo-Json -Depth 12)
             return [pscustomobject]@{world=$w;plan=$pl}
         }
         $world=New-StartWorld 'ngram' $null
-        $startPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -KvProfilesPath $world.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -Speculation 'ngram'
+        $startPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -KvProfilesPath $world.profiles -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -KvContextProfile 'long' -Speculation 'ngram'
         New-Item -ItemType Directory -Path (Split-Path -Parent $startPlan.modelPath) -Force | Out-Null
         [IO.File]::WriteAllText($startPlan.modelPath,'x')
         Check ($null -ne $startPlan.speculation -and (@($startPlan.serverArguments) -join ' ').Contains('--spec-type ngram-simple')) 'start re-plan: the plan that goes into Start-FastLlmServer carries the block and --spec-type ngram-simple'
@@ -453,7 +453,7 @@ try {
         Check ($gotArgs[[Array]::IndexOf($gotArgs,'--spec-type')+1] -ceq 'ngram-simple' -and (($gotArgs[($gotArgs.Count-4)..($gotArgs.Count-1)]) -join ' ') -ceq '--spec-ngram-size-n 12 --spec-ngram-size-m 48') 'start re-plan: the supervisor''s arguments carry --spec-type ngram-simple and the row''s extra arguments last'
         Check (Test-SameArguments $startPlan.serverArguments $got.serverArguments) 'start re-plan: the supervisor''s arguments equal the incoming plan''s (nothing was dropped or changed)'
         # A plan without speculation is re-planned exactly as before.
-        $plainPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -ModelId 'qwen3.8-27b-ud-q4-k-m'
+        $plainPlan=Get-FastLlmPlan -Hardware $card -CatalogPath $world.catalog -Profile balanced -NoEngineExecution -InstallRoot $world.install -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35'
         $plainReal=Invoke-RealStart $world $plainPlan
         Check (-not $plainReal.threw -and -not $plainReal.captured.PSObject.Properties['speculation'] -and (@($plainReal.captured.serverArguments) -join ' ').Contains('--spec-type none')) 'start re-plan: a plan without speculation reaches the supervisor with no block and --spec-type none'
         # The switch basis: a run that allows switching saves the serving options of the plan that runs, and they carry the mode.

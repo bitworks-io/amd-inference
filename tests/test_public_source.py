@@ -397,7 +397,7 @@ class PublicSourceTests(unittest.TestCase):
         staged = self.base / "real-staged"
         manifest = STAGE.stage(SCRIPT.parents[1], staged,
                                public_tree=not (SCRIPT.parents[1] / "ops").exists())
-        catalog_digest = "9015720bafea6c76e936c1bbf26e0a82c9f2e5de112583681379efe4e146a96e"
+        catalog_digest = "f80159beaa90b53a4ed452cfb433884cc586bbb2accd7f7145d2f84ca7161041"
         self.assertEqual(hashlib.sha256((staged / "config/catalog.json").read_bytes()).hexdigest(), catalog_digest)
         subprocess.run(["git", "init", "-q", str(staged)], check=True)
         subprocess.run(["git", "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)

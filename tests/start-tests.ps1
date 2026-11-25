@@ -17,7 +17,7 @@ try {
     New-Item -ItemType Directory -Path $engineFolder -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $engineFolder 'llama-server.exe') -Value 'not executable'
     $hardware.enginePath=Get-FastLlmEngineExecutable -InstallRoot $temp -EngineVersion b10698 -BackendKey vulkan -EntryPoint llama-server.exe
-    $plan=Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -InstallRoot $temp -ModelId qwen3.8-27b-ud-iq4-xs -ContextSize 8192
+    $plan=Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalogPath -InstallRoot $temp -ModelId qwen3.8-27b-ud-iq4-xs-4af51b35 -ContextSize 8192
     New-Item -ItemType Directory -Path (Split-Path $plan.modelPath -Parent) -Force | Out-Null
     Set-Content -LiteralPath $plan.modelPath -Value 'synthetic-placeholder'
     $fresh=$plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
@@ -1015,7 +1015,7 @@ try {
         Check ($null -ne $f -and $f.Data['FastLlmReason'] -ceq 'RuntimeCheckFailed' -and (Get-NdCode $f) -ceq $componentCase.code -and -not $script:nd.log.Contains('recovery-plan') -and @($script:nd.log | Where-Object { $_ -ceq 'start' }).Count -eq 1 -and $script:nd.planCalls -eq 1 -and $script:nd.requestedModelIds.Count -eq 1 -and (Test-NdNoAcquisition)) "$($componentCase.label): rethrown with its own code, no model recovery, re-plan or substitution"
     }
     $script:ndPlanComponent=$false;$script:ndPlanHip=$false
-    foreach($vulkanRecipe in @($null,'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k')){
+    foreach($vulkanRecipe in @($null,'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k')){
         Reset-Nd; $script:ndRecipe=$vulkanRecipe; $script:nd.startQueue.Enqueue('RuntimeCheckFailed')
         $f=Invoke-NdStart $false
         $recipeLabel=if($vulkanRecipe){'a UI-forwarded Vulkan -Recipe'}else{'an auto-selected'}

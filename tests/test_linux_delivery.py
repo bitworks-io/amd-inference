@@ -76,7 +76,7 @@ class LinuxDeliveryTests(unittest.TestCase):
             gpus = linux.inventory(Path(folder))
             catalog = json.loads((ROOT / "config" / "catalog.json").read_text())
             selected = linux.choose_recipe(catalog, gpus, "balanced")
-            self.assertEqual(selected["modelId"], "qwen3.8-27b-ud-q4-k-m")
+            self.assertEqual(selected["modelId"], "qwen3.8-27b-ud-q4-k-m-4af51b35")
             self.assertEqual(selected["observedFreeVramMiB"], 23 * 1024)
 
     def test_no_recipe_without_reliable_free_vram(self):
@@ -86,9 +86,9 @@ class LinuxDeliveryTests(unittest.TestCase):
     def test_two_headline_cards_preview_only_individual_gpu_capacity(self):
         catalog = json.loads((ROOT / "config" / "catalog.json").read_text())
         cases = (
-            ("two 7900 XT", (19900, 19800), "qwen3.8-27b-ud-iq4-xs", "qwen3.8-27b-ud-iq4-xs"),
-            ("two 7900 XTX", (23800, 23600), "qwen3.8-27b-ud-q4-k-m", "qwen3.8-27b-ud-q5-k-m"),
-            ("two R9700", (32000, 31800), "qwen3.8-27b-ud-q6-k-m", "qwen3.8-27b-q8-0"),
+            ("two 7900 XT", (19900, 19800), "qwen3.8-27b-ud-iq4-xs-4af51b35", "qwen3.8-27b-ud-iq4-xs-4af51b35"),
+            ("two 7900 XTX", (23800, 23600), "qwen3.8-27b-ud-q4-k-m-4af51b35", "qwen3.8-27b-ud-q5-k-m-4af51b35"),
+            ("two R9700", (32000, 31800), "qwen3.8-27b-ud-q6-k-m-4af51b35", "qwen3.8-27b-q8-0"),
         )
         for label, free_mib, balanced, quality in cases:
             cards = [{"card": f"card{index}", "recipeEligible": True, "vramFreeMiB": free}

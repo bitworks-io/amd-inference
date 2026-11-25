@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "note": "The *-4af51b35 entries are re-published files of already-approved models; licence Apache-2.0, LICENSE byte-identical to the previously accepted revision 4ca72078; approved 2026-11-25.",
   "models": [
     { "modelId": "qwen3.5-4b-iq4-xs", "revision": "e87f176479d0855a907a41277aca2f8ee7a09523" },
     { "modelId": "qwen3.5-9b-q4-k-m", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5" },
@@ -8,6 +9,9 @@
     { "modelId": "qwen3.8-27b-ud-iq4-xs", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
     { "modelId": "qwen3.8-27b-ud-q4-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
     { "modelId": "qwen3.8-27b-ud-q6-k-m", "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502" },
+    { "modelId": "qwen3.8-27b-ud-iq4-xs-4af51b35", "revision": "4af51b3542f775b0a8e4b310bfb3f17e01c306c9" },
+    { "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35", "revision": "4af51b3542f775b0a8e4b310bfb3f17e01c306c9" },
+    { "modelId": "qwen3.8-27b-ud-q6-k-m-4af51b35", "revision": "4af51b3542f775b0a8e4b310bfb3f17e01c306c9" },
     { "modelId": "qwen3.5-2b-q6-k", "revision": "f6d5376be1edb4d416d56da11e5397a961aca8ae" }
   ],
   "components": [

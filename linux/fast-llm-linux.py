@@ -72,7 +72,7 @@ def inventory(sysfs_root=Path("/sys/class/drm")):
 
 
 def choose_recipe(catalog, gpus, profile):
-    candidates = [m for m in catalog["models"] if m.get("autoEligible", True)]
+    candidates = [m for m in catalog["models"] if m.get("autoEligible", True) and not m.get("supersededBy")]
     matches = []
     for gpu in gpus:
         if not gpu["recipeEligible"]:

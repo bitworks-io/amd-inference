@@ -39,13 +39,13 @@ function Throws([scriptblock]$Action,[string]$Pattern) {
     if(-not $caught){throw "FAIL: rejects $Pattern (observed: $observed)"}
     Check $true "rejects $Pattern"
 }
-$explicit=Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-ud-iq4-xs' -ContextSize 8192
-Check ($explicit.model.id -eq 'qwen3.8-27b-ud-iq4-xs' -and $explicit.model.contextSize -eq 8192) 'explicit artifact/context survive resolution'
-Check ($explicit.model.requiredFreeVramMiB -eq 17800) 'reduced context does not invent a lower fit threshold'
+$explicit=Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-ud-iq4-xs-4af51b35' -ContextSize 8192
+Check ($explicit.model.id -eq 'qwen3.8-27b-ud-iq4-xs-4af51b35' -and $explicit.model.contextSize -eq 8192) 'explicit artifact/context survive resolution'
+Check ($explicit.model.requiredFreeVramMiB -eq 17896) 'reduced context does not invent a lower fit threshold'
 Throws { Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'does-not-exist' } 'Unknown model'
 Throws { Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ContextSize 256 } 'at least 512'
 Throws { Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-q8-0' } 'No other model'
-Throws { Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-ud-iq4-xs' -ContextSize 32768 } 'context exceeds'
+Throws { Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-ud-iq4-xs-4af51b35' -ContextSize 32768 } 'context exceeds'
 Throws { Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog -ModelId 'qwen3.8-27b-ud-iq3-xxs' } 'experimental'
 $before=Get-FastLlmPlan -Hardware $hardware -CatalogPath $catalog
 $hardware.adapters[0].freeVramMiB-=100
@@ -128,15 +128,15 @@ try {
     $record=@{kind='api-smoke-only';hardwareFingerprint=$cached.hardwareFingerprint;modelId=$cached.model.id;modelSha256=$cached.model.sha256;catalogSha256=(Get-FileHash $catalog -Algorithm SHA256).Hash.ToLowerInvariant()}
     $recordName=$cached.hardwareFingerprint+'.last-ready.json'
     Write-FastLlmState $recoveryRoot $record $recordName
-    $options=@{Hardware=$hardware;CatalogPath=$catalog;InstallRoot=$recoveryRoot;Profile='balanced';FailedModelId='qwen3.8-27b-ud-q4-k-m'}
+    $options=@{Hardware=$hardware;CatalogPath=$catalog;InstallRoot=$recoveryRoot;Profile='balanced';FailedModelId='qwen3.8-27b-ud-q4-k-m-4af51b35'}
     $recovered=Get-FastLlmRecoveryPlan @options
     Check ($recovered.model.id -eq $cached.model.id) 'recovery chooses only the previous cached consented artifact'
     Check ($recovered.recipe.origin -ceq 'estimated' -and $recovered.recipe.label -ceq 'Estimated for your card' -and $recovered.recovered) 'a recovered plan is labelled estimated, never Chosen by you'
     Check (-not (Test-FastLlmFileHash -Path $recovered.modelPath -Sha256 $recovered.model.sha256)) 'recovery eligibility is not an integrity bypass; startup must still hash'
-    Check ($null -eq (Get-FastLlmRecoveryPlan @options -RequestedModelId 'qwen3.8-27b-ud-q4-k-m')) 'explicit selection never falls back'
+    Check ($null -eq (Get-FastLlmRecoveryPlan @options -RequestedModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35')) 'explicit selection never falls back'
     $options.FailedModelId=$cached.model.id
     Check ($null -eq (Get-FastLlmRecoveryPlan @options)) 'recovery never loops onto the failing artifact'
-    $options.FailedModelId='qwen3.8-27b-ud-q4-k-m'
+    $options.FailedModelId='qwen3.8-27b-ud-q4-k-m-4af51b35'
     $record.catalogSha256='0'*64;Write-FastLlmState $recoveryRoot $record $recordName
     Check ($null -eq (Get-FastLlmRecoveryPlan @options)) 'catalog changes invalidate recovery history'
     $record.catalogSha256=(Get-FileHash $catalog -Algorithm SHA256).Hash.ToLowerInvariant()

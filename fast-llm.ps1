@@ -650,6 +650,7 @@ try {
                     foreach ($installedRow in $installedRows) {
                         $inUseText = if ($installedRow.inUse) { 'yes (' + $installedRow.inUseReason + ')' } else { 'no' }
                         $checkText = if ($installedRow.sizeMatches -and $installedRow.consent) { 'ok' } elseif (-not $installedRow.sizeMatches) { 'size differs' } else { 'no consent record' }
+                        if ($installedRow.supersededBy) { $checkText = $checkText + ' (superseded by ' + $installedRow.supersededBy + ')' }
                         Write-Host ('{0,-28} {1,5} GB  {2,-7}  {3}' -f $installedRow.id, (Format-FastLlmModelStoreGigabytes -Bytes $installedRow.sizeBytes), $inUseText, $checkText)
                     }
                 }

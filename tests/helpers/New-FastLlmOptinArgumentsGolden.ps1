@@ -55,13 +55,13 @@ function Get-FastLlmOptinArgumentsMatrix {
         @('long', 'test-24gb', 'auto', 'long', 1, 'auto', 'off'),
         @('long-two-slots', 'test-24gb', 'auto', 'long', 2, 'auto', 'off'),
         @('default-two-slots', 'test-24gb', 'auto', 'default', 2, 'auto', 'off'),
-        @('long-explicit-model', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'long', 1, 'auto', 'off'),
+        @('long-explicit-model', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'long', 1, 'auto', 'off'),
         @('long-smaller-card', 'test-12gb', 'auto', 'long', 1, 'auto', 'off'),
         @('long-two-slots-smaller-card', 'test-12gb', 'auto', 'long', 2, 'auto', 'off'),
         @('long-no-row', 'test-24gb', 'qwen3.5-9b-q8-0', 'long', 1, 'auto', 'off'),
         @('two-slots-not-allowed', 'test-24gb', 'qwen3.5-9b-q6-k', 'long', 2, 'auto', 'off'),
         @('two-slots-no-row', 'test-24gb', 'qwen3.5-9b-q6-k', 'default', 2, 'auto', 'off'),
-        @('long-row-memory-explicit', 'test-24gb-tight', 'qwen3.8-27b-ud-q4-k-m', 'long', 1, 'auto', 'off'),
+        @('long-row-memory-explicit', 'test-24gb-tight', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'long', 1, 'auto', 'off'),
         @('long-row-memory-auto', 'test-24gb-tight', 'auto', 'long', 1, 'auto', 'off'),
         @('long-two-slots-two-cards', 'test-dual-24gb', 'qwen3.8-27b-q8-0', 'long', 2, 'auto', 'off'),
         @('long-thinking-off-chat-page-on', 'test-24gb', 'auto', 'long', 1, 'off', 'on')
@@ -136,15 +136,15 @@ function Get-FastLlmVisionArgumentsMatrix {
     $projectorPath = 'C:\Users\Test User\FastLLM\components\projector\test-vision-projector-q8\test-vision-projector-q8.gguf'
     # name, hardware, request (auto or a model id), contextProfile, slots
     $cases = @(
-        @('vision-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'long', 1),
-        @('vision-long-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'long', 2),
-        @('vision-default-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'default', 2),
+        @('vision-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'long', 1),
+        @('vision-long-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'long', 2),
+        @('vision-default-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'default', 2),
         @('vision-smaller-model-long', 'test-24gb', 'qwen3.5-9b-q6-k', 'long', 1),
         @('vision-extra-memory-tips-the-fit', 'test-12gb', 'qwen3.5-9b-q6-k', 'long', 1),
-        @('vision-default-context-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'default', 1),
+        @('vision-default-context-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'default', 1),
         @('vision-row-has-no-value-for-the-profile', 'test-12gb', 'qwen3.5-9b-q6-k', 'default', 1),
         @('vision-no-row-for-the-model', 'test-24gb', 'qwen3.8-27b-q8-0', 'long', 1),
-        @('vision-fit-adds-the-extra-memory', 'test-24gb-22000', 'qwen3.8-27b-ud-q4-k-m', 'long', 1)
+        @('vision-fit-adds-the-extra-memory', 'test-24gb-22000', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'long', 1)
     )
     $rows = New-Object System.Collections.ArrayList
     foreach ($case in $cases) {
@@ -218,16 +218,16 @@ function Get-FastLlmSpeculationArgumentsMatrix {
     }
     # name, hardware, request (a model id), mode, contextProfile, slots, vision
     $cases = @(
-        @('ngram-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'long', 1, 'off'),
+        @('ngram-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'ngram', 'long', 1, 'off'),
         @('ngram-mod-no-extra-arguments', 'test-12gb', 'qwen3.5-9b-q6-k', 'ngram', 'long', 1, 'off'),
-        @('mtp-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'mtp', 'long', 1, 'off'),
+        @('mtp-long', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'mtp', 'long', 1, 'off'),
         @('refused-no-row-for-the-model', 'test-24gb', 'qwen3.8-27b-q8-0', 'ngram', 'long', 1, 'off'),
         @('refused-no-mtp-row-for-the-model', 'test-12gb', 'qwen3.5-9b-q6-k', 'mtp', 'long', 1, 'off'),
         @('refused-row-has-no-value-for-the-profile', 'test-12gb', 'qwen3.5-9b-q6-k', 'ngram', 'default', 1, 'off'),
-        @('refused-explicit-default-has-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'default', 1, 'off'),
-        @('refused-mtp-explicit-default-has-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'mtp', 'default', 1, 'off'),
-        @('refused-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'long', 2, 'off'),
-        @('refused-with-vision', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m', 'ngram', 'long', 1, 'on')
+        @('refused-explicit-default-has-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'ngram', 'default', 1, 'off'),
+        @('refused-mtp-explicit-default-has-no-profile-id', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'mtp', 'default', 1, 'off'),
+        @('refused-two-slots', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'ngram', 'long', 2, 'off'),
+        @('refused-with-vision', 'test-24gb', 'qwen3.8-27b-ud-q4-k-m-4af51b35', 'ngram', 'long', 1, 'on')
     )
     $rows = New-Object System.Collections.ArrayList
     foreach ($case in $cases) {

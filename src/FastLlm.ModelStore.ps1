@@ -142,6 +142,7 @@ function Get-FastLlmInstalledModels {
             consent      = $consent
             inUse        = [bool] ($reason -ne '')
             inUseReason  = $reason
+            supersededBy = (Get-FastLlmModelSupersededBy -Model $model)
         })
     }
     return @($rows)

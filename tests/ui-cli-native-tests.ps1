@@ -20,7 +20,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $module=Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force -PassThru
 & $module { Initialize-FastLlmProcessHost }
 $cli=Join-Path $root 'fast-llm.ps1'
-$modelId='qwen3.8-27b-ud-q4-k-m'
+$modelId='qwen3.8-27b-ud-q4-k-m-4af51b35'
 $wrongDigest=('0'*64)
 $checks=0
 function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:checks++}
