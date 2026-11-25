@@ -302,6 +302,13 @@ def acquire_model(catalog, model_id, cache_root, *, accept_license_for=None,
     if accept_license_for is not None and not reviewed:
         raise ValueError("acceptance requires reviewed exact license, upstream, artifact, and conversion provenance")
     root = _private_root(Path(cache_root))
+    # A superseded model is never fetched: it is acquired only when the exact file is already present and verified (then it is reused as for any
+    # model). Otherwise it is refused here, before any license or model request, naming the replacement.
+    replacement = item.get("supersededBy")
+    if replacement:
+        present = _regular_private(root / f"{item['id']}-{item['sha256']}.gguf", optional=True)
+        if not (present and present.st_size == item["sizeBytes"] and _sha256(root / f"{item['id']}-{item['sha256']}.gguf") == item["sha256"]):
+            raise ValueError(f"model-superseded: Model '{model_id}' is superseded by '{replacement}'. Use '{replacement}'.")
     transport = transport or UrlTransport()
     deadline = time.monotonic() + deadline_seconds
     final = root / f"{item['id']}-{item['sha256']}.gguf"

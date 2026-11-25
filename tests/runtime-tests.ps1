@@ -358,10 +358,11 @@ try {
     # (status phase, Ready console line) and before the last-ready recovery record is rewritten. A hard fail keeps the previous record.
     $savedWriteState=& $module {(Get-Command Write-FastLlmState).ScriptBlock}
     try {
-        foreach ($selfTestCase in @(@{mode='selftest-ok';context=1024;label='selftest-ok'},@{mode='ok';context=1024;label='ok'},@{mode='selftest-ok';context=600;label='small-context'})) {
+        foreach ($selfTestCase in @(@{mode='selftest-ok';context=1024;label='selftest-ok'},@{mode='ok';context=1024;label='ok'},@{mode='selftest-ok';context=600;label='small-context'},@{mode='selftest-ok';context=1024;label='below-expected';below=$true})) {
             $selfTestMode=$selfTestCase.mode
             $expectPass=($selfTestMode -ceq 'selftest-ok')
             $expectSkip=($selfTestCase.context -lt 648)
+            $expectBelow=[bool]($selfTestCase.ContainsKey('below') -and $selfTestCase.below)
             $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
             $listener.Start();$port=$listener.LocalEndpoint.Port;$listener.Stop()
             $runRoot=Join-Path $temp ('selftest-case-'+$selfTestCase.label)
@@ -375,6 +376,12 @@ try {
                 recipe=[pscustomobject]@{id='r1';origin='bitworks';label='Measured by Bitworks on this card';evidenceUrl='https://bitworks.io/amd/results/x';expected=$null}
             }
             $plan.model | Add-Member -NotePropertyMembers @{parallel=1;cacheTypeK='f16';cacheTypeV='f16'}
+            $lineageNote='Expected numbers were measured on the previous file revision 4ca72078; this revision is being verified.'
+            if ($expectBelow) {
+                # Expected numbers no run can reach make the verdict below-expected; the recipe says they were measured on the previous file revision.
+                $plan.recipe.expected=[pscustomobject]@{generationTokS=1000000;promptTokS=1000000;contextTokens=1024;engineBuild='test';mitigation='off'}
+                $plan.recipe | Add-Member -NotePropertyName measurementNote -NotePropertyValue $lineageNote
+            }
             $priorRecord=[ordered]@{kind='api-smoke-only';hardwareFingerprint='synthetic';modelId='prior-model';modelSha256=('1'*64);catalogSha256=('2'*64)}
             Write-FastLlmState $runRoot $priorRecord 'synthetic.last-ready.json'
             $recordPath=Join-Path $runRoot 'state/synthetic.last-ready.json'
@@ -433,7 +440,16 @@ try {
                 Check ($null -eq $failure -and $exit -eq 0) 'self-test pass: the supervised start completes and obeys stop'
                 Check ($iSelfTest -ge 0 -and $iReady -gt $iSelfTest -and $iRecord -gt $iReady) 'self-test pass: the verdict is written before the ready status and the last-ready record'
                 Check ($iSelfTestLine -ge 0 -and $iReadyLine -gt $iSelfTestLine -and $iReadyLine -gt $iSelfTest -and $iReady -lt $iReadyLine) 'self-test pass: the Ready line is printed after the self-test line and after the ready status'
-                Check ($selfTestFile.result.status -ceq 'pass' -and $selfTestFile.schemaVersion -eq 1) 'self-test pass: selftest.json records the verdict'
+                if ($expectBelow) {
+                    Check ($selfTestFile.result.status -ceq 'below-expected' -and $selfTestFile.schemaVersion -eq 1) 'self-test below expected: selftest.json records the verdict'
+                    Check (@($log | Where-Object { $_ -like 'host:Self-test: generation*below 70%*' }).Count -eq 1) 'self-test below expected: the console says the run is below expected'
+                    Check (@($log | Where-Object { $_ -ceq ('host:' + $lineageNote) }).Count -eq 1) 'self-test below expected: the console repeats the previous-revision measurement note'
+                    Check ([string]$finalStatus.measurementNote -ceq $lineageNote) 'self-test below expected: the persisted status file carries measurementNote'
+                }
+                else {
+                    Check ($selfTestFile.result.status -ceq 'pass' -and $selfTestFile.schemaVersion -eq 1) 'self-test pass: selftest.json records the verdict'
+                    Check (-not $finalStatus.PSObject.Properties['measurementNote'] -and @($log | Where-Object { $_ -like 'host:Expected numbers were measured*' }).Count -eq 0) 'self-test pass: no measurementNote in the status and none on the console'
+                }
                 $newRecord=Read-FastLlmJson $recordPath
                 Check ($newRecord.modelId -ceq 'test-model') 'self-test pass: the last-ready record is rewritten for the model that passed'
             } else {

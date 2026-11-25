@@ -279,6 +279,16 @@ def has_live_evidence(entry):
     return bool(evidence.get("url")) and bool(DATE_RE.match(str(evidence.get("publishedAt") or "")))
 
 
+LINEAGE_LABEL_SUFFIX = " on the previous file revision; this revision is being verified"
+
+
+def label_for(entry, origin):
+    """The origin's label; a recipe whose numbers were measured on the previous file revision says so (the plan block uses the same text)."""
+    if (entry.get("evidence") or {}).get("measuredModel"):
+        return LABELS[origin] + LINEAGE_LABEL_SUFFIX
+    return LABELS[origin]
+
+
 def recipe_from(entry, origin):
     if origin == "bitworks-experimental":
         components = {"engine": entry["components"]["engine"], "model": entry["model"]}
@@ -297,7 +307,7 @@ def recipe_from(entry, origin):
             if ref:
                 components[key] = ref
     recipe = {
-        "id": entry["id"], "origin": origin, "label": LABELS[origin],
+        "id": entry["id"], "origin": origin, "label": label_for(entry, origin),
         "gpu": {"variant": entry["variant"], "count": entry["gpuCount"]},
         "components": components,
         "runtime": entry["runtime"], "engineBuild": entry["engineBuild"], "recommended": bool(entry.get("recommended")),

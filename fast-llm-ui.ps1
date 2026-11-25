@@ -1921,7 +1921,7 @@ $timer.Add_Tick({
                         if($setupLine){$lines+=$setupLine}
                         if($script:setupNotice){$lines+=[string]$script:setupNotice}
                         if($script:servingSettingsNotice){$lines+=[string]$script:servingSettingsNotice}
-                        if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}
+                        if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest -MeasurementNote $(if($s.PSObject.Properties['measurementNote']){[string]$s.measurementNote}else{''});$script:servingNotesDone=$true}
                         $barNote=Get-FastLlmUiBarNote -State $s
                         if($barNote){$lines+=$barNote;$barLink.Visible=$true}
                         if($lines.Count){$notesLabel.Text=($lines -join [Environment]::NewLine)}

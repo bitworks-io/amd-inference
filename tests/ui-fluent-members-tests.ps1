@@ -327,6 +327,9 @@ try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application
 
 '@
       Orig=''}
+    @{Name='self-test measurement note'
+      Cur='if($s.PSObject.Properties[''selfTest''] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest -MeasurementNote $(if($s.PSObject.Properties[''measurementNote'']){[string]$s.measurementNote}else{''''});$script:servingNotesDone=$true}'
+      Orig='if($s.PSObject.Properties[''selfTest''] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}'}
 )
 function Get-NormalizedText([string]$Path){
     $bytes=[IO.File]::ReadAllBytes($Path)
@@ -348,7 +351,7 @@ function Undo-NamedChanges([string]$Text){
     }
     return [pscustomobject]@{Text=$Text;Problems=$problems}
 }
-Check ($namedChanges.Count -eq 12) 'twelve named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard)'
+Check ($namedChanges.Count -eq 13) 'thirteen named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note)'
 $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}

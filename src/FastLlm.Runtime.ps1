@@ -1673,7 +1673,7 @@ function Invoke-FastLlmSupervisedServer {
             }
             elseif ($selfTestResult.status -eq 'below-expected') {
                 Write-Host "Self-test: generation $($selfTestResult.generationTokS) tok/s is below 70% of the $($selfTestResult.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
-                if ($state.PSObject.Properties['measurementNote'] -and $state.measurementNote) { Write-Host ([string] $state.measurementNote) }
+                if ($state.Contains('measurementNote') -and $state['measurementNote']) { Write-Host ([string] $state['measurementNote']) }
             }
             else {
                 $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message (Get-FastLlmSelfTestFailureText -Reasons @($selfTestResult.reasons) -Plan $Plan)

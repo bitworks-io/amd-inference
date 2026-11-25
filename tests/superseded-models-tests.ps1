@@ -7,6 +7,7 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2.0
 $root=Split-Path $PSScriptRoot -Parent
 $module=Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force -PassThru -ErrorAction Stop
+. (Join-Path $root 'src/FastLlm.UiFlow.ps1')
 $script:count=0
 function Check($Condition,[string]$Message){if(-not $Condition){throw "FAIL: $Message"};$script:count++;Write-Host "PASS: $Message"}
 function Write-Utf8([string]$Path,[string]$Text){[IO.File]::WriteAllText($Path,$Text,(New-Object Text.UTF8Encoding($false)))}
@@ -107,20 +108,49 @@ try {
     Check ($shippedPick.model.id -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35' -and $shippedPick.recipe.origin -ceq 'bitworks') 'the shipped XTX recipe plans the new file'
     Check ($shippedPick.recipe.PSObject.Properties['measuredOn'] -and $shippedPick.recipe.measuredOn.model -ceq 'qwen3.8-27b-ud-q4-k-m' -and $shippedPick.recipe.measuredOn.revision -ceq '4ca720788d1e01f1bff70c033e0d0028fd02e502') 'the plan names the file revision the expected numbers were measured on'
     Check ($shippedPick.recipe.measurementNote -ceq 'Expected numbers were measured on the previous file revision 4ca72078; this revision is being verified.') 'the plan carries the measurement note, with the first 8 characters of the old revision'
+    $lineageLabel='Measured by Bitworks on this card on the previous file revision; this revision is being verified'
+    Check ($shippedPick.recipe.label -ceq $lineageLabel) 'the plan label for a lineage recipe says the numbers are from the previous file revision'
+    $summary=Format-FastLlmUiRecipeSummary -Plan $shippedPick
+    Check ($summary -clike 'Best setup for your *: qwen3.8-27b-ud-q4-k-m-4af51b35 (UD-Q4_K_M), 32,768 context. Measured by Bitworks on this card on the previous file revision; this revision is being verified.') "the window recipe summary carries the honest label (observed: $summary)"
+    $shippedRows=@(Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.json'))
+    $lineageRows=@($shippedRows | Where-Object { $_.evidence -and $_.evidence.PSObject.Properties['measuredModel'] })
+    Check ($lineageRows.Count -eq 4 -and @($lineageRows | Where-Object { [string]$_.label -cne $lineageLabel }).Count -eq 0) 'the recipe list labels every lineage recipe with the honest label'
+    Check (@($shippedRows | Where-Object { -not ($_.evidence -and $_.evidence.PSObject.Properties['measuredModel']) -and [string]$_.origin -ceq 'bitworks' }).Count -eq 0) 'every shipped verified recipe is a lineage recipe'
     $estimatedPlan=Get-FixturePlan 'rx-7900-xtx-24gb.json' $realCatalogPath
     Check (-not $estimatedPlan.recipe.PSObject.Properties['measuredOn'] -and -not $estimatedPlan.recipe.PSObject.Properties['measurementNote']) 'a plan without such a recipe has no measuredOn or measurementNote'
+
+    # Naming a current recipe is not refused because another usable recipe's model is superseded.
+    $twoRecipes=[pscustomobject][ordered]@{ schema='bitworks.fastllm-recipes/v2'; recipes=@(
+        $oldRecipeDocument.recipes[0],
+        [pscustomobject][ordered]@{ id='test-xtx-current'; origin='bitworks'; recommended=$false
+            gpu=[pscustomobject]@{ variant='rx-7900-xtx'; count=1 }
+            components=[pscustomobject]@{ engine="llama.cpp-$($realCatalog.engine.version)-vulkan"; model='qwen3.8-27b-ud-q4-k-m-4af51b35' }
+            engineBuild=[string]$realCatalog.engine.version
+            runtime=[pscustomobject]@{ contextSize=32768; vulkanBarMitigation='auto' }
+            expected=[pscustomobject]@{ generationTokS=30.5 }
+            evidence=[pscustomobject]@{ url='https://bitworks.io/test-recipe'; publishedAt='2026-10-01' } }) }
+    $twoFile=Join-Path $recipeDir 'two-recipes.json'
+    Write-Utf8 $twoFile ($twoRecipes | ConvertTo-Json -Depth 8)
+    $twoOptions=@{ RecipesPath=$twoFile; GpuVariantsPath=$variantsPath }
+    $currentNamed=Get-FastLlmPlan -Hardware $xtx -CatalogPath $realCatalogPath -InstallRoot (Join-Path $work 'plan-install') -NoEngineExecution -RecipeId 'test-xtx-current' @twoOptions
+    Check ($currentNamed.recipe.id -ceq 'test-xtx-current' -and $currentNamed.model.id -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35') 'naming a current recipe plans even when another usable recipe names a superseded model'
+    $supersededNamed=Get-Thrown { Get-FastLlmPlan -Hardware $xtx -CatalogPath $realCatalogPath -InstallRoot (Join-Path $work 'plan-install') -NoEngineExecution -RecipeId 'test-xtx-old' @twoOptions }
+    Check ((Get-Code $supersededNamed) -ceq 'model-superseded') 'naming the superseded recipe in the same list still refuses'
+    $twoAuto=Get-FastLlmPlan -Hardware $xtx -CatalogPath $realCatalogPath -InstallRoot (Join-Path $work 'plan-install') -NoEngineExecution @twoOptions
+    Check ($twoAuto.recipe.id -ceq 'test-xtx-current') 'auto-pick takes the current recipe and skips the superseded one'
 
     # The recipe block fields, from a recipe that carries the lineage and one that does not.
     $lineageBlock=& $module {
         param($Recipe) New-FastLlmPlanRecipeBlock -Pick ([pscustomobject]@{ recipe=$Recipe; variant='v'; skipped=@() }) -ModelId 'm'
     } ([pscustomobject]@{ id='r'; origin='bitworks'; evidence=[pscustomobject]@{ url='https://bitworks.io/x'; measuredModel='old-model'; measuredRevision='0123456789abcdef0123456789abcdef01234567' } })
+    Check ($lineageBlock.label -ceq 'Measured by Bitworks on this card on the previous file revision; this revision is being verified') 'recipe block: the label of a lineage recipe is the honest label'
     Check ($lineageBlock.measuredOn.model -ceq 'old-model' -and $lineageBlock.measuredOn.revision -ceq '0123456789abcdef0123456789abcdef01234567' -and $lineageBlock.measurementNote -ceq 'Expected numbers were measured on the previous file revision 01234567; this revision is being verified.') 'recipe block: measuredOn and measurementNote'
     $plainBlock=& $module {
         param($Recipe) New-FastLlmPlanRecipeBlock -Pick ([pscustomobject]@{ recipe=$Recipe; variant='v'; skipped=@() }) -ModelId 'm'
     } ([pscustomobject]@{ id='r'; origin='bitworks'; evidence=[pscustomobject]@{ url='https://bitworks.io/x' } })
+    Check ($plainBlock.label -ceq 'Measured by Bitworks on this card') 'recipe block: the label of any other recipe is unchanged'
     Check (-not $plainBlock.PSObject.Properties['measuredOn'] -and -not $plainBlock.PSObject.Properties['measurementNote']) 'recipe block: no lineage fields without measuredModel'
     $uiNote='Expected numbers were measured on the previous file revision 4ca72078; this revision is being verified.'
-    . (Join-Path $root 'src/FastLlm.UiFlow.ps1')
     $slow=Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status='below-expected'; generationTokS=20; promptTokS=400; expectedGenerationTokS=32.7 }) -MeasurementNote $uiNote
     Check ($slow -clike 'Self-test: slower than expected*' -and $slow.EndsWith($uiNote)) 'the window self-test line repeats the measurement note for such a recipe'
     Check ((Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status='below-expected'; generationTokS=20; promptTokS=400; expectedGenerationTokS=32.7 })) -cnotlike '*previous file revision*') 'the window self-test line has no note for any other recipe'

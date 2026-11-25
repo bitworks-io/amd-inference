@@ -38,7 +38,7 @@
         "variant": "rx-7900-xt"
       },
       "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k",
-      "label": "Measured by Bitworks on this card",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": false,
       "runtime": {
@@ -79,7 +79,7 @@
         "variant": "rx-7900-xt"
       },
       "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k.hip",
-      "label": "Measured by Bitworks on this card",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": true,
       "runtime": {
@@ -119,7 +119,7 @@
         "variant": "rx-7900-xtx"
       },
       "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k",
-      "label": "Measured by Bitworks on this card",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": false,
       "runtime": {
@@ -160,7 +160,7 @@
         "variant": "rx-7900-xtx"
       },
       "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip",
-      "label": "Measured by Bitworks on this card",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": true,
       "runtime": {

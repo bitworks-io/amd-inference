@@ -649,6 +649,13 @@ class MeasuredLineageTests(unittest.TestCase):
         self.assertEqual((evidence["measuredModel"], evidence["measuredRevision"]), ("m-old", OLD_REVISION))
         self.assertEqual(document["recipes"][0]["components"]["model"], "m-new")
 
+    def test_a_lineage_recipe_is_labelled_as_measured_on_the_previous_revision(self):
+        document, _ = br.build(self.lineage_tree(self.entry(measuredModel="m-old", measuredRevision=OLD_REVISION)))
+        self.assertEqual(document["recipes"][0]["label"],
+                         "Measured by Bitworks on this card on the previous file revision; this revision is being verified")
+        plain, _ = br.build(self.lineage_tree(self.entry()))
+        self.assertEqual(plain["recipes"][0]["label"], "Measured by Bitworks on this card")
+
     def test_measured_model_is_refused_for_anything_but_the_predecessor(self):
         bad = {
             "a model that is not superseded by this recipe's model": dict(measuredModel="m-other", measuredRevision="1" * 40),

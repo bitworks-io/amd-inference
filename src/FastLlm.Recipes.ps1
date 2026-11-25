@@ -261,7 +261,7 @@ function Select-FastLlmRecipeForPlacements {
     foreach ($model in @($Catalog.models)) { $models[[string] $model.id] = $model }
     # A recipe named with -Recipe whose model is superseded is refused up front; the replacement is named. Auto-pick skips it below.
     if ($RecipeId) {
-        foreach ($named in $usable) {
+        foreach ($named in @($usable | Where-Object { [string] $_.id -ceq $RecipeId })) {
             $namedModel = $models[[string] $named.components.model]
             $namedSupersededBy = Get-FastLlmModelSupersededBy -Model $namedModel
             if ($namedSupersededBy) { throw (New-FastLlmSupersededFailure -ModelId ([string] $namedModel.id) -ReplacementId $namedSupersededBy) }
@@ -411,6 +411,7 @@ function New-FastLlmPlanRecipeBlock {
         # A recipe whose expected numbers were measured on the previous file revision says so in the plan; nothing is added for any other recipe.
         $lineage = Get-FastLlmRecipeMeasuredLineage -Recipe $recipe
         if ($lineage) {
+            $block.label = (Get-FastLlmRecipeLabel ([string] $recipe.origin)) + ' on the previous file revision; this revision is being verified'
             $block | Add-Member -NotePropertyName measuredOn -NotePropertyValue ([pscustomobject] [ordered] @{ model = $lineage.model; revision = $lineage.revision })
             $block | Add-Member -NotePropertyName measurementNote -NotePropertyValue (Get-FastLlmMeasuredLineageNote -Revision $lineage.revision)
         }
