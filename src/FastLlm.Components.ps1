@@ -317,7 +317,7 @@ function Get-FastLlmRecipeChooserRows {
         $contextSize = 0
         if ($recipe.PSObject.Properties['runtime'] -and $recipe.runtime -and $recipe.runtime.PSObject.Properties['contextSize']) { $contextSize = [int] $recipe.runtime.contextSize }
         $rows.Add([pscustomobject] [ordered] @{
-                id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
+                id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeDisplayLabel -Recipe $recipe)
                 variant = [string] $recipe.gpu.variant; gpuCount = [int] $recipe.gpu.count
                 model = [string] $recipe.components.model; contextSize = $contextSize
                 engineId = $engineId; chain = $chain.ToArray(); consentRequired = [bool] $consentRequired; installRequired = [bool] $installRequired; chainError = $chainError

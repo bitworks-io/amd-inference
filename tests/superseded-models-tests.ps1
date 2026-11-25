@@ -177,6 +177,12 @@ try {
     } ([pscustomobject]@{ id='r'; origin='bitworks'; evidence=[pscustomobject]@{ url='https://bitworks.io/x' } })
     Check ($plainBlock.label -ceq 'Measured by Bitworks on this card') 'recipe block: the label of any other recipe is unchanged'
     Check (-not $plainBlock.PSObject.Properties['measuredOn'] -and -not $plainBlock.PSObject.Properties['measurementNote']) 'recipe block: no lineage fields without measuredModel'
+    # The one label function the plan block and the recipe chooser (recipes -Detail, "Choose another setup") both use.
+    $lineageRecipe=[pscustomobject]@{ id='r'; origin='bitworks'; evidence=[pscustomobject]@{ measuredModel='old-model'; measuredRevision='0123456789abcdef0123456789abcdef01234567' } }
+    Check ((Get-FastLlmRecipeDisplayLabel -Recipe $lineageRecipe) -ceq $lineageBlock.label -and (Get-FastLlmRecipeDisplayLabel -Recipe ([pscustomobject]@{ id='r'; origin='bitworks'; evidence=$null })) -ceq 'Measured by Bitworks on this card') 'display label: the lineage label for a lineage recipe, the origin label otherwise (the plan block agrees)'
+    $shippedRecipes=@(Read-FastLlmRecipes -Path (Join-Path $root 'config/recipes.json'))
+    $lineageShipped=@($shippedRecipes | Where-Object { $_.evidence -and $_.evidence.PSObject.Properties['measuredModel'] })
+    Check ($lineageShipped.Count -eq 4 -and @($lineageShipped | Where-Object { [string]$_.label -cne (Get-FastLlmRecipeDisplayLabel -Recipe $_) }).Count -eq 0) 'display label: the four shipped lineage recipes carry the same label in config/recipes.json as the product shows'
     $uiNote='Expected numbers were measured on the previous file revision 4ca72078; this revision is being verified.'
     $slow=Format-FastLlmUiSelfTest -SelfTest ([pscustomobject]@{ status='below-expected'; generationTokS=20; promptTokS=400; expectedGenerationTokS=32.7 }) -MeasurementNote $uiNote
     Check ($slow -clike 'Self-test: slower than expected*' -and $slow.EndsWith($uiNote)) 'the window self-test line repeats the measurement note for such a recipe'

@@ -386,6 +386,16 @@ function Get-FastLlmRecipeMeasuredLineage {
     return [pscustomobject] @{ model = [string] $evidence.measuredModel; revision = $measuredRevision }
 }
 
+# The label a recipe shows wherever it is planned or listed (the plan block, the window summary, the recipe chooser and recipes -Detail): its
+# origin's label, and for a recipe whose expected numbers were measured on the previous file revision, that label saying so. The recipe builder
+# writes the same text into config/recipes.json.
+function Get-FastLlmRecipeDisplayLabel {
+    param($Recipe)
+    $label = Get-FastLlmRecipeLabel ([string] $Recipe.origin)
+    if (Get-FastLlmRecipeMeasuredLineage -Recipe $Recipe) { $label = $label + ' on the previous file revision; this revision is being verified' }
+    return $label
+}
+
 # The one sentence every plan, self-test line or report uses for such a recipe.
 function Get-FastLlmMeasuredLineageNote {
     param([string] $Revision)
@@ -411,7 +421,7 @@ function New-FastLlmPlanRecipeBlock {
         # A recipe whose expected numbers were measured on the previous file revision says so in the plan; nothing is added for any other recipe.
         $lineage = Get-FastLlmRecipeMeasuredLineage -Recipe $recipe
         if ($lineage) {
-            $block.label = (Get-FastLlmRecipeLabel ([string] $recipe.origin)) + ' on the previous file revision; this revision is being verified'
+            $block.label = Get-FastLlmRecipeDisplayLabel -Recipe $recipe
             $block | Add-Member -NotePropertyName measuredOn -NotePropertyValue ([pscustomobject] [ordered] @{ model = $lineage.model; revision = $lineage.revision })
             $block | Add-Member -NotePropertyName measurementNote -NotePropertyValue (Get-FastLlmMeasuredLineageNote -Revision $lineage.revision)
         }

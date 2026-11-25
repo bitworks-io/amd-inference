@@ -4799,6 +4799,7 @@ Export-ModuleMember -Function @(
     'Read-FastLlmJson',
     'Read-FastLlmRecipes',
     'Get-FastLlmRecipeLabel',
+    'Get-FastLlmRecipeDisplayLabel',
     'Test-FastLlmExperimentalOrigin',
     'Remove-FastLlmDeviceBindingPrivateFields',
     'Get-FastLlmSpillCheckVerdict',
