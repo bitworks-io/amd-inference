@@ -291,6 +291,19 @@ $downloadMock={ param($Url,$Destination,$Sha256,$SizeBytes,$AllowedRedirectHosts
     Check (($pickerItems -join ',') -ceq 'Recommended for installed GPU,m-current,m-auto') 'picker: superseded and not-auto-eligible models are hidden, the rest are listed'
     $shippedItems=@((Initialize-FastLlmUiFluentBindings -InstallRoot $work -Catalog $realCatalog -UiSettings $pickerSettings)['modelBox'].Items | ForEach-Object { [string]$_ })
     Check (@($shippedItems | Where-Object { $oldIds -ccontains $_ }).Count -eq 0 -and $shippedItems -ccontains 'qwen3.8-27b-ud-q4-k-m-4af51b35') 'picker: the shipped catalog lists the new Qwen3.8 27B ids and none of the old ones'
+    # Both windows take their list from the one shared helper, so the classic and the Fluent picker cannot drift (the Windows parity suite also
+    # compares the two live lists). The helper itself, then the two call sites, then the absence of any other list-building loop.
+    Check ((@(Get-FastLlmUiPickerModelIds -Catalog $pickerCatalog) -join ',') -ceq 'm-current,m-auto') 'picker helper: superseded and not-auto-eligible models are left out, catalog order kept'
+    $helperShipped=@(Get-FastLlmUiPickerModelIds -Catalog $realCatalog)
+    Check (@($helperShipped | Where-Object { $oldIds -ccontains $_ }).Count -eq 0 -and (('Recommended for installed GPU,' + ($helperShipped -join ',')) -ceq ($shippedItems -join ','))) 'picker helper: the shipped list has no superseded id and equals the Fluent list after its first entry'
+    Check (@(Get-FastLlmUiPickerModelIds -Catalog ([pscustomobject]@{ models=@([pscustomobject]@{ id='m-only-old'; supersededBy='m-x' }) })).Count -eq 0) 'picker helper: a catalog of only superseded models gives an empty list'
+    $classicText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
+    $bindingsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentBindings.ps1'))
+    Check ($classicText.Contains('foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $catalog)) { $modelBox.Items.Add($pickerId)|Out-Null }')) 'classic window: the model list is built from the shared picker helper'
+    Check ($bindingsText.Contains('foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $Catalog)){ [void]$modelBox.Items.Add($pickerId) }')) 'Fluent window: the model list is built from the shared picker helper'
+    foreach($sourceText in @($classicText,$bindingsText)){
+        Check (-not ($sourceText -cmatch 'modelBox\.Items\.Add\(\[string\]\$model\.id\)')) 'no window adds catalog model ids to its picker outside the shared helper'
+    }
 
     Write-Host "superseded-models-tests: $script:count checks passed"
 }

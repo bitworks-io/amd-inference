@@ -89,6 +89,23 @@ function Set-FastLlmComponentSettings {
     Write-FastLlmComponentSettingsObject -InstallRoot $InstallRoot -Merged $merged
 }
 
+# The model ids a window's model picker offers after its 'Recommended for installed GPU' entry, in catalog order: auto-eligible models only, and
+# never a superseded file revision (picking one would only be refused). The classic and the Fluent window both build their list from this one
+# helper, so the two lists cannot drift. It lives here because both windows (and every Fluent test) dot-source this file before the bindings.
+function Get-FastLlmUiPickerModelIds {
+    param($Catalog)
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach ($model in @($Catalog.models)) {
+        $autoEligibleProperty = $model.PSObject.Properties['autoEligible']
+        if ($autoEligibleProperty -and -not $autoEligibleProperty.Value) { continue }
+        $supersededProperty = $model.PSObject.Properties['supersededBy']
+        if ($supersededProperty -and -not [string]::IsNullOrWhiteSpace([string] $supersededProperty.Value)) { continue }
+        $ids.Add([string] $model.id)
+    }
+    # Unrolled on purpose: callers wrap the call in @(), which gives an empty, one- or many-item array alike.
+    return $ids.ToArray()
+}
+
 function Format-FastLlmComponentSize {
     param([int64] $Bytes)
     $megabytes = [double] $Bytes / 1048576.0
