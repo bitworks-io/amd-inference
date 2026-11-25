@@ -222,6 +222,62 @@ def referenced_tools(text, names):
     return {n for n in names if re.search(r"(?<![\w.\-])" + re.escape(n) + r"(?![\w\-])", text)}
 
 
+class StableRecipeLineageGateTests(unittest.TestCase):
+    """A stable build refuses recipes whose expected numbers were measured on a previous file revision; a canary may carry them."""
+    # The same fake tree and build helper as PublicBuilderTests, without re-running its tests.
+    setUp = PublicBuilderTests.setUp
+    build = PublicBuilderTests.build
+    names = PublicBuilderTests.names
+
+    def write_recipes(self, with_lineage):
+        evidence = {"publishedAt": "2026-10-14", "resultId": "r", "url": "https://bitworks.io/x"}
+        if with_lineage:
+            evidence.update(measuredModel="old-model", measuredRevision="4ca720788d1e01f1bff70c033e0d0028fd02e502")
+        document = {"schema": "bitworks.fastllm-recipes/v2", "inputs": {}, "recipes": [{"id": "card.new-model.16k", "evidence": evidence},
+                                                                                          {"id": "card.other.16k", "evidence": None}]}
+        (self.root / "config" / "recipes.json").write_text(json.dumps(document))
+
+    def test_stable_refuses_a_recipe_measured_on_a_previous_revision(self):
+        self.write_recipes(True)
+        with self.assertRaisesRegex(br.BuildError, r"Refusing a stable build: recipe\(s\) card\.new-model\.16k still carry expected numbers measured on a previous file revision; publish new measured evidence first\."):
+            self.build(channel="stable")
+
+    def test_canary_builds_with_such_a_recipe(self):
+        self.write_recipes(True)
+        self.build(channel="canary")
+        self.assertIn("config/recipes.json", self.names())
+
+    def test_stable_builds_without_a_lineage_recipe(self):
+        self.write_recipes(False)
+        self.build(channel="stable")
+        self.assertIn("config/recipes.json", self.names())
+
+    def test_the_shipped_recipes_are_a_canary_only_release_until_new_evidence_exists(self):
+        files = br.collect(str(ROOT))
+        ids = br.lineage_recipe_ids(files["config/recipes.json"])
+        self.assertTrue(ids, "the shipped recipes name their predecessor measurement")
+        with self.assertRaisesRegex(br.BuildError, "Refusing a stable build"):
+            br.check_stable_recipe_lineage(files, "stable")
+        br.check_stable_recipe_lineage(files, "canary")
+
+    def test_mutant_without_the_guard_the_refusal_test_would_fail(self):
+        # Proves the refusal test bites: with the guard replaced by a no-op the same stable build succeeds, so the refusal assertion above would fail.
+        self.write_recipes(True)
+        original = br.check_stable_recipe_lineage
+        br.check_stable_recipe_lineage = lambda files, channel: None
+        try:
+            self.build(channel="stable")
+            with self.assertRaises(AssertionError):
+                self.out = Path(tempfile.mkdtemp()) / "out"
+                with self.assertRaisesRegex(br.BuildError, "Refusing a stable build"):
+                    self.build(channel="stable")
+        finally:
+            br.check_stable_recipe_lineage = original
+        self.out = Path(tempfile.mkdtemp()) / "out"
+        with self.assertRaisesRegex(br.BuildError, "Refusing a stable build"):
+            self.build(channel="stable")
+
+
 class ProductToolsRealTreeTests(unittest.TestCase):
     """Builds the real repository tree and checks the packaged tools/ set."""
 

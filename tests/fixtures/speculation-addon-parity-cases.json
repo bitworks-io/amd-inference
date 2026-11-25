@@ -8,8 +8,8 @@
       "addOns": [
         {
           "kind": "vision",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-vision-projector-q8",
@@ -27,8 +27,8 @@
         },
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -52,8 +52,8 @@
         },
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -82,8 +82,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -132,8 +132,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -157,8 +157,8 @@
         },
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -187,8 +187,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -217,8 +217,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -243,8 +243,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -271,8 +271,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -300,8 +300,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -330,8 +330,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -360,8 +360,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -388,8 +388,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -418,8 +418,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -450,8 +450,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "draft-mtp",
@@ -479,8 +479,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "",
@@ -509,8 +509,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "extraArguments": [
@@ -539,8 +539,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -564,8 +564,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-bogus",
@@ -595,8 +595,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "none",
@@ -626,8 +626,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "draft-simple",
@@ -657,8 +657,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "draft-mtp",
@@ -688,8 +688,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -718,8 +718,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -748,8 +748,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "NGRAM-SIMPLE",
@@ -779,8 +779,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -808,8 +808,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -838,8 +838,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -868,8 +868,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-hip-b11658",
           "backend": "hip",
           "componentId": "test-mtp-draft",
@@ -898,8 +898,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-hip-b11658",
           "backend": "hip",
           "specType": "ngram-simple",
@@ -929,8 +929,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -959,8 +959,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -988,8 +988,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1018,8 +1018,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1049,8 +1049,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1078,8 +1078,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1107,8 +1107,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1136,8 +1136,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1165,8 +1165,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1193,8 +1193,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1219,8 +1219,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1248,8 +1248,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1280,8 +1280,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -1311,8 +1311,8 @@
       "addOns": [
         {
           "kind": "vision",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-vision-projector-q8",
@@ -1338,8 +1338,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1363,8 +1363,8 @@
         },
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1394,8 +1394,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -1418,8 +1418,8 @@
         },
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "componentId": "test-mtp-draft",
@@ -1447,8 +1447,8 @@
       "addOns": [
         {
           "kind": "audio",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1478,8 +1478,8 @@
       "addOns": [
         {
           "kind": "Ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1509,7 +1509,7 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
           "modelSha256": "000000000000000000000000000000000000000000000000000000000000000",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
@@ -1540,8 +1540,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "cpu",
           "specType": "ngram-simple",
@@ -1571,8 +1571,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "llama.cpp-b10698-vulkan",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1598,8 +1598,8 @@
       "addOns": [
         {
           "kind": "ngram",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "LLAMA.CPP-B10698-VULKAN",
           "backend": "vulkan",
           "specType": "ngram-simple",
@@ -1629,8 +1629,8 @@
       "addOns": [
         {
           "kind": "mtp",
-          "modelId": "qwen3.8-27b-ud-q4-k-m",
-          "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+          "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+          "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
           "engineId": "Llama.cpp-hip-b11658",
           "backend": "hip",
           "componentId": "test-mtp-draft",

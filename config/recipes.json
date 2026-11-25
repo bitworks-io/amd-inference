@@ -1,21 +1,23 @@
 {
   "inputs": {
-    "config/catalog.json": "9015720bafea6c76e936c1bbf26e0a82c9f2e5de112583681379efe4e146a96e",
+    "config/catalog.json": "f80159beaa90b53a4ed452cfb433884cc586bbb2accd7f7145d2f84ca7161041",
     "config/components.json": "6183105bedffec0e3e8b91020fb77548f0478463fffcd1d0a253ccbee65b0684",
     "config/gpu-variants.json": "cbbc815150015687ce736e53ba90311d72cbceb9e47e3f61526197ddf890a7d2",
     "data/bitworks-experimental-recipes.json": "93056c1341e7abb8b8febaa997c37aa3e2846fbb7a45703c0c33b713718b0fe2",
     "data/community-records.json": "201849d8ae11d656bdbf3a90d0950a941b19c4cfa05d84e7b4a75e5b406da967",
-    "data/verified-recipes.json": "92ad17cb59271da1dff442c1bdaafad48131a65bda27a4f7ceba1198ba3f7a0d"
+    "data/verified-recipes.json": "b80a4ec5f8e81745e50b1aec563cb7b1fb40a90e66bd2cb9b8082c54fc7ced99"
   },
   "recipes": [
     {
       "compelling": null,
       "components": {
         "engine": "llama.cpp-b10698-vulkan",
-        "model": "qwen3.8-27b-ud-iq4-xs"
+        "model": "qwen3.8-27b-ud-iq4-xs-4af51b35"
       },
       "engineBuild": "b10698",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-iq4-xs",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-14",
         "resultId": "obs-rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs-2026-10-07",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation"
@@ -35,8 +37,8 @@
         "count": 1,
         "variant": "rx-7900-xt"
       },
-      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
-      "label": "Measured by Bitworks on this card",
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": false,
       "runtime": {
@@ -51,10 +53,12 @@
       "compelling": null,
       "components": {
         "engine": "llama.cpp-hip-b11658",
-        "model": "qwen3.8-27b-ud-iq4-xs"
+        "model": "qwen3.8-27b-ud-iq4-xs-4af51b35"
       },
       "engineBuild": "b11658",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-iq4-xs",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-16",
         "resultId": "obs-rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs-2026-10-15",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs/#lab-observation"
@@ -74,8 +78,8 @@
         "count": 1,
         "variant": "rx-7900-xt"
       },
-      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
-      "label": "Measured by Bitworks on this card",
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k.hip",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": true,
       "runtime": {
@@ -89,10 +93,12 @@
       "compelling": null,
       "components": {
         "engine": "llama.cpp-b10698-vulkan",
-        "model": "qwen3.8-27b-ud-q4-k-m"
+        "model": "qwen3.8-27b-ud-q4-k-m-4af51b35"
       },
       "engineBuild": "b10698",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-q4-k-m",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-14",
         "resultId": "obs-rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km-2026-10-07",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km/#lab-observation"
@@ -112,8 +118,8 @@
         "count": 1,
         "variant": "rx-7900-xtx"
       },
-      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k",
-      "label": "Measured by Bitworks on this card",
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": false,
       "runtime": {
@@ -128,10 +134,12 @@
       "compelling": null,
       "components": {
         "engine": "llama.cpp-hip-b11658",
-        "model": "qwen3.8-27b-ud-q4-k-m"
+        "model": "qwen3.8-27b-ud-q4-k-m-4af51b35"
       },
       "engineBuild": "b11658",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-q4-k-m",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-16",
         "resultId": "obs-rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km-2026-10-15",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km/#lab-observation"
@@ -151,8 +159,8 @@
         "count": 1,
         "variant": "rx-7900-xtx"
       },
-      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip",
-      "label": "Measured by Bitworks on this card",
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip",
+      "label": "Measured by Bitworks on this card on the previous file revision; this revision is being verified",
       "origin": "bitworks",
       "recommended": true,
       "runtime": {

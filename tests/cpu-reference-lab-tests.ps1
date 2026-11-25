@@ -49,13 +49,15 @@ Fails {Assert-FastLlmCpuReferenceMemoryBudget -AvailableBytes 100 -ModelBytes ([
 
 # --- Exact argument construction against the normal Q4 recipe ---
 $catalogPath=Join-Path $repo 'config/catalog.json'
-$catalogJson=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($catalogPath))
+# The lab is bound to the reviewed catalog (the shipped one supersedes this model id), so the normal-recipe comparison plans from the reviewed catalog.
+$normalCatalogPath=Join-Path $PSScriptRoot 'fixtures/reviewed-catalog-2026-08-30.json'
+$catalogJson=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($normalCatalogPath))
 $model=@($catalogJson.models | Where-Object {$_.id -ceq 'qwen3.8-27b-ud-q4-k-m'})[0]
 $modelPath='/verified/models/Qwen3.8-27B-UD-Q4_K_M.gguf'
 $cpuArgs=@(Get-FastLlmCpuReferenceArguments -Model $model -ModelPath $modelPath)
 $repoModule=Import-Module (Join-Path $repo 'src/FastLlm.psm1') -Force -PassThru
 $hardware=& $repoModule {param($P) Read-FastLlmJson $P} (Join-Path $PSScriptRoot 'fixtures/rx-7900-xtx-24gb.json')
-$plan=& $repoModule {param($H,$C) Get-FastLlmPlan -Hardware $H -CatalogPath $C -InstallRoot '/verified' -ModelId 'qwen3.8-27b-ud-q4-k-m'} $hardware $catalogPath
+$plan=& $repoModule {param($H,$C) Get-FastLlmPlan -Hardware $H -CatalogPath $C -InstallRoot '/verified' -ModelId 'qwen3.8-27b-ud-q4-k-m'} $hardware $normalCatalogPath
 $normal=@($plan.serverArguments | ForEach-Object {if([string]$_ -ceq [string]$plan.modelPath){$modelPath}else{[string]$_}})
 Assert ($plan.model.contextSize -eq 32768 -and [string]$normal[$normal.IndexOf('--ctx-size')+1] -ceq '32768') 'normal Q4 recipe is not 32768 context'
 $expected=New-Object 'System.Collections.Generic.List[string]'

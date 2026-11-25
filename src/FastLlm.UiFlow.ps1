@@ -815,12 +815,16 @@ function Format-FastLlmUiRunEngineLine {
 }
 
 function Format-FastLlmUiSelfTest {
-    param($SelfTest)
+    param($SelfTest, [string] $MeasurementNote)
     if (-not $SelfTest) { return $null }
     switch ([string] $SelfTest.status) {
         'pass' { return "Self-test passed: $($SelfTest.generationTokS) tok/s generation, $($SelfTest.promptTokS) tok/s prompt." }
         'skipped' { return 'Self-test skipped: the context size is too small for the performance check.' }
-        'below-expected' { return "Self-test: slower than expected ($($SelfTest.generationTokS) vs $($SelfTest.expectedGenerationTokS) tok/s generation). Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run Doctor for details." }
+        'below-expected' {
+            $slower = "Self-test: slower than expected ($($SelfTest.generationTokS) vs $($SelfTest.expectedGenerationTokS) tok/s generation). Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run Doctor for details."
+            if (-not [string]::IsNullOrWhiteSpace($MeasurementNote)) { $slower = $slower + ' ' + $MeasurementNote }
+            return $slower
+        }
         default {
             $reasons = @()
             if ($SelfTest.PSObject.Properties['reasons']) { $reasons = @($SelfTest.reasons) }
@@ -1498,6 +1502,7 @@ function Get-FastLlmUiSwitchStatusText {
                 'switch-target-already-serving' { return "$to is already running." }
                 'switch-target-unknown' { return "Did not switch: the requested model is not in FastLLM's list. $keeps" }
                 'switch-target-experimental-model' { return "Did not switch: an experimental model is started from the command line, not by a switch. $keeps" }
+                'switch-target-superseded-model' { return "Did not switch: $to is an older file revision that a newer one replaces. $keeps" }
                 'switch-recipe-experimental' { return "Did not switch: an experimental setup is started from the command line, not by a switch. $keeps" }
                 'switch-recipe-needs-default-options' { return "Did not switch: a measured setup needs the default context profile and one request at a time. $keeps" }
                 'switch-cancelled-by-stop' { return "The switch to $to was cancelled by Stop." }

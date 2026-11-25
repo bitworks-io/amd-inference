@@ -91,9 +91,9 @@ $cases = @(
     @{ Fixture = 'amd-8gb.json'; Expected = 'qwen3.5-9b-q4-k-m' },
     @{ Fixture = 'amd-12gb.json'; Expected = 'qwen3.5-9b-q6-k' },
     @{ Fixture = 'amd-16gb.json'; Expected = 'qwen3.5-9b-q8-0' },
-    @{ Fixture = 'rx-7900-xt-20gb.json'; Expected = 'qwen3.8-27b-ud-iq4-xs' },
-    @{ Fixture = 'rx-7900-xtx-24gb.json'; Expected = 'qwen3.8-27b-ud-q4-k-m' },
-    @{ Fixture = 'r9700-32gb.json'; Expected = 'qwen3.8-27b-ud-q6-k-m' }
+    @{ Fixture = 'rx-7900-xt-20gb.json'; Expected = 'qwen3.8-27b-ud-iq4-xs-4af51b35' },
+    @{ Fixture = 'rx-7900-xtx-24gb.json'; Expected = 'qwen3.8-27b-ud-q4-k-m-4af51b35' },
+    @{ Fixture = 'r9700-32gb.json'; Expected = 'qwen3.8-27b-ud-q6-k-m-4af51b35' }
 )
 
 foreach ($case in $cases) {
@@ -115,7 +115,7 @@ try {
         recipes = @([pscustomobject] [ordered] @{
                 id = 'test-xtx-q4'; origin = 'bitworks'; recommended = $true
                 gpu = [pscustomobject] @{ variant = 'rx-7900-xtx'; count = 1 }
-                components = [pscustomobject] @{ engine = "llama.cpp-$($recipeCatalog.engine.version)-vulkan"; model = 'qwen3.8-27b-ud-q4-k-m' }
+                components = [pscustomobject] @{ engine = "llama.cpp-$($recipeCatalog.engine.version)-vulkan"; model = 'qwen3.8-27b-ud-q4-k-m-4af51b35' }
                 engineBuild = [string] $recipeCatalog.engine.version
                 runtime = [pscustomobject] @{ contextSize = 32768; vulkanBarMitigation = 'auto' }
                 expected = [pscustomobject] @{ generationTokS = 30.5 }
@@ -131,10 +131,10 @@ try {
     Assert-Equal -Expected 'bitworks' -Actual $recipePlan.recipe.origin -Message 'a matched XTX picks the published recipe'
     Assert-Equal -Expected 'test-xtx-q4' -Actual $recipePlan.recipe.id -Message 'the plan names the chosen recipe'
     Assert-Equal -Expected 'Measured by Bitworks on this card' -Actual $recipePlan.recipe.label -Message 'the plan carries the exact Bitworks label'
-    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m' -Actual $recipePlan.model.id -Message 'the recipe model is planned'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m-4af51b35' -Actual $recipePlan.model.id -Message 'the recipe model is planned'
     Assert-Equal -Expected 32768 -Actual $recipePlan.model.contextSize -Message 'the recipe context is planned'
     Assert-Equal -Expected 'recipe' -Actual $recipePlan.selectionMode -Message 'a recipe pick reports selectionMode recipe'
-    $catalogXtxModel = @($recipeCatalog.models | Where-Object { $_.id -eq 'qwen3.8-27b-ud-q4-k-m' })[0]
+    $catalogXtxModel = @($recipeCatalog.models | Where-Object { $_.id -eq 'qwen3.8-27b-ud-q4-k-m-4af51b35' })[0]
     Assert-Equal -Expected $catalogXtxModel.parallel -Actual $recipePlan.model.parallel -Message 'runtime fields a recipe omits keep the catalog values'
     $smallerContext = Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -ContextSize 8192 @recipeOptions
     Assert-Equal -Expected 8192 -Actual $smallerContext.model.contextSize -Message 'a smaller explicit context wins over the recipe context'
@@ -144,9 +144,9 @@ try {
     $noIdentityPlan = Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') @recipeOptions
     Assert-Equal -Expected 'estimated' -Actual $noIdentityPlan.recipe.origin -Message 'without card identity the plan is labelled estimated'
     Assert-Equal -Expected 'auto' -Actual $noIdentityPlan.selectionMode -Message 'without card identity selection stays automatic'
-    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m' -Actual $noIdentityPlan.model.id -Message 'without card identity the estimated model choice is unchanged'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m-4af51b35' -Actual $noIdentityPlan.model.id -Message 'without card identity the estimated model choice is unchanged'
 
-    Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -ModelId 'qwen3.8-27b-ud-q4-k-m' -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'cannot be combined' -Message '-Recipe and -ModelId cannot be combined'
+    Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'cannot be combined' -Message '-Recipe and -ModelId cannot be combined'
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware $xtxHardware -CatalogPath $catalogPath -RecipeId 'no-such-recipe' @recipeOptions } -Pattern 'No other recipe was substituted' -Message 'an unknown -Recipe refuses without substituting'
     Assert-ThrowsMatching -Action { Get-FastLlmPlan -Hardware (Read-FastLlmJson -Path (Join-Path $fixtureRoot 'rx-7900-xtx-24gb.json')) -CatalogPath $catalogPath -RecipeId 'test-xtx-q4' @recipeOptions } -Pattern 'does not apply to this PC' -Message '-Recipe without a matching card identity refuses'
 
@@ -172,7 +172,7 @@ try {
         recipes = @([pscustomobject] [ordered] @{
                 id = 'test-xt-iq4'; origin = 'bitworks'; recommended = $true
                 gpu = [pscustomobject] @{ variant = 'rx-7900-xt'; count = 1 }
-                components = [pscustomobject] @{ engine = "llama.cpp-$($recipeCatalog.engine.version)-vulkan"; model = 'qwen3.8-27b-ud-iq4-xs' }
+                components = [pscustomobject] @{ engine = "llama.cpp-$($recipeCatalog.engine.version)-vulkan"; model = 'qwen3.8-27b-ud-iq4-xs-4af51b35' }
                 engineBuild = [string] $recipeCatalog.engine.version
                 runtime = [pscustomobject] @{ contextSize = 16384; vulkanBarMitigation = 'auto' }
                 expected = [pscustomobject] @{ generationTokS = 26.1 }
@@ -191,7 +191,7 @@ try {
     $dualXtPlan = Get-FastLlmPlan -Hardware $dualXt -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') @xtRecipeOptions
     Assert-Equal -Expected 'estimated' -Actual $dualXtPlan.recipe.origin -Message 'a one-card recipe does not apply on a PC with two identified XT cards'
     Assert-Equal -Expected 'auto' -Actual $dualXtPlan.selectionMode -Message 'two identified XT cards keep automatic selection'
-    Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $dualXtPlan.model.id -Message 'the estimated dual-XT model stays'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m-4af51b35' -Actual $dualXtPlan.model.id -Message 'the estimated dual-XT model stays'
     Assert-Equal -Expected 2 -Actual @($dualXtPlan.selectedAdapters).Count -Message 'the estimated dual-XT plan keeps both cards'
     Assert-Equal -Expected 'layer' -Actual $dualXtPlan.splitMode -Message 'the estimated dual-XT plan keeps the layer split'
     Assert-True -Condition (@($dualXtPlan.recipe.skipped | Where-Object { $_ -like 'test-xt-iq4: measured on 1 card(s)*' }).Count -ge 1) -Message 'the plan lists why the one-card recipe was skipped'
@@ -199,8 +199,8 @@ try {
     # The shipped recommended HIP setups: a fixture plan never runs an engine, so each card resolves to the Vulkan recipe it always had, and says why.
     $shippedRecipeOptions = @{ RecipesPath = (Join-Path (Join-Path $projectRoot 'config') 'recipes.json'); GpuVariantsPath = $variantsFile }
     foreach ($shippedCase in @(
-            @{ Name = 'XTX'; Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k' },
-            @{ Name = 'XT'; Hardware = $singleXt; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k' })) {
+            @{ Name = 'XTX'; Hardware = $xtxHardware; RecipeId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k' },
+            @{ Name = 'XT'; Hardware = $singleXt; RecipeId = 'rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k' })) {
         $shippedFixturePlan = Get-FastLlmPlan -Hardware $shippedCase.Hardware -CatalogPath $catalogPath -InstallRoot (Join-Path $projectRoot '.test-install') -NoEngineExecution @shippedRecipeOptions
         Assert-Equal -Expected $shippedCase.RecipeId -Actual $shippedFixturePlan.recipe.id -Message "$($shippedCase.Name) fixture plans with recipes still resolve to the same Vulkan recipe id as before"
         Assert-Equal -Expected 'fixture-plan-cannot-probe-engine' -Actual $shippedFixturePlan.fallback.reason -Message "$($shippedCase.Name) fixture plan carries fallback.reason"
@@ -228,7 +228,7 @@ finally {
 }
 
 $dual20 = Get-FixturePlan -Fixture 'dual-rx-7900-xt-20gb.json'
-Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $dual20.model.id -Message 'dual 20GB balanced profile uses aggregate capacity'
+Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m-4af51b35' -Actual $dual20.model.id -Message 'dual 20GB balanced profile uses aggregate capacity'
 Assert-Equal -Expected 'layer' -Actual $dual20.splitMode -Message 'dual 20GB defaults to layer split'
 Assert-Equal -Expected 2 -Actual @($dual20.selectedAdapters).Count -Message 'dual 20GB selects both identical adapters'
 Assert-True -Condition ([bool] ($dual20.tensorSplit -match '^\d+,\d+$')) -Message 'dual 20GB emits an explicit memory-weighted tensor split'
@@ -238,7 +238,7 @@ Assert-Equal -Expected 'qwen3.8-27b-q8-0' -Actual $dual20Quality.model.id -Messa
 Assert-Equal -Expected 2 -Actual @($dual20Quality.selectedAdapters).Count -Message 'dual XT quality profile needs both cards'
 
 $dual24Balanced = Get-FixturePlan -Fixture 'dual-rx-7900-xtx-24gb.json'
-Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $dual24Balanced.model.id -Message 'dual XTX balanced profile selects Qwen3.8 Q6'
+Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m-4af51b35' -Actual $dual24Balanced.model.id -Message 'dual XTX balanced profile selects Qwen3.8 Q6'
 Assert-Equal -Expected 2 -Actual @($dual24Balanced.selectedAdapters).Count -Message 'dual XTX balanced profile uses two cards only for the higher-ranked model'
 
 $dual24Quality = Get-FixturePlan -Fixture 'dual-rx-7900-xtx-24gb.json' -Profile 'quality'
@@ -246,7 +246,7 @@ Assert-Equal -Expected 'qwen3.8-27b-q8-0' -Actual $dual24Quality.model.id -Messa
 Assert-Equal -Expected 'layer' -Actual $dual24Quality.splitMode -Message 'dual XTX quality profile avoids experimental tensor parallelism'
 
 $dualR9700Balanced = Get-FixturePlan -Fixture 'dual-r9700-32gb.json'
-Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $dualR9700Balanced.model.id -Message 'dual R9700 balanced profile keeps its highest-ranked eligible Q6 model'
+Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m-4af51b35' -Actual $dualR9700Balanced.model.id -Message 'dual R9700 balanced profile keeps its highest-ranked eligible Q6 model'
 Assert-Equal -Expected 1 -Actual @($dualR9700Balanced.selectedAdapters).Count -Message 'dual R9700 balanced profile prefers one card when Q6 already fits'
 Assert-Equal -Expected 'ROCm0' -Actual $dualR9700Balanced.selectedAdapters[0].device -Message 'dual R9700 balanced profile uses the higher-free card'
 Assert-Equal -Expected 'none' -Actual $dualR9700Balanced.splitMode -Message 'dual R9700 balanced profile does not force a split'
@@ -268,7 +268,7 @@ Assert-Equal -Expected 'none' -Actual $heterogeneous.splitMode -Message 'heterog
 Assert-True -Condition ([bool] ((@($heterogeneous.warnings) -join ' ') -match 'Heterogeneous')) -Message 'heterogeneous selection is explained'
 
 $mixedSingleAndPair = Get-FixturePlan -Fixture 'r9700-plus-dual-rx-7900-xt.json'
-Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m' -Actual $mixedSingleAndPair.model.id -Message 'mixed single-plus-pair hardware selects the best balanced model'
+Assert-Equal -Expected 'qwen3.8-27b-ud-q6-k-m-4af51b35' -Actual $mixedSingleAndPair.model.id -Message 'mixed single-plus-pair hardware selects the best balanced model'
 Assert-Equal -Expected 1 -Actual @($mixedSingleAndPair.selectedAdapters).Count -Message 'a fitting R9700 is preferred over an unnecessary identical XT pair'
 Assert-Equal -Expected 'ROCm0' -Actual $mixedSingleAndPair.selectedAdapters[0].device -Message 'the strongest fitting single adapter is selected'
 Assert-Equal -Expected 'none' -Actual $mixedSingleAndPair.splitMode -Message 'an unnecessary pair does not activate layer splitting'
@@ -600,7 +600,7 @@ catch {
 Assert-Equal -Expected 0 -Actual $cliExitCode -Message 'the plan CLI JSON path exits successfully'
 Assert-True -Condition ($null -ne $cliJson) -Message 'the plan CLI emits parseable JSON without presentation text'
 if ($cliJson) {
-    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m' -Actual $cliJson.model.id -Message 'CLI JSON preserves deterministic model selection'
+    Assert-Equal -Expected 'qwen3.8-27b-ud-q4-k-m-4af51b35' -Actual $cliJson.model.id -Message 'CLI JSON preserves deterministic model selection'
     Assert-Equal -Expected 'http://127.0.0.1:8080/v1' -Actual $cliJson.endpoint -Message 'CLI JSON reports the loopback OpenAI-compatible endpoint'
 }
 

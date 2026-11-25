@@ -8,8 +8,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -56,8 +56,8 @@
    "addOns": [
     {
      "kind": "mtp",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -81,8 +81,8 @@
    "addOns": [
     {
      "kind": "ngram",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -106,8 +106,8 @@
    "addOns": [
     {
      "kind": "audio",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -131,8 +131,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -157,8 +157,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "extraFreeVramMiB": {
@@ -181,8 +181,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -207,8 +207,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -232,8 +232,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -257,8 +257,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -282,8 +282,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -307,8 +307,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -332,8 +332,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -357,8 +357,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -383,8 +383,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -405,8 +405,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -429,7 +429,7 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
      "modelSha256": "000000000000000000000000000000000000000000000000000000000000000",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
@@ -454,7 +454,7 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
      "modelSha256": "322E194FF79741C7BAA497C240F677F54B201B0EFAB44CA8E50F122B39123482",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
@@ -479,8 +479,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "cpu",
      "componentId": "test-vision-projector-q8",
@@ -504,8 +504,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -529,8 +529,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -554,8 +554,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -577,8 +577,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -596,8 +596,8 @@
     },
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -621,8 +621,8 @@
    "addOns": [
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "test-vision-projector-q8",
@@ -640,8 +640,8 @@
     },
     {
      "kind": "vision",
-     "modelId": "qwen3.8-27b-ud-q4-k-m",
-     "modelSha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "modelId": "qwen3.8-27b-ud-q4-k-m-4af51b35",
+     "modelSha256": "1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529",
      "engineId": "llama.cpp-b10698-vulkan",
      "backend": "vulkan",
      "componentId": "other",

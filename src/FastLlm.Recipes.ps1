@@ -1,3 +1,20 @@
+# The id of the entry that replaces this model's file revision, or '' when the model is current (the catalog loader has validated the field).
+function Get-FastLlmModelSupersededBy {
+    param($Model)
+    if ($null -eq $Model) { return '' }
+    $property = $Model.PSObject.Properties['supersededBy']
+    if ($null -eq $property -or $null -eq $property.Value) { return '' }
+    return [string] $property.Value
+}
+
+# The refusal for naming a superseded model: the plain sentence names the replacement, and the code travels in Data['FastLlmFailureCode'].
+function New-FastLlmSupersededFailure {
+    param([Parameter(Mandatory = $true)][string] $ModelId, [Parameter(Mandatory = $true)][string] $ReplacementId)
+    $superseded = New-Object -TypeName System.InvalidOperationException -ArgumentList "Model '$ModelId' is superseded by '$ReplacementId'. Use '$ReplacementId'."
+    $superseded.Data['FastLlmFailureCode'] = 'model-superseded'
+    return $superseded
+}
+
 # Per-card recipes (config/recipes.json, bitworks.fastllm-recipes/v2). Matching uses card variants from
 # FastLlm.CardIdentity.ps1, never names. community-experimental and bitworks-experimental recipes are never auto-selected.
 # A recipe whose engine chain needs an AMD license accepted may be auto-selected only when its origin is 'bitworks' (measured by us); every other
@@ -242,6 +259,14 @@ function Select-FastLlmRecipeForPlacements {
     }
     $models = @{}
     foreach ($model in @($Catalog.models)) { $models[[string] $model.id] = $model }
+    # A recipe named with -Recipe whose model is superseded is refused up front; the replacement is named. Auto-pick skips it below.
+    if ($RecipeId) {
+        foreach ($named in @($usable | Where-Object { [string] $_.id -ceq $RecipeId })) {
+            $namedModel = $models[[string] $named.components.model]
+            $namedSupersededBy = Get-FastLlmModelSupersededBy -Model $namedModel
+            if ($namedSupersededBy) { throw (New-FastLlmSupersededFailure -ModelId ([string] $namedModel.id) -ReplacementId $namedSupersededBy) }
+        }
+    }
     $options = New-Object System.Collections.Generic.List[object]
     # Reasons go straight into the caller's sink when there is one, so a plan keeps them even if a later step throws or no recipe is picked.
     $skipped = $SkippedSink
@@ -307,6 +332,9 @@ function Select-FastLlmRecipeForPlacements {
             # The build is compared with the engine the recipe actually resolves to: the catalog's for the built-in id, the component's otherwise.
             $recipeEngineVersion = Get-FastLlmRecipeEngineVersion -Recipe $recipe -Catalog $Catalog -Components $Components
             if ($null -eq $recipeEngineVersion -or [string] $recipe.engineBuild -ne $recipeEngineVersion) { $skipped.Add("$($recipe.id): engine build differs"); continue }
+            # A superseded file revision is never planned; its recipe is not auto-picked (naming it with -Recipe was refused above).
+            $recipeSupersededBy = Get-FastLlmModelSupersededBy -Model $model
+            if ($recipeSupersededBy) { $skipped.Add("$($recipe.id): model is superseded by '$recipeSupersededBy'"); continue }
             # The estimated planner never auto-picks a model flagged autoEligible false; a recipe may use one only when named with -Recipe.
             if (-not $RecipeId -and $model.PSObject.Properties['autoEligible'] -and -not [bool] $model.autoEligible) { $skipped.Add("$($recipe.id): model is experimental and not auto-eligible"); continue }
             if ([int64] $model.requiredFreeVramMiB -gt [int64] $placement.selectionCapacity) {
@@ -347,6 +375,35 @@ function Get-FastLlmIdentifiedCardVariant {
     return $null
 }
 
+# { model; revision } of the file revision a recipe's expected numbers were measured on, when that is not the revision the recipe plans; else $null.
+function Get-FastLlmRecipeMeasuredLineage {
+    param($Recipe)
+    if ($null -eq $Recipe -or -not $Recipe.PSObject.Properties['evidence'] -or $null -eq $Recipe.evidence) { return $null }
+    $evidence = $Recipe.evidence
+    if (-not $evidence.PSObject.Properties['measuredModel'] -or [string]::IsNullOrWhiteSpace([string] $evidence.measuredModel)) { return $null }
+    $measuredRevision = ''
+    if ($evidence.PSObject.Properties['measuredRevision']) { $measuredRevision = [string] $evidence.measuredRevision }
+    return [pscustomobject] @{ model = [string] $evidence.measuredModel; revision = $measuredRevision }
+}
+
+# The label a recipe shows wherever it is planned or listed (the plan block, the window summary, the recipe chooser and recipes -Detail): its
+# origin's label, and for a recipe whose expected numbers were measured on the previous file revision, that label saying so. The recipe builder
+# writes the same text into config/recipes.json.
+function Get-FastLlmRecipeDisplayLabel {
+    param($Recipe)
+    $label = Get-FastLlmRecipeLabel ([string] $Recipe.origin)
+    if (Get-FastLlmRecipeMeasuredLineage -Recipe $Recipe) { $label = $label + ' on the previous file revision; this revision is being verified' }
+    return $label
+}
+
+# The one sentence every plan, self-test line or report uses for such a recipe.
+function Get-FastLlmMeasuredLineageNote {
+    param([string] $Revision)
+    $short = $Revision
+    if ($short.Length -gt 8) { $short = $short.Substring(0, 8) }
+    return "Expected numbers were measured on the previous file revision $short; this revision is being verified."
+}
+
 function New-FastLlmPlanRecipeBlock {
     param($Pick, [string] $ModelId, [string[]] $Skipped, [switch] $Recovered, [switch] $HipBackend, [string] $IdentifiedVariant)
     if ($Pick) {
@@ -359,8 +416,16 @@ function New-FastLlmPlanRecipeBlock {
         if ($recipe.PSObject.Properties['runtime'] -and $recipe.runtime -and $recipe.runtime.PSObject.Properties['vulkanBarMitigation']) { $mitigation = [string] $recipe.runtime.vulkanBarMitigation }
         # The Vulkan BAR mitigation does not apply to the HIP engine; a HIP plan records that instead of a blank.
         if ($HipBackend -and $null -eq $mitigation) { $mitigation = 'not-applicable' }
-        return [pscustomobject] [ordered] @{ id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
+        $block = [pscustomobject] [ordered] @{ id = [string] $recipe.id; origin = [string] $recipe.origin; label = (Get-FastLlmRecipeLabel ([string] $recipe.origin))
             variant = $Pick.variant; evidenceUrl = $url; expected = $expected; vulkanBarMitigation = $mitigation; skipped = @($Pick.skipped) }
+        # A recipe whose expected numbers were measured on the previous file revision says so in the plan; nothing is added for any other recipe.
+        $lineage = Get-FastLlmRecipeMeasuredLineage -Recipe $recipe
+        if ($lineage) {
+            $block.label = Get-FastLlmRecipeDisplayLabel -Recipe $recipe
+            $block | Add-Member -NotePropertyName measuredOn -NotePropertyValue ([pscustomobject] [ordered] @{ model = $lineage.model; revision = $lineage.revision })
+            $block | Add-Member -NotePropertyName measurementNote -NotePropertyValue (Get-FastLlmMeasuredLineageNote -Revision $lineage.revision)
+        }
+        return $block
     }
     $origin = 'estimated'
     if ($ModelId -and -not $Recovered) { $origin = 'manual' }   # a model picked by recovery is not the user's choice

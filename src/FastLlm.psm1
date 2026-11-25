@@ -268,6 +268,32 @@ function Get-FastLlmCatalog {
             throw "Model '$modelId' has invalid immutable provenance metadata."
         }
         Assert-FastLlmHttpsUrl -Value ([string] $model.upstreamLicenseUrl) -Label "Model '$modelId' upstream license URL"
+        $notesProperty = $model.PSObject.Properties['notes']
+        if ($notesProperty -and ($notesProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string] $notesProperty.Value))) {
+            throw "Model '$modelId' notes must be a non-empty string."
+        }
+    }
+    # supersededBy is optional. When present it names the one catalog entry that replaces this file revision: another entry (not itself, not
+    # itself superseded, so there are no chains) for the same family, parameters and quantization.
+    $modelsById = @{}
+    foreach ($model in @($catalog.models)) { $modelsById[[string] $model.id] = $model }
+    foreach ($model in @($catalog.models)) {
+        $supersededProperty = $model.PSObject.Properties['supersededBy']
+        if (-not $supersededProperty) { continue }
+        $modelId = [string] $model.id
+        $replacementId = $supersededProperty.Value
+        if ($replacementId -isnot [string] -or [string]::IsNullOrWhiteSpace($replacementId)) {
+            throw "Model '$modelId' supersededBy must be a non-empty string naming a catalog model."
+        }
+        if ($replacementId -ceq $modelId) { throw "Model '$modelId' cannot be superseded by itself." }
+        if (-not $modelsById.ContainsKey($replacementId)) { throw "Model '$modelId' is superseded by '$replacementId', which is not in the catalog." }
+        $replacement = $modelsById[$replacementId]
+        if ($replacement.PSObject.Properties['supersededBy']) { throw "Model '$modelId' is superseded by '$replacementId', which is itself superseded. Chains are not allowed." }
+        foreach ($sameField in @('family', 'parameters', 'quantization')) {
+            if ([string] $model.$sameField -cne [string] $replacement.$sameField) {
+                throw "Model '$modelId' is superseded by '$replacementId', which has a different $sameField."
+            }
+        }
     }
     return $catalog
 }
@@ -1233,6 +1259,11 @@ function Get-FastLlmPlan {
     if ($ModelId) {
         $requested = @($catalog.models | Where-Object { $_.id -eq $ModelId })
         if ($requested.Count -ne 1) { throw "Unknown model '$ModelId'. Use the models action to list exact catalog IDs." }
+        # A superseded file revision is never planned, whatever -AllowExperimentalModel says: the replacement is named instead.
+        $requestedSupersededBy = Get-FastLlmModelSupersededBy -Model $requested[0]
+        if ($requestedSupersededBy) {
+            throw (New-FastLlmSupersededFailure -ModelId $ModelId -ReplacementId $requestedSupersededBy)
+        }
         $autoProperty = $requested[0].PSObject.Properties['autoEligible']
         if ($autoProperty -and -not [bool] $autoProperty.Value -and -not $AllowExperimentalModel) {
             throw "Model '$ModelId' is experimental and requires -AllowExperimentalModel with an explicit model selection."
@@ -1411,6 +1442,7 @@ function Get-FastLlmPlan {
         foreach ($placement in $placements) {
             foreach ($model in @($catalog.models)) {
                 if ($ModelId -and [string] $model.id -ne $ModelId) { continue }
+                if (Get-FastLlmModelSupersededBy -Model $model) { continue }
                 if ($ContextSize -gt [int] $model.contextSize) { continue }
                 $autoEligibleProperty = $model.PSObject.Properties['autoEligible']
                 if ($autoEligibleProperty -and -not [bool] $autoEligibleProperty.Value -and -not ($ModelId -and $AllowExperimentalModel)) {
@@ -3907,6 +3939,20 @@ function Install-FastLlmModelEntry {
         [switch] $Unattended
     )
 
+    # A superseded file revision is never downloaded: it installs only when the exact file is already present and verified (then this behaves as
+    # for any installed model, without a download). Otherwise it is refused here, before any prompt, receipt or download.
+    $supersededBy = Get-FastLlmModelSupersededBy -Model $Model
+    $presentAndVerified = $false
+    if ($supersededBy) {
+        $supersededRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'models' -Label 'Models root'
+        $supersededPath = Join-FastLlmContainedPath -Root $supersededRoot -Child ([string] $Model.file) -Label 'Model destination'
+        if ((Test-Path -LiteralPath $supersededPath -PathType Leaf) -and
+            (Get-Item -LiteralPath $supersededPath -Force).Length -eq [int64] $Model.sizeBytes -and
+            (Test-FastLlmFileHash -Path $supersededPath -Sha256 ([string] $Model.sha256))) {
+            $presentAndVerified = $true
+        }
+        else { throw (New-FastLlmSupersededFailure -ModelId ([string] $Model.id) -ReplacementId $supersededBy) }
+    }
     $hasExistingConsent = Test-FastLlmModelConsentReceipt -Model $Model -InstallRoot $InstallRoot
     $newAcceptanceMode = $null
     if (-not $hasExistingConsent) {
@@ -3934,7 +3980,9 @@ function Install-FastLlmModelEntry {
 
     $modelsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'models' -Label 'Models root'
     $destination = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $Model.file) -Label 'Model destination'
-    Save-FastLlmVerifiedFile -Url ([string] $Model.url) -Destination $destination -Sha256 ([string] $Model.sha256) -SizeBytes ([int64] $Model.sizeBytes) | Out-Null
+    if (-not $presentAndVerified) {
+        Save-FastLlmVerifiedFile -Url ([string] $Model.url) -Destination $destination -Sha256 ([string] $Model.sha256) -SizeBytes ([int64] $Model.sizeBytes) | Out-Null
+    }
     if ($newAcceptanceMode) {
         Write-FastLlmModelConsentReceipt -Model $Model -InstallRoot $InstallRoot -AcceptanceMode $newAcceptanceMode
     }
@@ -4751,6 +4799,7 @@ Export-ModuleMember -Function @(
     'Read-FastLlmJson',
     'Read-FastLlmRecipes',
     'Get-FastLlmRecipeLabel',
+    'Get-FastLlmRecipeDisplayLabel',
     'Test-FastLlmExperimentalOrigin',
     'Remove-FastLlmDeviceBindingPrivateFields',
     'Get-FastLlmSpillCheckVerdict',

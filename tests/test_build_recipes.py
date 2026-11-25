@@ -454,7 +454,7 @@ class RecipeBuilderTests(unittest.TestCase):
     def test_shipped_data_xt_and_xtx_recommend_hip(self):
         document, _ = br.build(ROOT)
         by_id = {r["id"]: r for r in document["recipes"]}
-        for hip_id in ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip", "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip"):
+        for hip_id in ("rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k.hip", "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip"):
             self.assertIs(by_id[hip_id]["recommended"], True, hip_id)
             self.assertIs(by_id[hip_id[:-len(".hip")]]["recommended"], False, hip_id)
 
@@ -614,6 +614,85 @@ class RecipeBuilderTests(unittest.TestCase):
         record = community("bitworks-experimental", generationTokS=40.0)
         with self.assertRaises(br.RecipeError):
             br.build(self.tree([ENTRY], [record]))
+
+
+OLD_REVISION = "4ca720788d1e01f1bff70c033e0d0028fd02e502"
+NEW_REVISION = "4af51b3542f775b0a8e4b310bfb3f17e01c306c9"
+
+
+class MeasuredLineageTests(unittest.TestCase):
+    """A recipe on a re-published file may carry the numbers measured on the file it replaced, and only on that one."""
+
+    def lineage_tree(self, entry, catalog_models=None, records=None):
+        root = Path(tempfile.mkdtemp())
+        (root / "config").mkdir(); (root / "data").mkdir()
+        models = catalog_models or [
+            {"id": "m-old", "contextSize": 32768, "revision": OLD_REVISION, "supersededBy": "m-new"},
+            {"id": "m-new", "contextSize": 32768, "revision": NEW_REVISION},
+            {"id": "m-other", "contextSize": 32768, "revision": "1" * 40}]
+        (root / "config" / "catalog.json").write_text(json.dumps({"engine": {"version": "b10698"}, "models": models}))
+        (root / "config" / "components.json").write_text(json.dumps({"components": [{"id": "llama.cpp-b10698-vulkan", "kind": "engine", "version": "b10698"}]}))
+        (root / "config" / "gpu-variants.json").write_text((ROOT / "config" / "gpu-variants.json").read_text())
+        (root / "data" / "verified-recipes.json").write_text(json.dumps({"schema": "bitworks.fastllm-verified-recipes/v1", "entries": [entry]}))
+        (root / "data" / "community-records.json").write_text(json.dumps({"schema": "bitworks.fastllm-community-recipes/v1", "records": records or []}))
+        return root
+
+    def entry(self, model="m-new", **evidence):
+        entry = copy.deepcopy(ENTRY)
+        entry["model"] = model
+        entry["evidence"].update(evidence)
+        return entry
+
+    def test_measured_model_is_accepted_for_the_predecessor_and_passed_through(self):
+        document, _ = br.build(self.lineage_tree(self.entry(measuredModel="m-old", measuredRevision=OLD_REVISION)))
+        evidence = document["recipes"][0]["evidence"]
+        self.assertEqual((evidence["measuredModel"], evidence["measuredRevision"]), ("m-old", OLD_REVISION))
+        self.assertEqual(document["recipes"][0]["components"]["model"], "m-new")
+
+    def test_a_lineage_recipe_is_labelled_as_measured_on_the_previous_revision(self):
+        document, _ = br.build(self.lineage_tree(self.entry(measuredModel="m-old", measuredRevision=OLD_REVISION)))
+        self.assertEqual(document["recipes"][0]["label"],
+                         "Measured by Bitworks on this card on the previous file revision; this revision is being verified")
+        plain, _ = br.build(self.lineage_tree(self.entry()))
+        self.assertEqual(plain["recipes"][0]["label"], "Measured by Bitworks on this card")
+
+    def test_measured_model_is_refused_for_anything_but_the_predecessor(self):
+        bad = {
+            "a model that is not superseded by this recipe's model": dict(measuredModel="m-other", measuredRevision="1" * 40),
+            "a model that is not in the catalog": dict(measuredModel="m-missing", measuredRevision=OLD_REVISION),
+            "the recipe's own model": dict(measuredModel="m-new", measuredRevision=NEW_REVISION),
+            "a wrong revision": dict(measuredModel="m-old", measuredRevision=NEW_REVISION),
+            "a model without a revision": dict(measuredModel="m-old"),
+            "a revision without a model": dict(measuredRevision=OLD_REVISION),
+            "a model that is not text": dict(measuredModel=["m-old"], measuredRevision=OLD_REVISION),
+        }
+        for label, evidence in bad.items():
+            with self.subTest(label):
+                with self.assertRaises(br.RecipeError):
+                    br.build(self.lineage_tree(self.entry(**evidence)))
+
+    def test_a_recipe_on_a_superseded_model_is_refused(self):
+        with self.assertRaisesRegex(br.RecipeError, "superseded by 'm-new'"):
+            br.build(self.lineage_tree(self.entry(model="m-old")))
+
+    def test_a_community_record_on_a_superseded_model_is_refused(self):
+        record = community("community-experimental", generationTokS=40.0)
+        record["model"] = "m-old"
+        with self.assertRaisesRegex(br.RecipeError, "superseded"):
+            br.build(self.lineage_tree(self.entry(), records=[record]))
+
+    def test_the_shipped_recipes_name_the_predecessor_measurement(self):
+        document, _ = br.build(ROOT)
+        catalog = json.loads((ROOT / "config" / "catalog.json").read_text(encoding="utf-8"))
+        by_id = {m["id"]: m for m in catalog["models"]}
+        lineage = [r for r in document["recipes"] if r["origin"] == "bitworks" and "measuredModel" in (r["evidence"] or {})]
+        self.assertEqual(4, len(lineage))
+        for recipe in lineage:
+            predecessor = by_id[recipe["evidence"]["measuredModel"]]
+            self.assertEqual(recipe["components"]["model"], predecessor["supersededBy"])
+            self.assertEqual(recipe["evidence"]["measuredRevision"], predecessor["revision"])
+        for recipe in document["recipes"]:
+            self.assertNotIn("supersededBy", by_id[recipe["components"]["model"]])
 
 
 class SyntheticRehearsalTests(unittest.TestCase):

@@ -144,6 +144,8 @@ function Get-FastLlmPreloadSet {
             if ($index.ContainsKey($item.modelId) -or $seenApproved.ContainsKey($item.modelId)) { continue }
             $hit = @($catalog.models | Where-Object { [string] $_.id -ceq $item.modelId -and [string] $_.revision -ceq $item.revision } | Select-Object -First 1)
             if ($hit.Count -eq 0) { continue }
+            # An approved pair that names a superseded file (an older release still lists it) is not downloaded again: the replacement is.
+            if (Get-FastLlmModelSupersededBy -Model $hit[0]) { continue }
             $seenApproved[$item.modelId] = $true
             $extra.Add([pscustomobject]@{ modelId = [string] $hit[0].id; sizeBytes = [int64] $hit[0].sizeBytes })
         }

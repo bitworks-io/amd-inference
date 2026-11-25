@@ -53,7 +53,7 @@ try {
 
     # ---- approved models parse
     $list=@(& $module { param($p) Read-FastLlmApprovedModels -Path $p } $approved)
-    Check ($list.Count -eq 8 -and $list[0].modelId -eq 'qwen3.5-4b-iq4-xs' -and $list[0].revision -eq 'e87f176479d0855a907a41277aca2f8ee7a09523') 'approved models parse'
+    Check ($list.Count -eq 11 -and $list[0].modelId -eq 'qwen3.5-4b-iq4-xs' -and $list[0].revision -eq 'e87f176479d0855a907a41277aca2f8ee7a09523') 'approved models parse'
     $badApproved=Join-Path $work 'approved-bad.json'
     Write-Utf8 $badApproved '{"schemaVersion":2,"models":[]}'
     Throws { & $module { param($p) Read-FastLlmApprovedModels -Path $p } $badApproved } 'schemaVersion'
@@ -62,7 +62,7 @@ try {
     $set=& $module { param($c,$r,$g,$t) Get-FastLlmPreloadSet -CatalogPath $c -RecipesPath $r -GpuVariantsPath $g -TiersPath $t } $catalog $recipes $variants $tiersPath
     Check ($set.schema -eq 'fastllm.preload-set.v1') 'preload set golden: schema'
     $ids=@($set.models | ForEach-Object { $_.modelId })
-    $expected='qwen3.8-27b-ud-iq4-xs,qwen3.8-27b-ud-q4-k-m,qwen3.5-4b-iq4-xs,qwen3.5-2b-q6-k,qwen3.5-9b-q6-k,qwen3.5-9b-q8-0,qwen3.8-27b-ud-q6-k-m'
+    $expected='qwen3.8-27b-ud-iq4-xs-4af51b35,qwen3.8-27b-ud-q4-k-m-4af51b35,qwen3.5-4b-iq4-xs,qwen3.5-2b-q6-k,qwen3.5-9b-q6-k,qwen3.5-9b-q8-0,qwen3.8-27b-ud-q6-k-m-4af51b35'
     Check (($ids -join ',') -eq $expected) "preload set golden: model order (observed: $($ids -join ','))"
     $empty=@($set.emptyTiers | ForEach-Object { $_.tier+'/'+$_.budget })
     Check (($empty -join ',') -eq '') "preload set golden: emptyTiers (observed: $($empty -join ','))"
@@ -70,10 +70,10 @@ try {
     Check ((@($iq4s.tiers) -join ',') -eq '4gb,8gb') "preload set golden: 4b iq4-xs tiers (observed: $(@($iq4s.tiers) -join ','))"
     $q6s=@($set.models | Where-Object { $_.modelId -eq 'qwen3.5-2b-q6-k' })[0]
     Check ((@($q6s.tiers) -join ',') -eq '4gb') "preload set golden: 2b q6-k tiers (observed: $(@($q6s.tiers) -join ','))"
-    $iq4=@($set.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-iq4-xs' })[0]
+    $iq4=@($set.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-iq4-xs-4af51b35' })[0]
     Check ((@($iq4.reasons) -join ',') -eq 'recipe,tier') 'preload set golden: iq4-xs reasons'
     Check ((@($iq4.tiers) -join ',') -eq '20gb') "preload set golden: iq4-xs tiers (observed: $(@($iq4.tiers) -join ','))"
-    $q6=@($set.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-q6-k-m' })[0]
+    $q6=@($set.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-q6-k-m-4af51b35' })[0]
     Check ((@($q6.tiers) -join ',') -eq '32gb') 'preload set golden: q6-k-m tiers'
     Check ($null -eq $iq4.approved) 'preload set golden: approved is null without a list'
 
@@ -189,14 +189,14 @@ try {
     $bigList=Get-Content -LiteralPath $approved -Raw | ConvertFrom-Json
     $catDocFull=Get-Content -LiteralPath $catalog -Raw | ConvertFrom-Json
     $bigRows=@()
-    foreach($id in @('qwen3.8-27b-q8-0','qwen3.8-27b-ud-q5-k-m','qwen3.8-27b-ud-iq3-xxs')){
+    foreach($id in @('qwen3.8-27b-q8-0','qwen3.8-27b-ud-q5-k-m-4af51b35','qwen3.8-27b-ud-iq3-xxs')){
         $bigRows += [pscustomobject]@{modelId=$id;revision=[string]@($catDocFull.models | Where-Object { $_.id -eq $id })[0].revision}
     }
     $bigList.models=@($bigList.models)+$bigRows
     Write-Utf8 $bigListPath ($bigList | ConvertTo-Json -Depth 6)
     $bigSet=Get-ApprovedSet $bigListPath
     $tail=@(Get-SetIds $bigSet | Select-Object -Skip 7)
-    Check (($tail -join ',') -eq 'qwen3.5-9b-q4-k-m,qwen3.8-27b-ud-iq3-xxs,qwen3.8-27b-ud-q5-k-m,qwen3.8-27b-q8-0') "approved-only: extra approved models come out smallest first, listing order ignored (observed: $($tail -join ','))"
+    Check (($tail -join ',') -eq 'qwen3.5-9b-q4-k-m,qwen3.8-27b-ud-iq3-xxs,qwen3.8-27b-ud-q5-k-m-4af51b35,qwen3.8-27b-q8-0') "approved-only: extra approved models come out smallest first, listing order ignored (observed: $($tail -join ','))"
 
     $revList=Join-Path $work 'approved-extra-wrongrev.json'
     $revDoc=Get-Content -LiteralPath $bigListPath -Raw | ConvertFrom-Json
@@ -277,15 +277,15 @@ try {
     $hw24 | Add-Member -NotePropertyName dxgiAdapters -NotePropertyValue @([pscustomobject]@{vendorId=4098;deviceId=29772;revision=200;dedicatedVideoMiB=24534})
     $rootNoneForRecipe=New-InstallRoot @()
     $recipeBase=Get-TierPlan $hw24 $rootNoneForRecipe
-    Check ($null -ne $recipeBase.recipe.id -and $recipeBase.model.id -eq 'qwen3.8-27b-ud-q4-k-m') "recipe pick without the switch (observed: $($recipeBase.model.id))"
+    Check ($null -ne $recipeBase.recipe.id -and $recipeBase.model.id -eq 'qwen3.8-27b-ud-q4-k-m-4af51b35') "recipe pick without the switch (observed: $($recipeBase.model.id))"
     Remove-Item -LiteralPath $rootNoneForRecipe -Recurse -Force -ErrorAction SilentlyContinue
     $root9=New-InstallRoot @('qwen3.5-9b-q8-0')
     $p=Get-TierPlan $hw24 $root9 -Prefer
-    Check ($p.model.id -eq 'qwen3.5-9b-q8-0' -and $null -eq $p.recipe.id -and $p.recipe.origin -eq 'estimated' -and $p.preferInstalled.from -eq 'qwen3.8-27b-ud-q4-k-m') "recipe model missing substitutes estimated installed pick (observed: $($p.model.id))"
+    Check ($p.model.id -eq 'qwen3.5-9b-q8-0' -and $null -eq $p.recipe.id -and $p.recipe.origin -eq 'estimated' -and $p.preferInstalled.from -eq 'qwen3.8-27b-ud-q4-k-m-4af51b35') "recipe model missing substitutes estimated installed pick (observed: $($p.model.id))"
     Remove-Item -LiteralPath $root9 -Recurse -Force -ErrorAction SilentlyContinue
-    $rootRecipe=New-InstallRoot @('qwen3.8-27b-ud-q4-k-m')
+    $rootRecipe=New-InstallRoot @('qwen3.8-27b-ud-q4-k-m-4af51b35')
     $p=Get-TierPlan $hw24 $rootRecipe -Prefer
-    Check ($p.model.id -eq 'qwen3.8-27b-ud-q4-k-m' -and $null -ne $p.recipe.id -and $null -eq $p.preferInstalled) 'recipe model installed keeps the recipe'
+    Check ($p.model.id -eq 'qwen3.8-27b-ud-q4-k-m-4af51b35' -and $null -ne $p.recipe.id -and $null -eq $p.preferInstalled) 'recipe model installed keeps the recipe'
     Remove-Item -LiteralPath $rootRecipe -Recurse -Force -ErrorAction SilentlyContinue
     # measured 4gb tier: idle plans the 4B IQ4_XS, conservative only fits the 2B Q6_K
     $p=Get-TierPlan (New-TierHardware '4gb' 'idle') (New-InstallRoot @('qwen3.5-4b-iq4-xs')) -Prefer
@@ -354,14 +354,14 @@ try {
     # only approved models install; an unapproved one never reaches the seam
     $partialApproved=Join-Path $work 'approved-partial.json'
     $partialDoc=Get-Content -LiteralPath $approved -Raw | ConvertFrom-Json
-    $partialDoc.models=@($partialDoc.models | Where-Object { $_.modelId -ne 'qwen3.8-27b-ud-q6-k-m' })
+    $partialDoc.models=@($partialDoc.models | Where-Object { $_.modelId -ne 'qwen3.8-27b-ud-q6-k-m-4af51b35' })
     Write-Utf8 $partialApproved ($partialDoc | ConvertTo-Json -Depth 6)
     $r1=New-InstallRoot @(); $c1=New-Object System.Collections.ArrayList; $cc1=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r1 @{ApprovedModelsPath=$partialApproved;Installer=(New-InstallerSeam $r1 $c1);ComponentInstaller=(New-ComponentSeam $cc1)}
     $m=Rows $rows 'model'
-    Check ((Row $rows 'qwen3.8-27b-ud-q6-k-m').action -eq 'awaiting-approval') 'preload installs only approved: unlisted model awaits approval'
-    Check (-not ($c1 -contains 'qwen3.8-27b-ud-q6-k-m')) 'preload installs only approved: seam never called for it'
-    Check (@($m | Where-Object { $_.id -ne 'qwen3.8-27b-ud-q6-k-m' -and $_.action -ne 'installed' }).Count -eq 0 -and $c1.Count -eq 7) 'preload installs only approved: the others are installed'
+    Check ((Row $rows 'qwen3.8-27b-ud-q6-k-m-4af51b35').action -eq 'awaiting-approval') 'preload installs only approved: unlisted model awaits approval'
+    Check (-not ($c1 -contains 'qwen3.8-27b-ud-q6-k-m-4af51b35')) 'preload installs only approved: seam never called for it'
+    Check (@($m | Where-Object { $_.id -ne 'qwen3.8-27b-ud-q6-k-m-4af51b35' -and $_.action -ne 'installed' }).Count -eq 0 -and $c1.Count -eq 7) 'preload installs only approved: the others are installed'
     Check ((@($rows[0].PSObject.Properties.Name | Sort-Object) -join ',') -eq $rowProps) 'row property names match the contract'
     Remove-Item -LiteralPath $r1 -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -391,7 +391,7 @@ try {
     # -Next picks recipe/tier models first, then the approved-only model once every recipe/tier model is installed
     $r4b=New-InstallRoot @(); $c4b=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r4b @{Next=$true;Installer=(New-InstallerSeam $r4b $c4b);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
-    Check (($c4b -join ',') -eq 'qwen3.8-27b-ud-iq4-xs') "next with recipe/tier models missing picks the first of those (observed: $($c4b -join ','))"
+    Check (($c4b -join ',') -eq 'qwen3.8-27b-ud-iq4-xs-4af51b35') "next with recipe/tier models missing picks the first of those (observed: $($c4b -join ','))"
     Remove-Item -LiteralPath $r4b -Recurse -Force -ErrorAction SilentlyContinue
     $r4c=New-InstallRoot @($ids); $c4c=New-Object System.Collections.ArrayList
     $rows=Invoke-PreloadSet $r4c @{Next=$true;Installer=(New-InstallerSeam $r4c $c4c);ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
@@ -453,7 +453,7 @@ try {
     New-Item -ItemType Directory -Path $bigDir -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'config/components.json') -Destination $bigDir
     $bigDoc=Get-Content -LiteralPath $smallCatalog -Raw | ConvertFrom-Json
-    @($bigDoc.models | Where-Object { $_.id -eq 'qwen3.8-27b-ud-iq4-xs' })[0].sizeBytes=[int64](3*$GiB)
+    @($bigDoc.models | Where-Object { $_.id -eq 'qwen3.8-27b-ud-iq4-xs-4af51b35' })[0].sizeBytes=[int64](3*$GiB)
     $bigCatalog=Join-Path $bigDir 'catalog.json'
     Write-Utf8 $bigCatalog ($bigDoc | ConvertTo-Json -Depth 20)
     $r9=New-InstallRoot @(); $c9=New-Object System.Collections.ArrayList
@@ -464,7 +464,7 @@ try {
 
     # a failing installer gives a failed row; -Next stops there
     $r10=New-InstallRoot @(); $c10=New-Object System.Collections.ArrayList
-    $rows=Invoke-PreloadSet $r10 @{Next=$true;Installer=(New-InstallerSeam $r10 $c10 @('qwen3.8-27b-ud-iq4-xs'));ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
+    $rows=Invoke-PreloadSet $r10 @{Next=$true;Installer=(New-InstallerSeam $r10 $c10 @('qwen3.8-27b-ud-iq4-xs-4af51b35'));ComponentInstaller=(New-ComponentSeam (New-Object System.Collections.ArrayList))}
     Check ($rows[-1].action -eq 'failed' -and $rows[-1].error -match 'seam failure' -and $c10.Count -eq 1) 'a failing installer gives a failed row and -Next stops'
     Remove-Item -LiteralPath $r10 -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -527,7 +527,7 @@ try {
     $fs=[IO.File]::Open($short,'Open','ReadWrite'); try { $fs.SetLength(10) } finally { $fs.Dispose() }
     $status2=Get-Status $sr2 @{ApprovedModelsPath=$partialApproved}
     Check (@($status2.models | Where-Object { $_.modelId -eq 'qwen3.5-4b-iq4-xs' })[0].reason -eq 'ok' -and @($status2.models | Where-Object { $_.modelId -eq 'qwen3.5-9b-q6-k' })[0].reason -eq 'size-mismatch') 'status: ok and size-mismatch reasons'
-    Check (@($status2.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-q6-k-m' })[0].reason -eq 'awaiting-approval') 'status: an unapproved absent model is awaiting-approval'
+    Check (@($status2.models | Where-Object { $_.modelId -eq 'qwen3.8-27b-ud-q6-k-m-4af51b35' })[0].reason -eq 'awaiting-approval') 'status: an unapproved absent model is awaiting-approval'
     $status3=Get-Status $sr2 @{}
     Check ($null -eq $status3.models[0].approved) 'status: approved is null without a list'
     Remove-Item -LiteralPath $sr2 -Recurse -Force -ErrorAction SilentlyContinue

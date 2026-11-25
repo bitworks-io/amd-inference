@@ -66,7 +66,7 @@ $null=LabelAt 'Model' 24 110 220
 $modelBox=New-Object Windows.Forms.ComboBox
 $modelBox.Location=New-Object Drawing.Point(24,138);$modelBox.Size=New-Object Drawing.Size(510,30);$modelBox.DropDownStyle='DropDownList'
 $modelBox.Items.Add('Recommended for installed GPU')|Out-Null
-foreach($model in $catalog.models) { if(-not $model.PSObject.Properties['autoEligible'] -or $model.autoEligible){$modelBox.Items.Add([string]$model.id)|Out-Null} }
+foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $catalog)) { $modelBox.Items.Add($pickerId)|Out-Null }
 $modelBox.SelectedIndex=0;$form.Controls.Add($modelBox)
 $null=LabelAt 'Context (0 = catalog default)' 560 110 280
 $contextBox=New-Object Windows.Forms.NumericUpDown
@@ -1921,7 +1921,7 @@ $timer.Add_Tick({
                         if($setupLine){$lines+=$setupLine}
                         if($script:setupNotice){$lines+=[string]$script:setupNotice}
                         if($script:servingSettingsNotice){$lines+=[string]$script:servingSettingsNotice}
-                        if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest;$script:servingNotesDone=$true}
+                        if($s.PSObject.Properties['selfTest'] -and $s.selfTest){$lines+=Format-FastLlmUiSelfTest -SelfTest $s.selfTest -MeasurementNote $(if($s.PSObject.Properties['measurementNote']){[string]$s.measurementNote}else{''});$script:servingNotesDone=$true}
                         $barNote=Get-FastLlmUiBarNote -State $s
                         if($barNote){$lines+=$barNote;$barLink.Visible=$true}
                         if($lines.Count){$notesLabel.Text=($lines -join [Environment]::NewLine)}

@@ -76,7 +76,7 @@ class LinuxDeliveryTests(unittest.TestCase):
             gpus = linux.inventory(Path(folder))
             catalog = json.loads((ROOT / "config" / "catalog.json").read_text())
             selected = linux.choose_recipe(catalog, gpus, "balanced")
-            self.assertEqual(selected["modelId"], "qwen3.8-27b-ud-q4-k-m")
+            self.assertEqual(selected["modelId"], "qwen3.8-27b-ud-q4-k-m-4af51b35")
             self.assertEqual(selected["observedFreeVramMiB"], 23 * 1024)
 
     def test_no_recipe_without_reliable_free_vram(self):
@@ -86,9 +86,9 @@ class LinuxDeliveryTests(unittest.TestCase):
     def test_two_headline_cards_preview_only_individual_gpu_capacity(self):
         catalog = json.loads((ROOT / "config" / "catalog.json").read_text())
         cases = (
-            ("two 7900 XT", (19900, 19800), "qwen3.8-27b-ud-iq4-xs", "qwen3.8-27b-ud-iq4-xs"),
-            ("two 7900 XTX", (23800, 23600), "qwen3.8-27b-ud-q4-k-m", "qwen3.8-27b-ud-q5-k-m"),
-            ("two R9700", (32000, 31800), "qwen3.8-27b-ud-q6-k-m", "qwen3.8-27b-q8-0"),
+            ("two 7900 XT", (19900, 19800), "qwen3.8-27b-ud-iq4-xs-4af51b35", "qwen3.8-27b-ud-iq4-xs-4af51b35"),
+            ("two 7900 XTX", (23800, 23600), "qwen3.8-27b-ud-q4-k-m-4af51b35", "qwen3.8-27b-ud-q5-k-m-4af51b35"),
+            ("two R9700", (32000, 31800), "qwen3.8-27b-ud-q6-k-m-4af51b35", "qwen3.8-27b-q8-0"),
         )
         for label, free_mib, balanced, quality in cases:
             cards = [{"card": f"card{index}", "recipeEligible": True, "vramFreeMiB": free}
@@ -692,6 +692,100 @@ class LinuxDeliveryTests(unittest.TestCase):
         child = subprocess.run([sys.executable, "-c", "raise SystemExit(0)"], timeout=5,
                                preexec_fn=lambda: bootstrap._parent_death(os.getpid() + 1))
         self.assertEqual(child.returncode, 127)
+
+
+linux_models = load(ROOT / "linux" / "models.py", "fastllm_linux_models_for_delivery")
+
+
+class SupersededModelTests(unittest.TestCase):
+    """A superseded catalog entry is never auto-picked and never fetched; an exact file already present and verified is reused."""
+    DATA = b"pinned GGUF example"
+    LICENSE = b"Apache-2.0 test license text"
+
+    def entry(self, model_id, superseded_by=None, scores=None):
+        item = {"id": model_id, "url": "https://models.example/file.gguf", "sizeBytes": len(self.DATA),
+                "sha256": hashlib.sha256(self.DATA).hexdigest(), "upstreamModel": "Qwen/Qwen-test", "upstreamRevision": "a" * 40,
+                "upstreamLicense": "Apache-2.0", "upstreamLicenseUrl": "https://models.example/LICENSE",
+                "upstreamLicenseSha256": hashlib.sha256(self.LICENSE).hexdigest(), "repository": "unsloth/Qwen-test-GGUF",
+                "revision": "c" * 40, "artifactLicense": "Apache-2.0",
+                "artifactLicenseMetadataUrl": "https://models.example/conversion-license",
+                "requiredFreeVramMiB": 1000, "scores": scores or {"fast": 1, "balanced": 1, "quality": 1}}
+        if superseded_by:
+            item["supersededBy"] = superseded_by
+        return item
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=ROOT)
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "private"
+        self.root.mkdir(mode=0o700)
+        for patcher in (patch.object(linux_models.os, "geteuid", return_value=self.root.stat().st_uid),
+                        patch.object(linux_models.platform, "system", return_value="Linux")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.catalog = {"models": [self.entry("m-old", "m-new", {"fast": 9, "balanced": 9, "quality": 9}), self.entry("m-new")]}
+        self.calls = []
+        calls = self.calls
+
+        class Transport:
+            def open(self, url, offset):
+                calls.append(url)
+                raise AssertionError("no request may be made")
+        self.transport = Transport()
+
+    def acquire(self, model_id, accept=False):
+        item = next(m for m in self.catalog["models"] if m["id"] == model_id)
+        reviewed = ({"reviewed_license_sha256": item["upstreamLicenseSha256"], "reviewed_upstream_revision": item["upstreamRevision"],
+                     "reviewed_artifact_sha256": item["sha256"], "reviewed_provenance_sha256": linux_models._provenance_sha256(item)}
+                    if accept else {})
+        return linux_models.acquire_model(self.catalog, model_id, self.root, accept_license_for=model_id if accept else None,
+                                          transport=self.transport, **reviewed)
+
+    def test_the_auto_pick_skips_a_superseded_model_even_with_the_best_score(self):
+        gpus = [{"card": "card0", "recipeEligible": True, "vramFreeMiB": 24000}]
+        pick = linux.choose_recipe({"models": [dict(m, family="f", quantization="q", contextSize=1, artifactProvider="p") for m in self.catalog["models"]]},
+                                   gpus, "balanced")
+        self.assertEqual(pick["modelId"], "m-new")
+
+    def test_install_of_an_absent_superseded_model_refuses_before_any_request_naming_the_replacement(self):
+        with self.assertRaisesRegex(ValueError, r"model-superseded: Model 'm-old' is superseded by 'm-new'\. Use 'm-new'\."):
+            self.acquire("m-old", accept=True)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_a_superseded_file_with_the_wrong_size_or_hash_is_refused_and_left_alone(self):
+        item = self.catalog["models"][0]
+        path = self.root / f"{item['id']}-{item['sha256']}.gguf"
+        for data in (b"short", b"x" * len(self.DATA)):
+            path.write_bytes(data)
+            os.chmod(path, 0o600)
+            with self.assertRaisesRegex(ValueError, "model-superseded"):
+                self.acquire("m-old", accept=True)
+            self.assertEqual(path.read_bytes(), data)
+        self.assertEqual(self.calls, [])
+
+    def test_a_present_verified_superseded_file_is_reused_without_a_download(self):
+        item = self.catalog["models"][0]
+        path = self.root / f"{item['id']}-{item['sha256']}.gguf"
+        path.write_bytes(self.DATA)
+        os.chmod(path, 0o600)
+
+        class LicenseOnly:
+            def __init__(self, license_data, calls):
+                self.license_data, self.calls = license_data, calls
+
+            def open(self, url, offset):
+                self.calls.append(url)
+                if not url.endswith("LICENSE"):
+                    raise AssertionError("the model file must not be requested")
+                response = io.BytesIO(self.license_data)
+                response.status = 200
+                response.headers = {}
+                return response
+        self.transport = LicenseOnly(self.LICENSE, self.calls)
+        result = self.acquire("m-old", accept=True)
+        self.assertTrue(result["reused"])
+        self.assertTrue(all(url.endswith("LICENSE") for url in self.calls))
 
 
 if __name__ == "__main__":

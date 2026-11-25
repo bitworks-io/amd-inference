@@ -103,10 +103,10 @@ try {
     }
 
     # ---- fit uses the row's memory, not the catalog's -----------------------------------------------------------------------------
-    Check (@($goldenRows | Where-Object { $_.name -ceq 'long-row-memory-explicit' })[0].refusal -ceq "Requested model 'qwen3.8-27b-ud-q4-k-m' does not fit the estimated current free-memory budget. No other model was substituted.") 'fit-uses-row-memory: 21000 MiB free fits the catalog number (20500) but not the long row (21500), so the explicit model is refused'
+    Check (@($goldenRows | Where-Object { $_.name -ceq 'long-row-memory-explicit' })[0].refusal -ceq "Requested model 'qwen3.8-27b-ud-q4-k-m-4af51b35' does not fit the estimated current free-memory budget. No other model was substituted.") 'fit-uses-row-memory: 21000 MiB free fits the catalog number (20500) but not the long row (21500), so the explicit model is refused'
     Check (@($goldenRows | Where-Object { $_.name -ceq 'long-row-memory-auto' })[0].modelId -ceq 'qwen3.5-9b-q6-k') 'fit-uses-row-memory: the automatic pick moves to the best model whose long row fits'
     $tightDefault=Get-FastLlmPlan -Hardware (New-OptinHardware 'test-24gb-tight') -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot
-    Check ([string]$tightDefault.model.id -ceq 'qwen3.8-27b-ud-q4-k-m') 'fit-uses-row-memory: the same card without the option still plans the larger model (today''s fit)'
+    Check ([string]$tightDefault.model.id -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35') 'fit-uses-row-memory: the same card without the option still plans the larger model (today''s fit)'
 
     # ---- no-option plans are today's plans -------------------------------------------------------------------------------------
     $defaultGolden=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/default-server-arguments.json') -Raw | ConvertFrom-Json
@@ -178,7 +178,7 @@ try {
     RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvSlots 2 -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: 2 slots with the shipped (empty) profile file is refused with the exact reason'
     RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' } $notMeasured 'no-row: long with no profile file given is refused with the exact reason'
     RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath (Join-Path $work 'absent.json') } $notMeasured 'no-row: long with a profile file that does not exist is refused with the exact reason'
-    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'long' -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: an explicit model with the shipped profile file is refused with the exact reason'
+    RefusedExactly { Get-FastLlmPlan -Hardware $card -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -KvContextProfile 'long' -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: an explicit model with the shipped profile file is refused with the exact reason'
     RefusedExactly { Get-FastLlmPlan @identifiedCommon -KvContextProfile 'long' -KvProfilesPath $shippedProfiles } $notMeasured 'no-row: a card with a measured recipe is refused too; the recipe is not run under the option'
     $shipped=Get-Content -LiteralPath $shippedProfiles -Raw | ConvertFrom-Json
     Check ($shipped.schema -ceq 'bitworks.fastllm-serving-profiles/v1' -and @($shipped.profiles).Count -eq 0 -and @($shipped.addOns).Count -eq 0 -and @($shipped.sidecars).Count -eq 0) 'the shipped profile file has the schema and no rows'
@@ -191,8 +191,8 @@ try {
         Write-Utf8 $path ($document | ConvertTo-Json -Depth 8)
         return $path
     }
-    $longFor={param($Document) @($Document.profiles | Where-Object { $_.modelId -ceq 'qwen3.8-27b-ud-q4-k-m' -and $_.id -ceq 'long' })[0]}
-    $explicitLong=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+    $longFor={param($Document) @($Document.profiles | Where-Object { $_.modelId -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35' -and $_.id -ceq 'long' })[0]}
+    $explicitLong=@{Hardware=$card;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;ModelId='qwen3.8-27b-ud-q4-k-m-4af51b35';KvContextProfile='long'}
     Check ([string](Get-FastLlmPlan @explicitLong -KvProfilesPath $testProfiles).servingProfile.id -ceq 'long') 'engine-binding: the unchanged test row applies'
     $oneRow=New-MutatedProfiles 'one-row' { param($d) $d.profiles=@((& $longFor $d)) }
     Check ([string](Get-FastLlmPlan @explicitLong -KvProfilesPath $oneRow).servingProfile.id -ceq 'long' -and [int](Get-FastLlmPlan @explicitLong -KvSlots 2 -KvProfilesPath $oneRow).servingProfile.contextPerSlot -eq 32768) 'engine-binding: a file with exactly one row applies (a one-element list is still a list)'
@@ -212,9 +212,9 @@ try {
     RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherBackend } $notMeasured 'engine-binding: a row for another backend does not apply'
     $otherSha=New-MutatedProfiles 'other-sha' { param($d) (& $longFor $d).modelSha256=('0'*64) }
     RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherSha } $notMeasured 'engine-binding: a row for another model sha256 does not apply'
-    $otherModelId=New-MutatedProfiles 'other-model-id' { param($d) (& $longFor $d).modelId='qwen3.8-27b-ud-q5-k-m' }
+    $otherModelId=New-MutatedProfiles 'other-model-id' { param($d) (& $longFor $d).modelId='qwen3.8-27b-ud-q5-k-m-4af51b35' }
     RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherModelId } $notMeasured 'engine-binding: a row whose model id is not the plan''s does not apply'
-    $otherProfile=New-MutatedProfiles 'other-profile' { param($d) $d.profiles=@($d.profiles | Where-Object { -not ($_.modelId -ceq 'qwen3.8-27b-ud-q4-k-m' -and $_.id -ceq 'long') }) }
+    $otherProfile=New-MutatedProfiles 'other-profile' { param($d) $d.profiles=@($d.profiles | Where-Object { -not ($_.modelId -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35' -and $_.id -ceq 'long') }) }
     RefusedExactly { Get-FastLlmPlan @explicitLong -KvProfilesPath $otherProfile } $notMeasured 'engine-binding: the default profile row of the same model does not stand in for a missing long row'
     $rocmHardware=Read-FastLlmJson (Join-Path $root 'tests/fixtures/dual-rx-7900-xtx-24gb.json')
     RefusedExactly { Get-FastLlmPlan -Hardware $rocmHardware -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -KvContextProfile 'long' -KvProfilesPath $testProfiles } $notMeasured 'engine-binding: a plan on another backend finds no row'
@@ -272,7 +272,7 @@ try {
         return [pscustomobject]$observed
     }
     $visionCard=New-OptinHardware 'test-24gb'
-    $visionCommon=@{Hardware=$visionCard;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId='qwen3.8-27b-ud-q4-k-m'}
+    $visionCommon=@{Hardware=$visionCard;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId='qwen3.8-27b-ud-q4-k-m-4af51b35'}
 
     # ---- the loader refuses what the checker refuses (tests/fixtures/vision-addon-parity-cases.json is read by both) ---------------
     $parity=Get-Content -LiteralPath (Join-Path $root 'tests/fixtures/vision-addon-parity-cases.json') -Raw | ConvertFrom-Json
@@ -318,12 +318,12 @@ try {
     Check ((@($specGolden | Where-Object { $_.outcome -ceq 'refused' } | ForEach-Object { $_.refusalCode }) -join ',') -ceq 'speculation-not-measured,speculation-not-measured,speculation-profile-not-measured,speculation-profile-not-measured,speculation-profile-not-measured,speculation-combination-not-offered,speculation-combination-not-offered') 'speculation golden: the refused rows carry the typed codes in order'
 
     # ---- off is today's plan: no field, no argument -----------------------------------------------------------------------------------
-    $plainLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m'
-    $offLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m' -Vision 'off'
+    $plainLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35'
+    $offLong=Get-FastLlmPlan @optCommon -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -Vision 'off'
     Check (($plainLong | ConvertTo-Json -Depth 12) -ceq ($offLong | ConvertTo-Json -Depth 12) -and -not $offLong.PSObject.Properties['vision']) 'vision off: -Vision off is byte-identical to no -Vision and adds no field'
     Check (($plainLong.serverArguments -ccontains '--no-mmproj') -and -not ($plainLong.serverArguments -ccontains '--mmproj')) 'vision off: the arguments keep --no-mmproj'
     Check (($defaultCardPlan.serverArguments -ccontains '--no-mmproj') -and -not ($defaultCardPlan.serverArguments -ccontains '--mmproj') -and -not $defaultCardPlan.PSObject.Properties['vision']) 'vision off: a direct planner call (the bench path) keeps --no-mmproj and has no vision field'
-    $offVisionFile=& { $s=Join-TestSplat $optCommon @{KvProfilesPath=$malformedProfiles}; Get-FastLlmPlan @s -ModelId 'qwen3.8-27b-ud-q4-k-m' -KvContextProfile 'default' -Vision 'off' }
+    $offVisionFile=& { $s=Join-TestSplat $optCommon @{KvProfilesPath=$malformedProfiles}; Get-FastLlmPlan @s -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35' -KvContextProfile 'default' -Vision 'off' }
     Check ($null -ne $offVisionFile) 'vision off: the add-on rows are never read (a profile file that is not JSON changes nothing)'
     RefusedLike { Get-FastLlmPlan @visionCommon -Vision 'maybe' } 'Vision|validate|Valid' 'vision: the parameter is a closed set (off|on)'
 
@@ -425,7 +425,7 @@ try {
     Check ($rOrder.threw -and $rOrder.code -ceq 'vision-not-measured') 'vision order: with no row AND no profile id, refusal 1 (no row) comes before refusal 2'
     # Fit: the extra memory is the row's, added to the profile's requirement. Nothing is derived.
     $fitCard=New-OptinHardware 'test-24gb-22000'
-    $fitCommon=@{Hardware=$fitCard;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+    $fitCommon=@{Hardware=$fitCard;CatalogPath=$catalogPath;Profile='balanced';NoEngineExecution=$true;InstallRoot=$installRoot;KvProfilesPath=$visionProfiles;ModelId='qwen3.8-27b-ud-q4-k-m-4af51b35';KvContextProfile='long'}
     Check ([string](Get-FastLlmPlan @fitCommon).servingProfile.id -ceq 'long') 'vision fit: with 22000 MiB free the long row alone (21500) fits'
     $rFit=Get-RefusalCode { Get-FastLlmPlan @fitCommon -Vision 'on' }
     Check ($rFit.threw -and $rFit.code -ceq 'model-does-not-fit') 'vision fit: the same card with vision on needs 21500 + 1200 and does not fit (the existing model-does-not-fit refusal)'
@@ -537,7 +537,7 @@ try {
         $directMissing=Get-RefusalCode { Assert-FastLlmVisionStartable -Plan $visionPlanForStart -CatalogPath $w4.catalog -InstallRoot $w4.install }
         Check ($directMissing.code -ceq 'needs-setup-component-missing') 'vision: Assert-FastLlmVisionStartable refuses a missing projector first'
         # A plan without vision is not touched: -IgnoreUserSettings, the bench path and a direct supervisor call all have such a plan.
-        $defaultPlanForStart=Get-FastLlmPlan -Hardware $visionCard -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m'
+        $defaultPlanForStart=Get-FastLlmPlan -Hardware $visionCard -CatalogPath $catalogPath -Profile balanced -NoEngineExecution -InstallRoot $installRoot -ModelId 'qwen3.8-27b-ud-q4-k-m-4af51b35'
         $sDefault=Invoke-VisionStart $w6 $defaultPlanForStart
         Check ($sDefault.threw -and $sDefault.message -ceq 'PAST-THE-VISION-CHECK' -and $sDefault.code -cne 'vision-evidence-unavailable') 'vision off: a plan without vision goes straight past the vision check (the start continues as it always did)'
         Check (($defaultPlanForStart.serverArguments -ccontains '--no-mmproj') -and -not ($defaultPlanForStart.serverArguments -ccontains '--mmproj')) 'vision off: the arguments a direct start would pass keep --no-mmproj'
@@ -603,7 +603,7 @@ try {
             $result | Add-Member -NotePropertyName hardwareCalls -NotePropertyValue ([int](& $module { $script:rpHardwareCalls })) -Force
             return $result
         }
-        $rpCommon=@{Hardware=$visionCard;CatalogPath=$rpCatalog;Profile='balanced';NoEngineExecution=$true;InstallRoot=$rpWorld;KvProfilesPath=$rpProfiles;ModelId='qwen3.8-27b-ud-q4-k-m';KvContextProfile='long'}
+        $rpCommon=@{Hardware=$visionCard;CatalogPath=$rpCatalog;Profile='balanced';NoEngineExecution=$true;InstallRoot=$rpWorld;KvProfilesPath=$rpProfiles;ModelId='qwen3.8-27b-ud-q4-k-m-4af51b35';KvContextProfile='long'}
         $rpPlan=Get-FastLlmPlan @rpCommon -Vision 'on'
         New-Item -ItemType Directory -Path (Split-Path -Parent $rpPlan.modelPath) -Force | Out-Null
         [IO.File]::WriteAllText($rpPlan.modelPath,'x')
@@ -652,7 +652,7 @@ try {
         # The switch basis: the serving options of a plan that carries vision keep the mode, so a switch asks the planner the same question.
         $rpOptions=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $rpPlan
         Check ($rpOptions.ContainsKey('Vision') -and [string]$rpOptions.Vision -ceq 'on' -and [string]$rpOptions.KvContextProfile -ceq 'long') 'vision switch basis: the serving options of a vision plan carry -Vision on with the context profile'
-        $rpPlanOptions=& $module { param($P,$C,$I) Get-FastLlmSwitchPlanOptions -PreviousPlan $P -Request ([pscustomobject]@{recipeId=$null;modelId='qwen3.8-27b-ud-q4-k-m'}) -CatalogPath $C -InstallRoot $I } $rpPlan $rpCatalog $rpWorld
+        $rpPlanOptions=& $module { param($P,$C,$I) Get-FastLlmSwitchPlanOptions -PreviousPlan $P -Request ([pscustomobject]@{recipeId=$null;modelId='qwen3.8-27b-ud-q4-k-m-4af51b35'}) -CatalogPath $C -InstallRoot $I } $rpPlan $rpCatalog $rpWorld
         Check ([string]$rpPlanOptions.Vision -ceq 'on' -and [string]$rpPlanOptions.KvProfilesPath -ceq $rpProfiles) 'vision switch basis: the switch target options carry -Vision on and read the rows next to the catalog'
         $rpDefaultOptions=& $module { param($P) Get-FastLlmSwitchServingOptions -PreviousPlan $P } $rpDefault
         Check (-not $rpDefaultOptions.ContainsKey('Vision')) 'vision switch basis: a plan without vision adds no Vision option'

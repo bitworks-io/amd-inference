@@ -15,7 +15,7 @@ function Plan($Model,$Inventory){return [pscustomobject]@{
     selectedAdapters=@([pscustomobject]@{device='Vulkan0';name='AMD Radeon RX 7900 XTX'})
 }}
 $catalog=Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw|ConvertFrom-Json
-$large=Clone (@($catalog.models|Where-Object id -eq 'qwen3.8-27b-ud-q4-k-m')[0])
+$large=Clone (@($catalog.models|Where-Object id -eq 'qwen3.8-27b-ud-q4-k-m-4af51b35')[0])
 if(-not $large){$large=Clone $catalog.models[0]}
 $small=Clone $catalog.models[0]
 $largePlan=Plan $large 'large-card'
@@ -321,10 +321,10 @@ try {
     $env:OS=$oldOs
 }
 $plan = [pscustomobject]@{ selectedAdapters = @([pscustomobject]@{ name = 'AMD Radeon RX 7900 XTX' })
-    model = [pscustomobject]@{ id = 'qwen3.8-27b-ud-q4-k-m'; quantization = 'UD-Q4_K_M'; contextSize = 32768 }
+    model = [pscustomobject]@{ id = 'qwen3.8-27b-ud-q4-k-m-4af51b35'; quantization = 'UD-Q4_K_M'; contextSize = 32768 }
     recipe = [pscustomobject]@{ label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
 $text = Format-FastLlmUiRecipeSummary -Plan $plan
-Check ($text -eq 'Best setup for your AMD Radeon RX 7900 XTX: qwen3.8-27b-ud-q4-k-m (UD-Q4_K_M), 32,768 context. Measured by Bitworks on this card.') 'recipe summary text is exact'
+Check ($text -eq 'Best setup for your AMD Radeon RX 7900 XTX: qwen3.8-27b-ud-q4-k-m-4af51b35 (UD-Q4_K_M), 32,768 context. Measured by Bitworks on this card.') 'recipe summary text is exact'
 Check ((Get-FastLlmUiEvidenceUrl -Plan $plan) -eq 'https://bitworks.io/amd/results/x') 'evidence link is the recipe page'
 $plan.recipe.evidenceUrl = 'https://evil.example/x'
 Check ($null -eq (Get-FastLlmUiEvidenceUrl -Plan $plan)) 'only https bitworks.io links are offered'
@@ -343,8 +343,8 @@ Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'of
 Set-Content -LiteralPath (Join-Path $uiRoot 'settings.json') -Value '{"vulkanBarMitigation":"sideways"}' -Encoding ascii
 Check ((Read-FastLlmUiSettings -InstallRoot $uiRoot).vulkanBarMitigation -eq 'auto') 'an invalid stored value falls back to auto'
 # The preview's measured recipe is passed to the start , and the running plan's recipe drives the label and link.
-$measuredPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'; origin = 'bitworks'; label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
-Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $measuredPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k') 'a measured preview passes its recipe id to the start'
+$measuredPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k'; origin = 'bitworks'; label = 'Measured by Bitworks on this card'; evidenceUrl = 'https://bitworks.io/amd/results/x' } }
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $measuredPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k') 'a measured preview passes its recipe id to the start'
 foreach ($quiet in @('estimated', 'manual')) { Check (@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = $null; origin = $quiet } })).Count -eq 0) "a $quiet preview passes no recipe" }
 Check (@(Get-FastLlmUiStartRecipeArguments -Plan ([pscustomobject]@{ recipe = [pscustomobject]@{ id = 'x y; evil'; origin = 'bitworks' } })).Count -eq 0) 'an unsafe recipe id is never passed to the child'
 Check (@(Get-FastLlmUiStartRecipeArguments -Plan $null).Count -eq 0) 'no preview plan passes no recipe'
@@ -498,13 +498,13 @@ $offFlipped = @(Get-FastLlmUiChooserRows -Rows $flippedRows -ExperimentalCompone
 $onFlipped = @(Get-FastLlmUiChooserRows -Rows $flippedRows -ExperimentalComponents 'on' -Variant $xtxVariant)
 Check ($offFlipped.Count -ge 1 -and @($offFlipped | Where-Object { $_.experimental }).Count -eq 0 -and $offFlipped.Count -eq $offRows.Count - 1 -and $onFlipped.Count -eq $offFlipped.Count + 1) 'with the switch off the chooser hides every experimental row, even when the list holds them; with it on it shows them'
 Check (@(Get-FastLlmUiChooserRows -Rows $flippedRows -Variant $xtxVariant).Count -eq $offFlipped.Count -and @(Get-FastLlmUiChooserRows -Rows $flippedRows -ExperimentalComponents 'ON' -Variant $xtxVariant).Count -eq $offFlipped.Count) 'the switch defaults to off and only the exact value on shows experimental rows'
-$hipRow = @($offRows | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' })[0]
-Check ($null -ne $hipRow -and $hipRow.label -ceq 'Measured by Bitworks on this card' -and $hipRow.origin -ceq 'bitworks' -and -not $hipRow.experimental -and $hipRow.model -ceq 'qwen3.8-27b-ud-q4-k-m' -and $hipRow.contextText -ceq '32,768 tokens') 'a HIP row shows the Bitworks-measured label, the model and the context, with the experimental switch off'
+$hipRow = @($offRows | Where-Object { $_.id -ceq 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip' })[0]
+Check ($null -ne $hipRow -and $hipRow.label -ceq 'Measured by Bitworks on this card on the previous file revision; this revision is being verified' -and $hipRow.origin -ceq 'bitworks' -and -not $hipRow.experimental -and $hipRow.model -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35' -and $hipRow.contextText -ceq '32,768 tokens') 'a HIP row shows the Bitworks-measured label, the model and the context, with the experimental switch off'
 Check ($hipRow.engineText -ceq 'llama.cpp b11658 (HIP, ROCm 10.0) (from github.com; missing); requires AMD ROCm 10.0 runtime (gfx1100) (from stable.repo.amd.com; missing)') 'a HIP row names the engine, its required runtime, their source hosts and the exact state "missing"'
 Check ($hipRow.installRequired -eq $true -and $hipRow.consentRequired -eq $true) 'a HIP row with its chain missing needs the install'
 Check (@($hipRow.chain).Count -eq 2 -and @($hipRow.chain[0].licenseLinks).Count -ge 1 -and @($hipRow.chain[1].licenseLinks).Count -ge 2 -and -not (@($hipRow.chain | ForEach-Object { $_.licenseLinks } | Where-Object { [string]$_.url -cnotlike 'https://*' }).Count)) 'a HIP row carries the license links of each component in its chain'
 $vulkanRow = @($offRows | Where-Object { $_.origin -ceq 'bitworks' -and $_.engineId -ceq 'llama.cpp-b10698-vulkan' })[0]
-Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card' -and -not $vulkanRow.consentRequired -and -not $vulkanRow.installRequired -and $vulkanRow.engineText -ceq 'llama.cpp b10698 (Vulkan) (from github.com; missing)') 'a Bitworks row with no engine installed says the built-in engine is missing, and needs no component install'
+Check ($null -ne $vulkanRow -and $vulkanRow.label -ceq 'Measured by Bitworks on this card on the previous file revision; this revision is being verified' -and -not $vulkanRow.consentRequired -and -not $vulkanRow.installRequired -and $vulkanRow.engineText -ceq 'llama.cpp b10698 (Vulkan) (from github.com; missing)') 'a Bitworks row with no engine installed says the built-in engine is missing, and needs no component install'
 # The built-in engine lives under engines\<version>\vulkan, not under components\.
 $vulkanDir = Join-Path $chooserRoot 'engines/b10698/vulkan'
 New-Item -ItemType Directory -Path $vulkanDir -Force | Out-Null
@@ -588,11 +588,11 @@ Check (($installArgs -join '|') -ceq 'components|-Install|llama.cpp-hip-b11658|-
 Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658' -InstallRoot $installRootArg -Confirmed $false -RowCount 2 -Ticked @($true, $true)).Count -eq 0) 'Cancel produces no install command, even with every box ticked'
 Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'llama.cpp-hip-b11658' -InstallRoot $installRootArg -Confirmed $true -RowCount 2 -Ticked @($true, $false)).Count -eq 0) 'Install without every box ticked produces no install command'
 Check (@(Get-FastLlmUiComponentInstallArguments -EngineId 'x y; evil' -InstallRoot $installRootArg -Confirmed $true -RowCount 1 -Ticked @($true)).Count -eq 0) 'an unsafe engine id never reaches the child'
-$expPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'; origin = 'bitworks-experimental' } }
-$expChosen = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'; origin = 'bitworks-experimental' }
-Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $expChosen) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip -AcceptExperimental') 'the start of the experimental recipe the user picked passes -Recipe and -AcceptExperimental'
-Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip' -and (@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $null) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip') 'an experimental origin in a plan alone never adds -AcceptExperimental'
-Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe ([pscustomobject]@{ id = 'another-recipe'; origin = 'bitworks-experimental' })) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip') 'a chosen recipe with a different id than the plan''s does not carry the acceptance'
+$expPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip'; origin = 'bitworks-experimental' } }
+$expChosen = [pscustomobject]@{ id = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip'; origin = 'bitworks-experimental' }
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $expChosen) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip -AcceptExperimental') 'the start of the experimental recipe the user picked passes -Recipe and -AcceptExperimental'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip' -and (@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe $null) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip') 'an experimental origin in a plan alone never adds -AcceptExperimental'
+Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $expPlan -ChosenRecipe ([pscustomobject]@{ id = 'another-recipe'; origin = 'bitworks-experimental' })) -join ' ') -ceq '-Recipe rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip') 'a chosen recipe with a different id than the plan''s does not carry the acceptance'
 $communityPlan = [pscustomobject]@{ recipe = [pscustomobject]@{ id = 'c1'; origin = 'community-experimental' } }
 Check ((@(Get-FastLlmUiStartRecipeArguments -Plan $communityPlan -ChosenRecipe ([pscustomobject]@{ id = 'c1'; origin = 'community-experimental' })) -join ' ') -ceq '-Recipe c1 -AcceptExperimental') 'the start of a chosen community-experimental recipe passes -AcceptExperimental'
 foreach ($plainOrigin in @('bitworks', 'community-reproduced')) {
@@ -1112,8 +1112,8 @@ Check ($ui.Contains('$control.UseMnemonic=$false')) 'Window labels show an amper
 
 
 # ---- engine components named by the preview, remembered declines, start arguments and the running-engine line ----
-$hipId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip'
-$vulkanId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k'
+$hipId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip'
+$vulkanId = 'rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k'
 function PendingItem([string]$Id, [string]$Title = 'AMD license', [string]$Url = 'https://www.amd.com/en/legal/eula.html', [bool]$Unverified = $false) {
     return [pscustomobject]@{ id = $Id; name = "Name of $Id"; kind = 'runtime'; version = '1.0'; sourceHosts = @('repo.radeon.com'); redirectHosts = @(); downloadBytes = 100
         licenseLinks = @([pscustomobject]@{ title = $Title; url = $Url }); consent = 'accept'; unverified = $Unverified }
@@ -1226,7 +1226,7 @@ Check ((@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'engine-1' -InstallRo
 Check (@(Get-FastLlmUiAutomaticInstallArguments -EngineId 'x y' -InstallRoot 'C:\r').Count -eq 0 -and @(Get-FastLlmUiAutomaticInstallArguments -EngineId '' -InstallRoot 'C:\r').Count -eq 0) 'an unsafe or empty engine id installs nothing'
 Check ((Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-Install', 'e', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('install', '-Unattended')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('plan', '-AsJson')) -and -not (Test-FastLlmUiStepReadsLicenseSetting -Arguments @('components', '-AsJson'))) 'only a component install reads the license setting'
 $displayCatalog = Get-Content -LiteralPath (Join-Path $root 'config/catalog.json') -Raw | ConvertFrom-Json
-$displayModel = @($displayCatalog.models | Where-Object { $_.id -ceq 'qwen3.8-27b-ud-q4-k-m' })[0]
+$displayModel = @($displayCatalog.models | Where-Object { $_.id -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35' })[0]
 Check ((Get-FastLlmModelDisplayName -Model $displayModel) -ceq 'Qwen3.8-27B UD-Q4_K_M') 'the display name of the real catalog model is the upstream name and quantization'
 Check ((Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; quantization = 'Q4_K_M' })) -ceq 'some-id' -and
     (Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; upstreamModel = 'Org/Name' })) -ceq 'some-id' -and

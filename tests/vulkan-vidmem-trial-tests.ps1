@@ -186,7 +186,7 @@ Check ($retry.first.owners.Count -eq 1 -and $retry.first.owners[0] -eq 4242 -and
 Check ($retry.failed -and $retry.secondCalls -eq 2) 'Persistent listener-lookup failure must surface after exactly one retry.'
 
 # Tuples: exactly two allowlisted tuples, each with its own model, context, fit target and adapter.
-$tup=& $module {param($p,$catalogPath,$repo) . $p
+$tup=& $module {param($p,$catalogPath,$repo,$reviewedCatalog) . $p
     $r=@{}
     $r.xtx=Get-FastLlmVulkanVidmemTupleSpec -Tuple 'xtx-q4-32k'
     $r.xt=Get-FastLlmVulkanVidmemTupleSpec -Tuple 'xt-iq4-16k'
@@ -195,20 +195,21 @@ $tup=& $module {param($p,$catalogPath,$repo) . $p
     $r.xtArgs=@(New-FastLlmVulkanVidmemArguments -ModelPath 'M' -Tuple 'xt-iq4-16k')
     $r.bad=@('','XTX-Q4-32K','xtx-q4-16k','xt-q4-32k','xt-iq4-32k','other')|ForEach-Object {try{Get-FastLlmVulkanVidmemTupleSpec -Tuple $_;'accepted:'+$_}catch{'refused'}}
     $r.badArgs=try{New-FastLlmVulkanVidmemArguments -ModelPath 'M' -Tuple 'bogus';$false}catch{$true}
-    # Normal-planner parity for both tuples (explicit model and context), using the repo fixtures as Vulkan hardware.
+    # Normal-planner parity for both tuples (explicit model and context), using the repo fixtures as Vulkan hardware. The lab is bound to the reviewed
+    # catalog, so the planner side of the parity is that catalog too; the shipped catalog supersedes these two model ids.
     $xtxHw=Read-FastLlmJson (Join-Path $repo 'tests/fixtures/rx-7900-xtx-24gb.json')
     $xtHw=Read-FastLlmJson (Join-Path $repo 'tests/fixtures/rx-7900-xt-20gb.json')
     $xtHw.backend='Vulkan';$xtHw.adapters[0].device='Vulkan0';$xtHw.adapters[0].backend='Vulkan'
     $root='/verified'
-    $planXtx=Get-FastLlmPlan -Hardware $xtxHw -CatalogPath $catalogPath -InstallRoot $root -ModelId 'qwen3.8-27b-ud-q4-k-m' -ContextSize 32768
-    $planXt=Get-FastLlmPlan -Hardware $xtHw -CatalogPath $catalogPath -InstallRoot $root -ModelId 'qwen3.8-27b-ud-iq4-xs' -ContextSize 16384
-    $r.parityXtx=Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xtx-q4-32k' -Hardware $xtxHw -CatalogPath $catalogPath -ArtifactRoot $root -ModelPath $planXtx.modelPath
-    $r.parityXt=Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xt-iq4-16k' -Hardware $xtHw -CatalogPath $catalogPath -ArtifactRoot $root -ModelPath $planXt.modelPath
-    $r.parityWrongPath=try{Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xt-iq4-16k' -Hardware $xtHw -CatalogPath $catalogPath -ArtifactRoot $root -ModelPath '/other/model.gguf';$false}catch{$true}
-    $r.parityWrongModel=try{Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xtx-q4-32k' -Hardware $xtHw -CatalogPath $catalogPath -ArtifactRoot $root -ModelPath $planXtx.modelPath;$false}catch{$true}
+    $planXtx=Get-FastLlmPlan -Hardware $xtxHw -CatalogPath $reviewedCatalog -InstallRoot $root -ModelId 'qwen3.8-27b-ud-q4-k-m' -ContextSize 32768
+    $planXt=Get-FastLlmPlan -Hardware $xtHw -CatalogPath $reviewedCatalog -InstallRoot $root -ModelId 'qwen3.8-27b-ud-iq4-xs' -ContextSize 16384
+    $r.parityXtx=Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xtx-q4-32k' -Hardware $xtxHw -CatalogPath $reviewedCatalog -ArtifactRoot $root -ModelPath $planXtx.modelPath
+    $r.parityXt=Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xt-iq4-16k' -Hardware $xtHw -CatalogPath $reviewedCatalog -ArtifactRoot $root -ModelPath $planXt.modelPath
+    $r.parityWrongPath=try{Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xt-iq4-16k' -Hardware $xtHw -CatalogPath $reviewedCatalog -ArtifactRoot $root -ModelPath '/other/model.gguf';$false}catch{$true}
+    $r.parityWrongModel=try{Assert-FastLlmVulkanVidmemPlanParity -Tuple 'xtx-q4-32k' -Hardware $xtHw -CatalogPath $reviewedCatalog -ArtifactRoot $root -ModelPath $planXtx.modelPath;$false}catch{$true}
     $r.planXt=$planXt;$r.planXtArgs=@($planXt.serverArguments)
     $r.xtPlacement=ConvertFrom-FastLlmVulkanVidmemBufferEvidence -Text "load_tensors: offloaded 66/66 layers to GPU`nload_tensors: Vulkan0 model buffer size = 12726.34 MiB" -CpuBufferLikeLines 0 -Overflow $false -ModelBytes 14252845984 -AllowHostModelBuffer $true
-    $r} $source $catalog $root
+    $r} $source $catalog $root (Join-Path $PSScriptRoot 'fixtures/reviewed-catalog-2026-08-30.json')
 Check ($tup.xtx.contextSize -eq 32768 -and $tup.xtx.fitTargetMiB -eq 768 -and $tup.xtx.adapterName -ceq 'AMD Radeon RX 7900 XTX' -and $tup.xtx.modelSha256 -ceq '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482') 'XTX tuple changed.'
 Check ($tup.xt.contextSize -eq 16384 -and $tup.xt.fitTargetMiB -eq 512 -and $tup.xt.adapterName -ceq 'AMD Radeon RX 7900 XT' -and $tup.xt.modelId -ceq 'qwen3.8-27b-ud-iq4-xs' -and $tup.xt.modelSha256 -ceq '40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199') 'XT tuple wrong.'
 Check ($tup.xtModel.sha256 -ceq $tup.xt.modelSha256 -and [long]$tup.xtModel.sizeBytes -eq 14252845984) 'XT catalog model differs from the tuple.'

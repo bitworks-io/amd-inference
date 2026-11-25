@@ -261,6 +261,7 @@ jobs:
           .\tests\connect-info-tests.ps1
           .\tests\preload-tests.ps1
           .\tests\model-store-tests.ps1
+          .\tests\superseded-models-tests.ps1
           .\tests\vc-redist-tests.ps1
           .\tests\vc-redist-install-tests.ps1
           .\tests\ggml-vulkan-identity-tests.ps1
@@ -295,6 +296,7 @@ jobs:
           .\tests\connect-info-tests.ps1
           .\tests\preload-tests.ps1
           .\tests\model-store-tests.ps1
+          .\tests\superseded-models-tests.ps1
           .\tests\vc-redist-tests.ps1
           .\tests\vc-redist-install-tests.ps1
           .\tests\ggml-vulkan-identity-tests.ps1

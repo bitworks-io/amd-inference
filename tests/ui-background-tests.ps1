@@ -31,10 +31,10 @@ Assert-True (-not (Test-FastLlmUiBackgroundMayStart $state)) 'Start must await a
 $null=Set-FastLlmUiBackgroundObservation $state $absent
 Assert-True (Test-FastLlmUiBackgroundMayStart $state) 'Verified absence should allow opt-in start.'
 $script:startCalls=0
-$started=Invoke-FastLlmUiBackgroundStart -State $state -Request ([pscustomobject]@{modelId='qwen3.8-27b-ud-q4-k-m'}) -Start {
+$started=Invoke-FastLlmUiBackgroundStart -State $state -Request ([pscustomobject]@{modelId='qwen3.8-27b-ud-q4-k-m-4af51b35'}) -Start {
     param($Request)
     $script:startCalls++
-    if($Request.modelId -cne 'qwen3.8-27b-ud-q4-k-m'){throw 'Selection changed.'}
+    if($Request.modelId -cne 'qwen3.8-27b-ud-q4-k-m-4af51b35'){throw 'Selection changed.'}
     [pscustomobject]@{phase='starting';requestId=$requestId;hostIdentity=$hostIdentity;active=$false;attachable=$false}
 }
 Assert-True ($started.requestId -ceq $requestId -and $state.pendingRequestId -ceq $requestId) 'Start must retain exact request ID.'

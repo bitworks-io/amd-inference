@@ -164,6 +164,31 @@ def validate_release_policy(data, version):
             raise BuildError("the release policy rollbackFloor must not be newer than the release being built")
 
 
+RECIPES_FILE = "config/recipes.json"
+
+
+def lineage_recipe_ids(recipes_bytes):
+    """Ids of the recipes whose expected numbers were measured on a previous file revision (evidence.measuredModel)."""
+    if recipes_bytes is None:
+        return []
+    try:
+        document = json.loads(recipes_bytes.decode("utf-8"))
+        recipes = document["recipes"]
+    except (ValueError, KeyError, TypeError):
+        raise BuildError("the recipes file is unreadable: " + RECIPES_FILE)
+    return sorted(str(r.get("id")) for r in recipes if isinstance(r, dict) and isinstance(r.get("evidence"), dict) and r["evidence"].get("measuredModel"))
+
+
+def check_stable_recipe_lineage(files, channel):
+    """A stable package never carries a recipe whose expected numbers were measured on a previous file revision. A canary may."""
+    if channel != "stable":
+        return
+    ids = lineage_recipe_ids(files.get(RECIPES_FILE))
+    if ids:
+        raise BuildError("Refusing a stable build: recipe(s) " + ", ".join(ids)
+                         + " still carry expected numbers measured on a previous file revision; publish new measured evidence first.")
+
+
 def manifest_bytes(entries):
     return json.dumps({"schema": MANIFEST_SCHEMA, "fileCount": len(entries), "files": entries}, indent=1, sort_keys=True).encode()
 
@@ -178,6 +203,7 @@ def build(root, version, channel, min_agent_version, out_dir, built_at=None, rol
         raise BuildError("the output folder already exists")
     files = collect(root)
     validate_release_policy(files.get(POLICY_FILE), version)
+    check_stable_recipe_lineage(files, channel)
     entries = [{"path": p, "bytes": len(b), "sha256": sha256_hex(b)} for p, b in sorted(files.items())]
     version_doc = canonical_json({"version": version, "builtAtUtc": built_at, "channel": channel,
                                   "sourceManifestSha256": sha256_hex(manifest_bytes(entries))})

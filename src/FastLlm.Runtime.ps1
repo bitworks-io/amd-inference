@@ -363,6 +363,8 @@ function Resolve-FastLlmSwitchTarget {
         # anything is stopped, rather than failing at the plan after the working server was stopped.
         $autoEligible = $model[0].PSObject.Properties['autoEligible']
         if ($autoEligible -and -not [bool] $autoEligible.Value) { $result.code = 'switch-target-experimental-model'; return [pscustomobject] $result }
+        # Nor to a superseded file revision: its replacement is what a switch offers.
+        if (Get-FastLlmModelSupersededBy -Model $model[0]) { $result.code = 'switch-target-superseded-model'; return [pscustomobject] $result }
         $modelsRoot = Join-FastLlmContainedPath -Root $InstallRoot -Child 'models' -Label 'Models root'
         $modelPath = Join-FastLlmContainedPath -Root $modelsRoot -Child ([string] $model[0].file) -Label 'Model file'
         if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) { $result.code = 'switch-target-not-installed'; return [pscustomobject] $result }
@@ -387,6 +389,7 @@ function Get-FastLlmSwitchRefusalText {
         'switch-target-no-consent' { return "The license of the model $name has not been accepted on this PC. Install it first." }
         'switch-target-already-serving' { return "The model $name is already running." }
         'switch-target-experimental-model' { return "The model $name is experimental. An experimental model is started from the command line (start -ModelId ... -AllowExperimentalModel), not by a switch." }
+        'switch-target-superseded-model' { return "The model $name is an older file revision that a newer one replaces. Switch to the newer model instead." }
         'switch-recipe-experimental' { return 'An experimental recipe is started from the command line (start -Recipe ... -AcceptExperimental), not by a switch.' }
         'switch-recipe-needs-default-options' { return 'A recipe is measured for the default context profile and one request at a time; this server runs with another setting.' }
         default { return 'The switch target could not be checked. Nothing was changed.' }
@@ -1412,6 +1415,10 @@ function Invoke-FastLlmSupervisedServer {
         if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['id']) { $fallbackToRecipe = [string] $Plan.recipe.id }
         $state.fallback = [ordered]@{ fromRecipe = [string] $Plan.fallback.fromRecipe; toRecipe = $fallbackToRecipe; reason = [string] $Plan.fallback.reason }
     }
+    # A recipe whose expected numbers were measured on the previous file revision keeps that sentence with the run, for every place that reports speed.
+    if ($Plan.PSObject.Properties['recipe'] -and $Plan.recipe -and $Plan.recipe.PSObject.Properties['measurementNote'] -and $Plan.recipe.measurementNote) {
+        $state.measurementNote = [string] $Plan.recipe.measurementNote
+    }
     if ($Plan.PSObject.Properties['catalogVersion']) {
         if (-not $CatalogPath) { throw 'A real runtime recipe requires the verified catalog path.' }
         $state.recipe = [ordered]@{
@@ -1666,6 +1673,7 @@ function Invoke-FastLlmSupervisedServer {
             }
             elseif ($selfTestResult.status -eq 'below-expected') {
                 Write-Host "Self-test: generation $($selfTestResult.generationTokS) tok/s is below 70% of the $($selfTestResult.expectedGenerationTokS) tok/s measured for this setup. Likely causes: driver version, Resizable BAR, other apps using GPU memory, power or thermal limits. Run: fast-llm doctor"
+                if ($state.Contains('measurementNote') -and $state['measurementNote']) { Write-Host ([string] $state['measurementNote']) }
             }
             else {
                 $failure = New-FastLlmTypedFailure -Code 'self-test-failed' -Message (Get-FastLlmSelfTestFailureText -Reasons @($selfTestResult.reasons) -Plan $Plan)

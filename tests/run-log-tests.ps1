@@ -172,8 +172,8 @@ try {
     Check (($switchAllowed['switch-request'] -join ',') -ceq 'fromModelId,toModelId' -and ($switchAllowed['switch-result'] -join ',') -ceq 'result,failureCode') 'switch-events: the allowlist has exactly switch-request { fromModelId, toModelId } and switch-result { result, failureCode }'
     $requestFieldsFor={ param($From,$To) & $module { param($F,$T) Get-FastLlmRunLogSwitchRequestFields -FromModelId $F -ToModelId $T } $From $To }
     $resultFieldsFor={ param($Result,$Code) & $module { param($R,$C) Get-FastLlmRunLogSwitchResultFields -Result $R -FailureCode $C } $Result $Code }
-    $requestFields=& $requestFieldsFor 'qwen3.5-9b-q4-k-m' 'qwen3.8-27b-ud-iq4-xs'
-    Check ((@($requestFields.Keys | Sort-Object) -join ',') -ceq 'fromModelId,toModelId' -and [string]$requestFields.fromModelId -ceq 'qwen3.5-9b-q4-k-m' -and [string]$requestFields.toModelId -ceq 'qwen3.8-27b-ud-iq4-xs') 'switch-events: a request line carries the two model ids'
+    $requestFields=& $requestFieldsFor 'qwen3.5-9b-q4-k-m' 'qwen3.8-27b-ud-iq4-xs-4af51b35'
+    Check ((@($requestFields.Keys | Sort-Object) -join ',') -ceq 'fromModelId,toModelId' -and [string]$requestFields.fromModelId -ceq 'qwen3.5-9b-q4-k-m' -and [string]$requestFields.toModelId -ceq 'qwen3.8-27b-ud-iq4-xs-4af51b35') 'switch-events: a request line carries the two model ids'
     $requestFields=& $requestFieldsFor 'qwen3.5-9b-q4-k-m' $null
     Check ((@($requestFields.Keys) -join ',') -ceq 'fromModelId') 'switch-events: a request whose target is not a catalog id carries no target'
     $requestFields=& $requestFieldsFor 'model a FLLM-MARKER-PROMPT-7f3a' "two`nlines"
