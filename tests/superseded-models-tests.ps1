@@ -37,23 +37,50 @@ try {
     function Get-Model($Doc,[string]$Id){return @($Doc.models | Where-Object { [string]$_.id -ceq $Id })[0]}
 
     # ---- a. validation ------------------------------------------------------------------------------------------------------------------------
+    # Each case changes one thing and must be refused for its OWN rule: the message is pinned, so a case cannot pass on another check's refusal.
     $loadRefusals=@{
-        'a target that is not in the catalog' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='no-such-model' }
-        'itself' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='qwen3.8-27b-ud-q4-k-m' }
-        'a target that is itself superseded (a chain)' = { param($d) $new=Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35'; $new | Add-Member -NotePropertyName supersededBy -NotePropertyValue 'qwen3.8-27b-ud-q5-k-m-4af51b35' }
-        'a target with another quantization' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='qwen3.8-27b-ud-q5-k-m-4af51b35' }
-        'a target with another family' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35').family='Other' }
-        'a target with other parameters' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35').parameters='9B' }
-        'an empty value' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='' }
-        'a value that is not text' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy=5 }
-        'notes that are empty' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q5-k-m-4af51b35').notes='  ' }
-        'notes that are not text' = { param($d) (Get-Model $d 'qwen3.8-27b-ud-q5-k-m-4af51b35').notes=7 }
+        'a target that is not in the catalog' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' is superseded by 'no-such-model', which is not in the catalog."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='no-such-model' } }
+        'itself' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' cannot be superseded by itself."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='qwen3.8-27b-ud-q4-k-m' } }
+        # A pure chain: old -> new -> a third entry of the SAME family, parameters and quantization (a copy of the new one under another id and
+        # file), so only the no-chains rule can refuse it.
+        'a target that is itself superseded (a chain)' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' is superseded by 'qwen3.8-27b-ud-q4-k-m-4af51b35', which is itself superseded. Chains are not allowed."
+            Change={ param($d)
+                $new=Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35'
+                $third=$new | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+                $third.id='qwen3.8-27b-ud-q4-k-m-chain-third'
+                $third.file='Qwen3.8-27B-UD-Q4_K_M-chain-third.gguf'
+                $d.models=@(@($d.models) + $third)
+                $new | Add-Member -NotePropertyName supersededBy -NotePropertyValue 'qwen3.8-27b-ud-q4-k-m-chain-third' } }
+        'a target with another quantization' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' is superseded by 'qwen3.8-27b-ud-q5-k-m-4af51b35', which has a different quantization."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='qwen3.8-27b-ud-q5-k-m-4af51b35' } }
+        'a target with another family' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' is superseded by 'qwen3.8-27b-ud-q4-k-m-4af51b35', which has a different family."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35').family='Other' } }
+        'a target with other parameters' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' is superseded by 'qwen3.8-27b-ud-q4-k-m-4af51b35', which has a different parameters."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35').parameters='9B' } }
+        'an empty value' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' supersededBy must be a non-empty string naming a catalog model."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy='' } }
+        'a value that is not text' = @{ Message="Model 'qwen3.8-27b-ud-q4-k-m' supersededBy must be a non-empty string naming a catalog model."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q4-k-m').supersededBy=5 } }
+        'notes that are empty' = @{ Message="Model 'qwen3.8-27b-ud-q5-k-m-4af51b35' notes must be a non-empty string."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q5-k-m-4af51b35').notes='  ' } }
+        'notes that are not text' = @{ Message="Model 'qwen3.8-27b-ud-q5-k-m-4af51b35' notes must be a non-empty string."
+            Change={ param($d) (Get-Model $d 'qwen3.8-27b-ud-q5-k-m-4af51b35').notes=7 } }
     }
     foreach($name in @($loadRefusals.Keys | Sort-Object)){
-        $bad=New-CatalogCopy ('bad-'+[Guid]::NewGuid().ToString('N')) $loadRefusals[$name]
+        $case=$loadRefusals[$name]
+        $bad=New-CatalogCopy ('bad-'+[Guid]::NewGuid().ToString('N')) $case.Change
         $thrown=Get-Thrown { Get-FastLlmCatalog -CatalogPath $bad }
-        Check ($null -ne $thrown) "validation: the catalog refuses supersededBy/notes with $name"
+        Check ($null -ne $thrown -and [string]$thrown.Message -ceq [string]$case.Message) "validation: the catalog refuses supersededBy/notes with $name, for that rule (got: $(if($thrown){$thrown.Message}else{'no error'}))"
     }
+    # The same chain with the third entry present but nothing superseded twice loads: the third entry alone breaks nothing.
+    $thirdOnly=New-CatalogCopy 'third-only' { param($d)
+        $third=(Get-Model $d 'qwen3.8-27b-ud-q4-k-m-4af51b35') | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $third.id='qwen3.8-27b-ud-q4-k-m-chain-third'
+        $third.file='Qwen3.8-27B-UD-Q4_K_M-chain-third.gguf'
+        $d.models=@(@($d.models) + $third) }
+    Check ($null -eq (Get-Thrown { Get-FastLlmCatalog -CatalogPath $thirdOnly })) 'validation: the chain case fails only because of the chain (the extra entry alone loads)'
     $withoutField=New-CatalogCopy 'plain' { param($d) foreach($m in @($d.models)){ if($m.PSObject.Properties['supersededBy']){ $m.PSObject.Properties.Remove('supersededBy') } } }
     Check ($null -eq (Get-Thrown { Get-FastLlmCatalog -CatalogPath $withoutField })) 'validation: supersededBy is optional'
 
