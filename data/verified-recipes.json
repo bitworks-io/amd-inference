@@ -3,6 +3,8 @@
     {
       "engineBuild": "b10698",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-iq4-xs",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-14",
         "resultId": "obs-rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs-2026-10-07",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-qwen3-8-27b-iq4xs/#lab-observation"
@@ -19,8 +21,8 @@
         "promptTokens": 512
       },
       "gpuCount": 1,
-      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k",
-      "model": "qwen3.8-27b-ud-iq4-xs",
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k",
+      "model": "qwen3.8-27b-ud-iq4-xs-4af51b35",
       "recommended": false,
       "runtime": {
         "cacheTypeK": "f16",
@@ -33,6 +35,8 @@
     {
       "engineBuild": "b10698",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-q4-k-m",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-14",
         "resultId": "obs-rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km-2026-10-07",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-qwen3-8-27b-q4km/#lab-observation"
@@ -49,8 +53,8 @@
         "promptTokens": 512
       },
       "gpuCount": 1,
-      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k",
-      "model": "qwen3.8-27b-ud-q4-k-m",
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k",
+      "model": "qwen3.8-27b-ud-q4-k-m-4af51b35",
       "recommended": false,
       "runtime": {
         "cacheTypeK": "f16",
@@ -66,6 +70,8 @@
       },
       "engineBuild": "b11658",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-iq4-xs",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-16",
         "resultId": "obs-rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs-2026-10-15",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xt-20gb-windows-hip-qwen3-8-27b-iq4xs/#lab-observation"
@@ -82,8 +88,8 @@
         "promptTokens": 512
       },
       "gpuCount": 1,
-      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs.16k.hip",
-      "model": "qwen3.8-27b-ud-iq4-xs",
+      "id": "rx-7900-xt.qwen3.8-27b-ud-iq4-xs-4af51b35.16k.hip",
+      "model": "qwen3.8-27b-ud-iq4-xs-4af51b35",
       "recommended": true,
       "runtime": {
         "cacheTypeK": "f16",
@@ -98,6 +104,8 @@
       },
       "engineBuild": "b11658",
       "evidence": {
+        "measuredModel": "qwen3.8-27b-ud-q4-k-m",
+        "measuredRevision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
         "publishedAt": "2026-10-16",
         "resultId": "obs-rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km-2026-10-15",
         "url": "https://bitworks.io/amd-inference/recipes/rx-7900-xtx-24gb-windows-hip-qwen3-8-27b-q4km/#lab-observation"
@@ -114,8 +122,8 @@
         "promptTokens": 512
       },
       "gpuCount": 1,
-      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m.32k.hip",
-      "model": "qwen3.8-27b-ud-q4-k-m",
+      "id": "rx-7900-xtx.qwen3.8-27b-ud-q4-k-m-4af51b35.32k.hip",
+      "model": "qwen3.8-27b-ud-q4-k-m-4af51b35",
       "recommended": true,
       "runtime": {
         "cacheTypeK": "f16",

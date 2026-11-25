@@ -103,6 +103,33 @@ def check_source_text(rid, source):
         raise RecipeError(f"{rid}: source.url host must be a plain ASCII domain name (an international name in its xn-- form), with no user name, IP address or non-ASCII characters")
 
 
+def check_model_not_superseded(rid, entry, model):
+    """A recipe is for the current file revision of a model; one that names a superseded entry would plan a file that is never downloaded."""
+    if model.get("supersededBy") is not None:
+        raise RecipeError(f"{rid}: model {entry.get('model')!r} is superseded by {model['supersededBy']!r}; the recipe must name the replacement")
+
+
+def check_measured_lineage(rid, entry, models):
+    """evidence.measuredModel and evidence.measuredRevision say the recipe's expected numbers were measured on the file revision it replaced.
+    They come together, and only for the predecessor: the named catalog entry must be superseded by this recipe's model, at that revision."""
+    evidence = entry.get("evidence") or {}
+    has_model, has_revision = "measuredModel" in evidence, "measuredRevision" in evidence
+    if not has_model and not has_revision:
+        return
+    if has_model != has_revision:
+        raise RecipeError(f"{rid}: evidence.measuredModel and evidence.measuredRevision come together")
+    measured_model, measured_revision = evidence["measuredModel"], evidence["measuredRevision"]
+    if not isinstance(measured_model, str) or not isinstance(measured_revision, str):
+        raise RecipeError(f"{rid}: evidence.measuredModel and evidence.measuredRevision must be strings")
+    predecessor = models.get(measured_model)
+    if predecessor is None:
+        raise RecipeError(f"{rid}: evidence.measuredModel {measured_model!r} is not in the catalog")
+    if predecessor.get("supersededBy") != entry.get("model"):
+        raise RecipeError(f"{rid}: evidence.measuredModel {measured_model!r} is not superseded by this recipe's model {entry.get('model')!r}")
+    if predecessor.get("revision") != measured_revision:
+        raise RecipeError(f"{rid}: evidence.measuredRevision {measured_revision!r} is not the revision of {measured_model!r} ({predecessor.get('revision')!r})")
+
+
 def positive(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
@@ -117,6 +144,8 @@ def validate(entry, origin, catalog, variants, components=None):
     model = models.get(entry.get("model"))
     if model is None:
         raise RecipeError(f"{rid}: model {entry.get('model')!r} is not in the catalog")
+    check_model_not_superseded(rid, entry, model)
+    check_measured_lineage(rid, entry, models)
     # A Bitworks entry may name its own engine component (the HIP lane); every other entry runs on the built-in Vulkan engine.
     own_engine = None
     if origin == "bitworks" and (entry.get("components") or {}).get("engine"):
@@ -239,6 +268,7 @@ def validate_bitworks_experimental(entry, catalog, variants, components):
     model = {m["id"]: m for m in catalog["models"]}.get(entry.get("model"))
     if model is None:
         raise RecipeError(f"{rid}: model {entry.get('model')!r} is not in the catalog")
+    check_model_not_superseded(rid, entry, model)
     if not isinstance(entry.get("gpuCount"), int) or isinstance(entry.get("gpuCount"), bool) or entry["gpuCount"] not in (1, 2):
         raise RecipeError(f"{rid}: gpuCount must be 1 or 2")
     check_engine_components(entry, model, components)
