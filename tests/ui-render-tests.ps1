@@ -66,6 +66,24 @@ $pageNames=Get-UiPageElementNames $shellMatch.Groups[1].Value
 Check (($pageNames -contains 'PaneColumn') -and ($pageNames -contains 'NavList') -and ($pageNames -contains 'MessageScroll')) "the page names include PaneColumn, NavList and MessageScroll (got $($pageNames -join ', '))"
 $partHits=@('Bd','Hd','Arrow','Body','Bar')|Where-Object{$pageNames -contains $_}
 Check (@($partHits).Count -eq 0) "the page names hold no template part name (found: $(@($partHits) -join ', '))"
+# The Models page (pure, any OS): every x:Name of its registered markup is in the hand list Initialize-FastLlmUiFluentModels collects into Els, and the list holds no
+# other name, so the stand-in (which collects the names the same way, through FindName) and the window see the same elements.
+$modelsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentModels.ps1'))
+$modelsMatch=[regex]::Match($modelsText,"(?s)\`$script:FastLlmUiXaml\['FastLlm\.Models'\]\s*=\s*@'\r?\n(.*?)\r?\n'@")
+Check $modelsMatch.Success 'the Models markup was found in the Models file'
+$listMatch=[regex]::Match($modelsText,'(?s)Add-FastLlmUiFluentElements -Els \$Els -Root \$Page -Names @\((.*?)\)')
+Check $listMatch.Success 'the Models element name list was found in Initialize-FastLlmUiFluentModels'
+if($modelsMatch.Success -and $listMatch.Success){
+    $modelsRaw=Get-UiPageElementNames $modelsMatch.Groups[1].Value
+    $modelsPageNames=@($modelsRaw|Sort-Object -Unique)
+    $listedNames=@([regex]::Matches($listMatch.Groups[1].Value,"'([A-Za-z0-9]+)'")|ForEach-Object{$_.Groups[1].Value}|Sort-Object -Unique)
+    $notListed=@($modelsPageNames|Where-Object{$listedNames -cnotcontains $_})
+    $notInMarkup=@($listedNames|Where-Object{$modelsPageNames -cnotcontains $_})
+    Check ($modelsPageNames.Count -ge 30 -and $modelsPageNames.Count -eq @($modelsRaw).Count) "the Models markup has at least 30 distinct page names (got $($modelsPageNames.Count) of $(@($modelsRaw).Count))"
+    Check ($notListed.Count -eq 0) "every Models markup name is in the Initialize list (not listed: $($notListed -join ', '))"
+    Check ($notInMarkup.Count -eq 0) "the Initialize list names no element that is not in the Models markup (extra: $($notInMarkup -join ', '))"
+    Check (@('Bd','Hd','Arrow','Body','Bar'|Where-Object{$modelsPageNames -contains $_}).Count -eq 0) 'the Models page names hold no template part name'
+}
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -546,8 +564,129 @@ foreach($state in 'not-running','key-unreadable'){
 }
 Write-Host ('INFO: Connect render of {0} cases took {1:N1} s' -f ($matrix.Count+12),$connectSw.Elapsed.TotalSeconds)
 
-# ---- Reading order of the Tools and Connect pages at text 1.0, 2.0 and 2.25: no overlap, and the whole tab sequence is the reading order.
-function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops){
+# ---- The Models page. The store reads, the engine components and the switch picker are shadows over a fixture; the page, its lists, its reasons and the
+# bindings are the product's. 'long' is the stress case (long names, in-use rows, leftovers, components, picker items with long verdicts, a long folder path,
+# the Start options open and long messages); 'empty' has nothing installed, switching off with its reason line and the Start options closed.
+$script:form=$null
+$script:catalog=$script:homeCatalog
+$script:modelsFx=$null
+$script:modelsEls=$null
+function Get-FastLlmInstalledModels{param([string]$InstallRoot,[string]$CatalogPath)return @($script:modelsFx.models)}
+function Get-FastLlmModelLeftovers{param([string]$InstallRoot)return @($script:modelsFx.leftovers)}
+function Get-FastLlmModelStoreFreeBytes{param([string]$InstallRoot)return [int64]123456789012}
+function Get-FastLlmComponentInventory{param([string]$ComponentsPath,[string]$InstallRoot)return @()}
+function Get-FastLlmInstalledComponentRows{param([object[]]$Inventory)return @($script:modelsFx.components)}
+function Get-FastLlmStatus{param([string]$InstallRoot)return $null}
+function Get-FastLlmUiSwitchPickerModel{param([string]$InstallRoot,[string]$CatalogPath,$Status,[scriptblock]$RowsProvider)return [pscustomobject]@{items=@($script:modelsFx.pickerItems);message=''}}
+function New-ModelsRenderFixture([string]$Kind){
+    if($Kind -ceq 'empty'){
+        return @{kind='empty';catalog=$script:homeCatalog;models=@();leftovers=@();components=@();pickerItems=@();switchOn=$false;expanded=$false;folder=[string]$script:InstallRoot
+            switchLine='Model switching is off. Turn it on in the settings to switch models while FastLLM runs.';longMessages=$false;models_n=0;components_n=0;picker_n=0}
+    }
+    $entries=New-Object System.Collections.ArrayList
+    $installed=New-Object System.Collections.ArrayList
+    $picker=New-Object System.Collections.ArrayList
+    for($i=1;$i -le 10;$i++){
+        $id=('render-model-{0:D2}' -f $i)
+        [void]$entries.Add([pscustomobject]@{id=$id;upstreamModel=('example-org/Very-Long-Model-Name-For-Layout-Checks-{0:D2}-Instruct-Extended-Context' -f $i);quantization='Q4_K_M'})
+        $reason='';if($i -le 2){$reason='FastLLM is serving this model right now, so it cannot be removed.'}
+        [void]$installed.Add([pscustomobject]@{id=$id;sizeBytes=[int64](1500000000+$i*250000000);inUse=($i -le 2);inUseReason=$reason})
+    }
+    for($i=1;$i -le 8;$i++){
+        [void]$picker.Add([pscustomobject]@{id=('render-model-{0:D2}' -f $i);text=('Very-Long-Model-Name-For-Layout-Checks-{0:D2}-Instruct Q4_K_M  -  fits with room for the context you picked, about 30 GB needed of 48 GB free' -f $i);canSwitch=(($i % 2) -eq 1)})
+    }
+    $components=@()
+    for($i=1;$i -le 5;$i++){$components+=[pscustomobject]@{id=('render-engine-{0}' -f $i);label=('render-engine-{0} (engine, 1.{0}.0, {0}40 MB) - a long component label to wrap on a narrow window' -f $i)}}
+    $leftovers=@([pscustomobject]@{name='a.part';sizeBytes=[int64]1073741824;locked=$false},[pscustomobject]@{name='b.part';sizeBytes=[int64]536870912;locked=$false})
+    $catalog=[pscustomobject]@{models=@($entries.ToArray())}
+    return @{kind='long';catalog=$catalog;models=@($installed.ToArray());leftovers=$leftovers;components=$components;pickerItems=@($picker.ToArray());switchOn=$true;expanded=$true
+        folder='D:\Programs and Data With A Long Name\FastLLM\models and caches\a-very-long-folder-name-for-the-layout-checks-and-one-more-part-to-make-it-longer';switchLine='';longMessages=$true;models_n=10;components_n=5;picker_n=8}
+}
+function Set-ModelsRenderFixtureState($Fx,$Els){
+    $script:pathBox.Text=[string]$Fx.folder
+    $script:switchButton.Enabled=[bool]$Fx.switchOn
+    if([string]$Fx.switchLine -ne ''){$script:switchLabel.Text=[string]$Fx.switchLine}
+    $Els['ModelsStartOptions'].IsExpanded=[bool]$Fx.expanded
+}
+function Set-ModelsRenderMessages($Fx){
+    if(-not [bool]$Fx.longMessages){return}
+    $long='The model list could not be read because the folder is on a drive that is not ready, and this sentence is long on purpose so that it wraps at a narrow window width and at the largest text size. '
+    $m=$script:FastLlmUiFluent['Models']
+    $m['Message'].Text=$long.Substring(0,180)
+    $m['ComponentsMessage'].Text=$long.Substring(0,180)
+    $m['SwitchMessage'].Text=$long.Substring(0,180)
+}
+function Initialize-ModelsRenderPage($Page){
+    $fx=$script:modelsFx
+    $els=@{}
+    $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme;Pages=@{};Current=''}
+    [void](Initialize-FastLlmUiFluentModels -Page $Page -Els $els)
+    # The names the stand-in holds are exactly the page's x:Names (resolved through FindName by the product's own collection, checked against the markup here).
+    $pageNames=Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Models'])
+    $absent=@($pageNames|Where-Object{-not $els.ContainsKey([string]$_)})
+    if($absent.Count -gt 0){throw ('Models names missing from the element map: '+($absent -join ', '))}
+    $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
+    Connect-RenderBindingRows @(Get-FastLlmUiFluentModelsBindings) $els
+    Set-ModelsRenderFixtureState $fx $els
+    $script:catalog=$fx.catalog
+    $script:homeSnap=New-HomeSnap @{}
+    $script:renderFail=''
+    Enter-FastLlmUiFluentModels
+    Set-ModelsRenderMessages $fx
+    $script:modelsEls=$els
+}
+$modelsPrepare={param($page) Initialize-ModelsRenderPage $page}
+function Get-RenderRemoveButtons($Panel){
+    $list=New-Object System.Collections.ArrayList
+    foreach($row in $Panel.Children){
+        if($row -is [System.Windows.Controls.Grid]){foreach($cell in $row.Children){if($cell -is [System.Windows.Controls.Button]){[void]$list.Add($cell)}}}
+    }
+    return $list.ToArray()
+}
+function Test-ModelsCase([string]$Kind,$case){
+    $script:modelsFx=New-ModelsRenderFixture $Kind
+    $script:homeCaseTheme=[string]$case.theme
+    $pngName='FastLlm.Models'
+    if($Kind -ceq 'empty'){$pngName='FastLlm.ModelsEmpty'}
+    $label="Models $Kind $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Models' -Case $case -OutFolder $out -Prepare $modelsPrepare -PngName $pngName -ScrollOwners @('ModelsSwitchList')}catch{Check $false "Models renders at ${label}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "Models clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+    $real=$false
+    if($r.png -and (Test-Path -LiteralPath $r.png)){$info=Get-UiPngInfo -Path $r.png;$real=$info.hasContent}
+    Check $real "the Models render is real at $label"
+    $e=$script:modelsEls
+    $fx=$script:modelsFx
+    Check ($script:renderFail -ceq '') "the Models page filled without a failure at ${label}: '$($script:renderFail)'"
+    $modelButtons=@(Get-RenderRemoveButtons $e['ModelsModelRows'])
+    $componentButtons=@(Get-RenderRemoveButtons $e['ModelsComponentRows'])
+    $wantModelChildren=[Math]::Max(1,[int]$fx.models_n)
+    $wantComponentChildren=[Math]::Max(1,[int]$fx.components_n)
+    Check ($e['ModelsModelRows'].Children.Count -eq $wantModelChildren -and $modelButtons.Count -eq [int]$fx.models_n) "the Models list has its fixture rows at ${label} (children $($e['ModelsModelRows'].Children.Count) of $wantModelChildren, buttons $($modelButtons.Count) of $($fx.models_n))"
+    Check ($e['ModelsComponentRows'].Children.Count -eq $wantComponentChildren -and $componentButtons.Count -eq [int]$fx.components_n) "the component list has its fixture rows at ${label} (children $($e['ModelsComponentRows'].Children.Count) of $wantComponentChildren, buttons $($componentButtons.Count) of $($fx.components_n))"
+    $names=@($modelButtons+$componentButtons|ForEach-Object{[string][System.Windows.Automation.AutomationProperties]::GetName($_)})
+    Check (@($names|Where-Object{$_ -notmatch '^Remove .'}).Count -eq 0 -and @($names|Sort-Object -Unique).Count -eq $names.Count) "every Remove button has its own name at ${label} (names: $($names -join ' | '))"
+    Check ($e['ModelsSwitchList'].Items.Count -eq [int]$fx.picker_n) "the switch list has its fixture items at ${label} (got $($e['ModelsSwitchList'].Items.Count) of $($fx.picker_n))"
+    Check ([bool]$e['ModelsStartOptions'].IsExpanded -eq [bool]$fx.expanded) "the Start options are $(if($fx.expanded){'open'}else{'closed'}) at $label"
+    $disabledModels=@($modelButtons|Where-Object{-not $_.IsEnabled})
+    if($Kind -ceq 'long'){
+        Check ($disabledModels.Count -eq 2 -and @($disabledModels|Where-Object{[string]::IsNullOrEmpty([string]$_.ToolTip)}).Count -eq 0) "the two in-use models have a disabled Remove with a reason at $label"
+        Check ($e['ModelsLeftoverButton'].IsEnabled) "the leftover button is enabled with leftovers at $label"
+    }else{
+        Check (-not $e['ModelsLeftoverButton'].IsEnabled -and [string]$e['ModelsLeftoverButton'].ToolTip -ceq [string]$script:FastLlmUiFluentStrings.WhyNoLeftovers) "the leftover button says why it is off at $label"
+    }
+}
+$modelsSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($case in $matrix){Test-ModelsCase 'long' $case}
+foreach($theme in 'light','dark','high-contrast'){
+    foreach($text in 1.0,2.25){Test-ModelsCase 'empty' @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
+}
+Write-Host ('INFO: Models render of {0} cases took {1:N1} s' -f ($matrix.Count+6),$modelsSw.Elapsed.TotalSeconds)
+
+# ---- Reading order of the Tools, Connect and Models pages at text 1.0, 2.0 and 2.25: no overlap, and the whole tab sequence is the reading order.
+function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops,[string[]]$ScrollOwners=@()){
     foreach($text in 1.0,2.0,2.25){
         $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
         $script:homeCaseTheme='light'
@@ -556,7 +695,7 @@ function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName
         $script:pinInner=$Prepare
         $pinPrepare={param($page) $script:pinPage=$page; & $script:pinInner $page}
         $r=$null
-        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
+        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName -ScrollOwners $ScrollOwners}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
         $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
         Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
         $stops=New-Object System.Collections.ArrayList
@@ -582,7 +721,11 @@ $script:toolsBusy=$false
 Test-PageReadingOrder 'Tools' 'FastLlm.Tools' 'FastLlm.ToolsReading' $toolsPrepare 6
 $script:connectState='running'
 Test-PageReadingOrder 'Connect' 'FastLlm.Connect' 'FastLlm.ConnectReading' $connectPrepare 10
-Write-Host ('INFO: Tools and Connect reading order of 6 cases took {0:N1} s' -f $orderSw.Elapsed.TotalSeconds)
+# Models at the long fixture (the Start options open, so the whole page is in the tab sequence): the model box, the three start inputs, the switch list, the leftover
+# button and the 13 Remove buttons, at least 12 stops
+$script:modelsFx=New-ModelsRenderFixture 'long'
+Test-PageReadingOrder 'Models' 'FastLlm.Models' 'FastLlm.ModelsReading' $modelsPrepare 12 @('ModelsSwitchList')
+Write-Host ('INFO: Tools, Connect and Models reading order of 9 cases took {0:N1} s' -f $orderSw.Elapsed.TotalSeconds)
 
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
@@ -608,9 +751,13 @@ function New-ShellRenderPage($Case,[string]$PageId='Home'){
     [void](Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $els)
     $connectPage=New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
     [void](Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $els)
+    # PR 3b: Models is registered the same way (the binding table includes its rows, bound by the same loop below as Tools and Connect).
+    $modelsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Models'
+    [void](Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $els)
     Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
     Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $els
     Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $els
+    Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     Connect-RenderBindingRows @(Get-FastLlmUiFluentBindingTable) $els
@@ -627,11 +774,17 @@ function New-ShellRenderPage($Case,[string]$PageId='Home'){
     Update-FastLlmUiFluentHome
     Update-FastLlmUiFluentMessages
     Update-FastLlmUiFluentPane
-    # The page under test is hosted the way the window hosts it (Leave, host, nav selection, Enter).
+    # The page under test is hosted the way the window hosts it (Leave, host, nav selection, Enter). Models is hosted with the long fixture.
+    if($PageId -ceq 'Models'){
+        $script:modelsFx=New-ModelsRenderFixture 'long'
+        Set-ModelsRenderFixtureState $script:modelsFx $els
+        $script:catalog=$script:modelsFx.catalog
+    }
     if($PageId -cne 'Home'){
         $script:renderFail=''
         $hosted=Set-FastLlmUiFluentPage -Id $PageId
         if(-not [bool]$hosted -or $script:renderFail -cne ''){throw ("the shell could not host $PageId (hosted=$hosted, failure='$($script:renderFail)')")}
+        if($PageId -ceq 'Models'){Set-ModelsRenderMessages $script:modelsFx}
     }
     $res=$sw.Resources
     $content=$sw.Content
@@ -643,7 +796,7 @@ $shellPrepare={
     foreach($k in @($script:shellRp.Resources.Keys)){$page.Resources[$k]=([object]$script:shellRp.Resources[$k]).psobject.BaseObject}
 }
 $shellSw=[Diagnostics.Stopwatch]::StartNew()
-foreach($pageId in 'Home','Tools','Connect'){
+foreach($pageId in 'Home','Tools','Connect','Models'){
     $pageSw=[Diagnostics.Stopwatch]::StartNew()
     $shellPng='FastLlm.Shell'
     if($pageId -cne 'Home'){$shellPng='FastLlm.Shell'+$pageId}
@@ -657,7 +810,7 @@ foreach($pageId in 'Home','Tools','Connect'){
                 $r=$null
                 try{
                     $script:shellRp=New-ShellRenderPage $case $pageId
-                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList')
+                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList') -ScrollOwners @('ModelsSwitchList')
                 }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
                 $diagText=''
                 if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
@@ -681,7 +834,7 @@ foreach($pageId in 'Home','Tools','Connect'){
     }
     Write-Host ('INFO: Shell with {0} render of 12 cases took {1:N1} s' -f $pageId,$pageSw.Elapsed.TotalSeconds)
 }
-Write-Host ('INFO: Shell render of 36 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
+Write-Host ('INFO: Shell render of 48 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
 
 # PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
@@ -689,7 +842,8 @@ function Get-RenderPngCount([string]$Prefix){
 }
 Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
-    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12}
+    'FastLlm.Models'=40;'FastLlm.ModelsEmpty'=6;'FastLlm.ModelsReading'=3
+    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12}
 foreach($prefix in $pngExpect.Keys){
     $got=Get-RenderPngCount $prefix
     Check ($got -eq $pngExpect[$prefix]) ("the render folder holds $($pngExpect[$prefix]) $prefix PNGs written by this run (got $got)")

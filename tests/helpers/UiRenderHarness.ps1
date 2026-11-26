@@ -110,6 +110,11 @@ function Get-UiVisibleRect($Text, $Stop) {
     return $visible
 }
 
+# Names of controls (a ListBox) whose own viewer a case treats as a content scroller (set by Invoke-UiRenderCase -ScrollOwners; empty by default, so every
+# existing case is judged exactly as before). The Models switch list scrolls its long rows inside a fixed-height ListBox: a row below its fold or beyond its width
+# is scrolled, not clipped or outside.
+$script:UiRenderScrollOwners = @()
+
 # The scroll presenter an element scrolls in: the nearest ScrollContentPresenter above it that belongs to an authored ScrollViewer (one that is not a part of
 # another control's template, as a TextBox's own is), else $Default. A page with a ScrollViewer of its own is judged against that viewer's content, not the
 # harness wrapper's. The ScrollViewer is the presenter's TemplatedParent.
@@ -119,6 +124,7 @@ function Get-UiScrollPresenter($Element, $Default) {
         if ($node -is [System.Windows.Controls.ScrollContentPresenter]) {
             $owner = $node.TemplatedParent
             if ($owner -is [System.Windows.Controls.ScrollViewer] -and $null -eq $owner.TemplatedParent) { return $node }
+            if ($owner -is [System.Windows.Controls.ScrollViewer] -and $owner.TemplatedParent -is [System.Windows.FrameworkElement] -and (@($script:UiRenderScrollOwners) -ccontains [string]$owner.TemplatedParent.Name)) { return $node }
         }
         $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
     }
@@ -213,8 +219,11 @@ function Invoke-UiRenderCase {
         # Optional: names the PNG instead of $Name, so two states of one page (same size, theme and scales) never write the same file.
         [string]$PngName = '',
         # Optional: names of region roots (in order). Stops inside a region are one contiguous block, in that order, each in reading order; the rest come last.
-        [string[]]$TabRegions = @()
+        [string[]]$TabRegions = @(),
+        # Optional: names of ListBoxes whose own viewer is a content scroller for the clipped and outside rules (see $script:UiRenderScrollOwners).
+        [string[]]$ScrollOwners = @()
     )
+    $script:UiRenderScrollOwners = @($ScrollOwners)
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
     $scale = [double]$Case.scale
@@ -332,6 +341,8 @@ function Invoke-UiRenderCase {
         $scroller = Get-UiScrollPresenter $el $presenter
         $scrollOwner = $scroller.TemplatedParent
         $elViewportWidth = [double]$scrollOwner.ViewportWidth
+        # A viewer that scrolls sideways (a named ListBox) holds a row wider than its viewport in its extent; the page's own and the nested sample's never do.
+        if ($scrollOwner.HorizontalScrollBarVisibility -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled) { $elViewportWidth = [Math]::Max($elViewportWidth, [double]$scrollOwner.ExtentWidth) }
         # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
         $elBottomLimit = [Math]::Max([double]$scrollOwner.ExtentHeight, [double]$scrollOwner.ViewportHeight)
         $r = Get-UiRelativeRect $el $scroller
