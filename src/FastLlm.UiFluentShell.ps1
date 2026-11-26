@@ -21,6 +21,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentSettings.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.

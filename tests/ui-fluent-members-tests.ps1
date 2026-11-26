@@ -752,7 +752,7 @@ function Get-PagePinFindings([string[]]$Texts){
             foreach($kv in $h.KeyValuePairs){ if([string]$kv.Item1.Extent.Text -ceq 'Id' -and $kv.Item2.Extent.Text -match "^'(Nav[A-Za-z]+)'$"){[void]$navIds.Add($Matches[1])} }
         }
     }
-    $pageNames=@($xaml.Keys|Where-Object{$_ -cmatch '^FastLlm\.' -and $_ -cne 'FastLlm.Shell'}|ForEach-Object{$_.Substring(8)}|Sort-Object)
+    $pageNames=@($xaml.Keys|Where-Object{$_ -cmatch '^FastLlm\.' -and $_ -cne 'FastLlm.Shell' -and $_ -cne 'FastLlm.Dialog'}|ForEach-Object{$_.Substring(8)}|Sort-Object)
     $ids=@($regs|ForEach-Object{[string]$_.Id}|Sort-Object)
     if(($pageNames -join ',') -cne ($ids -join ',')){[void]$found.Add("the registered page markup ($($pageNames -join ',')) differs from the registered page ids ($($ids -join ','))")}
     foreach($r in $regs){
@@ -2439,6 +2439,189 @@ $flowPlants=[ordered]@{
 }
 foreach($k in $flowPlants.Keys){ Check ($flowPlants[$k] -cne $settingsText -and (Get-SettingsFlowFindings $flowPlants[$k]).Count -ge 1) "mutation check: the Settings flow pin flags: $k" }
 # ===== end PR 3c: Settings pins (Task 2) =====
+
+
+
+# ===== PR 4a: the dialog host and the fluent message box (Tasks 2 and 3) =====
+# Every pin reads src/FastLlm.UiFluentDialogs.ps1 (AST and the registered markup) and runs again on planted mutants, so each is proven on every platform.
+$dlgText=Get-OptionalText 'src/FastLlm.UiFluentDialogs.ps1'
+$dlgHome=Get-OptionalText 'src/FastLlm.UiFluentHome.ps1'
+Check ($dlgText -ne '') 'src/FastLlm.UiFluentDialogs.ps1 exists'
+$dlgShell=Get-OptionalText 'src/FastLlm.UiFluentShell.ps1'
+Check ($dlgShell.Contains(". (Join-Path `$PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')")) 'the shell dot-sources the dialog host like the page files'
+function Get-DlgXaml([string]$Text){
+    $m=[regex]::Match($Text,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Dialog'\] = @'\r?\n(.*?)\r?\n'@")
+    if($m.Success){return $m.Groups[1].Value}
+    return ''
+}
+function Get-DlgFn([string]$Text,[string]$Name){
+    $a=ConvertTo-PinAst $Text
+    $f=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name},$true))
+    if($f.Count -ne 1){return $null}
+    return $f[0]
+}
+function Test-DlgCall($n,[string]$Name){ return ($n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $Name) }
+function Get-DlgParamText($Call,[string]$Param){
+    $els=@($Call.CommandElements)
+    for($i=1;$i -lt $els.Count-1;$i++){ if($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and [string]$els[$i].ParameterName -ceq $Param){return [string]$els[$i+1].Extent.Text} }
+    return $null
+}
+function Get-DlgFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $ast=ConvertTo-PinAst $Text
+    # --- the markup: constant, parses, no event attribute, no IsDefault or IsCancel at all, the footer presenter wraps ---
+    $xaml=Get-DlgXaml $Text
+    if($xaml -eq ''){[void]$f.Add('the FastLlm.Dialog markup is not a constant here-string in the table');return ,$f.ToArray()}
+    $x=$null; try{$x=[xml]$xaml}catch{[void]$f.Add('the dialog markup does not parse')}
+    if($null -ne $x){
+        foreach($n in $x.SelectNodes('//*')){
+            foreach($a in $n.Attributes){
+                if($a.LocalName -cin @('IsDefault','IsCancel')){[void]$f.Add("the dialog markup sets $($a.LocalName) (Enter and Escape go through the key plan)")}
+                if($a.LocalName -cin @('Click','Loaded','Closing','Closed','KeyDown','PreviewKeyDown','KeyUp','MouseDown','Checked','TextChanged','SelectionChanged')){[void]$f.Add("the dialog markup has the event attribute $($a.LocalName)")}
+            }
+        }
+        $xn='http://schemas.microsoft.com/winfx/2006/xaml'
+        $footer=@($x.SelectNodes('//*[local-name()="UniformGrid"]')|Where-Object{$_.GetAttribute('Name',$xn) -ceq 'DlgFooter'})
+        if($footer.Count -ne 1){[void]$f.Add('the dialog markup has no DlgFooter panel')}
+        else{
+            foreach($target in 'AccessText','TextBlock'){
+                $hit=@($footer[0].SelectNodes("*[local-name()='UniformGrid.Resources']/*[local-name()='Style']")|Where-Object{$_.GetAttribute('TargetType') -ceq $target -and @($_.SelectNodes("*[local-name()='Setter'][@Property='TextWrapping'][@Value='Wrap']")).Count -eq 1})
+                if($hit.Count -ne 1){[void]$f.Add("the footer presenter has no $target style with TextWrapping Wrap")}
+            }
+        }
+        foreach($need in 'DlgIconHost','DlgBodyScroll','DlgFooter'){ if(@($x.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name',$xn) -ceq $need}).Count -ne 1){[void]$f.Add("the dialog markup has no $need")} }
+    }
+    # --- no IsDefault or IsCancel member anywhere in the code ---
+    foreach($n in @($ast.FindAll({param($a) $a -is [System.Management.Automation.Language.MemberExpressionAst] -and $a.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and @('IsDefault','IsCancel') -ccontains [string]$a.Member.Value},$true))){[void]$f.Add("code uses $($n.Member.Value): $($n.Extent.Text)")}
+    # --- the dialog builder ---
+    $new=Get-DlgFn $Text 'New-FastLlmUiFluentDialog'
+    if($null -eq $new){[void]$f.Add('New-FastLlmUiFluentDialog is not defined exactly once')}
+    else{
+        $inv=@($new.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true))
+        $keyHook=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_PreviewKeyDown' -and $_.Expression.Extent.Text -ceq '$win'})
+        if($keyHook.Count -ne 1){[void]$f.Add('the dialog Window has no single PreviewKeyDown handler')}
+        else{
+            $h=$keyHook[0].Extent.Text
+            if($h -cnotmatch 'Key\]::Return' -or $h -cnotmatch 'Key\]::Escape'){[void]$f.Add('the key handler does not read Return and Escape')}
+            if($h -cnotmatch "\`$state\['Enter'\]" -or $h -cnotmatch "\`$state\['Escape'\]"){[void]$f.Add('the key handler does not answer the Enter and Escape targets')}
+            if($h -cnotmatch [regex]::Escape("`$state['Enter'] -cne '') { `$e.Handled = `$true; & `$close ([string] `$state['Enter'])") -or $h -cnotmatch [regex]::Escape("`$state['Escape'] -cne '') { & `$close ([string] `$state['Escape'])")){[void]$f.Add('the key handler does not close with the matching target')}
+            if($h -cnotmatch 'FocusedElement' -or $h -cnotmatch '-is \[System.Windows.Controls.Button\]'){[void]$f.Add('the key handler lets Enter override a focused button')}
+        }
+        $closing=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_Closing'})
+        if($closing.Count -ne 1){[void]$f.Add('the dialog Window has no single Closing handler')}
+        else{
+            $c=$closing[0].Extent.Text
+            if($c -cnotmatch '\$e\.Cancel = \$true'){[void]$f.Add('the Closing handler never refuses a close')}
+            if($c -cnotmatch "CloseEnabled'\]"){[void]$f.Add('the Closing handler does not read CloseEnabled')}
+            if($c -cnotmatch "\`$state\['Result'\] = \[string\] \`$state\['Escape'\]"){[void]$f.Add('the close box does not answer the Escape target')}
+        }
+        $names=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'SetName' -and $_.Extent.Text -ceq '[System.Windows.Automation.AutomationProperties]::SetName($button, $caption)'})
+        if($names.Count -ne 1){[void]$f.Add('every code-built button is not named by its caption')}
+        $loaded=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_Loaded' -and $_.Extent.Text -cmatch '\$target\.Focus\(\)'})
+        if($loaded.Count -ne 1){[void]$f.Add('the first focus is not set on the target in Loaded')}
+        if($new.Extent.Text.IndexOf('@($Enter, $Escape)',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the first focus target is not chosen from Enter, then Escape')}
+        if($new.Extent.Text.IndexOf('$win.Tag = $result',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the dialog Window.Tag is not the returned table (the test answerer reads it)')}
+        # Ownership: the Owner is set only inside an if whose condition reads IsVisible (a hidden owner is never set).
+        $own=@($new.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$win.Owner'},$true))
+        if($own.Count -ne 1){[void]$f.Add('the Owner is not assigned exactly once')}
+        else{
+            $p=$own[0].Parent; while($null -ne $p -and $p -isnot [System.Management.Automation.Language.IfStatementAst]){$p=$p.Parent}
+            if($null -eq $p -or $p.Clauses[0].Item1.Extent.Text -cnotmatch 'IsVisible'){[void]$f.Add('the Owner is set without the owner-visible guard')}
+        }
+        if(@($new.FindAll({param($n) Test-DlgCall $n 'ConvertTo-FastLlmUiAccessText'},$true)).Count -ne 1){[void]$f.Add('the button captions do not go through ConvertTo-FastLlmUiAccessText')}
+    }
+    # --- the dialog is shown modally and answers its id ---
+    $show=Get-DlgFn $Text 'Show-FastLlmUiFluentDialog'
+    if($null -eq $show -or @($show.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -ceq 'ShowDialog'},$true)).Count -ne 1){[void]$f.Add('Show-FastLlmUiFluentDialog does not call ShowDialog once')}
+    # --- the icon is a decorative text block ---
+    $icon=Get-DlgFn $Text 'Set-FastLlmUiFluentDialogIcon'
+    if($null -eq $icon -or $icon.Extent.Text -cnotmatch 'New-Object Bitworks\.FastLlm\.DecorativeTextBlock'){[void]$f.Add('the icon is not a DecorativeTextBlock')}
+    # --- the DialogResult conversion (D1 a: an enum value, never a string) ---
+    $conv=Get-DlgFn $Text 'ConvertTo-FastLlmUiFluentDialogResult'
+    if($null -eq $conv){[void]$f.Add('ConvertTo-FastLlmUiFluentDialogResult is not defined exactly once')}
+    else{
+        $rets=@($conv.FindAll({param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst]},$true))
+        if($rets.Count -ne 1 -or $rets[0].Pipeline.Extent.Text -cne '[System.Enum]::Parse([System.Windows.Forms.DialogResult], [string] $name)'){[void]$f.Add('the answer is not returned as a [System.Windows.Forms.DialogResult] value')}
+        if($conv.Extent.Text -cnotmatch "FastLlmUiFluentDialogResultNames\[\`$Id\]"){[void]$f.Add('the answer is not mapped through the result table')}
+    }
+    # --- the message box ---
+    $box=Get-DlgFn $Text 'Show-FastLlmUiFluentMessageBox'
+    if($null -eq $box){[void]$f.Add('Show-FastLlmUiFluentMessageBox is not defined exactly once')}
+    else{
+        $plan=@($box.FindAll({param($n) Test-DlgCall $n 'Get-FastLlmUiDialogKeyPlan'},$true))
+        if($plan.Count -ne 1 -or (Get-DlgParamText $plan[0] 'Buttons') -cne '$Buttons' -or (Get-DlgParamText $plan[0] 'DefaultButton') -cne '$DefaultButton'){[void]$f.Add('the box does not call the key plan once with its Buttons and DefaultButton')}
+        $dlg=@($box.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true))
+        if($dlg.Count -ne 1){[void]$f.Add('the box does not build one dialog')}
+        else{
+            $want=@{Enter="([string] `$plan['enter'])";Escape="([string] `$plan['escape'])";CloseEnabled="([bool] `$plan['closeEnabled'])";Owner='$Owner';Title='$Caption'}
+            foreach($k in $want.Keys){ if((Get-DlgParamText $dlg[0] $k) -cne $want[$k]){[void]$f.Add("the box dialog's -$k is not $($want[$k])")} }
+        }
+        $last=@($box.Body.EndBlock.Statements)[-1]
+        if($last -isnot [System.Management.Automation.Language.ReturnStatementAst] -or $last.Pipeline.Extent.Text -cne '(ConvertTo-FastLlmUiFluentDialogResult -Id $answer)'){[void]$f.Add('the box does not return the converted DialogResult')}
+        foreach($k in 'BoxOK','BoxCancel','BoxYes','BoxNo'){ if($box.Extent.Text -cnotmatch "\`$s\.$k\b"){[void]$f.Add("the box does not read the string $k")} }
+        if($box.Extent.Text -cmatch 'MessageBox\]::Show'){[void]$f.Add('the fluent box calls the WinForms MessageBox')}
+    }
+    # --- the answer table ---
+    $m=[regex]::Match($Text,"(?s)\`$script:FastLlmUiFluentDialogResultNames = @\{(.*?)\}")
+    if(-not $m.Success){[void]$f.Add('the result table is missing')}
+    else{
+        $pairs=@([regex]::Matches($m.Groups[1].Value,"(\w+)\s*=\s*'(\w+)'")|ForEach-Object{$_.Groups[1].Value+'='+$_.Groups[2].Value})
+        if((($pairs|Sort-Object) -join ',') -cne 'Cancel=Cancel,No=No,OK=OK,Yes=Yes'){[void]$f.Add("the result table is not the four identity pairs: $($pairs -join ',')")}
+    }
+    return ,$f.ToArray()
+}
+$dlgFindings=Get-DlgFindings $dlgText
+foreach($fn in $dlgFindings){Write-Host "FINDING: $fn"}
+Check ($dlgText -ne '' -and $dlgFindings.Count -eq 0) 'the dialog host: constant markup without IsDefault or IsCancel, a wrapping footer, key plan Enter and Escape, a refusing close box, named buttons, DecorativeTextBlock icon, and a message box that returns DialogResult values'
+function Edit-DlgPlant([string]$From,[string]$To){ if($dlgText.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: plant anchor missing: $From"}; return $dlgText.Replace($From,$To) }
+$dlgPlants=[ordered]@{
+    'a button with IsDefault (code)'=Edit-DlgPlant '        $button.MinWidth = 88' "        `$button.MinWidth = 88`n        `$button.IsDefault = `$true"
+    'a button with IsCancel (code)'=Edit-DlgPlant '        $button.MinWidth = 88' "        `$button.MinWidth = 88`n        `$button.IsCancel = `$true"
+    'IsDefault in the markup'=Edit-DlgPlant '<UniformGrid x:Name="DlgFooter"' '<UniformGrid IsDefault="True" x:Name="DlgFooter"'
+    'an event attribute in the markup'=Edit-DlgPlant '<Border x:Name="DlgIconHost"' '<Border Loaded="x" x:Name="DlgIconHost"'
+    'a footer AccessText that does not wrap'=Edit-DlgPlant '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>' '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="NoWrap"/></Style>'
+    'a footer TextBlock that does not wrap'=Edit-DlgPlant '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/>' '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="NoWrap"/>'
+    'the key hook moved off PreviewKeyDown'=Edit-DlgPlant '$win.Add_PreviewKeyDown({' '$win.Add_KeyDown({'
+    'Enter overriding a focused button'=Edit-DlgPlant 'if ($focused -is [System.Windows.Controls.Button]) { return }' '$null = 1'
+    'Escape answering the Enter target'=Edit-DlgPlant "if ([string] `$state['Escape'] -cne '') { & `$close ([string] `$state['Escape']) }" "if ([string] `$state['Escape'] -cne '') { & `$close ([string] `$state['Enter']) }"
+    'a close box that never refuses'=Edit-DlgPlant '$e.Cancel = $true' '$e.Cancel = $false'
+    'a close box that ignores CloseEnabled'=Edit-DlgPlant "if ([bool] `$state['CloseEnabled']) { `$state['Result']" "if (`$true) { `$state['Result']"
+    'a button without its automation name'=Edit-DlgPlant '[System.Windows.Automation.AutomationProperties]::SetName($button, $caption)' '$null = $caption'
+    'the first focus dropped'=Edit-DlgPlant '$null = $target.Focus(); ' ''
+    'the first focus on the first button'=Edit-DlgPlant 'foreach ($candidate in @($Enter, $Escape)) {' 'foreach ($candidate in @()) {'
+    'the Window.Tag dropped'=Edit-DlgPlant '$win.Tag = $result' '$null = $result'
+    'a hidden owner set as owner'=Edit-DlgPlant 'if ($null -ne $ownerWindow -and [bool] $ownerWindow.IsVisible)' 'if ($null -ne $ownerWindow)'
+    'an icon that is a plain TextBlock'=Edit-DlgPlant 'New-Object Bitworks.FastLlm.DecorativeTextBlock' 'New-Object System.Windows.Controls.TextBlock'
+    'the box answering the string (D1 a)'=Edit-DlgPlant '[System.Enum]::Parse([System.Windows.Forms.DialogResult], [string] $name)' '[string] $name'
+    'the box returning the raw id'=Edit-DlgPlant 'return (ConvertTo-FastLlmUiFluentDialogResult -Id $answer)' 'return $answer'
+    'the key plan called without the default button'=Edit-DlgPlant '-Buttons $Buttons -DefaultButton $DefaultButton' '-Buttons $Buttons'
+    'Enter taken from the Escape answer'=Edit-DlgPlant "-Enter ([string] `$plan['enter'])" "-Enter ([string] `$plan['escape'])"
+    'the close box always enabled'=Edit-DlgPlant "-CloseEnabled ([bool] `$plan['closeEnabled'])" '-CloseEnabled $true'
+    'the box owner dropped'=Edit-DlgPlant "-CloseEnabled ([bool] `$plan['closeEnabled']) -Owner `$Owner" "-CloseEnabled ([bool] `$plan['closeEnabled'])"
+    'a caption string not read (BoxNo)'=Edit-DlgPlant '[string] $s.BoxNo' "'No'"
+    'a result table that maps Yes to No'=Edit-DlgPlant "Yes = 'Yes'" "Yes = 'No'"
+}
+foreach($k in $dlgPlants.Keys){ Check ($dlgPlants[$k] -cne $dlgText -and (Get-DlgFindings $dlgPlants[$k]).Count -ge 1) "mutation check: the dialog host pin flags: $k" }
+
+# The four box captions are in the string table (D3), equal to what Windows shows in English; the box reads them from the table.
+foreach($pair in @(@('BoxOK','OK'),@('BoxCancel','Cancel'),@('BoxYes','Yes'),@('BoxNo','No'))){
+    Check ([regex]::IsMatch($dlgHome,"(?m)^\s+$($pair[0])\s*=\s*'$($pair[1])'\s*$")) "the string table has $($pair[0]) = '$($pair[1])'"
+}
+
+# The DialogResult mapping table, run for real: every id of every box kind maps to a System.Windows.Forms.DialogResult member name of the same spelling.
+. (Join-Path $root 'src/FastLlm.UiState.ps1')
+. (Join-Path $root 'src/FastLlm.UiXaml.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentDialogs.ps1')
+$dlgEnum=@('None','OK','Cancel','Abort','Retry','Ignore','Yes','No')
+$dlgIds=@(); foreach($k in 'OK','OKCancel','YesNo'){ foreach($d in 'Button1','Button2'){ $dlgIds+=@((Get-FastLlmUiDialogKeyPlan -Buttons $k -DefaultButton $d)['order']) } }
+Check (@($dlgIds|Select-Object -Unique).Count -eq 4) 'the three box kinds use exactly the four ids OK, Cancel, Yes and No'
+foreach($id in ($dlgIds|Select-Object -Unique)){
+    $name=$script:FastLlmUiFluentDialogResultNames[$id]
+    Check ($name -is [string] -and $name -ceq $id -and $dlgEnum -ccontains $name) "answer id $id maps to the DialogResult member of the same name"
+}
+Check ($script:FastLlmUiFluentDialogResultNames.Count -eq 4) 'the result table has exactly four rows'
+Check ($script:FastLlmUiXaml.ContainsKey('FastLlm.Dialog') -and [string]$script:FastLlmUiXaml['FastLlm.Dialog'] -ceq (Get-DlgXaml $dlgText)) 'the registered dialog markup is the constant here-string of the file'
+# ===== end PR 4a: the dialog host and the fluent message box (Tasks 2 and 3) =====
 
 
 Write-Host "UI fluent member coverage tests passed: $checks"
