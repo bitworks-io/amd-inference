@@ -147,6 +147,27 @@ if($plantRows.Count -eq 2){
     Check ([string]$pr['line'] -ceq 'scale 1.0 text 1.0: cases 2; live layout scale 1.0, 1.25; bound 0.500; NoWrap n=4 gap W [-0.310, 0.420] H [-0.380, -0.380]; Wrap n=3 gap W [0.490, 0.490] H [0.240, 0.240]; above the bound (reported clipped) 1; below the bound 0; off the pixel grid 2; below it by an explicit size 2; below it by an access key split 1; trimmed with a tooltip 1; wraps re-measured 1') "the gap summary line reads as pinned (got '$($pr['line'])')"
     Check ([int]$plantRows[1]['under'] -eq 1 -and @($plantRows[1]['notes']).Count -eq 1 -and [string]@($plantRows[1]['notes'])[0] -ceq 'Plant.B light 1.25 2.0 640x480: below the bound on W: PlantText' -and [string]$plantRows[1]['line'] -like '*Wrap n=0 gap W none H none; above the bound (reported clipped) 0; below the bound 1;*') "the gap summary carries a case's notes with its label and prints an empty range as none (line '$($plantRows[1]['line'])')"
 }
+# The Hyperlink negative pages (pure, any OS, from this file's own text): each is a TextBlock whose only content is a Hyperlink, the negative table and the case list
+# name each page and its one expected problem, and the PNG count covers both, so the Windows run cannot drop them unnoticed.
+$selfText=[IO.File]::ReadAllText((Join-Path $root 'tests/ui-render-tests.ps1'))
+$linkExpect=[ordered]@{LinkClipped=@{Name='LinkClippedText';Problem='clipped:LinkClippedText'};LinkOutside=@{Name='LinkOutsideText';Problem='outside:LinkOutsideText'}}
+foreach($ln in $linkExpect.Keys){
+    $m=[regex]::Match($selfText,"(?s)\`$script:FastLlmUiXaml\['Test\.$ln'\]\s*=\s*@'\r?\n(.*?)\r?\n'@")
+    Check $m.Success "the $ln markup was found in this file"
+    if(-not $m.Success){continue}
+    $linkDoc=New-Object System.Xml.XmlDocument
+    $linkDoc.LoadXml($m.Groups[1].Value)
+    $xamlNs='http://schemas.microsoft.com/winfx/2006/xaml'
+    $tbs=@($linkDoc.GetElementsByTagName('TextBlock')|Where-Object{$_.GetAttribute('Name',$xamlNs) -ceq $linkExpect[$ln].Name})
+    Check ($tbs.Count -eq 1) "the $ln page has one TextBlock named $($linkExpect[$ln].Name)"
+    if($tbs.Count -ne 1){continue}
+    $kids=@($tbs[0].ChildNodes|Where-Object{$_.NodeType -eq [System.Xml.XmlNodeType]::Element})
+    Check ($kids.Count -eq 1 -and $kids[0].LocalName -ceq 'Hyperlink' -and $kids[0].InnerText.Length -ge 40 -and -not [string]::IsNullOrEmpty($kids[0].GetAttribute('Name',$xamlNs))) "the $ln TextBlock holds one named Hyperlink with a long text and nothing else"
+    Check ($tbs[0].InnerText -ceq $kids[0].InnerText -and [string]::IsNullOrEmpty($tbs[0].GetAttribute('Text'))) "the $ln TextBlock text is the link's run alone"
+    Check ($selfText.Contains("$ln='$($linkExpect[$ln].Problem)'")) "the negative table expects exactly '$($linkExpect[$ln].Problem)' from $ln"
+}
+Check ($selfText.Contains("'Nested','LinkClipped','LinkOutside'){")) 'the negative case list runs both Hyperlink pages'
+Check ($selfText.Contains('-eq 54) ("the render folder holds 54 Test.* PNGs')) 'the Test.* PNG count includes the two Hyperlink pages'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -242,6 +263,20 @@ $script:FastLlmUiXaml['Test.Outside']=@'
 </Canvas>
 '@
 
+# A Hyperlink inside a TextBlock: the clipped and outside rules judge the TextBlock, whose Text includes the link's run, so a link that overflows is reported.
+# The link has no NavigateUri (an external reference is refused) and no Run of its own, so the overflow is the link's text alone.
+$script:FastLlmUiXaml['Test.LinkClipped']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <TextBlock x:Name="LinkClippedText" Width="60" HorizontalAlignment="Left" VerticalAlignment="Top" TextWrapping="NoWrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"><Hyperlink x:Name="ClippedLink">This link text is much too long to fit in sixty device independent pixels.</Hyperlink></TextBlock>
+</Grid>
+'@
+
+$script:FastLlmUiXaml['Test.LinkOutside']=@'
+<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Height="60">
+  <TextBlock x:Name="LinkOutsideText" Canvas.Left="560" Canvas.Top="10" TextWrapping="NoWrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"><Hyperlink x:Name="OutsideLink">This link text runs past the right edge of the page.</Hyperlink></TextBlock>
+</Canvas>
+'@
+
 $script:FastLlmUiXaml['Test.UnnamedTextBox']=@'
 <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
   <TextBox x:Name="BareBox" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
@@ -307,9 +342,9 @@ if([string]::IsNullOrEmpty($out)){
 $matrix=@(Get-UiRenderMatrix)
 
 # Each negative page shows exactly its own problem.
-$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox';Nested='outside:InnerFar'}
+$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox';Nested='outside:InnerFar';LinkClipped='clipped:LinkClippedText';LinkOutside='outside:LinkOutsideText'}
 $base=@{theme='light';scale=[double]1.0;textScale=[double]1.0;width=640;height=480}
-foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch','Nested'){
+foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch','Nested','LinkClipped','LinkOutside'){
     $found=@()
     $diag=@()
     try{$res=Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out;$found=@($res.problems);$diag=@($res.diagnostics)}catch{$found=@('threw: '+$_.Exception.Message)}
@@ -1119,11 +1154,11 @@ foreach($row in $gapRows){
 $gapPairs=@($matrix|ForEach-Object{"$([double]$_.scale)|$([double]$_.textScale)"}|Sort-Object -Unique)
 Check ($gapRows.Count -eq $gapPairs.Count -and $gapRows.Count -eq 13) "the text gap summary covers the 13 device scale and text scale pairs of the matrix (rows $($gapRows.Count), pairs $($gapPairs.Count))"
 
-# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
+# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 12 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
     return @(Get-ChildItem -LiteralPath $out -Filter ($Prefix+'-*.png') -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart }).Count
 }
-Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
+Check ((Get-RenderPngCount 'Test.*') -eq 54) ("the render folder holds 54 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
     'FastLlm.Models'=40;'FastLlm.ModelsEmpty'=6;'FastLlm.ModelsReading'=3
     'FastLlm.Settings'=40;'FastLlm.SettingsKeyOn'=6;'FastLlm.SettingsKeyOff'=6;'FastLlm.SettingsRunning'=6;'FastLlm.SettingsUnavailable'=6;'FastLlm.SettingsReading'=3
