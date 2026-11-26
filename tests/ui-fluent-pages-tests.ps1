@@ -1542,6 +1542,17 @@ function Invoke-P20-HomeToModels {
     $els.ChangeButton.RaiseEvent((New-ShellClick $els.ChangeButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
     Invoke-Pump 200
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Models' -and $els.ModelsModelBox.IsKeyboardFocusWithin) 'P20 Home Change hosts Models and focuses the model box' "current=$(Get-FastLlmUiFluentCurrentPage) boxFocusWithin=$($els.ModelsModelBox.IsKeyboardFocusWithin)"
+    # Change while the model box is disabled (a run is active): the focus is never lost, it rests on the Models pane item
+    $origModelEnabled = [bool]$script:modelBox.Enabled
+    $script:modelBox.Enabled = $false
+    Invoke-FastLlmUiFluentTick
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $els.ChangeButton.RaiseEvent((New-ShellClick $els.ChangeButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 200
+    $focusedOff = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Models' -and -not $els.ModelsModelBox.IsEnabled -and ([object]::ReferenceEquals($focusedOff, $els.NavModels) -or $els.NavModels.IsKeyboardFocused)) 'P20 Home Change with the model box disabled hosts Models and leaves the focus on the NavModels pane item' "current=$(Get-FastLlmUiFluentCurrentPage) boxEnabled=$($els.ModelsModelBox.IsEnabled) focused=$(if ($null -ne $focusedOff) { $focusedOff.GetType().Name } else { 'nothing' })"
+    $script:modelBox.Enabled = $origModelEnabled
+    Invoke-FastLlmUiFluentTick
     # The Models page and its rows never open today's dialogs
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Open-ModelsPage
@@ -1577,17 +1588,23 @@ function Invoke-P20-HomeToModels {
     Check-NoExceptions 'P20'
 }
 
-# Two-way elements: one write, one adapter event, no echo. A key is raised as a routed KeyDown on the element; if the value did not follow, the same key is posted to the window.
+# Two-way elements: one write, one adapter event, no echo. A key is routed the way WPF routes it: PreviewKeyDown first (the Number box reads Up, Down and Enter there),
+# then KeyDown only if the preview was not marked Handled (the folder box reads Enter in KeyDown). One KeyEventArgs per raise. If the value did not follow, the same key is posted to the window.
 function Send-ModelsKey($Element, $Key) {
     $src = [System.Windows.PresentationSource]::FromVisual($Element)
     if ($null -eq $src) { return $false }
-    $ke = New-Object System.Windows.Input.KeyEventArgs([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, $Key)
-    $ke.RoutedEvent = [System.Windows.Input.Keyboard]::KeyDownEvent
-    $Element.RaiseEvent($ke)
+    $preview = [System.Windows.Input.KeyEventArgs]::new([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, $Key).psobject.BaseObject
+    $preview.RoutedEvent = [System.Windows.Input.Keyboard]::PreviewKeyDownEvent
+    $Element.RaiseEvent($preview)
+    if (-not [bool]$preview.Handled) {
+        $down = [System.Windows.Input.KeyEventArgs]::new([System.Windows.Input.Keyboard]::PrimaryDevice, $src, 0, $Key).psobject.BaseObject
+        $down.RoutedEvent = [System.Windows.Input.Keyboard]::KeyDownEvent
+        $Element.RaiseEvent($down)
+    }
     return $true
 }
 function Send-ModelsKeyChecked($Element, $Key, [int]$Vk, [scriptblock]$Done) {
-    $path = 'KeyDown routed event'
+    $path = 'PreviewKeyDown then KeyDown routed events'
     $threw = ''
     try { $null = Send-ModelsKey $Element $Key } catch { $threw = $_.Exception.Message }
     Invoke-Pump 100
@@ -1854,6 +1871,15 @@ function Invoke-P23-Picker {
     $els.ModelsSwitchList.SelectedIndex = 0
     Invoke-Pump 50
     Check ($script:pickerCalls -eq 4 -and $els.ModelsSwitchNow.IsEnabled) 'P23 the next computation (page opened again) makes Switch available again' "calls=$($script:pickerCalls) enabled=$($els.ModelsSwitchNow.IsEnabled)"
+    # The switch-off edge after a successful request (the real request disables the Switch button) keeps the request's result: no empty message, no empty announcement
+    $els.ModelsSwitchList.SelectedIndex = 0
+    Invoke-Pump 50
+    $els.ModelsSwitchNow.RaiseEvent((New-ShellClick $els.ModelsSwitchNow ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 100
+    $live0 = Get-LiveCount $els.ModelsSwitchMessage
+    $script:switchButton.Enabled = $false
+    for ($i = 0; $i -lt 3; $i++) { Invoke-FastLlmUiFluentTick }
+    Check ((Get-ModelsUiMessage 'SwitchMessage') -ceq $wantText -and [string]$els.ModelsSwitchMessage.Text -ceq $wantText -and (Get-LiveCount $els.ModelsSwitchMessage) -eq $live0 -and $els.ModelsSwitchList.Items.Count -eq 0) 'P23 the switch-off edge after a request keeps its message and announces nothing new' "message='$(Get-ModelsUiMessage 'SwitchMessage')' element='$($els.ModelsSwitchMessage.Text)' announcements=$(Get-LiveCount $els.ModelsSwitchMessage) before=$live0 items=$($els.ModelsSwitchList.Items.Count)"
     $script:switchButton.Enabled = $origSwitch
     $script:statusLabel.Text = $origStatus
     $script:pickerItems = @()
@@ -1997,7 +2023,8 @@ $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:tick = $tick
 $deadline = New-Object System.Windows.Threading.DispatcherTimer
-$deadline.Interval = [TimeSpan]::FromSeconds(240)
+# 420 s: the Models steps (P20-P23) and the larger pages added since the 240 s figure took most of it on the slowest Windows CI runner
+$deadline.Interval = [TimeSpan]::FromSeconds(420)
 $script:deadline = $deadline
 
 $tick.Add_Tick({
@@ -2019,7 +2046,7 @@ $tick.Add_Tick({
 $deadline.Add_Tick({
     $script:deadline.Stop()
     $where = if ($script:si -gt 0 -and $script:si -le $script:steps.Count) { $script:steps[$script:si - 1] } else { 'before the first step' }
-    Write-Host "FAIL: the 240 s suite deadline was hit during step $where"
+    Write-Host "FAIL: the 420 s suite deadline was hit during step $where"
     # a step may be stuck in a modal loop: ending the process is the only way out and it must not hang CI
     [Environment]::Exit(1)
 })
