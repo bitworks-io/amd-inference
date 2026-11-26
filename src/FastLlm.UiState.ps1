@@ -118,7 +118,7 @@ function Get-FastLlmUiControlStates {
 # ConnectRunning is the Connect page's own "is FastLLM serving" flag and is read by apiCheck only.
 function Get-FastLlmUiGreyedReason {
     param(
-        [Parameter(Mandatory=$true)][ValidateSet('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck','chooseSetup','startInputs')][string]$Action,
+        [Parameter(Mandatory=$true)][ValidateSet('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck','chooseSetup','startInputs','settings')][string]$Action,
         [Parameter(Mandatory=$true)]$Snapshot,
         [bool]$ConnectRunning = $false
     )
@@ -173,6 +173,12 @@ function Get-FastLlmUiGreyedReason {
             if ($busy) { if ($vc) { return 'microsoft-setup' }; return 'busy' }
             if (Test-FastLlmUiStateOccupied -Background $bg) { return 'background' }
             return ''
+        }
+        'settings' {
+            $availability = Get-FastLlmUiStateAvailabilityFor -Snapshot $Snapshot -Busy $busy
+            if ($availability.settings) { return '' }
+            if ($vc) { return 'microsoft-setup' }
+            return 'busy'
         }
         default { throw "Unknown action '$Action'" }
     }
@@ -282,5 +288,73 @@ function Get-FastLlmUiCardState {
     return [pscustomobject]@{
         state = $state; headline = $headlines[$state]; tone = $tone; reason = $reason; mainAction = $action
         steps = $steps; stepsText = $stepsText
+    }
+}
+
+# The Settings page's held edits (PR 3c). Every expression is today's: the dialog's initial values and its Save handler.
+# The held thinking and idle values are combo indexes: thinking 1 is 'off', idle indexes 0..3 are never, 15, 30 and 60 minutes.
+function ConvertTo-FastLlmUiSettingsHeld {
+    param([Parameter(Mandatory=$true)]$Current)
+    return [pscustomobject][ordered]@{
+        port          = [int]$Current.serverPort
+        thinkingIndex = [int]$(if ([string]$Current.thinking -ceq 'off') { 1 } else { 0 })
+        chatPage      = [bool]([string]$Current.chatPage -ceq 'on')
+        idleIndex     = [int]$(switch ([int]$Current.idleStopMinutes) { 15 { 1 } 30 { 2 } 60 { 3 } default { 0 } })
+        keyBox        = [string](Get-FastLlmUiApiKeyBoxState -Settings $Current)
+        keyTouched    = $false
+        allowSwitch   = [bool]$Current.allowSwitch
+    }
+}
+
+# The values Save writes, from the held edits (the dialog's Save expressions).
+function ConvertFrom-FastLlmUiSettingsHeld {
+    param([Parameter(Mandatory=$true)]$Held)
+    return [pscustomobject][ordered]@{
+        serverPort      = [int]$Held.port
+        thinking        = [string]$(if ([int]$Held.thinkingIndex -eq 1) { 'off' } else { 'auto' })
+        chatPage        = [string]$(if ([bool]$Held.chatPage) { 'on' } else { 'off' })
+        idleStopMinutes = [int]@(0,15,30,60)[[Math]::Max(0,[int]$Held.idleIndex)]
+        allowSwitch     = [bool]$Held.allowSwitch
+    }
+}
+
+# The "Require an API key" box as one of three strings, from a checkbox IsChecked ($true, $false or $null for the indeterminate state).
+function ConvertTo-FastLlmUiKeyBoxState {
+    param([AllowNull()]$IsChecked)
+    if ($null -eq $IsChecked) { return 'indeterminate' }
+    if ([bool]$IsChecked) { return 'checked' }
+    return 'unchecked'
+}
+
+# Whether the held edits differ from the saved ones. Touching the box while the saved key setting is unknown counts as an edit.
+function Test-FastLlmUiSettingsDirty {
+    param([Parameter(Mandatory=$true)]$Saved,[Parameter(Mandatory=$true)]$Held)
+    if ([int]$Saved.port -ne [int]$Held.port) { return $true }
+    if ([int]$Saved.thinkingIndex -ne [int]$Held.thinkingIndex) { return $true }
+    if ([bool]$Saved.chatPage -ne [bool]$Held.chatPage) { return $true }
+    if ([int]$Saved.idleIndex -ne [int]$Held.idleIndex) { return $true }
+    if ([bool]$Saved.allowSwitch -ne [bool]$Held.allowSwitch) { return $true }
+    if ([string]$Saved.keyBox -cne [string]$Held.keyBox) { return $true }
+    if ([string]$Saved.keyBox -ceq 'indeterminate' -and [bool]$Held.keyTouched) { return $true }
+    return $false
+}
+
+# What leaving the Settings page does: go, stay, save (run Save first) or discard-go (drop the edits and go).
+# Not dirty goes. Hiding the window keeps the edits. Signing out discards them. Otherwise the answer to the save prompt decides;
+# cancel (or no answer yet) stays. A save answer without SaveOk says save (run it); with SaveOk it goes, or stays when Save was refused.
+function Get-FastLlmUiSettingsExitDecision {
+    param(
+        [Parameter(Mandatory=$true)][bool]$Dirty,
+        [Parameter(Mandatory=$true)][ValidateSet('save','discard','cancel','none')][string]$Answer,
+        [AllowNull()]$SaveOk = $null,
+        [Parameter(Mandatory=$true)][ValidateSet('leave','close','signout','hide')][string]$Reason
+    )
+    if (-not $Dirty) { return 'go' }
+    if ($Reason -ceq 'hide') { return 'go' }
+    if ($Reason -ceq 'signout') { return 'discard-go' }
+    switch -CaseSensitive ($Answer) {
+        'save' { if ($null -eq $SaveOk) { return 'save' }; if ([bool]$SaveOk) { return 'go' }; return 'stay' }
+        'discard' { return 'discard-go' }
+        default { return 'stay' }
     }
 }
