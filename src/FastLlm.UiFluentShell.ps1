@@ -1109,6 +1109,12 @@ function Initialize-FastLlmUiFluentShell {
         # The form adapter takes over the window's handle; from here the orchestration's $form is the adapter (owner of every dialog and message box).
         $formAdapter = New-FastLlmUiFormAdapter -Window $win
         Set-Variable -Name form -Scope Script -Value $formAdapter
+        # The seam table the classic orchestration reads for every dialog it hands to the Fluent window (D1: explicit named entries). Captured with ${function:} so the entries are the functions themselves.
+        Set-Variable -Name uiDialogView -Scope Script -Value @{
+            MessageBox = ${function:Show-FastLlmUiFluentMessageBox}
+            ShowUiSideResult = ${function:Show-FastLlmUiFluentSideResult}
+            ShowDriverGuidance = ${function:Show-FastLlmUiFluentDriverGuidance}
+        }
         # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
         $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
         try { $classicForm.Dispose() } catch { $null = $_ }

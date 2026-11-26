@@ -168,6 +168,8 @@ function Get-OwnerKind($Node){
            [string]$p.Expression.TypeName.Name -cmatch '^(System\.)?Windows\.Forms\.MessageBox$' -and [object]::ReferenceEquals(@($p.Arguments)[0],$Node)){return 'MessageBox.Show'}
     }
     if($p -is [System.Management.Automation.Language.CommandAst] -and [string]$p.GetCommandName() -ceq 'NewUiApiKey'){return 'NewUiApiKey'}
+    # The seam's box call (ShowUiMessageBox <owner> ...): the owner is the first argument and is only handed on to MessageBox.Show or the fluent box host.
+    if($p -is [System.Management.Automation.Language.CommandAst] -and [string]$p.GetCommandName() -ceq 'ShowUiMessageBox' -and $p.CommandElements.Count -ge 2 -and [object]::ReferenceEquals($p.CommandElements[1],$Node)){return 'ShowUiMessageBox'}
     return $null
 }
 function Get-FormBareUses([System.Management.Automation.Language.Ast]$Tree,[int]$AfterLine){
@@ -205,7 +207,7 @@ Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Co
 $keyFn=$tree.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'NewUiApiKey'},$true)
 Check ($null -ne $keyFn) 'NewUiApiKey is defined'
 $ownerVars=@($keyFn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ieq 'Owner'},$true))
-Check ($ownerVars.Count -ge 2 -and @($ownerVars|Where-Object{(Get-OwnerKind $_) -ceq 'MessageBox.Show'}).Count -eq $ownerVars.Count) 'NewUiApiKey uses its Owner only as a MessageBox owner'
+Check ($ownerVars.Count -ge 2 -and @($ownerVars|Where-Object{(Get-OwnerKind $_) -cin 'MessageBox.Show','ShowUiMessageBox'}).Count -eq $ownerVars.Count) 'NewUiApiKey uses its Owner only as a MessageBox owner'
 # Self-check.
 $bareSyn=@'
 Foo $form
@@ -365,6 +367,165 @@ function GetUiSettingsDialogMaxHeight($OwnerHandle){
 function GetUiSettingsDialogMaxHeight($Owner){
     return [int][Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height
 '@}
+    @{Name='dialog view init'
+      Cur=@'
+$script:uiDialogView=$null
+
+'@
+      Orig=''}
+    @{Name='ShowUiMessageBox'
+      Cur=@'
+function ShowUiMessageBox($Owner,[string]$Text,[string]$Caption,[string]$Buttons='OK',[string]$Icon='None',[string]$DefaultButton='Button1'){
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['MessageBox'] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}
+    return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)
+}
+function SetUiBanner([string]$Text,
+'@
+      Orig=@'
+function SetUiBanner([string]$Text,
+'@}
+    @{Name='box vc link'
+      Cur=@'
+$vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{$null=ShowUiMessageBox $form 'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.' 'Open prerequisite page' 'OK' 'Warning'}})
+'@
+      Orig=@'
+$vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
+'@}
+    @{Name='box amd link'
+      Cur=@'
+$amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{$null=ShowUiMessageBox $form 'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.' 'Open AMD page' 'OK' 'Warning'}})
+'@
+      Orig=@'
+$amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
+'@}
+    @{Name='box results link'
+      Cur=@'
+    }catch{$null=ShowUiMessageBox $form 'Unable to open the results page. Check your default browser.' 'Open results page' 'OK' 'Warning'}
+'@
+      Orig=@'
+    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the results page. Check your default browser.','Open results page','OK','Warning')}
+'@}
+    @{Name='box bar link'
+      Cur=@'
+$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{$null=ShowUiMessageBox $form 'Unable to open the Resizable BAR page. Check your default browser.' 'Open Resizable BAR page' 'OK' 'Warning'}})
+'@
+      Orig=@'
+$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the Resizable BAR page. Check your default browser.','Open Resizable BAR page','OK','Warning')}})
+'@}
+    @{Name='box release link'
+      Cur=@'
+    }catch{$null=ShowUiMessageBox $form 'Unable to open the release page. Check your default browser.' 'Open release page' 'OK' 'Warning'}
+'@
+      Orig=@'
+    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the release page. Check your default browser.','Open release page','OK','Warning')}
+'@}
+    @{Name='box experimental'
+      Cur=@'
+            $answer=ShowUiMessageBox $form $script:FastLlmExperimentalParagraph 'Experimental community components' 'YesNo' 'Warning' 'Button2'
+'@
+      Orig=@'
+            $answer=[Windows.Forms.MessageBox]::Show($form,$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2')
+'@}
+    @{Name='box license link 1'
+      Cur=@'
+                }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was changed.' 'Open license page' 'OK' 'Warning'}
+'@
+      Orig=@'
+                }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was changed.','Open license page','OK','Warning')}
+'@}
+    @{Name='box new key ask'
+      Cur=@'
+    if((ShowUiMessageBox $Owner $question 'Create a new key' 'YesNo' 'Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
+'@
+      Orig=@'
+    if([Windows.Forms.MessageBox]::Show($Owner,$question,'Create a new key','YesNo','Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
+'@}
+    @{Name='box new key shown'
+      Cur=@'
+    $null=ShowUiMessageBox $Owner ((@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.')) 'Create a new key' 'OK' 'Information'
+'@
+      Orig=@'
+    [void][Windows.Forms.MessageBox]::Show($Owner,(@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.'),'Create a new key','OK','Information')
+'@}
+    @{Name='box remove component'
+      Cur=@'
+    $answer=ShowUiMessageBox $view.dialog "Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later." 'Remove component' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later.",'Remove component','YesNo','Question','Button2')
+'@}
+    @{Name='box remove model'
+      Cur=@'
+    $answer=ShowUiMessageBox $view.dialog $text 'Remove model' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,$text,'Remove model','YesNo','Question','Button2')
+'@}
+    @{Name='box remove leftovers'
+      Cur=@'
+    $answer=ShowUiMessageBox $view.dialog "Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?" 'Remove leftover partial downloads' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?",'Remove leftover partial downloads','YesNo','Question','Button2')
+'@}
+    @{Name='box support bundle list'
+      Cur=@'
+    $answer=ShowUiMessageBox $form (Format-FastLlmUiSupportBundleList -Listing $listing) 'Save support bundle' ([Windows.Forms.MessageBoxButtons]::OKCancel) ([Windows.Forms.MessageBoxIcon]::Information)
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiSupportBundleList -Listing $listing),'Save support bundle',[Windows.Forms.MessageBoxButtons]::OKCancel,[Windows.Forms.MessageBoxIcon]::Information)
+'@}
+    @{Name='box support bundle exists'
+      Cur=@'
+            if(Test-Path -LiteralPath $dialog.FileName){$null=ShowUiMessageBox $form 'That file already exists. A support bundle is never written over a file; choose a new name.' 'Save support bundle'}
+'@
+      Orig=@'
+            if(Test-Path -LiteralPath $dialog.FileName){[void][Windows.Forms.MessageBox]::Show($form,'That file already exists. A support bundle is never written over a file; choose a new name.','Save support bundle')}
+'@}
+    @{Name='box license link 2'
+      Cur=@'
+                    }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was downloaded.' 'Open license page' 'OK' 'Warning'}
+'@
+      Orig=@'
+                    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was downloaded.','Open license page','OK','Warning')}
+'@}
+    @{Name='box update'
+      Cur=@'
+    $choice=ShowUiMessageBox $form (Format-FastLlmUiUpdateConfirm -Version $version) 'Update FastLLM' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiUpdateConfirm -Version $version),'Update FastLLM','YesNo','Question','Button2')
+'@}
+    @{Name='box reinstall'
+      Cur=@'
+    $choice=ShowUiMessageBox $form (Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)) 'Reinstall previous version' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)),'Reinstall previous version','YesNo','Question','Button2')
+'@}
+    @{Name='box close'
+      Cur=@'
+        if((ShowUiMessageBox $form 'Closing stops this window''s active download or inference process. Continue?' 'Close FastLLM' 'YesNo' 'Question') -ne 'Yes'){
+'@
+      Orig=@'
+        if([Windows.Forms.MessageBox]::Show($form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){
+'@}
+    @{Name='side result dispatch'
+      Cur=@'
+function ShowUiSideResult([string]$Title,[string]$Text) {
+    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowUiSideResult'] -Title $Title -Text $Text;return}
+'@
+      Orig=@'
+function ShowUiSideResult([string]$Title,[string]$Text) {
+'@}
+    @{Name='driver guidance dispatch'
+      Cur=@'
+function ShowDriverGuidance($Diagnostic) {
+    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowDriverGuidance'] -Diagnostic $Diagnostic;return}
+'@
+      Orig=@'
+function ShowDriverGuidance($Diagnostic) {
+'@}
 )
 function Get-NormalizedText([string]$Path){
     $bytes=[IO.File]::ReadAllBytes($Path)
@@ -386,7 +547,7 @@ function Undo-NamedChanges([string]$Text){
     }
     return [pscustomobject]@{Text=$Text;Problems=$problems}
 }
-Check ($namedChanges.Count -eq 18) 'eighteen named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh, settings height call site, settings height body)'
+Check ($namedChanges.Count -eq 40) 'forty named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh, settings height call site, settings height body, dialog view init, ShowUiMessageBox, 18 box call sites, side result dispatch, driver guidance dispatch)'
 $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
@@ -2622,6 +2783,99 @@ foreach($id in ($dlgIds|Select-Object -Unique)){
 Check ($script:FastLlmUiFluentDialogResultNames.Count -eq 4) 'the result table has exactly four rows'
 Check ($script:FastLlmUiXaml.ContainsKey('FastLlm.Dialog') -and [string]$script:FastLlmUiXaml['FastLlm.Dialog'] -ceq (Get-DlgXaml $dlgText)) 'the registered dialog markup is the constant here-string of the file'
 # ===== end PR 4a: the dialog host and the fluent message box (Tasks 2 and 3) =====
+
+
+# ===== PR 4a Task 4: the classic seam (D1 = A: explicit named entries) =====
+# Every message box the reachable classic orchestration opens goes through ShowUiMessageBox, which hands it to $script:uiDialogView['MessageBox'] when the Fluent
+# shell has set that table (and is exactly MessageBox.Show's six-argument owner overload otherwise); the two custom dialogs dispatch on their own first line.
+$seamUiText=Get-NormalizedText $path
+$seamShellText=Get-NormalizedText (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+$seamDispatchLine='if($null -ne $script:uiDialogView){return & $script:uiDialogView[''MessageBox''] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}'
+$seamPassLine='return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)'
+$seamParams='$Owner,[string]$Text,[string]$Caption,[string]$Buttons=''OK'',[string]$Icon=''None'',[string]$DefaultButton=''Button1'''
+# Ruling c: every direct MessageBox.Show left in the window script, by enclosing function and count. A new direct call anywhere fails the suite.
+#  ShowUiMessageBox: the passthrough itself. ShowFailure and EnsureTrayIcon: the window cannot be restored (native by design, 6.6).
+#  BuildUiSettingsDialog and ShowUiSettings: the classic Settings dialog, unreachable in the Fluent window (its page replaces it); deleted at the flip.
+$seamNativeShows=@{ShowUiMessageBox=1;ShowFailure=1;EnsureTrayIcon=2;BuildUiSettingsDialog=3;ShowUiSettings=1}
+$seamViewKeys=@{MessageBox='Show-FastLlmUiFluentMessageBox';ShowUiSideResult='Show-FastLlmUiFluentSideResult';ShowDriverGuidance='Show-FastLlmUiFluentDriverGuidance'}
+function Get-SeamFindings([string]$UiText,[string]$ShellText){
+    $f=New-Object System.Collections.ArrayList
+    $e=$null
+    $ui=[System.Management.Automation.Language.Parser]::ParseInput($UiText,[ref]$null,[ref]$e)
+    $sh=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$e)
+    $isFn={param($n,$name) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}
+    # 1. The classic body: the dispatch line, then the six-argument owner overload, nothing else.
+    $box=@($ui.FindAll({param($n) & $isFn $n 'ShowUiMessageBox'},$true))
+    if($box.Count -ne 1){[void]$f.Add('ShowUiMessageBox is not defined exactly once')}
+    else{
+        $ps=@($box[0].Parameters|ForEach-Object{[string]$_.Extent.Text}) -join ','
+        if($ps -cne $seamParams){[void]$f.Add("ShowUiMessageBox parameters changed: $ps")}
+        $st=@($box[0].Body.EndBlock.Statements)
+        if($st.Count -ne 2 -or $st[0].Extent.Text -cne $seamDispatchLine -or $st[1].Extent.Text -cne $seamPassLine){[void]$f.Add('ShowUiMessageBox is not exactly the dispatch line plus the six-argument MessageBox.Show passthrough')}
+    }
+    # 2. The direct MessageBox.Show census (ruling c).
+    $counts=@{}
+    foreach($n in @($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and $n.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and [string]$n.Member.Value -ceq 'Show' -and $n.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and [string]$n.Expression.TypeName.Name -cmatch '^(System\.)?Windows\.Forms\.MessageBox$'},$true))){
+        $p=$n.Parent; while($null -ne $p -and $p -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$p=$p.Parent}
+        $name=if($null -ne $p){[string]$p.Name}else{'(script level)'}
+        if(-not $counts.ContainsKey($name)){$counts[$name]=0}; $counts[$name]++
+    }
+    foreach($k in @($counts.Keys)){ if(-not $seamNativeShows.ContainsKey($k)){[void]$f.Add("a direct MessageBox.Show in $k is not on the native list (use ShowUiMessageBox)")} elseif($counts[$k] -ne $seamNativeShows[$k]){[void]$f.Add("MessageBox.Show count in ${k}: $($counts[$k]), expected $($seamNativeShows[$k])")} }
+    foreach($k in @($seamNativeShows.Keys)){ if(-not $counts.ContainsKey($k)){[void]$f.Add("the native MessageBox.Show list names $k, which has none left")} }
+    # 3. Every view key the classic script reads exists in the shell's table, bound to the named Fluent function.
+    $used=@{}
+    foreach($n in @($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Target -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$n.Target.VariablePath.UserPath -ceq 'script:uiDialogView'},$true))){
+        $k=if($n.Index -is [System.Management.Automation.Language.StringConstantExpressionAst]){[string]$n.Index.Value}else{'(not a literal)'}
+        $used[$k]=$true
+    }
+    if($used.Count -ne 3){[void]$f.Add("the classic script reads $($used.Count) distinct view keys, expected 3")}
+    $init=@($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:uiDialogView' -and $n.Right.Extent.Text -ceq '$null'},$true))
+    if($init.Count -ne 1){[void]$f.Add('the classic script does not set $script:uiDialogView=$null exactly once')}
+    foreach($k in @($used.Keys)){ if(-not $seamViewKeys.ContainsKey($k)){[void]$f.Add("the classic script reads view key '$k', which is not a known entry")} }
+    $setv=@($sh.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Set-Variable' -and $n.Extent.Text -cmatch '-Name uiDialogView\b'},$true))
+    if($setv.Count -ne 1){[void]$f.Add('Initialize-FastLlmUiFluentShell does not set uiDialogView exactly once')}
+    else{
+        $inFn=$setv[0].Parent; while($null -ne $inFn -and $inFn -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$inFn=$inFn.Parent}
+        if($null -eq $inFn -or $inFn.Name -cne 'Initialize-FastLlmUiFluentShell'){[void]$f.Add('uiDialogView is not set inside Initialize-FastLlmUiFluentShell')}
+        if($setv[0].Extent.Text -cnotmatch '-Scope Script\b'){[void]$f.Add('uiDialogView is not set in the Script scope')}
+        $hash=$setv[0].Find({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)
+        if($null -eq $hash){[void]$f.Add('the uiDialogView value is not a hashtable literal')}
+        else{
+            $tbl=@{}; foreach($kv in $hash.KeyValuePairs){$tbl[[string]$kv.Item1.Extent.Text]=[string]$kv.Item2.Extent.Text}
+            foreach($k in @($used.Keys)){ if(-not $tbl.ContainsKey($k)){[void]$f.Add("view key '$k' is read by the classic script but is not in the shell's table")} }
+            foreach($k in @($seamViewKeys.Keys)){ if(-not $tbl.ContainsKey($k) -or $tbl[$k] -cne ('${function:'+$seamViewKeys[$k]+'}')){[void]$f.Add("the shell's table entry $k is not `${function:$($seamViewKeys[$k])}")} }
+            if($tbl.Count -ne $seamViewKeys.Count){[void]$f.Add("the shell's table has $($tbl.Count) entries, expected $($seamViewKeys.Count)")}
+        }
+    }
+    # 4. The two custom dialogs dispatch on their first statement, passing their parameters by name.
+    foreach($d in @(@('ShowUiSideResult','if($null -ne $script:uiDialogView){& $script:uiDialogView[''ShowUiSideResult''] -Title $Title -Text $Text;return}'),@('ShowDriverGuidance','if($null -ne $script:uiDialogView){& $script:uiDialogView[''ShowDriverGuidance''] -Diagnostic $Diagnostic;return}'))){
+        $dn=$d[0]; $fn=@($ui.FindAll({param($n) & $isFn $n $dn},$true))
+        if($fn.Count -ne 1 -or @($fn[0].Body.EndBlock.Statements).Count -lt 2 -or @($fn[0].Body.EndBlock.Statements)[0].Extent.Text -cne $d[1]){[void]$f.Add("$dn does not start with its dispatch line")}
+    }
+    return ,$f.ToArray()
+}
+$seamFindings=Get-SeamFindings $seamUiText $seamShellText
+foreach($x in $seamFindings){Write-Host "FINDING: $x"}
+Check ($seamFindings.Count -eq 0) 'the classic seam: ShowUiMessageBox body, the native MessageBox.Show list by function and count, and every view key present in the shell table'
+function Edit-SeamPlant([string]$Text,[string]$From,[string]$To){ if($Text.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: seam plant anchor missing: $From"}; return $Text.Replace($From,$To) }
+$seamPlants=[ordered]@{
+    'the passthrough drops DefaultButton (5-argument overload)'=@((Edit-SeamPlant $seamUiText ',$Icon,$DefaultButton)' ',$Icon)'),$seamShellText)
+    'the passthrough drops Icon and DefaultButton (4 arguments)'=@((Edit-SeamPlant $seamUiText ',$Buttons,$Icon,$DefaultButton)' ',$Buttons)'),$seamShellText)
+    'the passthrough loses the owner (owner-less overload)'=@((Edit-SeamPlant $seamUiText 'Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)' 'Show($Text,$Caption,$Buttons,$Icon,$DefaultButton)'),$seamShellText)
+    'the dispatch line forgets to pass DefaultButton'=@((Edit-SeamPlant $seamUiText ' -Icon $Icon -DefaultButton $DefaultButton}' ' -Icon $Icon}'),$seamShellText)
+    'a DefaultButton default changed'=@((Edit-SeamPlant $seamUiText "[string]`$DefaultButton='Button1'){" "[string]`$DefaultButton='Button2'){"),$seamShellText)
+    'a new direct MessageBox.Show in InvokeUiUpdate'=@((Edit-SeamPlant $seamUiText 'function InvokeUiUpdate {' "function InvokeUiUpdate {`n    [void][Windows.Forms.MessageBox]::Show(`$form,'x','y')"),$seamShellText)
+    'a new direct MessageBox.Show at script level'=@(($seamUiText+"`n[void][System.Windows.Forms.MessageBox]::Show('x')`n"),$seamShellText)
+    'a native ShowFailure Show removed'=@((Edit-SeamPlant $seamUiText "[void][Windows.Forms.MessageBox]::Show('FastLLM needs attention," "[void][Console]::WriteLine('FastLLM needs attention,"),$seamShellText)
+    'a view key misspelled in the classic script'=@((Edit-SeamPlant $seamUiText "uiDialogView['MessageBox']" "uiDialogView['MessageBoks']"),$seamShellText)
+    'a view key misspelled in the shell table'=@($seamUiText,(Edit-SeamPlant $seamShellText 'ShowDriverGuidance = ${function:' 'ShowDriverGuidence = ${function:'))
+    'a shell entry bound to the wrong function'=@($seamUiText,(Edit-SeamPlant $seamShellText 'MessageBox = ${function:Show-FastLlmUiFluentMessageBox}' 'MessageBox = ${function:Show-FastLlmUiFluentSideResult}'))
+    'the side result dispatch missing'=@((Edit-SeamPlant $seamUiText "    if(`$null -ne `$script:uiDialogView){& `$script:uiDialogView['ShowUiSideResult'] -Title `$Title -Text `$Text;return}`n" ''),$seamShellText)
+    'the table set in the Local scope'=@($seamUiText,(Edit-SeamPlant $seamShellText '-Name uiDialogView -Scope Script' '-Name uiDialogView -Scope Local'))
+}
+foreach($k in $seamPlants.Keys){ Check ((@(Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1])).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
+# Ruling a (the fluent box returns [System.Windows.Forms.DialogResult], never a string) is pinned with the dialog host above; the view entry is that function (the key pin).
+# ===== end PR 4a Task 4 =====
 
 
 Write-Host "UI fluent member coverage tests passed: $checks"
