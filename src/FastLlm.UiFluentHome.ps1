@@ -181,7 +181,7 @@ function New-FastLlmUiFluentSink {
     param(
         [Parameter(Mandatory = $true)] $Adapter,
         [Parameter(Mandatory = $true)] $Element,
-        [Parameter(Mandatory = $true)][ValidateSet('TextBlock', 'Content', 'Header', 'Output', 'Visual')][string] $Mode,
+        [Parameter(Mandatory = $true)][ValidateSet('TextBlock', 'Content', 'Header', 'Output', 'Visual', 'Combo', 'Number', 'Input')][string] $Mode,
         [string[]] $Flags = @()
     )
     $convert = ${function:ConvertTo-FastLlmUiAccessText}
@@ -190,6 +190,24 @@ function New-FastLlmUiFluentSink {
     $noText = ($Flags -contains 'NoText')
     $sink = {
         param($Property, $Value)
+        # The two-way modes. An element write that came from the element itself (FromElement) is skipped, and so is one the element already shows.
+        if ($Mode -ceq 'Combo') {
+            if ($Adapter.__state['FromElement']) { return }
+            if ([string] $Property -ceq 'SelectedIndex') { if ($Element.SelectedIndex -ne [int] $Value) { $Element.SelectedIndex = [int] $Value }; return }
+            if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
+            if ([string] $Property -ceq 'Text') { return }
+        }
+        if ($Mode -ceq 'Number') {
+            if ($Adapter.__state['FromElement']) { return }
+            if ([string] $Property -ceq 'Value') { $shown = ([decimal] $Value).ToString('F0'); if ($Element.Text -cne $shown) { $Element.Text = $shown }; return }
+            if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
+            if ([string] $Property -ceq 'Text') { return }
+        }
+        if ($Mode -ceq 'Input') {
+            if ($Adapter.__state['FromElement']) { return }
+            if ([string] $Property -ceq 'Text') { if ($Element.Text -cne [string] $Value) { $Element.Text = [string] $Value }; return }
+            if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
+        }
         switch -CaseSensitive ([string] $Property) {
             'Text' {
                 if ($noText -or $Mode -ceq 'Visual') { break }
@@ -230,7 +248,50 @@ function Connect-FastLlmUiFluentControl {
     $sink = New-FastLlmUiFluentSink -Adapter $Adapter -Element $Element -Mode $Mode -Flags $Flags
     # Also joins an adapter that is already bound (each element keeps its own Mode and Flags); without it a second bind throws.
     Add-FastLlmUiAdapterSink -Adapter $Adapter -Sink $sink -Also:$Also
-    foreach ($property in 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    if ($Mode -ceq 'Combo') {
+        # Fill the element's items once from the adapter's strings, then push the selection.
+        foreach ($item in $Adapter.Items) { $null = $Element.Items.Add([string] $item) }
+        foreach ($property in 'SelectedIndex', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
+    elseif ($Mode -ceq 'Number') {
+        foreach ($property in 'Value', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
+    else {
+        foreach ($property in 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
+    $setFrom = ${function:Set-FastLlmUiAdapterFromElement}
+    if ($Mode -ceq 'Combo') {
+        $Element.Add_SelectionChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'SelectedIndex' -Value ([int] $Element.SelectedIndex) }.GetNewClosure())
+    }
+    elseif ($Mode -ceq 'Input') {
+        $Element.Add_TextChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Text' -Value ([string] $Element.Text) }.GetNewClosure())
+    }
+    elseif ($Mode -ceq 'Number') {
+        # Commits the typed text through the WinForms clamp (minimum 0; Maximum and Increment come from the adapter), or steps first when
+        # $direction is Up or Down. The shown text is then normalised to the committed value. The page Leave calls the same block (kept on the adapter).
+        $parse = ${function:ConvertTo-FastLlmUiNumericValue}
+        $step = ${function:Step-FastLlmUiNumericValue}
+        $commit = {
+            param($direction)
+            $maximum = [decimal] $Adapter.Maximum
+            $value = & $parse -Text ([string] $Element.Text) -Current ([decimal] $Adapter.Value) -Minimum ([decimal] 0) -Maximum $maximum
+            if ($direction -ceq 'Up') { $value = & $step -Current $value -Increment ([decimal] $Adapter.Increment) -Minimum ([decimal] 0) -Maximum $maximum -Up }
+            elseif ($direction -ceq 'Down') { $value = & $step -Current $value -Increment ([decimal] $Adapter.Increment) -Minimum ([decimal] 0) -Maximum $maximum }
+            & $setFrom -Adapter $Adapter -Property 'Value' -Value $value
+            $shown = $value.ToString('F0')
+            if ($Element.Text -cne $shown) { $Element.Text = $shown }
+        }.GetNewClosure()
+        $Adapter.__state['CommitEdit'] = $commit
+        $Element.Add_KeyDown({
+                param($sender, $routed)
+                $direction = $null
+                if ($routed.Key -eq [System.Windows.Input.Key]::Return) { $direction = '' }
+                elseif ($routed.Key -eq [System.Windows.Input.Key]::Up) { $direction = 'Up' }
+                elseif ($routed.Key -eq [System.Windows.Input.Key]::Down) { $direction = 'Down' }
+                if ($null -ne $direction) { & $commit $direction }
+            }.GetNewClosure())
+        $Element.Add_LostKeyboardFocus({ param($sender, $routed) & $commit '' }.GetNewClosure())
+    }
     if ($Event) {
         $invoke = ${function:Invoke-FastLlmUiAdapterEvent}
         $adapterEvent = $Event

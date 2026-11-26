@@ -144,4 +144,29 @@ Check ([string]$script:uiSettings.vulkanBarMitigation -ceq 'off') 'the second ca
 Check ([string]$script:uiSettings.experimentalComponents -ceq 'on') 'the second case read the saved experimental setting'
 Check ([string]$script:uiSettings.updateCheck -ceq 'off') 'the second case read the saved update setting'
 
+
+# A real NumericUpDown (Maximum 32768, Increment 1024, as the context box) takes each typed string, commits it with ValidateEditText, and its Value
+# must equal the pure clamp (the clamp that the Fluent number box runs). The same under the current culture, so grouping and decimals agree.
+$nud = New-Object Windows.Forms.NumericUpDown
+$nud.Minimum = 0; $nud.Maximum = 32768; $nud.Increment = 1024; $nud.DecimalPlaces = 0
+foreach ($typed in @('', 'abc', '-5', '40000', '2048', ' 4096 ', '1,024', '1500.7', '0x10', '32768', '0')) {
+    $nud.Value = 7
+    $nud.Text = $typed
+    $nud.ValidateEditText()
+    $pure = ConvertTo-FastLlmUiNumericValue -Text $typed -Current 7 -Minimum 0 -Maximum 32768
+    Check ([decimal]$nud.Value -eq $pure) "number clamp parity for '$typed': WinForms Value $($nud.Value), pure $pure"
+}
+$nud.Dispose()
+# Port: 1024..65535, step 1.
+$port = New-Object Windows.Forms.NumericUpDown
+$port.Minimum = 1024; $port.Maximum = 65535; $port.Increment = 1
+foreach ($typed in @('80', '70000', '8080', 'x')) {
+    $port.Value = 5000
+    $port.Text = $typed
+    $port.ValidateEditText()
+    $pure = ConvertTo-FastLlmUiNumericValue -Text $typed -Current 5000 -Minimum 1024 -Maximum 65535
+    Check ([decimal]$port.Value -eq $pure) "port clamp parity for '$typed': WinForms Value $($port.Value), pure $pure"
+}
+$port.Dispose()
+
 Write-Host "UI fluent parity tests passed: $($script:checks)"
