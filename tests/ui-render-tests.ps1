@@ -130,6 +130,7 @@ $script:FastLlmUiXaml['Test.Sample']=@'
 <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16" UseLayoutRounding="True">
   <TextBlock x:Name="TitleText" Text="Fluent harness check" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.TitleSize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,8"/>
   <TextBlock x:Name="BodyText" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}" Margin="0,0,0,12" Text="This sample page exists only to exercise the layout and accessibility checks. It holds a heading, a paragraph that wraps over several lines, a labelled text box, a check box and two buttons, one of them an icon button with a spoken name."/>
+  <TextBlock x:Name="InheritedText" Text="Inherited example text" TextWrapping="Wrap" Margin="0,0,0,12"/>
   <TextBlock x:Name="NameLabel" Text="Example field" TextWrapping="Wrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,4"/>
   <TextBox x:Name="NameBox" AutomationProperties.Name="Example field" AutomationProperties.LabeledBy="{x:Reference NameLabel}" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" Margin="0,0,0,12"/>
   <CheckBox x:Name="OptionBox" Content="Example option" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" Margin="0,0,0,12"/>
@@ -287,6 +288,8 @@ foreach($case in $matrix){
     $expBody=14.0*[double]$case.textScale
     Check ($null -ne $r.titleFontSize -and [Math]::Abs([double]$r.titleFontSize-$expTitle) -le 0.01) "title font size follows the text scale at ${label} (got $($r.titleFontSize), want $expTitle)"
     Check ($null -ne $r.bodyFontSize -and [Math]::Abs([double]$r.bodyFontSize-$expBody) -le 0.01) "body font size follows the text scale at ${label} (got $($r.bodyFontSize), want $expBody)"
+    # Body text with no size of its own is the host's: 14 at 1.0, 2.25 times that at 2.25 (the host takes FastLlm.BodySize the way the Window does).
+    Check ($null -ne $r.inheritedFontSize -and [Math]::Abs([double]$r.inheritedFontSize-$expBody) -le 0.01) "inherited body text follows the text scale at ${label} (got $($r.inheritedFontSize), want $expBody)"
     $themeArgs=@{Theme=[string]$case.theme;AccentPair=(Get-FastLlmUiAccentPair -Palette $null);TextScale=[double]$case.textScale}
     if($case.theme -ceq 'high-contrast'){
         $expFg=([System.Windows.Media.ColorConverter]::ConvertFromString($hcPal.WindowText)).ToString()
@@ -294,6 +297,9 @@ foreach($case in $matrix){
         Check ($expFg -cne $darkText) "the high-contrast probe colour differs from dark TextPrimary at ${label}"
     }else{$expFg=(New-FastLlmUiThemeDictionary @themeArgs)['FastLlm.TextPrimaryBrush'].Color.ToString()}
     Check ([string]$r.titleForeground -ceq $expFg) "title colour is the theme text colour at ${label} (got $($r.titleForeground), want $expFg)"
+    $expFont=[string](New-FastLlmUiThemeDictionary -Theme dark -AccentPair (Get-FastLlmUiAccentPair -Palette $null) -TextScale 1.0)['FastLlm.TextFont'].Source
+    Check ([string]$r.inheritedFontFamily -ceq $expFont) "inherited body text uses the theme text font at ${label} (got $($r.inheritedFontFamily), want $expFont)"
+    Check ([string]$r.inheritedForeground -ceq $expFg) "inherited body text uses the theme text colour at ${label} (got $($r.inheritedForeground), want $expFg)"
     Check ($r.labeledInputs -ge 1) "the label-mismatch check saw at least 1 labelled input at ${label} (got $($r.labeledInputs))"
     Check ($r.textBlocks -ge 6) "the clipped check examined at least 6 text blocks at ${label} (got $($r.textBlocks))"
     Check ($r.namedControls -ge 4) "the unnamed check examined at least 4 controls at ${label} (got $($r.namedControls))"

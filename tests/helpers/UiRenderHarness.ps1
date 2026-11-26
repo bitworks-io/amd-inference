@@ -249,6 +249,12 @@ function Invoke-UiRenderCase {
     $sv.UseLayoutRounding = $true
     $sv.Background = $dict['FastLlm.LayerBrush']
     $sv.Content = $page
+    # In the app a page inherits its font, size and colour from the Window (FontFamily, FontSize and Foreground there are the same three resources). The host
+    # takes them from the case's theme dictionary, shared with the page, so body text in every case scales with the text scale the way it does in the app.
+    $sv.Resources = $dict
+    $sv.SetResourceReference([System.Windows.Documents.TextElement]::FontSizeProperty, 'FastLlm.BodySize')
+    $sv.SetResourceReference([System.Windows.Documents.TextElement]::FontFamilyProperty, 'FastLlm.TextFont')
+    $sv.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
     [System.Windows.Media.VisualTreeHelper]::SetRootDpi($sv, (New-Object System.Windows.DpiScale($scale, $scale)))
     $sv.Measure((New-Object System.Windows.Size($width, $height)))
     $sv.Arrange((New-Object System.Windows.Rect(0, 0, $width, $height)))
@@ -441,17 +447,27 @@ function Invoke-UiRenderCase {
     $titleFontSize = $null
     $bodyFontSize = $null
     $titleForeground = ''
+    $inheritedFontSize = $null
+    $inheritedFontFamily = ''
+    $inheritedForeground = ''
     foreach ($el in $all) {
         if ($el -is [System.Windows.FrameworkElement] -and $el -is [System.Windows.Controls.TextBlock]) {
             if ($el.Name -ceq 'TitleText') {
                 $titleFontSize = [double]$el.FontSize
                 if ($el.Foreground -is [System.Windows.Media.SolidColorBrush]) { $titleForeground = $el.Foreground.Color.ToString() }
             } elseif ($el.Name -ceq 'BodyText') { $bodyFontSize = [double]$el.FontSize }
+            elseif ($el.Name -ceq 'InheritedText') {
+                # a text block with no size, family or colour of its own: what the host hands down
+                $inheritedFontSize = [double]$el.FontSize
+                $inheritedFontFamily = [string]$el.FontFamily.Source
+                if ($el.Foreground -is [System.Windows.Media.SolidColorBrush]) { $inheritedForeground = $el.Foreground.Color.ToString() }
+            }
         }
     }
     return @{
         problems = [string[]]@($problems.ToArray()); diagnostics = [string[]]@($diagnostics.ToArray()); png = $png
         titleFontSize = $titleFontSize; bodyFontSize = $bodyFontSize; titleForeground = $titleForeground
+        inheritedFontSize = $inheritedFontSize; inheritedFontFamily = $inheritedFontFamily; inheritedForeground = $inheritedForeground
         labeledInputs = $labeledInputs; textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
     }
 }
