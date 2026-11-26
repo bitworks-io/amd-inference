@@ -1727,12 +1727,28 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
         foreach ($assignment in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true))) {
             if (@($assignment.Right.FindAll({ param($node) ($node -is [Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -ceq '_') -or ($node -is [Management.Automation.Language.MemberExpressionAst] -and $node.Member.Extent.Text -ieq 'Exception') }, $true)).Count -gt 0) { $tainted[$assignment.Left.VariablePath.UserPath.ToLowerInvariant()] = $true }
         }
+        # A box is a static MessageBox Show (message = argument 2) or a call of the fluent box Show-FastLlmUiFluentMessageBox (message = its -Text argument).
+        $boxes = New-Object 'System.Collections.Generic.List[object]'
         foreach ($show in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static -and $node.Member.Extent.Text -ieq 'Show' -and $node.Expression.Extent.Text -cmatch '(?i)MessageBox\]$' }, $true))) {
             $showArgs = @($show.Arguments); if ($showArgs.Count -lt 2) { continue }
-            $message = $showArgs[1]
-            $carries = @($message.FindAll({ param($node) ($node -is [Management.Automation.Language.VariableExpressionAst] -and ($node.VariablePath.UserPath -ceq '_' -or $tainted.ContainsKey($node.VariablePath.UserPath.ToLowerInvariant()))) -or ($node -is [Management.Automation.Language.MemberExpressionAst] -and $node.Member.Extent.Text -ieq 'Exception') }, $true)).Count -gt 0
-            if ($carries -and @($message.FindAll($isFree, $true)).Count -eq 0) { $found.Add("[messagebox] $Label shows an exception text without ConvertTo-FastLlmKeyFreeText -Text ([ref] ...): $($show.Extent.Text)") }
+            $boxes.Add(@{ Message = $showArgs[1]; Extent = $show.Extent.Text })
         }
+        foreach ($fluentBox in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -ieq 'Show-FastLlmUiFluentMessageBox' }, $true))) {
+            $boxElements = @($fluentBox.CommandElements); $message = $null
+            for ($i = 1; $i -lt $boxElements.Count; $i++) {
+                if ($boxElements[$i] -is [Management.Automation.Language.CommandParameterAst] -and $boxElements[$i].ParameterName -ieq 'Text') {
+                    if ($null -ne $boxElements[$i].Argument) { $message = $boxElements[$i].Argument } elseif ($i + 1 -lt $boxElements.Count) { $message = $boxElements[$i + 1] }
+                }
+            }
+            if ($null -ne $message) { $boxes.Add(@{ Message = $message; Extent = $fluentBox.Extent.Text }) }
+        }
+        foreach ($box in $boxes) {
+            $message = $box['Message']
+            $carries = @($message.FindAll({ param($node) ($node -is [Management.Automation.Language.VariableExpressionAst] -and ($node.VariablePath.UserPath -ceq '_' -or $tainted.ContainsKey($node.VariablePath.UserPath.ToLowerInvariant()))) -or ($node -is [Management.Automation.Language.MemberExpressionAst] -and $node.Member.Extent.Text -ieq 'Exception') }, $true)).Count -gt 0
+            if ($carries -and @($message.FindAll($isFree, $true)).Count -eq 0) { $found.Add("[messagebox] $Label shows an exception text without ConvertTo-FastLlmKeyFreeText -Text ([ref] ...): $($box['Extent'])") }
+        }
+        # Every box of the Settings page is the fluent box: a direct MessageBox Show is a finding, key-free or not.
+        if (@($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static -and $node.Member.Extent.Text -ieq 'Show' -and $node.Expression.Extent.Text -cmatch '(?i)MessageBox\]$' }, $true)).Count -gt 0) { $found.Add("[directbox] $Label shows a box through the system MessageBox instead of Show-FastLlmUiFluentMessageBox") }
         return $found.ToArray()
     }
     $settingsPageText = ''
@@ -1740,12 +1756,14 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     if (Test-Path -LiteralPath $settingsPagePath) { $settingsPageText = [IO.File]::ReadAllText($settingsPagePath) }
     $settingsKeyProblems = @(Get-FluentSettingsKeyProblems $settingsFile $settingsPageText)
     Check ($settingsKeyProblems.Count -eq 0) "fluent window: the Settings page reads no key (ReadUiApiKey 0), never rotates, writes the key setting with -Action on twice and off once, calls NewUiApiKey twice with the window as owner, and shows no exception text without the key-free text $($settingsKeyProblems -join '; ')"
+    $settingsBoxCount = @([regex]::Matches($settingsPageText, '(?i)(?<![A-Za-z0-9_-])Show-FastLlmUiFluentMessageBox(?![A-Za-z0-9_-])')).Count
+    Check ($settingsBoxCount -eq 4 -and $settingsPageText -cnotmatch '(?i)MessageBox\]::Show') "fluent window: the Settings page's four boxes are the fluent box and none is a direct system MessageBox ($settingsBoxCount fluent calls)"
     $settingsPlantBase = @'
 function Invoke-X {
     try { $null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action on }
     catch { if (-not (NewUiApiKey $script:form)) { throw 'x' }; $null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action on }
     $null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action off
-    try { [void](NewUiApiKey $script:form) } catch { $newKeyFailureText = [string]$_.Exception.Message; [void][Windows.Forms.MessageBox]::Show($script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)), 'FastLLM settings', 'OK', 'Warning') }
+    try { [void](NewUiApiKey $script:form) } catch { $newKeyFailureText = [string]$_.Exception.Message; [void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning') }
 }
 '@
     Check (@(Get-FluentSettingsKeyProblems 'plant.ps1' $settingsPlantBase).Count -eq 0) 'fluent window self-check: a well formed Settings shape (on, on, off, two NewUiApiKey, a key-free box) has no problem'
@@ -1761,7 +1779,13 @@ function Invoke-X {
         'newkey-own' = @('newkey', $settingsPlantBase.Replace('(NewUiApiKey $script:form)) { throw', '(NewUiApiKey $null)) { throw'))
         'rawbox'     = @('messagebox', $settingsPlantBase.Replace('(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))', '$newKeyFailureText'))
         'rawbox-ex'  = @('messagebox', ($settingsPlantBase + "`n" + 'try { 1 } catch { [void][Windows.Forms.MessageBox]::Show($script:form, [string]$_.Exception.Message, ''FastLLM settings'', ''OK'', ''Warning'') }'))
-        'rawbox-lc'  = @('messagebox', $settingsPlantBase.Replace('[Windows.Forms.MessageBox]::Show($script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))', '[windows.forms.MESSAGEBOX]::SHOW($script:form, ([string]$_.Exception.Message)'))
+        'rawbox-lc'  = @('messagebox', ($settingsPlantBase + "`
+" + 'try { 1 } catch { [void][windows.forms.MESSAGEBOX]::SHOW($script:form, ([string]$_.Exception.Message), ''FastLLM settings'', ''OK'', ''Warning'') }'))
+        'rawbox-fl'  = @('messagebox', ($settingsPlantBase + "`
+" + 'try { 1 } catch { [void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text ([string]$_.Exception.Message) -Caption ''FastLLM settings'') }'))
+        'rawbox-fu'  = @('messagebox', ($settingsPlantBase + "`
+" + 'try { 1 } catch { [void](SHOW-FASTLLMUIFLUENTMESSAGEBOX -TEXT:([string]$_.Exception.Message) -Owner $script:form) }'))
+        'directbox'  = @('directbox', $settingsPlantBase.Replace('[void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)) -Caption ''FastLLM settings'' -Buttons ''OK'' -Icon ''Warning'')', '[void][Windows.Forms.MessageBox]::Show($script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)), ''FastLLM settings'', ''OK'', ''Warning'')'))
         'notref'     = @('messagebox', $settingsPlantBase.Replace('-Text ([ref]$newKeyFailureText)', '-Text $newKeyFailureText'))
     }
     $settingsPlantMissed = New-Object 'System.Collections.Generic.List[string]'
