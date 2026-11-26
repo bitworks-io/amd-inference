@@ -692,7 +692,7 @@ foreach($theme in 'light','dark','high-contrast'){
 Write-Host ('INFO: Models render of {0} cases took {1:N1} s' -f ($matrix.Count+6),$modelsSw.Elapsed.TotalSeconds)
 
 # ---- Reading order of the Tools, Connect and Models pages at text 1.0, 2.0 and 2.25: no overlap, and the whole tab sequence is the reading order.
-function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops,[string[]]$ScrollOwners=@()){
+function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops,[string[]]$ScrollOwners=@(),[string[]]$TabRegions=@()){
     foreach($text in 1.0,2.0,2.25){
         $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
         $script:homeCaseTheme='light'
@@ -701,7 +701,7 @@ function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName
         $script:pinInner=$Prepare
         $pinPrepare={param($page) $script:pinPage=$page; & $script:pinInner $page}
         $r=$null
-        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName -ScrollOwners $ScrollOwners}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
+        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName -ScrollOwners $ScrollOwners -TabRegions $TabRegions}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
         $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
         Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
         $stops=New-Object System.Collections.ArrayList
@@ -712,10 +712,10 @@ function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName
         $order=0
         foreach($el in $stops){
             $rect=Get-UiRelativeRect $el $script:pinPage
-            if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+            if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Region=(Get-UiTabRegion $el $script:pinPage $TabRegions);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
             $order++
         }
-        $byRead=@($rows|Sort-Object -Property @{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
+        $byRead=@($rows|Sort-Object -Property @{Expression='Region'},@{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
         $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
         $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
         Write-Host "INFO: $Label tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
@@ -732,6 +732,168 @@ Test-PageReadingOrder 'Connect' 'FastLlm.Connect' 'FastLlm.ConnectReading' $conn
 $script:modelsFx=New-ModelsRenderFixture 'long'
 Test-PageReadingOrder 'Models' 'FastLlm.Models' 'FastLlm.ModelsReading' $modelsPrepare 12 @('ModelsSwitchList')
 Write-Host ('INFO: Tools, Connect and Models reading order of 9 cases took {0:N1} s' -f $orderSw.Elapsed.TotalSeconds)
+
+# ---- The Settings page (PR 3c): the fluent replacement for settings-dialog-render-tests (the table is in the PR body).
+# The serving settings and the sign-in view are fixtures over the real functions; the page, its bindings, its reasons and its Enter are the product's.
+# The harness wraps a page in a ScrollViewer with unlimited height, so a bounded page height (the window's) is set in the prepare step: row 0 (the page's own
+# ScrollViewer) then fills what the footer leaves, and the footer is always in view, as in the app. Tab regions: the page's scroll content first, the footer last.
+$script:settingsOverride=$null
+$script:settingsKind='notset'
+$script:settingsCaseHeight=[double]480
+$script:settingsPageEl=$null
+$script:settingsEls=$null
+$script:uiSettings=$script:homeSettings
+$script:realGetServingSettings=Get-Command -Name Get-FastLlmServingSettings -CommandType Function
+function Get-FastLlmServingSettings{
+    param([string]$InstallRoot)
+    $real=& $script:realGetServingSettings -InstallRoot $InstallRoot
+    if($null -ne $script:settingsOverride){foreach($k in @($script:settingsOverride.Keys)){$real.$k=$script:settingsOverride[$k]}}
+    return $real
+}
+function Get-FastLlmSignInDefaultInstallRoot{return [string]$script:homeDir}
+function Get-FastLlmSignInSettingsView{param([string]$AppRoot,[string]$InstallRoot)return [pscustomobject]@{checked=$false;stateText='Starting FastLLM when you sign in is off.';lastResultText='No sign-in start has run yet.'}}
+# The fixtures: not set (the worst case: the long caption, the long thinking text, the biggest port), key on, key off, running (key on), unavailable (a launch is starting).
+function Get-SettingsRenderFixture([string]$Kind){
+    switch -CaseSensitive ($Kind){
+        'notset'{return @{override=@{serverPort=65535;thinking='off';chatPage='on';idleStopMinutes=60;apiKey='off';apiKeyUndetermined=$true};snap=@{};unavailable=$false;keyChecked=$null}}
+        'on'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=15;apiKey='on';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$true}}
+        'off'{return @{override=@{serverPort=8080;thinking='off';chatPage='on';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false}}
+        'running'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=30;apiKey='on';apiKeyUndetermined=$false};snap=@{ChildActive=$true;Step='serving';RunReady=$true};unavailable=$false;keyChecked=$true}}
+        'unavailable'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{Busy=$true;ChildActive=$true;Step='model download'};unavailable=$true;keyChecked=$false}}
+        default{throw "unknown Settings render state $Kind"}
+    }
+}
+function Initialize-SettingsRenderPage($Page){
+    $fx=Get-SettingsRenderFixture $script:settingsKind
+    $els=@{}
+    $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme;Pages=@{};Current=''}
+    [void](Initialize-FastLlmUiFluentSettings -Page $Page -Els $els)
+    $pageNames=Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Settings'])
+    $absent=@($pageNames|Where-Object{-not $els.ContainsKey([string]$_)})
+    if($absent.Count -gt 0){throw ('Settings names missing from the element map: '+($absent -join ', '))}
+    $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
+    Connect-RenderBindingRows @(Get-FastLlmUiFluentSettingsBindings) $els
+    $script:settingsOverride=$fx.override
+    $script:homeSnap=New-HomeSnap $fx.snap
+    $script:settingsButton.Enabled=(-not [bool]$fx.unavailable)
+    $script:renderFail=''
+    Enter-FastLlmUiFluentSettings
+    $Page.Height=[double]$script:settingsCaseHeight
+    $script:settingsPageEl=$Page
+    $script:settingsEls=$els
+}
+$settingsPrepare={param($page) Initialize-SettingsRenderPage $page}
+# Pixels of a box's text area that differ from the area's most common colour (the box background): 0 means the box is blank. -1: the area is outside the bitmap.
+function Get-UiRegionInk([string]$PngPath,$Rect,[double]$Scale){
+    $stream=[System.IO.File]::OpenRead($PngPath)
+    try{
+        $decoder=New-Object System.Windows.Media.Imaging.PngBitmapDecoder($stream,[System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+        $conv=New-Object System.Windows.Media.Imaging.FormatConvertedBitmap($decoder.Frames[0],[System.Windows.Media.PixelFormats]::Pbgra32,$null,0)
+        $x0=[int][Math]::Ceiling(($Rect.Left+6)*$Scale);$y0=[int][Math]::Ceiling(($Rect.Top+5)*$Scale)
+        $w=[int][Math]::Floor(($Rect.Width*0.5)*$Scale);$h=[int][Math]::Floor(($Rect.Height-10)*$Scale)
+        if($w -le 0 -or $h -le 0 -or $x0 -lt 0 -or $y0 -lt 0 -or ($x0+$w) -gt $conv.PixelWidth -or ($y0+$h) -gt $conv.PixelHeight){return -1}
+        $stride=$w*4
+        $pixels=New-Object byte[] ($stride*$h)
+        $conv.CopyPixels((New-Object System.Windows.Int32Rect($x0,$y0,$w,$h)),$pixels,$stride,0)
+        $counts=@{}
+        for($i=0;$i -lt $pixels.Length;$i+=4){$v=[BitConverter]::ToInt32($pixels,$i);if($counts.ContainsKey($v)){$counts[$v]++}else{$counts[$v]=1}}
+        $mode=0;foreach($c in $counts.Values){if($c -gt $mode){$mode=$c}}
+        return [int]($w*$h-$mode)
+    }finally{$stream.Dispose()}
+}
+function Test-SettingsCase([string]$Kind,$case){
+    $script:settingsKind=$Kind
+    $script:settingsCaseHeight=[double]$case.height
+    $script:homeCaseTheme=[string]$case.theme
+    $pngName='FastLlm.Settings'
+    switch -CaseSensitive ($Kind){'on'{$pngName='FastLlm.SettingsKeyOn'}'off'{$pngName='FastLlm.SettingsKeyOff'}'running'{$pngName='FastLlm.SettingsRunning'}'unavailable'{$pngName='FastLlm.SettingsUnavailable'}}
+    $label="Settings $Kind $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Settings' -Case $case -OutFolder $out -Prepare $settingsPrepare -PngName $pngName -TabRegions @('SettingsScroll')}catch{Check $false "Settings renders at ${label}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "Settings clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+    $real=$false
+    if($r.png -and (Test-Path -LiteralPath $r.png)){$info=Get-UiPngInfo -Path $r.png;$real=$info.hasContent}
+    Check $real "the Settings render is real at $label"
+    $e=$script:settingsEls
+    $page=$script:settingsPageEl
+    $fx=Get-SettingsRenderFixture $Kind
+    $t=$script:FastLlmUiFluentSettingsText
+    Check ($script:renderFail -ceq '') "the Settings page filled without a failure at ${label}: '$($script:renderFail)'"
+    # every authored element is shown, apart from the unavailable line (shown only while unavailable)
+    $hidden=@((Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Settings']))|Where-Object{[string]$_ -cne 'SettingsUnavailableText' -and -not (Test-UiShown $e[[string]$_] $page)})
+    Check ($hidden.Count -eq 0) "no Settings control is hidden at ${label}: $($hidden -join ', ')"
+    $line=($e['SettingsUnavailableText'].Visibility -eq [System.Windows.Visibility]::Visible)
+    Check ($line -eq [bool]$fx.unavailable -and (-not $line -or [string]$e['SettingsUnavailableText'].Text -ceq [string]$script:FastLlmUiFluentStrings.WhyBusy)) "the unavailable line is shown exactly while unavailable, with WhyBusy, at $label (shown=$line text='$($e['SettingsUnavailableText'].Text)')"
+    # the footer: Save and Discard inside the client area, never inside the scroll viewer; the scroll viewer fills what the footer leaves
+    $scroll=$e['SettingsScroll']
+    $badFooter=@()
+    foreach($n in 'SettingsSaveButton','SettingsDiscardButton'){
+        $rect=Get-UiRelativeRect $e[$n] $page
+        if($null -eq $rect -or $rect.Top -lt -0.5 -or $rect.Bottom -gt ([double]$case.height+0.5) -or $rect.Right -gt ([double]$case.width+0.5) -or $scroll.IsAncestorOf($e[$n])){$badFooter+="$n rect=$rect inScroll=$($scroll.IsAncestorOf($e[$n]))"}
+    }
+    Check ($badFooter.Count -eq 0) "Save and Discard are in the footer, inside the client area and outside the scroll viewer at ${label}: $($badFooter -join '; ')"
+    Check ([Math]::Abs([double]$scroll.ActualHeight+[double]$e['SettingsFooter'].ActualHeight-[double]$case.height) -le 1.0) "the Settings scroll viewer fills the page above the footer at ${label} (scroll $($scroll.ActualHeight) + footer $($e['SettingsFooter'].ActualHeight) of $($case.height))"
+    $outside=@('SettingsServerGroup','SettingsStartingGroup','SettingsComponentsGroup'|Where-Object{-not $scroll.IsAncestorOf($e[[string]$_])})
+    Check ($outside.Count -eq 0) "every Settings group is inside the scroll content at ${label}: $($outside -join ', ')"
+    if([double]$case.textScale -ge 2.25 -and [int]$case.width -eq 640){
+        Check ([double]$scroll.ExtentHeight -gt [double]$scroll.ViewportHeight) "at text 2.25 the Settings content needs scrolling at ${label} (extent $($scroll.ExtentHeight), viewport $($scroll.ViewportHeight))"
+    }
+    if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){
+        $g=Get-UiRelativeRect $e['SettingsServerGroup'] $scroll
+        Check ($null -ne $g -and $g.Top -ge -0.5 -and $g.Bottom -le ([double]$scroll.ViewportHeight+0.5)) "at 1000x680 and 100 percent text the Server group is fully inside the viewport at ${label} (group $g, viewport $($scroll.ViewportHeight))"
+    }
+    # the texts: each label is on its element; the three help lines are shown; the key box has its caption and state
+    Check ([string]$e['SettingsPortLabel'].Text -ceq [string]$t.Port -and [string]$e['SettingsThinkingLabel'].Text -ceq [string]$t.Thinking -and [string]$e['SettingsIdleLabel'].Text -ceq [string]$t.Idle -and [string]$e['SettingsServerHeading'].Text -ceq [string]$script:FastLlmUiFluentStrings.SettingsServer) "the Settings labels and headings carry their text-table strings at $label"
+    $helpBad=@('SettingsChatHelp','SettingsIdleHelp','SettingsKeyHelp','SettingsSwitchHelp'|Where-Object{[string]::IsNullOrEmpty([string]$e[[string]$_].Text) -or $e[[string]$_].Visibility -ne [System.Windows.Visibility]::Visible})
+    Check ($helpBad.Count -eq 0) "the Settings help lines are shown with their text at ${label}: $($helpBad -join ', ')"
+    $wantKeyName=[string]$t.Key
+    if($Kind -ceq 'notset'){$wantKeyName=[string]$t.KeyNotSet}
+    $keyChecked=$e['SettingsKeyBox'].IsChecked
+    $keyOk=([string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsKeyBox']) -ceq $wantKeyName)
+    if($Kind -ceq 'notset'){$keyOk=($keyOk -and $null -eq $keyChecked -and [bool]$e['SettingsKeyBox'].IsThreeState)}else{$keyOk=($keyOk -and $null -ne $keyChecked -and $keyChecked -eq [bool]$fx.keyChecked)}
+    Check $keyOk "the key box shows the right caption and state for the $Kind fixture at ${label} (name='$([System.Windows.Automation.AutomationProperties]::GetName($e['SettingsKeyBox']))' checked=$keyChecked)"
+    # the three value boxes hold the saved values and a selection
+    Check ([string]$e['SettingsPortBox'].Text -ceq ([int]$fx.override.serverPort).ToString() -and [int]$e['SettingsThinkingBox'].SelectedIndex -ge 0 -and [int]$e['SettingsIdleBox'].SelectedIndex -ge 0) "Port shows the saved port and Thinking and the idle stop have a selection at $label (port='$($e['SettingsPortBox'].Text)' thinking=$($e['SettingsThinkingBox'].SelectedIndex) idle=$($e['SettingsIdleBox'].SelectedIndex))"
+    foreach($n in 'SettingsThinkingBox','SettingsIdleBox'){
+        $selected=[string]$e[$n].SelectedItem
+        $drawn=@(Get-UiVisualElements $e[$n]|Where-Object{$_ -is [System.Windows.Controls.TextBlock] -and [string]$_.Text -ceq $selected})
+        Check ($drawn.Count -ge 1) "the $n selection text is drawn at ${label} ('$selected')"
+    }
+    $toggleBad=@('SettingsUpdateToggle','SettingsExperimentalToggle','SettingsLicenseToggle'|Where-Object{-not $e[[string]$_].IsEnabled -or [string]::IsNullOrWhiteSpace([string][System.Windows.Automation.AutomationProperties]::GetName($e[[string]$_]))})
+    Check ($toggleBad.Count -eq 0) "the three Components toggles are enabled and named (also while unavailable) at ${label}: $($toggleBad -join ', ')"
+    if($Kind -ceq 'unavailable'){
+        Check (-not $e['SettingsServerGroup'].IsEnabled -and -not $e['SettingsStartingGroup'].IsEnabled -and -not $e['SettingsFooter'].IsEnabled) "the Server group, the Starting group and the footer are disabled while unavailable at $label"
+    }else{
+        Check ($e['SettingsServerGroup'].IsEnabled -and $e['SettingsStartingGroup'].IsEnabled -and $e['SettingsFooter'].IsEnabled) "the Settings groups are enabled while available at $label"
+    }
+    # ink: the value boxes are painted (the classic blank-list regression). Only boxes inside the viewport can be seen in the picture.
+    if($r.png -and (Test-Path -LiteralPath $r.png)){
+        $seen=0
+        foreach($n in 'SettingsPortBox','SettingsThinkingBox','SettingsIdleBox'){
+            $br=Get-UiRelativeRect $e[$n] $scroll
+            if($null -eq $br -or $br.Top -lt 0 -or $br.Bottom -gt [double]$scroll.ViewportHeight){continue}
+            $pr=Get-UiRelativeRect $e[$n] $page
+            $ink=Get-UiRegionInk $r.png $pr ([double]$case.scale)
+            $seen++
+            Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
+        }
+        if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){Check ($seen -eq 3) "all three value boxes are inside the viewport and inked at 1000x680 (seen $seen) at $label"}
+    }
+}
+$settingsSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($case in $matrix){Test-SettingsCase 'notset' $case}
+foreach($kind in 'on','off','running','unavailable'){
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($text in 1.0,2.25){Test-SettingsCase $kind @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
+    }
+}
+Write-Host ('INFO: Settings render of {0} cases took {1:N1} s' -f ($matrix.Count+24),$settingsSw.Elapsed.TotalSeconds)
+$script:settingsKind='notset'
+$script:settingsCaseHeight=[double]480
+Test-PageReadingOrder 'Settings' 'FastLlm.Settings' 'FastLlm.SettingsReading' $settingsPrepare 13 @() @('SettingsScroll')
+$script:settingsOverride=$null
 
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
@@ -760,10 +922,14 @@ function New-ShellRenderPage($Case,[string]$PageId='Home'){
     # PR 3b: Models is registered the same way (the binding table includes its rows, bound by the same loop below as Tools and Connect).
     $modelsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Models'
     [void](Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $els)
+    # PR 3c (named test change): Settings is registered the same way (the binding table includes its rows), so every pane item has a page, as in the window.
+    $settingsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Settings'
+    [void](Initialize-FastLlmUiFluentSettings -Page $settingsPage -Els $els)
     Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
     Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $els
     Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $els
     Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $els
+    Register-FastLlmUiFluentSettingsPage -Page $settingsPage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     Connect-RenderBindingRows @(Get-FastLlmUiFluentBindingTable) $els
@@ -786,6 +952,7 @@ function New-ShellRenderPage($Case,[string]$PageId='Home'){
         Set-ModelsRenderFixtureState $script:modelsFx $els
         $script:catalog=$script:modelsFx.catalog
     }
+    if($PageId -ceq 'Settings'){$script:settingsOverride=$null;$script:settingsButton.Enabled=$true}
     if($PageId -cne 'Home'){
         $script:renderFail=''
         $hosted=Set-FastLlmUiFluentPage -Id $PageId
@@ -802,7 +969,7 @@ $shellPrepare={
     foreach($k in @($script:shellRp.Resources.Keys)){$page.Resources[$k]=([object]$script:shellRp.Resources[$k]).psobject.BaseObject}
 }
 $shellSw=[Diagnostics.Stopwatch]::StartNew()
-foreach($pageId in 'Home','Tools','Connect','Models'){
+foreach($pageId in 'Home','Tools','Connect','Models','Settings'){
     $pageSw=[Diagnostics.Stopwatch]::StartNew()
     $shellPng='FastLlm.Shell'
     if($pageId -cne 'Home'){$shellPng='FastLlm.Shell'+$pageId}
@@ -816,7 +983,7 @@ foreach($pageId in 'Home','Tools','Connect','Models'){
                 $r=$null
                 try{
                     $script:shellRp=New-ShellRenderPage $case $pageId
-                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList') -ScrollOwners @('ModelsSwitchList')
+                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList','NavSettingsList') -ScrollOwners @('ModelsSwitchList')
                 }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
                 $diagText=''
                 if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
@@ -840,7 +1007,7 @@ foreach($pageId in 'Home','Tools','Connect','Models'){
     }
     Write-Host ('INFO: Shell with {0} render of 12 cases took {1:N1} s' -f $pageId,$pageSw.Elapsed.TotalSeconds)
 }
-Write-Host ('INFO: Shell render of 48 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
+Write-Host ('INFO: Shell render of 60 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
 
 # PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
@@ -849,7 +1016,8 @@ function Get-RenderPngCount([string]$Prefix){
 Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
     'FastLlm.Models'=40;'FastLlm.ModelsEmpty'=6;'FastLlm.ModelsReading'=3
-    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12}
+    'FastLlm.Settings'=40;'FastLlm.SettingsKeyOn'=6;'FastLlm.SettingsKeyOff'=6;'FastLlm.SettingsRunning'=6;'FastLlm.SettingsUnavailable'=6;'FastLlm.SettingsReading'=3
+    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12;'FastLlm.ShellSettings'=12}
 foreach($prefix in $pngExpect.Keys){
     $got=Get-RenderPngCount $prefix
     Check ($got -eq $pngExpect[$prefix]) ("the render folder holds $($pngExpect[$prefix]) $prefix PNGs written by this run (got $got)")

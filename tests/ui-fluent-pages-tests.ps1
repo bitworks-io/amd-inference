@@ -228,6 +228,111 @@ function Update-FastLlmUiFluentComponentsList {
     & $script:origComponentsList
 }
 
+# ---- PR 3c Task 6: the Settings page's orchestration stand-ins ----
+# Everything Save, Create a new key, the sign-in toggle and the three Components toggles CALL is a file-level shadow below (the real registry, the real key store
+# and the real settings files are never touched). The REAL code under test is taken by name from fast-llm-ui.ps1 with the PowerShell parser: NewUiApiKey and
+# ShowLicenseSettingConfirm (functions), and the wiring statements of the update, experimental and licence boxes and of settingsButton.Add_Click. The effect log
+# holds only WRITES (reads are counted apart), in call order, so the Save sequence is one comparable string.
+$script:setLog = New-Object System.Collections.ArrayList
+$script:setFx = @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; apiKeyUndetermined = $false }
+$script:setReads = 0
+$script:setLastServing = $null
+$script:setAllowStored = $null
+$script:setApiUnavailable = $false      # true: an 'on' throws api-key-unavailable until a rotate happened
+$script:setRotateThrows = ''            # a message: rotate throws it
+$script:setRefreshThrows = 0            # RefreshUiSwitchState throws this many times
+$script:setSignInChecked = $false
+$script:setSignInReads = 0
+$script:setSignInReadThrows = $false
+$script:setSignInSetThrows = $false
+$script:setSignInSets = New-Object System.Collections.ArrayList
+$script:setUpdateWrites = New-Object System.Collections.ArrayList
+$script:setExpWrites = New-Object System.Collections.ArrayList
+$script:setLicWrites = New-Object System.Collections.ArrayList
+$script:setExpEvents = New-Object System.Collections.ArrayList
+$script:settingsDialogCalls = 0         # ShowUiSettings: must stay 0 (the page replaces the dialog)
+$script:experimentalRevert = $false
+$script:licenseRevert = $false
+$script:apiKeyStore = $null
+$script:bgState = Get-UiBackgroundFixture -Name 'none'
+$script:realGetComponents = Get-Command -Name Get-FastLlmComponents -CommandType Function
+$script:p30Missing = @()
+foreach ($fnName in 'NewUiApiKey', 'ShowLicenseSettingConfirm') {
+    $script:p13Want = $fnName
+    $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $script:p13Want }, $true)
+    if ($null -eq $def) { $script:p30Missing += $fnName; continue }
+    . ([scriptblock]::Create([string]$def.Extent.Text))
+}
+# The real wiring statements, by their target and member (attached in P0 to the adapters the shell made).
+$script:settingsWiring = @{}
+foreach ($pair in @(@('$updateBox', 'Add_CheckedChanged'), @('$experimentalBox', 'Add_CheckedChanged'), @('$licenseBox', 'Add_CheckedChanged'), @('$settingsButton', 'Add_Click'))) {
+    $script:setWantTarget = [string]$pair[0]
+    $script:setWantMember = [string]$pair[1]
+    $wireAst = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$node.Member.Extent.Text -ceq $script:setWantMember -and [string]$node.Expression.Extent.Text -ceq $script:setWantTarget }, $true)
+    if ($null -ne $wireAst) { $script:settingsWiring[[string]$pair[0]] = [string]$wireAst.Extent.Text }
+}
+
+function Get-FastLlmServingSettings {
+    param([string]$InstallRoot)
+    $script:setReads++
+    return [pscustomobject]@{ serverPort = [int]$script:setFx.serverPort; thinking = [string]$script:setFx.thinking; chatPage = [string]$script:setFx.chatPage; idleStopMinutes = [int]$script:setFx.idleStopMinutes
+        apiKey = [string]$script:setFx.apiKey; apiKeyUndetermined = [bool]$script:setFx.apiKeyUndetermined; malformed = $false }
+}
+function Set-FastLlmServingSettings {
+    param([string]$InstallRoot, [int]$ServerPort, [string]$Thinking, [string]$ChatPage, [int]$IdleStopMinutes)
+    [void]$script:setLog.Add('serving')
+    $script:setLastServing = @{ port = $ServerPort; thinking = $Thinking; chat = $ChatPage; idle = $IdleStopMinutes }
+    $script:setFx.serverPort = $ServerPort; $script:setFx.thinking = $Thinking; $script:setFx.chatPage = $ChatPage; $script:setFx.idleStopMinutes = $IdleStopMinutes
+}
+function Set-FastLlmUiAllowSwitch {
+    param([string]$InstallRoot, [bool]$Value)
+    [void]$script:setLog.Add('allow')
+    $script:setAllowStored = $Value
+}
+function Invoke-FastLlmApiKeySetting {
+    param([string]$InstallRoot, [string]$Action)
+    [void]$script:setLog.Add('apikey:' + $Action)
+    if ($Action -ceq 'on' -and $script:setApiUnavailable) {
+        $ex = New-Object System.InvalidOperationException('The stored API key cannot be read.')
+        $ex.Data['FastLlmFailureCode'] = 'api-key-unavailable'
+        throw $ex
+    }
+    if ($Action -ceq 'rotate') {
+        if ([string]$script:setRotateThrows -ne '') { throw [string]$script:setRotateThrows }
+        $script:setApiUnavailable = $false
+    }
+    elseif ($Action -ceq 'on') { $script:setFx.apiKey = 'on'; $script:setFx.apiKeyUndetermined = $false }
+    elseif ($Action -ceq 'off') { $script:setFx.apiKey = 'off'; $script:setFx.apiKeyUndetermined = $false }
+    return [pscustomobject]@{ lines = @('A new key was created (probe).') }
+}
+function RefreshUiSwitchState {
+    [void]$script:setLog.Add('refresh')
+    if ($script:setRefreshThrows -gt 0) { $script:setRefreshThrows--; throw 'refresh boom' }
+}
+function Get-FastLlmSignInDefaultInstallRoot { return (Join-Path ([System.IO.Path]::GetTempPath()) 'fastllm-settings-probe-signin') }
+function New-SettingsSignInView { return [pscustomobject]@{ checked = [bool]$script:setSignInChecked; stateText = ('Probe sign-in state ' + [bool]$script:setSignInChecked); lastResultText = 'Probe last result' } }
+function Get-FastLlmSignInSettingsView {
+    param([string]$AppRoot, [string]$InstallRoot)
+    $script:setSignInReads++
+    if ($script:setSignInReadThrows) { throw 'sign-in read boom' }
+    return (New-SettingsSignInView)
+}
+function Set-FastLlmSignInStartEnabled {
+    param([string]$AppRoot, [string]$InstallRoot, [bool]$Enabled)
+    [void]$script:setSignInSets.Add([string]$Enabled)
+    if ($script:setSignInSetThrows) { throw 'sign-in write boom' }
+    $script:setSignInChecked = $Enabled
+    return (New-SettingsSignInView)
+}
+function Set-FastLlmUpdateSettings { param([string]$InstallRoot, [string]$UpdateCheck) [void]$script:setUpdateWrites.Add($UpdateCheck) }
+function Set-FastLlmExperimentalSwitchMirrored { param([string]$SourceRoot, [string]$TargetRoot, [string]$Value) [void]$script:setExpWrites.Add($Value) }
+function Set-FastLlmComponentLicenseSettingMirrored { param([string]$SourceRoot, [string]$TargetRoot, [string]$Mode, [object[]]$Accepted, [string]$AcceptedAt) [void]$script:setLicWrites.Add($Mode) }
+function Clear-FastLlmUiDeclinedSetups { param([string]$InstallRoot) }
+# The licence handler reads the components file next to fast-llm-ui.ps1 ($PSScriptRoot); here that is the tests folder, so the real reader is pointed at the repo file.
+function Get-FastLlmComponents { param([string]$ComponentsPath) return (& $script:realGetComponents -ComponentsPath (Join-Path $root 'config/components.json')) }
+# ShowUiSettings (the classic dialog) is a counter: the Settings page must never reach it.
+function ShowUiSettings { $script:settingsDialogCalls++ }
+
 function Invoke-P0-ShellStart {
     Initialize-ShellEnv
     $err = ''
@@ -255,6 +360,11 @@ function Invoke-P0-ShellStart {
     $script:componentsButton.Add_Click({ try { ShowComponentsWindow } catch { ShowFailure $_.Exception.Message } })
     $script:chooseButton.Add_Click({ try { StartRecipeList } catch { ShowFailure $_.Exception.Message } })
     if ($script:barWiringText -ne '') { . ([scriptblock]::Create($script:barWiringText)) }
+    # PR 3c: the REAL wiring statements of the three Components toggles (their confirmations, mirroring and reverts) and of the classic Settings button, attached to
+    # the adapters the shell made. The Settings button's Click opens today's dialog: it is a counter here and must stay 0 while the page is used (P30).
+    foreach ($target in '$updateBox', '$experimentalBox', '$licenseBox', '$settingsButton') {
+        if ($script:settingsWiring.ContainsKey($target)) { . ([scriptblock]::Create([string]$script:settingsWiring[$target])) }
+    }
     # From here the loop owns the thread. A DispatcherTimer re-queues itself only after its Tick returns, and P0 does not return until the loop ends:
     # re-arm the step timer by hand so P1 onward run in the nested frame. The loop ends when the last step calls Stop-ShellLoop, so no step may follow that.
     $script:busy = $false
@@ -360,13 +470,32 @@ function Invoke-P1-PageHostAndNav {
     }
     Check ($mismatch.Count -eq 0) 'P1 a pane item is enabled exactly when a page is registered for it' ("mismatch=" + ($mismatch -join ','))
     Check ([bool](Get-NavEntry 'NavHome')['Item'].IsEnabled) 'P1 Home is enabled' ''
-    # PR 3b: Models is a registered page now, so only Settings stays greyed with the coming-later text.
+    # PR 3c (named test change): every pane item has a registered page now, so EVERY item is enabled and none carries the coming-later tooltip or help text.
+    # (3b left Settings disabled here.) The disabled branch of Set-FastLlmUiFluentNavTip stays as the fail-safe for an unregistered page, tested below with a scratch item.
     Check ([bool](Get-NavEntry 'NavModels')['Item'].IsEnabled -and $null -eq (Get-NavEntry 'NavModels')['Item'].ToolTip) 'P1 Models is enabled in the pane and carries no coming-later tooltip' "enabled=$((Get-NavEntry 'NavModels')['Item'].IsEnabled) tip='$((Get-NavEntry 'NavModels')['Item'].ToolTip)'"
+    $disabledNow = @(@($f.NavItems) | Where-Object { -not [bool]$_['Item'].IsEnabled -or -not [bool]$_['Enabled'] } | ForEach-Object { [string]$_['Id'] })
+    Check ($disabledNow.Count -eq 0 -and @($f.NavItems).Count -eq 5) 'P1 every pane item (five) is enabled' "disabled=[$($disabledNow -join ',')] items=$(@($f.NavItems).Count)"
     foreach ($id in 'NavSettings') {
         $item = (Get-NavEntry $id)['Item']
         $help = [System.Windows.Automation.AutomationProperties]::GetHelpText($item)
-        Check ((-not $item.IsEnabled) -and [string]$item.ToolTip -ceq [string]$s.ComingLater -and $help -ceq [string]$s.ComingLater) "P1 $id is disabled with the ComingLater tooltip and help text" "enabled=$($item.IsEnabled) tip='$($item.ToolTip)' help='$help'"
+        Check ($item.IsEnabled -and $null -eq $item.ToolTip -and $help -ceq '') "P1 $id is enabled with no coming-later tooltip or help text" "enabled=$($item.IsEnabled) tip='$($item.ToolTip)' help='$help'"
     }
+    # The fail-safe: a scratch pane entry that is NOT enabled (no page behind it) gets the coming-later tooltip and help text, expanded and collapsed. It is never added to NavItems.
+    $scratchNav = @{ Item = (New-Object System.Windows.Controls.ListBoxItem); Label = $null; Text = 'Probe item'; Enabled = $false; Id = 'NavProbe'; List = 'NavList' }
+    $origCollapsed = [bool]$f.Keys['PaneCollapsed']
+    try {
+        $f.Keys['PaneCollapsed'] = $false
+        Set-FastLlmUiFluentNavTip -Nav $scratchNav
+        $tipWide = [string]$scratchNav['Item'].ToolTip
+        $helpWide = [System.Windows.Automation.AutomationProperties]::GetHelpText($scratchNav['Item'])
+        Check ($tipWide -ceq [string]$s.ComingLater -and $helpWide -ceq [string]$s.ComingLater -and [System.Windows.Controls.ToolTipService]::GetShowOnDisabled($scratchNav['Item'])) 'P1 the disabled-item fail-safe (scratch unregistered item, expanded pane) says ComingLater in its tooltip and help text' "tip='$tipWide' help='$helpWide' showOnDisabled=$([System.Windows.Controls.ToolTipService]::GetShowOnDisabled($scratchNav['Item']))"
+        $f.Keys['PaneCollapsed'] = $true
+        Set-FastLlmUiFluentNavTip -Nav $scratchNav
+        $tipNarrow = [string]$scratchNav['Item'].ToolTip
+        $wantNarrow = ([string]$s.ComingLaterFormat) -f 'Probe item'
+        Check ($tipNarrow -ceq $wantNarrow) 'P1 the disabled-item fail-safe (collapsed pane) says the ComingLaterFormat text with the item label' "tip='$tipNarrow' want='$wantNarrow'"
+    }
+    finally { $f.Keys['PaneCollapsed'] = $origCollapsed }
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Home' -and [object]::ReferenceEquals($els.PageHost.Child, $f.Pages['Home']['Element']) -and $els.NavHome.IsSelected) 'P1 Home is hosted and selected by default' "current=$(Get-FastLlmUiFluentCurrentPage)"
     # A duplicate element name throws
     $dupThrew = ''
@@ -376,7 +505,7 @@ function Invoke-P1-PageHostAndNav {
     Add-PagesTestPage 'Tools' 'NavTools' 'ToolsStatusText'
     Add-PagesTestPage 'Connect' 'NavConnect' 'ConnectStatusText'
     $enabled = @(@($f.NavItems) | Where-Object { [bool]$_['Item'].IsEnabled } | ForEach-Object { [string]$_['Id'] })
-    Check (($enabled -join ',') -ceq 'NavHome,NavModels,NavConnect,NavTools') 'P1 the enabled set is Home, Models, Connect and Tools (only Settings stays disabled)' "enabled=$($enabled -join ',')"
+    Check (($enabled -join ',') -ceq 'NavHome,NavModels,NavConnect,NavTools,NavSettings') 'P1 the enabled set is all five pane items, Settings last (no item stays disabled)' "enabled=$($enabled -join ',')"
     Check ($null -eq (Get-NavEntry 'NavTools')['Item'].ToolTip -and [string]::IsNullOrEmpty([System.Windows.Automation.AutomationProperties]::GetHelpText((Get-NavEntry 'NavTools')['Item']))) 'P1 a page that registers drops its coming-later tooltip and help text' ''
     # Set-FastLlmUiFluentPage returns exactly one bool
     $script:pageEvents.Clear()
@@ -387,8 +516,9 @@ function Invoke-P1-PageHostAndNav {
     $script:pageEvents.Clear()
     $r2 = Set-FastLlmUiFluentPage -Id 'Tools'
     Check (@($r2).Count -eq 1 -and $r2 -and $script:pageEvents.Count -eq 0) 'P1 the current page does nothing (no Leave, no Enter)' "events=$($script:pageEvents -join ',')"
-    $r3 = Set-FastLlmUiFluentPage -Id 'Settings'
-    Check (@($r3).Count -eq 1 -and $r3 -is [bool] -and -not $r3 -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Tools') 'P1 an unregistered page (Settings) returns false and changes nothing' "value=$r3"
+    # PR 3c: Settings is registered now, so a scratch id stands for the unregistered page
+    $r3 = Set-FastLlmUiFluentPage -Id 'ProbeUnregistered'
+    Check (@($r3).Count -eq 1 -and $r3 -is [bool] -and -not $r3 -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Tools') 'P1 an unregistered page (a scratch id) returns false and changes nothing' "value=$r3"
     $r4 = Set-FastLlmUiFluentPage -Id 'Connect'
     Check ($r4 -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Connect' -and [object]::ReferenceEquals($els.PageHost.Child, $f.Pages['Connect']['Element']) -and $els.NavConnect.IsSelected) 'P1 Connect is hosted and selected' "current=$(Get-FastLlmUiFluentCurrentPage)"
     $null = Set-FastLlmUiFluentPage -Id 'Home'
@@ -424,8 +554,8 @@ function Invoke-P1-PageHostAndNav {
     $els.NavList.SelectedItem = $null
     Invoke-Pump 150
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Tools' -and $els.NavTools.IsSelected) 'P1 a null selection re-selects the current page item' "current=$(Get-FastLlmUiFluentCurrentPage)"
-    # Every item of the list has a page now (Settings, the one greyed item, lives in the other list), so the Models page is taken out of the registry for this
-    # check and put back after it: its item then has no page, which is what a disabled item was before (the guard under test is the same one).
+    # Every item has a page now, so the Models page is taken out of the registry for this check and put back after it: its item then has no page, which is what
+    # a disabled item was before (the guard under test is the same one). The same for Settings, whose item lives in the second list.
     $modelsEntry = $f.Pages['Models']
     $f.Pages.Remove('Models')
     try {
@@ -434,6 +564,14 @@ function Invoke-P1-PageHostAndNav {
         Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Tools' -and $els.NavTools.IsSelected -and -not $els.NavList.Items[1].IsSelected) 'P1 selecting an item that has no registered page re-selects the current page item' "current=$(Get-FastLlmUiFluentCurrentPage) toolsSelected=$($els.NavTools.IsSelected) item1Selected=$($els.NavList.Items[1].IsSelected)"
     }
     finally { $f.Pages['Models'] = $modelsEntry }
+    $settingsEntry = $f.Pages['Settings']
+    $f.Pages.Remove('Settings')
+    try {
+        $els.NavSettingsList.SelectedIndex = 0
+        Invoke-Pump 150
+        Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Tools' -and $els.NavTools.IsSelected -and $els.NavSettingsList.SelectedIndex -eq -1 -and -not $els.NavSettings.IsSelected) 'P1 selecting the Settings item with no registered page re-selects the current item and clears the second list' "current=$(Get-FastLlmUiFluentCurrentPage) toolsSelected=$($els.NavTools.IsSelected) settingsListIndex=$($els.NavSettingsList.SelectedIndex)"
+    }
+    finally { $f.Pages['Settings'] = $settingsEntry }
     $script:pagesLeaveAnswer = $false
     $script:pageEvents.Clear()
     $els.NavList.SelectedIndex = 0
@@ -1190,7 +1328,23 @@ function Invoke-P11-TabWalk {
         Check ($namedStops -ccontains $want) "P11 the Models walk has a stop named $want" "stops=[$($namedStops -join ' | ')]"
     }
     $null = Reset-ModelsFixture
-    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    # Settings (PR 3c): the walk from its pane item (the second list) reaches the page; every stop is named; the spin buttons are not stops; the footer comes last
+    $null = Open-SettingsPage
+    Invoke-Pump 200
+    $walk = Get-PagesTabWalk $els.NavSettings
+    $stops = @($walk.Stops)
+    $unnamed = @($stops | Where-Object { -not (Test-ShellNameReadable ([string]$_.Name)) } | ForEach-Object { [string]$_.Type })
+    $inPage = @(Get-PagesStopsIn $walk $f.Pages['Settings']['Element'])
+    Write-Host ("INFO: P11 Settings tab stops: " + (($stops | ForEach-Object { [string]$_.Type + ':' + [string]$_.Name }) -join ' > '))
+    Check ($walk.Started) 'P11 the focus can be placed on the Settings pane item' "focused=$([System.Windows.Input.Keyboard]::FocusedElement)"
+    Check ($inPage.Count -ge 12 -and $unnamed.Count -eq 0) 'P11 the Settings walk reaches the page (at least 12 stops: the fields, the toggles and the footer) and every tab stop has a readable name' "inPage=$($inPage.Count) stops=$($stops.Count) unnamed=[$($unnamed -join ',')]"
+    Check (@($stops | Where-Object { $_.Element -is [System.Windows.Controls.Primitives.RepeatButton] }).Count -eq 0) 'P11 the Settings spin buttons are not tab stops' "types=[$((@($stops | ForEach-Object { [string]$_.Type }) -join ','))]"
+    $lastTwo = @($inPage | Select-Object -Last 2)
+    Check ($lastTwo.Count -eq 2 -and [object]::ReferenceEquals($lastTwo[0].Element, $els.SettingsSaveButton) -and [object]::ReferenceEquals($lastTwo[1].Element, $els.SettingsDiscardButton)) 'P11 the last two Settings tab stops are Save, then Discard (the footer is last)' "last=[$((@($lastTwo | ForEach-Object { [string]$_.Type + ':' + [string]$_.Name }) -join ' > '))]"
+    # The pane's own stops: with Settings current the walk starts in the second list and never visits an item of the first list (one selection, one tab stop)
+    $navStops = @($stops | Where-Object { $_.Element -is [System.Windows.Controls.ListBoxItem] })
+    Check ($navStops.Count -eq 0) 'P11 no other pane item is a tab stop while Settings is current (the first list is skipped)' "navStops=[$((@($navStops | ForEach-Object { [string]$_.Name }) -join ','))]"
+    Close-SettingsPage
     Check-NoExceptions 'P11'
 }
 
@@ -1254,7 +1408,7 @@ function Invoke-P12-ControlView {
     # Every pane item, the disabled ones too (S9 covers Home only)
     foreach ($nav in @($f.NavItems)) { Test-PagesNavGlyphHidden ('P12 nav item ' + [string]$nav['Id'] + ': glyph not in the UIA control view; name present') $nav['Item'] }
     # No loose glyph TextBlock on any page or in the shell
-    foreach ($pageId in 'Home', 'Tools', 'Connect', 'Models') {
+    foreach ($pageId in 'Home', 'Tools', 'Connect', 'Models', 'Settings') {
         $null = Set-FastLlmUiFluentPage -Id $pageId
         Invoke-Pump 150
         $f.Window.UpdateLayout()
@@ -1268,6 +1422,13 @@ function Invoke-P12-ControlView {
     $f.Window.UpdateLayout()
     $modelsGlyphs = Get-PagesPuaTextBlocks $els.ModelsContextRow
     Check (@($modelsGlyphs.Loose).Count -eq 0) 'P12 the Models spin button glyphs are not loose TextBlocks (decorative or template parts)' ("loose=" + ((@($modelsGlyphs.Loose) | ForEach-Object { [string]$_.Name + ':' + [string]$_.Text.Length }) -join ',') + " templated=$(@($modelsGlyphs.Templated).Count)")
+    # The Settings spin buttons draw the same icon glyphs: template or content-presenter parts, never loose TextBlocks
+    $null = Set-FastLlmUiFluentPage -Id 'Settings'
+    Invoke-Pump 150
+    $f.Window.UpdateLayout()
+    $settingsGlyphs = Get-PagesPuaTextBlocks $els.SettingsPortRow
+    Check (@($settingsGlyphs.Loose).Count -eq 0) 'P12 the Settings spin button glyphs are not loose TextBlocks (decorative or template parts)' ("loose=" + ((@($settingsGlyphs.Loose) | ForEach-Object { [string]$_.Name + ':' + [string]$_.Text.Length }) -join ',') + " templated=$(@($settingsGlyphs.Templated).Count)")
+    Close-SettingsPage
     # Negative control: a plain TextBlock with a glyph is found by the scan and IS in the control view
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Invoke-Pump 100
@@ -1365,14 +1526,18 @@ function Invoke-P15-RealTableOrder {
     $table = @(Get-FastLlmUiFluentBindingTable)
     $toolRows = @(Get-FastLlmUiFluentToolsBindings)
     $modelsRows = @(Get-FastLlmUiFluentModelsBindings)
+    $settingsRows = @(Get-FastLlmUiFluentSettingsBindings)
     # The shell rows are what lies between the Home rows and the page rows in the table (its order is the contract this step pins)
-    $shellRows = @($table | Select-Object -Skip $homeRows.Count -First ($table.Count - $homeRows.Count - $toolRows.Count - $modelsRows.Count))
-    $reversed = @($toolRows) + @($modelsRows) + @($shellRows) + @($homeRows)
+    $shellRows = @($table | Select-Object -Skip $homeRows.Count -First ($table.Count - $homeRows.Count - $toolRows.Count - $modelsRows.Count - $settingsRows.Count))
+    $reversed = @($toolRows) + @($modelsRows) + @($settingsRows) + @($shellRows) + @($homeRows)
     $adapterNames = @(Get-FastLlmUiFluentControlTable | ForEach-Object { [string]$_[0] })
     $saved = @{}
     foreach ($n in $adapterNames) { $saved[$n] = Get-Variable -Name $n -Scope Script -ValueOnly }
     try {
-        Check ($table.Count -eq ($homeRows.Count + $shellRows.Count + $toolRows.Count + $modelsRows.Count) -and $toolRows.Count -eq 8 -and $modelsRows.Count -eq 8 -and @($toolRows | Where-Object { $_.ContainsKey('Also') -and [bool]$_['Also'] }).Count -ge 1 -and @($modelsRows | Where-Object { $_.ContainsKey('Also') -and [bool]$_['Also'] }).Count -eq 1) 'P15 the real table is the Home rows, then the shell rows, then the Tools rows, then the Models rows, and each page group carries its Also row' "table=$($table.Count) home=$($homeRows.Count) shell=$($shellRows.Count) tools=$($toolRows.Count) models=$($modelsRows.Count)"
+        $tail = @($table | Select-Object -Last $settingsRows.Count)
+        $tailSame = ($tail.Count -eq $settingsRows.Count)
+        for ($i = 0; $i -lt $tail.Count -and $i -lt $settingsRows.Count; $i++) { if ([string]$tail[$i].Element -cne [string]$settingsRows[$i].Element) { $tailSame = $false } }
+        Check ($table.Count -eq ($homeRows.Count + $shellRows.Count + $toolRows.Count + $modelsRows.Count + $settingsRows.Count) -and $toolRows.Count -eq 8 -and $modelsRows.Count -eq 8 -and $settingsRows.Count -eq 6 -and $tailSame -and @($toolRows | Where-Object { $_.ContainsKey('Also') -and [bool]$_['Also'] }).Count -ge 1 -and @($modelsRows | Where-Object { $_.ContainsKey('Also') -and [bool]$_['Also'] }).Count -eq 1 -and @($settingsRows | Where-Object { $_.ContainsKey('Also') -and [bool]$_['Also'] }).Count -eq 2) 'P15 the real table is the Home rows, then the shell rows, then the Tools, Models and Settings rows (the Settings rows last), and each page group carries its Also rows' "table=$($table.Count) home=$($homeRows.Count) shell=$($shellRows.Count) tools=$($toolRows.Count) models=$($modelsRows.Count) settings=$($settingsRows.Count) settingsLast=$tailSame"
         # In order: every row binds
         $null = Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:catalog -UiSettings $script:uiSettings
         $scratch = New-PagesScratchElements $table
@@ -1977,11 +2142,803 @@ function Invoke-P25-DisabledRows {
     Check-NoExceptions 'P25'
 }
 
+# ======================================================================================================================
+# PR 3c Task 6: the Settings page (P30 to P36). Every check name starts with its step id. The stand-ins are at the top of the file (the "Settings page's
+# orchestration stand-ins" block); the effect log holds only the writes, in call order.
+# ======================================================================================================================
+$script:p35Attached = $false
+function Get-SettingsEls { return $script:FastLlmUiFluent.Els }
+function Get-SettingsState { return $script:FastLlmUiFluent['Settings'] }
+function Get-SettingsLogText { return (@($script:setLog.ToArray()) -join ',') }
+
+# The stores, the toggles' write lists, the snapshot and the adapters back to a quiet, available start. The key is known (off) unless the case says otherwise.
+function Reset-SettingsFixture([hashtable]$O = @{}) {
+    $fx = @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; apiKeyUndetermined = $false }
+    foreach ($k in $O.Keys) { $fx[$k] = $O[$k] }
+    $script:setFx = $fx
+    $script:setLog.Clear(); $script:setSignInSets.Clear(); $script:setUpdateWrites.Clear(); $script:setExpWrites.Clear(); $script:setLicWrites.Clear(); $script:setExpEvents.Clear()
+    $script:setReads = 0; $script:setLastServing = $null; $script:setAllowStored = $null
+    $script:setApiUnavailable = $false; $script:setRotateThrows = ''; $script:setRefreshThrows = 0
+    $script:setSignInChecked = $false; $script:setSignInReads = 0; $script:setSignInReadThrows = $false; $script:setSignInSetThrows = $false
+    $script:uiSettings.allowSwitch = $false
+    $script:child = $null
+    $script:bgState = Get-UiBackgroundFixture -Name 'none'
+    $script:shellSnap = New-ShellSnap
+    $script:settingsButton.Enabled = $true
+    $script:shellFailMsg = ''
+    $script:trayAvailability.Clear()
+}
+# Edits are never left behind: the held edits are dropped, the page goes back to Home (a clean leave never prompts).
+function Close-SettingsPage {
+    $st = Get-SettingsState
+    if ($null -ne $st -and $null -ne $st['Held']) { Invoke-FastLlmUiFluentSettingsDiscard }
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 50
+}
+function Open-SettingsPage([hashtable]$Fixture = @{}) {
+    $null = Close-SettingsPage
+    Reset-SettingsFixture $Fixture
+    $opened = [bool](Set-FastLlmUiFluentPage -Id 'Settings')
+    Invoke-Pump 100
+    return $opened
+}
+
+# ---- the dialog driver: ONE WinForms timer answers a list of expected dialogs, in order ----
+# Steps: @{ Kind = 'prompt'; Action = 'Save' | 'Dont' | 'Cancel' | 'Escape' | 'Enter' } (the page's own WinForms form, found in Application.OpenForms and told apart
+# from a message box that has the same caption because each step starts only after the one before it is gone), @{ Kind = 'box'; Caption; Id; Fallback; Key } (a native
+# box or form by its caption: press button Id, then the ladder BM_CLICK id, WM_COMMAND id, WM_COMMAND Fallback, WM_CLOSE; with Key, post that key first and press
+# Fallback at 1.5 s), and the last step @{ Kind = 'watch' } which answers anything the case did NOT expect (Cancel on a prompt, OK on a box) and counts it, so an
+# unexpected modal can never hang the suite. Each found dialog leaves a record in $St['recs'].
+function Find-SettingsPrompt {
+    foreach ($candidate in @([System.Windows.Forms.Application]::OpenForms)) {
+        if ($candidate -is [System.Windows.Forms.Form] -and [string]$candidate.Text -ceq 'FastLLM settings' -and [bool]$candidate.Visible) { return $candidate }
+    }
+    return $null
+}
+function Get-SettingsPromptButton($Form, [string]$Text) {
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Form)
+    while ($stack.Count -gt 0) {
+        $c = $stack.Pop()
+        if ($c -is [System.Windows.Forms.Button] -and [string]$c.Text -ceq $Text) { return $c }
+        foreach ($k in $c.Controls) { $stack.Push($k) }
+    }
+    return $null
+}
+function Get-SettingsPromptInfo($Form) {
+    $labels = New-Object System.Collections.ArrayList
+    $buttons = New-Object System.Collections.ArrayList
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Form)
+    while ($stack.Count -gt 0) {
+        $c = $stack.Pop()
+        if ($c -is [System.Windows.Forms.Label]) { [void]$labels.Add([string]$c.Text) }
+        if ($c -is [System.Windows.Forms.Button]) { [void]$buttons.Add([string]$c.Text) }
+        foreach ($k in $c.Controls) { $stack.Push($k) }
+    }
+    $sorted = @($buttons.ToArray() | Sort-Object { [string]$_ } -CaseSensitive)
+    return @{ Body = ($labels.ToArray() -join "`n"); Buttons = ($sorted -join '|') }
+}
+function New-SettingsWatch { return @{ Kind = 'watch'; Captions = @('FastLLM settings', 'Create a new key', 'Experimental community components'); Id = 2 } }
+function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
+    $St['i'] = 0
+    $St['recs'] = New-Object System.Collections.ArrayList
+    $St['unexpected'] = 0
+    $St['hardStop'] = $false
+    $St['timedOut'] = $false
+    $st = $St
+    $list = @($Steps)
+    $nat = $script:native
+    $wpf = Get-ModelsWindowHandle
+    $find = ${function:Find-SettingsPrompt}
+    $button = ${function:Get-SettingsPromptButton}
+    $info = ${function:Get-SettingsPromptInfo}
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false }
+    $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND fallback', 'WM_CLOSE')
+    $t = New-Object System.Windows.Forms.Timer
+    $t.Interval = 50
+    $t.Add_Tick(({
+        $ms = $sw.ElapsedMilliseconds
+        $idx = [int]$st['i']
+        if ($idx -ge $list.Count) { return }
+        $step = $list[$idx]
+        $kind = [string]$step['Kind']
+        if ($kind -ceq 'watch') {
+            $pf = & $find
+            if ($null -ne $pf) {
+                $st['unexpected'] = [int]$st['unexpected'] + 1
+                $cancelButton = & $button $pf 'Cancel'
+                if ($null -ne $cancelButton) { $cancelButton.PerformClick() }
+                return
+            }
+            foreach ($caption in @($step['Captions'])) {
+                $h = $nat::FindWindowByTitle([string]$caption)
+                if ($h.ToInt64() -ne 0) {
+                    $st['unexpected'] = [int]$st['unexpected'] + 1
+                    $null = $nat::PostButtonClick($h, [int]$step['Id'])
+                    $null = $nat::PostCommand($h, [int]$step['Id'])
+                }
+            }
+            return
+        }
+        if ($kind -ceq 'prompt') {
+            $pf = & $find
+            if ($null -ne $pf) {
+                if ($null -eq $loc['rec']) {
+                    $pi = & $info $pf
+                    $rec = @{ Kind = 'prompt'; Found = $true; Body = [string]$pi['Body']; Buttons = [string]$pi['Buttons']; SaveEnabled = $false; AcceptText = ''; CancelText = ''; ActiveText = ''
+                        Owner = [long]0; WpfEnabledDuring = $true; Action = [string]$step['Action']; FellBack = $false; Rung = ''; Closed = $false }
+                    $saveButton = & $button $pf 'Save'
+                    if ($null -ne $saveButton) { $rec['SaveEnabled'] = [bool]$saveButton.Enabled }
+                    if ($null -ne $pf.AcceptButton) { $rec['AcceptText'] = [string]$pf.AcceptButton.Text }
+                    if ($null -ne $pf.CancelButton) { $rec['CancelText'] = [string]$pf.CancelButton.Text }
+                    if ($null -ne $pf.ActiveControl) { $rec['ActiveText'] = [string]$pf.ActiveControl.Text }
+                    $rec['Owner'] = $nat::GetOwner($pf.Handle).ToInt64()
+                    $rec['WpfEnabledDuring'] = [bool]$nat::IsWindowEnabled($wpf)
+                    $loc['rec'] = $rec
+                    $loc['foundAt'] = $ms
+                    [void]$st['recs'].Add($rec)
+                }
+                $rec = $loc['rec']
+                $age = $ms - [long]$loc['foundAt']
+                if (-not [bool]$loc['acted']) {
+                    $loc['acted'] = $true
+                    $action = [string]$step['Action']
+                    $rec['Rung'] = 'action ' + $action
+                    if ($action -ceq 'Enter') { $null = $nat::PostKey($pf.Handle, 0x0D) }
+                    elseif ($action -ceq 'Escape') { $null = $nat::PostKey($pf.Handle, 0x1B) }
+                    else {
+                        $caption = $action
+                        if ($action -ceq 'Dont') { $caption = "Don't save" }
+                        $target = & $button $pf $caption
+                        if ($null -ne $target) { $target.PerformClick() }
+                    }
+                }
+                elseif ($age -ge 6000) {
+                    if (-not [bool]$st['hardStop']) { $st['hardStop'] = $true; $pf.DialogResult = [System.Windows.Forms.DialogResult]::Cancel }
+                }
+                elseif ($age -ge 1500 -and -not [bool]$loc['fell']) {
+                    $loc['fell'] = $true
+                    $rec['FellBack'] = $true
+                    $rec['Rung'] = 'did not close; Cancel clicked'
+                    $cancelButton = & $button $pf 'Cancel'
+                    if ($null -ne $cancelButton) { $cancelButton.PerformClick() }
+                }
+            }
+            elseif ($null -ne $loc['rec']) {
+                $loc['rec']['Closed'] = $true
+                $st['i'] = $idx + 1; $loc['rec'] = $null; $loc['acted'] = $false; $loc['fell'] = $false; $loc['stepStart'] = $ms
+            }
+            elseif (($ms - [long]$loc['stepStart']) -gt 8000) {
+                $st['timedOut'] = $true
+                [void]$st['recs'].Add(@{ Kind = 'prompt'; Found = $false })
+                $st['i'] = $idx + 1; $loc['stepStart'] = $ms
+            }
+            return
+        }
+        # a native box or form by its caption
+        $h = $nat::FindWindowByTitle([string]$step['Caption'])
+        if ($h.ToInt64() -ne 0) {
+            if ($null -eq $loc['rec']) {
+                $rec = @{ Kind = 'box'; Found = $true; Caption = [string]$step['Caption']; Text = [string]$nat::GetText($h); Owner = $nat::GetOwner($h).ToInt64()
+                    WpfEnabledDuring = [bool]$nat::IsWindowEnabled($wpf); HasYes = ($nat::GetDlgItem($h, 6).ToInt64() -ne 0); HasOk = ($nat::GetDlgItem($h, 1).ToInt64() -ne 0)
+                    HasCancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0); Rung = ''; FellBack = $false; Closed = $false }
+                $loc['rec'] = $rec
+                $loc['foundAt'] = $ms
+                [void]$st['recs'].Add($rec)
+            }
+            $rec = $loc['rec']
+            $age = $ms - [long]$loc['foundAt']
+            if ($age -ge 6000) {
+                if (-not [bool]$st['hardStop']) { $st['hardStop'] = $true; $null = $nat::PostClose($h) }
+            }
+            elseif ($null -ne $step['Key']) {
+                if (-not [bool]$loc['acted']) { $loc['acted'] = $true; $rec['Rung'] = 'PostKey'; $null = $nat::PostKey($h, [int]$step['Key']) }
+                elseif ($age -ge 1500 -and -not [bool]$loc['fell']) {
+                    $loc['fell'] = $true
+                    $rec['FellBack'] = $true
+                    if ([int]$step['Fallback'] -gt 0) { $rec['Rung'] = 'key did not close it; BM_CLICK fallback'; $null = $nat::PostButtonClick($h, [int]$step['Fallback']) }
+                    else { $rec['Rung'] = 'key did not close it; WM_CLOSE'; $null = $nat::PostClose($h) }
+                }
+            }
+            else {
+                $rung = [int][Math]::Floor($age / 1000)
+                if ($rung -gt [int]$loc['rungDone'] -or -not $loc.ContainsKey('rungDone')) {
+                    $loc['rungDone'] = $rung
+                    $which = [Math]::Min($rung, 3)
+                    $rec['Rung'] = [string]$names[$which]
+                    if ($which -eq 0) { $null = $nat::PostButtonClick($h, [int]$step['Id']) }
+                    elseif ($which -eq 1) { $null = $nat::PostCommand($h, [int]$step['Id']) }
+                    elseif ($which -eq 2) { $null = $nat::PostCommand($h, [int]$step['Fallback']) }
+                    else { $null = $nat::PostClose($h) }
+                }
+            }
+        }
+        elseif ($null -ne $loc['rec']) {
+            $loc['rec']['Closed'] = $true
+            $st['i'] = $idx + 1; $loc['rec'] = $null; $loc['acted'] = $false; $loc['fell'] = $false; $loc['stepStart'] = $ms
+            if ($loc.ContainsKey('rungDone')) { $loc.Remove('rungDone') }
+        }
+        elseif (($ms - [long]$loc['stepStart']) -gt 8000) {
+            $st['timedOut'] = $true
+            [void]$st['recs'].Add(@{ Kind = 'box'; Found = $false; Caption = [string]$step['Caption'] })
+            $st['i'] = $idx + 1; $loc['stepStart'] = $ms
+        }
+    }).GetNewClosure())
+    $script:objs.Add($t)
+    $t.Start()
+    return $t
+}
+function Get-SettingsRecDetail([hashtable]$D) {
+    $parts = New-Object System.Collections.ArrayList
+    foreach ($r in @($D['recs'].ToArray())) {
+        if (-not [bool]$r['Found']) { [void]$parts.Add($r['Kind'] + ' NOT FOUND'); continue }
+        if ($r['Kind'] -ceq 'prompt') { [void]$parts.Add("prompt[action=$($r['Action']) buttons=$($r['Buttons']) saveEnabled=$($r['SaveEnabled']) accept='$($r['AcceptText'])' cancel='$($r['CancelText'])' active='$($r['ActiveText'])' fellBack=$($r['FellBack']) rung='$($r['Rung'])' body='$($r['Body'])']") }
+        else { [void]$parts.Add("box[$($r['Caption']) rung='$($r['Rung'])' fellBack=$($r['FellBack']) yes=$($r['HasYes']) text='$($r['Text'])']") }
+    }
+    return ("dialogs=" + $D['recs'].Count + " " + ($parts.ToArray() -join ' ; ') + " unexpected=$($D['unexpected']) timedOut=$($D['timedOut']) hardStop=$($D['hardStop'])")
+}
+function Get-SettingsRec([hashtable]$D, [int]$Index) {
+    if ($Index -lt $D['recs'].Count) { return $D['recs'][$Index] }
+    return @{ Found = $false; Kind = 'missing' }
+}
+function Test-SettingsRecClean([hashtable]$D) {
+    return (-not [bool]$D['timedOut'] -and -not [bool]$D['hardStop'] -and [int]$D['unexpected'] -eq 0)
+}
+
+# One edit of each Server field: how to make it, how to see it in the held values, and how to see it back at the saved value.
+function Get-SettingsEditTable {
+    $els = Get-SettingsEls
+    $st = Get-SettingsState
+    return @(
+        @{ Name = 'Port'; Do = { $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return) }; Held = { [int]$st['Held'].port -eq 9000 }; Back = { [string]$els.SettingsPortBox.Text -ceq '8080' } },
+        @{ Name = 'Thinking'; Do = { $els.SettingsThinkingBox.SelectedIndex = 1 }; Held = { [int]$st['Held'].thinkingIndex -eq 1 }; Back = { [int]$els.SettingsThinkingBox.SelectedIndex -eq 0 } },
+        @{ Name = 'Chat'; Do = { $els.SettingsChatBox.IsChecked = $true }; Held = { [bool]$st['Held'].chatPage }; Back = { $els.SettingsChatBox.IsChecked -eq $false } },
+        @{ Name = 'Idle'; Do = { $els.SettingsIdleBox.SelectedIndex = 2 }; Held = { [int]$st['Held'].idleIndex -eq 2 }; Back = { [int]$els.SettingsIdleBox.SelectedIndex -eq 0 } },
+        @{ Name = 'Key'; Do = { $els.SettingsKeyBox.IsChecked = $true }; Held = { [string]$st['Held'].keyBox -ceq 'checked' -and [bool]$st['Held'].keyTouched }; Back = { $els.SettingsKeyBox.IsChecked -eq $false } },
+        @{ Name = 'Switch'; Do = { $els.SettingsSwitchBox.IsChecked = $true }; Held = { [bool]$st['Held'].allowSwitch }; Back = { $els.SettingsSwitchBox.IsChecked -eq $false } }
+    )
+}
+
+function Get-SettingsBeforeObject([hashtable]$Fx) {
+    return [pscustomobject]@{ serverPort = [int]$Fx.serverPort; thinking = [string]$Fx.thinking; chatPage = [string]$Fx.chatPage; idleStopMinutes = [int]$Fx.idleStopMinutes; apiKey = [string]$Fx.apiKey; allowSwitch = $false }
+}
+
+# ---- P30: Save ----
+function Invoke-P30-Save {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $hwnd = Get-ModelsWindowHandle
+    $s = $script:FastLlmUiFluentStrings
+    Check (@($script:p30Missing).Count -eq 0) 'P30 NewUiApiKey and ShowLicenseSettingConfirm were found in fast-llm-ui.ps1' ("missing=" + (@($script:p30Missing) -join ','))
+    Check ($script:settingsWiring.Count -eq 4) 'P30 the real wiring statements of the update, experimental and licence boxes and of settingsButton.Add_Click were found in fast-llm-ui.ps1' "found=[$((@($script:settingsWiring.Keys) -join ','))]"
+    # Control: the classic Settings button wiring is real-shaped and a raised Click reaches its counter; the page itself never does.
+    $script:settingsDialogCalls = 0
+    Invoke-FastLlmUiAdapterEvent -Adapter $script:settingsButton -Event 'Click'
+    Check ($script:settingsDialogCalls -eq 1) 'P30 control: a raised settingsButton Click reaches the wired ShowUiSettings stub once (the counter can move)' "calls=$($script:settingsDialogCalls)"
+    $script:settingsDialogCalls = 0
+
+    # A. Opening fills the page from the saved values; an edit to each field makes it dirty and Discard puts that field back.
+    Check (Open-SettingsPage @{}) 'P30 Set-FastLlmUiFluentPage -Id Settings hosts the registered Settings page' "current=$(Get-FastLlmUiFluentCurrentPage)"
+    $st = Get-SettingsState
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and $els.NavSettings.IsSelected -and [object]::ReferenceEquals($els.PageHost.Child, $f.Pages['Settings']['Element'])) 'P30 the Settings page is hosted and its pane item is selected' "current=$(Get-FastLlmUiFluentCurrentPage)"
+    Check ([string]$els.SettingsPortBox.Text -ceq '8080' -and [int]$els.SettingsThinkingBox.SelectedIndex -eq 0 -and $els.SettingsChatBox.IsChecked -eq $false -and [int]$els.SettingsIdleBox.SelectedIndex -eq 0 -and $els.SettingsKeyBox.IsChecked -eq $false -and $els.SettingsSwitchBox.IsChecked -eq $false -and -not [bool]$st['Dirty']) 'P30 Enter fills the controls from the saved settings and the page starts clean' "port='$($els.SettingsPortBox.Text)' thinking=$($els.SettingsThinkingBox.SelectedIndex) chat=$($els.SettingsChatBox.IsChecked) idle=$($els.SettingsIdleBox.SelectedIndex) key=$($els.SettingsKeyBox.IsChecked) switch=$($els.SettingsSwitchBox.IsChecked) dirty=$($st['Dirty'])"
+    foreach ($edit in @(Get-SettingsEditTable)) {
+        & $edit.Do
+        Invoke-Pump 30
+        $heldOk = [bool](& $edit.Held)
+        Check ([bool]$st['Dirty'] -and $heldOk) "P30 an edit to $($edit.Name) makes the page dirty and writes the held value" "dirty=$($st['Dirty']) held=$heldOk"
+        Invoke-FastLlmUiFluentSettingsDiscard
+        Invoke-Pump 30
+        $backOk = [bool](& $edit.Back)
+        Check ((-not [bool]$st['Dirty']) -and $backOk) "P30 Discard puts $($edit.Name) back to the saved value and the page is clean again" "dirty=$($st['Dirty']) back=$backOk"
+    }
+    Check ($script:setLog.Count -eq 0) 'P30 editing and discarding wrote nothing' "log=$(Get-SettingsLogText)"
+
+    # B. A full Save: the effect sequence is classic's (the key action, the serving write, the switch write, the refresh), the status text is the saved note, the chat-off note follows.
+    $null = Open-SettingsPage @{ chatPage = 'on' }
+    $st = Get-SettingsState
+    $before = Get-SettingsBeforeObject $script:setFx
+    $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    $els.SettingsChatBox.IsChecked = $false
+    $els.SettingsIdleBox.SelectedIndex = 2
+    $els.SettingsKeyBox.IsChecked = $true
+    $els.SettingsSwitchBox.IsChecked = $true
+    Invoke-Pump 50
+    Check ([bool]$st['Dirty']) 'P30 all six edits together are dirty' "dirty=$($st['Dirty'])"
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 50 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0]) 'P30 Save returns exactly one bool (true) for a completed save' "count=$($r.Count) value=$($r -join ',')"
+    Check ((Get-SettingsLogText) -ceq 'apikey:on,serving,allow,refresh') 'P30 Save writes in classic order: the key action, the serving settings, the switch setting, the refresh' "log=$(Get-SettingsLogText)"
+    $ls = $script:setLastServing
+    Check ($null -ne $ls -and [int]$ls.port -eq 9000 -and [string]$ls.thinking -ceq 'off' -and [string]$ls.chat -ceq 'off' -and [int]$ls.idle -eq 30 -and $script:setAllowStored -eq $true -and [bool]$script:uiSettings.allowSwitch) 'P30 Save writes the held values: port 9000, thinking off, chat off, idle 30, switch on (and the window setting follows)' "serving=$(if ($null -ne $ls) { $ls.port.ToString() + '/' + $ls.thinking + '/' + $ls.chat + '/' + $ls.idle } else { 'none' }) allow=$($script:setAllowStored) ui=$($script:uiSettings.allowSwitch)"
+    $after = [pscustomobject]@{ serverPort = 9000; thinking = 'off'; chatPage = 'off'; idleStopMinutes = 30; apiKey = 'on'; allowSwitch = $true }
+    $wantNote = (Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $before -After $after) + ' ' + (Get-FastLlmUiChatPageOffNote -Port 9000)
+    Check ([string]$script:statusLabel.Text -ceq $wantNote) 'P30 the status text is the saved note plus the chat-off note (chat went from on to off)' "status='$($script:statusLabel.Text)' want='$wantNote'"
+    Check ((-not [bool]$st['Dirty']) -and [int]$st['Saved'].port -eq 9000 -and -not [bool]$st['Held'].keyTouched -and [string]$els.SettingsPortBox.Text -ceq '9000' -and $els.SettingsKeyBox.IsChecked -eq $true) 'P30 after a saved Save the page is reloaded: clean, Saved = Held, keyTouched cleared, the controls show the saved values' "dirty=$($st['Dirty']) saved=$($st['Saved'].port) touched=$($st['Held'].keyTouched) port='$($els.SettingsPortBox.Text)' key=$($els.SettingsKeyBox.IsChecked)"
+    Check (Test-SettingsRecClean $d) 'P30 a completed save (not running) shows no box' (Get-SettingsRecDetail $d)
+
+    # C. While a run is active the Information box shows the saved note too (the tick rewrites the status line). The Save button path.
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    $script:child = [pscustomobject]@{ probe = $true }
+    $els.SettingsPortBox.Text = '9001'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try {
+        $els.SettingsSaveButton.RaiseEvent((New-ShellClick $els.SettingsSaveButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 150
+    }
+    finally { $timer.Stop(); $script:child = $null }
+    $wantRun = Get-FastLlmUiSettingsSavedNote -RunActive $true -Before (Get-SettingsBeforeObject @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off' }) -After ([pscustomobject]@{ serverPort = 9001; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; allowSwitch = $false })
+    $rec = Get-SettingsRec $d 0
+    Check ([bool]$rec['Found'] -and (ConvertTo-ModelsPlainBoxText ([string]$rec['Text'])) -ceq $wantRun -and [string]$script:statusLabel.Text -ceq $wantRun -and (Test-SettingsRecClean $d)) 'P30 while a run is active the Save button shows the Information box with the saved note' ("want='$wantRun' status='$($script:statusLabel.Text)' " + (Get-SettingsRecDetail $d))
+    Check ([bool]$rec['Found'] -and [long]$rec['Owner'] -eq $hwnd.ToInt64()) 'P30 the Information box is owned by the WPF window handle' "owner=$($rec['Owner']) expected=$($hwnd.ToInt64())"
+    Check ((Get-SettingsLogText) -ceq 'serving,allow,refresh' -and [int]$script:setFx.serverPort -eq 9001) 'P30 the Save button runs the same sequence (no key action: the box agrees with the saved key)' "log=$(Get-SettingsLogText)"
+
+    # D. A refused key decision: "not set" and untouched. Nothing is written, the page and its edits stay, the key row is marked, the Warning box has the key-free text.
+    $null = Open-SettingsPage @{ apiKeyUndetermined = $true }
+    $st = Get-SettingsState
+    Check (($null -eq $els.SettingsKeyBox.IsChecked) -and [bool]$els.SettingsKeyBox.IsThreeState -and [string]$st['Held'].keyBox -ceq 'indeterminate') 'P30 a "not set" key opens the key box in its third state' "checked=$($els.SettingsKeyBox.IsChecked) threeState=$($els.SettingsKeyBox.IsThreeState) held=$($st['Held'].keyBox)"
+    $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    $rec = Get-SettingsRec $d 0
+    $choice = Get-FastLlmUiApiKeyChoiceText
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0]) 'P30 a refused Save returns exactly one bool (false)' "count=$($r.Count) value=$($r -join ',')"
+    Check ([bool]$rec['Found'] -and (ConvertTo-ModelsPlainBoxText ([string]$rec['Text'])) -ceq (ConvertTo-ModelsPlainBoxText $choice) -and (Test-SettingsRecClean $d)) 'P30 a refused key decision shows the Warning box with the key-free choice text' (Get-SettingsRecDetail $d)
+    Check ((Get-SettingsLogText) -ceq '' -and $null -eq $script:setLastServing -and $null -eq $script:setAllowStored) 'P30 a refused key decision writes nothing at all (no key action, no serving write, no switch write)' "log=$(Get-SettingsLogText)"
+    $mark = $els.SettingsKeyRow.BorderBrush
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9000 -and [string]$els.SettingsPortBox.Text -ceq '9000') 'P30 a refused Save keeps the page and the edits' "current=$(Get-FastLlmUiFluentCurrentPage) dirty=$($st['Dirty']) held=$($st['Held'].port) text='$($els.SettingsPortBox.Text)'"
+    Check ([bool]$st['KeyMarked'] -and $mark -is [System.Windows.Media.SolidColorBrush] -and $mark.Color.A -gt 0 -and [string]$els.SettingsKeyHelp.Text -ceq $choice -and [System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsKeyBox) -ceq $choice) 'P30 a refused key decision marks the key row: a caution border and the key-free text as its help' "marked=$($st['KeyMarked']) brush=$mark help='$($els.SettingsKeyHelp.Text)'"
+    # Discard clears the mark and puts the "not set" third state back (and the saved port)
+    Invoke-FastLlmUiFluentSettingsDiscard
+    Invoke-Pump 30
+    Check ((-not [bool]$st['KeyMarked']) -and ($null -eq $els.SettingsKeyBox.IsChecked) -and [bool]$els.SettingsKeyBox.IsThreeState -and [string]$st['Held'].keyBox -ceq 'indeterminate' -and -not [bool]$st['Held'].keyTouched -and [string]$els.SettingsPortBox.Text -ceq '8080' -and [string]$els.SettingsKeyHelp.Text -ceq [string]$script:FastLlmUiFluentSettingsText.KeyHelp) 'P30 Discard clears the key mark (help text back to the key help) and restores the "not set" third state and the saved port' "marked=$($st['KeyMarked']) checked=$($els.SettingsKeyBox.IsChecked) threeState=$($els.SettingsKeyBox.IsThreeState) held=$($st['Held'].keyBox) touched=$($st['Held'].keyTouched) help='$($els.SettingsKeyHelp.Text)'"
+    # a key click clears a mark: refuse once more, then the first automation Toggle of the "not set" box (WPF goes null to false) clears the mark and the third state
+    $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $null = Invoke-FastLlmUiFluentSettingsSave; Invoke-Pump 100 } finally { $timer.Stop() }
+    $markedBefore = [bool]$st['KeyMarked']
+    $keyPeer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.SettingsKeyBox)
+    $toggle = [System.Windows.Automation.Provider.IToggleProvider]($keyPeer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Toggle))
+    $toggle.Toggle()
+    Invoke-Pump 50
+    $state1 = $els.SettingsKeyBox.IsChecked
+    Check ($markedBefore -and $null -ne $state1 -and $state1 -eq $false -and [string]$st['Held'].keyBox -ceq 'unchecked' -and [bool]$st['Held'].keyTouched -and -not [bool]$els.SettingsKeyBox.IsThreeState -and -not [bool]$st['KeyMarked']) 'P30 the first Toggle of a refused "not set" box clears it (null to false), marks it touched, drops the third state and clears the mark' "markedBefore=$markedBefore after1=$state1 held=$($st['Held'].keyBox) touched=$($st['Held'].keyTouched) threeState=$($els.SettingsKeyBox.IsThreeState) marked=$($st['KeyMarked'])"
+    $toggle.Toggle()
+    Invoke-Pump 50
+    $state2 = $els.SettingsKeyBox.IsChecked
+    Check ($null -ne $state2 -and $state2 -eq $true -and [string]$st['Held'].keyBox -ceq 'checked') 'P30 the second Toggle ticks the box (it never goes back to "not set")' "after2=$state2 held=$($st['Held'].keyBox)"
+
+    # E. api-key-unavailable: the "Create a new key" box (No), then the not-turned-on refusal; nothing is written. Then the Yes path: one rotate, the retry, the rest of the sequence.
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    $els.SettingsKeyBox.IsChecked = $true
+    $script:setApiUnavailable = $true
+    Invoke-Pump 30
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 7; Fallback = 7 }, @{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    $rec0 = Get-SettingsRec $d 0
+    $rec1 = Get-SettingsRec $d 1
+    Check ($r.Count -eq 1 -and -not $r[0]) 'P30 an unavailable stored key with No returns one bool (false)' "count=$($r.Count) value=$($r -join ',')"
+    Check ([bool]$rec0['Found'] -and [bool]$rec0['HasYes'] -and (ConvertTo-ModelsPlainBoxText ([string]$rec0['Text'])) -ceq (Get-FastLlmUiNewKeyConfirmText -HasReadableKey $false) -and [long]$rec0['Owner'] -eq $hwnd.ToInt64()) 'P30 api-key-unavailable asks the Create a new key Yes/No box (owned by the WPF window); the answer is No' ("expected text='$(Get-FastLlmUiNewKeyConfirmText -HasReadableKey $false)' " + (Get-SettingsRecDetail $d))
+    Check ([bool]$rec1['Found'] -and (ConvertTo-ModelsPlainBoxText ([string]$rec1['Text'])) -ceq ([string]$script:FastLlmUiFluentSettingsText.NotTurnedOn) -and (Test-SettingsRecClean $d)) 'P30 after No the Warning box says the key was not turned on and nothing was changed' (Get-SettingsRecDetail $d)
+    Check ((Get-SettingsLogText) -ceq 'apikey:on' -and $null -eq $script:setLastServing -and $null -eq $script:setAllowStored) 'P30 after No the one write attempted is the key on (it threw); nothing else is written, no rotate' "log=$(Get-SettingsLogText)"
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and [bool]$st['Dirty'] -and $els.SettingsKeyBox.IsChecked -eq $true) 'P30 after the refusal the page and the ticked key box stay' "dirty=$($st['Dirty']) key=$($els.SettingsKeyBox.IsChecked)"
+    $script:setLog.Clear()
+    $script:setApiUnavailable = $true
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 6; Fallback = 7 }, @{ Kind = 'box'; Caption = 'Create a new key'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'apikey:on,apikey:rotate,apikey:on,serving,allow,refresh' -and (Test-SettingsRecClean $d) -and $d['recs'].Count -eq 2) 'P30 with Yes: the key on is retried after exactly one rotate, then the serving write, the switch write and the refresh' ("log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $d))
+
+    # F. "Not set", ticked, then Save writes the key on; a SECOND Save on the same visit is not refused (the reload cleared apiKeyUndetermined).
+    $null = Open-SettingsPage @{ apiKeyUndetermined = $true }
+    $st = Get-SettingsState
+    $keyPeer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($els.SettingsKeyBox)
+    $toggle = [System.Windows.Automation.Provider.IToggleProvider]($keyPeer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Toggle))
+    $toggle.Toggle()
+    Invoke-Pump 30
+    $toggle.Toggle()
+    Invoke-Pump 30
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'apikey:on,serving,allow,refresh' -and (Test-SettingsRecClean $d)) 'P30 "not set", ticked (two Toggles), then Save writes the key on and the settings' ("log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $d))
+    Check ((-not [bool]$st['Current'].apiKeyUndetermined) -and -not [bool]$els.SettingsKeyBox.IsThreeState -and $els.SettingsKeyBox.IsChecked -eq $true) 'P30 the reload after Save re-derives the key box: known (on), no third state' "undetermined=$($st['Current'].apiKeyUndetermined) threeState=$($els.SettingsKeyBox.IsThreeState) checked=$($els.SettingsKeyBox.IsChecked)"
+    $script:setLog.Clear()
+    $els.SettingsPortBox.Text = '9002'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and (Test-SettingsRecClean $d)) 'P30 a second Save on the same visit is not refused: no key action, no Warning box' ("log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $d))
+
+    # G. A throw after the writes (the refresh) goes to ShowFailure, shows no Warning box, and the save still counts: Dirty is false and Save returns true.
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $script:setRefreshThrows = 1
+    $script:shellFailMsg = ''
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -and [string]$script:shellFailMsg -ceq 'refresh boom' -and (Test-SettingsRecClean $d) -and -not [bool]$st['Dirty'] -and [int]$st['Saved'].port -eq 9000) 'P30 a throw in the after-OK block goes to ShowFailure, shows no Warning box, and the save stays a completed save (clean, Saved = Held, returns true)' ("failure='$($script:shellFailMsg)' dirty=$($st['Dirty']) saved=$($st['Saved'].port) " + (Get-SettingsRecDetail $d))
+
+    Close-SettingsPage
+    Check ($script:settingsDialogCalls -eq 0) 'P30 ShowUiSettings (the classic dialog) was never reached by the page' "calls=$($script:settingsDialogCalls)"
+    Check-NoExceptions 'P30'
+}
+
+# ---- P31: leaving the page with edits, through the pane (the prompt opens INSIDE the selection handler) ----
+function Invoke-SettingsLeave([string]$Action, [hashtable]$Fixture, [object[]]$Boxes = @()) {
+    $els = Get-SettingsEls
+    $null = Open-SettingsPage $Fixture
+    $st = Get-SettingsState
+    $els.SettingsPortBox.Text = '9001'          # typed, NOT committed: Leave commits the Port box before the dirty test
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $d = @{}
+    $steps = @(@{ Kind = 'prompt'; Action = $Action }) + @($Boxes) + @((New-SettingsWatch))
+    $script:trayAvailability.Clear()
+    $timer = Start-SettingsDialogs $steps $d
+    try { $els.NavList.SelectedIndex = 0; Invoke-Pump 200 } finally { $timer.Stop() }
+    return $d
+}
+function Get-SettingsPaneDetail {
+    $els = Get-SettingsEls
+    $st = Get-SettingsState
+    return "current=$(Get-FastLlmUiFluentCurrentPage) navHome=$($els.NavHome.IsSelected) navSettings=$($els.NavSettings.IsSelected) list=$($els.NavList.SelectedIndex) settingsList=$($els.NavSettingsList.SelectedIndex) dirty=$($st['Dirty']) heldPort=$($st['Held'].port) thinking=$($st['Held'].thinkingIndex) log=$(Get-SettingsLogText)"
+}
+function Invoke-P31-Leave {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $hwnd = Get-ModelsWindowHandle
+    $s = $script:FastLlmUiFluentStrings
+    $okBox = @{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }
+    $stays = @(@('Cancel', 'Cancel'), @('Escape', 'Escape'), @('Enter', 'Enter (the ruled target is Cancel)'))
+    # Save ok: saved and left
+    $d = Invoke-SettingsLeave 'Save' @{}
+    $st = Get-SettingsState
+    $rec = Get-SettingsRec $d 0
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Home' -and $els.NavHome.IsSelected -and $els.NavSettingsList.SelectedIndex -eq -1 -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and [int]$script:setFx.serverPort -eq 9001 -and [string]$script:setFx.thinking -ceq 'off' -and (Test-SettingsRecClean $d)) 'P31 Save in the prompt: the typed (uncommitted) port and the thinking edit are saved and the page is left for Home' ((Get-SettingsPaneDetail) + ' ' + (Get-SettingsRecDetail $d))
+    Check ([bool]$rec['Found'] -and [string]$rec['Buttons'] -ceq "Cancel|Don't save|Save" -and [bool]$rec['SaveEnabled'] -and [string]$rec['Body'] -ceq [string]$s.SavePrompt) 'P31 the prompt has Save, Dont save and Cancel, Save enabled, and the body is the SavePrompt text with no reason line' (Get-SettingsRecDetail $d)
+    Check ([bool]$rec['Found'] -and [string]$rec['AcceptText'] -ceq 'Cancel' -and [string]$rec['CancelText'] -ceq 'Cancel' -and [string]$rec['ActiveText'] -ceq 'Cancel') 'P31 the prompt: Enter (AcceptButton), Escape (CancelButton) and the first focus are all Cancel (lead ruling)' (Get-SettingsRecDetail $d)
+    Check ([bool]$rec['Found'] -and [long]$rec['Owner'] -eq $hwnd.ToInt64() -and -not [bool]$rec['WpfEnabledDuring']) 'P31 the prompt is owned by the WPF window handle and the window is disabled while it is up' "owner=$($rec['Owner']) expected=$($hwnd.ToInt64()) wpfEnabled=$($rec['WpfEnabledDuring'])"
+    Check (($script:trayAvailability.ToArray() -join ',') -ceq 'False,True') 'P31 the prompt turned the tray menu off while open and on again after' "calls=$($script:trayAvailability.ToArray() -join ',')"
+    # Save refused: stays, edits kept, key row marked
+    $d = Invoke-SettingsLeave 'Save' @{ apiKeyUndetermined = $true } @($okBox)
+    $st = Get-SettingsState
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and $els.NavSettings.IsSelected -and $els.NavList.SelectedIndex -eq -1 -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9001 -and [int]$st['Held'].thinkingIndex -eq 1 -and [bool]$st['KeyMarked'] -and (Get-SettingsLogText) -ceq '' -and (Test-SettingsRecClean $d)) 'P31 Save refused in the prompt: the page stays selected in the second list, the edits are kept, the key row is marked and nothing is written' ((Get-SettingsPaneDetail) + " marked=$($st['KeyMarked']) " + (Get-SettingsRecDetail $d))
+    # Don't save: reverted and left
+    $d = Invoke-SettingsLeave 'Dont' @{}
+    $st = Get-SettingsState
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Home' -and $els.NavHome.IsSelected -and $els.NavSettingsList.SelectedIndex -eq -1 -and (Get-SettingsLogText) -ceq '' -and [int]$st['Held'].port -eq 8080 -and [string]$els.SettingsPortBox.Text -ceq '8080' -and -not [bool]$st['Dirty'] -and (Test-SettingsRecClean $d)) "P31 Don't save: the edits are reverted, nothing is written and the page is left for Home" ((Get-SettingsPaneDetail) + " text='$($els.SettingsPortBox.Text)' " + (Get-SettingsRecDetail $d))
+    # Cancel, Escape and Enter: stay with the edits
+    foreach ($case in $stays) {
+        $d = Invoke-SettingsLeave ([string]$case[0]) @{}
+        $st = Get-SettingsState
+        $rec = Get-SettingsRec $d 0
+        Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and $els.NavSettings.IsSelected -and $els.NavList.SelectedIndex -eq -1 -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9001 -and [string]$els.SettingsPortBox.Text -ceq '9001' -and [int]$st['Held'].thinkingIndex -eq 1 -and (Get-SettingsLogText) -ceq '' -and (Test-SettingsRecClean $d)) "P31 $($case[1]): the page stays (pane restored: the Settings item selected, the first list cleared), the edits are kept and nothing is written" ((Get-SettingsPaneDetail) + ' ' + (Get-SettingsRecDetail $d))
+        Check ([bool]$rec['Found'] -and -not [bool]$rec['FellBack']) "P31 $($case[1]) closed the prompt by itself (the key, not the fallback click)" (Get-SettingsRecDetail $d)
+    }
+    # a clean leave never asks
+    $null = Open-SettingsPage @{}
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $els.NavList.SelectedIndex = 0; Invoke-Pump 150 } finally { $timer.Stop() }
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Home' -and (Test-SettingsRecClean $d) -and $d['recs'].Count -eq 0) 'P31 leaving a clean Settings page asks nothing' ((Get-SettingsPaneDetail) + ' ' + (Get-SettingsRecDetail $d))
+    Close-SettingsPage
+    Check-NoExceptions 'P31'
+}
+
+# ---- P32: closing the window with edits ----
+function Invoke-P32-Close {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $win = $f.Window
+    $fs = $script:form.FastLlmFormState
+    Check ($null -ne $fs['BeforeClosing']) 'P32 the shell registered the Settings close hook on the form adapter' ''
+    $script:setCloseLog = New-Object System.Collections.ArrayList
+    $recorder = { param($sender, $e) [void]$script:setCloseLog.Add([string]$e.CloseReason); $e.Cancel = $true }
+    [void]$fs.FormClosing.Add($recorder)
+    try {
+        # Cancel in the prompt: no FormClosing guard ran, the timer still runs, the window and the edits stay
+        $null = Open-SettingsPage @{}
+        $st = Get-SettingsState
+        $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+        $script:setCloseLog.Clear()
+        $d = @{}
+        $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Cancel' }, (New-SettingsWatch)) $d
+        try { $win.Close(); Invoke-Pump 150 } finally { $timer.Stop() }
+        Check ($script:setCloseLog.Count -eq 0 -and [bool]$f.Timer.IsEnabled -and $win.IsVisible -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9000 -and (Get-SettingsLogText) -ceq '' -and (Test-SettingsRecClean $d)) 'P32 dirty, X, Cancel: no FormClosing guard ran (the handler log is empty), the timer still runs, the window and the edits stay' ("guards=$($script:setCloseLog.Count) timer=$($f.Timer.IsEnabled) visible=$($win.IsVisible) " + (Get-SettingsPaneDetail) + ' ' + (Get-SettingsRecDetail $d))
+        # Don't save: the edits are dropped and the guards run as today (the recorder stands for them and cancels, so the window stays)
+        $script:setCloseLog.Clear()
+        $d = @{}
+        $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Dont' }, (New-SettingsWatch)) $d
+        try { $win.Close(); Invoke-Pump 150 } finally { $timer.Stop() }
+        Check ($script:setCloseLog.Count -eq 1 -and [string]$script:setCloseLog[0] -ceq 'UserClosing' -and (Get-SettingsLogText) -ceq '' -and [int]$st['Held'].port -eq 8080 -and -not [bool]$st['Dirty'] -and (Test-SettingsRecClean $d)) "P32 dirty, X, Don't save: nothing is written, the edits are dropped, and the FormClosing guards then run once with UserClosing" ("guards=[$($script:setCloseLog.ToArray() -join ',')] heldPort=$($st['Held'].port) dirty=$($st['Dirty']) " + (Get-SettingsRecDetail $d))
+        # Save ok on close: saved, then the guards run
+        $els.SettingsPortBox.Text = '9003'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+        $script:setCloseLog.Clear()
+        $d = @{}
+        $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Save' }, (New-SettingsWatch)) $d
+        try { $win.Close(); Invoke-Pump 150 } finally { $timer.Stop() }
+        Check ($script:setCloseLog.Count -eq 1 -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and [int]$script:setFx.serverPort -eq 9003 -and (Test-SettingsRecClean $d)) 'P32 dirty, X, Save: the settings are saved, then the guards run once' ("guards=$($script:setCloseLog.Count) " + (Get-SettingsRecDetail $d) + " log=$(Get-SettingsLogText)")
+        # Save refused on close: no guard runs, the window stays
+        $null = Open-SettingsPage @{ apiKeyUndetermined = $true }
+        $st = Get-SettingsState
+        $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+        $script:setCloseLog.Clear()
+        $d = @{}
+        $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Save' }, @{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+        try { $win.Close(); Invoke-Pump 150 } finally { $timer.Stop() }
+        Check ($script:setCloseLog.Count -eq 0 -and $win.IsVisible -and [bool]$st['Dirty'] -and (Get-SettingsLogText) -ceq '' -and (Test-SettingsRecClean $d)) 'P32 dirty, X, Save refused: no guard ran, the window stays and the edits are kept' ("guards=$($script:setCloseLog.Count) " + (Get-SettingsRecDetail $d) + ' ' + (Get-SettingsPaneDetail))
+        # Minimize to the tray while dirty: no prompt (the window is only hidden), and the edits are there after Restore
+        $null = Open-SettingsPage @{}
+        $st = Get-SettingsState
+        $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+        $script:setCloseLog.Clear()
+        $d = @{}
+        $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+        try {
+            $win.WindowState = [System.Windows.WindowState]::Minimized
+            $script:form.Hide()
+            Invoke-Pump 150
+            $script:form.Show()
+            $script:form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+            $script:form.Activate()
+            Invoke-Pump 200
+        }
+        finally { $timer.Stop() }
+        Check ((Test-SettingsRecClean $d) -and $d['recs'].Count -eq 0 -and $script:setCloseLog.Count -eq 0 -and $win.WindowState -eq [System.Windows.WindowState]::Normal -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9000 -and [string]$els.SettingsPortBox.Text -ceq '9000') 'P32 hide to the tray while dirty never asks, and the edits are kept after Restore' ((Get-SettingsRecDetail $d) + " guards=$($script:setCloseLog.Count) state=$($win.WindowState) " + (Get-SettingsPaneDetail))
+        # The session-end hook (WindowsShutDown) while dirty: no prompt, nothing written; the guards still run (the recorder cancels)
+        $d = @{}
+        $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+        $refused = $null
+        try { $refused = @(Invoke-FastLlmUiFormClosing -Form $script:form -CloseReason ([System.Windows.Forms.CloseReason]::WindowsShutDown)); Invoke-Pump 100 } finally { $timer.Stop() }
+        Check ((Test-SettingsRecClean $d) -and $d['recs'].Count -eq 0 -and $script:setCloseLog.Count -eq 1 -and [string]$script:setCloseLog[0] -ceq 'WindowsShutDown' -and (Get-SettingsLogText) -ceq '' -and @($refused).Count -eq 1) 'P32 the session-end hook (WindowsShutDown) while dirty shows no prompt and writes nothing; the guards run once' ((Get-SettingsRecDetail $d) + " guards=[$($script:setCloseLog.ToArray() -join ',')] log=$(Get-SettingsLogText) results=$(@($refused).Count)")
+    }
+    finally { [void]$fs.FormClosing.Remove($recorder) }
+    Close-SettingsPage
+    Check (@($fs.FormClosing.ToArray() | Where-Object { [object]::ReferenceEquals($_, $recorder) }).Count -eq 0) 'P32 the recording FormClosing handler was removed again' ''
+    Check-NoExceptions 'P32'
+}
+
+# ---- P33: Create a new key... ----
+function Invoke-P33-NewKey {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $hwnd = Get-ModelsWindowHandle
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    $script:apiKeyStore = 'probe-store-marker'
+    $reads0 = $script:keyReadCalls
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 6; Fallback = 7 }, @{ Kind = 'box'; Caption = 'Create a new key'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $els.SettingsNewKeyButton.RaiseEvent((New-ShellClick $els.SettingsNewKeyButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))); Invoke-Pump 150 } finally { $timer.Stop() }
+    $yesNo = Get-SettingsRec $d 0
+    $info = Get-SettingsRec $d 1
+    Check ([bool]$yesNo['Found'] -and [bool]$yesNo['HasYes'] -and [long]$yesNo['Owner'] -eq $hwnd.ToInt64() -and [bool]$info['Found'] -and -not [bool]$info['HasYes'] -and [long]$info['Owner'] -eq $hwnd.ToInt64() -and (Test-SettingsRecClean $d)) 'P33 Create a new key shows the Yes/No box and then the OK box, both owned by the WPF window' (Get-SettingsRecDetail $d)
+    Check ((Get-SettingsLogText) -ceq 'apikey:rotate') 'P33 the log has exactly one rotate and nothing else' "log=$(Get-SettingsLogText)"
+    Check ($script:keyReadCalls -eq $reads0) 'P33 the stored key is never read (ReadUiApiKey moved by 0)' "reads before=$reads0 after=$($script:keyReadCalls)"
+    Check ($null -eq $script:apiKeyStore) 'P33 the key store cache is cleared afterwards' "store=$($script:apiKeyStore)"
+    Check (-not [bool]$st['Dirty'] -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings') 'P33 a new key takes effect at once and is not a held edit (the page stays clean)' "dirty=$($st['Dirty'])"
+    # No: nothing is rotated
+    $script:setLog.Clear()
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 7; Fallback = 7 }, (New-SettingsWatch)) $d
+    try { $els.SettingsNewKeyButton.RaiseEvent((New-ShellClick $els.SettingsNewKeyButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))); Invoke-Pump 150 } finally { $timer.Stop() }
+    Check ((Get-SettingsLogText) -ceq '' -and $d['recs'].Count -eq 1 -and (Test-SettingsRecClean $d)) 'P33 answering No creates nothing' ("log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $d))
+    # A failing rotate: the Warning box shows the text with the key removed
+    $script:setRotateThrows = 'Rotate failed for ' + [string]$script:markerKey
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 6; Fallback = 7 }, @{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $els.SettingsNewKeyButton.RaiseEvent((New-ShellClick $els.SettingsNewKeyButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))); Invoke-Pump 150 } finally { $timer.Stop() }
+    $warn = Get-SettingsRec $d 1
+    Check ([bool]$warn['Found'] -and -not ([string]$warn['Text']).Contains([string]$script:markerKey) -and ([string]$warn['Text']).Contains('Rotate failed') -and (Test-SettingsRecClean $d)) 'P33 a failing rotate shows a Warning box whose text has no key in it' (Get-SettingsRecDetail $d)
+    $script:setRotateThrows = ''
+    Close-SettingsPage
+    Check-NoExceptions 'P33'
+}
+
+# ---- P34: Settings unavailable ----
+function Invoke-P34-Unavailable {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $s = $script:FastLlmUiFluentStrings
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    Check ($els.SettingsServerGroup.IsEnabled -and $els.SettingsStartingGroup.IsEnabled -and $els.SettingsFooter.IsEnabled -and $els.SettingsUnavailableText.Visibility -eq [System.Windows.Visibility]::Collapsed) 'P34 an available Settings has its three groups enabled and no reason line' "server=$($els.SettingsServerGroup.IsEnabled) starting=$($els.SettingsStartingGroup.IsEnabled) footer=$($els.SettingsFooter.IsEnabled) line=$($els.SettingsUnavailableText.Visibility)"
+    $els.SettingsPortBox.Text = '9000'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    $els.SettingsIdleBox.SelectedIndex = 3
+    # a launch is running: Settings is unavailable
+    $script:shellSnap = New-ShellSnap @{ Busy = $true; ChildActive = $true; Step = 'model download' }
+    $script:settingsButton.Enabled = $false
+    Invoke-FastLlmUiFluentTick
+    Invoke-Pump 100
+    Check ((-not $els.SettingsServerGroup.IsEnabled) -and (-not $els.SettingsStartingGroup.IsEnabled) -and (-not $els.SettingsFooter.IsEnabled) -and (-not $els.SettingsPortBox.IsEnabled) -and (-not $els.SettingsSaveButton.IsEnabled)) 'P34 a launch snapshot disables the Server group, the Starting group and the footer (so the fields, the sign-in toggle, Save and Discard)' "server=$($els.SettingsServerGroup.IsEnabled) starting=$($els.SettingsStartingGroup.IsEnabled) footer=$($els.SettingsFooter.IsEnabled) port=$($els.SettingsPortBox.IsEnabled) save=$($els.SettingsSaveButton.IsEnabled)"
+    Check ([string]$els.SettingsUnavailableText.Text -ceq [string]$s.WhyBusy -and $els.SettingsUnavailableText.Visibility -eq [System.Windows.Visibility]::Visible -and [System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsServerHeading) -ceq [string]$s.WhyBusy) 'P34 the reason line says WhyBusy and is visible; the Server heading carries it as help text' "text='$($els.SettingsUnavailableText.Text)' visibility=$($els.SettingsUnavailableText.Visibility) help='$([System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsServerHeading))'"
+    Check ($els.SettingsUpdateToggle.IsEnabled -and $els.SettingsExperimentalToggle.IsEnabled -and $els.SettingsLicenseToggle.IsEnabled) 'P34 the three Components and updates toggles stay enabled (as on today''s main window)' "update=$($els.SettingsUpdateToggle.IsEnabled) experimental=$($els.SettingsExperimentalToggle.IsEnabled) licence=$($els.SettingsLicenseToggle.IsEnabled)"
+    Check ([bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9000 -and [int]$st['Held'].idleIndex -eq 3 -and [string]$els.SettingsPortBox.Text -ceq '9000') 'P34 the held edits are kept while unavailable' "dirty=$($st['Dirty']) port=$($st['Held'].port) idle=$($st['Held'].idleIndex)"
+    # Save is refused (a prompt's Save must never write while a run is starting), with no box and nothing written
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 100 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq '' -and (Test-SettingsRecClean $d) -and $d['recs'].Count -eq 0) 'P34 Save while unavailable returns one bool (false), shows no box and writes nothing' ("count=$($r.Count) value=$($r -join ',') log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $d))
+    # leaving: the prompt has Save disabled and says why; Cancel keeps the page
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Cancel' }, (New-SettingsWatch)) $d
+    try { $els.NavList.SelectedIndex = 0; Invoke-Pump 200 } finally { $timer.Stop() }
+    $rec = Get-SettingsRec $d 0
+    Check ([bool]$rec['Found'] -and -not [bool]$rec['SaveEnabled'] -and ([string]$rec['Body']).Contains([string]$s.WhyBusy) -and ([string]$rec['Body']).Contains([string]$s.SavePrompt) -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and (Test-SettingsRecClean $d)) 'P34 the prompt while unavailable has Save disabled and shows the reason under the question; Cancel keeps the page' ((Get-SettingsRecDetail $d) + ' ' + (Get-SettingsPaneDetail))
+    # a different reason: Microsoft setup
+    $script:shellSnap = New-ShellSnap @{ VcBrokerActive = $true }
+    Invoke-FastLlmUiFluentTick
+    Invoke-Pump 50
+    Check ([string]$els.SettingsUnavailableText.Text -ceq [string]$s.WhyMicrosoftSetup) 'P34 during Microsoft setup the reason line says WhyMicrosoftSetup' "text='$($els.SettingsUnavailableText.Text)' code='$(Get-FastLlmUiGreyedReason -Action 'settings' -Snapshot $script:shellSnap)'"
+    # back to available: the edits are still there, the line goes
+    $script:shellSnap = New-ShellSnap
+    $script:settingsButton.Enabled = $true
+    Invoke-FastLlmUiFluentTick
+    Invoke-Pump 100
+    Check ($els.SettingsServerGroup.IsEnabled -and $els.SettingsStartingGroup.IsEnabled -and $els.SettingsFooter.IsEnabled -and $els.SettingsUnavailableText.Visibility -eq [System.Windows.Visibility]::Collapsed -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9000 -and [string]$els.SettingsPortBox.Text -ceq '9000' -and [int]$els.SettingsIdleBox.SelectedIndex -eq 3) 'P34 back to available: the groups are enabled, the line is gone and the edits are still there' "server=$($els.SettingsServerGroup.IsEnabled) line=$($els.SettingsUnavailableText.Visibility) port='$($els.SettingsPortBox.Text)' idle=$($els.SettingsIdleBox.SelectedIndex)"
+    Close-SettingsPage
+    Check-NoExceptions 'P34'
+}
+
+# ---- P35: the sign-in toggle and the three Components and updates toggles ----
+function Invoke-P35-Toggles {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $hwnd = Get-ModelsWindowHandle
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    # Updates: one Set-FastLlmUpdateSettings per change, in the direction of the change
+    $wantFirst = -not [bool]$els.SettingsUpdateToggle.IsChecked
+    $els.SettingsUpdateToggle.IsChecked = $wantFirst
+    Invoke-Pump 50
+    $els.SettingsUpdateToggle.IsChecked = -not $wantFirst
+    Invoke-Pump 50
+    $wantTexts = @($(if ($wantFirst) { 'on' } else { 'off' }), $(if ($wantFirst) { 'off' } else { 'on' }))
+    Check (($script:setUpdateWrites.ToArray() -join ',') -ceq ($wantTexts -join ',')) 'P35 the Updates toggle makes one Set-FastLlmUpdateSettings per change, in the direction of the change' "writes=$($script:setUpdateWrites.ToArray() -join ',') want=$($wantTexts -join ',')"
+    # Experimental on: today's YesNo box (default No); Enter answers No: reverted, CheckedChanged ran twice (the revert re-enters under its guard), nothing mirrored
+    if ($script:setExpEvents.Count -eq 0 -and -not $script:p35Attached) {
+        $script:p35Attached = $true
+        [void]$script:experimentalBox.PSObject.Methods['Add_CheckedChanged'].Invoke([scriptblock]::Create('[void]$script:setExpEvents.Add([string]$script:experimentalBox.Checked)'))
+    }
+    $script:setExpEvents.Clear()
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Experimental community components'; Key = 0x0D; Fallback = 7 }, (New-SettingsWatch)) $d
+    try { $els.SettingsExperimentalToggle.IsChecked = $true; Invoke-Pump 150 } finally { $timer.Stop() }
+    $rec = Get-SettingsRec $d 0
+    Check ([bool]$rec['Found'] -and [bool]$rec['HasYes'] -and [long]$rec['Owner'] -eq $hwnd.ToInt64() -and -not [bool]$rec['FellBack'] -and $script:setExpWrites.Count -eq 0 -and $els.SettingsExperimentalToggle.IsChecked -eq $false -and [bool]$script:experimentalBox.Checked -eq $false -and $script:setExpEvents.Count -eq 2 -and (Test-SettingsRecClean $d)) 'P35 Experimental on: Enter answers the YesNo box with its default No, the toggle is reverted, nothing is mirrored and CheckedChanged ran twice (the revert, under its guard)' ((Get-SettingsRecDetail $d) + " mirrored=$($script:setExpWrites.Count) toggle=$($els.SettingsExperimentalToggle.IsChecked) events=[$($script:setExpEvents.ToArray() -join ',')]")
+    # Yes: mirrored once
+    $script:setExpEvents.Clear()
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Experimental community components'; Id = 6; Fallback = 7 }, (New-SettingsWatch)) $d
+    try { $els.SettingsExperimentalToggle.IsChecked = $true; Invoke-Pump 150 } finally { $timer.Stop() }
+    Check (($script:setExpWrites.ToArray() -join ',') -ceq 'on' -and $els.SettingsExperimentalToggle.IsChecked -eq $true -and $script:setExpEvents.Count -eq 1 -and (Test-SettingsRecClean $d)) 'P35 Experimental on with Yes: mirrored once (on), the toggle stays on, one CheckedChanged' ((Get-SettingsRecDetail $d) + " mirrored=[$($script:setExpWrites.ToArray() -join ',')] events=$($script:setExpEvents.Count)")
+    $els.SettingsExperimentalToggle.IsChecked = $false
+    Invoke-Pump 100
+    Check (($script:setExpWrites.ToArray() -join ',') -ceq 'on,off') 'P35 Experimental off needs no box and is mirrored (off)' "mirrored=[$($script:setExpWrites.ToArray() -join ',')]"
+    # Licence on: today's licence form (Enter and Escape both cancel); Escape: reverted, nothing written, no failure text
+    Check (@($script:p30Missing | Where-Object { $_ -ceq 'ShowLicenseSettingConfirm' }).Count -eq 0) 'P35 the licence confirmation form (ShowLicenseSettingConfirm) is the real function of fast-llm-ui.ps1' ''
+    $script:statusLabel.Text = 'status before the licence step'
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Install engine components automatically'; Key = 0x1B; Fallback = 0 }, (New-SettingsWatch)) $d
+    try { $els.SettingsLicenseToggle.IsChecked = $true; Invoke-Pump 150 } finally { $timer.Stop() }
+    $rec = Get-SettingsRec $d 0
+    Check ([bool]$rec['Found'] -and -not [bool]$rec['FellBack'] -and $script:setLicWrites.Count -eq 0 -and $els.SettingsLicenseToggle.IsChecked -eq $false -and [bool]$script:licenseBox.Checked -eq $false -and (Test-SettingsRecClean $d) -and -not ([string]$script:statusLabel.Text).Contains('could not be saved')) 'P35 Licence on: the real licence form opens, Escape cancels it, the toggle is reverted and nothing is written (and the revert is not the failure path)' ((Get-SettingsRecDetail $d) + " licenceWrites=$($script:setLicWrites.Count) toggle=$($els.SettingsLicenseToggle.IsChecked) status='$($script:statusLabel.Text)'")
+    # Sign-in: one Set-FastLlmSignInStartEnabled per change; the toggle shows what was read back
+    Check (-not [bool]$els.SettingsSignInToggle.IsChecked -and [string]$els.SettingsSignInState.Text -ceq 'Probe sign-in state False' -and [string]$els.SettingsSignInLast.Text -ceq 'Probe last result' -and [bool]$els.SettingsSignInToggle.IsEnabled) 'P35 Enter shows the sign-in view that was read: the toggle, its state line and the last result' "checked=$($els.SettingsSignInToggle.IsChecked) state='$($els.SettingsSignInState.Text)' last='$($els.SettingsSignInLast.Text)'"
+    $reads0 = $script:setSignInReads
+    $els.SettingsSignInToggle.IsChecked = $true
+    Invoke-Pump 100
+    Check (($script:setSignInSets.ToArray() -join ',') -ceq 'True' -and [string]$els.SettingsSignInState.Text -ceq 'Probe sign-in state True' -and $els.SettingsSignInToggle.IsChecked -eq $true) 'P35 the sign-in toggle makes exactly one Set-FastLlmSignInStartEnabled (True) and shows the returned view (no second write from the refill)' "sets=[$($script:setSignInSets.ToArray() -join ',')] state='$($els.SettingsSignInState.Text)'"
+    # a failure: the Warning box (key-free), a re-read, and the toggle shows the stored truth
+    $script:setSignInSetThrows = $true
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+    try { $els.SettingsSignInToggle.IsChecked = $false; Invoke-Pump 150 } finally { $timer.Stop(); $script:setSignInSetThrows = $false }
+    $rec = Get-SettingsRec $d 0
+    Check ([bool]$rec['Found'] -and ([string]$rec['Text']).Contains('sign-in write boom') -and ($script:setSignInSets.ToArray() -join ',') -ceq 'True,False' -and $script:setSignInReads -gt $reads0 -and $els.SettingsSignInToggle.IsChecked -eq $true -and (Test-SettingsRecClean $d)) 'P35 a failing sign-in write shows the Warning box, re-reads the setting and puts the toggle back to the stored value (no extra write)' ((Get-SettingsRecDetail $d) + " sets=[$($script:setSignInSets.ToArray() -join ',')] reads=$($script:setSignInReads - $reads0) toggle=$($els.SettingsSignInToggle.IsChecked)")
+    # an unreadable sign-in setting disables the toggle with today's text
+    $null = Close-SettingsPage
+    Reset-SettingsFixture @{}
+    $script:setSignInReadThrows = $true
+    $null = Set-FastLlmUiFluentPage -Id 'Settings'
+    Invoke-Pump 100
+    $script:setSignInReadThrows = $false
+    Check ((-not $els.SettingsSignInToggle.IsEnabled) -and [string]$els.SettingsSignInState.Text -ceq [string]$script:FastLlmUiFluentSettingsText.SignInUnreadable) 'P35 an unreadable sign-in setting disables the toggle and shows today''s text' "enabled=$($els.SettingsSignInToggle.IsEnabled) text='$($els.SettingsSignInState.Text)'"
+    Close-SettingsPage
+    Check-NoExceptions 'P35'
+}
+
+# ---- P36: the two-list pane and the keyboard ----
+function Invoke-P36-Pane {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $win = $f.Window
+    $none = [System.Windows.Input.KeyboardNavigationMode]::None
+    $once = [System.Windows.Input.KeyboardNavigationMode]::Once
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    $navMode = [System.Windows.Input.KeyboardNavigation]::GetTabNavigation($els.NavList)
+    $setMode = [System.Windows.Input.KeyboardNavigation]::GetTabNavigation($els.NavSettingsList)
+    Check ($els.NavSettings.IsSelected -and $els.NavList.SelectedIndex -eq -1 -and $els.NavSettingsList.SelectedIndex -eq 0 -and $navMode -eq $none -and $setMode -eq $once) 'P36 Settings selected: the first list is cleared and skipped by Tab (None), the second list holds the selection (Once)' "navSettings=$($els.NavSettings.IsSelected) list=$($els.NavList.SelectedIndex) settingsList=$($els.NavSettingsList.SelectedIndex) navMode=$navMode settingsMode=$setMode"
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $navMode = [System.Windows.Input.KeyboardNavigation]::GetTabNavigation($els.NavList)
+    $setMode = [System.Windows.Input.KeyboardNavigation]::GetTabNavigation($els.NavSettingsList)
+    Check ($els.NavHome.IsSelected -and $els.NavSettingsList.SelectedIndex -eq -1 -and $els.NavList.SelectedIndex -eq 0 -and $navMode -eq $once -and $setMode -eq $none) 'P36 Home selected: the second list is cleared and skipped by Tab, the first list holds the selection' "navHome=$($els.NavHome.IsSelected) list=$($els.NavList.SelectedIndex) settingsList=$($els.NavSettingsList.SelectedIndex) navMode=$navMode settingsMode=$setMode"
+    # a refused Leave from Settings restores both lists
+    $null = Open-SettingsPage @{}
+    $st = Get-SettingsState
+    $els.SettingsPortBox.Text = '9001'
+    $d = @{}
+    $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Cancel' }, (New-SettingsWatch)) $d
+    try { $els.NavList.SelectedIndex = 2; Invoke-Pump 200 } finally { $timer.Stop() }
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and $els.NavSettings.IsSelected -and $els.NavSettingsList.SelectedIndex -eq 0 -and $els.NavList.SelectedIndex -eq -1 -and [System.Windows.Input.KeyboardNavigation]::GetTabNavigation($els.NavList) -eq $none -and [System.Windows.Input.KeyboardNavigation]::GetTabNavigation($els.NavSettingsList) -eq $once -and (Test-SettingsRecClean $d)) 'P36 a refused Leave (Cancel) restores both lists: Settings selected again, the first list cleared, the tab modes as before' ((Get-SettingsPaneDetail) + ' ' + (Get-SettingsRecDetail $d))
+    Close-SettingsPage
+    # arrows across the two lists: Down from Tools reaches Settings, Up from Settings returns to Tools
+    $null = Set-FastLlmUiFluentPage -Id 'Tools'
+    $null = $win.Activate()
+    $null = $els.NavTools.Focus()
+    Invoke-Pump 150
+    $pathDown = Send-ModelsKeyChecked $els.NavTools ([System.Windows.Input.Key]::Down) 0x28 ({ (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' })
+    Invoke-Pump 150
+    $focused = [System.Windows.Input.Keyboard]::FocusedElement
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and $els.NavSettings.IsSelected -and $els.NavList.SelectedIndex -eq -1 -and ([object]::ReferenceEquals($focused, $els.NavSettings) -or $els.NavSettings.IsKeyboardFocused)) 'P36 Down on the last item of the first list (Tools) selects and focuses Settings in the second list' "path=$pathDown current=$(Get-FastLlmUiFluentCurrentPage) navSettings=$($els.NavSettings.IsSelected) focused=$(if ($null -ne $focused) { $focused.GetType().Name } else { 'nothing' })"
+    $pathUp = Send-ModelsKeyChecked $els.NavSettings ([System.Windows.Input.Key]::Up) 0x26 ({ (Get-FastLlmUiFluentCurrentPage) -ceq 'Tools' })
+    Invoke-Pump 150
+    $focused = [System.Windows.Input.Keyboard]::FocusedElement
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Tools' -and $els.NavTools.IsSelected -and $els.NavSettingsList.SelectedIndex -eq -1 -and ([object]::ReferenceEquals($focused, $els.NavTools) -or $els.NavTools.IsKeyboardFocused)) 'P36 Up on the Settings item selects and focuses the last item of the first list (Tools)' "path=$pathUp current=$(Get-FastLlmUiFluentCurrentPage) navTools=$($els.NavTools.IsSelected) focused=$(if ($null -ne $focused) { $focused.GetType().Name } else { 'nothing' })"
+    # Down from Tools with unsaved edits asks first and a Cancel keeps Settings out of reach: edits only exist while on Settings, so the Home arrow is the plain case
+    # Tab from the pane lands in the page, and Shift+Tab returns to the selected item
+    $null = Open-SettingsPage @{}
+    $null = $win.Activate()
+    $null = $els.NavSettings.Focus()
+    Invoke-Pump 200
+    $cur = [System.Windows.Input.Keyboard]::FocusedElement
+    $started = ($null -ne $cur) -and [object]::ReferenceEquals($cur, $els.NavSettings)
+    $null = $cur.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Next)))
+    Invoke-Pump 100
+    $inside = [System.Windows.Input.Keyboard]::FocusedElement
+    $insidePage = ($null -ne $inside) -and ($inside -is [System.Windows.DependencyObject]) -and $f.Pages['Settings']['Element'].IsAncestorOf($inside)
+    $null = $inside.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Previous)))
+    Invoke-Pump 100
+    $back = [System.Windows.Input.Keyboard]::FocusedElement
+    Check ($started -and $insidePage -and $null -ne $back -and [object]::ReferenceEquals($back, $els.NavSettings)) 'P36 Tab from the Settings pane item lands in the page, and Shift+Tab returns to the selected item' "started=$started insidePage=$insidePage first=$(if ($null -ne $inside) { $inside.GetType().Name } else { 'nothing' }) back=$(if ($null -ne $back) { $back.GetType().Name } else { 'nothing' })"
+    # and from Home: Tab from the pane never visits the Settings item
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $walk = Get-PagesTabWalk $els.NavHome
+    $settingsStops = @($walk.Stops | Where-Object { [object]::ReferenceEquals($_.Element, $els.NavSettings) })
+    Check ($walk.Started -and $settingsStops.Count -eq 0) 'P36 with Home selected, the Tab walk from the pane never stops on the Settings item (the second list is skipped)' "started=$($walk.Started) stops=$($walk.Stops.Count) settingsStops=$($settingsStops.Count)"
+    Close-SettingsPage
+    Check-NoExceptions 'P36'
+}
+
 # Faults are injected last: each Initialize run replaces the shell state, so nothing after this may use the real shell.
 function Invoke-P99-StartupFaults {
     if (-not $script:shellOk) { return }
     try { $script:FastLlmUiFluent.Timer.Stop() } catch { $null = $_ }
     Check ($script:connectDialogCalls -eq 0) 'P99 ShowConnectDialog was never called in fluent mode' "calls=$($script:connectDialogCalls)"
+    Check ($script:settingsDialogCalls -eq 0) 'P99 ShowUiSettings (the classic Settings dialog) was never called by the Fluent Settings page' "calls=$($script:settingsDialogCalls)"
     # Text C is the same for a markup fault as for a theme fault, and the real stop function passes its reason on and exits 3
     $textXaml = Get-FastLlmUiUnsupportedText -Reason 'xaml-parse' -Folder 'C:\example'
     $textTheme = Get-FastLlmUiUnsupportedText -Reason 'theme-init' -Folder 'C:\example'
@@ -2005,6 +2962,14 @@ function Invoke-P99-StartupFaults {
     finally { Set-Item -Path Function:\New-FastLlmUiXamlElement -Value $script:realXamlLoader }
     Check ($errModels -ceq 'startup stopped: xaml-parse') 'P99 an injected Models markup fault stops the startup with xaml-parse (text C, exit 3)' "error='$errModels'"
     Check ((${function:New-FastLlmUiXamlElement}).ToString() -ceq $script:realXamlLoader.ToString()) 'P99 the real XAML loader is restored after the Models fault' ''
+    # The same for the Settings page (PR 3c)
+    function New-FastLlmUiXamlElement { param([string]$Name) if ($Name -ceq 'FastLlm.Settings') { throw 'Exception calling "Parse" with "1" argument(s): injected Settings markup fault' }; return (& $script:realXamlLoader -Name $Name) }
+    Initialize-ShellEnv
+    $errSettings = ''
+    try { Initialize-FastLlmUiFluentShell } catch { $errSettings = $_.Exception.Message }
+    finally { Set-Item -Path Function:\New-FastLlmUiXamlElement -Value $script:realXamlLoader }
+    Check ($errSettings -ceq 'startup stopped: xaml-parse') 'P99 an injected Settings markup fault stops the startup with xaml-parse (text C, exit 3)' "error='$errSettings'"
+    Check ((${function:New-FastLlmUiXamlElement}).ToString() -ceq $script:realXamlLoader.ToString()) 'P99 the real XAML loader is restored after the Settings fault' ''
     Check (($script:dialogCalls['switch'] + $script:dialogCalls['models'] + $script:dialogCalls['components']) -eq 0) 'P99 ShowUiSwitchPicker, ShowModelsWindow and ShowComponentsWindow were never called by a Fluent page action' "switch=$($script:dialogCalls['switch']) models=$($script:dialogCalls['models']) components=$($script:dialogCalls['components'])"
     Check-NoExceptions 'P99'
 }
@@ -2016,6 +2981,7 @@ $script:steps = @(
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
+    'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'
@@ -2025,8 +2991,10 @@ $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:tick = $tick
 $deadline = New-Object System.Windows.Threading.DispatcherTimer
-# 420 s: the Models steps (P20-P23) and the larger pages added since the 240 s figure took most of it on the slowest Windows CI runner
-$deadline.Interval = [TimeSpan]::FromSeconds(420)
+# 420 s: the Models steps (P20-P23) and the larger pages added since the 240 s figure took most of it on the slowest Windows CI runner.
+# 600 s (PR 3c): the Settings steps P30-P36 drive about forty modal dialogs (the save prompt, the message boxes, the confirmations), each found by a 50 ms timer, and
+# the box ladder waits a full second per rung when a first answer does not land, so the suite needs room for them on the same slowest runner.
+$deadline.Interval = [TimeSpan]::FromSeconds(600)
 $script:deadline = $deadline
 
 $tick.Add_Tick({
@@ -2048,7 +3016,7 @@ $tick.Add_Tick({
 $deadline.Add_Tick({
     $script:deadline.Stop()
     $where = if ($script:si -gt 0 -and $script:si -le $script:steps.Count) { $script:steps[$script:si - 1] } else { 'before the first step' }
-    Write-Host "FAIL: the 420 s suite deadline was hit during step $where"
+    Write-Host "FAIL: the 600 s suite deadline was hit during step $where"
     # a step may be stuck in a modal loop: ending the process is the only way out and it must not hang CI
     [Environment]::Exit(1)
 })
