@@ -465,6 +465,87 @@ Check ($plantUnbound.Count -eq 1 -and $plantUnbound[0] -ceq 'plantedButton') 'se
 $plantPending=@('statusLabel'|Where-Object{$boundNames -ccontains $_})
 Check ($plantPending.Count -eq 1) 'self-check: the bound-name list would catch a bound adapter put on the pending list'
 
+# ===== PR 3b: Models pins (Task 1) =====
+# Row events: the rows that open a page or a section must never carry a Click event, or today's dialogs (switch picker, models and components
+# windows, Connect dialog) would open from the fluent window. Read by AST from the binding rows (a hashtable with a literal Name). A row for one of
+# these names must have Event = ''. A name with no row yet must be on the pending list (adapter pending, or the row not flipped yet).
+$eventlessRowNames=@('switchButton','modelsButton','componentsButton','connectButton')
+# switchButton still has Event = 'Click' until Home's rows change (PR 3b Task 7); the pin errors if it is listed here but already eventless.
+$eventlessPending=@{'switchButton'='3b Task 7'}
+function Get-EventlessRowFindings([string[]]$Texts,[string[]]$Names,[hashtable]$Pending,[hashtable]$AdapterPending){
+    $found=New-Object System.Collections.ArrayList
+    $seen=@{}
+    foreach($t in $Texts){
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($t,[ref]$null,[ref]$null)
+        foreach($h in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
+            $rowName=$null;$rowEvent=$null;$hasEvent=$false
+            foreach($kv in $h.KeyValuePairs){
+                $k=[string]$kv.Item1.Extent.Text
+                if($k -ceq 'Name' -and $kv.Item2.Extent.Text -match "^'([^']+)'$"){$rowName=$Matches[1]}
+                if($k -ceq 'Event'){$hasEvent=$true;$rowEvent=[string]$kv.Item2.Extent.Text}
+            }
+            if($null -eq $rowName -or $Names -cnotcontains $rowName){continue}
+            $seen[$rowName]=$true
+            $eventless=($hasEvent -and $rowEvent -ceq "''")
+            if($Pending.ContainsKey($rowName)){
+                if($eventless){[void]$found.Add("row $rowName is already eventless; remove it from the pending list")}
+            }
+            elseif(-not $eventless){[void]$found.Add("row $rowName must have Event = '' (found: $(if($hasEvent){$rowEvent}else{'no Event key'}))")}
+        }
+    }
+    foreach($n in $Names){
+        if(-not $seen.ContainsKey($n) -and -not $AdapterPending.ContainsKey($n)){[void]$found.Add("no binding row for $n and it is not on the adapter pending list")}
+    }
+    return ,$found.ToArray()
+}
+$rowTexts=@($fluentSrcFiles|ForEach-Object{[IO.File]::ReadAllText($_)})
+$rowFindings=Get-EventlessRowFindings $rowTexts $eventlessRowNames $eventlessPending $pendingAdapters
+foreach($f in $rowFindings){Write-Host "FINDING: $f"}
+Check ($rowFindings.Count -eq 0) 'the switch, models, components and connect rows have Event = '''' (pending ones are listed)'
+$plantRows="function Get-FastLlmUiFluentPlantBindings { return @(@{ Name = 'connectButton'; Element = 'X'; Mode = 'Content'; Event = 'Click'; Flags = @() }) }"
+$plantRowFindings=Get-EventlessRowFindings @($plantRows) @('connectButton') @{} @{}
+Check ($plantRowFindings.Count -eq 1 -and $plantRowFindings[0] -cmatch '^row connectButton must have Event') 'self-check: a planted Click event on a protected row is flagged'
+$plantNoEvent="function Get-FastLlmUiFluentPlantBindings { return @(@{ Name = 'connectButton'; Element = 'X' }) }"
+Check ((Get-EventlessRowFindings @($plantNoEvent) @('connectButton') @{} @{}).Count -eq 1) 'self-check: a protected row with no Event key is flagged'
+$plantEventless="function Get-FastLlmUiFluentPlantBindings { return @(@{ Name = 'switchButton'; Element = 'X'; Event = '' }) }"
+Check ((Get-EventlessRowFindings @($plantEventless) @('switchButton') @{'switchButton'='x'} @{}).Count -eq 1) 'self-check: an eventless row left on the pending list is flagged'
+Check ((Get-EventlessRowFindings @('function F { 1 }') @('modelsButton') @{} @{}).Count -eq 1) 'self-check: a protected name with no row and no pending entry is flagged'
+
+# The tick hook: Update-FastLlmUiFluentModels (the Models page's tick hook, added by PR 3b) must call no list build, store read, panel fill or picker
+# function; the page computes those only when it opens or when an action asks. When the function is not in the tree yet the pin has nothing to read.
+# The one allowed call is the picker inside the edge branch (an If statement), if the lead accepts that exception.
+$tickForbidden=@('Get-FastLlmUiSwitchPickerModel','Update-FastLlmUiFluentModelsList','Get-FastLlmInstalledModels','Get-FastLlmComponentInventory','Get-FastLlmModelLeftovers','FillModelsPanel','FillComponentsPanel')
+function Get-TickHookFindings([string[]]$Texts,[string[]]$Forbidden,[string]$FunctionName){
+    $found=New-Object System.Collections.ArrayList
+    foreach($t in $Texts){
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($t,[ref]$null,[ref]$null)
+        foreach($fn in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $FunctionName},$true))){
+            foreach($c in @($fn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true))){
+                $cn=[string]$c.GetCommandName()
+                if($Forbidden -ccontains $cn){
+                    $inIf=$false
+                    $p=$c.Parent
+                    while($null -ne $p -and $p -ne $fn){if($p -is [System.Management.Automation.Language.IfStatementAst]){$inIf=$true};$p=$p.Parent}
+                    if($cn -ceq 'Get-FastLlmUiSwitchPickerModel' -and $inIf){continue}
+                    [void]$found.Add("$FunctionName calls $cn")
+                }
+            }
+        }
+    }
+    return ,$found.ToArray()
+}
+$tickFindings=Get-TickHookFindings $rowTexts $tickForbidden 'Update-FastLlmUiFluentModels'
+foreach($f in $tickFindings){Write-Host "FINDING: $f"}
+Check ($tickFindings.Count -eq 0) 'Update-FastLlmUiFluentModels calls no list build, store read, panel fill or picker outside the edge branch'
+foreach($fb in $tickForbidden){
+    $plantTick="function Update-FastLlmUiFluentModels { $fb -X 1 }"
+    Check ((Get-TickHookFindings @($plantTick) $tickForbidden 'Update-FastLlmUiFluentModels').Count -eq 1) "self-check: a planted $fb call in the tick hook is flagged"
+}
+Check ((Get-TickHookFindings @('function Update-FastLlmUiFluentModels { if ($edge) { Get-FastLlmUiSwitchPickerModel } }') $tickForbidden 'Update-FastLlmUiFluentModels').Count -eq 0) 'self-check: the picker inside an If (the edge branch) is allowed'
+Check ((Get-TickHookFindings @('function Update-FastLlmUiFluentModels { Get-FastLlmUiSwitchPickerModel }') $tickForbidden 'Update-FastLlmUiFluentModels').Count -eq 1) 'self-check: the picker outside an If is flagged'
+Check ((Get-TickHookFindings @('function Update-FastLlmUiFluentOther { FillModelsPanel }') $tickForbidden 'Update-FastLlmUiFluentModels').Count -eq 0) 'self-check: another function is not scanned'
+# ===== end PR 3b: Models pins (Task 1) =====
+
 # Pages (G2, N1): every page registered with Register-FastLlmUiFluentPage passes a -Status element, and that element is a TextBlock with a Polite live
 # setting in the page's registered XAML; the set of registered FastLlm.<Page> markup equals the set of registered ids; and every pane item that is not
 # a registered page is one of the coming-later items. Read by AST and XML, so it runs on every platform.

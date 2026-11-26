@@ -30,15 +30,15 @@ function Invoke-Pump([int]$Ms, [scriptblock]$Until = $null) {
 }
 
 # A WinForms timer that finds a message box by its caption, records the owner and the WPF window state, then closes it with an escalation
-# ladder, one rung per second: BM_CLICK(id), WM_COMMAND(id), WM_COMMAND(IDCANCEL), WM_CLOSE. A YesNo box ignores WM_CLOSE, so the ladder starts with the button.
+# ladder, one rung per second: BM_CLICK(id), WM_COMMAND(id), WM_COMMAND(FallbackId), WM_CLOSE. A YesNo box ignores WM_CLOSE and has no IDCANCEL, so the ladder starts with the button and a Yes/No caller passes -FallbackId 7 (IDNO).
 # Records which rung closed the box and whether buttons 1 and 2 exist. After 6 s a still-open box gets WM_CLOSE and hardStop is set (the caller fails the case).
-function Start-BoxAnswer([string]$Caption, [int]$ButtonId, [IntPtr]$Hwnd, [hashtable]$St) {
+function Start-BoxAnswer([string]$Caption, [int]$ButtonId, [IntPtr]$Hwnd, [hashtable]$St, [int]$FallbackId = 2) {
     $St.found = $false; $St.during = $null; $St.owner = [long]0; $St.timedOut = $false; $St.hardStop = $false; $St.rung = ''; $St.closedBy = ''
     $st = $St
     $nat = $script:native
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $loc = @{ rung = -1; foundAt = [long]0; last = '' }
-    $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND IDCANCEL', 'WM_CLOSE')
+    $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND fallback', 'WM_CLOSE')
     $t = New-Object System.Windows.Forms.Timer
     $t.Interval = 50
     $t.Add_Tick(({
@@ -62,7 +62,7 @@ function Start-BoxAnswer([string]$Caption, [int]$ButtonId, [IntPtr]$Hwnd, [hasht
                     $loc.last = $names[$idx]; $st.rung = $loc.last
                     if ($idx -eq 0) { $null = $nat::PostButtonClick($h, $ButtonId) }
                     elseif ($idx -eq 1) { $null = $nat::PostCommand($h, $ButtonId) }
-                    elseif ($idx -eq 2) { $null = $nat::PostCommand($h, 2) }
+                    elseif ($idx -eq 2) { $null = $nat::PostCommand($h, $FallbackId) }
                     else { $null = $nat::PostClose($h) }
                 }
             }
