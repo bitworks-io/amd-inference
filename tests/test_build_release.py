@@ -307,7 +307,7 @@ class ProductToolsRealTreeTests(unittest.TestCase):
         # would break the window the same way a missing C# file would.
         manifest = {e["path"] for e in json.loads(self.members["MANIFEST.json"])["files"]}
         on_disk = sorted(p.name for p in (ROOT / "src").glob("FastLlm.UiFluent*.ps1"))
-        for name in ("FastLlm.UiFluentShell.ps1", "FastLlm.UiFluentTools.ps1", "FastLlm.UiFluentConnect.ps1", "FastLlm.UiFluentModels.ps1", "FastLlm.UiFluentSettings.ps1"):
+        for name in ("FastLlm.UiFluentShell.ps1", "FastLlm.UiFluentTools.ps1", "FastLlm.UiFluentConnect.ps1", "FastLlm.UiFluentModels.ps1", "FastLlm.UiFluentSettings.ps1", "FastLlm.UiFluentDialogs.ps1"):
             self.assertIn(name, on_disk, name + " is missing from src/")
         for name in on_disk:
             rel = "src/" + name

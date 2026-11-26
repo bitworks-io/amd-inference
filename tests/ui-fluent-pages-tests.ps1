@@ -2666,7 +2666,7 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
                 $loc['hwnd'] = $h.ToInt64()
                 $rec = @{ Kind = 'box'; Found = $true; Path = 'win32'; Caption = [string]$step['Caption']; Text = [string]$nat::GetText($h); Owner = $nat::GetOwner($h).ToInt64()
                     WpfEnabledDuring = [bool]$nat::IsWindowEnabled($wpf); HasYes = ($nat::GetDlgItem($h, 6).ToInt64() -ne 0); HasOk = ($nat::GetDlgItem($h, 1).ToInt64() -ne 0)
-                    HasCancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0); Rung = ''; FellBack = $false; Closed = $false }
+                    HasCancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0); Rung = ''; FellBack = $false; Closed = $false; Native = ($step['Native'] -eq $true) }
                 $loc['rec'] = $rec
                 $loc['foundAt'] = $ms
                 [void]$st['recs'].Add($rec)
@@ -2739,7 +2739,7 @@ function Get-SettingsRec([hashtable]$D, [int]$Index) {
 # window left in these steps is the licence confirmation form (a WinForms form, 4b), which is a different caption and is not a message box.
 function Test-SettingsRecClean([hashtable]$D) {
     foreach ($r in @($D['recs'].ToArray())) {
-        if ([string]$r['Kind'] -ceq 'box' -and [bool]$r['Found'] -and [string]$r['Caption'] -cne 'Install engine components automatically' -and [string]$r['Path'] -cne 'wpf') { return $false }
+        if ([string]$r['Kind'] -ceq 'box' -and [bool]$r['Found'] -and [string]$r['Caption'] -cne 'Install engine components automatically' -and [string]$r['Path'] -cne 'wpf' -and -not ($r.ContainsKey('Native') -and [bool]$r['Native'])) { return $false }
     }
     return (-not [bool]$D['timedOut'] -and -not [bool]$D['hardStop'] -and [int]$D['unexpected'] -eq 0)
 }
@@ -3529,7 +3529,8 @@ function Get-PagesBoxExtras([string]$Id) {
     $pre = @(); $post = @()
     if ($Id -ceq 'newkey-done') { $pre = @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 6; Fallback = 7 }) }
     if ($Id -ceq 'newkey-ask') { $post = @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 1; Fallback = 2 }) }
-    if ($Id -ceq 'bundle-list') { $post = @(@{ Kind = 'box'; Caption = 'Save support bundle'; Id = 2; Fallback = 2 }) }
+    # the native SaveFileDialog that OK leads to has the box's own title: its step is marked Native, so the clean check allows its Win32 record
+    if ($Id -ceq 'bundle-list') { $post = @(@{ Kind = 'box'; Caption = 'Save support bundle'; Id = 2; Fallback = 2; Native = $true }) }
     return @{ Pre = $pre; Post = $post }
 }
 
@@ -3554,6 +3555,12 @@ function Invoke-PagesBoxPhase([string]$Id, [string]$Caption, [string]$Buttons, [
     return @{ D = $d; Err = $err; Calls = @($script:boxCalls.ToArray()); PreCount = @($extras.Pre).Count }
 }
 
+# A MessageBox argument as the enum value (a 'bad:' string when the name is not one of the type), so two names of one value compare equal.
+function ConvertTo-PagesBoxEnum([string]$TypeName, $Value) {
+    $type = [type]('System.Windows.Forms.' + $TypeName)
+    try { return ('v' + [string][int][System.Enum]::Parse($type, [string]$Value, $true)) } catch { return ('bad:' + [string]$Value) }
+}
+
 # The checks of one phase of one routed call site. Returns $false when the box never appeared (the row's other phases are then skipped, so a broken opener costs one wait).
 function Test-PagesBoxPhase($Row, [string]$Action, [IntPtr]$MainHwnd) {
     $id = [string]$Row.Id
@@ -3572,9 +3579,17 @@ function Test-PagesBoxPhase($Row, [string]$Action, [IntPtr]$MainHwnd) {
     Check ($calls.Count -eq 1) "$n : the classic caller reached ShowUiMessageBox once for this box" "calls=$($calls.Count) $detail"
     if ($Action -ceq 'enter') {
         # the classic caller passed the arguments the AST table says, the owner is the main window and it is disabled while the box is up
+        # compared as enums: the call sites pass [MessageBoxIcon] values, and Information and Asterisk (also Warning and Exclamation, Error and Hand) share a value,
+        # so the string the seam received can be the other name of the same value
         $got = ''
-        if ($calls.Count -gt 0) { $got = "$($calls[0].Buttons)/$($calls[0].Icon)/$($calls[0].Default)" }
-        Check ($got -ceq "$($Row.Buttons)/$($Row.Icon)/$($Row.Default)") "$n : the caller passed the table's buttons, icon and default button" "actual='$got' expected='$($Row.Buttons)/$($Row.Icon)/$($Row.Default)'"
+        $same = $false
+        if ($calls.Count -gt 0) {
+            $got = "$($calls[0].Buttons)/$($calls[0].Icon)/$($calls[0].Default)"
+            $same = ((ConvertTo-PagesBoxEnum 'MessageBoxButtons' $calls[0].Buttons) -eq (ConvertTo-PagesBoxEnum 'MessageBoxButtons' $Row.Buttons)) -and
+                ((ConvertTo-PagesBoxEnum 'MessageBoxIcon' $calls[0].Icon) -eq (ConvertTo-PagesBoxEnum 'MessageBoxIcon' $Row.Icon)) -and
+                ((ConvertTo-PagesBoxEnum 'MessageBoxDefaultButton' $calls[0].Default) -eq (ConvertTo-PagesBoxEnum 'MessageBoxDefaultButton' $Row.Default))
+        }
+        Check $same "$n : the caller passed the table's buttons, icon and default button" "actual='$got' expected='$($Row.Buttons)/$($Row.Icon)/$($Row.Default)'"
         Check ([long]$rec['Owner'] -eq $MainHwnd.ToInt64() -and -not [bool]$rec['WpfEnabledDuring']) "$n : the box is owned by the main window and the main window is disabled while it is up" "owner=$($rec['Owner']) expected=$($MainHwnd.ToInt64()) mainEnabledDuring=$($rec['WpfEnabledDuring'])"
         $fi = $rec['FocusInfo']
         $focusId = ''
@@ -3645,6 +3660,9 @@ function Invoke-P41-DialogKeys {
         Where-Object { $null -eq (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
     Check (@($missing).Count -eq 0 -and @($script:p22Missing).Count -eq 0 -and $null -ne $script:realShowBox) 'P41 the callers and helpers the table needs are loaded (the classic functions, the seam and the recording wrapper)' ("missing=" + (@($missing) -join ',') + " classic=" + (@($script:p22Missing) -join ',') + " wrapper=$($null -ne $script:realShowBox)")
     Check ($null -ne $script:uiDialogView -and $null -ne $script:uiDialogView['MessageBox']) 'P41 the shell registered the fluent view table, so the seam shows the fluent box' "view=$($null -ne $script:uiDialogView)"
+    # the clean check lets a Native step's Win32 record through (the SaveFileDialog after the support bundle box) and still rejects any other Win32 box
+    $synth = { param([bool]$Native) $recs = New-Object System.Collections.ArrayList; [void]$recs.Add(@{ Kind = 'box'; Found = $true; Path = 'win32'; Caption = 'Save support bundle'; Native = $Native }); return @{ recs = $recs; timedOut = $false; hardStop = $false; unexpected = 0 } }
+    Check ((Test-SettingsRecClean (& $synth $true)) -and -not (Test-SettingsRecClean (& $synth $false))) 'P41 pin: a Native Win32 record is clean, a non-Native Win32 record is still rejected' ''
     $script:p41Src = Get-PagesBoxSources
     $srcMissing = @($script:p41Src.Keys | Where-Object { $null -eq $script:p41Src[$_] })
     Check ($srcMissing.Count -eq 0) 'P41 the Close FastLLM statement, the already-exists statement and the two licence link handlers were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
@@ -3682,7 +3700,7 @@ function Invoke-P41-DialogKeys {
         Invoke-Pump 150
         $rec = Get-SettingsRec $d 0
         $trayCalls = @($script:boxCalls.ToArray())
-        Check ([bool]$rec['Found'] -and (Test-SettingsRecClean $d) -and [long]$rec['Owner'] -eq 0 -and -not [bool]$rec['FellBack'] -and $trayCalls.Count -eq 1 -and [string]$trayCalls[0].Result -ceq 'OK') 'P41 a box opened while the window is in the tray shows (unowned) and Enter answers it OK' ((Get-SettingsRecDetail $d) + " owner=$($rec['Owner']) expected=0 calls=$($trayCalls.Count) result='$(if ($trayCalls.Count -gt 0) { $trayCalls[0].Result })' error='$err'")
+        Check ([bool]$rec['Found'] -and (Test-SettingsRecClean $d) -and [long]$rec['Owner'] -eq 0 -and -not [bool]$rec['WpfEnabledDuring'] -and -not [bool]$rec['FellBack'] -and $trayCalls.Count -eq 1 -and [string]$trayCalls[0].Result -ceq 'OK') 'P41 a box opened while the window is in the tray shows (unowned), the hidden main window is disabled while it is open, and Enter answers it OK' ((Get-SettingsRecDetail $d) + " owner=$($rec['Owner']) expected=0 calls=$($trayCalls.Count) result='$(if ($trayCalls.Count -gt 0) { $trayCalls[0].Result })' error='$err'")
         Check ($win.IsVisible -and [bool]$script:native::IsWindowEnabled($hwnd)) 'P41 after the tray box the window is back, visible and enabled' "visible=$($win.IsVisible) enabled=$($script:native::IsWindowEnabled($hwnd))"
     }
     finally {

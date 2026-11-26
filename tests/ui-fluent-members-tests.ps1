@@ -2704,12 +2704,23 @@ function Get-DlgFindings([string]$Text){
             if($h -cnotmatch 'FocusedElement' -or $h -cnotmatch '-is \[System.Windows.Controls.Button\]'){[void]$f.Add('the key handler lets Enter override a focused button')}
             # Enter on a focused button presses that button through the dialog (a footer button answers its own id; any other gets its Click), never left to the
             # Button's own AcceptsReturn handling (CI-proof: initial focus is on a footer button).
+            # An open drop-down list takes Escape itself: the Escape branch returns, before it handles the key, for a ComboBoxItem and for an open ComboBox (R6).
+            $escAt=$h.IndexOf('Key]::Escape',[StringComparison]::Ordinal)
+            $escHandled=$h.IndexOf('$e.Handled = $true',[Math]::Max($escAt,0),[StringComparison]::Ordinal)
+            $itemAt=$h.IndexOf('if ($focused -is [System.Windows.Controls.ComboBoxItem]) { return }',[StringComparison]::Ordinal)
+            $openAt=$h.IndexOf('if ($focused -is [System.Windows.Controls.ComboBox] -and [bool] $focused.IsDropDownOpen) { return }',[StringComparison]::Ordinal)
+            if($escAt -lt 0 -or $itemAt -lt $escAt -or $itemAt -gt $escHandled){[void]$f.Add('Escape on an open drop-down item answers the dialog (it must close the list only)')}
+            if($escAt -lt 0 -or $openAt -lt $escAt -or $openAt -gt $escHandled){[void]$f.Add('Escape on an open ComboBox answers the dialog (it must close the list only)')}
             if($h -cnotmatch [regex]::Escape('& $close $focusedId') -or $h -cnotmatch [regex]::Escape('RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))')){[void]$f.Add('a focused button is not pressed by the dialog on Enter')}
         }
         $closing=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_Closing'})
         if($closing.Count -ne 1){[void]$f.Add('the dialog Window has no single Closing handler')}
         else{
             $c=$closing[0].Extent.Text
+            # Once an answer is set (a button, or the key plan) the close goes through: the early return is the first thing the handler does (R8).
+            $earlyAt=$c.IndexOf("if ([string] `$state['Result'] -cne '') { return }",[StringComparison]::Ordinal)
+            $cancelAt=$c.IndexOf('$e.Cancel = $true',[StringComparison]::Ordinal)
+            if($earlyAt -lt 0 -or ($cancelAt -ge 0 -and $earlyAt -gt $cancelAt)){[void]$f.Add('the Closing handler does not let a close through once the dialog has an answer')}
             if($c -cnotmatch '\$e\.Cancel = \$true'){[void]$f.Add('the Closing handler never refuses a close')}
             if($c -cnotmatch "CloseEnabled'\]"){[void]$f.Add('the Closing handler does not read CloseEnabled')}
             if($c -cnotmatch "\`$state\['Result'\] = \[string\] \`$state\['Escape'\]"){[void]$f.Add('the close box does not answer the Escape target')}
@@ -2720,6 +2731,12 @@ function Get-DlgFindings([string]$Text){
         if($loaded.Count -ne 1){[void]$f.Add('the first focus is not set on the target in Loaded')}
         if($new.Extent.Text.IndexOf('@($Enter, $Escape)',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the first focus target is not chosen from Enter, then Escape')}
         if($new.Extent.Text.IndexOf('$win.Tag = $result',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the dialog Window.Tag is not the returned table (the test answerer reads it)')}
+        # The owner's resources (the styles and the live theme dictionary) are merged into the dialog, so it follows the theme (R9).
+        $merge=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add' -and $_.Expression.Extent.Text -ceq '$win.Resources.MergedDictionaries' -and @($_.Arguments).Count -eq 1 -and $_.Arguments[0].Extent.Text -ceq '$ownerWindow.Resources'})
+        if($merge.Count -ne 1){[void]$f.Add('the owner resources are not merged into the dialog')}
+        # A hidden owner is recorded for Show (its handle), only when the owner exists and is not visible (R5).
+        if($new.Extent.Text.IndexOf('if ($null -ne $ownerWindow -and -not [bool] $ownerWindow.IsVisible) {',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the hidden owner is not recorded only for a hidden owner')}
+        if($new.Extent.Text.IndexOf('HiddenOwner = $hiddenOwner }',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the dialog table does not carry the hidden owner handle')}
         # Ownership: the Owner is set only inside an if whose condition reads IsVisible (a hidden owner is never set).
         $own=@($new.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$win.Owner'},$true))
         if($own.Count -ne 1){[void]$f.Add('the Owner is not assigned exactly once')}
@@ -2732,6 +2749,28 @@ function Get-DlgFindings([string]$Text){
     # --- the dialog is shown modally and answers its id ---
     $show=Get-DlgFn $Text 'Show-FastLlmUiFluentDialog'
     if($null -eq $show -or @($show.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -ceq 'ShowDialog'},$true)).Count -ne 1){[void]$f.Add('Show-FastLlmUiFluentDialog does not call ShowDialog once')}
+    # A hidden owner is disabled by handle before ShowDialog and enabled again in a finally (R5): a system box disables its owner even when it is in the tray.
+    if($null -ne $show){
+        $tries=@($show.FindAll({param($n) $n -is [System.Management.Automation.Language.TryStatementAst]},$true))
+        if($tries.Count -ne 1 -or $null -eq $tries[0].Finally -or $tries[0].Finally.Extent.Text -cnotmatch [regex]::Escape('SetWindowEnabled($hiddenOwner, $true)')){[void]$f.Add('the hidden owner is not enabled again in a finally')}
+        elseif($tries[0].Body.Extent.Text -cnotmatch 'ShowDialog\(\)'){[void]$f.Add('ShowDialog is not inside the try that restores the hidden owner')}
+        $offAt=$show.Extent.Text.IndexOf('SetWindowEnabled($hiddenOwner, $false)',[StringComparison]::Ordinal)
+        $tryAt=$show.Extent.Text.IndexOf('try {',[StringComparison]::Ordinal)
+        if($offAt -lt 0 -or $tryAt -lt 0 -or $offAt -gt $tryAt){[void]$f.Add('the hidden owner is not disabled before ShowDialog')}
+    }
+    # --- the icon table has a row for every name of every MessageBoxIcon value, with the glyph and help of that value's canonical row (R4, R10) ---
+    $im=[regex]::Match($Text,"(?s)\`$script:FastLlmUiFluentDialogIcons = @\{(.*?)\r?\n\}")
+    if(-not $im.Success){[void]$f.Add('the icon table is missing')}
+    else{
+        $rows=@{}
+        foreach($r in [regex]::Matches($im.Groups[1].Value,"(?m)^\s*(\w+)\s*=\s*@\{\s*Glyph\s*=\s*(0x[0-9A-Fa-f]+|\d+);\s*Help\s*=\s*'([^']*)'\s*\}")){ $rows[$r.Groups[1].Value]=$r.Groups[2].Value+'|'+$r.Groups[3].Value }
+        # the nine names of System.Windows.Forms.MessageBoxIcon with their values (None 0, Hand/Stop/Error 16, Question 32, Exclamation/Warning 48, Asterisk/Information 64)
+        $canon=[ordered]@{None='None';Error='Error';Hand='Error';Stop='Error';Question='Question';Warning='Warning';Exclamation='Warning';Information='Information';Asterisk='Information'}
+        foreach($name in $canon.Keys){
+            if(-not $rows.ContainsKey($name)){[void]$f.Add("the icon table has no row for MessageBoxIcon.$name");continue}
+            if($rows[$name] -cne $rows[[string]$canon[$name]]){[void]$f.Add("the icon row $name is not the row of $($canon[$name])")}
+        }
+    }
     # --- the icon is a decorative text block ---
     $icon=Get-DlgFn $Text 'Set-FastLlmUiFluentDialogIcon'
     if($null -eq $icon -or $icon.Extent.Text -cnotmatch 'New-Object Bitworks\.FastLlm\.DecorativeTextBlock'){[void]$f.Add('the icon is not a DecorativeTextBlock')}
@@ -2801,6 +2840,20 @@ $dlgPlants=[ordered]@{
     'the box owner dropped'=Edit-DlgPlant "-CloseEnabled ([bool] `$plan['closeEnabled']) -Owner `$Owner" "-CloseEnabled ([bool] `$plan['closeEnabled'])"
     'a caption string not read (BoxNo)'=Edit-DlgPlant '[string] $s.BoxNo' "'No'"
     'a result table that maps Yes to No'=Edit-DlgPlant "Yes = 'Yes'" "Yes = 'No'"
+    'the Closing early return deleted (R8)'=Edit-DlgPlant "        if ([string] `$state['Result'] -cne '') { return }`n        if ([bool] `$state['CloseEnabled'])" "        if ([bool] `$state['CloseEnabled'])"
+    'the owner resources merge deleted (R9)'=Edit-DlgPlant '        $win.Resources.MergedDictionaries.Add($ownerWindow.Resources)' '        $null = $ownerWindow'
+    'the Asterisk icon row dropped (R4, R10)'=Edit-DlgPlant "    Asterisk    = @{ Glyph = 0xE946; Help = 'Information' }`n" ''
+    'the Exclamation icon row dropped (R4, R10)'=Edit-DlgPlant "    Exclamation = @{ Glyph = 0xE7BA; Help = 'Warning' }`n" ''
+    'the Hand icon row dropped (R4, R10)'=Edit-DlgPlant "    Hand        = @{ Glyph = 0xEA39; Help = '' }`n" ''
+    'the Stop icon row dropped (R4, R10)'=Edit-DlgPlant "    Stop        = @{ Glyph = 0xEA39; Help = '' }`n" ''
+    'the Asterisk icon row with another glyph (R4, R10)'=Edit-DlgPlant "    Asterisk    = @{ Glyph = 0xE946;" "    Asterisk    = @{ Glyph = 0xE947;"
+    'the hidden owner never disabled (R5)'=Edit-DlgPlant '        $null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled($hiddenOwner, $false)' '        $null = $hiddenOwner'
+    'the hidden owner never enabled again (R5)'=Edit-DlgPlant '    finally { if ($disabled) { $null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled($hiddenOwner, $true) } }' '    finally { }'
+    'the hidden owner enabled after the try, not in a finally (R5)'=Edit-DlgPlant "    try { `$null = `$Dialog['Window'].ShowDialog() }`n    finally { if (`$disabled) { `$null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled(`$hiddenOwner, `$true) } }" "    try { `$null = `$Dialog['Window'].ShowDialog() }`n    finally { }`n    if (`$disabled) { `$null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled(`$hiddenOwner, `$true) }"
+    'the hidden owner handle taken for a shown owner too (R5)'=Edit-DlgPlant 'if ($null -ne $ownerWindow -and -not [bool] $ownerWindow.IsVisible) {' 'if ($null -ne $ownerWindow) {'
+    'the hidden owner handle not carried (R5)'=Edit-DlgPlant '; HiddenOwner = $hiddenOwner }' ' }'
+    'Escape answering with an open drop-down item (R6)'=Edit-DlgPlant '            if ($focused -is [System.Windows.Controls.ComboBoxItem]) { return }' '            $null = $focused'
+    'Escape answering with an open ComboBox (R6)'=Edit-DlgPlant '            if ($focused -is [System.Windows.Controls.ComboBox] -and [bool] $focused.IsDropDownOpen) { return }' '            $null = $focused'
 }
 foreach($k in $dlgPlants.Keys){ Check ($dlgPlants[$k] -cne $dlgText -and (Get-DlgFindings $dlgPlants[$k]).Count -ge 1) "mutation check: the dialog host pin flags: $k" }
 

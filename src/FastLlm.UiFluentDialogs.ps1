@@ -16,6 +16,12 @@ $script:FastLlmUiFluentDialogIcons = @{
     Warning     = @{ Glyph = 0xE7BA; Help = 'Warning' }
     Question    = @{ Glyph = 0xE897; Help = '' }
     Error       = @{ Glyph = 0xEA39; Help = '' }
+    # The other names of the same [System.Windows.Forms.MessageBoxIcon] values (the enum's ToString can give either name of a shared value, and a call
+    # site may pass any), each with the canonical row's glyph and help.
+    Asterisk    = @{ Glyph = 0xE946; Help = 'Information' }
+    Exclamation = @{ Glyph = 0xE7BA; Help = 'Warning' }
+    Hand        = @{ Glyph = 0xEA39; Help = '' }
+    Stop        = @{ Glyph = 0xEA39; Help = '' }
 }
 
 # The dialog: a Grid with a decorative icon slot, a scrolling body slot and a footer of buttons. Every visible string is set from code (Text, never markup).
@@ -150,6 +156,9 @@ function New-FastLlmUiFluentDialog {
             if ([string] $state['Enter'] -cne '') { $e.Handled = $true; & $close ([string] $state['Enter']) }
         }
         elseif ($e.Key -eq [System.Windows.Input.Key]::Escape) {
+            # An open drop-down list takes Escape itself (it closes its list, as in WinForms); only a second Escape answers the dialog.
+            if ($focused -is [System.Windows.Controls.ComboBoxItem]) { return }
+            if ($focused -is [System.Windows.Controls.ComboBox] -and [bool] $focused.IsDropDownOpen) { return }
             $e.Handled = $true
             if ([string] $state['Escape'] -cne '') { & $close ([string] $state['Escape']) }
         }
@@ -180,7 +189,12 @@ function New-FastLlmUiFluentDialog {
         $win.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
         $win.ShowInTaskbar = $true
     }
-    $result = @{ Window = $win; Els = $els; Buttons = $buttonMap; State = $state }
+    # A hidden owner (the tray) is not a WPF owner, so WPF would leave it enabled: its handle is kept so Show disables it for the dialog's life.
+    $hiddenOwner = [IntPtr]::Zero
+    if ($null -ne $ownerWindow -and -not [bool] $ownerWindow.IsVisible) {
+        try { $hiddenOwner = [System.Windows.Interop.WindowInteropHelper]::new($ownerWindow).Handle } catch { $hiddenOwner = [IntPtr]::Zero }
+    }
+    $result = @{ Window = $win; Els = $els; Buttons = $buttonMap; State = $state; HiddenOwner = $hiddenOwner }
     # The test answerer finds the id -> Button map through Window.Tag.
     $win.Tag = $result
     return $result
@@ -190,7 +204,17 @@ function New-FastLlmUiFluentDialog {
 function Show-FastLlmUiFluentDialog {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Dialog)
-    $null = $Dialog['Window'].ShowDialog()
+    # A system MessageBox disables its owner even when the owner is hidden in the tray; WPF does that only for a shown owner, so the hidden main window is
+    # disabled here by its handle (a restore from the tray icon while the box is open then finds it disabled) and enabled again in the finally.
+    $hiddenOwner = [IntPtr]::Zero
+    if ($Dialog.Contains('HiddenOwner')) { $hiddenOwner = [IntPtr] $Dialog['HiddenOwner'] }
+    $disabled = $false
+    if ($hiddenOwner -ne [IntPtr]::Zero -and ('Bitworks.FastLlm.FluentWindowNative' -as [type])) {
+        $null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled($hiddenOwner, $false)
+        $disabled = $true
+    }
+    try { $null = $Dialog['Window'].ShowDialog() }
+    finally { if ($disabled) { $null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled($hiddenOwner, $true) } }
     return [string] $Dialog['State']['Result']
 }
 

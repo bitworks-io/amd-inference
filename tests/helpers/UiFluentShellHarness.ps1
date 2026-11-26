@@ -176,6 +176,21 @@ function Send-DialogKey([ValidateSet('Return', 'Escape')][string]$Key, $Dialog =
 # Records which rung closed the box, whether buttons 1 and 2 exist (Win32), the path used ($St.path: 'win32' or 'wpf') and the body text read when it appeared ($St.text).
 # After 6 s a still-open box gets WM_CLOSE / Window.Close and hardStop is set (the caller fails the case).
 # Two timers drive one tick body: a WinForms timer (the proven path for a Win32 box) and a DispatcherTimer (a WPF ShowDialog is a nested dispatcher frame). Stop() stops both, Dispose() releases them.
+# Closes a WPF dialog the last-resort way. A YesNo dialog refuses a plain Window.Close, so the answer is set first (the fallback button's own answer: No for
+# the IDNO id 7, Cancel for 2, OK for 1), as Stop-PagesWpfBox does; the Closing handler then lets the close through.
+function Close-BoxWindow($Wnd, [int]$FallbackId) {
+    try {
+        $tag = $Wnd.Tag
+        if ($tag -is [System.Collections.IDictionary] -and $tag.Contains('State')) {
+            $answer = ''
+            if ($FallbackId -eq 7) { $answer = 'No' } elseif ($FallbackId -eq 2) { $answer = 'Cancel' } elseif ($FallbackId -eq 1) { $answer = 'OK' }
+            if ($answer -cne '' -and [string]$tag['State']['Result'] -ceq '') { $tag['State']['Result'] = $answer }
+        }
+        $Wnd.Close()
+    }
+    catch { $null = $_ }
+}
+
 function Start-BoxAnswer([string]$Caption, $ButtonId, [IntPtr]$Hwnd, [hashtable]$St, [int]$FallbackId = 2) {
     $St.found = $false; $St.during = $null; $St.owner = [long]0; $St.timedOut = $false; $St.hardStop = $false; $St.rung = ''; $St.closedBy = ''; $St.path = ''; $St.text = ''
     $st = $St
@@ -185,6 +200,7 @@ function Start-BoxAnswer([string]$Caption, $ButtonId, [IntPtr]$Hwnd, [hashtable]
     $pressBtn = ${function:Invoke-WpfBoxButton}
     $readText = ${function:Get-WpfBoxText}
     $toKey = ${function:ConvertTo-WpfBoxKey}
+    $closeWnd = ${function:Close-BoxWindow}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $loc = @{ rung = -1; foundAt = [long]0; last = ''; path = '' }
     $winNames = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND fallback', 'WM_CLOSE')
@@ -229,7 +245,7 @@ function Start-BoxAnswer([string]$Caption, $ButtonId, [IntPtr]$Hwnd, [hashtable]
             if ($age -ge 6000) {
                 if (-not $st.hardStop) {
                     $st.hardStop = $true
-                    if ($loc.path -eq 'wpf') { try { $wnd.Close() } catch { $null = $_ } } else { $null = $nat::PostClose($h) }
+                    if ($loc.path -eq 'wpf') { & $closeWnd $wnd $FallbackId } else { $null = $nat::PostClose($h) }
                 }
             }
             else {
@@ -242,7 +258,7 @@ function Start-BoxAnswer([string]$Caption, $ButtonId, [IntPtr]$Hwnd, [hashtable]
                         if ($idx -eq 0) { $null = & $pressBtn (& $findBtn $wnd $wpfKey) 0 }
                         elseif ($idx -eq 1) { $null = & $pressBtn (& $findBtn $wnd $wpfKey) 1 }
                         elseif ($idx -eq 2) { $null = & $pressBtn (& $findBtn $wnd $wpfFallbackKey) 0 }
-                        else { try { $wnd.Close() } catch { $null = $_ } }
+                        else { & $closeWnd $wnd $FallbackId }
                     }
                     else {
                         $loc.last = $winNames[$idx]; $st.rung = $loc.last

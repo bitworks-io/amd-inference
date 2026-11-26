@@ -49,6 +49,10 @@ namespace Bitworks.FastLlm {
         private static extern bool DestroyIcon(IntPtr icon);
 
         [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool EnableWindow(IntPtr hwnd, [MarshalAs(UnmanagedType.Bool)] bool enable);
+
+        [DllImport("user32.dll")]
         private static extern uint GetGuiResources(IntPtr process, uint flags);
 
         [DllImport("kernel32.dll")]
@@ -123,6 +127,23 @@ namespace Bitworks.FastLlm {
             }
             try {
                 return DestroyIcon(icon);
+            } catch (DllNotFoundException) {
+                return false;
+            } catch (EntryPointNotFoundException) {
+                return false;
+            } catch (Win32Exception) {
+                return false;
+            }
+        }
+
+        // Enables or disables a window by its handle (a dialog does this to a hidden owner, which WPF would not disable). Returns true when the window
+        // was disabled before the call (the Win32 return value); false for a zero handle or any failure.
+        public static bool SetWindowEnabled(IntPtr hwnd, bool enabled) {
+            if (hwnd == IntPtr.Zero) {
+                return false;
+            }
+            try {
+                return EnableWindow(hwnd, enabled);
             } catch (DllNotFoundException) {
                 return false;
             } catch (EntryPointNotFoundException) {
