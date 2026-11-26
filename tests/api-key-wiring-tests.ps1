@@ -671,7 +671,7 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     Check (-not $plain.status.PSObject.Properties['apiKey'] -and -not $plain.status.PSObject.Properties['apiKeyId'] -and @($plain.console | Where-Object { $_ -clike 'API key*' }).Count -eq 0) 'no key: the status has no apiKey field and the console says nothing about a key'
     Check (@($plain.status.PSObject.Properties.Name | Where-Object { $_ -match '(?i)apikey' }).Count -eq 0) 'no key: the status has no field about the key at all (the document of a start without the key is the one it always was)'
     Check (@(Find-LeakFiles @($plain.install)).Count -eq 0) 'no key: the inherited variable left no trace in any file'
-    $benchCallers = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1', 'FastLlm.ApiKey.ps1', 'FastLlm.Sidecar.ps1', 'FastLlm.BackgroundHost.ps1', 'FastLlm.ServingSettings.ps1', 'FastLlm.ConnectInfo.ps1', 'FastLlm.UiFlow.ps1', 'FastLlm.SupportBundle.ps1', 'FastLlm.UiFluentConnect.ps1') } | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?<!FastLlm\.)ApiKey|LLAMA_API_KEY' })
+    $benchCallers = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1', 'FastLlm.ApiKey.ps1', 'FastLlm.Sidecar.ps1', 'FastLlm.BackgroundHost.ps1', 'FastLlm.ServingSettings.ps1', 'FastLlm.ConnectInfo.ps1', 'FastLlm.UiFlow.ps1', 'FastLlm.SupportBundle.ps1', 'FastLlm.UiFluentConnect.ps1', 'FastLlm.UiFluentSettings.ps1', 'FastLlm.UiState.ps1') } | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?<!FastLlm\.)ApiKey|LLAMA_API_KEY' })
     $benchTools = @(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -Filter '*.ps1' | Where-Object { [IO.File]::ReadAllText($_.FullName) -cmatch '(?<!FastLlm\.)ApiKey|LLAMA_API_KEY' })
     $benchRefusal = InModule { try { Assert-FastLlmBenchmarkDefaultSetup -State ([pscustomobject]@{ active = $true; phase = 'ready'; apiKey = 'on'; apiKeyId = '0123abcd' }); 'accepted' } catch { [string]$_.Exception.Message } }
     Check ($benchRefusal -ceq 'Benchmarks measure the default setup. Turn the API key off, start again, then benchmark.') 'bench path: the benchmark tool refuses a run that was started with the API key on'
@@ -1694,6 +1694,93 @@ public sealed class FlApiKeyWiringRecorder : IDisposable {
     $clipboardLines = @($connectText -split "`r?`n" | Where-Object { $_ -cmatch 'Set-FastLlmUiFluentClipboardText' -and $_ -cnotmatch '^\s*function ' })
     Check ($clipboardLines.Count -eq 1 -and $clipboardLines[0] -cmatch '-Text \(\[string\]\$Sender\.Tag\)' -and $clipboardLines[0] -cnotmatch 'ReadUiApiKey|shownKey|keyBox') 'fluent window: the plain clipboard wrapper is called once, with a field Copy button tag, never a key source'
     Check ($connectText.Contains('ApplicationCommands]::Copy') -and $connectText.Contains('Invoke-FastLlmUiFluentConnectKeyCopy')) 'fluent window: the key box Copy command (Ctrl+C, Ctrl+Insert, context menu) is bound and runs the key Copy function'
+    # The Settings page (PR 3c): the key is never read, and the key setting is written only as today's Save writes it (on, on, off); the one rotate stays in
+    # today's NewUiApiKey (fast-llm-ui.ps1), which the page reaches with the window as owner, twice (Create a new key, and the Save fallback). Every
+    # MessageBox that shows an exception text goes through ConvertTo-FastLlmKeyFreeText -Text ([ref] ...).
+    $settingsFile = 'src/FastLlm.UiFluentSettings.ps1'
+    function Get-FluentSettingsKeyProblems([string]$Label, [string]$Text) {
+        $found = New-Object 'System.Collections.Generic.List[string]'
+        if ([string]::IsNullOrEmpty($Text)) { $found.Add("[missing] $Label does not exist or is empty"); return $found.ToArray() }
+        $pe = $null
+        $parsed = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$pe)
+        if (@($pe).Count -gt 0) { $found.Add("[parse] $Label does not parse"); return $found.ToArray() }
+        if ($Text -cmatch (& $fluentWordPattern 'ReadUiApiKey')) { $found.Add("[readkey] $Label uses ReadUiApiKey") }
+        $settingCalls = @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -ieq 'Invoke-FastLlmApiKeySetting' }, $true))
+        $actions = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($call in $settingCalls) {
+            $action = '?'; $elements = @($call.CommandElements)
+            for ($i = 1; $i -lt $elements.Count; $i++) {
+                if ($elements[$i] -is [Management.Automation.Language.CommandParameterAst] -and $elements[$i].ParameterName -ieq 'Action') {
+                    if ($null -ne $elements[$i].Argument) { $action = $elements[$i].Argument.Extent.Text } elseif ($i + 1 -lt $elements.Count) { $action = $elements[$i + 1].Extent.Text }
+                }
+            }
+            $actions.Add($action)
+        }
+        if ($actions -contains 'rotate') { $found.Add("[rotate] $Label calls Invoke-FastLlmApiKeySetting -Action rotate") }
+        if ((@($actions | Sort-Object) -join ',') -cne 'off,on,on') { $found.Add("[actions] $Label writes the key setting with -Action $((@($actions | Sort-Object) -join ',')), expected off,on,on") }
+        $newKeyCalls = @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -ieq 'NewUiApiKey' }, $true))
+        $badOwner = @($newKeyCalls | Where-Object { @($_.CommandElements).Count -ne 2 -or $_.CommandElements[1].Extent.Text -cne '$script:form' })
+        if ($newKeyCalls.Count -ne 2 -or $badOwner.Count -gt 0) { $found.Add("[newkey] $Label calls NewUiApiKey $($newKeyCalls.Count) times (expected 2, each with `$script:form), $($badOwner.Count) with another argument") }
+        $isFree = { param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]$node.GetCommandName() -ieq 'ConvertTo-FastLlmKeyFreeText' -and @($node.CommandElements).Count -eq 3 -and $node.CommandElements[1] -is [Management.Automation.Language.CommandParameterAst] -and $node.CommandElements[1].ParameterName -ieq 'Text' -and $node.CommandElements[2].Extent.Text -cmatch '^\(\s*\[ref\]\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\)$' }
+        # A variable that carries an exception text: assigned from an expression holding $_ or .Exception.
+        $tainted = @{}
+        foreach ($assignment in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true))) {
+            if (@($assignment.Right.FindAll({ param($node) ($node -is [Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -ceq '_') -or ($node -is [Management.Automation.Language.MemberExpressionAst] -and $node.Member.Extent.Text -ieq 'Exception') }, $true)).Count -gt 0) { $tainted[$assignment.Left.VariablePath.UserPath.ToLowerInvariant()] = $true }
+        }
+        foreach ($show in @($parsed.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Static -and $node.Member.Extent.Text -ieq 'Show' -and $node.Expression.Extent.Text -cmatch '(?i)MessageBox\]$' }, $true))) {
+            $showArgs = @($show.Arguments); if ($showArgs.Count -lt 2) { continue }
+            $message = $showArgs[1]
+            $carries = @($message.FindAll({ param($node) ($node -is [Management.Automation.Language.VariableExpressionAst] -and ($node.VariablePath.UserPath -ceq '_' -or $tainted.ContainsKey($node.VariablePath.UserPath.ToLowerInvariant()))) -or ($node -is [Management.Automation.Language.MemberExpressionAst] -and $node.Member.Extent.Text -ieq 'Exception') }, $true)).Count -gt 0
+            if ($carries -and @($message.FindAll($isFree, $true)).Count -eq 0) { $found.Add("[messagebox] $Label shows an exception text without ConvertTo-FastLlmKeyFreeText -Text ([ref] ...): $($show.Extent.Text)") }
+        }
+        return $found.ToArray()
+    }
+    $settingsPageText = ''
+    $settingsPagePath = Join-Path $root $settingsFile
+    if (Test-Path -LiteralPath $settingsPagePath) { $settingsPageText = [IO.File]::ReadAllText($settingsPagePath) }
+    $settingsKeyProblems = @(Get-FluentSettingsKeyProblems $settingsFile $settingsPageText)
+    Check ($settingsKeyProblems.Count -eq 0) "fluent window: the Settings page reads no key (ReadUiApiKey 0), never rotates, writes the key setting with -Action on twice and off once, calls NewUiApiKey twice with the window as owner, and shows no exception text without the key-free text $($settingsKeyProblems -join '; ')"
+    $settingsPlantBase = @'
+function Invoke-X {
+    try { $null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action on }
+    catch { if (-not (NewUiApiKey $script:form)) { throw 'x' }; $null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action on }
+    $null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action off
+    try { [void](NewUiApiKey $script:form) } catch { $newKeyFailureText = [string]$_.Exception.Message; [void][Windows.Forms.MessageBox]::Show($script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)), 'FastLLM settings', 'OK', 'Warning') }
+}
+'@
+    Check (@(Get-FluentSettingsKeyProblems 'plant.ps1' $settingsPlantBase).Count -eq 0) 'fluent window self-check: a well formed Settings shape (on, on, off, two NewUiApiKey, a key-free box) has no problem'
+    $settingsPlants = [ordered]@{
+        'readkey'    = @('readkey', $settingsPlantBase.Replace('$null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action off', '$k = ReadUiApiKey' + "`n" + '$null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action off'))
+        'readkey-lc' = @('readkey', ($settingsPlantBase + "`n" + '$k = readuiapikey'))
+        'rotate'     = @('rotate', $settingsPlantBase.Replace('-Action on }' + "`n", '-Action rotate }' + "`n"))
+        'rotate-uc'  = @('rotate', $settingsPlantBase.Replace('-Action off', '-ACTION Rotate'))
+        'actions'    = @('actions', $settingsPlantBase.Replace('-Action off', '-Action show'))
+        'on-thrice'  = @('actions', ($settingsPlantBase + "`n" + '$null = Invoke-FastLlmApiKeySetting -InstallRoot $r -Action on'))
+        'newkey-1'   = @('newkey', $settingsPlantBase.Replace('try { [void](NewUiApiKey $script:form) }', 'try { [void]1 }'))
+        'newkey-3'   = @('newkey', ($settingsPlantBase + "`n" + '[void](NewUiApiKey $script:form)'))
+        'newkey-own' = @('newkey', $settingsPlantBase.Replace('(NewUiApiKey $script:form)) { throw', '(NewUiApiKey $null)) { throw'))
+        'rawbox'     = @('messagebox', $settingsPlantBase.Replace('(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))', '$newKeyFailureText'))
+        'rawbox-ex'  = @('messagebox', ($settingsPlantBase + "`n" + 'try { 1 } catch { [void][Windows.Forms.MessageBox]::Show($script:form, [string]$_.Exception.Message, ''FastLLM settings'', ''OK'', ''Warning'') }'))
+        'rawbox-lc'  = @('messagebox', $settingsPlantBase.Replace('[Windows.Forms.MessageBox]::Show($script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))', '[windows.forms.MESSAGEBOX]::SHOW($script:form, ([string]$_.Exception.Message)'))
+        'notref'     = @('messagebox', $settingsPlantBase.Replace('-Text ([ref]$newKeyFailureText)', '-Text $newKeyFailureText'))
+    }
+    $settingsPlantMissed = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($plantName in $settingsPlants.Keys) {
+        $plantKind = [string]$settingsPlants[$plantName][0]; $plantText = [string]$settingsPlants[$plantName][1]
+        $plantFound = @(Get-FluentSettingsKeyProblems "$plantName.ps1" $plantText)
+        if ($plantText -ceq $settingsPlantBase -or @($plantFound | Where-Object { $_.StartsWith("[$plantKind] ", [StringComparison]::Ordinal) }).Count -eq 0) { $settingsPlantMissed.Add("$plantName (wanted $plantKind, got: $($plantFound -join ' / '))") }
+    }
+    Check ($settingsPlantMissed.Count -eq 0) "fluent window self-check: each of $($settingsPlants.Count) planted Settings shapes (a ReadUiApiKey in either case, a rotate, a wrong action set, a wrong NewUiApiKey count or owner, a MessageBox with a raw exception text) is flagged by its own rule $($settingsPlantMissed -join '; ')"
+    # The whole fluent glob: no rotate anywhere, and the key setting is written only by the Settings page.
+    $fluentRotate = 0; $fluentSettingWriters = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($fluentFile in $fluentFiles) {
+        $fileText = [IO.File]::ReadAllText((Join-Path $root $fluentFile))
+        $fluentRotate += @([regex]::Matches($fileText, '(?i)-Action[\s:]+[''"]?rotate')).Count
+        if ($fileText -cmatch (& $fluentWordPattern 'Invoke-FastLlmApiKeySetting') -and $fluentFile -cne $settingsFile) { $fluentSettingWriters.Add($fluentFile) }
+    }
+    Check ($fluentRotate -eq 0 -and $fluentSettingWriters.Count -eq 0) "fluent window: no fluent file rotates the key, and only the Settings page calls Invoke-FastLlmApiKeySetting ($fluentRotate rotate; other callers: $($fluentSettingWriters -join ', '))"
+    $classicUiText = [IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
+    Check (@([regex]::Matches($classicUiText, '(?i)-Action\s+rotate')).Count -eq 1 -and @([regex]::Matches($classicUiText, '(?i)(?<![A-Za-z0-9_-])ReadUiApiKey(?![A-Za-z0-9_-])')).Count -ge 1) 'fluent window: the classic window still has its one -Action rotate (in NewUiApiKey), which the Settings page reaches only through that function'
     $cliTextForShow = [IO.File]::ReadAllText((Join-Path $root 'fast-llm.ps1'))
     Check ($cliTextForShow.Contains('[Console]::Out.WriteLine([string] $apiKeyChange.key)') -and $cliTextForShow -cnotmatch '(?m)^[^#\r\n]*\b(Write-Output|Write-Host|Write-Information|Write-Verbose|Out-String|Out-Host|Out-File|Set-Content|Add-Content|Tee-Object|Set-Clipboard|ConvertTo-Json)\b[^\r\n]*\.key\b') 'M2 static: settings -ApiKey show writes the key straight to standard output; no cmdlet is given it'
     $keySourceText = [IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.ApiKey.ps1'))

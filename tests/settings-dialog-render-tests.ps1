@@ -184,7 +184,7 @@ New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
 
 try {
     $probeForm = New-Object Windows.Forms.Form
-    try { $screenCap = [int](GetUiSettingsDialogMaxHeight $probeForm) } finally { $probeForm.Dispose() }
+    try { $screenCap = [int](GetUiSettingsDialogMaxHeight $probeForm.Handle) } finally { $probeForm.Dispose() }
     Check ($screenCap -gt 0) "the working-area height of the screen is read ($screenCap px)"
     $cases = @(
         @{ scale = 1.0; name = '100'; cap = 0 },
