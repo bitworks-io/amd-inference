@@ -19,6 +19,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHome.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -380,7 +381,7 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
         @{ Name = 'failureCopyLink';   Element = 'ActivityCopyButton'; Mode = 'Content';  Event = 'LinkClicked'; Flags = @(); Also = $true }
     )
-    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings))
+    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings) + @(Get-FastLlmUiFluentModelsBindings))
 }
 
 # An unsupported-at-initialisation window (the theme or the markup failed) is a fault in FastLLM: the approved text, the run-log reason, exit code 3.
@@ -699,6 +700,7 @@ function Initialize-FastLlmUiFluentPane {
         [void] $items.Add($nav)
     }
     $f['Els']['NavHome'] = $items[0].Item
+    $f['Els']['NavModels'] = $items[1].Item
     $f['Els']['NavConnect'] = $items[2].Item
     $f['Els']['NavTools'] = $items[3].Item
     # The Settings list has one item, disabled for now: it is named so it is never an anonymous list. Home stays selected (Ctrl+Click cannot empty it).
@@ -858,6 +860,7 @@ function Initialize-FastLlmUiFluentShell {
         $homePage = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
         $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
         $connectPage = New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
+        $modelsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Models'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -885,9 +888,11 @@ function Initialize-FastLlmUiFluentShell {
         [void] (Initialize-FastLlmUiFluentHome -Page $homePage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $f['Els'])
         Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
         Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
         Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $f['Els']
+        Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $f['Els']
         $f['Current'] = 'Home'
         $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane

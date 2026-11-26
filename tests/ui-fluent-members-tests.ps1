@@ -333,6 +333,28 @@ try{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application
     @{Name='model picker ids'
       Cur='foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $catalog)) { $modelBox.Items.Add($pickerId)|Out-Null }'
       Orig='foreach($model in $catalog.models) { if(-not $model.PSObject.Properties[''autoEligible''] -or $model.autoEligible){$modelBox.Items.Add([string]$model.id)|Out-Null} }'}
+    @{Name='models list refresh'
+      Cur=@'
+function FillModelsPanel {
+    $view=$script:modelsView
+    # The Fluent window's Models page rebuilds its own list: its view names the function (the classic view has no refresh key).
+    if($null -ne $view -and $view['refresh']){& $view['refresh'];return}
+'@
+      Orig=@'
+function FillModelsPanel {
+    $view=$script:modelsView
+'@}
+    @{Name='components list refresh'
+      Cur=@'
+function FillComponentsPanel {
+    $view=$script:componentsView
+    # The Fluent window's Models page rebuilds its own list: its view names the function (the classic view has no refresh key).
+    if($null -ne $view -and $view['refresh']){& $view['refresh'];return}
+'@
+      Orig=@'
+function FillComponentsPanel {
+    $view=$script:componentsView
+'@}
 )
 function Get-NormalizedText([string]$Path){
     $bytes=[IO.File]::ReadAllBytes($Path)
@@ -354,7 +376,7 @@ function Undo-NamedChanges([string]$Text){
     }
     return [pscustomobject]@{Text=$Text;Problems=$problems}
 }
-Check ($namedChanges.Count -eq 14) 'fourteen named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids)'
+Check ($namedChanges.Count -eq 16) 'sixteen named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh)'
 $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
@@ -380,8 +402,7 @@ Check ((Undo-NamedChanges $broken).Problems.Count -ge 1) 'mutation check: an alt
 # of the shell's binding table) or is on the pending list with its PR. The suite does not load the shell or Home off Windows, so the bound names are read by AST.
 # A later task removes an entry from the pending list when it binds the adapter.
 $pendingAdapters=@{
-    # PR 3b: Models.
-    'componentsButton'='3b';'chooseButton'='3b';'modelsButton'='3b';'modelBox'='3b';'barBox'='3b';'contextBox'='3b';'pathBox'='3b'
+    # PR 3b: Models (all bound by Get-FastLlmUiFluentModelsBindings now).
     # PR 3c: Settings.
     'settingsButton'='3c';'updateBox'='3c';'experimentalBox'='3c';'licenseBox'='3c'
     # Never: the tooltip text is on the card.
@@ -470,8 +491,8 @@ Check ($plantPending.Count -eq 1) 'self-check: the bound-name list would catch a
 # windows, Connect dialog) would open from the fluent window. Read by AST from the binding rows (a hashtable with a literal Name). A row for one of
 # these names must have Event = ''. A name with no row yet must be on the pending list (adapter pending, or the row not flipped yet).
 $eventlessRowNames=@('switchButton','modelsButton','componentsButton','connectButton')
-# switchButton still has Event = 'Click' until Home's rows change (PR 3b Task 7); the pin errors if it is listed here but already eventless.
-$eventlessPending=@{'switchButton'='3b Task 7'}
+# Every protected row is eventless now (Home's Switch row was flipped by PR 3b Task 7); a row listed here that is already eventless is a finding.
+$eventlessPending=@{}
 function Get-EventlessRowFindings([string[]]$Texts,[string[]]$Names,[hashtable]$Pending,[hashtable]$AdapterPending){
     $found=New-Object System.Collections.ArrayList
     $seen=@{}
@@ -513,8 +534,8 @@ Check ((Get-EventlessRowFindings @('function F { 1 }') @('modelsButton') @{} @{}
 
 # The tick hook: Update-FastLlmUiFluentModels (the Models page's tick hook, added by PR 3b) must call no list build, store read, panel fill or picker
 # function; the page computes those only when it opens or when an action asks. When the function is not in the tree yet the pin has nothing to read.
-# The one allowed call is the picker inside the edge branch (an If statement), if the lead accepts that exception.
-$tickForbidden=@('Get-FastLlmUiSwitchPickerModel','Update-FastLlmUiFluentModelsList','Get-FastLlmInstalledModels','Get-FastLlmComponentInventory','Get-FastLlmModelLeftovers','FillModelsPanel','FillComponentsPanel')
+# The one allowed call is the picker (or its helper Update-FastLlmUiFluentModelsPicker) inside the edge branch (an If statement), which the lead accepted.
+$tickForbidden=@('Get-FastLlmUiSwitchPickerModel','Update-FastLlmUiFluentModelsPicker','Update-FastLlmUiFluentModelsList','Get-FastLlmInstalledModels','Get-FastLlmComponentInventory','Get-FastLlmModelLeftovers','FillModelsPanel','FillComponentsPanel')
 function Get-TickHookFindings([string[]]$Texts,[string[]]$Forbidden,[string]$FunctionName){
     $found=New-Object System.Collections.ArrayList
     foreach($t in $Texts){
@@ -526,7 +547,7 @@ function Get-TickHookFindings([string[]]$Texts,[string[]]$Forbidden,[string]$Fun
                     $inIf=$false
                     $p=$c.Parent
                     while($null -ne $p -and $p -ne $fn){if($p -is [System.Management.Automation.Language.IfStatementAst]){$inIf=$true};$p=$p.Parent}
-                    if($cn -ceq 'Get-FastLlmUiSwitchPickerModel' -and $inIf){continue}
+                    if(($cn -ceq 'Get-FastLlmUiSwitchPickerModel' -or $cn -ceq 'Update-FastLlmUiFluentModelsPicker') -and $inIf){continue}
                     [void]$found.Add("$FunctionName calls $cn")
                 }
             }
@@ -680,7 +701,7 @@ foreach($spec in $viewSpecs){
 # Pages (G2, N1): every page registered with Register-FastLlmUiFluentPage passes a -Status element, and that element is a TextBlock with a Polite live
 # setting in the page's registered XAML; the set of registered FastLlm.<Page> markup equals the set of registered ids; and every pane item that is not
 # a registered page is one of the coming-later items. Read by AST and XML, so it runs on every platform.
-$comingLater=@('NavModels','NavSettings')
+$comingLater=@('NavSettings')
 function Get-PagePinFindings([string[]]$Texts){
     $found=New-Object System.Collections.ArrayList
     $regs=New-Object System.Collections.ArrayList
@@ -949,5 +970,362 @@ foreach($key in @($connectTable.Keys)){$mutatedTable[$key]=[string]$connectTable
 $mutatedTable['KeyUnreadable']='The stored API key cannot be read'
 Check ((Get-ConnectDriftProblems $mutatedTable $dialogConstants $dialogTextConstants).Count -ge 1) 'mutation check: a changed table value fails the drift pin'
 Check ((Get-ConnectDriftProblems $connectTable $dialogConstants @($dialogTextConstants.ToArray()+'A new caption')).Count -ge 1) 'mutation check: a new .Text constant in the dialog that the table lacks fails the drift pin'
+
+# ===== PR 3b: input style pins (Task 3) =====
+# The shell's TextBox, ComboBox, ComboBoxItem and spin button styles, read from the registered shell markup (XML), so they run on every platform. Each pin names
+# one rule; the plants below change one character-run of the real shell text and each must be flagged.
+function Get-StylePinFailures([string]$ShellText){
+    $fails=New-Object System.Collections.ArrayList
+    function StyleCheck($name,$ok){ if(-not $ok){ [void]$fails.Add($name) } }
+    $m=[regex]::Match($ShellText,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Shell'\] = @'\r?\n(.*?)\r?\n'@")
+    if(-not $m.Success){return ,@('the shell markup is not found')}
+    $x=[xml]$m.Groups[1].Value
+    $xn='http://schemas.microsoft.com/winfx/2006/xaml'
+    $styles=@{}
+    foreach($st in $x.SelectNodes("//*[local-name()='Style']")){ $k=$st.GetAttribute('Key',$xn); if($k){$styles[$k]=$st} }
+    foreach($pair in @(@('FastLlm.TextBoxStyle','TextBox'),@('FastLlm.ComboBoxStyle','ComboBox'),@('FastLlm.ComboBoxItemStyle','ComboBoxItem'),@('FastLlm.SpinButtonStyle','RepeatButton'))){
+        $k=$pair[0]; $has=$styles.ContainsKey($k)
+        StyleCheck "$k registered" $has
+        if(-not $has){continue}
+        $st=$styles[$k]; $xml=$st.OuterXml
+        StyleCheck "$k TargetType" ($st.GetAttribute('TargetType') -ceq $pair[1])
+        StyleCheck "$k no event attribute" (-not [regex]::IsMatch($xml,'\s(Click|Loaded|Unloaded|GotFocus|LostFocus|TextChanged|SelectionChanged|PreviewKeyDown|KeyDown|MouseDown|Checked|Unchecked|Initialized)\s*='))
+        StyleCheck "$k no literal colour" (-not [regex]::IsMatch($xml,'(?i)(Brush|Background|Foreground|Fill|Stroke|Value)="(#|White|Black|Red|Gray|Blue|Green)'))
+        StyleCheck "$k no SystemColors literal" (-not $xml.Contains('SystemColors'))
+        StyleCheck "$k disabled look" ($xml.Contains('Property="IsEnabled" Value="False"') -and $xml.Contains('FastLlm.DisabledTextBrush'))
+    }
+    $tb=$styles['FastLlm.TextBoxStyle']; if($tb){ $o=$tb.OuterXml
+        StyleCheck 'TextBox strong stroke' $o.Contains('BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"')
+        StyleCheck 'TextBox radius 4' ([regex]::IsMatch($o,'CornerRadius="4"'))
+        StyleCheck 'TextBox MinHeight' $o.Contains('Property="MinHeight" Value="{DynamicResource FastLlm.ControlHeight}"')
+        StyleCheck 'TextBox ring 2px' ([regex]::IsMatch($o,'x:Name="Ring" BorderBrush="\{DynamicResource FastLlm\.FocusBrush\}" BorderThickness="2"'))
+        StyleCheck 'TextBox ring on focus' $o.Contains('Property="IsKeyboardFocused" Value="True"')
+        StyleCheck 'TextBox content host' $o.Contains('x:Name="PART_ContentHost"') }
+    $cb=$styles['FastLlm.ComboBoxStyle']; if($cb){ $o=$cb.OuterXml
+        StyleCheck 'Combo strong stroke' $o.Contains('BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"')
+        StyleCheck 'Combo ring 2px' ([regex]::IsMatch($o,'x:Name="Ring" BorderBrush="\{DynamicResource FastLlm\.FocusBrush\}" BorderThickness="2"'))
+        StyleCheck 'Combo ring on focus-within' $o.Contains('Property="IsKeyboardFocusWithin" Value="True"')
+        StyleCheck 'Combo toggle + popup' ($o.Contains('ToggleButton') -and $o.Contains('x:Name="PART_Popup"'))
+        StyleCheck 'Combo popup themed border' ([regex]::IsMatch($o,'(?s)<Popup.*?FastLlm\.ControlStrongStrokeBrush'))
+        StyleCheck 'Combo item style linked' $o.Contains('Property="ItemContainerStyle" Value="{StaticResource FastLlm.ComboBoxItemStyle}"')
+        StyleCheck 'Combo popup not opened by click-less' (-not $o.Contains('StaysOpenOnEdit')) }
+    $ci=$styles['FastLlm.ComboBoxItemStyle']; if($ci){ $o=$ci.OuterXml
+        StyleCheck 'Item selected accent' ([regex]::IsMatch($o,'(?s)Property="IsSelected" Value="True".*?TextOnAccentBrush.*?AccentFillBrush'))
+        StyleCheck 'Item focus ring 2px' ([regex]::IsMatch($o,'BorderThickness="2"') -and $o.Contains('IsKeyboardFocused'))}
+    $sp=$styles['FastLlm.SpinButtonStyle']; if($sp){
+        $set=@{}; foreach($el in $sp.SelectNodes("*[local-name()='Setter']")){ $set[$el.GetAttribute('Property')]=$el }
+        StyleCheck 'Spin not tab stop' ($set.ContainsKey('IsTabStop') -and $set['IsTabStop'].GetAttribute('Value') -ceq 'False')
+        StyleCheck 'Spin icon font' ($set.ContainsKey('FontFamily') -and $set['FontFamily'].GetAttribute('Value') -ceq '{DynamicResource FastLlm.IconFont}')
+        StyleCheck 'Spin focus ring' ($set.ContainsKey('FocusVisualStyle') -and $set['FocusVisualStyle'].GetAttribute('Value') -ceq '{DynamicResource FastLlm.FocusVisual}') }
+    # No x:Name of a template part reaches Els: each one sits inside a template or a style.
+    foreach($n in @($x.SelectNodes("//*[@*[local-name()='Name']]"))){
+        $anc=$n; $in=$false
+        while($null -ne $anc -and $anc -is [System.Xml.XmlElement]){ if($anc.LocalName -in 'ControlTemplate','Style'){$in=$true}; $anc=$anc.ParentNode }
+        if($n.GetAttribute('Name',$xn) -match '^(Ring|Bd|PART_)'){ StyleCheck "template name $($n.GetAttribute('Name',$xn)) inside template" $in }
+    }
+    return ,$fails.ToArray()
+}
+$styleFails=Get-StylePinFailures $shellText
+foreach($sf in $styleFails){Write-Host "FINDING: style pin $sf"}
+Check ($styleFails.Count -eq 0) 'the shell input styles (TextBox, ComboBox, ComboBoxItem, spin button) hold every style rule'
+# Plants: each replaces one run of the real shell text and must be flagged.
+$stylePlants=@(
+    @{Name='combo ring on mouse over (focus-within lost)';Old='<Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Ring" Property="Visibility" Value="Visible"/></Trigger>';New='<Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Ring" Property="Visibility" Value="Visible"/></Trigger>'}
+    @{Name='disabled text is the primary brush';Old='<Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>';New='<Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>'}
+    @{Name='an event attribute in a style';Old='<ToggleButton ClickMode="Press" Focusable="False"';New='<ToggleButton Click="OnX" ClickMode="Press" Focusable="False"'}
+    @{Name='selected item not accent';Old='<Setter Property="Foreground" Value="{DynamicResource FastLlm.TextOnAccentBrush}"/>';New='<Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>'}
+    @{Name='a literal colour';Old='      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>'+"`n"+'      <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>'+"`n"+'      <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>';New='      <Setter Property="Foreground" Value="#FF000000"/>'+"`n"+'      <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>'+"`n"+'      <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>'}
+    @{Name='combo style key renamed';Old='x:Key="FastLlm.ComboBoxStyle"';New='x:Key="FastLlm.ComboBoxStyleX"'}
+    @{Name='ring 1px';Old='<Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>';New='<Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="1" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>'}
+    @{Name='spin button without the icon font';Old='      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>'+"`n"+'      <Setter Property="FontSize" Value="10"/>';New='      <Setter Property="FontSize" Value="10"/>'}
+    @{Name='spin button is a tab stop';Old='<Setter Property="IsTabStop" Value="False"/>'+"`n"+'      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>'+"`n"+'      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>';New='<Setter Property="IsTabStop" Value="True"/>'+"`n"+'      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>'+"`n"+'      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>'}
+    @{Name='text box with the weak stroke';Old='<Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>'+"`n"+'      <Setter Property="CaretBrush"';New='<Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrokeBrush}"/>'+"`n"+'      <Setter Property="CaretBrush"'}
+)
+foreach($plant in $stylePlants){
+    $shellLf=$shellText.Replace("`r`n","`n")
+    Check ($shellLf.IndexOf([string]$plant.Old,[StringComparison]::Ordinal) -ge 0) "style plant '$($plant.Name)' matches the real shell text"
+    $mutated=$shellLf.Replace([string]$plant.Old,[string]$plant.New)
+    Check ((Get-StylePinFailures $mutated).Count -ge 1) "self-check: a style mutant is flagged ($($plant.Name))"
+}
+# ===== end PR 3b: input style pins (Task 3) =====
+
+# ===== PR 3b: Home Switch/Change and Activity copy pins (Task 7) =====
+$homeSrc=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentHome.ps1'))
+$shellSrc=$shellText
+function Get-HomePinFunc([string]$Text,[string]$Name){
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $f=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name},$true))
+    if($f.Count -eq 1){return [string]$f[0].Extent.Text}
+    return ''
+}
+$t7Switch=Get-HomePinFunc $homeSrc 'Invoke-FastLlmUiFluentHomeSwitch'
+$t7Change=Get-HomePinFunc $homeSrc 'Invoke-FastLlmUiFluentHomeChange'
+$t7Init=Get-HomePinFunc $homeSrc 'Initialize-FastLlmUiFluentHome'
+Check ($t7Switch -cmatch "Test-FastLlmUiFluentPageRegistered -Id 'Models'" -and $t7Switch -cmatch "Set-FastLlmUiFluentPage -Id 'Models' -FocusNav" -and $t7Switch -cmatch "Invoke-FastLlmUiAdapterEvent -Adapter \`$script:switchButton -Event 'Click'") 'Task 7: Home Switch navigates to Models (focusing the pane item) when registered, else raises the adapter click'
+Check ($t7Change -cmatch "Test-FastLlmUiFluentPageRegistered -Id 'Models'" -and $t7Change -cmatch "Set-FastLlmUiFluentPage -Id 'Models'" -and $t7Change -cnotmatch '-FocusNav' -and $t7Change -cmatch "\['ModelsModelBox'\]" -and $t7Change -cmatch '\.Focus\(\)') 'Task 7: Home Change navigates to Models and focuses the model box'
+Check ($t7Init -cmatch "\`$Els\['SwitchButton'\]\.Add_Click\(\{[^}]*Invoke-FastLlmUiFluentHomeSwitch" -and $t7Init -cmatch "\`$Els\['ChangeButton'\]\.Add_Click\(\{[^}]*Invoke-FastLlmUiFluentHomeChange") 'Task 7: Switch and Change clicks are wired to the plain handlers'
+Check ($homeSrc -cnotmatch '<Button x:Name="ChangeButton"[^>]*IsEnabled="False"' -and $t7Init -cnotmatch "ChangeButton'\]\.ToolTip" -and $t7Init -cnotmatch "SetShowOnDisabled\(\`$Els\['ChangeButton'\]") 'Task 7: Change is enabled with no coming-later tooltip'
+# the header button: strings, name, Els, table row, hosting
+Check ($homeSrc -cmatch "(?m)^\s*CopyFullOutputActivity\s*=\s*'Copy full output \(Activity\)'\s*$") 'Task 7: the string CopyFullOutputActivity is exactly Copy full output (Activity)'
+Check ($t7Init -cmatch "SetName\(\`$Els\['ActivityCopyButton'\],\s*\[string\]\s*\`$s\.CopyFullOutputActivity\)" -and $t7Init -cmatch "'ActivityExpander', 'ActivityHeader', 'ActivityCopyButton', 'ActivityBox'") 'Task 7: the header button is collected into Els and named from CopyFullOutputActivity'
+$t7Tag=[regex]::Match($homeSrc,"FastLlmUiFluentActivityCopyTagXaml = '([^']*)'").Groups[1].Value
+Check ($t7Tag -ceq '<Expander.Tag><Button x:Name="ActivityCopyButton" Style="{DynamicResource FastLlm.LinkButtonStyle}"/></Expander.Tag>' -and $homeSrc -cmatch "FastLlmUiFluentActivityCopySlot = 'Tag'" -and $homeSrc -cmatch '<!--ACTIVITY_COPY_TAG-->\s*<StackPanel>\s*<!--ACTIVITY_COPY_BODY-->\s*<TextBox x:Name="ActivityBox"') 'Task 7: the Activity copy button is hosted in the Expander Tag (slot Tag), with the body fallback slot ahead of the Activity box'
+$t7Body=[regex]::Match($homeSrc,"FastLlmUiFluentActivityCopyBodyXaml = '([^']*)'").Groups[1].Value
+Check ($t7Body -cmatch 'x:Name="ActivityCopyButton"' -and $t7Body -cmatch 'HorizontalAlignment="Right"') 'Task 7: the body fallback fragment names the same button, right-aligned'
+$rowAst=[System.Management.Automation.Language.Parser]::ParseInput($shellSrc,[ref]$null,[ref]$null)
+$t7Rows=@($rowAst.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst] -and ($n.Extent.Text -cmatch "Name\s*=\s*'failureCopyLink'")},$true))
+$t7Second=@($t7Rows|Where-Object{$_.Extent.Text -cmatch "Element\s*=\s*'ActivityCopyButton'"})
+Check ($t7Rows.Count -eq 2 -and $t7Second.Count -eq 1 -and $t7Second[0].Extent.Text -cmatch "Mode\s*=\s*'Content'" -and $t7Second[0].Extent.Text -cmatch "Event\s*=\s*'LinkClicked'" -and $t7Second[0].Extent.Text -cmatch 'Also\s*=\s*\$true' -and $t7Rows[0].Extent.Text -cmatch "Element\s*=\s*'FailureCopyButton'" -and $t7Rows[0].Extent.Text -cnotmatch 'Also') 'Task 7: the binding table has the ActivityCopyButton row after FailureCopyButton, joining failureCopyLink with Also and LinkClicked'
+$t7Style=[regex]::Match($shellSrc,'(?s)<Style x:Key="FastLlm\.ExpanderStyle".*?</Style>').Value
+$t7Hd=$t7Style.IndexOf('x:Name="Hd"');$t7Tg=$t7Style.IndexOf('Content="{TemplateBinding Tag}"');$t7Bd=$t7Style.IndexOf('x:Name="Body"')
+Check ($t7Hd -gt 0 -and $t7Tg -gt $t7Hd -and $t7Bd -gt $t7Tg -and $t7Style -cmatch 'Grid\.Column="1"[^>]*Content="\{TemplateBinding Tag\}"|x:Name="TagHost" Grid\.Column="1"') 'Task 7: the Expander style presents the Tag after the toggle and before the body (tab order toggle, copy, body)'
+# Plants: one change in the real Home or Shell text each; the matching check must fail. The pins above are read from named variables, so a plant re-evaluates the
+# one expression it is aimed at.
+function Test-T7Pin([string]$HomeText,[string]$ShellTextIn,[string]$Which){
+    $sw=Get-HomePinFunc $HomeText 'Invoke-FastLlmUiFluentHomeSwitch'
+    $ch=Get-HomePinFunc $HomeText 'Invoke-FastLlmUiFluentHomeChange'
+    $in=Get-HomePinFunc $HomeText 'Initialize-FastLlmUiFluentHome'
+    switch($Which){
+        'switch'{return ($sw -cmatch "Set-FastLlmUiFluentPage -Id 'Models' -FocusNav")}
+        'change'{return ($ch -cmatch "\['ModelsModelBox'\]" -and $ch -cnotmatch '-FocusNav')}
+        'wire'{return ($in -cmatch "\`$Els\['SwitchButton'\]\.Add_Click\(\{[^}]*Invoke-FastLlmUiFluentHomeSwitch")}
+        'tag'{$st=[regex]::Match($ShellTextIn,'(?s)<Style x:Key="FastLlm\.ExpanderStyle".*?</Style>').Value;return ($st.Contains('Content="{TemplateBinding Tag}"'))}
+        'name'{return ($in -cmatch "SetName\(\`$Els\['ActivityCopyButton'\],\s*\[string\]\s*\`$s\.CopyFullOutputActivity\)")}
+    }
+}
+Check ((Test-T7Pin $homeSrc $shellSrc 'switch') -and (Test-T7Pin $homeSrc $shellSrc 'change') -and (Test-T7Pin $homeSrc $shellSrc 'wire') -and (Test-T7Pin $homeSrc $shellSrc 'tag') -and (Test-T7Pin $homeSrc $shellSrc 'name')) 'Task 7 plant helper: every aimed expression holds on the real text'
+Check (-not (Test-T7Pin $homeSrc.Replace("Set-FastLlmUiFluentPage -Id 'Models' -FocusNav","Set-FastLlmUiFluentPage -Id 'Models'") $shellSrc 'switch')) 'self-check: Home Switch without -FocusNav is flagged'
+Check (-not (Test-T7Pin $homeSrc.Replace("['ModelsModelBox']","['ModelsFolderBox']") $shellSrc 'change')) 'self-check: Home Change that focuses another box is flagged'
+Check (-not (Test-T7Pin $homeSrc.Replace('Invoke-FastLlmUiFluentHomeSwitch })','Invoke-FastLlmUiFluentHomeConnect })') $shellSrc 'wire')) 'self-check: a Switch click wired to another handler is flagged'
+Check (-not (Test-T7Pin $homeSrc $shellSrc.Replace('Content="{TemplateBinding Tag}"','Content="{TemplateBinding Header}"') 'tag')) 'self-check: an Expander style that presents the Header instead of the Tag is flagged'
+Check (-not (Test-T7Pin $homeSrc.Replace('SetName($Els[''ActivityCopyButton''], [string] $s.CopyFullOutputActivity)','SetName($Els[''ActivityCopyButton''], [string] $s.Activity)') $shellSrc 'name')) 'self-check: a header copy button named like the Activity heading is flagged'
+# ===== end PR 3b: Home Switch/Change and Activity copy pins (Task 7) =====
+
+# ===== PR 3b: the Models page pins (Task 6) =====
+$modelsPath=Join-Path $root 'src/FastLlm.UiFluentModels.ps1'
+$modelsText=[IO.File]::ReadAllText($modelsPath)
+$modelsAst=Get-FileAst $modelsPath
+function Get-AstFunction($Ast,[string]$Name){ return ,@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name},$true)) }
+function Get-CommandNames($Ast){ return ,@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true)|ForEach-Object{[string]$_.GetCommandName()}) }
+
+# The page is wired into the shell: dot-sourced, parsed, initialised and registered, and the Models rows join the binding table; the Home Change/Switch targets
+# (ModelsModelBox in Els, NavModels in Els) exist.
+Check ($shellText.Contains("'FastLlm.UiFluentModels.ps1'")) 'the shell dot-sources the Models file'
+foreach($need in "New-FastLlmUiXamlElement -Name 'FastLlm.Models'",'Initialize-FastLlmUiFluentModels -Page $modelsPage','Register-FastLlmUiFluentModelsPage -Page $modelsPage',"@(Get-FastLlmUiFluentModelsBindings)","`$f['Els']['NavModels'] = `$items[1].Item"){
+    Check ($shellText.Contains($need)) "the shell has: $need"
+}
+Check ($modelsText -cmatch "(?s)Add-FastLlmUiFluentElements[^\r\n]*'ModelsModelBox'|'ModelsModelBox'") 'the Models page collects ModelsModelBox into Els (Home Change focuses it)'
+# Models binds exactly the eight rows of the plan; the two sections bind Visual with no event; no page row opens a dialog.
+$bindFn=Get-AstFunction $modelsAst 'Get-FastLlmUiFluentModelsBindings'
+Check ($bindFn.Count -eq 1) 'Get-FastLlmUiFluentModelsBindings is defined once'
+$bindRows=@($bindFn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)|ForEach-Object{ ($_.KeyValuePairs|ForEach-Object{$_.Item1.Extent.Text+'='+$_.Item2.Extent.Text}) -join ';' })
+Check ($bindRows.Count -eq 8) 'the Models binding table has eight rows'
+foreach($want in @("Name='modelBox';Element='ModelsModelBox';Mode='Combo'","Name='pathBox';Element='ModelsFolderBox';Mode='Input'","Name='contextBox';Element='ModelsContextBox';Mode='Number'","Name='barBox';Element='ModelsBarBox';Mode='Combo'","Name='chooseButton';Element='ModelsChooseButton';Mode='Content';Event='Click'","Name='switchLabel';Element='ModelsSwitchLine';Mode='TextBlock'","Name='modelsButton';Element='ModelsDownloadedSection';Mode='Visual';Event=''","Name='componentsButton';Element='ModelsComponentsSection';Mode='Visual';Event=''")){
+    $wantNorm=$want -replace '\s',''
+    Check (@($bindRows|Where-Object{($_ -replace '\s','').StartsWith($wantNorm)}).Count -eq 1) "the Models binding table has the row $want"
+}
+# Today's dialogs are unreachable from the page.
+$modelsCalls=Get-CommandNames $modelsAst
+foreach($dlg in 'ShowUiSwitchPicker','ShowModelsWindow','ShowComponentsWindow','ShowConnectDialog'){ Check ($modelsCalls -cnotcontains $dlg) "the Models page never calls $dlg" }
+# The views are made by the list updates (never in Initialize, where the script's own null assignments run later) and never cleared.
+$initFn=Get-AstFunction $modelsAst 'Initialize-FastLlmUiFluentModels'
+Check ($initFn.Count -eq 1 -and (Get-CommandNames $initFn[0]) -cnotcontains 'New-FastLlmUiFluentModelsView' -and (Get-CommandNames $initFn[0]) -cnotcontains 'New-FastLlmUiFluentComponentsView') 'the views are not made in Initialize'
+Check ($modelsText -cnotmatch '\$script:(modelsView|componentsView)\s*=\s*\$null') 'the page never clears the views'
+foreach($pair in @(@('Update-FastLlmUiFluentModelsList','New-FastLlmUiFluentModelsView'),@('Update-FastLlmUiFluentComponentsList','New-FastLlmUiFluentComponentsView'))){
+    $fnList=Get-AstFunction $modelsAst $pair[0]
+    Check ($fnList.Count -eq 1 -and (Get-CommandNames $fnList[0]) -ccontains $pair[1]) "$($pair[0]) makes its view first"
+}
+# The Remove buttons call today's functions with today's shapes; the leftover handler passes nothing.
+foreach($pair in @(@('Invoke-FastLlmUiFluentModelsRemoveModel','RemoveModelFromWindow','([string] $Sender.Tag)'),@('Invoke-FastLlmUiFluentModelsRemoveLeftovers','RemoveLeftoversFromWindow',''),@('Invoke-FastLlmUiFluentModelsRemoveComponent','RemoveComponentFromWindow','([string] $Sender.Tag)'))){
+    $h=Get-AstFunction $modelsAst $pair[0]
+    $calls=@(); if($h.Count -eq 1){$calls=@($h[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $pair[1]},$true))}
+    Check ($calls.Count -eq 1 -and (($calls[0].CommandElements|Select-Object -Skip 1|ForEach-Object{$_.Extent.Text}) -join ' ') -ceq $pair[2]) "$($pair[0]) calls $($pair[1]) $($pair[2])"
+}
+# Leave commits a pending number edit, and the spin buttons step through the same commit block (which calls Step-FastLlmUiNumericValue in Home.ps1).
+$exitFn=Get-AstFunction $modelsAst 'Exit-FastLlmUiFluentModels'
+Check ($exitFn.Count -eq 1 -and $exitFn[0].Body.Extent.Text.Contains("`$script:contextBox.__state['CommitEdit']") -and $exitFn[0].Body.Extent.Text -cmatch "& \`$commit ''") 'the Models Leave runs the context box CommitEdit block'
+$spinFn=Get-AstFunction $modelsAst 'Invoke-FastLlmUiFluentModelsSpin'
+Check ($spinFn.Count -eq 1 -and $spinFn[0].Body.Extent.Text.Contains("`$script:contextBox.__state['CommitEdit']") -and $spinFn[0].Body.Extent.Text -cmatch '& \$commit \$Direction') 'the spin handler runs CommitEdit with its direction'
+Check ($initFn[0].Body.Extent.Text -cmatch "ModelsContextUp'\]\.Add_Click\(\{[^}]*Invoke-FastLlmUiFluentModelsSpin -Direction 'Up'" -and $initFn[0].Body.Extent.Text -cmatch "ModelsContextDown'\]\.Add_Click\(\{[^}]*Invoke-FastLlmUiFluentModelsSpin -Direction 'Down'") 'the up and down spin buttons call the spin handler with Up and Down'
+$homeAst=Get-FileAst (Join-Path $root 'src/FastLlm.UiFluentHome.ps1')
+$connectCtl=Get-AstFunction $homeAst 'Connect-FastLlmUiFluentControl'
+Check ($connectCtl.Count -eq 1 -and $connectCtl[0].Body.Extent.Text -cmatch '\$step = \$\{function:Step-FastLlmUiNumericValue\}' -and $connectCtl[0].Body.Extent.Text -cmatch '& \$step -Current \$value -Increment') 'the Number commit block steps through Step-FastLlmUiNumericValue'
+
+# The picker is computed once, by ShowUiSwitchPicker's opening statements ($status, its try, the picker call), inside an if on the Switch button's Enabled; that is the only call site in the file.
+function Get-PickerGuardFindings([string]$Text,[string]$ClassicText){
+    $found=New-Object System.Collections.ArrayList
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $calls=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Get-FastLlmUiSwitchPickerModel'},$true))
+    if($calls.Count -ne 1){[void]$found.Add("Get-FastLlmUiSwitchPickerModel has $($calls.Count) call sites, expected 1");return ,$found.ToArray()}
+    $p=$calls[0].Parent; $guard=$null
+    while($null -ne $p){ if($p -is [System.Management.Automation.Language.IfStatementAst]){$guard=$p;break}; $p=$p.Parent }
+    if($null -eq $guard -or $guard.Clauses[0].Item1.Extent.Text -cnotmatch '\$script:switchButton\.Enabled'){[void]$found.Add('the picker call is not inside an if on $script:switchButton.Enabled');return ,$found.ToArray()}
+    $body=@($guard.Clauses[0].Item2.Statements|ForEach-Object{$_.Extent.Text})
+    $ca=[System.Management.Automation.Language.Parser]::ParseInput($ClassicText,[ref]$null,[ref]$null)
+    $cf=@($ca.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowUiSwitchPicker'},$true))
+    if($cf.Count -ne 1){[void]$found.Add('ShowUiSwitchPicker is not found');return ,$found.ToArray()}
+    $want=@($cf[0].Body.EndBlock.Statements|Select-Object -First 3|ForEach-Object{$_.Extent.Text.Replace('(Join-Path $PSScriptRoot','(Join-Path $script:FastLlmUiFluentSourceRoot')})
+    if($body.Count -ne 3 -or $body[0] -cne $want[0] -or $body[1] -cne $want[1] -or $body[2] -cne $want[2]){[void]$found.Add('the guarded statements are not the first three statements of ShowUiSwitchPicker (status, its try, the picker call), with the source root')}
+    return ,$found.ToArray()
+}
+$classicUiText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
+$pickerFindings=Get-PickerGuardFindings $modelsText $classicUiText
+foreach($f in $pickerFindings){Write-Host "FINDING: $f"}
+Check ($pickerFindings.Count -eq 0) 'the picker is computed by ShowUiSwitchPicker statements inside the Switch-button-enabled guard, at one call site'
+Check ((Get-PickerGuardFindings $modelsText.Replace('if ([bool] $script:switchButton.Enabled) {','if ($true) {') $classicUiText).Count -ge 1) 'mutation check: a picker without the switchButton.Enabled guard is flagged'
+Check ((Get-PickerGuardFindings $modelsText.Replace("-CatalogPath (Join-Path `$script:FastLlmUiFluentSourceRoot 'config/catalog.json') -Status `$status","-CatalogPath (Join-Path `$script:FastLlmUiFluentSourceRoot 'config/other.json') -Status `$status") $classicUiText).Count -ge 1) 'mutation check: a changed picker statement is flagged'
+Check ((Get-PickerGuardFindings ($modelsText+"`nfunction Plant { Get-FastLlmUiSwitchPickerModel -InstallRoot x -CatalogPath y }") $classicUiText).Count -ge 1) 'mutation check: a second picker call site is flagged'
+# The tick hook: the helper may be called only inside the If of the edge; the edge compares the stored state with the button.
+$tickFn=Get-AstFunction $modelsAst 'Update-FastLlmUiFluentModels'
+Check ($tickFn.Count -eq 1 -and $tickFn[0].Body.Extent.Text -cmatch 'if \(\[bool\] \$script:switchButton\.Enabled -ne \[bool\] \$m\[''SwitchWas''\]\) \{ Update-FastLlmUiFluentModelsPicker \}') 'the tick hook computes the picker only on the Switch button edge'
+Check ($tickFn[0].Body.Extent.Text.Contains("Update-FastLlmUiFluentModelsPicker") -and (Get-TickHookFindings @($modelsText.Replace('if ([bool] $script:switchButton.Enabled -ne [bool] $m[''SwitchWas'']) { Update-FastLlmUiFluentModelsPicker }','Update-FastLlmUiFluentModelsPicker')) $tickForbidden 'Update-FastLlmUiFluentModels').Count -ge 1) 'mutation check: the picker helper called on every tick is flagged'
+
+# Live regions: the three message lines are Polite in the registered markup, and each message adapter's TextChanged handler sends the announcement.
+$modelsXamlAssign=@($modelsAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiXaml[''FastLlm.Models'']'},$true))
+Check ($modelsXamlAssign.Count -eq 1) 'the Models markup is assigned once, as one string constant'
+$modelsXaml=[string]$modelsXamlAssign[0].Right.Expression.Value
+function Get-LiveRegionFindings([string]$Xaml,[string]$Source){
+    $found=New-Object System.Collections.ArrayList
+    $doc=New-Object System.Xml.XmlDocument; $doc.LoadXml($Xaml)
+    $xn='http://schemas.microsoft.com/winfx/2006/xaml'
+    foreach($name in 'ModelsSwitchMessage','ModelsDownloadedMessage','ModelsComponentsMessage'){
+        $node=@($doc.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name',$xn) -ceq $name})
+        if($node.Count -ne 1 -or $node[0].GetAttribute('AutomationProperties.LiveSetting') -cne 'Polite'){[void]$found.Add("$name is not a single element with LiveSetting Polite")}
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($Source,[ref]$null,[ref]$null)
+        $hooks=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Value -ceq 'Add_TextChanged' -and $n.Extent.Text.Contains("'$name'")},$true))
+        if($hooks.Count -ne 1 -or (Get-CommandNames $hooks[0]) -cnotcontains 'Send-FastLlmUiFluentLiveRegion'){[void]$found.Add("the TextChanged handler for $name does not call Send-FastLlmUiFluentLiveRegion")}
+    }
+    return ,$found.ToArray()
+}
+$liveFindings=Get-LiveRegionFindings $modelsXaml $modelsText
+foreach($f in $liveFindings){Write-Host "FINDING: $f"}
+Check ($liveFindings.Count -eq 0) 'the three Models message lines are polite live regions and announce on TextChanged'
+Check ((Get-LiveRegionFindings $modelsXaml.Replace('<TextBlock x:Name="ModelsDownloadedMessage" Margin="0,8,0,0" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>','<TextBlock x:Name="ModelsDownloadedMessage" Margin="0,8,0,0" TextWrapping="Wrap"/>') $modelsText).Count -eq 1) 'mutation check: a message line without LiveSetting is flagged'
+Check ((Get-LiveRegionFindings $modelsXaml $modelsText.Replace("Send-FastLlmUiFluentLiveRegion -Element `$script:FastLlmUiFluent['Els']['ModelsComponentsMessage']","`$null = 1")).Count -eq 1) 'mutation check: a TextChanged handler without the announcement is flagged'
+# The markup: no event attribute, the input styles, one x:Name each, and the named elements the shell, Home and the tests rely on.
+Check ($modelsXaml -cnotmatch '\s(Click|Loaded|TextChanged|SelectionChanged|KeyDown|PreviewKeyDown|GotFocus|LostFocus)\s*=') 'the Models markup has no event attribute'
+foreach($pair in @(@('ModelsModelBox','FastLlm.ComboBoxStyle'),@('ModelsBarBox','FastLlm.ComboBoxStyle'),@('ModelsFolderBox','FastLlm.TextBoxStyle'),@('ModelsContextBox','FastLlm.TextBoxStyle'),@('ModelsContextUp','FastLlm.SpinButtonStyle'),@('ModelsContextDown','FastLlm.SpinButtonStyle'),@('ModelsStartOptions','FastLlm.ExpanderStyle'))){
+    Check ($modelsXaml -cmatch ('x:Name="'+$pair[0]+'"[^>]*Style="\{DynamicResource '+[regex]::Escape($pair[1])+'\}"')) "$($pair[0]) uses $($pair[1])"
+}
+Check ($modelsXaml -cmatch 'x:Name="ModelsStartOptions"[^>]*IsExpanded="False"') 'the Start options expander starts collapsed'
+$modelsXamlDoc=New-Object System.Xml.XmlDocument; $modelsXamlDoc.LoadXml($modelsXaml)
+$modelsNames=@($modelsXamlDoc.SelectNodes('//*[@*[local-name()=''Name'']]')|ForEach-Object{$_.GetAttribute('Name','http://schemas.microsoft.com/winfx/2006/xaml')})
+Check (@($modelsNames|Select-Object -Unique).Count -eq $modelsNames.Count) 'every Models x:Name is unique'
+Check (@($modelsNames|Where-Object{$_ -cnotmatch '^Models'}).Count -eq 1 -and @($modelsNames|Where-Object{$_ -ceq 'Bd'}).Count -eq 1) 'every Models x:Name is Models-prefixed (the one template part is Bd, inside the list item template)'
+$collected=@([regex]::Matches($initFn[0].Body.Extent.Text,"'(Models[A-Za-z]+)'")|ForEach-Object{$_.Groups[1].Value}|Select-Object -Unique)
+Check (@($modelsNames|Where-Object{$_ -cmatch '^Models' -and $collected -cnotcontains $_}).Count -eq 0) 'Initialize collects every Models x:Name into Els'
+
+# The copied text drift pin (as the Connect one): every value of $script:FastLlmUiFluentModelsText equals a constant or a format template of the four classic
+# functions, or the first argument of a top-level LabelAt call; and every constant or template those functions assign to a .Text is in the table or on the allowlist.
+$modelsTextAssign=@($modelsAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentModelsText'},$true))
+Check ($modelsTextAssign.Count -eq 1) 'the Models text table is assigned exactly once'
+$modelsTable=& ([scriptblock]::Create($modelsTextAssign[0].Right.Extent.Text))
+Check ((@($modelsTable.Keys) -join ',') -ceq 'Model,Context,Folder,Bar,SwitchTitle,SwitchIntro,SwitchNow,DownloadedModels,RemoveLeftovers,Remove,NoModels,NoComponents,FreeFormat,ModelRowFormat,InUseFormat,LeftoversFormat,ModelListReadFormat,ComponentListReadFormat') 'the Models text table has the 18 planned keys, in order'
+$classicFns=@('ShowUiSwitchPicker','ShowModelsWindow','FillModelsPanel','FillComponentsPanel')
+function Get-TemplateText($Expandable){
+    $text=[string]$Expandable.Value
+    $start=$Expandable.Extent.StartOffset
+    # Replace each nested expression, last first, by its index; the string constant offsets are relative to the whole script, the value excludes the quotes.
+    $nested=@($Expandable.NestedExpressions)
+    $raw=$Expandable.Extent.Text
+    for($i=$nested.Count-1;$i -ge 0;$i--){
+        $ns=$nested[$i].Extent.StartOffset-$start; $ne=$nested[$i].Extent.EndOffset-$start
+        $raw=$raw.Substring(0,$ns)+('{'+$i+'}')+$raw.Substring($ne)
+    }
+    return $raw.Substring(1,$raw.Length-2)
+}
+$classicValues=New-Object System.Collections.ArrayList
+$classicAssigned=New-Object System.Collections.ArrayList
+foreach($cfn in $classicFns){
+    foreach($fnAst in (Get-AstFunction $classicAst $cfn)){
+        foreach($k in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){ [void]$classicValues.Add([string]$k.Value) }
+        foreach($ex in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]},$true))){ [void]$classicValues.Add((Get-TemplateText $ex)) }
+        foreach($asg in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and (($n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and [string]$n.Left.Member.Value -ceq 'Text') -or ($n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.Left.VariablePath.UserPath) -ceq 'text'))},$true))){
+            foreach($k in @($asg.Right.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]},$true))){
+                if($k.Parent -is [System.Management.Automation.Language.MemberExpressionAst] -and [object]::ReferenceEquals($k.Parent.Member,$k)){continue}
+                if($k.Parent -is [System.Management.Automation.Language.BinaryExpressionAst] -and [string]$k.Parent.Operator -cnotmatch '^(Plus|Format)$'){continue}
+                if($k.Parent -is [System.Management.Automation.Language.CommandAst] -and [object]::ReferenceEquals($k.Parent.CommandElements[0],$k)){continue}
+                $v=if($k -is [System.Management.Automation.Language.ExpandableStringExpressionAst]){Get-TemplateText $k}else{[string]$k.Value}
+                if($v.Trim() -ne ''){[void]$classicAssigned.Add($v)}
+            }
+        }
+    }
+}
+foreach($labelCall in @($classicAst.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'LabelAt'},$true))){
+    if($labelCall.CommandElements.Count -ge 2 -and $labelCall.CommandElements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst]){[void]$classicValues.Add([string]$labelCall.CommandElements[1].Value)}
+}
+function Get-ModelsDriftProblems($Table,[string[]]$Values,[string[]]$Assigned){
+    $problems=New-Object System.Collections.ArrayList
+    foreach($key in @($Table.Keys)){if($Values -cnotcontains [string]$Table[$key]){[void]$problems.Add("table value $key is not a constant or template of the classic Models code")}}
+    $allowed=@($Table.Values|ForEach-Object{[string]$_})+@('Close','FastLLM components','Downloaded models')
+    foreach($text in $Assigned){if($allowed -cnotcontains $text){[void]$problems.Add("the classic code assigns '$text' to a .Text and the table has no such value")}}
+    return ,$problems.ToArray()
+}
+$modelsDrift=Get-ModelsDriftProblems $modelsTable $classicValues.ToArray() $classicAssigned.ToArray()
+foreach($pr in $modelsDrift){Write-Host "FINDING: $pr"}
+Check ($modelsDrift.Count -eq 0 -and $classicAssigned.Count -gt 8) "every Models text value is a classic constant or template, and every classic .Text constant is in the table ($($classicAssigned.Count) assigned)"
+$mutatedModels=[ordered]@{}; foreach($key in @($modelsTable.Keys)){$mutatedModels[$key]=[string]$modelsTable[$key]}
+$mutatedModels['NoModels']='No models are downloaded'
+Check ((Get-ModelsDriftProblems $mutatedModels $classicValues.ToArray() $classicAssigned.ToArray()).Count -ge 1) 'mutation check: a changed table value fails the Models drift pin'
+$mutatedModels=[ordered]@{}; foreach($key in @($modelsTable.Keys)){$mutatedModels[$key]=[string]$modelsTable[$key]}
+$mutatedModels['FreeFormat']='Free disk space: {0} GiB'
+Check ((Get-ModelsDriftProblems $mutatedModels $classicValues.ToArray() $classicAssigned.ToArray()).Count -ge 1) 'mutation check: an edited template fails the Models drift pin'
+Check ((Get-ModelsDriftProblems $modelsTable $classicValues.ToArray() @($classicAssigned.ToArray()+'A new caption')).Count -ge 1) 'mutation check: a new .Text literal in the classic code that the table lacks fails the Models drift pin'
+
+# The list models (pure), with the store functions shadowed. The real functions are taken from the file by AST; the text table is the real one.
+$script:FastLlmUiFluentModelsText=$modelsTable
+foreach($fnName in 'Get-FastLlmUiFluentModelsListModel','Get-FastLlmUiFluentComponentsListModel'){
+    $def=@(Get-AstFunction $modelsAst $fnName)
+    Check ($def.Count -eq 1) "$fnName is defined once"
+    . ([scriptblock]::Create($def[0].Extent.Text))
+}
+$script:storeState=@{models=@();leftovers=@();free=$null;throwModels=$false;throwLeftovers=$false;components=@();throwComponents=$false}
+function Get-FastLlmInstalledModels { param($InstallRoot,$CatalogPath) if($script:storeState.throwModels){throw 'the catalog is unreadable'}; return @($script:storeState.models) }
+function Get-FastLlmModelLeftovers { param($InstallRoot) if($script:storeState.throwLeftovers){throw 'no access'}; return @($script:storeState.leftovers) }
+function Get-FastLlmModelStoreFreeBytes { param($InstallRoot) return $script:storeState.free }
+function Format-FastLlmModelStoreGigabytes { param([int64]$Bytes) return ([double]$Bytes/1e9).ToString('0.0',[Globalization.CultureInfo]::InvariantCulture) }
+function Get-FastLlmModelDisplayName { param($Model) return [string]$Model.name }
+function Get-FastLlmComponentInventory { param($ComponentsPath,$InstallRoot) if($script:storeState.throwComponents){throw 'inventory failed'}; return @($script:storeState.components) }
+function Get-FastLlmInstalledComponentRows { param([object[]]$Inventory) return @($Inventory|ForEach-Object{[pscustomobject]@{id=[string]$_.id;kind='engine';label=([string]$_.id+' (engine, 1.0) - 1.0 GB')}}) }
+$fixtureCatalog=[pscustomobject]@{models=@([pscustomobject]@{id='m-a';name='Alpha'},[pscustomobject]@{id='m-b';name='Beta'})}
+function New-ModelRow([string]$Id,[int64]$Bytes,[bool]$InUse,[string]$Reason){ return [pscustomobject]@{id=$Id;sizeBytes=$Bytes;inUse=$InUse;inUseReason=$Reason} }
+$script:storeState.models=@()
+$empty=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check (@($empty.rows).Count -eq 0 -and $empty.freeText -ceq '' -and $empty.leftoverEnabled -eq $false -and @($empty.leftoverNames).Count -eq 0 -and $empty.leftoverText -ceq '' -and $empty.message -ceq '') 'the list model of an empty store is empty, with no free text, leftovers or message'
+$script:storeState.models=@((New-ModelRow 'm-a' 4300000000 $false ''),(New-ModelRow 'm-b' 12000000000 $true 'serving'))
+$script:storeState.free=250000000000
+$two=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check (@($two.rows).Count -eq 2 -and $two.rows[0].text -ceq 'Alpha  -  4.3 GB' -and $two.rows[0].removable -eq $true -and $two.rows[0].id -ceq 'm-a' -and $two.rows[0].name -ceq 'Alpha') 'a removable row has the classic row text'
+Check ($two.rows[1].text -ceq 'Beta  -  12.0 GB  (in use: serving)' -and $two.rows[1].removable -eq $false -and $two.rows[1].inUseReason -ceq 'serving') 'an in-use row says why, and cannot be removed'
+Check ($two.freeText -ceq 'Free disk space: 250.0 GB') 'the free space has the classic text'
+$mutRemovable=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check (@($mutRemovable.rows|Where-Object{$_.inUseReason -cne '' -and $_.removable}).Count -eq 0) 'no in-use row is removable'
+$modelsFnText=(Get-AstFunction $modelsAst 'Get-FastLlmUiFluentModelsListModel')[0].Extent.Text
+$plantFn=$modelsFnText.Replace('removable = [bool] (-not $row.inUse)','removable = $true')
+Check ($plantFn -cne $modelsFnText) 'the in-use plant matches the real text'
+. ([scriptblock]::Create($plantFn))
+$plantRows=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check (@($plantRows.rows|Where-Object{$_.inUseReason -cne '' -and $_.removable}).Count -ge 1) 'mutation check: a list model that makes an in-use row removable is caught by the no-in-use-removable check'
+. ([scriptblock]::Create($modelsFnText))
+$script:storeState.leftovers=@([pscustomobject]@{name='a.partial';sizeBytes=1000000000;locked=$false},[pscustomobject]@{name='b.partial';sizeBytes=500000000;locked=$true})
+$left=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check ($left.leftoverEnabled -eq $true -and (@($left.leftoverNames) -join ',') -ceq 'a.partial' -and $left.leftoverText -ceq '2 leftover file(s), 1.5 GB') 'locked leftovers are counted and sized but never named for removal'
+$script:storeState.free=$null
+$noFree=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check ($noFree.freeText -ceq '') 'an unknown free space shows no free text'
+$script:storeState.throwModels=$true; $script:storeState.throwLeftovers=$true
+$bad=Get-FastLlmUiFluentModelsListModel -Root 'C:\r' -File 'f' -Catalog $fixtureCatalog
+Check ($bad.message -ceq 'The model list could not be read: the catalog is unreadable' -and @($bad.rows).Count -eq 0 -and $bad.leftoverEnabled -eq $false) 'an unreadable list gives the list-read text and no rows; unreadable leftovers are ignored'
+$script:storeState.throwModels=$false; $script:storeState.throwLeftovers=$false
+$folder=Get-FastLlmUiFluentModelsListModel -Catalog $fixtureCatalog -RootError 'Illegal characters in path.'
+Check ($folder.message -ceq 'The model list could not be read: Illegal characters in path.' -and @($folder.rows).Count -eq 0 -and $folder.freeText -ceq '') 'an unusable folder shows the list-read text and reads nothing'
+$script:storeState.components=@([pscustomobject]@{id='vulkan'},[pscustomobject]@{id='hip'})
+$comp=Get-FastLlmUiFluentComponentsListModel -Root 'C:\r' -File 'f'
+Check (@($comp.rows).Count -eq 2 -and $comp.rows[0].id -ceq 'vulkan' -and $comp.rows[0].text -ceq 'vulkan (engine, 1.0) - 1.0 GB' -and $comp.message -ceq '') 'the component list model has the row id and label'
+$script:storeState.throwComponents=$true
+$compBad=Get-FastLlmUiFluentComponentsListModel -Root 'C:\r' -File 'f'
+Check ($compBad.message -ceq 'The component list could not be read: inventory failed' -and @($compBad.rows).Count -eq 0) 'an unreadable component list gives the classic text'
+Check ((Get-FastLlmUiFluentComponentsListModel -RootError 'bad folder').message -ceq 'The component list could not be read: bad folder') 'an unusable folder shows the component list-read text'
+# ===== end PR 3b: the Models page pins (Task 6) =====
 
 Write-Host "UI fluent member coverage tests passed: $checks"

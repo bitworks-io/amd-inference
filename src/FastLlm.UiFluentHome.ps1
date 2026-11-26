@@ -36,6 +36,16 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     WhyNotRunning        = 'Start FastLLM first'
     # PR 3b: the automation name of the Copy full output button in the Activity header (the failure bar's keeps the adapter caption).
     CopyFullOutputActivity = 'Copy full output (Activity)'
+    # PR 3b: the Models page headings, the Remove and spin button names and the three greyed-reason lines.
+    ModelsStartWith      = 'Model to start with'
+    ModelsStartOptions   = 'Start options'
+    ModelsComponents     = 'Engine components'
+    RemoveFormat         = 'Remove {0}'
+    SpinUp               = 'Increase'
+    SpinDown             = 'Decrease'
+    WhyNoPreview         = 'Start once to preview a setup first'
+    WhyBackgroundRun     = 'Available when the background run has ended'
+    WhyNoLeftovers       = 'No leftover partial downloads were found'
 }
 
 # Icon glyphs (Segoe Fluent Icons, falling back to Segoe MDL2 Assets: the same code points exist in both). They are drawn, never read.

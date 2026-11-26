@@ -1218,6 +1218,8 @@ $driverButton.Add_Click({try{ReadSelection;LaunchStep 'driver guidance' (@('doct
 $script:componentsView=$null
 function FillComponentsPanel {
     $view=$script:componentsView
+    # The Fluent window's Models page rebuilds its own list: its view names the function (the classic view has no refresh key).
+    if($null -ne $view -and $view['refresh']){& $view['refresh'];return}
     foreach($old in @($view.panel.Controls)){$old.Dispose()}
     try{$rows=@(Get-FastLlmInstalledComponentRows -Inventory @(Get-FastLlmComponentInventory -ComponentsPath $view.file -InstallRoot $view.root))}
     catch{$rows=@();$view.message.Text="The component list could not be read: $($_.Exception.Message)"}
@@ -1277,6 +1279,8 @@ $componentsButton.Add_Click({try{ShowComponentsWindow}catch{ShowFailure $_.Excep
 $script:modelsView=$null
 function FillModelsPanel {
     $view=$script:modelsView
+    # The Fluent window's Models page rebuilds its own list: its view names the function (the classic view has no refresh key).
+    if($null -ne $view -and $view['refresh']){& $view['refresh'];return}
     foreach($old in @($view.panel.Controls)){$old.Dispose()}
     $rows=@()
     try{$rows=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file)}
