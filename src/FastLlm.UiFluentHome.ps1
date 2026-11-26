@@ -54,12 +54,11 @@ $script:FastLlmUiFluentGlyphs = @{
     StepDone = 0xE73E; StepActive = 0xE768; StepWait = 0xE739; StepAttention = 0xE7BA
 }
 
-# Where the Activity header's Copy full output button is hosted. 'Tag' (the plan's first choice) puts it in the Expander's Tag, which the shell's Expander
-# style presents beside the toggle. If the Windows check (pages step P16) shows the Tag hosting fails, change this ONE value to 'Body': the button becomes the
-# first child of the Expander's body, above the Activity box (the tab order stays toggle, copy, box). Nothing else changes.
+# Where the Activity header's Copy full output button is hosted. The button is built in code (registered XAML is constant markup only) and put in the slot
+# this value names. 'Tag' (the plan's first choice) puts it in the Expander's Tag, which the shell's Expander style presents beside the toggle. If the Windows
+# check (pages step P16) shows the Tag hosting fails, change this ONE value to 'Body': the button becomes the first child of the Expander's body (the named
+# ActivityBody panel), right-aligned above the Activity box (the tab order stays toggle, copy, box). Nothing else changes.
 $script:FastLlmUiFluentActivityCopySlot = 'Tag'
-$script:FastLlmUiFluentActivityCopyTagXaml = '<Expander.Tag><Button x:Name="ActivityCopyButton" Style="{DynamicResource FastLlm.LinkButtonStyle}"/></Expander.Tag>'
-$script:FastLlmUiFluentActivityCopyBodyXaml = '<Button x:Name="ActivityCopyButton" HorizontalAlignment="Right" Margin="0,8,0,0" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>'
 
 # Home reads its markup text only from the string table above and from the adapters; the markup itself carries no visible text.
 $script:FastLlmUiXaml['FastLlm.Home'] = @'
@@ -146,9 +145,7 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
       <Expander.Header>
         <TextBlock x:Name="ActivityHeader" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
       </Expander.Header>
-      <!--ACTIVITY_COPY_TAG-->
-      <StackPanel>
-        <!--ACTIVITY_COPY_BODY-->
+      <StackPanel x:Name="ActivityBody">
         <TextBox x:Name="ActivityBox" Margin="0,8,0,0" FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Height="220" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
                  VerticalScrollBarVisibility="Auto" FontFamily="{DynamicResource FastLlm.MonoFont}"
                  Background="{DynamicResource FastLlm.CardBrush}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"
@@ -159,8 +156,6 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
   </Grid>
 </ScrollViewer>
 '@
-# The copy button's slot is filled once, here (the table holds the final markup; the XAML loader and its safety scan see only that).
-$script:FastLlmUiXaml['FastLlm.Home'] = ([string] $script:FastLlmUiXaml['FastLlm.Home']).Replace('<!--ACTIVITY_COPY_TAG-->', $(if ($script:FastLlmUiFluentActivityCopySlot -ceq 'Tag') { $script:FastLlmUiFluentActivityCopyTagXaml } else { '' })).Replace('<!--ACTIVITY_COPY_BODY-->', $(if ($script:FastLlmUiFluentActivityCopySlot -ceq 'Body') { $script:FastLlmUiFluentActivityCopyBodyXaml } else { '' }))
 
 # The Home rows of the binding table: adapter name, element name, how the caption is set, the adapter event a click raises, and flags.
 #   Mode  : TextBlock (Text), Content (Content), Header (Header), Output (read-only box), Visual (visibility and enablement only)
@@ -350,7 +345,7 @@ function Initialize-FastLlmUiFluentHome {
     foreach ($name in 'HeaderGrid', 'TitleText', 'NoticeText', 'TrayButton', 'StatusCard', 'StatusDot', 'StatusHeadline', 'StartSplit', 'InstallButton',
         'MoreStartButton', 'StopButton', 'AttachButton', 'StatusDetail', 'BackgroundLine', 'HomeProgress', 'StepsBlock', 'StepsSummary', 'StepsPanel', 'FactsPanel', 'AddressLabel',
         'AddressText', 'CopyButton', 'WillStartPanel', 'WillStartText', 'ChangeButton', 'NotesText', 'ResultsLink', 'BarLink', 'QuickPanel', 'QuickHeading',
-        'OpenChatButton', 'ConnectButton', 'SwitchButton', 'SwitchLine', 'ActivityExpander', 'ActivityHeader', 'ActivityCopyButton', 'ActivityBox') {
+        'OpenChatButton', 'ConnectButton', 'SwitchButton', 'SwitchLine', 'ActivityExpander', 'ActivityHeader', 'ActivityBody', 'ActivityBox') {
         $Els[$name] = Get-FastLlmUiFluentElement -Root $Page -Name $name
     }
 
@@ -415,8 +410,18 @@ function Initialize-FastLlmUiFluentHome {
     # Switch and Change go to the Models page (plain handlers; the Switch row has no adapter event, so today's picker dialog never opens from here).
     $Els['SwitchButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentHomeSwitch })
     $Els['ChangeButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentHomeChange })
-    # The Activity header's Copy full output button: its own name (the adapter caption is the visible text, bound by the shell row).
-    [System.Windows.Automation.AutomationProperties]::SetName($Els['ActivityCopyButton'], [string] $s.CopyFullOutputActivity)
+    # The Activity header's Copy full output button is built in code, with the failure bar link's style; its caption is bound by the shell row, its name is its own.
+    $copy = New-Object System.Windows.Controls.Button
+    $copy.Name = 'ActivityCopyButton'
+    $copy.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.LinkButtonStyle')
+    [System.Windows.Automation.AutomationProperties]::SetName($copy, [string] $s.CopyFullOutputActivity)
+    if ($script:FastLlmUiFluentActivityCopySlot -ceq 'Body') {
+        $copy.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
+        $copy.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+        $Els['ActivityBody'].Children.Insert(0, $copy)
+    }
+    else { $Els['ActivityExpander'].Tag = $copy }
+    $Els['ActivityCopyButton'] = $copy
     return $Els
 }
 

@@ -323,7 +323,7 @@ function Invoke-P16-ActivityCopyHeader {
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     $null = $win.Activate()
     $btn = $els['ActivityCopyButton']
-    Check ($null -ne $btn -and $btn -is [System.Windows.Controls.Button] -and $btn.Name -ceq 'ActivityCopyButton') 'P16 ACTIVITY-COPY-TAG the header button resolves by FindName into the shell element map' ''
+    Check ($null -ne $btn -and $btn -is [System.Windows.Controls.Button] -and $btn.Name -ceq 'ActivityCopyButton') 'P16 ACTIVITY-COPY-TAG the code-built header button is in the shell element map (FindName does not find code-built elements)' ''
     if ($null -eq $btn) { return }
     # The failure link's visibility drives the header button (the same adapter), so show it for the checks and put it back after.
     $origVisible = [bool]$script:failureCopyLink.Visible

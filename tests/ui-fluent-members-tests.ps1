@@ -1067,11 +1067,9 @@ Check ($t7Init -cmatch "\`$Els\['SwitchButton'\]\.Add_Click\(\{[^}]*Invoke-FastL
 Check ($homeSrc -cnotmatch '<Button x:Name="ChangeButton"[^>]*IsEnabled="False"' -and $t7Init -cnotmatch "ChangeButton'\]\.ToolTip" -and $t7Init -cnotmatch "SetShowOnDisabled\(\`$Els\['ChangeButton'\]") 'Task 7: Change is enabled with no coming-later tooltip'
 # the header button: strings, name, Els, table row, hosting
 Check ($homeSrc -cmatch "(?m)^\s*CopyFullOutputActivity\s*=\s*'Copy full output \(Activity\)'\s*$") 'Task 7: the string CopyFullOutputActivity is exactly Copy full output (Activity)'
-Check ($t7Init -cmatch "SetName\(\`$Els\['ActivityCopyButton'\],\s*\[string\]\s*\`$s\.CopyFullOutputActivity\)" -and $t7Init -cmatch "'ActivityExpander', 'ActivityHeader', 'ActivityCopyButton', 'ActivityBox'") 'Task 7: the header button is collected into Els and named from CopyFullOutputActivity'
-$t7Tag=[regex]::Match($homeSrc,"FastLlmUiFluentActivityCopyTagXaml = '([^']*)'").Groups[1].Value
-Check ($t7Tag -ceq '<Expander.Tag><Button x:Name="ActivityCopyButton" Style="{DynamicResource FastLlm.LinkButtonStyle}"/></Expander.Tag>' -and $homeSrc -cmatch "FastLlmUiFluentActivityCopySlot = 'Tag'" -and $homeSrc -cmatch '<!--ACTIVITY_COPY_TAG-->\s*<StackPanel>\s*<!--ACTIVITY_COPY_BODY-->\s*<TextBox x:Name="ActivityBox"') 'Task 7: the Activity copy button is hosted in the Expander Tag (slot Tag), with the body fallback slot ahead of the Activity box'
-$t7Body=[regex]::Match($homeSrc,"FastLlmUiFluentActivityCopyBodyXaml = '([^']*)'").Groups[1].Value
-Check ($t7Body -cmatch 'x:Name="ActivityCopyButton"' -and $t7Body -cmatch 'HorizontalAlignment="Right"') 'Task 7: the body fallback fragment names the same button, right-aligned'
+Check ($t7Init -cmatch '\$copy = New-Object System\.Windows\.Controls\.Button' -and $t7Init -cmatch "\`$copy\.Name = 'ActivityCopyButton'" -and $t7Init -cmatch "SetResourceReference\(\[System\.Windows\.FrameworkElement\]::StyleProperty, 'FastLlm\.LinkButtonStyle'\)" -and $t7Init -cmatch 'SetName\(\$copy,\s*\[string\]\s*\$s\.CopyFullOutputActivity\)' -and $t7Init -cmatch "\`$Els\['ActivityCopyButton'\] = \`$copy") 'Task 7: the header button is created in code, styled as the failure link, named from CopyFullOutputActivity and put in Els'
+Check ($t7Init -cmatch "FastLlmUiFluentActivityCopySlot -ceq 'Body'" -and $t7Init -cmatch "\`$Els\['ActivityBody'\]\.Children\.Insert\(0, \`$copy\)" -and $t7Init -cmatch "else \{ \`$Els\['ActivityExpander'\]\.Tag = \`$copy \}" -and $homeSrc -cmatch "FastLlmUiFluentActivityCopySlot = 'Tag'" -and $t7Init -cmatch 'HorizontalAlignment\]::Right') 'Task 7: slot Tag puts the button in Expander.Tag, slot Body inserts it first in the ActivityBody panel, right-aligned'
+Check ($homeSrc -cmatch '<StackPanel x:Name="ActivityBody">\s*<TextBox x:Name="ActivityBox"' -and $homeSrc -cnotmatch 'x:Name="ActivityCopyButton"' -and $homeSrc -cnotmatch 'ACTIVITY_COPY') 'Task 7: the Home markup holds the ActivityBody panel and no copy button or placeholder (the button is code-built)'
 $rowAst=[System.Management.Automation.Language.Parser]::ParseInput($shellSrc,[ref]$null,[ref]$null)
 $t7Rows=@($rowAst.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst] -and ($n.Extent.Text -cmatch "Name\s*=\s*'failureCopyLink'")},$true))
 $t7Second=@($t7Rows|Where-Object{$_.Extent.Text -cmatch "Element\s*=\s*'ActivityCopyButton'"})
@@ -1090,7 +1088,7 @@ function Test-T7Pin([string]$HomeText,[string]$ShellTextIn,[string]$Which){
         'change'{return ($ch -cmatch "\['ModelsModelBox'\]" -and $ch -cnotmatch '-FocusNav')}
         'wire'{return ($in -cmatch "\`$Els\['SwitchButton'\]\.Add_Click\(\{[^}]*Invoke-FastLlmUiFluentHomeSwitch")}
         'tag'{$st=[regex]::Match($ShellTextIn,'(?s)<Style x:Key="FastLlm\.ExpanderStyle".*?</Style>').Value;return ($st.Contains('Content="{TemplateBinding Tag}"'))}
-        'name'{return ($in -cmatch "SetName\(\`$Els\['ActivityCopyButton'\],\s*\[string\]\s*\`$s\.CopyFullOutputActivity\)")}
+        'name'{return ($in -cmatch 'SetName\(\$copy,\s*\[string\]\s*\$s\.CopyFullOutputActivity\)')}
     }
 }
 Check ((Test-T7Pin $homeSrc $shellSrc 'switch') -and (Test-T7Pin $homeSrc $shellSrc 'change') -and (Test-T7Pin $homeSrc $shellSrc 'wire') -and (Test-T7Pin $homeSrc $shellSrc 'tag') -and (Test-T7Pin $homeSrc $shellSrc 'name')) 'Task 7 plant helper: every aimed expression holds on the real text'
@@ -1098,7 +1096,25 @@ Check (-not (Test-T7Pin $homeSrc.Replace("Set-FastLlmUiFluentPage -Id 'Models' -
 Check (-not (Test-T7Pin $homeSrc.Replace("['ModelsModelBox']","['ModelsFolderBox']") $shellSrc 'change')) 'self-check: Home Change that focuses another box is flagged'
 Check (-not (Test-T7Pin $homeSrc.Replace('Invoke-FastLlmUiFluentHomeSwitch })','Invoke-FastLlmUiFluentHomeConnect })') $shellSrc 'wire')) 'self-check: a Switch click wired to another handler is flagged'
 Check (-not (Test-T7Pin $homeSrc $shellSrc.Replace('Content="{TemplateBinding Tag}"','Content="{TemplateBinding Header}"') 'tag')) 'self-check: an Expander style that presents the Header instead of the Tag is flagged'
-Check (-not (Test-T7Pin $homeSrc.Replace('SetName($Els[''ActivityCopyButton''], [string] $s.CopyFullOutputActivity)','SetName($Els[''ActivityCopyButton''], [string] $s.Activity)') $shellSrc 'name')) 'self-check: a header copy button named like the Activity heading is flagged'
+Check (-not (Test-T7Pin $homeSrc.Replace('SetName($copy, [string] $s.CopyFullOutputActivity)','SetName($copy, [string] $s.Activity)') $shellSrc 'name')) 'self-check: a header copy button named like the Activity heading is flagged'
+# No runtime string goes into registered XAML: no src/FastLlm.UiFluent*.ps1 file calls .Replace( or -replace on a $script:FastLlmUiXaml[...] value or on a here-string
+# assigned to one, and every table entry is assigned a constant here-string.
+function Get-XamlRewriteFindings([string]$Text){
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $found=New-Object System.Collections.ArrayList
+    $isTable='\$script:FastLlmUiXaml\['
+    foreach($n in @($a.FindAll({param($x) $x -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $x.Member.Extent.Text -ceq 'Replace' -and $x.Expression.Extent.Text -cmatch '\$script:FastLlmUiXaml\['},$true))){[void]$found.Add($n.Extent.Text)}
+    foreach($n in @($a.FindAll({param($x) $x -is [System.Management.Automation.Language.BinaryExpressionAst] -and ([string]$x.Operator) -match 'replace' -and $x.Left.Extent.Text -cmatch '\$script:FastLlmUiXaml\['},$true))){[void]$found.Add($n.Extent.Text)}
+    foreach($n in @($a.FindAll({param($x) $x -is [System.Management.Automation.Language.AssignmentStatementAst] -and $x.Left.Extent.Text -cmatch '\$script:FastLlmUiXaml\[' -and $x.Right.Extent.Text -cnotmatch "^@'"},$true))){[void]$found.Add($n.Extent.Text)}
+    return ,$found.ToArray()
+}
+$t7XamlFindings=@()
+foreach($uf in @(Get-ChildItem (Join-Path $root 'src') -Filter 'FastLlm.UiFluent*.ps1')){foreach($fnd in (Get-XamlRewriteFindings ([IO.File]::ReadAllText($uf.FullName)))){$t7XamlFindings+=($uf.Name+': '+$fnd.Substring(0,[Math]::Min(80,$fnd.Length)))}}
+foreach($fnd in $t7XamlFindings){Write-Host "FINDING: $fnd"}
+Check ($t7XamlFindings.Count -eq 0) 'Task 7: no UiFluent file rewrites registered XAML (no .Replace or -replace on a table value; every table entry is a constant here-string)'
+Check ((Get-XamlRewriteFindings "`$script:FastLlmUiXaml['X'] = ([string] `$script:FastLlmUiXaml['X']).Replace('a','b')").Count -ge 1) 'self-check: a .Replace on a XAML table value is flagged'
+Check ((Get-XamlRewriteFindings "`$script:FastLlmUiXaml['X'] = (`$script:FastLlmUiXaml['X'] -replace 'a','b')").Count -ge 1) 'self-check: a -replace on a XAML table value is flagged'
+Check ((Get-XamlRewriteFindings "`$script:FastLlmUiXaml['X'] = `$markup").Count -eq 1) 'self-check: a table entry assigned a non-constant is flagged'
 # ===== end PR 3b: Home Switch/Change and Activity copy pins (Task 7) =====
 
 # ===== PR 3b: the Models page pins (Task 6) =====
