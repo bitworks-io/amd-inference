@@ -485,6 +485,14 @@ $closeHash='7a4a7c9923207fe9f2e83ee74e4e70aa2201ec7f77d2b9b6559a8a68f1b16ac4'
 $windowParsed=Get-ParsedFile (Join-Path $root 'fast-llm-ui.ps1')
 $adminText=Get-AdminRefusalText $windowParsed.ast
 $closeText=Get-CloseGuardsText $windowParsed.ast
+# PR 4a routes the handler's one confirmation through the ShowUiMessageBox view function (a named pair in the members suite, 'box close'). The guards
+# are judged as text from before that seam: the pair is undone first, so the hash below is still today's, and any other edit still moves it.
+$closeSeamCur="if((ShowUiMessageBox `$form 'Closing stops this window''s active download or inference process. Continue?' 'Close FastLLM' 'YesNo' 'Question') -ne 'Yes'){"
+$closeSeamOrig="if([Windows.Forms.MessageBox]::Show(`$form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){"
+if($null -ne $closeText){
+    Check (([regex]::Matches($closeText,[regex]::Escape($closeSeamCur))).Count -eq 1) 'the close handler holds the PR 4a confirmation seam exactly once'
+    $closeText=$closeText.Replace($closeSeamCur,$closeSeamOrig)
+}
 Check ($null -ne $adminText) 'the admin refusal statement is found once'
 Check ($null -ne $closeText) 'the FormClosing handler is found once'
 Check ((Get-Sha256Lf $adminText) -ceq $adminHash) 'the admin refusal is unchanged'
