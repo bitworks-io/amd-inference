@@ -1019,6 +1019,118 @@ $script:settingsCaseHeight=[double]480
 Test-PageReadingOrder 'Settings' 'FastLlm.Settings' 'FastLlm.SettingsReading' $settingsPrepare 13 @() @('SettingsScroll')
 $script:settingsOverride=$null
 
+# ---- PR 4a: the dialogs (message box kinds and icons, the side result, the driver guidance). Each dialog is built by the product's own functions with
+# Show-FastLlmUiFluentDialog shadowed to capture it (nothing is shown); its body and footer Grid is taken off the dialog Window and rendered like a page, at the dialog's
+# own width capped at the case width. The shell Window's style resources are merged in the prepare step (as for the shell render), so these cases do not depend on the
+# harness carrying them. This block runs before the shell block, which leaves a stand-in window in $script:FastLlmUiFluent.
+if($null -eq (Get-Command -Name Get-FastLlmUiDialogKeyPlan -ErrorAction SilentlyContinue)){. (Join-Path $root 'src/FastLlm.UiState.ps1')}
+$script:FastLlmUiFluent=$null
+function RevealUiForAction{}
+function SetTrayMenuAvailable([bool]$Available){}
+$script:dlgCaptured=$null
+$script:dlgStyleHost=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
+$script:dlgRealShow=${function:Show-FastLlmUiFluentDialog}
+function Show-FastLlmUiFluentDialog{param([Parameter(Mandatory=$true)]$Dialog) $script:dlgCaptured=$Dialog; return ''}
+$dlgCases=@()
+foreach($theme in 'light','dark','high-contrast'){foreach($size in @(@(640,480),@(1000,680))){foreach($text in 1.0,2.25){$dlgCases+=,@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=[int]$size[0];height=[int]$size[1]}}}}
+Check ($dlgCases.Count -eq 12) 'the dialog grid is 3 themes x 2 window sizes x 2 text sizes (12 cases)'
+$dlgShort='Remove the model? It is deleted from this PC.'
+$dlgLong=((1..40|ForEach-Object{"Line $_ of a long box body that is long enough to wrap at large text sizes and to scroll inside the dialog."}) -join "`n")
+# Builds the dialog for a spec and returns its content Grid (detached from the dialog Window) and the dialog's own width.
+function New-DialogRenderContent($Spec,$Case){
+    $themeArgs=@{Theme=[string]$Case.theme;AccentPair=(Get-FastLlmUiAccentPair -Palette $null);TextScale=[double]$Case.textScale}
+    if($Case.theme -ceq 'high-contrast'){$themeArgs['HighContrastPalette']=Get-UiRenderHighContrastPalette}
+    $owner=New-Object System.Windows.Window
+    $owner.Resources=New-FastLlmUiThemeDictionary @themeArgs
+    $script:form=$owner
+    $script:dlgCaptured=$null
+    switch([string]$Spec.Kind){
+        'box'{$null=Show-FastLlmUiFluentMessageBox -Owner $owner -Text ([string]$Spec.Text) -Caption 'FastLLM dialog render' -Buttons ([string]$Spec.Buttons) -Icon ([string]$Spec.Icon) -DefaultButton ([string]$Spec.Default)}
+        'side'{Show-FastLlmUiFluentSideResult -Title 'FastLLM dialog render result' -Text ([string]$Spec.Text)}
+        'guidance'{Show-FastLlmUiFluentDriverGuidance -Diagnostic $Spec.Diagnostic}
+        default{throw "unknown dialog kind '$($Spec.Kind)'"}
+    }
+    if($null -eq $script:dlgCaptured){throw 'the dialog function did not build a dialog'}
+    $win=$script:dlgCaptured['Window']
+    $grid=$win.Content
+    $win.Content=$null
+    $grid.Width=[Math]::Min([double]$win.Width,[double]$Case.width)
+    return @{Content=$grid;Dialog=$script:dlgCaptured;Width=[double]$win.Width}
+}
+$dlgPrepare={
+    param($page)
+    foreach($k in @($script:dlgStyleHost.Resources.Keys)){if(-not $page.Resources.Contains($k)){$page.Resources[$k]=([object]$script:dlgStyleHost.Resources[$k]).psobject.BaseObject}}
+}
+$dlgGuidance=[pscustomobject]@{windows=$true;driverGuidance=@([pscustomobject]@{schemaVersion=1;qualification=$false;automaticDriverInstall=$false;hasOwnTrustedMapping=$false
+    asOf='2026-01-01';inputGpuName='Probe display device';reportedPnpDriverVersion='1.0';knownFocusModel=$false;note=((1..12|ForEach-Object{"Guidance note line $_ that is long enough to wrap."}) -join ' ')})}
+function Test-DialogCase([string]$Label,$Spec,$Case,[string]$PngName,[int]$WantButtons){
+    $caseLabel="$($Case.theme) $($Case.scale) $($Case.textScale) $($Case.width)x$($Case.height)"
+    $r=$null;$built=$null
+    try{
+        $built=New-DialogRenderContent $Spec $Case
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName
+    }catch{Check $false "$Label renders at ${caseLabel}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "$Label clean at ${caseLabel}: $(@($r.problems) -join '; ')$diagText"
+    $buttons=@(Get-UiVisualElements $built.Content|Where-Object{$_ -is [System.Windows.Controls.Button] -and (Test-UiAuthored $_) -and (Test-UiShown $_ $built.Content)})
+    Check ($buttons.Count -eq $WantButtons) "$Label shows $WantButtons footer button(s) at ${caseLabel} (got $($buttons.Count))"
+    Check ($r.unmappedRects -eq 0) "$Label left no authored element unmapped at ${caseLabel} (got $($r.unmappedRects))"
+}
+$dlgSw=[Diagnostics.Stopwatch]::StartNew()
+# every box kind with a short and a long body, over the 12-case grid
+foreach($kind in @(@('OK','Button1',1),@('OKCancel','Button1',2),@('YesNo','Button2',2))){
+    foreach($body in 'short','long'){
+        $text=$dlgShort;if($body -ceq 'long'){$text=$dlgLong}
+        foreach($case in $dlgCases){
+            Test-DialogCase "Box $($kind[0]) $body" @{Kind='box';Buttons=$kind[0];Default=$kind[1];Icon='Question';Text=$text} $case ('FastLlm.Dialog'+$kind[0]+$body) ([int]$kind[2])
+        }
+    }
+}
+# every icon over the 3 themes at text 1.0 and 2.25 (640x480)
+foreach($icon in 'None','Information','Warning','Question','Error'){
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($text in 1.0,2.25){
+            $case=@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+            Test-DialogCase "Box icon $icon" @{Kind='box';Buttons='OK';Default='Button1';Icon=$icon;Text=$dlgShort} $case ('FastLlm.DialogIcon'+$icon) 1
+        }
+    }
+}
+# the side result (long text) and the driver guidance over the 12-case grid
+foreach($case in $dlgCases){Test-DialogCase 'Side result' @{Kind='side';Text=((1..60|ForEach-Object{"Probe line $_ of a long side result that wraps at large text."}) -join "`n")} $case 'FastLlm.DialogSide' 1}
+foreach($case in $dlgCases){Test-DialogCase 'Driver guidance' @{Kind='guidance';Diagnostic=$dlgGuidance} $case 'FastLlm.DialogGuidance' 2}
+Write-Host ('INFO: dialog render of {0} cases took {1:N1} s' -f (12*6+30+24),$dlgSw.Elapsed.TotalSeconds)
+# reading order: no overlap, and the tab sequence is the reading order, at text 1.0, 2.0 and 2.25 (a YesNo box and the driver guidance, the one with a list, a text box and two buttons)
+function Test-DialogReadingOrder([string]$Label,$Spec,[string]$PngName,[int]$MinStops){
+    foreach($text in 1.0,2.0,2.25){
+        $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+        $r=$null;$built=$null
+        try{
+            $built=New-DialogRenderContent $Spec $case
+            $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName
+        }catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
+        $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
+        Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
+        $rows=@();$order=0
+        foreach($el in (Get-UiVisualElements $built.Content)){
+            if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $built.Content)){
+                $rect=Get-UiRelativeRect $el $built.Content
+                if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+            }
+            $order++
+        }
+        $byRead=@($rows|Sort-Object -Property @{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
+        $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
+        $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
+        Write-Host "INFO: $Label tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
+        Check ($treeNames -ceq $readNames -and @($rows).Count -ge $MinStops) "the $Label tab sequence is the reading order at text ${text} ($(@($rows).Count) stops, at least $MinStops)"
+    }
+}
+Test-DialogReadingOrder 'YesNo box' @{Kind='box';Buttons='YesNo';Default='Button2';Icon='Question';Text=$dlgShort} 'FastLlm.DialogReadingYesNo' 2
+Test-DialogReadingOrder 'Driver guidance' @{Kind='guidance';Diagnostic=$dlgGuidance} 'FastLlm.DialogReadingGuidance' 4
+Set-Item -Path Function:\Show-FastLlmUiFluentDialog -Value $script:dlgRealShow
+$script:form=$null
+
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
 # The update bar is visible and the failure bar holds 400 characters in every case.
@@ -1162,6 +1274,8 @@ Check ((Get-RenderPngCount 'Test.*') -eq 54) ("the render folder holds 54 Test.*
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
     'FastLlm.Models'=40;'FastLlm.ModelsEmpty'=6;'FastLlm.ModelsReading'=3
     'FastLlm.Settings'=40;'FastLlm.SettingsKeyOn'=6;'FastLlm.SettingsKeyOff'=6;'FastLlm.SettingsRunning'=6;'FastLlm.SettingsUnavailable'=6;'FastLlm.SettingsReading'=3
+    'FastLlm.DialogOKshort'=12;'FastLlm.DialogOKlong'=12;'FastLlm.DialogOKCancelshort'=12;'FastLlm.DialogOKCancellong'=12;'FastLlm.DialogYesNoshort'=12;'FastLlm.DialogYesNolong'=12
+    'FastLlm.DialogIconNone'=6;'FastLlm.DialogIconInformation'=6;'FastLlm.DialogIconWarning'=6;'FastLlm.DialogIconQuestion'=6;'FastLlm.DialogIconError'=6;'FastLlm.DialogSide'=12;'FastLlm.DialogGuidance'=12;'FastLlm.DialogReadingYesNo'=3;'FastLlm.DialogReadingGuidance'=3
     'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12;'FastLlm.ShellSettings'=12}
 foreach($prefix in $pngExpect.Keys){
     $got=Get-RenderPngCount $prefix
