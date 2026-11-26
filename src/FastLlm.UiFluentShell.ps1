@@ -20,6 +20,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentSettings.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -474,7 +475,7 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
         @{ Name = 'failureCopyLink';   Element = 'ActivityCopyButton'; Mode = 'Content';  Event = 'LinkClicked'; Flags = @(); Also = $true }
     )
-    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings) + @(Get-FastLlmUiFluentModelsBindings))
+    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings) + @(Get-FastLlmUiFluentModelsBindings) + @(Get-FastLlmUiFluentSettingsBindings))
 }
 
 # An unsupported-at-initialisation window (the theme or the markup failed) is a fault in FastLLM: the approved text, the run-log reason, exit code 3.
@@ -1030,6 +1031,7 @@ function Initialize-FastLlmUiFluentShell {
         $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
         $connectPage = New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
         $modelsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Models'
+        $settingsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Settings'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -1058,10 +1060,12 @@ function Initialize-FastLlmUiFluentShell {
         [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentSettings -Page $settingsPage -Els $f['Els'])
         Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
         Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
         Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $f['Els']
         Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $f['Els']
+        Register-FastLlmUiFluentSettingsPage -Page $settingsPage -Els $f['Els']
         $f['Current'] = 'Home'
         $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane
@@ -1078,6 +1082,8 @@ function Initialize-FastLlmUiFluentShell {
         # The form adapter takes over the window's handle; from here the orchestration's $form is the adapter (owner of every dialog and message box).
         $formAdapter = New-FastLlmUiFormAdapter -Window $win
         Set-Variable -Name form -Scope Script -Value $formAdapter
+        # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
+        $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
         try { $classicForm.Dispose() } catch { $null = $_ }
 
         $stage = 'theme-init'
