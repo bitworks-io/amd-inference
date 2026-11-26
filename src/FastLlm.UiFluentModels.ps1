@@ -374,6 +374,8 @@ function Initialize-FastLlmUiFluentModels {
     $leftoverCaption.TextWrapping = [System.Windows.TextWrapping]::Wrap
     $leftoverCaption.Text = ConvertTo-FastLlmUiAccessText -Text ([string] $t.RemoveLeftovers) -UseMnemonic $false
     $Els['ModelsLeftoverButton'].Content = $leftoverCaption
+    # A button names itself from string content only; with an AccessText content it needs its name set (the caption, as on every other button).
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['ModelsLeftoverButton'], [string] $t.RemoveLeftovers)
     $Els['ModelsSwitchNow'].IsEnabled = $false
     $Els['ModelsLeftoverButton'].IsEnabled = $false
     # The spin buttons: icon glyphs (drawn, not read), named, never tab stops (their style).

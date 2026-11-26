@@ -1566,11 +1566,12 @@ Check (Test-SwitchListPixelScroll $modelsXaml) 'the Models switch list scrolls b
 Check (-not (Test-SwitchListPixelScroll $modelsXaml.Replace(' ScrollViewer.CanContentScroll="False"',''))) 'mutation check: a switch list that scrolls by item is flagged'
 # The leftover button's caption wraps inside the button at large text (CI round 1: clipped at text 2.25 in the 640 wide shell).
 function Test-LeftoverCaptionWraps([string]$Text){
-    return ($Text -cmatch '\$leftoverCaption = New-Object System\.Windows\.Controls\.AccessText' -and $Text -cmatch '\$leftoverCaption\.TextWrapping = \[System\.Windows\.TextWrapping\]::Wrap' -and $Text -cmatch "\`$Els\['ModelsLeftoverButton'\]\.Content = \`$leftoverCaption")
+    return ($Text -cmatch '\$leftoverCaption = New-Object System\.Windows\.Controls\.AccessText' -and $Text -cmatch '\$leftoverCaption\.TextWrapping = \[System\.Windows\.TextWrapping\]::Wrap' -and $Text -cmatch "\`$Els\['ModelsLeftoverButton'\]\.Content = \`$leftoverCaption" -and $Text -cmatch "AutomationProperties\]::SetName\(\`$Els\['ModelsLeftoverButton'\], \[string\] \`$t\.RemoveLeftovers\)")
 }
 $modelsFileText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentModels.ps1'))
 Check (Test-LeftoverCaptionWraps $modelsFileText) 'the leftover button caption is a wrapping AccessText'
 Check (-not (Test-LeftoverCaptionWraps $modelsFileText.Replace('$leftoverCaption.TextWrapping = [System.Windows.TextWrapping]::Wrap','$leftoverCaption.TextWrapping = [System.Windows.TextWrapping]::NoWrap'))) 'mutation check: a leftover caption that does not wrap is flagged'
+Check (-not (Test-LeftoverCaptionWraps $modelsFileText.Replace("[System.Windows.Automation.AutomationProperties]::SetName(`$Els['ModelsLeftoverButton'], [string] `$t.RemoveLeftovers)",''))) 'mutation check: a leftover button with AccessText content and no explicit name (an unnamed button, CI round 2) is flagged'
 
 # B3: Home Change never loses the keyboard focus: a disabled or missing model box, or a box that still cannot take the focus, falls back to the Models pane item.
 function Get-ChangeFallbackFindings([string]$Text){
