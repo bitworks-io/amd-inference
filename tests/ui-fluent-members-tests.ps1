@@ -2974,7 +2974,7 @@ function Get-SideFindings([string]$Text){
         if($fn.Extent.Text -cmatch 'IsDefault|IsCancel'){[void]$f.Add("$name sets IsDefault or IsCancel")}
     }
     $box=Get-DlgFn $Text 'New-FastLlmUiFluentDialogReadBox'
-    if($null -eq $box -or -not $box.Extent.Text.Contains('$box.IsReadOnly = $true') -or -not $box.Extent.Text.Contains('$box.IsUndoEnabled = $false') -or -not $box.Extent.Text.Contains('TextWrapping]::Wrap')){[void]$f.Add('the read box is not read-only, undo-free and wrapping')}
+    if($null -eq $box -or -not $box.Extent.Text.Contains('$box.IsReadOnly = $true') -or -not $box.Extent.Text.Contains('$box.IsUndoEnabled = $false') -or -not $box.Extent.Text.Contains('TextWrapping]::Wrap') -or -not $box.Extent.Text.Contains('$box.AcceptsReturn = $false')){[void]$f.Add('the read box is not read-only, undo-free, wrapping and Enter-transparent')}
     $drvFn=Get-DlgFn $Text 'Show-FastLlmUiFluentDriverGuidance'
     if($null -ne $drvFn -and -not $drvFn.Extent.Text.Contains('SetCanContentScroll($devices, $false)')){[void]$f.Add('the device list scrolls by item (CanContentScroll is not False)')}
     if($null -ne $drvFn){
@@ -2992,6 +2992,7 @@ $sdPlants=[ordered]@{
     'side result Escape removed'=$sdText.Replace("-Buttons `$buttons -Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0","-Buttons `$buttons -Enter 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0")
     'driver guidance Escape removed'=$sdText.Replace("-Enter '' -Escape 'Close'","-Enter ''")
     'undo left on'=$sdText.Replace('$box.IsUndoEnabled = $false','$box.IsUndoEnabled = $true')
+    'the read box swallowing Enter'=$sdText.Replace('$box.AcceptsReturn = $false','$box.AcceptsReturn = $true')
     'list scrolls by item'=$sdText.Replace('SetCanContentScroll($devices, $false)','SetCanContentScroll($devices, $true)')
     'a LabeledBy dropped'=$sdText.Replace('        [System.Windows.Automation.AutomationProperties]::SetLabeledBy($field, $label)','')
     'IsDefault on the driver close'=$sdText.Replace("-Enter '' -Escape 'Close'","-Enter '' -Escape 'Close'; `$IsDefault = 1")

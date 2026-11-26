@@ -288,7 +288,8 @@ function New-FastLlmUiFluentDialogReadBox {
     $box = New-Object System.Windows.Controls.TextBox
     $box.IsReadOnly = $true
     $box.IsUndoEnabled = $false
-    $box.AcceptsReturn = $true
+    # Read-only: Enter is never typed, so it reaches the dialog (side result: Enter = Close, as the classic AcceptButton; driver guidance: no Enter target).
+    $box.AcceptsReturn = $false
     $box.TextWrapping = [System.Windows.TextWrapping]::Wrap
     $box.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
     $box.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Disabled
