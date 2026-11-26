@@ -2995,4 +2995,57 @@ foreach($k in $sdPlants.Keys){ Check ($sdPlants[$k] -cne $sdText -and (Get-SideF
 # ===== end PR 4a Task 5 =====
 
 
+# ===== PR 4a Task 6: the #84 lines in the shell message area (SignInNotice) =====
+# The element is constant XAML (polite, named by its text, theme brushes, wrapping); its text is the startup's own sign-in line (captured from the
+# output/status writes at the loop start, no literal and no second read) or the existing not-measured line; it hides once a start has succeeded.
+$snText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
+function Get-SignInNoticeFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $m=[regex]::Match($Text,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Shell'\] = @'\r?\n(.*?)\r?\n'@")
+    $x=if($m.Success){$m.Groups[1].Value}else{''}
+    $el=[regex]::Match($x,'(?s)<TextBlock x:Name="SignInNotice"[^>]*>')
+    if(-not $el.Success){[void]$f.Add('there is no SignInNotice TextBlock in the shell XAML')}
+    else{
+        if($el.Value -cnotmatch 'AutomationProperties\.LiveSetting="Polite"'){[void]$f.Add('SignInNotice is not a polite live region')}
+        if($el.Value -cmatch 'AutomationProperties\.Name|\bText='){[void]$f.Add('SignInNotice carries a literal name or text (its name is its text)')}
+        if($el.Value -cnotmatch 'TextWrapping="Wrap"'){[void]$f.Add('SignInNotice does not wrap')}
+        if($el.Value -cnotmatch 'Foreground="\{DynamicResource FastLlm\.'){[void]$f.Add('SignInNotice has no theme foreground')}
+    }
+    if($x -cnotmatch '<Border x:Name="SignInNoticeBar" Visibility="Collapsed"'){[void]$f.Add('the notice bar is not a collapsed Border')}
+    $upd=Get-DlgFn $Text 'Update-FastLlmUiFluentMessages'
+    $sav=Get-DlgFn $Text 'Save-FastLlmUiFluentSignInNotice'
+    $loop=Get-DlgFn $Text 'Start-FastLlmUiFluentLoop'
+    if($null -eq $upd -or $null -eq $sav -or $null -eq $loop){[void]$f.Add('the message refresh, the capture or the loop is not defined once');return ,$f.ToArray()}
+    $ut=$upd.Extent.Text
+    if(-not $sav.Extent.Text.Contains('$script:statusLabel.Text') -or -not $sav.Extent.Text.Contains('$script:output.Text')){[void]$f.Add('the capture does not read the startup status and output text')}
+    if($sav.Extent.Text -cmatch 'Get-FastLlmSignInAttentionText|Read-FastLlmSignInResult|Get-FastLlmSignInResultText'){[void]$f.Add('the capture reads the sign-in result again')}
+    if($sav.Extent.Text -cmatch "\`$keys\['SignInLine'\] = '"){[void]$f.Add('the capture stores a literal line')}
+    $capture=@($loop.FindAll({param($n) Test-DlgCall $n 'Save-FastLlmUiFluentSignInNotice'},$true))
+    $tick=@($loop.FindAll({param($n) Test-DlgCall $n 'Invoke-FastLlmUiFluentTick'},$true))
+    if($capture.Count -ne 1 -or $tick.Count -ne 1 -or $capture[0].Extent.StartOffset -ge $tick[0].Extent.StartOffset){[void]$f.Add('the capture is not called once before the first tick')}
+    if(-not $ut.Contains("`$e['SignInNotice'].Text = `$noticeText") -or -not $ut.Contains("[string] `$keys['SignInLine']")){[void]$f.Add('the notice text is not the captured line')}
+    if(-not $ut.Contains("Get-FastLlmSavedServingFailureText -Code 'serving-profile-not-measured'") -or -not $ut.Contains('$script:backgroundLabel.Text') -or -not $ut.Contains('{ $noticeText = [string] $notMeasured }')){[void]$f.Add('the not-measured line is not the existing text compared with the background line')}
+    if($ut -cnotmatch "(?s)Get-FastLlmUiCardState.*?'running' -or .*?'running-background'.*?\`$keys\['SignInLine'\] = \`$null"){[void]$f.Add('the sign-in line is not cleared once a start has succeeded')}
+    if($ut -cnotmatch "SignInNoticeBar'\]\.Visibility = if \(\`$noticeText -cne ''\)"){[void]$f.Add('the bar does not show only while there is a notice')}
+    if($ut -cnotmatch "SignInNotice'\]\.Text = .*?\r?\n\s*if \(\`$noticeText -cne ''\) \{ Send-FastLlmUiFluentLiveRegion"){[void]$f.Add('a notice change does not raise the live region')}
+    return ,$f.ToArray()
+}
+$snReal=Get-SignInNoticeFindings $snText
+foreach($pr in $snReal){Write-Host "FINDING: $pr"}
+Check ($snReal.Count -eq 0) 'SignInNotice: polite, wrapping, themed, named by its text; the text is the startup line or the existing not-measured line (no literal); it hides after a successful start'
+$snPlants=[ordered]@{
+    'not polite'=$snText.Replace('AutomationProperties.LiveSetting="Polite"','AutomationProperties.LiveSetting="Assertive"')
+    'literal name'=$snText.Replace('<TextBlock x:Name="SignInNotice" ','<TextBlock x:Name="SignInNotice" AutomationProperties.Name="Sign-in notice" ')
+    'no wrap'=$snText.Replace('<TextBlock x:Name="SignInNotice" TextWrapping="Wrap" ','<TextBlock x:Name="SignInNotice" ')
+    'literal text'=$snText.Replace('$e[''SignInNotice''].Text = $noticeText','$e[''SignInNotice''].Text = ''Sign-in start was refused.''')
+    'second read'=$snText.Replace('$line = [string] $script:statusLabel.Text','$line = [string] (Get-FastLlmSignInAttentionText -InstallRoot $InstallRoot)')
+    'never hides'=$snText.Replace('$keys[''SignInLine''] = $null }','$null = 1 }')
+    'capture after the tick'=$snText.Replace("    Save-FastLlmUiFluentSignInNotice`n    Invoke-FastLlmUiFluentTick","    Invoke-FastLlmUiFluentTick`n    Save-FastLlmUiFluentSignInNotice")
+    'not-measured text dropped'=$snText.Replace('{ $noticeText = [string] $notMeasured }','{ }')
+    'bar always visible'=$snText.Replace('$e[''SignInNoticeBar''].Visibility = if ($noticeText -cne '''')','$e[''SignInNoticeBar''].Visibility = if ($true)')
+}
+foreach($k in $snPlants.Keys){ Check ($snPlants[$k] -cne $snText -and (Get-SignInNoticeFindings $snPlants[$k]).Count -ge 1) "mutation check: the SignInNotice pins flag: $k" }
+# ===== end PR 4a Task 6 (#84 lines) =====
+
+
 Write-Host "UI fluent member coverage tests passed: $checks"
