@@ -647,7 +647,7 @@ foreach($pair in @(@('RemoveModelFromWindow','ShowModelsWindow','catalog.json'),
 }
 Check ($classicConfig['catalog.json'] -and $classicConfig['components.json']) 'the classic views join $PSScriptRoot with the literals config/catalog.json and config/components.json'
 
-function Get-ViewContractFindings([string[]]$Texts,[string]$FunctionName,[string[]]$Read,[string]$ConfigFile){
+function Get-ViewContractFindings([string[]]$Texts,[string]$FunctionName,[string[]]$Read,[string]$ConfigFile,[string]$Refresh=''){
     $found=New-Object System.Collections.ArrayList
     $fns=@()
     foreach($t in $Texts){
@@ -663,38 +663,49 @@ function Get-ViewContractFindings([string[]]$Texts,[string]$FunctionName,[string
     foreach($kv in $view.KeyValuePairs){$map[[string]$kv.Item1.Extent.Text]=[string]$kv.Item2.Extent.Text}
     foreach($k in @($Read)+@('refresh')){if(-not $map.ContainsKey($k)){[void]$found.Add("$FunctionName has no key $k")}}
     foreach($k in 'panel','free'){if($map.ContainsKey($k)){[void]$found.Add("$FunctionName has the classic control key $k")}}
+    if($Refresh -ne ''){
+        # The refresh value is the NAME of the list update that rebuilds this view's rows, and that name is a function defined in the scanned files.
+        if($map.ContainsKey('refresh') -and $map['refresh'] -cne "'$Refresh'"){[void]$found.Add("$FunctionName refresh is not '$Refresh': "+$map['refresh'])}
+        $refreshDefined=@($Texts|Where-Object{$_ -cmatch "(?m)^function\s+$([regex]::Escape($Refresh))\b"})
+        if($refreshDefined.Count -ne 1){[void]$found.Add("the refresh target $Refresh is defined $($refreshDefined.Count) times, expected 1")}
+    }
     if($map.ContainsKey('dialog') -and $map['dialog'] -cne '$script:form'){[void]$found.Add("$FunctionName dialog is not `$script:form: "+$map['dialog'])}
     if($map.ContainsKey('file') -and $map['file'] -cne "(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/$ConfigFile')" -and $map['file'] -cne "Join-Path `$script:FastLlmUiFluentSourceRoot 'config/$ConfigFile'"){[void]$found.Add("$FunctionName file is not Join-Path `$script:FastLlmUiFluentSourceRoot 'config/$ConfigFile': "+$map['file'])}
     return ,$found.ToArray()
 }
 $viewSpecs=@(
-    @{Fn='New-FastLlmUiFluentModelsView';Read=$modelsRead;Config='catalog.json'},
-    @{Fn='New-FastLlmUiFluentComponentsView';Read=$componentsRead;Config='components.json'})
+    @{Fn='New-FastLlmUiFluentModelsView';Read=$modelsRead;Config='catalog.json';Refresh='Update-FastLlmUiFluentModelsList'},
+    @{Fn='New-FastLlmUiFluentComponentsView';Read=$componentsRead;Config='components.json';Refresh='Update-FastLlmUiFluentComponentsList'})
 $viewGood=@{
-    'New-FastLlmUiFluentModelsView'="function New-FastLlmUiFluentModelsView { return @{dialog=`$script:form;message=`$m;leftoverButton=`$b;leftoverText='';root=`$r;file=(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/catalog.json');refresh={1}} }"
-    'New-FastLlmUiFluentComponentsView'="function New-FastLlmUiFluentComponentsView { return @{dialog=`$script:form;message=`$m;root=`$r;file=(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/components.json');refresh={1}} }"}
+    'New-FastLlmUiFluentModelsView'="function New-FastLlmUiFluentModelsView { return @{dialog=`$script:form;message=`$m;leftoverButton=`$b;leftoverText='';root=`$r;file=(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/catalog.json');refresh='Update-FastLlmUiFluentModelsList'} }`nfunction Update-FastLlmUiFluentModelsList { }"
+    'New-FastLlmUiFluentComponentsView'="function New-FastLlmUiFluentComponentsView { return @{dialog=`$script:form;message=`$m;root=`$r;file=(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/components.json');refresh='Update-FastLlmUiFluentComponentsList'} }`nfunction Update-FastLlmUiFluentComponentsList { }"}
 foreach($spec in $viewSpecs){
     $fn=$spec.Fn
     # The real constructor: Task 6 adds it. Until a source file defines it, only the self-checks run; once defined the contract is enforced.
     $defined=@($rowTexts|Where-Object{$_ -cmatch "(?m)^function\s+$([regex]::Escape($fn))\b"})
     if($defined.Count -gt 0){
-        $vf=Get-ViewContractFindings $rowTexts $fn $spec.Read $spec.Config
+        $vf=Get-ViewContractFindings $rowTexts $fn $spec.Read $spec.Config $spec.Refresh
         foreach($f in $vf){Write-Host "FINDING: $f"}
         Check ($vf.Count -eq 0) "$fn names every key the Remove* bodies read, plus refresh, with no panel or free, dialog = `$script:form and the config/ file"
     }
     else{Write-Host "INFO: $fn is not defined yet (PR 3b Task 6); the contract pin is enforced once it is"}
     $good=$viewGood[$fn]
-    Check ((Get-ViewContractFindings @($good) $fn $spec.Read $spec.Config).Count -eq 0) "self-check: a well formed $fn passes"
+    Check ((Get-ViewContractFindings @($good) $fn $spec.Read $spec.Config $spec.Refresh).Count -eq 0) "self-check: a well formed $fn passes"
     foreach($k in @($spec.Read)+@('refresh')){
         $plant=$good -creplace "(?<![A-Za-z])$k=","renamed_$k="
-        Check ($plant -cne $good -and (Get-ViewContractFindings @($plant) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: a view without the $k key (renamed or dropped) is flagged in $fn"
+        Check ($plant -cne $good -and (Get-ViewContractFindings @($plant) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: a view without the $k key (renamed or dropped) is flagged in $fn"
     }
     foreach($k in 'panel','free'){
-        Check ((Get-ViewContractFindings @($good.Replace('refresh=',"$k=`$p;refresh=")) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: a $k key in $fn is flagged"
+        Check ((Get-ViewContractFindings @($good.Replace('refresh=',"$k=`$p;refresh=")) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: a $k key in $fn is flagged"
     }
-    Check ((Get-ViewContractFindings @($good.Replace('dialog=$script:form','dialog=$null')) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: a dialog that is not `$script:form is flagged in $fn"
-    Check ((Get-ViewContractFindings @($good.Replace("config/$($spec.Config)",'config/other.json')) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: another config file is flagged in $fn"
-    Check ((Get-ViewContractFindings @('function F { 1 }') $fn $spec.Read $spec.Config).Count -eq 1) "self-check: a missing $fn is flagged"
+    Check ((Get-ViewContractFindings @($good.Replace('dialog=$script:form','dialog=$null')) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: a dialog that is not `$script:form is flagged in $fn"
+    Check ((Get-ViewContractFindings @($good.Replace("config/$($spec.Config)",'config/other.json')) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: another config file is flagged in $fn"
+    # The refresh VALUE, not only its key: each view rebuilds its own list (swapped targets, an empty name, or a target no file defines are flagged)
+    $otherRefresh=@('Update-FastLlmUiFluentModelsList','Update-FastLlmUiFluentComponentsList')|Where-Object{$_ -cne $spec.Refresh}|Select-Object -First 1
+    Check ((Get-ViewContractFindings @($good.Replace("refresh='$($spec.Refresh)'","refresh='$otherRefresh'")) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: $fn with the other view's refresh target is flagged"
+    Check ((Get-ViewContractFindings @($good.Replace("refresh='$($spec.Refresh)'","refresh=''")) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: $fn with an empty refresh is flagged"
+    Check ((Get-ViewContractFindings @($good.Substring(0,$good.IndexOf("`nfunction $($spec.Refresh)"))) $fn $spec.Read $spec.Config $spec.Refresh).Count -ge 1) "self-check: $fn whose refresh target is defined nowhere is flagged"
+    Check ((Get-ViewContractFindings @('function F { 1 }') $fn $spec.Read $spec.Config $spec.Refresh).Count -eq 1) "self-check: a missing $fn is flagged"
 }
 # ===== end PR 3b: form BeginInvoke and the fluent view contract (Task 5) =====
 
@@ -1015,6 +1026,7 @@ function Get-StylePinFailures([string]$ShellText){
     $sp=$styles['FastLlm.SpinButtonStyle']; if($sp){
         $set=@{}; foreach($el in $sp.SelectNodes("*[local-name()='Setter']")){ $set[$el.GetAttribute('Property')]=$el }
         StyleCheck 'Spin not tab stop' ($set.ContainsKey('IsTabStop') -and $set['IsTabStop'].GetAttribute('Value') -ceq 'False')
+        StyleCheck 'Spin not focusable (a click keeps the keyboard focus in the context box)' ($set.ContainsKey('Focusable') -and $set['Focusable'].GetAttribute('Value') -ceq 'False')
         StyleCheck 'Spin icon font' ($set.ContainsKey('FontFamily') -and $set['FontFamily'].GetAttribute('Value') -ceq '{DynamicResource FastLlm.IconFont}')
         StyleCheck 'Spin focus ring' ($set.ContainsKey('FocusVisualStyle') -and $set['FocusVisualStyle'].GetAttribute('Value') -ceq '{DynamicResource FastLlm.FocusVisual}') }
     # No x:Name of a template part reaches Els: each one sits inside a template or a style.
@@ -1039,6 +1051,8 @@ $stylePlants=@(
     @{Name='ring 1px';Old='<Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>';New='<Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="1" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>'}
     @{Name='spin button without the icon font';Old='      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>'+"`n"+'      <Setter Property="FontSize" Value="10"/>';New='      <Setter Property="FontSize" Value="10"/>'}
     @{Name='spin button is a tab stop';Old='<Setter Property="IsTabStop" Value="False"/>'+"`n"+'      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>'+"`n"+'      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>';New='<Setter Property="IsTabStop" Value="True"/>'+"`n"+'      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>'+"`n"+'      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>'}
+    @{Name='spin button takes the focus on a click (Focusable removed)';Old='      <Setter Property="Focusable" Value="False"/>'+"`
+"+'      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>';New='      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>'}
     @{Name='text box with the weak stroke';Old='<Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>'+"`n"+'      <Setter Property="CaretBrush"';New='<Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrokeBrush}"/>'+"`n"+'      <Setter Property="CaretBrush"'}
 )
 foreach($plant in $stylePlants){
@@ -1193,7 +1207,8 @@ function Get-PickerGuardFindings([string]$Text,[string]$ClassicText){
     $cf=@($ca.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowUiSwitchPicker'},$true))
     if($cf.Count -ne 1){[void]$found.Add('ShowUiSwitchPicker is not found');return ,$found.ToArray()}
     $want=@($cf[0].Body.EndBlock.Statements|Select-Object -First 3|ForEach-Object{$_.Extent.Text.Replace('(Join-Path $PSScriptRoot','(Join-Path $script:FastLlmUiFluentSourceRoot')})
-    if($body.Count -ne 3 -or $body[0] -cne $want[0] -or $body[1] -cne $want[1] -or $body[2] -cne $want[2]){[void]$found.Add('the guarded statements are not the first three statements of ShowUiSwitchPicker (status, its try, the picker call), with the source root')}
+    if($body.Count -ne 4 -or $body[0] -cne $want[0] -or $body[1] -cne $want[1] -or $body[2] -cne $want[2]){[void]$found.Add('the guarded statements are not the first three statements of ShowUiSwitchPicker (status, its try, the picker call), with the source root, then the message write')}
+    elseif($body[3] -cne "`$m['SwitchMessage'].Text = [string] `$picker.message"){[void]$found.Add('the fourth guarded statement is not the picker message write (the message is written only when the picker is computed)')}
     return ,$found.ToArray()
 }
 $classicUiText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
@@ -1355,5 +1370,245 @@ $compBad=Get-FastLlmUiFluentComponentsListModel -Root 'C:\r' -File 'f'
 Check ($compBad.message -ceq 'The component list could not be read: inventory failed' -and @($compBad.rows).Count -eq 0) 'an unreadable component list gives the classic text'
 Check ((Get-FastLlmUiFluentComponentsListModel -RootError 'bad folder').message -ceq 'The component list could not be read: bad folder') 'an unusable folder shows the component list-read text'
 # ===== end PR 3b: the Models page pins (Task 6) =====
+
+# ===== PR 3b review fix round 1: pins for the surviving mutants =====
+$modelsLf=$modelsText.Replace("`r`n","`n")
+$homeLf=$homeSrc.Replace("`r`n","`n")
+function Get-FnAst([string]$Text,[string]$Name){
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    return ,@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name},$true))
+}
+function Test-InsideClause($Node,$Guard){ return ($Node.Extent.StartOffset -ge $Guard.Clauses[0].Item2.Extent.StartOffset -and $Node.Extent.EndOffset -le $Guard.Clauses[0].Item2.Extent.EndOffset) }
+
+# B1 and C-a: the picker function writes the message only in the on branch (the Switch button enabled), and stores SwitchWas from the button.
+function Get-PickerMessageFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $fn=Get-FnAst $Text 'Update-FastLlmUiFluentModelsPicker'
+    if($fn.Count -ne 1){[void]$found.Add('the picker function is not defined once');return ,$found.ToArray()}
+    $msg=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$m[''SwitchMessage''].Text'},$true))
+    if($msg.Count -ne 1){[void]$found.Add("the picker function writes SwitchMessage.Text $($msg.Count) times, expected 1")}
+    else{
+        $p=$msg[0].Parent; $guard=$null
+        while($null -ne $p -and $p -ne $fn[0]){ if($p -is [System.Management.Automation.Language.IfStatementAst]){$guard=$p;break}; $p=$p.Parent }
+        if($null -eq $guard -or $guard.Clauses[0].Item1.Extent.Text -cnotmatch '\$script:switchButton\.Enabled' -or -not (Test-InsideClause $msg[0] $guard)){[void]$found.Add('the SwitchMessage write is not in the on branch of the if on $script:switchButton.Enabled (an off edge would wipe the request result)')}
+    }
+    $was=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$m[''SwitchWas'']'},$true))
+    $en=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$enabled'},$true))
+    if($was.Count -ne 1 -or $was[0].Right.Extent.Text -cne '$enabled' -or $en.Count -ne 1 -or $en[0].Right.Extent.Text -cnotmatch '^\[bool\]\s*\$script:switchButton\.Enabled$'){[void]$found.Add('SwitchWas is not assigned once from the Switch button Enabled')}
+    return ,$found.ToArray()
+}
+$pmf=Get-PickerMessageFindings $modelsText
+foreach($f in $pmf){Write-Host "FINDING: $f"}
+Check ($pmf.Count -eq 0) 'the picker writes the switch message only in its on branch, and stores SwitchWas from the Switch button'
+$msgLine="        # The picker's message is written only when the picker is computed: a switch-off edge (a successful Switch disables the button) must not wipe the request's result.`n        `$m['SwitchMessage'].Text = [string] `$picker.message`n"
+Check ($modelsLf.Contains($msgLine)) 'the message write and its comment are found in the real text (the plant below moves them)'
+$movedOut=$modelsLf.Replace($msgLine,'').Replace("    foreach (`$pickerItem in @(`$picker.items)) { `$null = `$list.Items.Add([string] `$pickerItem.text) }`n","    foreach (`$pickerItem in @(`$picker.items)) { `$null = `$list.Items.Add([string] `$pickerItem.text) }`n    `$m['SwitchMessage'].Text = [string] `$picker.message`n")
+Check ($movedOut -cne $modelsLf -and (Get-PickerMessageFindings $movedOut).Count -ge 1) 'mutation check: the message write moved out of the on branch is flagged (B1)'
+Check ((Get-PickerGuardFindings $movedOut $classicUiText).Count -ge 1) 'mutation check: the message write moved out of the guard fails the picker guard pin too (B1)'
+Check ((Get-PickerMessageFindings $modelsLf.Replace("`$m['SwitchWas'] = `$enabled","`$null = `$enabled")).Count -ge 1) 'mutation check: SwitchWas not assigned is flagged (C-a)'
+Check ((Get-PickerMessageFindings $modelsLf.Replace("`$m['SwitchWas'] = `$enabled","`$m['SwitchWas'] = `$true")).Count -ge 1) 'mutation check: SwitchWas assigned a constant is flagged (C-a)'
+
+# B4: Enter wraps its body like Enter-FastLlmUiFluentConnect: one try, every call inside it, and a catch that shows the failure.
+function Get-EnterWrapFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $fn=Get-FnAst $Text 'Enter-FastLlmUiFluentModels'
+    if($fn.Count -ne 1){[void]$found.Add('Enter-FastLlmUiFluentModels is not defined once');return ,$found.ToArray()}
+    $tries=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.TryStatementAst]},$true))
+    if($tries.Count -ne 1 -or $tries[0].CatchClauses.Count -ne 1){[void]$found.Add('Enter has not exactly one try with one catch');return ,$found.ToArray()}
+    $catchCalls=@($tries[0].CatchClauses[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true)|Where-Object{[string]$_.GetCommandName() -ceq 'ShowFailure'})
+    if($catchCalls.Count -ne 1 -or $catchCalls[0].Extent.Text -cne 'ShowFailure $_.Exception.Message'){[void]$found.Add('the catch is not ShowFailure $_.Exception.Message')}
+    foreach($want in 'Update-FastLlmUiFluentModelsList','Update-FastLlmUiFluentComponentsList','Update-FastLlmUiFluentModelsPicker','Update-FastLlmUiFluentModels'){
+        $inTry=@($tries[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $want},$true))
+        if($inTry.Count -ne 1){[void]$found.Add("$want is not called once inside the try")}
+    }
+    return ,$found.ToArray()
+}
+$ewf=Get-EnterWrapFindings $modelsText
+foreach($f in $ewf){Write-Host "FINDING: $f"}
+Check ($ewf.Count -eq 0) 'Enter-FastLlmUiFluentModels runs its body in a try whose catch is ShowFailure (as Connect Enter does)'
+Check ((Get-EnterWrapFindings $modelsLf.Replace('    catch { ShowFailure $_.Exception.Message }','    catch { $null = $_ }')).Count -ge 1) 'mutation check: a catch that swallows the failure is flagged (B4)'
+Check ((Get-EnterWrapFindings $modelsLf.Replace("        Update-FastLlmUiFluentModelsPicker`n        Update-FastLlmUiFluentModels`n    }`n    catch { ShowFailure `$_.Exception.Message }","        Update-FastLlmUiFluentModels`n    }`n    catch { ShowFailure `$_.Exception.Message }`n    Update-FastLlmUiFluentModelsPicker")).Count -ge 1) 'mutation check: a call moved out of the try is flagged (B4)'
+
+# C-b: the tick hook, transitively. Every file-level function reachable from Update-FastLlmUiFluentModels is scanned; the only way to the picker is the edge-guarded if
+# of the root itself (the picker is not entered by the walk: it is the one place the store is read).
+$tickReachForbidden=$tickForbidden+@('Update-FastLlmUiFluentComponentsList','Get-FastLlmInstalledComponentRows','Get-FastLlmStatus','Get-FastLlmModelStoreFreeBytes')
+function Get-TickReachFindings([string[]]$Texts,[string]$Root,[string[]]$Forbidden,[string]$Edge){
+    $found=New-Object System.Collections.ArrayList
+    $defs=@{}
+    foreach($t in $Texts){
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($t,[ref]$null,[ref]$null)
+        foreach($fd in @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))){ $defs[[string]$fd.Name]=$fd }
+    }
+    if(-not $defs.ContainsKey($Root)){return ,$found.ToArray()}
+    $seen=@{}; $seen[$Root]=$true
+    $queue=New-Object System.Collections.Queue
+    $queue.Enqueue($Root)
+    while($queue.Count -gt 0){
+        $name=[string]$queue.Dequeue()
+        $fd=$defs[$name]
+        foreach($c in @($fd.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true))){
+            $cn=[string]$c.GetCommandName()
+            if($cn -eq ''){continue}
+            if($cn -ceq $Edge){
+                $inIf=$false; $p=$c.Parent
+                while($null -ne $p -and $p -ne $fd){ if($p -is [System.Management.Automation.Language.IfStatementAst]){$inIf=$true}; $p=$p.Parent }
+                if($name -ceq $Root -and $inIf){continue}
+                [void]$found.Add("$name calls $cn outside the edge-guarded if of $Root")
+                continue
+            }
+            if($Forbidden -ccontains $cn){[void]$found.Add("$name (reached from $Root) calls $cn");continue}
+            if($defs.ContainsKey($cn) -and -not $seen.ContainsKey($cn)){$seen[$cn]=$true;$queue.Enqueue($cn)}
+        }
+    }
+    return ,$found.ToArray()
+}
+$treach=Get-TickReachFindings $rowTexts 'Update-FastLlmUiFluentModels' $tickReachForbidden 'Update-FastLlmUiFluentModelsPicker'
+foreach($f in $treach){Write-Host "FINDING: $f"}
+Check ($treach.Count -eq 0) 'no function reachable from the Models tick hook reads a store or builds a list, and the picker is reached only by the edge-guarded if'
+$planted=[regex]::Replace($modelsLf,'\$enabled = \$false(\n    if \(\$null -ne \$picker)','$enabled = $false; Get-FastLlmStatus$1')
+Check ($planted -cne $modelsLf -and (Get-TickReachFindings @($planted) 'Update-FastLlmUiFluentModels' $tickReachForbidden 'Update-FastLlmUiFluentModelsPicker').Count -ge 1) 'mutation check: Get-FastLlmStatus planted in Update-FastLlmUiFluentModelsSwitchState (two calls deep) is flagged (C-b)'
+foreach($fb in 'Update-FastLlmUiFluentComponentsList','Get-FastLlmInstalledComponentRows','Get-FastLlmModelStoreFreeBytes'){
+    $pl=[regex]::Replace($modelsLf,'\$enabled = \$false(\n    if \(\$null -ne \$picker)',('$enabled = $false; '+$fb+'$1'))
+    Check ((Get-TickReachFindings @($pl) 'Update-FastLlmUiFluentModels' $tickReachForbidden 'Update-FastLlmUiFluentModelsPicker').Count -ge 1) "mutation check: $fb planted in the switch state helper is flagged (C-b)"
+}
+$plPicker=[regex]::Replace($modelsLf,'\$enabled = \$false(\n    if \(\$null -ne \$picker)','$enabled = $false; Update-FastLlmUiFluentModelsPicker$1')
+Check ((Get-TickReachFindings @($plPicker) 'Update-FastLlmUiFluentModels' $tickReachForbidden 'Update-FastLlmUiFluentModelsPicker').Count -ge 1) 'mutation check: the picker called from the switch state helper (outside the root edge if) is flagged (C-b)'
+Check ((Get-TickReachFindings @($modelsLf.Replace('if ([bool] $script:switchButton.Enabled -ne [bool] $m[''SwitchWas'']) { Update-FastLlmUiFluentModelsPicker }','Update-FastLlmUiFluentModelsPicker')) 'Update-FastLlmUiFluentModels' $tickReachForbidden 'Update-FastLlmUiFluentModelsPicker').Count -ge 1) 'mutation check: the picker called every tick in the root is flagged by the transitive walk (C-b)'
+
+# C-d: the Picked lock. The Switch state needs -not Picked, and a successful Switch click sets it.
+function Get-PickedLockFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $st=Get-FnAst $Text 'Update-FastLlmUiFluentModelsSwitchState'
+    if($st.Count -ne 1 -or $st[0].Body.Extent.Text -cnotmatch 'if \(\$null -ne \$picker -and \[bool\] \$script:switchButton\.Enabled -and -not \[bool\] \$m\[''Picked''\]\) \{'){[void]$found.Add('the Switch state does not require -not $m[''Picked'']')}
+    $now=Get-FnAst $Text 'Invoke-FastLlmUiFluentModelsSwitchNow'
+    $set=@(); if($now.Count -eq 1){$set=@($now[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$m[''Picked'']'},$true))}
+    $ok=$false
+    if($set.Count -eq 1 -and $set[0].Right.Extent.Text -ceq '$true'){
+        $p=$set[0].Parent
+        while($null -ne $p -and $p -ne $now[0]){ if($p -is [System.Management.Automation.Language.IfStatementAst] -and $p.Clauses[0].Item1.Extent.Text -ceq '$outcome.ok'){$ok=$true}; $p=$p.Parent }
+    }
+    if(-not $ok){[void]$found.Add('a successful Switch click does not set Picked inside the if on $outcome.ok')}
+    return ,$found.ToArray()
+}
+$plf=Get-PickedLockFindings $modelsText
+foreach($f in $plf){Write-Host "FINDING: $f"}
+Check ($plf.Count -eq 0) 'the Switch state needs -not Picked and a successful Switch click sets Picked'
+Check ((Get-PickedLockFindings $modelsLf.Replace(" -and -not [bool] `$m['Picked']",'')).Count -ge 1) 'mutation check: the Switch state without the -not Picked term is flagged (C-d)'
+Check ((Get-PickedLockFindings $modelsLf.Replace("`$m['Picked'] = `$true","`$m['Picked'] = `$false")).Count -ge 1) 'mutation check: a Switch click that never sets Picked is flagged (C-d)'
+
+# C-e: the view wiring. Each Remove's IsEnabled and help text come from the row, the leftover button's Tag is the leftover names, and the view's leftoverText is written.
+function Get-ListWiringFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $ul=Get-FnAst $Text 'Update-FastLlmUiFluentModelsList'
+    $row=Get-FnAst $Text 'New-FastLlmUiFluentModelsRow'
+    if($ul.Count -ne 1 -or $row.Count -ne 1){[void]$found.Add('the list update or the row builder is not defined once');return ,$found.ToArray()}
+    $u=$ul[0].Body.Extent.Text; $r=$row[0].Body.Extent.Text
+    if($u -cnotmatch '-Enabled \(\[bool\] \$row\.removable\)'){[void]$found.Add('a model row''s Remove IsEnabled is not from the row removable')}
+    if($u -cnotmatch '-Reason \(\[string\] \$row\.inUseReason\)'){[void]$found.Add('a model row''s help text is not from the row inUseReason')}
+    if($r -cnotmatch '\$remove\.IsEnabled = \$Enabled\b'){[void]$found.Add('the row builder does not set IsEnabled from -Enabled')}
+    if($r -cnotmatch 'SetHelpText\(\$remove, \$Reason\)'){[void]$found.Add('the row builder does not set the help text from -Reason')}
+    if($u -cnotmatch '\$leftoverButton\.Tag = @\(\$model\.leftoverNames\)'){[void]$found.Add('the leftover button Tag is not the leftover names')}
+    if($u -cnotmatch '\$view\[''leftoverText''\] = \[string\] \$model\.leftoverText'){[void]$found.Add('the view leftoverText is not assigned from the model')}
+    if($u -cnotmatch 'ToolTip = \[string\] \$s\.WhyNoLeftovers' -or $u -cnotmatch 'SetHelpText\(\$leftoverButton, \[string\] \$s\.WhyNoLeftovers\)'){[void]$found.Add('the leftover button does not say WhyNoLeftovers (tooltip and help text) when disabled')}
+    return ,$found.ToArray()
+}
+$lwf=Get-ListWiringFindings $modelsText
+foreach($f in $lwf){Write-Host "FINDING: $f"}
+Check ($lwf.Count -eq 0) 'the list update wires the Remove state, the leftover button and the view leftoverText from the model'
+Check ((Get-ListWiringFindings $modelsLf.Replace('-Enabled ([bool] $row.removable)','-Enabled $true')).Count -ge 1) 'mutation check: a Remove with -Enabled $true is flagged (C-e)'
+Check ((Get-ListWiringFindings $modelsLf.Replace('-Reason ([string] $row.inUseReason)','-Reason ''''')).Count -ge 1) 'mutation check: a Remove with no reason is flagged (C-e)'
+Check ((Get-ListWiringFindings $modelsLf.Replace('$leftoverButton.Tag = @($model.leftoverNames)','$leftoverButton.Tag = @()')).Count -ge 1) 'mutation check: a leftover button with Tag = @() is flagged (C-e)'
+Check ((Get-ListWiringFindings $modelsLf.Replace("    if (`$null -ne `$view) { `$view['leftoverText'] = [string] `$model.leftoverText }`n",'')).Count -ge 1) 'mutation check: the view leftoverText assignment deleted is flagged (C-e)'
+Check ((Get-ListWiringFindings $modelsLf.Replace('$remove.IsEnabled = $Enabled','$remove.IsEnabled = $true')).Count -ge 1) 'mutation check: the row builder ignoring -Enabled is flagged (C-e)'
+
+# C-f: the reasons. The rows are Choose and the four inputs (and the leftover button's own reason above), and each code reads its own string.
+function Get-ReasonWiringFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $rows=Get-FnAst $Text 'Get-FastLlmUiFluentModelsReasonRows'
+    if($rows.Count -ne 1){[void]$found.Add('the reason rows function is not defined once');return ,$found.ToArray()}
+    $got=@($rows[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)|ForEach-Object{($_.Extent.Text -replace '\s+',' ')})
+    $want=@("@{ Element = 'ModelsChooseButton'; Adapter = 'chooseButton'; Action = 'chooseSetup' }","@{ Element = 'ModelsModelBox'; Adapter = 'modelBox'; Action = 'startInputs' }","@{ Element = 'ModelsFolderBox'; Adapter = 'pathBox'; Action = 'startInputs' }","@{ Element = 'ModelsContextBox'; Adapter = 'contextBox'; Action = 'startInputs' }","@{ Element = 'ModelsBarBox'; Adapter = 'barBox'; Action = 'startInputs' }")
+    if(($got -join '|') -cne ($want -join '|')){[void]$found.Add('the reason rows are not Choose and the four inputs (model, folder, context, BAR) in order')}
+    $txt=Get-FnAst $Text 'Get-FastLlmUiFluentModelsReasonText'
+    if($txt.Count -ne 1 -or $txt[0].Body.Extent.Text -cnotmatch "'background' \{ return \[string\] \`$s\.WhyBackgroundRun \}" -or $txt[0].Body.Extent.Text -cnotmatch "'no-preview' \{ return \[string\] \`$s\.WhyNoPreview \}"){[void]$found.Add('the reason codes background and no-preview do not map to WhyBackgroundRun and WhyNoPreview')}
+    return ,$found.ToArray()
+}
+$rwf=Get-ReasonWiringFindings $modelsText
+foreach($f in $rwf){Write-Host "FINDING: $f"}
+Check ($rwf.Count -eq 0) 'the reason rows are Choose and the four inputs, and each Models reason code maps to its own string'
+Check ((Get-ReasonWiringFindings $modelsLf.Replace("        @{ Element = 'ModelsBarBox';       Adapter = 'barBox';       Action = 'startInputs' }`n",'').Replace("Action = 'startInputs' },`n    )","Action = 'startInputs' }`n    )")).Count -ge 1) 'mutation check: the BAR box row dropped from the reason rows is flagged (C-f)'
+Check ((Get-ReasonWiringFindings $modelsLf.Replace("'background' { return [string] `$s.WhyBackgroundRun }","'background' { return [string] `$s.WhyNoPreview }").Replace("'no-preview' { return [string] `$s.WhyNoPreview }","'no-preview' { return [string] `$s.WhyBackgroundRun }")).Count -ge 1) 'mutation check: WhyNoPreview swapped with WhyBackgroundRun is flagged (C-f)'
+
+# B2: no fixed Width on a ComboBox, a TextBox or the context row in the Models markup (a fixed width clips at large text); a MinWidth is allowed.
+function Get-FixedWidthFindings([string]$Xaml){
+    $found=New-Object System.Collections.ArrayList
+    $doc=New-Object System.Xml.XmlDocument; $doc.LoadXml($Xaml)
+    $xn='http://schemas.microsoft.com/winfx/2006/xaml'
+    foreach($node in @($doc.SelectNodes('//*'))){
+        $nm=$node.GetAttribute('Name',$xn)
+        if(($node.LocalName -in 'ComboBox','TextBox' -or $nm -ceq 'ModelsContextRow') -and $node.HasAttribute('Width')){[void]$found.Add("$($node.LocalName) $nm has a fixed Width")}
+    }
+    $row=@($doc.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name',$xn) -ceq 'ModelsContextRow'})
+    $bar=@($doc.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name',$xn) -ceq 'ModelsBarBox'})
+    if($row.Count -ne 1 -or $row[0].GetAttribute('MinWidth') -cne '260' -or $bar.Count -ne 1 -or $bar[0].GetAttribute('MinWidth') -cne '260'){[void]$found.Add('the context row and the BAR box do not both carry MinWidth 260')}
+    return ,$found.ToArray()
+}
+$fwf=Get-FixedWidthFindings $modelsXaml
+foreach($f in $fwf){Write-Host "FINDING: $f"}
+Check ($fwf.Count -eq 0) 'the Models markup has no fixed Width on a ComboBox, a TextBox or the context row (MinWidth 260 on the row and the BAR box)'
+Check ((Get-FixedWidthFindings $modelsXaml.Replace('<ComboBox x:Name="ModelsBarBox" HorizontalAlignment="Left" MinWidth="260"','<ComboBox x:Name="ModelsBarBox" HorizontalAlignment="Left" Width="260"')).Count -ge 1) 'mutation check: a fixed Width on the BAR box is flagged (B2)'
+Check ((Get-FixedWidthFindings $modelsXaml.Replace('<Grid x:Name="ModelsContextRow" HorizontalAlignment="Left" MinWidth="260">','<Grid x:Name="ModelsContextRow" HorizontalAlignment="Left" Width="260">')).Count -ge 1) 'mutation check: a fixed Width on the context row is flagged (B2)'
+Check ((Get-FixedWidthFindings $modelsXaml.Replace('<TextBox x:Name="ModelsFolderBox"','<TextBox Width="300" x:Name="ModelsFolderBox"')).Count -ge 1) 'mutation check: a fixed Width on a text box is flagged (B2)'
+
+# B3: Home Change never loses the keyboard focus: a disabled or missing model box, or a box that still cannot take the focus, falls back to the Models pane item.
+function Get-ChangeFallbackFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $fn=Get-FnAst $Text 'Invoke-FastLlmUiFluentHomeChange'
+    if($fn.Count -ne 1){[void]$found.Add('Home Change is not defined once');return ,$found.ToArray()}
+    $b=$fn[0].Body.Extent.Text
+    if($b -cnotmatch "\`$nav = \`$script:FastLlmUiFluent\['Els'\]\['NavModels'\]"){[void]$found.Add('Change does not read the NavModels pane item')}
+    if($b -cnotmatch 'if \(\$null -eq \$box -or -not \[bool\] \$box\.IsEnabled\) \{\s*if \(\$null -ne \$nav\) \{ \$null = \$nav\.Focus\(\) \}\s*return\s*\}'){[void]$found.Add('a missing or disabled model box does not move the focus to NavModels')}
+    if($b -cnotmatch '\$focusLater = \{ if \(-not \[bool\] \$box\.Focus\(\) -and \$null -ne \$nav\) \{ \$null = \$nav\.Focus\(\) \} \}\.GetNewClosure\(\)'){[void]$found.Add('the deferred focus does not fall back to NavModels')}
+    return ,$found.ToArray()
+}
+$cff=Get-ChangeFallbackFindings $homeSrc
+foreach($f in $cff){Write-Host "FINDING: $f"}
+Check ($cff.Count -eq 0) 'Home Change falls back to the NavModels pane item when the model box is disabled or cannot take the focus'
+Check ((Get-ChangeFallbackFindings $homeLf.Replace("        if (`$null -ne `$nav) { `$null = `$nav.Focus() }`n        return`n","        return`n")).Count -ge 1) 'mutation check: Change without the disabled-box fallback is flagged (B3)'
+Check ((Get-ChangeFallbackFindings $homeLf.Replace('$focusLater = { if (-not [bool] $box.Focus() -and $null -ne $nav) { $null = $nav.Focus() } }.GetNewClosure()','$focusLater = { $null = $box.Focus() }.GetNewClosure()')).Count -ge 1) 'mutation check: Change without the deferred fallback is flagged (B3)'
+Check ((Get-ChangeFallbackFindings $homeLf.Replace('if ($null -eq $box -or -not [bool] $box.IsEnabled) {','if ($null -eq $box) {')).Count -ge 1) 'mutation check: Change that ignores a disabled box is flagged (B3)'
+# D: the render harness hosts every page the way the Window hands text down. The shell Window's FontFamily, FontSize and Foreground resources and the host's three
+# SetResourceReference calls must name the same resources, so the two cannot drift (read as text: the harness needs WPF to run, this pin does not).
+function Get-HostTextFindings([string]$ShellMarkup,[string]$HarnessText){
+    $found=New-Object System.Collections.ArrayList
+    $m=[regex]::Match($ShellMarkup,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Shell'\] = @'\r?\n(.*?)\r?\n'@")
+    if(-not $m.Success){[void]$found.Add('the shell markup is not found');return ,$found.ToArray()}
+    $root=([xml]$m.Groups[1].Value).DocumentElement
+    $want=@{}
+    foreach($pair in @(@('FontFamily','TextFont'),@('FontSize','BodySize'),@('Foreground','TextPrimaryBrush'))){
+        $attr=$root.GetAttribute($pair[0])
+        if($attr -cne ('{DynamicResource FastLlm.'+$pair[1]+'}')){[void]$found.Add("the shell Window $($pair[0]) is not {DynamicResource FastLlm.$($pair[1])}: $attr")}
+        $want[$pair[0]]='FastLlm.'+$pair[1]
+    }
+    $got=@{}
+    foreach($mm in [regex]::Matches($HarnessText,"\`$sv\.SetResourceReference\(\[System\.Windows\.Documents\.TextElement\]::(FontFamily|FontSize|Foreground)Property, '([^']+)'\)")){$got[$mm.Groups[1].Value]=$mm.Groups[2].Value}
+    foreach($k in 'FontFamily','FontSize','Foreground'){
+        if(-not $got.ContainsKey($k)){[void]$found.Add("the harness host has no $k reference")}
+        elseif($got[$k] -cne $want[$k]){[void]$found.Add("the harness host $k names $($got[$k]), the Window uses $($want[$k])")}
+    }
+    if($HarnessText -cnotmatch '\$sv\.Resources = \$dict'){[void]$found.Add('the harness host does not take the case theme dictionary')}
+    return ,$found.ToArray()
+}
+$harnessText=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'helpers/UiRenderHarness.ps1'))
+$htf=Get-HostTextFindings $shellText $harnessText
+foreach($f in $htf){Write-Host "FINDING: $f"}
+Check ($htf.Count -eq 0) 'the render harness host and the shell Window name the same three text resources (family, size, colour)'
+Check ((Get-HostTextFindings $shellText $harnessText.Replace("'FastLlm.BodySize')","'FastLlm.SubtitleSize')")).Count -ge 1) 'mutation check: a harness host size resource that differs from the Window is flagged (D)'
+Check ((Get-HostTextFindings $shellText $harnessText.Replace("FontFamilyProperty, 'FastLlm.TextFont')","FontFamilyProperty, 'FastLlm.DisplayFont')")).Count -ge 1) 'mutation check: a harness host family resource that differs from the Window is flagged (D)'
+Check ((Get-HostTextFindings $shellText $harnessText.Replace("ForegroundProperty, 'FastLlm.TextPrimaryBrush')","ForegroundProperty, 'FastLlm.TextSecondaryBrush')")).Count -ge 1) 'mutation check: a harness host colour resource that differs from the Window is flagged (D)'
+Check ((Get-HostTextFindings $shellText $harnessText.Replace("    `$sv.SetResourceReference([System.Windows.Documents.TextElement]::FontSizeProperty, 'FastLlm.BodySize')`n","").Replace("    `$sv.SetResourceReference([System.Windows.Documents.TextElement]::FontSizeProperty, 'FastLlm.BodySize')`r`n","")).Count -ge 1) 'mutation check: a harness host without the size reference is flagged (D)'
+Check ((Get-HostTextFindings $shellText.Replace('FontSize="{DynamicResource FastLlm.BodySize}"','FontSize="14"') $harnessText).Count -ge 1) 'mutation check: a Window with a literal font size is flagged (D)'
+# ===== end PR 3b review fix round 1 =====
+
 
 Write-Host "UI fluent member coverage tests passed: $checks"
