@@ -396,11 +396,13 @@ function Invoke-A15-BeginInvoke {
     $log = New-Object System.Collections.ArrayList
     $returned = @{ op = $null }
     # Runs as a dispatcher item (like a Click handler): queues a Normal item with the form adapter, then an Input item, then returns.
+    # An inner .GetNewClosure() does not capture the outer closure's variables, so the handler copies them to locals first.
     $handler = {
-        $null = $log.Add('handler-start')
-        $returned.op = $form.BeginInvoke([Action]{ $null = $log.Add('normal') }.GetNewClosure())
-        $null = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input, [Action]{ $null = $log.Add('input') }.GetNewClosure())
-        $null = $log.Add('handler-end')
+        $logHere = $log
+        $null = $logHere.Add('handler-start')
+        $returned.op = $form.BeginInvoke([Action]{ $null = $logHere.Add('normal') }.GetNewClosure())
+        $null = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input, [Action]{ $null = $logHere.Add('input') }.GetNewClosure())
+        $null = $logHere.Add('handler-end')
     }.GetNewClosure()
     $null = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Loaded, [Action]$handler)
     Invoke-Pump 1000 ({ $log.Count -ge 4 }).GetNewClosure()

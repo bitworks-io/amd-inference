@@ -69,7 +69,7 @@ $script:FastLlmUiXaml['FastLlm.Models'] = @'
     <TextBlock x:Name="ModelsSwitchHeading" Margin="0,24,0,0" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
     <TextBlock x:Name="ModelsSwitchIntro" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
     <TextBlock x:Name="ModelsSwitchLine" Margin="0,8,0,0" TextWrapping="Wrap"/>
-    <ListBox x:Name="ModelsSwitchList" Margin="0,8,0,0" MaxHeight="220" ScrollViewer.HorizontalScrollBarVisibility="Auto"
+    <ListBox x:Name="ModelsSwitchList" Margin="0,8,0,0" MaxHeight="220" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="False"
              FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Background="{DynamicResource FastLlm.CardBrush}"
              Foreground="{DynamicResource FastLlm.TextPrimaryBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}">
       <ListBox.ItemContainerStyle>
@@ -369,7 +369,11 @@ function Initialize-FastLlmUiFluentModels {
     Set-FastLlmUiFluentConnectInputName -Box $Els['ModelsBarBox'] -Label $Els['ModelsBarLabel'] -Text ([string] $t.Bar)
     Set-FastLlmUiFluentConnectInputName -Box $Els['ModelsSwitchList'] -Label $Els['ModelsSwitchHeading'] -Text ([string] $t.SwitchTitle)
     $Els['ModelsSwitchNow'].Content = ConvertTo-FastLlmUiAccessText -Text ([string] $t.SwitchNow) -UseMnemonic $false
-    $Els['ModelsLeftoverButton'].Content = ConvertTo-FastLlmUiAccessText -Text ([string] $t.RemoveLeftovers) -UseMnemonic $false
+    # The leftover caption is the page's longest button text: it wraps inside the button at large text instead of clipping.
+    $leftoverCaption = New-Object System.Windows.Controls.AccessText
+    $leftoverCaption.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $leftoverCaption.Text = ConvertTo-FastLlmUiAccessText -Text ([string] $t.RemoveLeftovers) -UseMnemonic $false
+    $Els['ModelsLeftoverButton'].Content = $leftoverCaption
     $Els['ModelsSwitchNow'].IsEnabled = $false
     $Els['ModelsLeftoverButton'].IsEnabled = $false
     # The spin buttons: icon glyphs (drawn, not read), named, never tab stops (their style).

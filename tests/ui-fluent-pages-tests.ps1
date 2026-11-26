@@ -127,8 +127,10 @@ $script:dialogCalls = @{ switch = 0; models = 0; components = 0; recipe = 0 }
 $script:modelsView = $null
 $script:componentsView = $null
 $script:barValues = @('auto', 'on', 'off')
-$script:realConfirmText = Get-Command -Name Get-FastLlmModelRemovalConfirmationText -CommandType Function
-$script:realRefusalText = Get-Command -Name Get-FastLlmModelRemovalRefusalText -CommandType Function
+# The real functions' script blocks, captured before the wrappers below replace them. Not Get-Command: a FunctionInfo is updated in place when the
+# function is redefined in the same scope, so calling it from the wrapper would call the wrapper itself (endless recursion).
+$script:realConfirmText = ${function:Get-FastLlmModelRemovalConfirmationText}
+$script:realRefusalText = ${function:Get-FastLlmModelRemovalRefusalText}
 $script:p22Missing = @()
 foreach ($fnName in 'RemoveModelFromWindow', 'RemoveLeftoversFromWindow', 'RemoveComponentFromWindow', 'FillModelsPanel', 'FillComponentsPanel', 'ReadSelection', 'GetBarValue') {
     $script:p13Want = $fnName

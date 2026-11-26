@@ -1559,6 +1559,18 @@ Check ($fwf.Count -eq 0) 'the Models markup has no fixed Width on a ComboBox, a 
 Check ((Get-FixedWidthFindings $modelsXaml.Replace('<ComboBox x:Name="ModelsBarBox" HorizontalAlignment="Left" MinWidth="260"','<ComboBox x:Name="ModelsBarBox" HorizontalAlignment="Left" Width="260"')).Count -ge 1) 'mutation check: a fixed Width on the BAR box is flagged (B2)'
 Check ((Get-FixedWidthFindings $modelsXaml.Replace('<Grid x:Name="ModelsContextRow" HorizontalAlignment="Left" MinWidth="260">','<Grid x:Name="ModelsContextRow" HorizontalAlignment="Left" Width="260">')).Count -ge 1) 'mutation check: a fixed Width on the context row is flagged (B2)'
 Check ((Get-FixedWidthFindings $modelsXaml.Replace('<TextBox x:Name="ModelsFolderBox"','<TextBox Width="300" x:Name="ModelsFolderBox"')).Count -ge 1) 'mutation check: a fixed Width on a text box is flagged (B2)'
+# The switch list scrolls by pixel (CanContentScroll False): its multi-line rows scroll smoothly, every row is realized (so every row has a peer), and its
+# viewer's extent is in pixels, which the render harness's outside rule reads (CI round 1: item units made every row 'outside').
+function Test-SwitchListPixelScroll([string]$Xaml){ return ([regex]::Match($Xaml,'<ListBox x:Name="ModelsSwitchList"[^>]*>').Value -cmatch 'ScrollViewer\.CanContentScroll="False"') }
+Check (Test-SwitchListPixelScroll $modelsXaml) 'the Models switch list scrolls by pixel (ScrollViewer.CanContentScroll False)'
+Check (-not (Test-SwitchListPixelScroll $modelsXaml.Replace(' ScrollViewer.CanContentScroll="False"',''))) 'mutation check: a switch list that scrolls by item is flagged'
+# The leftover button's caption wraps inside the button at large text (CI round 1: clipped at text 2.25 in the 640 wide shell).
+function Test-LeftoverCaptionWraps([string]$Text){
+    return ($Text -cmatch '\$leftoverCaption = New-Object System\.Windows\.Controls\.AccessText' -and $Text -cmatch '\$leftoverCaption\.TextWrapping = \[System\.Windows\.TextWrapping\]::Wrap' -and $Text -cmatch "\`$Els\['ModelsLeftoverButton'\]\.Content = \`$leftoverCaption")
+}
+$modelsFileText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentModels.ps1'))
+Check (Test-LeftoverCaptionWraps $modelsFileText) 'the leftover button caption is a wrapping AccessText'
+Check (-not (Test-LeftoverCaptionWraps $modelsFileText.Replace('$leftoverCaption.TextWrapping = [System.Windows.TextWrapping]::Wrap','$leftoverCaption.TextWrapping = [System.Windows.TextWrapping]::NoWrap'))) 'mutation check: a leftover caption that does not wrap is flagged'
 
 # B3: Home Change never loses the keyboard focus: a disabled or missing model box, or a box that still cannot take the focus, falls back to the Models pane item.
 function Get-ChangeFallbackFindings([string]$Text){
