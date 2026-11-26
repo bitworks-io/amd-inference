@@ -1934,9 +1934,12 @@ $homeText=Get-OptionalText 'src/FastLlm.UiFluentHome.ps1'
 # text went through ConvertTo-FastLlmKeyFreeText (keyfree or raw; the key-free call itself is that flag, so computing it a second time for the key row is fluent-only), and the assignments to $script:apiKeyStore and $script:uiSettings.allowSwitch, in execution order (a call is
 # after the calls inside its own arguments). Fluent-only statements (the availability guard, the key-row mark, the reload) are not projected.
 $fxCommands=@('Get-FastLlmUiApiKeySaveAction','Get-FastLlmUiApiKeyChoiceText','Invoke-FastLlmApiKeySetting','NewUiApiKey','Set-FastLlmServingSettings','Set-FastLlmUiAllowSwitch','RefreshUiSwitchState','Get-FastLlmUiSettingsSavedNote','Get-FastLlmUiChatPageOffNote','ShowFailure')
-function Test-FxKeyFree($Show){
-    $callArgs=@($Show.Arguments); if($callArgs.Count -lt 2){return $false}
-    $msg=$callArgs[1]
+function Test-FxKeyFree($Show,$Message=$null){
+    $msg=$Message
+    if($null -eq $msg){
+        $callArgs=@($Show.Arguments); if($callArgs.Count -lt 2){return $false}
+        $msg=$callArgs[1]
+    }
     $isCtf={param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'ConvertTo-FastLlmKeyFreeText'}
     if(@($msg.FindAll($isCtf,$true)).Count -gt 0){return $true}
     $vars=@($msg.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst]},$true))
@@ -1967,6 +1970,21 @@ function Get-EffectSequence($Scope){
                     }
                     $tok="$name -Action $act"
                 }
+            }
+            elseif($name -ceq 'Show-FastLlmUiFluentMessageBox'){
+                # The fluent box projects as the system box it replaces: the same caption, icon and key-free state, read from its named arguments (Text, Caption, Icon).
+                $named=@{}; $els=@($n.CommandElements)
+                for($i=1;$i -lt $els.Count;$i++){
+                    if($els[$i] -is [System.Management.Automation.Language.CommandParameterAst]){
+                        $pn=([string]$els[$i].ParameterName).ToLowerInvariant()
+                        if($null -ne $els[$i].Argument){$named[$pn]=$els[$i].Argument}elseif($i+1 -lt $els.Count){$named[$pn]=$els[$i+1]}
+                    }
+                }
+                $title='?'; $icon='?'; $keyFree=$false
+                if($named.ContainsKey('caption')){$title=$named['caption'].Extent.Text}
+                if($named.ContainsKey('icon')){$icon=$named['icon'].Extent.Text}
+                if($named.ContainsKey('text')){$keyFree=[bool](Test-FxKeyFree $n $named['text'])}
+                $tok='MessageBox '+$title+' '+$icon+$(if($keyFree){' keyfree'}else{' raw'})
             }
         }
         elseif($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]){
@@ -2096,6 +2114,23 @@ $fxPlants=[ordered]@{
 }
 foreach($k in $fxPlants.Keys){
     Check ($fxPlants[$k] -cne $fxGood -and (Get-EffectFindings $fxPlants[$k] $classicParts).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
+}
+# The fluent box is the same effect as the system box: the well formed copy with both boxes as Show-FastLlmUiFluentMessageBox has no finding, and its mutants are flagged.
+$fxFluent=$fxGood.Replace("[void] [Windows.Forms.MessageBox]::Show(`$script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref] `$saveFailureText)), 'FastLLM settings', 'OK', 'Warning')","[void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] `$saveFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning')").Replace("[void] [Windows.Forms.MessageBox]::Show(`$script:form, [string] `$script:statusLabel.Text, 'FastLLM settings', 'OK', 'Information')","[void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text ([string] `$script:statusLabel.Text) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Information')")
+Check ($fxFluent -cne $fxGood -and $fxFluent.Contains('Show-FastLlmUiFluentMessageBox') -and -not $fxFluent.Contains('MessageBox]::Show')) 'self-check: the fluent variant of the well formed Save copy uses only the fluent box'
+$fxFluentFindings=Get-EffectFindings $fxFluent $classicParts
+foreach($f in $fxFluentFindings){Write-Host "FINDING: $f"}
+Check ($fxFluentFindings.Count -eq 0) 'self-check: the fluent box projects as the classic box (same caption, icon and key-free state, no finding)'
+$fxFluentPlants=[ordered]@{
+    'fluent refusal box without the key-free text'=$fxFluent.Replace('-Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] $saveFailureText))','-Text $saveFailureText')
+    'fluent refusal box icon changed'=$fxFluent.Replace("-Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning'","-Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Error'")
+    'fluent refusal box caption changed'=$fxFluent.Replace("-Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning'","-Caption 'Settings' -Buttons 'OK' -Icon 'Warning'")
+    'fluent after-OK box icon changed'=$fxFluent.Replace("-Icon 'Information'","-Icon 'Warning'")
+    'fluent after-OK box dropped'=$fxFluent.Replace("if (`$runActive) { [void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text ([string] `$script:statusLabel.Text) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Information') }",'')
+    'fluent refusal box without its text'=$fxFluent.Replace('-Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] $saveFailureText)) ','')
+}
+foreach($k in $fxFluentPlants.Keys){
+    Check ($fxFluentPlants[$k] -cne $fxFluent -and (Get-EffectFindings $fxFluentPlants[$k] $classicParts).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
 }
 $fxReal=Get-EffectFindings $settingsText $classicParts
 foreach($f in $fxReal){Write-Host "FINDING: $f"}
@@ -2876,6 +2911,88 @@ $seamPlants=[ordered]@{
 foreach($k in $seamPlants.Keys){ Check ((@(Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1])).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
 # Ruling a (the fluent box returns [System.Windows.Forms.DialogResult], never a string) is pinned with the dialog host above; the view entry is that function (the key pin).
 # ===== end PR 4a Task 4 =====
+
+# ===== PR 4a Task 5: side result and driver guidance (builder D) =====
+# The text table is copied from the two classic functions (drift pin), the key targets are the classic ones (side result: Close answers Enter and Escape;
+# driver guidance: Escape only, no Enter target), and each runs again on a planted mutant.
+$sdText=Get-OptionalText 'src/FastLlm.UiFluentDialogs.ps1'
+$sdTextAssign=@((ConvertTo-PinAst $sdText).FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentDialogText'},$true))
+Check ($sdTextAssign.Count -eq 1) 'the dialog text table is assigned exactly once'
+$sdTable=& ([scriptblock]::Create($sdTextAssign[0].Right.Extent.Text))
+Check ((@($sdTable.Keys) -join ',') -ceq 'SideClose,GuidanceTitle,GuidanceLabel,OpenPage,GuidanceClose,NoReport,NoEntries,NoEntriesStatus,TooMany,Invalid,OpenFailed,Viewed,Url') 'the dialog text table has the 13 planned keys, in order'
+function Get-SideDriftLiterals($Ast){
+    $vals=New-Object System.Collections.ArrayList
+    foreach($fnName in 'ShowUiSideResult','ShowDriverGuidance'){
+        foreach($fnAst in (Get-AstFunction $Ast $fnName)){
+            foreach($k in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){ [void]$vals.Add([string]$k.Value) }
+        }
+    }
+    return ,$vals.ToArray()
+}
+function Get-SideDriftProblems($Table,[string[]]$Values){
+    $problems=New-Object System.Collections.ArrayList
+    foreach($key in @($Table.Keys)){if($Values -cnotcontains [string]$Table[$key]){[void]$problems.Add("table value $key is not a string constant of ShowUiSideResult or ShowDriverGuidance")}}
+    return ,$problems.ToArray()
+}
+$sdClassic=Get-SideDriftLiterals $classicAst
+$sdDrift=Get-SideDriftProblems $sdTable $sdClassic
+foreach($pr in $sdDrift){Write-Host "FINDING: $pr"}
+Check ($sdDrift.Count -eq 0 -and $sdClassic.Count -gt 20) "every dialog text value is a classic literal of ShowUiSideResult or ShowDriverGuidance ($($sdClassic.Count) literals read)"
+foreach($sdKey in @($sdTable.Keys)){
+    $mut=[ordered]@{}; foreach($key in @($sdTable.Keys)){$mut[$key]=[string]$sdTable[$key]}
+    $mut[$sdKey]=[string]$sdTable[$sdKey]+'.'
+    Check ((Get-SideDriftProblems $mut $sdClassic).Count -ge 1) "mutation check: a changed $sdKey literal fails the dialog text drift pin"
+}
+# The classic key targets, read from the classic AST: the side result has AcceptButton and CancelButton = Close; driver guidance has CancelButton only.
+$sdSideClassic=(Get-AstFunction $classicAst 'ShowUiSideResult')[0].Extent.Text
+$sdDriverClassic=(Get-AstFunction $classicAst 'ShowDriverGuidance')[0].Extent.Text
+Check ($sdSideClassic.Contains('$dialog.AcceptButton=$close') -and $sdSideClassic.Contains('$dialog.CancelButton=$close')) 'classic ShowUiSideResult: Close is both AcceptButton and CancelButton'
+Check ($sdDriverClassic.Contains('$dialog.CancelButton=$close') -and -not $sdDriverClassic.Contains('AcceptButton')) 'classic ShowDriverGuidance: Close is the CancelButton and there is no AcceptButton'
+function Get-SideKeyTargets([string]$Text,[string]$FnName){
+    $fn=Get-DlgFn $Text $FnName
+    if($null -eq $fn){return $null}
+    $calls=@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true))
+    if($calls.Count -ne 1){return $null}
+    $e=Get-DlgParamText $calls[0] 'Enter'; $x=Get-DlgParamText $calls[0] 'Escape'
+    return [pscustomobject]@{Enter=$(if($null -eq $e){'<none>'}else{$e});Escape=$(if($null -eq $x){'<none>'}else{$x})}
+}
+function Get-SideFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $side=Get-SideKeyTargets $Text 'Show-FastLlmUiFluentSideResult'
+    $drv=Get-SideKeyTargets $Text 'Show-FastLlmUiFluentDriverGuidance'
+    if($null -eq $side -or $side.Enter -cne "'Close'" -or $side.Escape -cne "'Close'"){[void]$f.Add('the side result does not answer Enter and Escape with Close')}
+    if($null -eq $drv -or $drv.Enter -cnotin @("''",'<none>')){[void]$f.Add('driver guidance has an Enter target (the classic form has no AcceptButton)')}
+    if($null -eq $drv -or $drv.Escape -cne "'Close'"){[void]$f.Add('driver guidance does not answer Escape with Close')}
+    foreach($name in 'Show-FastLlmUiFluentSideResult','Show-FastLlmUiFluentDriverGuidance'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){[void]$f.Add("$name is not defined once");continue}
+        if($fn.Extent.Text -cmatch 'IsDefault|IsCancel'){[void]$f.Add("$name sets IsDefault or IsCancel")}
+    }
+    $box=Get-DlgFn $Text 'New-FastLlmUiFluentDialogReadBox'
+    if($null -eq $box -or -not $box.Extent.Text.Contains('$box.IsReadOnly = $true') -or -not $box.Extent.Text.Contains('$box.IsUndoEnabled = $false') -or -not $box.Extent.Text.Contains('TextWrapping]::Wrap')){[void]$f.Add('the read box is not read-only, undo-free and wrapping')}
+    $drvFn=Get-DlgFn $Text 'Show-FastLlmUiFluentDriverGuidance'
+    if($null -ne $drvFn -and -not $drvFn.Extent.Text.Contains('SetCanContentScroll($devices, $false)')){[void]$f.Add('the device list scrolls by item (CanContentScroll is not False)')}
+    if($null -ne $drvFn){
+        $names=@($drvFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and [string]$n.Member.Value -in @('SetName','SetLabeledBy')},$true)).Count
+        if($names -lt 3){[void]$f.Add('the driver guidance inputs do not each carry Name and LabeledBy')}
+    }
+    return ,$f.ToArray()
+}
+$sdReal=Get-SideFindings $sdText
+foreach($pr in $sdReal){Write-Host "FINDING: $pr"}
+Check ($sdReal.Count -eq 0) 'side result: Enter = Escape = Close; driver guidance: Escape = Close and no Enter target; read-only undo-free wrapping box; the list scrolls by pixel; every input has Name and LabeledBy'
+$sdPlants=[ordered]@{
+    'driver guidance Enter = Close'=$sdText.Replace("-Enter '' -Escape 'Close' -Owner `$script:form`n    `$work","-Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work")
+    'side result Enter removed'=$sdText.Replace("-Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0","-Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0")
+    'side result Escape removed'=$sdText.Replace("-Buttons `$buttons -Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0","-Buttons `$buttons -Enter 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0")
+    'driver guidance Escape removed'=$sdText.Replace("-Enter '' -Escape 'Close'","-Enter ''")
+    'undo left on'=$sdText.Replace('$box.IsUndoEnabled = $false','$box.IsUndoEnabled = $true')
+    'list scrolls by item'=$sdText.Replace('SetCanContentScroll($devices, $false)','SetCanContentScroll($devices, $true)')
+    'a LabeledBy dropped'=$sdText.Replace('        [System.Windows.Automation.AutomationProperties]::SetLabeledBy($field, $label)','')
+    'IsDefault on the driver close'=$sdText.Replace("-Enter '' -Escape 'Close'","-Enter '' -Escape 'Close'; `$IsDefault = 1")
+}
+foreach($k in $sdPlants.Keys){ Check ($sdPlants[$k] -cne $sdText -and (Get-SideFindings $sdPlants[$k]).Count -ge 1) "mutation check: the side result and driver guidance pins flag: $k" }
+# ===== end PR 4a Task 5 =====
 
 
 Write-Host "UI fluent member coverage tests passed: $checks"
