@@ -274,8 +274,9 @@ function Get-WiringProblems([string]$Source){
     if($conn.Count -ne 1 -or $sinkFn.Count -ne 1){[void]$problems.Add('functions missing');return $problems}
     $callsOf={param($root,$var) @($root.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq 'Ampersand' -and $n.CommandElements[0].Extent.Text -ceq $var},$true)).Count}
     $attach=@($conn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -clike 'Add_*'},$true))
-    $want=@{SelectionChanged='$setFrom';TextChanged='$setFrom';KeyDown='$commit';LostKeyboardFocus='$commit'}
-    foreach($ev in 'SelectionChanged','TextChanged','KeyDown','LostKeyboardFocus'){
+    # The Number keys are read in PreviewKeyDown: a TextBox's class handler marks Up and Down handled before instance KeyDown handlers run.
+    $want=@{SelectionChanged='$setFrom';TextChanged='$setFrom';PreviewKeyDown='$commit';LostKeyboardFocus='$commit'}
+    foreach($ev in 'SelectionChanged','TextChanged','PreviewKeyDown','LostKeyboardFocus'){
         $m=@($attach | Where-Object { $_.Member.Extent.Text -ceq "Add_$ev" })
         if($m.Count -ne 1){[void]$problems.Add("Add_$ev attached $($m.Count) times, expected 1");continue}
         $sb=@($m[0].Arguments[0].FindAll({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true))
@@ -306,7 +307,8 @@ function Test-Plant([string]$Label,[string]$From,[string]$To,[int]$Which=0){
 }
 Test-Plant 'missing SelectionChanged attach' '.Add_SelectionChanged(' '.Add_SelectionChangedX('
 Test-Plant 'missing TextChanged attach' '.Add_TextChanged(' '.Add_TextChangedX('
-Test-Plant 'missing KeyDown attach' '.Add_KeyDown(' '.Add_KeyDownX('
+Test-Plant 'missing PreviewKeyDown attach' '.Add_PreviewKeyDown({' '.Add_PreviewKeyDownX({'
+Test-Plant 'Number keys back in KeyDown' '$Element.Add_PreviewKeyDown({' '$Element.Add_KeyDown({'
 Test-Plant 'missing LostKeyboardFocus attach' '.Add_LostKeyboardFocus(' '.Add_LostKeyboardFocusX('
 Test-Plant 'combo handler double call' "-Property 'SelectedIndex'" "-Property 'SelectedIndex'; & `$setFrom -Adapter `$Adapter -Property 'SelectedIndex' -Value 0"
 Test-Plant 'number commit double call' "-Property 'Value' -Value `$value" "-Property 'Value' -Value `$value; & `$setFrom -Adapter `$Adapter -Property 'Value' -Value 0"
