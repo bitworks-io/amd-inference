@@ -456,10 +456,15 @@ function Invoke-FastLlmUiFluentHomeChange {
     if (-not (Test-FastLlmUiFluentPageRegistered -Id 'Models')) { return }
     $null = Set-FastLlmUiFluentPage -Id 'Models'
     $box = $script:FastLlmUiFluent['Els']['ModelsModelBox']
-    if ($null -eq $box) { return }
+    $nav = $script:FastLlmUiFluent['Els']['NavModels']
+    # Keyboard focus is never lost: a model box that is missing or disabled (a run is active), or one that cannot take the focus, leaves it on the Models pane item.
+    if ($null -eq $box -or -not [bool] $box.IsEnabled) {
+        if ($null -ne $nav) { $null = $nav.Focus() }
+        return
+    }
     if (-not [bool] $box.Focus()) {
-        # The page was only just attached: focus once its layout has run.
-        $focusLater = { $null = $box.Focus() }.GetNewClosure()
+        # The page was only just attached: focus once its layout has run, and fall back to the pane item if the box still cannot take it.
+        $focusLater = { if (-not [bool] $box.Focus() -and $null -ne $nav) { $null = $nav.Focus() } }.GetNewClosure()
         $null = $box.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input, [Action] $focusLater)
     }
 }

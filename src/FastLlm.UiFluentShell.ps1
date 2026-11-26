@@ -289,6 +289,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
       <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>
       <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>
       <Setter Property="FontSize" Value="10"/>
+      <Setter Property="Focusable" Value="False"/>
       <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
       <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>
       <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrokeBrush}"/>

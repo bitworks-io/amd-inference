@@ -50,7 +50,7 @@ $script:FastLlmUiXaml['FastLlm.Models'] = @'
         <TextBlock x:Name="ModelsFolderLabel" Margin="0,0,0,4" TextWrapping="Wrap"/>
         <TextBox x:Name="ModelsFolderBox" Style="{DynamicResource FastLlm.TextBoxStyle}"/>
         <TextBlock x:Name="ModelsContextLabel" Margin="0,12,0,4" TextWrapping="Wrap"/>
-        <Grid x:Name="ModelsContextRow" HorizontalAlignment="Left" Width="260">
+        <Grid x:Name="ModelsContextRow" HorizontalAlignment="Left" MinWidth="260">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
@@ -63,7 +63,7 @@ $script:FastLlmUiXaml['FastLlm.Models'] = @'
                         IsEnabled="{Binding IsEnabled, ElementName=ModelsContextBox}"/>
         </Grid>
         <TextBlock x:Name="ModelsBarLabel" Margin="0,12,0,4" TextWrapping="Wrap"/>
-        <ComboBox x:Name="ModelsBarBox" HorizontalAlignment="Left" Width="260" Style="{DynamicResource FastLlm.ComboBoxStyle}"/>
+        <ComboBox x:Name="ModelsBarBox" HorizontalAlignment="Left" MinWidth="260" Style="{DynamicResource FastLlm.ComboBoxStyle}"/>
       </StackPanel>
     </Expander>
     <TextBlock x:Name="ModelsSwitchHeading" Margin="0,24,0,0" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
@@ -416,14 +416,17 @@ function Register-FastLlmUiFluentModelsPage {
 # Opening the page does what the three dialogs do when they open: the two lists, and the switch picker (computed once, here).
 function Enter-FastLlmUiFluentModels {
     [CmdletBinding()] param()
-    $m = $script:FastLlmUiFluent['Models']
-    $m['Message'].Text = ''
-    $m['ComponentsMessage'].Text = ''
-    $m['SwitchMessage'].Text = ''
-    Update-FastLlmUiFluentModelsList
-    Update-FastLlmUiFluentComponentsList
-    Update-FastLlmUiFluentModelsPicker
-    Update-FastLlmUiFluentModels
+    try {
+        $m = $script:FastLlmUiFluent['Models']
+        $m['Message'].Text = ''
+        $m['ComponentsMessage'].Text = ''
+        $m['SwitchMessage'].Text = ''
+        Update-FastLlmUiFluentModelsList
+        Update-FastLlmUiFluentComponentsList
+        Update-FastLlmUiFluentModelsPicker
+        Update-FastLlmUiFluentModels
+    }
+    catch { ShowFailure $_.Exception.Message }
 }
 
 # Leaving the page commits a number edit that is still pending (Enter or focus loss may not have run). It never refuses.
@@ -447,12 +450,13 @@ function Update-FastLlmUiFluentModelsPicker {
     if ([bool] $script:switchButton.Enabled) {
         $status=$null;try{$status=Get-FastLlmStatus -InstallRoot $script:installPath}catch{}
         $picker=Get-FastLlmUiSwitchPickerModel -InstallRoot $script:installPath -CatalogPath (Join-Path $script:FastLlmUiFluentSourceRoot 'config/catalog.json') -Status $status
+        # The picker's message is written only when the picker is computed: a switch-off edge (a successful Switch disables the button) must not wipe the request's result.
+        $m['SwitchMessage'].Text = [string] $picker.message
     }
     $m['Picker'] = $picker
     $list = $e['ModelsSwitchList']
     $list.Items.Clear()
     foreach ($pickerItem in @($picker.items)) { $null = $list.Items.Add([string] $pickerItem.text) }
-    $m['SwitchMessage'].Text = [string] $picker.message
     Update-FastLlmUiFluentModelsSwitchState
 }
 
