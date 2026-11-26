@@ -119,7 +119,12 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
         <Setter.Value>
           <ControlTemplate TargetType="Expander">
             <DockPanel>
-              <ToggleButton x:Name="Hd" DockPanel.Dock="Top" Content="{TemplateBinding Header}" Foreground="{TemplateBinding Foreground}"
+              <Grid DockPanel.Dock="Top">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+              <ToggleButton x:Name="Hd" Grid.Column="0" Content="{TemplateBinding Header}" Foreground="{TemplateBinding Foreground}"
                             IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                             FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Background="Transparent" Padding="4,6,4,6" HorizontalContentAlignment="Left">
                 <ToggleButton.Template>
@@ -136,6 +141,8 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                   </ControlTemplate>
                 </ToggleButton.Template>
               </ToggleButton>
+              <ContentPresenter x:Name="TagHost" Grid.Column="1" Content="{TemplateBinding Tag}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+              </Grid>
               <ContentPresenter x:Name="Body" Visibility="Collapsed"/>
             </DockPanel>
             <ControlTemplate.Triggers>
@@ -370,7 +377,8 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'bannerNotes';       Element = 'UpdateNotesButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
         @{ Name = 'bannerButton';      Element = 'UpdateButton';      Mode = 'Content';   Event = 'Click';       Flags = @() },
         @{ Name = 'reinstallButton';   Element = 'ReinstallButton';   Mode = 'Content';   Event = 'Click';       Flags = @() },
-        @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() }
+        @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
+        @{ Name = 'failureCopyLink';   Element = 'ActivityCopyButton'; Mode = 'Content';  Event = 'LinkClicked'; Flags = @(); Also = $true }
     )
     return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings))
 }

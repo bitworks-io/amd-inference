@@ -307,6 +307,114 @@ function Invoke-P1-PageHostAndNav {
     Check-NoExceptions 'P1'
 }
 
+# ---- PR 3b Task 7: the Activity header's Copy full output button (the lead's flagged risk: Expander.Tag hosting) ----
+# Run early (right after P1). Every check name starts with "P16 ACTIVITY-COPY-TAG" so the CI line is easy to find. If a check here fails, change the one
+# value $script:FastLlmUiFluentActivityCopySlot in src/FastLlm.UiFluentHome.ps1 from 'Tag' to 'Body' (the plan's fallback slot) and rerun.
+$script:activityCopyEvents = New-Object System.Collections.ArrayList
+function Add-ActivityCopyEvent { [void]$script:activityCopyEvents.Add('LinkClicked') }
+function Invoke-P16-ActivityCopyHeader {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $win = $f.Window
+    $s = $script:FastLlmUiFluentStrings
+    $slot = [string]$script:FastLlmUiFluentActivityCopySlot
+    Write-Host "INFO: P16 the Activity copy slot is '$slot'"
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $null = $win.Activate()
+    $btn = $els['ActivityCopyButton']
+    Check ($null -ne $btn -and $btn -is [System.Windows.Controls.Button] -and $btn.Name -ceq 'ActivityCopyButton') 'P16 ACTIVITY-COPY-TAG the header button resolves by FindName into the shell element map' ''
+    if ($null -eq $btn) { return }
+    # The failure link's visibility drives the header button (the same adapter), so show it for the checks and put it back after.
+    $origVisible = [bool]$script:failureCopyLink.Visible
+    $script:failureCopyLink.Visible = $true
+    # In the Tag slot the button sits in the header and shows while Activity is collapsed; in the Body fallback it shows only when Activity is expanded.
+    $els.ActivityExpander.IsExpanded = ($slot -ceq 'Body')
+    Invoke-Pump 150
+    Check ($btn.Visibility -eq [System.Windows.Visibility]::Visible -and $btn.IsVisible -and $btn.IsLoaded) 'P16 ACTIVITY-COPY-TAG the header button is visible and loaded (collapsed Activity in the Tag slot)' "visibility=$($btn.Visibility) isVisible=$($btn.IsVisible) loaded=$($btn.IsLoaded)"
+    Check ($null -ne $btn.Style -and [object]::ReferenceEquals($btn.Style, $els.FailureCopyButton.Style)) 'P16 ACTIVITY-COPY-TAG the DynamicResource link style resolves (same style object as the failure bar copy link)' "style=$(if ($null -ne $btn.Style) { 'set but not the link style' } else { 'null' })"
+    Check ($btn.FontSize -eq $els.FailureCopyButton.FontSize -and [string]$btn.FontFamily -ceq [string]$els.FailureCopyButton.FontFamily) 'P16 ACTIVITY-COPY-TAG the font is inherited as on the failure bar link' "size=$($btn.FontSize) family=$($btn.FontFamily) want size=$($els.FailureCopyButton.FontSize) family=$($els.FailureCopyButton.FontFamily)"
+    Check ($btn.Focusable -and $btn.IsEnabled -and $btn.IsTabStop) 'P16 ACTIVITY-COPY-TAG the header button is focusable, enabled and a tab stop' "focusable=$($btn.Focusable) enabled=$($btn.IsEnabled) tabStop=$($btn.IsTabStop)"
+    $peer = [System.Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($btn)
+    Check ($null -ne $peer -and $peer.GetName() -ceq [string]$s.CopyFullOutputActivity -and [string]$s.CopyFullOutputActivity -ceq 'Copy full output (Activity)') 'P16 ACTIVITY-COPY-TAG the header button has a peer named Copy full output (Activity)' "name='$(if ($null -ne $peer) { $peer.GetName() })'"
+    Check ($null -ne $peer -and $peer.IsControlElement() -and $peer.IsKeyboardFocusable() -and $null -ne $peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Invoke)) 'P16 ACTIVITY-COPY-TAG the peer is a control element, keyboard focusable, with the Invoke pattern' ''
+    Check ([string]$btn.Content -ceq [string]$script:failureCopyLink.Text -or [string]$btn.Content -ceq (ConvertTo-FastLlmUiAccessText -Text ([string]$script:failureCopyLink.Text) -UseMnemonic ([bool]$script:failureCopyLink.UseMnemonic))) 'P16 ACTIVITY-COPY-TAG the visible text is the adapter caption' "content='$($btn.Content)'"
+    # Tab order: toggle, then copy, then (expanded) the Activity box
+    $toggle = $els.ActivityExpander.Template.FindName('Hd', $els.ActivityExpander)
+    Check ($null -ne $toggle) 'P16 ACTIVITY-COPY-TAG the Expander toggle part is found' ''
+    if ($null -ne $toggle) {
+        $null = $toggle.Focus()
+        Invoke-Pump 100
+        $null = $toggle.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Next)))
+        Invoke-Pump 100
+        $now = [System.Windows.Input.Keyboard]::FocusedElement
+        Check ([object]::ReferenceEquals($now, $btn)) 'P16 ACTIVITY-COPY-TAG Tab from the Activity toggle reaches the header button (reachable by Tab)' "focused=$(if ($null -ne $now) { $now.GetType().Name + ':' + [string]$now.Name } else { 'nothing' })"
+        $els.ActivityExpander.IsExpanded = $true
+        Invoke-Pump 150
+        $null = $btn.Focus()
+        $null = $btn.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Next)))
+        Invoke-Pump 100
+        $after = [System.Windows.Input.Keyboard]::FocusedElement
+        Check ([object]::ReferenceEquals($after, $els.ActivityBox)) 'P16 ACTIVITY-COPY-TAG Tab from the header button reaches the Activity box (toggle, copy, box)' "focused=$(if ($null -ne $after) { $after.GetType().Name + ':' + [string]$after.Name } else { 'nothing' })"
+        $els.ActivityExpander.IsExpanded = $false
+    }
+    # The copy runs: one adapter LinkClicked per click, by mouse-shaped click and by the UI Automation Invoke pattern
+    [void]$script:failureCopyLink.PSObject.Methods['Add_LinkClicked'].Invoke([scriptblock]::Create('Add-ActivityCopyEvent'))
+    $script:activityCopyEvents.Clear()
+    $btn.RaiseEvent((New-ShellClick $btn ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 50
+    Check ($script:activityCopyEvents.Count -eq 1) 'P16 ACTIVITY-COPY-TAG a click on the header button runs the copy (one adapter LinkClicked)' "events=$($script:activityCopyEvents.Count)"
+    if ($null -ne $peer) { $peer.GetPattern([System.Windows.Automation.Peers.PatternInterface]::Invoke).Invoke() }
+    Invoke-Pump 50
+    Check ($script:activityCopyEvents.Count -eq 2) 'P16 ACTIVITY-COPY-TAG the UI Automation Invoke runs the copy too (one more LinkClicked)' "events=$($script:activityCopyEvents.Count)"
+    # The failure bar's own link still raises exactly one and keeps its own name
+    $script:activityCopyEvents.Clear()
+    $els.FailureCopyButton.RaiseEvent((New-ShellClick $els.FailureCopyButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Invoke-Pump 50
+    Check ($script:activityCopyEvents.Count -eq 1) 'P16 ACTIVITY-COPY-TAG the failure bar link still raises one LinkClicked' "events=$($script:activityCopyEvents.Count)"
+    # Visible follows the adapter both ways
+    $script:failureCopyLink.Visible = $false
+    Check ($btn.Visibility -eq [System.Windows.Visibility]::Collapsed) 'P16 ACTIVITY-COPY-TAG the header button hides with the adapter' "visibility=$($btn.Visibility)"
+    $script:failureCopyLink.Visible = $origVisible
+    Check-NoExceptions 'P16'
+}
+
+# Home's Switch and Change go to Models once that page is registered (Task 6 registers it); until then Switch raises today's adapter click and Change does nothing.
+$script:homeSwitchAdapterClicks = 0
+function Add-HomeSwitchAdapterClick { $script:homeSwitchAdapterClicks++ }
+function Invoke-P17-HomeSwitchAndChange {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $win = $f.Window
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $null = $win.Activate()
+    Check ($els.ChangeButton.IsEnabled -and $null -eq $els.ChangeButton.ToolTip) 'P17 Change is enabled and carries no coming-later tooltip' "enabled=$($els.ChangeButton.IsEnabled) tip='$($els.ChangeButton.ToolTip)'"
+    if (Test-FastLlmUiFluentPageRegistered -Id 'Models') {
+        $els.SwitchButton.RaiseEvent((New-ShellClick $els.SwitchButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 200
+        $focused = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+        Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Models' -and $els.NavModels.IsSelected -and ([object]::ReferenceEquals($focused, $els.NavModels) -or $els.NavModels.IsKeyboardFocused)) 'P17 Home Switch hosts Models and focuses the pane item' "current=$(Get-FastLlmUiFluentCurrentPage)"
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+        $els.ChangeButton.RaiseEvent((New-ShellClick $els.ChangeButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 200
+        $box = $els['ModelsModelBox']
+        Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Models' -and $null -ne $box -and $box.IsKeyboardFocusWithin) 'P17 Home Change hosts Models and focuses the model box' "current=$(Get-FastLlmUiFluentCurrentPage)"
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+    }
+    else {
+        [void]$script:switchButton.PSObject.Methods['Add_Click'].Invoke([scriptblock]::Create('Add-HomeSwitchAdapterClick'))
+        $script:homeSwitchAdapterClicks = 0
+        $els.SwitchButton.RaiseEvent((New-ShellClick $els.SwitchButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 100
+        Check ($script:homeSwitchAdapterClicks -eq 1 -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Home') 'P17 Models not registered yet: Home Switch raises today adapter click once and stays on Home' "clicks=$($script:homeSwitchAdapterClicks) current=$(Get-FastLlmUiFluentCurrentPage)"
+        $els.ChangeButton.RaiseEvent((New-ShellClick $els.ChangeButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 100
+        Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Home' -and $script:homeSwitchAdapterClicks -eq 1) 'P17 Models not registered yet: Home Change does nothing' "current=$(Get-FastLlmUiFluentCurrentPage)"
+    }
+    Check-NoExceptions 'P17'
+}
+
 function Invoke-P2-ConnectAnApp {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -1136,7 +1244,7 @@ function Invoke-P99-StartupFaults {
 $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
-    'Invoke-P1-PageHostAndNav', 'Invoke-P2-ConnectAnApp', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
+    'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
