@@ -2702,6 +2702,9 @@ function Get-DlgFindings([string]$Text){
             if($h -cnotmatch "\`$state\['Enter'\]" -or $h -cnotmatch "\`$state\['Escape'\]"){[void]$f.Add('the key handler does not answer the Enter and Escape targets')}
             if($h -cnotmatch [regex]::Escape("`$state['Enter'] -cne '') { `$e.Handled = `$true; & `$close ([string] `$state['Enter'])") -or $h -cnotmatch [regex]::Escape("`$state['Escape'] -cne '') { & `$close ([string] `$state['Escape'])")){[void]$f.Add('the key handler does not close with the matching target')}
             if($h -cnotmatch 'FocusedElement' -or $h -cnotmatch '-is \[System.Windows.Controls.Button\]'){[void]$f.Add('the key handler lets Enter override a focused button')}
+            # Enter on a focused button presses that button through the dialog (a footer button answers its own id; any other gets its Click), never left to the
+            # Button's own AcceptsReturn handling (CI-proof: initial focus is on a footer button).
+            if($h -cnotmatch [regex]::Escape('& $close $focusedId') -or $h -cnotmatch [regex]::Escape('RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))')){[void]$f.Add('a focused button is not pressed by the dialog on Enter')}
         }
         $closing=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_Closing'})
         if($closing.Count -ne 1){[void]$f.Add('the dialog Window has no single Closing handler')}
@@ -2778,7 +2781,9 @@ $dlgPlants=[ordered]@{
     'a footer AccessText that does not wrap'=Edit-DlgPlant '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>' '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="NoWrap"/></Style>'
     'a footer TextBlock that does not wrap'=Edit-DlgPlant '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/>' '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="NoWrap"/>'
     'the key hook moved off PreviewKeyDown'=Edit-DlgPlant '$win.Add_PreviewKeyDown({' '$win.Add_KeyDown({'
-    'Enter overriding a focused button'=Edit-DlgPlant 'if ($focused -is [System.Windows.Controls.Button]) { return }' '$null = 1'
+    'Enter overriding a focused button'=Edit-DlgPlant 'if ($focused -is [System.Windows.Controls.Button]) {' 'if ($false) {'
+    'a focused footer button answering the Enter target'=Edit-DlgPlant '& $close $focusedId' "& `$close ([string] `$state['Enter'])"
+    'a focused button left to its own Enter handling'=Edit-DlgPlant 'else { $focused.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) }' 'else { }'
     'Escape answering the Enter target'=Edit-DlgPlant "if ([string] `$state['Escape'] -cne '') { & `$close ([string] `$state['Escape']) }" "if ([string] `$state['Escape'] -cne '') { & `$close ([string] `$state['Enter']) }"
     'a close box that never refuses'=Edit-DlgPlant '$e.Cancel = $true' '$e.Cancel = $false'
     'a close box that ignores CloseEnabled'=Edit-DlgPlant "if ([bool] `$state['CloseEnabled']) { `$state['Result']" "if (`$true) { `$state['Result']"

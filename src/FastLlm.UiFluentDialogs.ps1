@@ -137,7 +137,15 @@ function New-FastLlmUiFluentDialog {
         param($sender, $e)
         $focused = [System.Windows.Input.Keyboard]::FocusedElement
         if ($e.Key -eq [System.Windows.Input.Key]::Return) {
-            if ($focused -is [System.Windows.Controls.Button]) { return }
+            # A focused button is pressed by Enter as itself, as on a system box. The dialog does it here rather than leaving it to the Button, whose own
+            # Enter handling depends on KeyboardNavigation.AcceptsReturn: a footer button answers its id; any other button gets its Click.
+            if ($focused -is [System.Windows.Controls.Button]) {
+                $e.Handled = $true
+                $focusedId = [string] $focused.Tag
+                if ($buttonMap.ContainsKey($focusedId) -and [object]::ReferenceEquals($buttonMap[$focusedId], $focused)) { & $close $focusedId }
+                else { $focused.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) }
+                return
+            }
             if ($focused -is [System.Windows.Controls.TextBox] -and [bool] $focused.AcceptsReturn) { return }
             if ([string] $state['Enter'] -cne '') { $e.Handled = $true; & $close ([string] $state['Enter']) }
         }
