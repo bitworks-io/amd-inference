@@ -74,6 +74,10 @@ function New-FastLlmUiFormAdapter {
     $native | Add-Member -MemberType ScriptMethod -Name Show -Value ({ if ($state['Closing']) { return }; $Window.Show() }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Activate -Value ({ [void] $Window.Activate() }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Close -Value ({ if ($state['Closing']) { return }; $Window.Close() }.GetNewClosure())
+    # BeginInvoke queues the delegate on the window's dispatcher at Normal priority, like the classic form's Control.BeginInvoke (a posted message, handled
+    # before later input). The remove flows queue their list rebuild with it: it runs after the Click handler returns and before a click that is still waiting.
+    # A closure over $Window only. The caller discards the returned DispatcherOperation with [void].
+    $native | Add-Member -MemberType ScriptMethod -Name BeginInvoke -Value ({ param($Method) return $Window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [System.Delegate] $Method) }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Dispose -Value ({ if ($this.Handle -ne [IntPtr]::Zero) { $this.ReleaseHandle() } })
     $native | Add-Member -MemberType ScriptMethod -Name Add_Shown -Value ({ param($handler) [void] $state.Shown.Add($handler) }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Add_FormClosing -Value ({ param($handler) [void] $state.FormClosing.Add($handler) }.GetNewClosure())

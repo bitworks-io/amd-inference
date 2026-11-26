@@ -18,7 +18,7 @@ function Check([bool]$Condition,[string]$Message){if(-not $Condition){throw "FAI
 $formSpec=@{
     Get=@('Text','Visible','Font','WindowState','Controls','Size','MinimumSize','StartPosition','BackColor','Handle')
     Set=@('Text','Font','WindowState','Size','MinimumSize','StartPosition','BackColor')
-    Invoke=@('Hide','Show','Activate','Close','Dispose','Add_Shown','Add_FormClosing')
+    Invoke=@('Hide','Show','Activate','Close','Dispose','BeginInvoke','Add_Shown','Add_FormClosing')
 }
 $table=Get-FastLlmUiAdapterMemberTable
 $kinds=@{form='Form'}
@@ -545,6 +545,137 @@ Check ((Get-TickHookFindings @('function Update-FastLlmUiFluentModels { if ($edg
 Check ((Get-TickHookFindings @('function Update-FastLlmUiFluentModels { Get-FastLlmUiSwitchPickerModel }') $tickForbidden 'Update-FastLlmUiFluentModels').Count -eq 1) 'self-check: the picker outside an If is flagged'
 Check ((Get-TickHookFindings @('function Update-FastLlmUiFluentOther { FillModelsPanel }') $tickForbidden 'Update-FastLlmUiFluentModels').Count -eq 0) 'self-check: another function is not scanned'
 # ===== end PR 3b: Models pins (Task 1) =====
+
+# ===== PR 3b: form BeginInvoke and the fluent view contract (Task 5) =====
+# The form adapter's BeginInvoke ScriptMethod (the remove flows queue their list rebuild with it) must call exactly one Dispatcher.BeginInvoke on
+# $Window.Dispatcher, at Normal priority, with the $Method parameter, inside a closure over $Window. Read by AST so it runs on every platform.
+# Mutants it kills: Background, ApplicationIdle or Input priority; a synchronous Invoke; a body that drops $Method; a missing GetNewClosure.
+function Get-FormBeginInvokeFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $a=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $cmds=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Add-Member' -and $n.Extent.Text -cmatch '-Name\s+BeginInvoke\b'},$true))
+    if($cmds.Count -ne 1){[void]$found.Add("expected exactly one Add-Member ... -Name BeginInvoke, found $($cmds.Count)");return ,$found.ToArray()}
+    $cmd=$cmds[0]
+    if($cmd.Extent.Text -cnotmatch '-MemberType\s+ScriptMethod\b'){[void]$found.Add('BeginInvoke is not a ScriptMethod')}
+    $sb=@($cmd.FindAll({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true))
+    if($sb.Count -ne 1){[void]$found.Add("BeginInvoke has $($sb.Count) script blocks, expected 1");return ,$found.ToArray()}
+    $closure=@($cmd.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and [string]$n.Member.Value -ceq 'GetNewClosure' -and [object]::ReferenceEquals($n.Expression,$sb[0])},$true))
+    if($closure.Count -ne 1){[void]$found.Add('the BeginInvoke script block is not closed with GetNewClosure() (it reads $Window)')}
+    $body=$sb[0].ScriptBlock
+    $pb=$body.ParamBlock
+    if($null -eq $pb -or @($pb.Parameters).Count -ne 1 -or ([string]$pb.Parameters[0].Name.VariablePath.UserPath) -cne 'Method'){[void]$found.Add('BeginInvoke must take exactly one parameter, $Method')}
+    $calls=@($body.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true))
+    $bi=@($calls|Where-Object{$_.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and [string]$_.Member.Value -ceq 'BeginInvoke'})
+    if($bi.Count -ne 1){[void]$found.Add("the body must call .BeginInvoke( exactly once, found $($bi.Count)");return ,$found.ToArray()}
+    $others=@($calls|Where-Object{-not [object]::ReferenceEquals($_,$bi[0])})
+    if($others.Count -gt 0){[void]$found.Add('the body makes another method call: '+$others[0].Extent.Text)}
+    $c=$bi[0]
+    if($c.Expression.Extent.Text -cne '$Window.Dispatcher'){[void]$found.Add('BeginInvoke is not called on $Window.Dispatcher: '+$c.Expression.Extent.Text)}
+    $cargs=@($c.Arguments)
+    if($cargs.Count -ne 2){[void]$found.Add("BeginInvoke takes $($cargs.Count) arguments, expected 2");return ,$found.ToArray()}
+    if($cargs[0].Extent.Text -cne '[System.Windows.Threading.DispatcherPriority]::Normal'){[void]$found.Add('the priority is not DispatcherPriority::Normal: '+$cargs[0].Extent.Text)}
+    $refs=@($cargs[1].FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ceq 'Method'},$true))
+    $lit=@($cargs[1].FindAll({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true))
+    if($refs.Count -ne 1 -or $lit.Count -gt 0){[void]$found.Add('the second argument must be the $Method parameter: '+$cargs[1].Extent.Text)}
+    return ,$found.ToArray()
+}
+$formText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentForm.ps1'))
+$biFindings=Get-FormBeginInvokeFindings $formText
+foreach($f in $biFindings){Write-Host "FINDING: $f"}
+Check ($biFindings.Count -eq 0) 'the form adapter BeginInvoke is a Normal-priority Dispatcher.BeginInvoke of $Method in a closure over $Window'
+$biGood='[System.Windows.Threading.DispatcherPriority]::Normal, [System.Delegate] $Method'
+Check ($formText.Contains($biGood)) 'self-check: the real BeginInvoke text contains the priority and delegate arguments the plants replace'
+foreach($prio in 'Background','ApplicationIdle','Input','Send','Loaded'){
+    $plant=$formText.Replace('DispatcherPriority]::Normal, [System.Delegate] $Method',"DispatcherPriority]::$prio, [System.Delegate] `$Method")
+    Check ((Get-FormBeginInvokeFindings $plant).Count -ge 1) "self-check: a $prio priority in the form BeginInvoke is flagged"
+}
+$plantInvoke=$formText.Replace('$Window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [System.Delegate] $Method)','$Window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Normal, [System.Delegate] $Method)')
+Check ($plantInvoke -cne $formText -and (Get-FormBeginInvokeFindings $plantInvoke).Count -ge 1) 'self-check: a synchronous Dispatcher.Invoke in place of BeginInvoke is flagged'
+$plantEmpty=$formText.Replace('[System.Delegate] $Method)','{})')
+Check ($plantEmpty -cne $formText -and (Get-FormBeginInvokeFindings $plantEmpty).Count -ge 1) 'self-check: a body that passes {} instead of $Method is flagged'
+$plantOther=$formText.Replace('$Window.Dispatcher.BeginInvoke(','$Window.Dispatcher.Thread.BeginInvoke(')
+Check ($plantOther -cne $formText -and (Get-FormBeginInvokeFindings $plantOther).Count -ge 1) 'self-check: another receiver than $Window.Dispatcher is flagged'
+$plantNoClosure=$formText.Replace('[System.Delegate] $Method) }.GetNewClosure())','[System.Delegate] $Method) })')
+Check ($plantNoClosure -cne $formText -and (Get-FormBeginInvokeFindings $plantNoClosure).Count -ge 1) 'self-check: a BeginInvoke script block without GetNewClosure is flagged'
+$plantSync=$formText.Replace('-Name BeginInvoke -Value ({ param($Method) return','-Name BeginInvoke -Value ({ param($Method) $Method.Invoke(); return')
+Check ($plantSync -cne $formText -and (Get-FormBeginInvokeFindings $plantSync).Count -ge 1) 'self-check: a body that also runs $Method synchronously is flagged'
+Check ((Get-FormBeginInvokeFindings 'function F { 1 }').Count -eq 1) 'self-check: no BeginInvoke ScriptMethod at all is flagged'
+
+# The fluent view contract. The three Remove* functions of fast-llm-ui.ps1 read the open window's view hashtable ($script:modelsView or
+# $script:componentsView). The fluent Models page builds its own view with New-FastLlmUiFluentModelsView / New-FastLlmUiFluentComponentsView (PR 3b
+# Task 6), and every key those bodies read (plus refresh) must be a key of that hashtable literal. panel and free are the classic WinForms controls and must
+# be absent; dialog is $script:form; file is Join-Path $script:FastLlmUiFluentSourceRoot of the same config/ literal the classic view uses.
+$viewRead=@{}
+$classicAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$null,[ref]$null)
+function Get-ViewReadKeys($Ast,[string]$FunctionName){
+    $keys=New-Object System.Collections.ArrayList
+    foreach($fn in @($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $FunctionName},$true))){
+        foreach($m in @($fn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.Expression.VariablePath.UserPath) -ceq 'view' -and $n.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){
+            if(-not $keys.Contains([string]$m.Member.Value)){[void]$keys.Add([string]$m.Member.Value)}
+        }
+    }
+    return $keys.ToArray()
+}
+$modelsRead=@((Get-ViewReadKeys $classicAst 'RemoveModelFromWindow')+(Get-ViewReadKeys $classicAst 'RemoveLeftoversFromWindow')|Sort-Object -Unique)
+$componentsRead=@(Get-ViewReadKeys $classicAst 'RemoveComponentFromWindow'|Sort-Object -Unique)
+Check (($modelsRead -join ',') -ceq 'dialog,file,leftoverButton,leftoverText,message,root') "the model and leftovers remove flows read exactly dialog, file, leftoverButton, leftoverText, message, root of the view (found: $($modelsRead -join ','))"
+Check (($componentsRead -join ',') -ceq 'dialog,file,message,root') "the component remove flow reads exactly dialog, file, message, root of the view (found: $($componentsRead -join ','))"
+$classicConfig=@{}
+foreach($pair in @(@('RemoveModelFromWindow','ShowModelsWindow','catalog.json'),@('RemoveComponentFromWindow','ShowComponentsWindow','components.json'))){
+    $classicConfig[$pair[2]]=$classicAst.Extent.Text.Contains("(Join-Path `$PSScriptRoot 'config/$($pair[2])')")
+}
+Check ($classicConfig['catalog.json'] -and $classicConfig['components.json']) 'the classic views join $PSScriptRoot with the literals config/catalog.json and config/components.json'
+
+function Get-ViewContractFindings([string[]]$Texts,[string]$FunctionName,[string[]]$Read,[string]$ConfigFile){
+    $found=New-Object System.Collections.ArrayList
+    $fns=@()
+    foreach($t in $Texts){
+        $a=[System.Management.Automation.Language.Parser]::ParseInput($t,[ref]$null,[ref]$null)
+        $fns+=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $FunctionName},$true))
+    }
+    if($fns.Count -ne 1){[void]$found.Add("$FunctionName is defined $($fns.Count) times, expected 1");return ,$found.ToArray()}
+    $tables=@($fns[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))
+    $view=$null
+    foreach($h in $tables){$ks=@($h.KeyValuePairs|ForEach-Object{[string]$_.Item1.Extent.Text}); if($ks -ccontains 'dialog'){$view=$h;break}}
+    if($null -eq $view){[void]$found.Add("$FunctionName builds no hashtable with a dialog key");return ,$found.ToArray()}
+    $map=@{}
+    foreach($kv in $view.KeyValuePairs){$map[[string]$kv.Item1.Extent.Text]=[string]$kv.Item2.Extent.Text}
+    foreach($k in @($Read)+@('refresh')){if(-not $map.ContainsKey($k)){[void]$found.Add("$FunctionName has no key $k")}}
+    foreach($k in 'panel','free'){if($map.ContainsKey($k)){[void]$found.Add("$FunctionName has the classic control key $k")}}
+    if($map.ContainsKey('dialog') -and $map['dialog'] -cne '$script:form'){[void]$found.Add("$FunctionName dialog is not `$script:form: "+$map['dialog'])}
+    if($map.ContainsKey('file') -and $map['file'] -cne "(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/$ConfigFile')" -and $map['file'] -cne "Join-Path `$script:FastLlmUiFluentSourceRoot 'config/$ConfigFile'"){[void]$found.Add("$FunctionName file is not Join-Path `$script:FastLlmUiFluentSourceRoot 'config/$ConfigFile': "+$map['file'])}
+    return ,$found.ToArray()
+}
+$viewSpecs=@(
+    @{Fn='New-FastLlmUiFluentModelsView';Read=$modelsRead;Config='catalog.json'},
+    @{Fn='New-FastLlmUiFluentComponentsView';Read=$componentsRead;Config='components.json'})
+$viewGood=@{
+    'New-FastLlmUiFluentModelsView'="function New-FastLlmUiFluentModelsView { return @{dialog=`$script:form;message=`$m;leftoverButton=`$b;leftoverText='';root=`$r;file=(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/catalog.json');refresh={1}} }"
+    'New-FastLlmUiFluentComponentsView'="function New-FastLlmUiFluentComponentsView { return @{dialog=`$script:form;message=`$m;root=`$r;file=(Join-Path `$script:FastLlmUiFluentSourceRoot 'config/components.json');refresh={1}} }"}
+foreach($spec in $viewSpecs){
+    $fn=$spec.Fn
+    # The real constructor: Task 6 adds it. Until a source file defines it, only the self-checks run; once defined the contract is enforced.
+    $defined=@($rowTexts|Where-Object{$_ -cmatch "(?m)^function\s+$([regex]::Escape($fn))\b"})
+    if($defined.Count -gt 0){
+        $vf=Get-ViewContractFindings $rowTexts $fn $spec.Read $spec.Config
+        foreach($f in $vf){Write-Host "FINDING: $f"}
+        Check ($vf.Count -eq 0) "$fn names every key the Remove* bodies read, plus refresh, with no panel or free, dialog = `$script:form and the config/ file"
+    }
+    else{Write-Host "INFO: $fn is not defined yet (PR 3b Task 6); the contract pin is enforced once it is"}
+    $good=$viewGood[$fn]
+    Check ((Get-ViewContractFindings @($good) $fn $spec.Read $spec.Config).Count -eq 0) "self-check: a well formed $fn passes"
+    foreach($k in @($spec.Read)+@('refresh')){
+        $plant=$good -creplace "(?<![A-Za-z])$k=","renamed_$k="
+        Check ($plant -cne $good -and (Get-ViewContractFindings @($plant) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: a view without the $k key (renamed or dropped) is flagged in $fn"
+    }
+    foreach($k in 'panel','free'){
+        Check ((Get-ViewContractFindings @($good.Replace('refresh=',"$k=`$p;refresh=")) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: a $k key in $fn is flagged"
+    }
+    Check ((Get-ViewContractFindings @($good.Replace('dialog=$script:form','dialog=$null')) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: a dialog that is not `$script:form is flagged in $fn"
+    Check ((Get-ViewContractFindings @($good.Replace("config/$($spec.Config)",'config/other.json')) $fn $spec.Read $spec.Config).Count -ge 1) "self-check: another config file is flagged in $fn"
+    Check ((Get-ViewContractFindings @('function F { 1 }') $fn $spec.Read $spec.Config).Count -eq 1) "self-check: a missing $fn is flagged"
+}
+# ===== end PR 3b: form BeginInvoke and the fluent view contract (Task 5) =====
 
 # Pages (G2, N1): every page registered with Register-FastLlmUiFluentPage passes a -Status element, and that element is a TextBlock with a Polite live
 # setting in the page's registered XAML; the set of registered FastLlm.<Page> markup equals the set of registered ids; and every pane item that is not
