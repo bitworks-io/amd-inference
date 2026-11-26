@@ -341,8 +341,11 @@ function Invoke-UiRenderCase {
         $scroller = Get-UiScrollPresenter $el $presenter
         $scrollOwner = $scroller.TemplatedParent
         $elViewportWidth = [double]$scrollOwner.ViewportWidth
-        # A viewer that scrolls sideways (a named ListBox) holds a row wider than its viewport in its extent; the page's own and the nested sample's never do.
-        if ($scrollOwner.HorizontalScrollBarVisibility -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled) { $elViewportWidth = [Math]::Max($elViewportWidth, [double]$scrollOwner.ExtentWidth) }
+        # Only a viewer the case names (-ScrollOwners, a ListBox that scrolls sideways) holds a row wider than its viewport in its extent; every other viewer is judged as before.
+        $ownerParent = $scrollOwner.TemplatedParent
+        if ($ownerParent -is [System.Windows.FrameworkElement] -and (@($script:UiRenderScrollOwners) -ccontains [string]$ownerParent.Name) -and $scrollOwner.HorizontalScrollBarVisibility -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled) {
+            $elViewportWidth = [Math]::Max($elViewportWidth, [double]$scrollOwner.ExtentWidth)
+        }
         # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
         $elBottomLimit = [Math]::Max([double]$scrollOwner.ExtentHeight, [double]$scrollOwner.ViewportHeight)
         $r = Get-UiRelativeRect $el $scroller
