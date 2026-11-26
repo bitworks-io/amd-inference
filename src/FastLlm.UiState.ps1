@@ -112,13 +112,13 @@ function Get-FastLlmUiControlStates {
 }
 
 # Why an action is greyed, as a code only (never text; the view maps each code to its string). '' means the
-# action is enabled. Codes: microsoft-setup, busy, side-step, attached, no-run, not-running. First match wins.
+# action is enabled. Codes: microsoft-setup, busy, side-step, attached, no-run, not-running, background, no-preview. First match wins.
 # The attachable and requestMatches expressions are copies of the ones in Get-FastLlmUiControlStates; the control-states suite pins them
 # text-identical and checks that a code is empty exactly when the control state is true, so a drift between the two fails there.
 # ConnectRunning is the Connect page's own "is FastLLM serving" flag and is read by apiCheck only.
 function Get-FastLlmUiGreyedReason {
     param(
-        [Parameter(Mandatory=$true)][ValidateSet('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck')][string]$Action,
+        [Parameter(Mandatory=$true)][ValidateSet('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck','chooseSetup','startInputs')][string]$Action,
         [Parameter(Mandatory=$true)]$Snapshot,
         [bool]$ConnectRunning = $false
     )
@@ -161,6 +161,18 @@ function Get-FastLlmUiGreyedReason {
             if ($availability.apiCheck) { return '' }
             if ($Snapshot.SideChildActive) { return 'side-step' }
             return 'not-running'
+        }
+        'chooseSetup' {
+            if ($vc) { return 'microsoft-setup' }
+            if ($busy) { return 'busy' }
+            if (Test-FastLlmUiStateOccupied -Background $bg) { return 'background' }
+            if (-not $Snapshot.PreviewReady) { return 'no-preview' }
+            return ''
+        }
+        'startInputs' {
+            if ($busy) { if ($vc) { return 'microsoft-setup' }; return 'busy' }
+            if (Test-FastLlmUiStateOccupied -Background $bg) { return 'background' }
+            return ''
         }
         default { throw "Unknown action '$Action'" }
     }
