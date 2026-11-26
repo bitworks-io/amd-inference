@@ -2799,7 +2799,8 @@ function Invoke-P34-Unavailable {
     $rec = Get-SettingsRec $d 0
     Check ([bool]$rec['Found'] -and -not [bool]$rec['SaveEnabled'] -and ([string]$rec['Body']).Contains([string]$s.WhyBusy) -and ([string]$rec['Body']).Contains([string]$s.SavePrompt) -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and (Test-SettingsRecClean $d)) 'P34 the prompt while unavailable has Save disabled and shows the reason under the question; Cancel keeps the page' ((Get-SettingsRecDetail $d) + ' ' + (Get-SettingsPaneDetail))
     # a different reason: Microsoft setup
-    $script:shellSnap = New-ShellSnap @{ VcBrokerActive = $true }
+    # as the window really has it: Microsoft setup runs under SetBusy (Busy true) with the broker process set; the broker alone leaves Settings available
+    $script:shellSnap = New-ShellSnap @{ Busy = $true; VcBrokerActive = $true }
     Invoke-FastLlmUiFluentTick
     Invoke-Pump 50
     Check ([string]$els.SettingsUnavailableText.Text -ceq [string]$s.WhyMicrosoftSetup) 'P34 during Microsoft setup the reason line says WhyMicrosoftSetup' "text='$($els.SettingsUnavailableText.Text)' code='$(Get-FastLlmUiGreyedReason -Action 'settings' -Snapshot $script:shellSnap)'"

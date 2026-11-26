@@ -260,7 +260,11 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                                 ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}">
                 <ContentPresenter.Resources>
                   <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
-                  <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="TextWrapping" Value="NoWrap"/>
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                  </Style>
                 </ContentPresenter.Resources>
               </ContentPresenter>
               <TextBlock Text="&#xE70D;" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="12" Margin="0,0,10,0" HorizontalAlignment="Right"

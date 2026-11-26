@@ -159,6 +159,13 @@ function Get-UiTextNaturalSize($Text, [double]$Scale, [double]$ActualWidth) {
     $clone.FontStretch = $Text.FontStretch
     $clone.TextWrapping = $Text.TextWrapping
     $clone.Padding = $Text.Padding
+    # PR 3c CI round 1 (F5): what else can make a clone's text wider than the live block's (the cause is unproven; every property below is copied so none can differ):
+    # the inherited text formatting, rendering and hinting modes, layout rounding, flow direction and the typography the font features are read from.
+    $clone.FlowDirection = $Text.FlowDirection
+    $clone.UseLayoutRounding = $Text.UseLayoutRounding
+    [System.Windows.Media.TextOptions]::SetTextFormattingMode($clone, [System.Windows.Media.TextOptions]::GetTextFormattingMode($Text))
+    [System.Windows.Media.TextOptions]::SetTextRenderingMode($clone, [System.Windows.Media.TextOptions]::GetTextRenderingMode($Text))
+    [System.Windows.Media.TextOptions]::SetTextHintingMode($clone, [System.Windows.Media.TextOptions]::GetTextHintingMode($Text))
     if (-not [double]::IsNaN([double]$Text.LineHeight)) {
         $clone.LineHeight = $Text.LineHeight
         $clone.LineStackingStrategy = $Text.LineStackingStrategy
@@ -168,7 +175,8 @@ function Get-UiTextNaturalSize($Text, [double]$Scale, [double]$ActualWidth) {
     if ($Text.TextWrapping -eq [System.Windows.TextWrapping]::NoWrap) {
         $clone.Measure((New-Object System.Windows.Size($inf, $inf)))
     } else {
-        $clone.Measure((New-Object System.Windows.Size($ActualWidth, $inf)))
+        # One epx more than the live width absorbs the layout rounding of the live block: a line that just fits live must not wrap on the clone.
+        $clone.Measure((New-Object System.Windows.Size(($ActualWidth + 1.0), $inf)))
     }
     return $clone.DesiredSize
 }
@@ -207,6 +215,17 @@ function Get-UiPngInfo {
     } finally { $stream.Dispose() }
 }
 
+# Merges the shell Window's style resources into a theme dictionary: the registered FastLlm.Shell markup is parsed through the same safe loader as the app and its
+# Window.Resources entries (the Button, TextBox, ComboBox, CheckBox, switch and spin button styles) are added, each stored as its raw object (a PSObject wrapper is
+# rejected by WPF). A key the dictionary already holds is kept, so the theme's own brushes are never replaced. Nothing is added when the shell markup is not registered.
+function Add-UiShellStyleResources($Dictionary) {
+    if (-not $script:FastLlmUiXaml.ContainsKey('FastLlm.Shell')) { return }
+    $shellWindow = New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
+    foreach ($k in @($shellWindow.Resources.Keys)) {
+        if (-not $Dictionary.Contains($k)) { $Dictionary[$k] = ([object]$shellWindow.Resources[$k]).psobject.BaseObject }
+    }
+}
+
 function Invoke-UiRenderCase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -238,6 +257,8 @@ function Invoke-UiRenderCase {
         $themeArgs['HighContrastPalette'] = Get-UiRenderHighContrastPalette
     }
     $dict = New-FastLlmUiThemeDictionary @themeArgs
+    # PR 3c CI round 1 (F4): the Fluent control styles live in the shell Window's Resources, so a page rendered outside the shell takes them from the host the same way.
+    Add-UiShellStyleResources $dict
     $page.Resources = $dict
     if ($null -ne $Prepare) { & $Prepare $page }
 

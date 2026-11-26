@@ -1084,8 +1084,17 @@ function Get-WrapPinFailures([string]$ShellText){
         $want=@($st.SelectNodes(".//*[local-name()='ContentPresenter']") | Where-Object { if($spec[1] -ceq 'selection'){ ([string]$_.GetAttribute('Content')).Contains('SelectionBoxItem') } else { $_.GetAttribute('RecognizesAccessKey') -ceq 'True' } })
         if($want.Count -ne 1){[void]$fails.Add("$($spec[0]) has $($want.Count) $($spec[1]) presenters, expected 1");continue}
         foreach($target in 'AccessText','TextBlock'){
-            $hit=@($want[0].SelectNodes("*[local-name()='ContentPresenter.Resources']/*[local-name()='Style']") | Where-Object { $_.GetAttribute('TargetType') -ceq $target -and @($_.SelectNodes("*[local-name()='Setter'][@Property='TextWrapping'][@Value='Wrap']")).Count -eq 1 })
-            if($hit.Count -ne 1){[void]$fails.Add("the $($spec[1]) presenter of $($spec[0]) has no $target style with TextWrapping Wrap")}
+            $wantWrap='Wrap'
+            if($spec[1] -ceq 'selection' -and $target -ceq 'TextBlock'){$wantWrap='NoWrap'}   # PR 3c CI round 1: a selection box is one line, trimmed
+            $hit=@($want[0].SelectNodes("*[local-name()='ContentPresenter.Resources']/*[local-name()='Style']") | Where-Object { $_.GetAttribute('TargetType') -ceq $target -and @($_.SelectNodes("*[local-name()='Setter'][@Property='TextWrapping'][@Value='$wantWrap']")).Count -eq 1 })
+            if($hit.Count -ne 1){[void]$fails.Add("the $($spec[1]) presenter of $($spec[0]) has no $target style with TextWrapping $wantWrap")}
+        }
+        if($spec[1] -ceq 'selection'){
+            $tbStyle=@($want[0].SelectNodes("*[local-name()='ContentPresenter.Resources']/*[local-name()='Style']") | Where-Object { $_.GetAttribute('TargetType') -ceq 'TextBlock' })
+            if($tbStyle.Count -eq 1){
+                if(@($tbStyle[0].SelectNodes("*[local-name()='Setter'][@Property='TextTrimming'][@Value='CharacterEllipsis']")).Count -ne 1){[void]$fails.Add("the selection TextBlock style of $($spec[0]) does not trim with CharacterEllipsis")}
+                if(@($tbStyle[0].SelectNodes("*[local-name()='Setter'][@Property='ToolTip'][@Value='{Binding Text, RelativeSource={RelativeSource Self}}']")).Count -ne 1){[void]$fails.Add("the selection TextBlock style of $($spec[0]) does not carry its text as the ToolTip")}
+            }
         }
     }
     return ,$fails.ToArray()
@@ -1100,6 +1109,15 @@ Check ($wrapPos.Count -eq 3) 'the shell markup holds the wrapping AccessText sty
 for($wk=0;$wk -lt $wrapPos.Count;$wk++){
     $mutated=$wrapLf.Remove($wrapPos[$wk],$wrapOne.Length).Insert($wrapPos[$wk],'<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="NoWrap"/></Style>')
     Check ((Get-WrapPinFailures $mutated).Count -ge 1) "self-check: a presenter without the wrapping AccessText style is flagged (presenter $($wk + 1) of 3)"
+}
+# PR 3c CI round 1: the selection TextBlock style does not wrap, trims and carries a tooltip. Each of the three parts is mutated away and must be flagged.
+$selLf=$shellText.Replace("`r`n","`n")
+foreach($selPlant in @(
+    @{Name='selection wraps again';Old='<Setter Property="TextWrapping" Value="NoWrap"/>';New='<Setter Property="TextWrapping" Value="Wrap"/>'},
+    @{Name='selection does not trim';Old='<Setter Property="TextTrimming" Value="CharacterEllipsis"/>';New='<Setter Property="TextTrimming" Value="None"/>'},
+    @{Name='selection has no tooltip';Old='<Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>';New='<Setter Property="Cursor" Value="Arrow"/>'})){
+    Check ($selLf.IndexOf([string]$selPlant.Old,[StringComparison]::Ordinal) -ge 0) "selection plant '$($selPlant.Name)' matches the real shell text"
+    Check ((Get-WrapPinFailures $selLf.Replace([string]$selPlant.Old,[string]$selPlant.New)).Count -ge 1) "self-check: a selection style mutant is flagged ($($selPlant.Name))"
 }
 # ===== end PR 3b: input style pins (Task 3) =====
 

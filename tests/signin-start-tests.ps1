@@ -672,7 +672,13 @@ foreach ($file in @(Get-ChildItem -LiteralPath $repo -Recurse -File -Include '*.
     $text = Get-Content -LiteralPath $file.FullName -Raw
     if ($text -match 'Set-FastLlmSignInStart(Enabled)?\b|Invoke-FastLlmSignInSettingsAction') { $callers += $file.Name }
 }
-Assert-True ($callers.Count -eq 3 -and $callers -ccontains 'FastLlm.SignInStart.ps1' -and $callers -ccontains 'fast-llm-ui.ps1' -and $callers -ccontains 'fast-llm.ps1') 'only the sign-in module, the window and the CLI settings action can register'
+Assert-True ($callers.Count -eq 4 -and $callers -ccontains 'FastLlm.SignInStart.ps1' -and $callers -ccontains 'fast-llm-ui.ps1' -and $callers -ccontains 'FastLlm.UiFluentSettings.ps1' -and $callers -ccontains 'fast-llm.ps1') 'only the sign-in module, the window, the fluent Settings page and the CLI settings action can register'
+# the fluent Settings page is the window checkbox handler's copy: its one call sits only inside Invoke-FastLlmUiFluentSettingsSignIn
+$fluentSettingsText = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.UiFluentSettings.ps1') -Raw
+$fluentSignInAt = $fluentSettingsText.IndexOf('function Invoke-FastLlmUiFluentSettingsSignIn')
+$fluentSignInEnd = $fluentSettingsText.IndexOf("`nfunction ", $fluentSignInAt + 1)
+if ($fluentSignInEnd -lt 0) { $fluentSignInEnd = $fluentSettingsText.Length }
+Assert-True ($fluentSignInAt -ge 0 -and [regex]::Matches($fluentSettingsText, 'Set-FastLlmSignInStart(Enabled)?\b|Invoke-FastLlmSignInSettingsAction').Count -eq 1 -and $fluentSettingsText.IndexOf('Set-FastLlmSignInStartEnabled') -gt $fluentSignInAt -and $fluentSettingsText.IndexOf('Set-FastLlmSignInStartEnabled') -lt $fluentSignInEnd) 'the fluent Settings page registers only inside Invoke-FastLlmUiFluentSettingsSignIn'
 $cliText = Get-Content -LiteralPath (Join-Path $repo 'fast-llm.ps1') -Raw
 $settingsCase = $cliText.Substring($cliText.IndexOf("        'settings' {"), $cliText.IndexOf("        'status' {") - $cliText.IndexOf("        'settings' {"))
 Assert-True ($settingsCase -match "ContainsKey\('StartAtSignIn'\)") 'the CLI registers only when -StartAtSignIn is bound'

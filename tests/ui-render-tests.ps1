@@ -802,6 +802,23 @@ function Get-UiRegionInk([string]$PngPath,$Rect,[double]$Scale){
         return [int]($w*$h-$mode)
     }finally{$stream.Dispose()}
 }
+# PR 3c CI round 1 (F6): a selection box shows its selection when a non-empty selected string reaches the box's own presenter (a TextBlock or the ContentPresenter that
+# holds the string), whichever template draws it. An empty or missing selection is never drawn. The ink check below still judges the pixels of the box's own rectangle.
+function Test-UiSelectionDrawn($Box){
+    $selected=[string]$Box.SelectedItem
+    if([string]::IsNullOrEmpty($selected)){return $false}
+    foreach($v in (Get-UiVisualElements $Box)){
+        if($v -is [System.Windows.Controls.TextBlock] -and [string]$v.Text -ceq $selected){return $true}
+        if($v -is [System.Windows.Controls.ContentPresenter] -and $v.Content -is [string] -and [string]$v.Content -ceq $selected){return $true}
+    }
+    return $false
+}
+$plantedBox=New-Object System.Windows.Controls.ComboBox
+$plantedBox.Items.Add('') | Out-Null
+$plantedBox.SelectedIndex=0
+Check (-not (Test-UiSelectionDrawn $plantedBox)) 'planted: a box whose selected text is empty is not drawn'
+$plantedBox.SelectedIndex=-1
+Check (-not (Test-UiSelectionDrawn $plantedBox)) 'planted: a box with no selection is not drawn'
 function Test-SettingsCase([string]$Kind,$case){
     $script:settingsKind=$Kind
     $script:settingsCaseHeight=[double]$case.height
@@ -859,8 +876,7 @@ function Test-SettingsCase([string]$Kind,$case){
     Check ([string]$e['SettingsPortBox'].Text -ceq ([int]$fx.override.serverPort).ToString() -and [int]$e['SettingsThinkingBox'].SelectedIndex -ge 0 -and [int]$e['SettingsIdleBox'].SelectedIndex -ge 0) "Port shows the saved port and Thinking and the idle stop have a selection at $label (port='$($e['SettingsPortBox'].Text)' thinking=$($e['SettingsThinkingBox'].SelectedIndex) idle=$($e['SettingsIdleBox'].SelectedIndex))"
     foreach($n in 'SettingsThinkingBox','SettingsIdleBox'){
         $selected=[string]$e[$n].SelectedItem
-        $drawn=@(Get-UiVisualElements $e[$n]|Where-Object{$_ -is [System.Windows.Controls.TextBlock] -and [string]$_.Text -ceq $selected})
-        Check ($drawn.Count -ge 1) "the $n selection text is drawn at ${label} ('$selected')"
+        Check (Test-UiSelectionDrawn $e[$n]) "the $n selection text is drawn at ${label} ('$selected')"
     }
     $toggleBad=@('SettingsUpdateToggle','SettingsExperimentalToggle','SettingsLicenseToggle'|Where-Object{-not $e[[string]$_].IsEnabled -or [string]::IsNullOrWhiteSpace([string][System.Windows.Automation.AutomationProperties]::GetName($e[[string]$_]))})
     Check ($toggleBad.Count -eq 0) "the three Components toggles are enabled and named (also while unavailable) at ${label}: $($toggleBad -join ', ')"
