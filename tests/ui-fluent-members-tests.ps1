@@ -1070,6 +1070,37 @@ foreach($plant in $stylePlants){
     $mutated=$shellLf.Replace([string]$plant.Old,[string]$plant.New)
     Check ((Get-StylePinFailures $mutated).Count -ge 1) "self-check: a style mutant is flagged ($($plant.Name))"
 }
+# ===== PR 3c review fix: caption wrapping (a non-wrapping AccessText clips at 2.25 text scale) =====
+# The caption presenter of the CheckBox and the switch, and the selection presenter of the ComboBox, each carry a Resources dictionary whose AccessText and TextBlock styles set TextWrapping Wrap.
+function Get-WrapPinFailures([string]$ShellText){
+    $fails=New-Object System.Collections.ArrayList
+    $m=[regex]::Match($ShellText,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Shell'\] = @'\r?\n(.*?)\r?\n'@")
+    if(-not $m.Success){return ,@('the shell markup is not found')}
+    $x=[xml]$m.Groups[1].Value
+    $xn='http://schemas.microsoft.com/winfx/2006/xaml'
+    foreach($spec in @(@('FastLlm.CheckBoxStyle','caption'),@('FastLlm.ToggleSwitchStyle','caption'),@('FastLlm.ComboBoxStyle','selection'))){
+        $st=$null; foreach($n in $x.SelectNodes("//*[local-name()='Style']")){ if($n.GetAttribute('Key',$xn) -ceq $spec[0]){$st=$n} }
+        if($null -eq $st){[void]$fails.Add("$($spec[0]) is not found");continue}
+        $want=@($st.SelectNodes(".//*[local-name()='ContentPresenter']") | Where-Object { if($spec[1] -ceq 'selection'){ ([string]$_.GetAttribute('Content')).Contains('SelectionBoxItem') } else { $_.GetAttribute('RecognizesAccessKey') -ceq 'True' } })
+        if($want.Count -ne 1){[void]$fails.Add("$($spec[0]) has $($want.Count) $($spec[1]) presenters, expected 1");continue}
+        foreach($target in 'AccessText','TextBlock'){
+            $hit=@($want[0].SelectNodes("*[local-name()='ContentPresenter.Resources']/*[local-name()='Style']") | Where-Object { $_.GetAttribute('TargetType') -ceq $target -and @($_.SelectNodes("*[local-name()='Setter'][@Property='TextWrapping'][@Value='Wrap']")).Count -eq 1 })
+            if($hit.Count -ne 1){[void]$fails.Add("the $($spec[1]) presenter of $($spec[0]) has no $target style with TextWrapping Wrap")}
+        }
+    }
+    return ,$fails.ToArray()
+}
+$wrapFails=Get-WrapPinFailures $shellText
+foreach($wf in $wrapFails){Write-Host "FINDING: wrap pin $wf"}
+Check ($wrapFails.Count -eq 0) 'the CheckBox and switch caption presenters and the ComboBox selection presenter wrap their text'
+$wrapOne='<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>'
+$wrapLf=$shellText.Replace("`r`n","`n")
+$wrapPos=@(); $wi=0; while(($wi=$wrapLf.IndexOf($wrapOne,$wi,[StringComparison]::Ordinal)) -ge 0){$wrapPos+=$wi;$wi+=$wrapOne.Length}
+Check ($wrapPos.Count -eq 3) 'the shell markup holds the wrapping AccessText style exactly three times' "found=$($wrapPos.Count)"
+for($wk=0;$wk -lt $wrapPos.Count;$wk++){
+    $mutated=$wrapLf.Remove($wrapPos[$wk],$wrapOne.Length).Insert($wrapPos[$wk],'<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="NoWrap"/></Style>')
+    Check ((Get-WrapPinFailures $mutated).Count -ge 1) "self-check: a presenter without the wrapping AccessText style is flagged (presenter $($wk + 1) of 3)"
+}
 # ===== end PR 3b: input style pins (Task 3) =====
 
 # ===== PR 3b: Home Switch/Change and Activity copy pins (Task 7) =====
@@ -2140,6 +2171,9 @@ function Get-ToggleWiringFindings([string]$Text){
         foreach($ad in $adds){
             $setCalls=@($ad.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand},$true))
             if($setCalls.Count -ne 1 -or $setCalls[0].CommandElements[0].Extent.Text -cne '$setFrom' -or $setCalls[0].Extent.Text -cnotmatch "-Property 'Checked'"){[void]$found.Add("the $($ad.Member.Value) handler does not call `$setFrom -Property 'Checked' exactly once")}
+            # The re-sync after the adapter write: a revert inside the adapter's handler ran with FromElement set, so only this element write turns the toggle back off.
+            $resync=@($ad.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -ceq '$Element.IsChecked -ne [bool] $Adapter.Checked' -and $n.Clauses[0].Item2.Extent.Text -cmatch '^\{\s*\$Element\.IsChecked = \[bool\] \$Adapter\.Checked\s*\}$'},$true))
+            if($resync.Count -ne 1 -or $setCalls.Count -ne 1 -or $resync[0].Extent.StartOffset -lt $setCalls[0].Extent.EndOffset){[void]$found.Add("the $($ad.Member.Value) handler does not re-sync IsChecked from the adapter after the write")}
         }
     }
     $setFromAsg=@($connect[0].FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$setFrom'},$true))
@@ -2165,8 +2199,9 @@ Check ($toggleFindings.Count -eq 0) 'the Toggle mode attaches Checked and Unchec
 $togglePlants=[ordered]@{
     'Add_Click in the Toggle branch'=$homeText.Replace('$Element.Add_Checked(','$Element.Add_Click(')
     'Unchecked not attached'=$homeText.Replace('$Element.Add_Unchecked(','$Element.Add_Indeterminate2(')
-    'a Toggle handler that does not write the adapter'=$homeText.Replace("& `$setFrom -Adapter `$Adapter -Property 'Checked' -Value ([bool] (`$Element.IsChecked -eq `$true)) }.GetNewClosure())`n        `$Element.Add_Unchecked(","`$null = 1 }.GetNewClosure())`n        `$Element.Add_Unchecked(")
-    'a Toggle handler that writes the wrong property'=$homeText.Replace("-Property 'Checked' -Value ([bool] (`$Element.IsChecked -eq `$true)) }.GetNewClosure())`n        `$Element.Add_Indeterminate(","-Property 'Text' -Value ([bool] (`$Element.IsChecked -eq `$true)) }.GetNewClosure())`n        `$Element.Add_Indeterminate(")
+    'a Toggle handler that does not write the adapter'=$homeText.Replace("& `$setFrom -Adapter `$Adapter -Property 'Checked' -Value ([bool] (`$Element.IsChecked -eq `$true)); if (`$Element.IsChecked -ne [bool] `$Adapter.Checked) { `$Element.IsChecked = [bool] `$Adapter.Checked } }.GetNewClosure())`n        `$Element.Add_Unchecked(","`$null = 1 }.GetNewClosure())`n        `$Element.Add_Unchecked(")
+    'a Toggle handler that writes the wrong property'=$homeText.Replace("-Property 'Checked' -Value ([bool] (`$Element.IsChecked -eq `$true)); if (`$Element.IsChecked -ne [bool] `$Adapter.Checked) { `$Element.IsChecked = [bool] `$Adapter.Checked } }.GetNewClosure())`n        `$Element.Add_Indeterminate(","-Property 'Text' -Value ([bool] (`$Element.IsChecked -eq `$true)); if (`$Element.IsChecked -ne [bool] `$Adapter.Checked) { `$Element.IsChecked = [bool] `$Adapter.Checked } }.GetNewClosure())`n        `$Element.Add_Indeterminate(")
+    'a Toggle handler without the re-sync'=$homeText.Replace("-Property 'Checked' -Value ([bool] (`$Element.IsChecked -eq `$true)); if (`$Element.IsChecked -ne [bool] `$Adapter.Checked) { `$Element.IsChecked = [bool] `$Adapter.Checked } }.GetNewClosure())`n        `$Element.Add_Unchecked(","-Property 'Checked' -Value ([bool] (`$Element.IsChecked -eq `$true)) }.GetNewClosure())`n        `$Element.Add_Unchecked(")
     'the Event Click block open to a Toggle'=$homeText.Replace("if (`$Event -and `$Mode -cne 'Toggle') {","if (`$Event) {")
     'the sink without the FromElement check'=$homeText.Replace("                if (`$Adapter.__state['FromElement']) { return }`n                if (`$Element.IsChecked -ne","                if (`$Element.IsChecked -ne")
 }
@@ -2228,6 +2263,10 @@ function Get-NavSettingsFindings([string]$Text){
                 $otherSet=@(); if($null -ne $ifs[0].ElseClause){$otherSet=@(& $setOf $ifs[0].ElseClause)}
                 if($holderSet.Count -ne 1 -or $holderSet[0].Extent.Text -cnotmatch 'KeyboardNavigationMode\]::Once'){[void]$found.Add('the holder list is not set to TabNavigation Once')}
                 if($otherSet.Count -ne 1 -or $otherSet[0].Extent.Text -cnotmatch 'KeyboardNavigationMode\]::None'){[void]$found.Add('the other list is not set to TabNavigation None')}
+                # The item WPF remembers as last focused survives TabNavigation None, so every item is also a tab stop only in the holder list.
+                $tabStops=@($loops[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and [string]$n.Member.Value -ceq 'SetIsTabStop'},$true))
+                $itemLoops=@($loops[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.ForStatementAst]},$true))
+                if($tabStops.Count -ne 1 -or $itemLoops.Count -ne 1 -or $tabStops[0].Extent.StartOffset -lt $itemLoops[0].Extent.StartOffset -or $tabStops[0].Extent.EndOffset -gt $itemLoops[0].Extent.EndOffset -or $tabStops[0].Arguments.Count -ne 2 -or $tabStops[0].Arguments[0].Extent.Text -cne '$item' -or $tabStops[0].Arguments[1].Extent.Text -cnotmatch '^\(\$name -ceq \$Holder\)$'){[void]$found.Add('the swap does not set KeyboardNavigation.SetIsTabStop($item, ($name -ceq $Holder)) on every item of both lists')}
             }
         }
     }
@@ -2243,6 +2282,8 @@ $navPlants=[ordered]@{
     'the NavSettingsList handler routed to NavList'=$shellText.Replace("Add_SelectionChanged({ Invoke-FastLlmUiFluentNavSelection -List NavSettingsList })","Add_SelectionChanged({ Invoke-FastLlmUiFluentNavSelection -List NavList })")
     'the swap sets only NavList'=$shellText.Replace("foreach (`$name in 'NavList', 'NavSettingsList') {","foreach (`$name in 'NavList') {")
     'the swap Once and None exchanged'=$shellText.Replace('SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::Once)','SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::Tmp)').Replace('SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::None)','SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::Once)').Replace('KeyboardNavigationMode]::Tmp)','KeyboardNavigationMode]::None)')
+    'the item tab stops not set'=$shellText.Replace('[System.Windows.Input.KeyboardNavigation]::SetIsTabStop($item, ($name -ceq $Holder))','$null = $item')
+    'the item tab stops set in both lists'=$shellText.Replace('SetIsTabStop($item, ($name -ceq $Holder))','SetIsTabStop($item, $true)')
     'the page change not swapping'=$shellText.Replace('Update-FastLlmUiFluentNavLists -Holder','Update-FastLlmUiFluentNavListsGone -Holder')
 }
 foreach($k in $navPlants.Keys){ Check ($navPlants[$k] -cne $shellText -and (Get-NavSettingsFindings $navPlants[$k]).Count -ge 1) "mutation check: the pane pin flags: $k" }
@@ -2279,6 +2320,80 @@ Check ((Get-KeyClickFindings $keyClickGood.Replace('keyTouched = $true','keyTouc
 $keyClickReal=Get-KeyClickFindings $settingsText
 foreach($f in $keyClickReal){Write-Host "FINDING: $f"}
 Check ($settingsText -ne '' -and $keyClickReal.Count -eq 0) 'the Settings key box click sets keyTouched and clears IsThreeState'
+# ---- PR 3c review fix: Settings save prompt, close and Save structure pins (AST on the real page text, each with a text mutant) ----
+function Get-SettingsFlowFindings([string]$Text){
+    $found=New-Object System.Collections.ArrayList
+    $a=ConvertTo-PinAst $Text
+    $fnOf={param($name) @($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))}
+    $isCall={param($n,$cmd) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $cmd}
+    # 1. Only leaving the page discards: the one Discard call of the exit decision sits in an if on $Reason -ceq 'leave'; the close entry point never calls it.
+    $resolve=@(& $fnOf 'Resolve-FastLlmUiFluentSettingsExit')
+    $closeFn=@(& $fnOf 'Test-FastLlmUiFluentSettingsCloseRefused')
+    if($resolve.Count -ne 1 -or $closeFn.Count -ne 1){[void]$found.Add('Resolve-FastLlmUiFluentSettingsExit or Test-FastLlmUiFluentSettingsCloseRefused is not defined exactly once')}
+    else{
+        $dis=@($resolve[0].FindAll({param($n) & $isCall $n 'Invoke-FastLlmUiFluentSettingsDiscard'},$true))
+        if($dis.Count -ne 1){[void]$found.Add("the exit decision calls Discard $($dis.Count) times, expected 1")}
+        else{
+            $p=$dis[0].Parent; $guarded=$false
+            while($null -ne $p -and $p -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){ if($p -is [System.Management.Automation.Language.IfStatementAst] -and $p.Clauses[0].Item1.Extent.Text -ceq "`$Reason -ceq 'leave'"){$guarded=$true}; $p=$p.Parent }
+            if(-not $guarded){[void]$found.Add("the Discard call of the exit decision is not guarded by `$Reason -ceq 'leave' (a close must not discard before the FormClosing guards run)")}
+        }
+        if(@($closeFn[0].FindAll({param($n) & $isCall $n 'Invoke-FastLlmUiFluentSettingsDiscard'},$true)).Count -ne 0){[void]$found.Add('the close entry point calls Discard')}
+        $reasonArgs=@($closeFn[0].FindAll({param($n) & $isCall $n 'Resolve-FastLlmUiFluentSettingsExit'},$true))
+        if($reasonArgs.Count -ne 1 -or $reasonArgs[0].Extent.Text -cnotmatch "-Reason 'close'"){[void]$found.Add("the close entry point does not resolve with -Reason 'close'")}
+    }
+    # 2. The prompt: Enter, Escape and the first focus all land on Cancel (lead ruling 3); the tray menu is made unavailable before it shows and restored in a finally.
+    $prompt=@(& $fnOf 'Show-FastLlmUiFluentSavePrompt')
+    if($prompt.Count -ne 1){[void]$found.Add('Show-FastLlmUiFluentSavePrompt is not defined exactly once')}
+    else{
+        foreach($member in 'AcceptButton','CancelButton','ActiveControl'){
+            $asg=@($prompt[0].FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq "`$dialog.$member"},$true))
+            if($asg.Count -ne 1 -or $asg[0].Right.Extent.Text -cne '$cancel'){[void]$found.Add("the prompt's $member is not the Cancel button")}
+        }
+        $trays=@($prompt[0].FindAll({param($n) & $isCall $n 'SetTrayMenuAvailable'},$true))
+        $off=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $false'}); $on=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $true'})
+        $tries=@($prompt[0].FindAll({param($n) $n -is [System.Management.Automation.Language.TryStatementAst]},$true))
+        if($off.Count -ne 1 -or $on.Count -ne 1 -or $tries.Count -ne 1 -or $null -eq $tries[0].Finally){[void]$found.Add('the prompt does not call SetTrayMenuAvailable $false once and $true once around one try with a finally')}
+        else{
+            if($off[0].Extent.EndOffset -gt $tries[0].Extent.StartOffset){[void]$found.Add('SetTrayMenuAvailable $false is not called before the try that shows the prompt')}
+            if($on[0].Extent.StartOffset -lt $tries[0].Finally.Extent.StartOffset -or $on[0].Extent.EndOffset -gt $tries[0].Finally.Extent.EndOffset){[void]$found.Add('SetTrayMenuAvailable $true is not called in the finally')}
+        }
+    }
+    # 3. Save: the unavailable guard first, the refused-save return after the save try and before the reload, the reload after the save try and before the after-OK block.
+    $save=@(& $fnOf 'Invoke-FastLlmUiFluentSettingsSave')
+    if($save.Count -ne 1){[void]$found.Add('Invoke-FastLlmUiFluentSettingsSave is not defined exactly once')}
+    else{
+        $top=@($save[0].Body.EndBlock.Statements)
+        $tryIdx=@(); for($i=0;$i -lt $top.Count;$i++){ if($top[$i] -is [System.Management.Automation.Language.TryStatementAst]){$tryIdx+=$i} }
+        if($tryIdx.Count -ne 3){[void]$found.Add("Save has $($tryIdx.Count) top-level try statements, expected 3 (save, reload, after-OK)")}
+        else{
+            $guard=-1; for($i=0;$i -lt $top.Count;$i++){ if($top[$i] -is [System.Management.Automation.Language.IfStatementAst] -and $top[$i].Clauses[0].Item1.Extent.Text -ceq '-not [bool] $script:settingsButton.Enabled' -and $top[$i].Clauses[0].Item2.Extent.Text -cmatch 'return \$false'){$guard=$i;break} }
+            if($guard -lt 0 -or $guard -gt $tryIdx[0]){[void]$found.Add('Save has no unavailable guard (-not [bool] $script:settingsButton.Enabled -> return $false) before the save try')}
+            $refused=-1; for($i=0;$i -lt $top.Count;$i++){ if($top[$i] -is [System.Management.Automation.Language.IfStatementAst] -and $top[$i].Clauses[0].Item1.Extent.Text -ceq '-not $saved' -and $top[$i].Clauses[0].Item2.Extent.Text -cmatch '^\{\s*return \$false\s*\}$'){$refused=$i;break} }
+            if($refused -le $tryIdx[0] -or $refused -ge $tryIdx[1]){[void]$found.Add('Save has no `if (-not $saved) { return $false }` between the save try and the reload try')}
+            $reload=@($top[$tryIdx[1]].Body.FindAll({param($n) & $isCall $n 'Update-FastLlmUiFluentSettingsLoad'},$true))
+            if($reload.Count -ne 1){[void]$found.Add('the reload try between the refused-save return and the after-OK block does not call Update-FastLlmUiFluentSettingsLoad once')}
+            if(@($top[$tryIdx[2]].Body.FindAll({param($n) & $isCall $n 'RefreshUiSwitchState'},$true)).Count -ne 1){[void]$found.Add('the last try is not the after-OK block (RefreshUiSwitchState)')}
+        }
+    }
+    return ,$found.ToArray()
+}
+$flowFindings=Get-SettingsFlowFindings $settingsText
+foreach($f in $flowFindings){Write-Host "FINDING: $f"}
+Check ($settingsText -ne '' -and $flowFindings.Count -eq 0) 'the Settings close never discards, the prompt defaults to Cancel and restores the tray menu in a finally, and Save keeps its guard, refused-save return and reload in order'
+$flowPlants=[ordered]@{
+    'a close that discards (the guard removed)'=$settingsText.Replace("if (`$Reason -ceq 'leave') { Invoke-FastLlmUiFluentSettingsDiscard }","Invoke-FastLlmUiFluentSettingsDiscard")
+    'a close that discards (the guard on close)'=$settingsText.Replace("if (`$Reason -ceq 'leave') { Invoke-FastLlmUiFluentSettingsDiscard }","if (`$Reason -ceq 'close') { Invoke-FastLlmUiFluentSettingsDiscard }")
+    'Enter saves (AcceptButton = save)'=$settingsText.Replace('$dialog.AcceptButton = $cancel','$dialog.AcceptButton = $save')
+    'Escape saves (CancelButton = save)'=$settingsText.Replace('$dialog.CancelButton = $cancel','$dialog.CancelButton = $save')
+    'the first focus on Save (ActiveControl = save)'=$settingsText.Replace('$dialog.ActiveControl = $cancel','$dialog.ActiveControl = $save')
+    'the refused-save return dropped'=$settingsText.Replace("    if(-not `$saved){return `$false}`n",'')
+    'the unavailable guard dropped'=$settingsText.Replace("    if (-not [bool] `$script:settingsButton.Enabled) {`n        Update-FastLlmUiFluentSettings`n        return `$false`n    }`n",'')
+    'the reload after Save dropped'=$settingsText.Replace("        Update-FastLlmUiFluentSettingsLoad`n    }catch{ShowFailure",'        $null = 1'+"`n    }catch{ShowFailure")
+    'the tray restore moved out of the finally'=$settingsText.Replace('finally { $dialog.Dispose(); SetTrayMenuAvailable $true }','finally { $dialog.Dispose() }')
+    'the tray never made unavailable'=$settingsText.Replace("    SetTrayMenuAvailable `$false`n",'')
+}
+foreach($k in $flowPlants.Keys){ Check ($flowPlants[$k] -cne $settingsText -and (Get-SettingsFlowFindings $flowPlants[$k]).Count -ge 1) "mutation check: the Settings flow pin flags: $k" }
 # ===== end PR 3c: Settings pins (Task 2) =====
 
 

@@ -302,10 +302,11 @@ function Connect-FastLlmUiFluentControl {
         $Element.Add_SelectionChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'SelectedIndex' -Value ([int] $Element.SelectedIndex) }.GetNewClosure())
     }
     elseif ($Mode -ceq 'Toggle') {
-        # Checked, Unchecked and Indeterminate, never Click: a UIA Toggle (Narrator) does not raise Click. Each handler writes the adapter once.
-        $Element.Add_Checked({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)) }.GetNewClosure())
-        $Element.Add_Unchecked({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)) }.GetNewClosure())
-        $Element.Add_Indeterminate({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)) }.GetNewClosure())
+        # Checked, Unchecked and Indeterminate, never Click: a UIA Toggle (Narrator) does not raise Click. Each handler writes the adapter once, then re-syncs the element:
+        # a handler of the adapter that reverts it (Checked = $false) ran while FromElement was set, so the sink skipped the element and it would stay on.
+        $Element.Add_Checked({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)); if ($Element.IsChecked -ne [bool] $Adapter.Checked) { $Element.IsChecked = [bool] $Adapter.Checked } }.GetNewClosure())
+        $Element.Add_Unchecked({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)); if ($Element.IsChecked -ne [bool] $Adapter.Checked) { $Element.IsChecked = [bool] $Adapter.Checked } }.GetNewClosure())
+        $Element.Add_Indeterminate({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)); if ($Element.IsChecked -ne [bool] $Adapter.Checked) { $Element.IsChecked = [bool] $Adapter.Checked } }.GetNewClosure())
     }
     elseif ($Mode -ceq 'Input') {
         $Element.Add_TextChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Text' -Value ([string] $Element.Text) }.GetNewClosure())

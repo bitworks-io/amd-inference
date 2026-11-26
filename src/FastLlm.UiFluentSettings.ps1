@@ -367,7 +367,8 @@ function Resolve-FastLlmUiFluentSettingsExit {
         $decision = [string] (Get-FastLlmUiSettingsExitDecision -Dirty $dirty -Answer $answer -SaveOk $saved -Reason $Reason)
     }
     if ($decision -ceq 'discard-go') {
-        Invoke-FastLlmUiFluentSettingsDiscard
+        # Only leaving the page discards. A close goes without discarding: the edits die with the window, and survive if a FormClosing guard keeps it open.
+        if ($Reason -ceq 'leave') { Invoke-FastLlmUiFluentSettingsDiscard }
         return $true
     }
     return [bool] ($decision -ceq 'go')

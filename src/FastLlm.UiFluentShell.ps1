@@ -257,7 +257,12 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                       BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4"/>
               <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False"
                                 Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}">
+                <ContentPresenter.Resources>
+                  <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
               <TextBlock Text="&#xE70D;" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="12" Margin="0,0,10,0" HorizontalAlignment="Right"
                          VerticalAlignment="Center" IsHitTestVisible="False"/>
               <ToggleButton ClickMode="Press" Focusable="False" Background="Transparent" Opacity="0.01"
@@ -341,7 +346,12 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                 <Border x:Name="Ring" Margin="-3" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="6"
                         Visibility="Collapsed" IsHitTestVisible="False"/>
               </Grid>
-              <ContentPresenter Grid.Column="1" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+              <ContentPresenter Grid.Column="1" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" RecognizesAccessKey="True">
+                <ContentPresenter.Resources>
+                  <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
             </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
@@ -379,7 +389,12 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
               </Grid.ColumnDefinitions>
-              <ContentPresenter Grid.Column="0" Margin="0,0,12,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+              <ContentPresenter Grid.Column="0" Margin="0,0,12,0" VerticalAlignment="Center" RecognizesAccessKey="True">
+                <ContentPresenter.Resources>
+                  <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
               <Grid Grid.Column="1" Width="40" Height="20" VerticalAlignment="Center">
                 <Border x:Name="Track" Background="Transparent" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="10"/>
                 <Ellipse x:Name="Thumb" Width="12" Height="12" Margin="4,0,4,0" HorizontalAlignment="Left" VerticalAlignment="Center"
@@ -732,6 +747,13 @@ function Update-FastLlmUiFluentNavLists {
             else {
                 if ($list.SelectedIndex -ne -1) { $list.SelectedIndex = -1 }
                 [System.Windows.Input.KeyboardNavigation]::SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::None)
+            }
+            # TabNavigation None does not clear the item WPF remembers as last focused in a list that held focus, so that item would stay a second tab stop:
+            # each item is a tab stop only in the list that holds the current page. The items are ListBoxItems (iterated in place, no enumerator is kept).
+            for ($i = 0; $i -lt $list.Items.Count; $i++) {
+                $item = $list.Items[$i]
+                if ($item -isnot [System.Windows.Controls.ListBoxItem]) { $item = $list.ItemContainerGenerator.ContainerFromIndex($i) }
+                if ($null -ne $item) { [System.Windows.Input.KeyboardNavigation]::SetIsTabStop($item, ($name -ceq $Holder)) }
             }
         }
     }

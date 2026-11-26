@@ -85,6 +85,21 @@ $c.Checked=$true; $c.Checked=$true
 Check ($c.Checked -and $n -eq 1) 'CheckedChanged once per change'
 $c.Checked=$false; Check ($n -eq 2) 'CheckedChanged on revert'
 
+# The Toggle element handler (Home's Connect wiring) against a stub element: the sink skips the element while FromElement is set, so an adapter handler that
+# reverts the value leaves the element on unless the handler re-syncs afterwards. The model uses the real FromElement write; the text of the product handler is pinned in members.
+$tg=New-FastLlmUiAdapter -Kind CheckBox -Name 'tg'
+$tgEl=[pscustomobject]@{IsChecked=$false}
+Set-FastLlmUiAdapterSink -Adapter $tg -Sink { param($Property,$Value) if($Property -ceq 'Checked'){ if($tg.__state['FromElement']){return}; if($tgEl.IsChecked -ne [bool]$Value){$tgEl.IsChecked=[bool]$Value} } }
+$tgSetFrom=${function:Set-FastLlmUiAdapterFromElement}
+$tgElementChanged={ & $tgSetFrom -Adapter $tg -Property 'Checked' -Value ([bool]($tgEl.IsChecked -eq $true)); if($tgEl.IsChecked -ne [bool]$tg.Checked){$tgEl.IsChecked=[bool]$tg.Checked} }
+$tgRevert=$true; $tgCalls=0
+$tg.Add_CheckedChanged({ param($sender,$e) $script:tgCalls++; if($script:tgRevert -and $sender.Checked){ $sender.Checked=$false } })
+$tgEl.IsChecked=$true; & $tgElementChanged
+Check (-not $tg.Checked -and $tgEl.IsChecked -eq $false) 'a reverting adapter handler turns the element back off (re-sync)'
+Check ($tgCalls -eq 2) 'the revert raises CheckedChanged twice (on, then off), and the re-sync adds none'
+$tgRevert=$false; $tgEl.IsChecked=$true; & $tgElementChanged
+Check ($tg.Checked -and $tgEl.IsChecked -eq $true) 'without a revert the element stays on'
+
 # ComboBox
 $cb=New-FastLlmUiAdapter -Kind ComboBox -Name 'cb'; $n=0
 $cb.Add_SelectedIndexChanged({ param($sender,$e) $script:n++ })

@@ -743,7 +743,8 @@ $script:settingsCaseHeight=[double]480
 $script:settingsPageEl=$null
 $script:settingsEls=$null
 $script:uiSettings=$script:homeSettings
-$script:realGetServingSettings=Get-Command -Name Get-FastLlmServingSettings -CommandType Function
+# The function's script block, not a FunctionInfo: a FunctionInfo is updated in place when the function is redefined below, so the wrapper would call itself.
+$script:realGetServingSettings=${function:Get-FastLlmServingSettings}
 function Get-FastLlmServingSettings{
     param([string]$InstallRoot)
     $real=& $script:realGetServingSettings -InstallRoot $InstallRoot

@@ -255,7 +255,8 @@ $script:experimentalRevert = $false
 $script:licenseRevert = $false
 $script:apiKeyStore = $null
 $script:bgState = Get-UiBackgroundFixture -Name 'none'
-$script:realGetComponents = Get-Command -Name Get-FastLlmComponents -CommandType Function
+# The function's script block, not a FunctionInfo: a FunctionInfo is updated in place when the function is redefined below, so the wrapper would call itself.
+$script:realGetComponents = ${function:Get-FastLlmComponents}
 $script:p30Missing = @()
 foreach ($fnName in 'NewUiApiKey', 'ShowLicenseSettingConfirm') {
     $script:p13Want = $fnName
@@ -363,7 +364,12 @@ function Invoke-P0-ShellStart {
     # PR 3c: the REAL wiring statements of the three Components toggles (their confirmations, mirroring and reverts) and of the classic Settings button, attached to
     # the adapters the shell made. The Settings button's Click opens today's dialog: it is a counter here and must stay 0 while the page is used (P30).
     foreach ($target in '$updateBox', '$experimentalBox', '$licenseBox', '$settingsButton') {
-        if ($script:settingsWiring.ContainsKey($target)) { . ([scriptblock]::Create([string]$script:settingsWiring[$target])) }
+        # Dot-sourced from a file, so $PSScriptRoot inside the licence handler is a real folder (a [scriptblock]::Create block has none, and its Join-Path throws; the stub ignores the path).
+        if ($script:settingsWiring.ContainsKey($target)) {
+            $wireFile = Join-Path $script:InstallRoot ('wire-' + [guid]::NewGuid().ToString('N') + '.ps1')
+            [System.IO.File]::WriteAllText($wireFile, [string]$script:settingsWiring[$target], (New-Object System.Text.UTF8Encoding($false)))
+            . $wireFile
+        }
     }
     # From here the loop owns the thread. A DispatcherTimer re-queues itself only after its Tick returns, and P0 does not return until the loop ends:
     # re-arm the step timer by hand so P1 onward run in the nested frame. The loop ends when the last step calls Stop-ShellLoop, so no step may follow that.
@@ -2234,7 +2240,7 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
     $button = ${function:Get-SettingsPromptButton}
     $info = ${function:Get-SettingsPromptInfo}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false }
+    $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false; hwnd = [long]0 }
     $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND fallback', 'WM_CLOSE')
     $t = New-Object System.Windows.Forms.Timer
     $t.Interval = 50
@@ -2320,7 +2326,16 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
         # a native box or form by its caption
         $h = $nat::FindWindowByTitle([string]$step['Caption'])
         if ($h.ToInt64() -ne 0) {
+            # Two boxes with the same caption can follow each other within one tick (the Create a new key Yes/No box, then its OK box): a different handle while the
+            # record is still open means the first box closed, so close the record, advance and let the next tick take the new box as its own.
+            if ($null -ne $loc['rec'] -and $h.ToInt64() -ne [long]$loc['hwnd']) {
+                $loc['rec']['Closed'] = $true
+                $st['i'] = $idx + 1; $loc['rec'] = $null; $loc['acted'] = $false; $loc['fell'] = $false; $loc['stepStart'] = $ms
+                if ($loc.ContainsKey('rungDone')) { $loc.Remove('rungDone') }
+                return
+            }
             if ($null -eq $loc['rec']) {
+                $loc['hwnd'] = $h.ToInt64()
                 $rec = @{ Kind = 'box'; Found = $true; Caption = [string]$step['Caption']; Text = [string]$nat::GetText($h); Owner = $nat::GetOwner($h).ToInt64()
                     WpfEnabledDuring = [bool]$nat::IsWindowEnabled($wpf); HasYes = ($nat::GetDlgItem($h, 6).ToInt64() -ne 0); HasOk = ($nat::GetDlgItem($h, 1).ToInt64() -ne 0)
                     HasCancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0); Rung = ''; FellBack = $false; Closed = $false }
@@ -2661,12 +2676,12 @@ function Invoke-P32-Close {
         $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Cancel' }, (New-SettingsWatch)) $d
         try { $win.Close(); Invoke-Pump 150 } finally { $timer.Stop() }
         Check ($script:setCloseLog.Count -eq 0 -and [bool]$f.Timer.IsEnabled -and $win.IsVisible -and (Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and [bool]$st['Dirty'] -and [int]$st['Held'].port -eq 9000 -and (Get-SettingsLogText) -ceq '' -and (Test-SettingsRecClean $d)) 'P32 dirty, X, Cancel: no FormClosing guard ran (the handler log is empty), the timer still runs, the window and the edits stay' ("guards=$($script:setCloseLog.Count) timer=$($f.Timer.IsEnabled) visible=$($win.IsVisible) " + (Get-SettingsPaneDetail) + ' ' + (Get-SettingsRecDetail $d))
-        # Don't save: the edits are dropped and the guards run as today (the recorder stands for them and cancels, so the window stays)
+        # Don't save on close: nothing is discarded before the guards run; the guards run once (the recorder stands for them and cancels, so the window stays), and the page is still dirty with its edits
         $script:setCloseLog.Clear()
         $d = @{}
         $timer = Start-SettingsDialogs @(@{ Kind = 'prompt'; Action = 'Dont' }, (New-SettingsWatch)) $d
         try { $win.Close(); Invoke-Pump 150 } finally { $timer.Stop() }
-        Check ($script:setCloseLog.Count -eq 1 -and [string]$script:setCloseLog[0] -ceq 'UserClosing' -and (Get-SettingsLogText) -ceq '' -and [int]$st['Held'].port -eq 8080 -and -not [bool]$st['Dirty'] -and (Test-SettingsRecClean $d)) "P32 dirty, X, Don't save: nothing is written, the edits are dropped, and the FormClosing guards then run once with UserClosing" ("guards=[$($script:setCloseLog.ToArray() -join ',')] heldPort=$($st['Held'].port) dirty=$($st['Dirty']) " + (Get-SettingsRecDetail $d))
+        Check ($script:setCloseLog.Count -eq 1 -and [string]$script:setCloseLog[0] -ceq 'UserClosing' -and (Get-SettingsLogText) -ceq '' -and [int]$st['Held'].port -eq 9000 -and [bool]$st['Dirty'] -and [string]$els.SettingsPortBox.Text -ceq '9000' -and (Test-SettingsRecClean $d)) "P32 dirty, X, Don't save: nothing is written or discarded before the guards, the FormClosing guards run once with UserClosing, and (a guard keeping the window open) the page is still dirty with its edits" ("guards=[$($script:setCloseLog.ToArray() -join ',')] heldPort=$($st['Held'].port) dirty=$($st['Dirty']) " + (Get-SettingsRecDetail $d))
         # Save ok on close: saved, then the guards run
         $els.SettingsPortBox.Text = '9003'; $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
         $script:setCloseLog.Clear()
