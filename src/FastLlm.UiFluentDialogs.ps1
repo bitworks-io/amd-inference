@@ -240,3 +240,149 @@ function Show-FastLlmUiFluentMessageBox {
     if ($answer -ceq '') { $answer = [string] @($plan['order'])[-1] }
     return (ConvertTo-FastLlmUiFluentDialogResult -Id $answer)
 }
+
+# The words of the side result and driver guidance dialogs, copied byte-identical from ShowUiSideResult and ShowDriverGuidance in fast-llm-ui.ps1
+# (a members pin compares every value below with its classic literal). Url is the page the generic button opens. DetailsName is the one string that is not
+# a classic literal: the guidance box has no label of its own today, so it takes the device label as its name and LabeledBy (one string, see below).
+$script:FastLlmUiFluentDialogText = [ordered]@{
+    SideClose     = 'Close'
+    GuidanceTitle = 'AMD driver guidance - read-only'
+    GuidanceLabel = 'Choose a detected display device (not a verified serving-GPU match)'
+    OpenPage      = 'Open official AMD page'
+    GuidanceClose = 'Close'
+    NoReport      = 'No Windows driver guidance report was returned.'
+    NoEntries     = 'No readable display-device guidance is available. Use Diagnostics for the inventory error and AMD Windows drivers to select your product manually.'
+    NoEntriesStatus = 'Driver guidance unavailable. No driver changes made.'
+    TooMany       = 'Driver guidance exceeds the display-device limit.'
+    Invalid       = 'The advisory could not be validated. Use the main AMD Windows drivers link.'
+    OpenFailed    = 'Unable to open the official AMD page. No driver changes were made.'
+    Viewed        = 'Driver guidance viewed. No driver changes made.'
+    Url           = 'https://www.amd.com/en/support/download/drivers.html'
+}
+
+# The text scale of the dialogs (the owner's body size over 14, clamped to 1.0 .. 2.25), as New-FastLlmUiFluentDialog derives it.
+function Get-FastLlmUiFluentDialogScale {
+    [CmdletBinding()]
+    param($Owner = $null)
+    $scale = 1.0
+    $ownerWindow = Resolve-FastLlmUiFluentDialogOwner -Owner $Owner
+    if ($null -ne $ownerWindow) {
+        $size = $ownerWindow.TryFindResource('FastLlm.BodySize')
+        if ($size -is [double] -and $size -gt 0) { $scale = [Math]::Min([Math]::Max($size / 14.0, 1.0), 2.25) }
+    }
+    return [double] $scale
+}
+
+# A read-only, wrapping, mono TextBox for a dialog body: its own scrollbar once it passes MaxHeight, no undo, never in markup.
+function New-FastLlmUiFluentDialogReadBox {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string] $Text = '', [double] $MinHeight = 96, [double] $MaxHeight = 360)
+    $box = New-Object System.Windows.Controls.TextBox
+    $box.IsReadOnly = $true
+    $box.IsUndoEnabled = $false
+    $box.AcceptsReturn = $true
+    $box.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $box.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
+    $box.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Disabled
+    $box.SetResourceReference([System.Windows.Controls.Control]::FontFamilyProperty, 'FastLlm.MonoFont')
+    $box.MinHeight = $MinHeight
+    $box.MaxHeight = $MaxHeight
+    $box.Text = $Text
+    return $box
+}
+
+# A side result (API format check, support bundle list): the text in a read-only mono box, and Close, which answers Enter and Escape as today. Returns nothing.
+function Show-FastLlmUiFluentSideResult {
+    [CmdletBinding()]
+    param([string] $Title, [string] $Text)
+    $t = $script:FastLlmUiFluentDialogText
+    $scale = Get-FastLlmUiFluentDialogScale -Owner $script:form
+    $box = New-FastLlmUiFluentDialogReadBox -Text $Text -MinHeight (96 * $scale) -MaxHeight (360 * $scale)
+    $box.Name = 'SideResultText'
+    [System.Windows.Automation.AutomationProperties]::SetName($box, $Title)
+    $buttons = [ordered] @{ Close = [string] $t.SideClose }
+    $dialog = New-FastLlmUiFluentDialog -Title $Title -Body $box -Buttons $buttons -Enter 'Close' -Escape 'Close' -Owner $script:form
+    $work = [System.Windows.SystemParameters]::WorkArea
+    $dialog['Window'].Width = [Math]::Min($work.Width * 0.9, 760.0 * $scale)
+    $null = Show-FastLlmUiFluentDialog -Dialog $dialog
+}
+
+# Driver guidance: the same checks, texts and flow as ShowDriverGuidance. A device list, the guidance of the chosen device, "Open official AMD page" (never
+# closes) and Close (Escape). There is no Enter target, as today (the classic form has no AcceptButton). Returns nothing.
+function Show-FastLlmUiFluentDriverGuidance {
+    [CmdletBinding()]
+    param($Diagnostic)
+    RevealUiForAction
+    $t = $script:FastLlmUiFluentDialogText
+    if (-not $Diagnostic.PSObject.Properties['driverGuidance'] -or -not $Diagnostic.windows) {
+        throw [string] $t.NoReport
+    }
+    $entries = @($Diagnostic.driverGuidance)
+    if ($entries.Count -eq 0) {
+        $script:output.Text = [string] $t.NoEntries
+        $script:statusLabel.Text = [string] $t.NoEntriesStatus
+        return
+    }
+    if ($entries.Count -gt 128) { throw [string] $t.TooMany }
+    $format = ${function:Format-FastLlmDriverGuidance}
+    $invalidText = [string] $t.Invalid
+    $openFailedText = [string] $t.OpenFailed
+    $pageUrl = [string] $t.Url
+    $scale = Get-FastLlmUiFluentDialogScale -Owner $script:form
+
+    $label = New-Object System.Windows.Controls.TextBlock
+    $label.Text = [string] $t.GuidanceLabel
+    $label.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $label.Margin = New-Object System.Windows.Thickness(0, 0, 0, 8)
+    $devices = New-Object System.Windows.Controls.ComboBox
+    $devices.Name = 'DriverDevice'
+    [System.Windows.Controls.ScrollViewer]::SetCanContentScroll($devices, $false)
+    for ($i = 0; $i -lt $entries.Count; $i++) { $null = $devices.Items.Add("$($i+1). $($entries[$i].inputGpuName)") }
+    $details = New-FastLlmUiFluentDialogReadBox -Text '' -MinHeight (160 * $scale) -MaxHeight (320 * $scale)
+    $details.Name = 'DriverGuidanceText'
+    $details.Margin = New-Object System.Windows.Thickness(0, 8, 0, 8)
+    # Name and LabeledBy from one string: the visible label of the list. The guidance box has no label of its own, so it shares that one.
+    $labelText = [string] $t.GuidanceLabel
+    foreach ($field in @($devices, $details)) {
+        [System.Windows.Automation.AutomationProperties]::SetName($field, $labelText)
+        [System.Windows.Automation.AutomationProperties]::SetLabeledBy($field, $label)
+    }
+    $openPage = New-Object System.Windows.Controls.Button
+    $openPage.Name = 'OpenAmdPage'
+    $openPage.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.ButtonStyle')
+    $openPage.Content = ConvertTo-FastLlmUiAccessText -Text ([string] $t.OpenPage) -UseMnemonic $false
+    [System.Windows.Automation.AutomationProperties]::SetName($openPage, [string] $t.OpenPage)
+    $openPage.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+    $openPage.MinWidth = 88
+
+    $panel = New-Object System.Windows.Controls.StackPanel
+    foreach ($child in @($label, $devices, $details, $openPage)) { $null = $panel.Children.Add($child) }
+
+    $devices.Add_SelectionChanged({
+        try { $details.Text = & $format -Guidance $entries[$devices.SelectedIndex]; $openPage.IsEnabled = $true }
+        catch { $details.Text = $invalidText; $openPage.IsEnabled = $false }
+    }.GetNewClosure())
+    $openPage.Add_Click({
+        try {
+            $chosen = $entries[$devices.SelectedIndex]
+            if ($chosen.knownFocusModel) {
+                # Revalidate before opening; do not execute a URL from an unvalidated diagnostic.
+                $null = & $format -Guidance $chosen
+                Start-Process ([string] $chosen.productUrl)
+            }
+            else { Start-Process $pageUrl }
+        }
+        catch { $details.Text = $openFailedText }
+    }.GetNewClosure())
+
+    $buttons = [ordered] @{ Close = [string] $t.GuidanceClose }
+    # No Enter target (the classic form has no AcceptButton); Escape closes. The first focus is the list, the first tab stop of the classic form.
+    $dialog = New-FastLlmUiFluentDialog -Title ([string] $t.GuidanceTitle) -Body $panel -Buttons $buttons -Enter '' -Escape 'Close' -Owner $script:form
+    $work = [System.Windows.SystemParameters]::WorkArea
+    $dialog['Window'].Width = [Math]::Min($work.Width * 0.9, 780.0 * $scale)
+    $dialog['Window'].Add_Loaded({ $null = $devices.Focus() }.GetNewClosure())
+    SetTrayMenuAvailable $false
+    try { $devices.SelectedIndex = 0; $null = Show-FastLlmUiFluentDialog -Dialog $dialog }
+    finally { SetTrayMenuAvailable $true }
+    $script:statusLabel.Text = [string] $t.Viewed
+}
