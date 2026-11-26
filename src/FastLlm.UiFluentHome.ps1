@@ -302,12 +302,14 @@ function Connect-FastLlmUiFluentControl {
             if ($Element.Text -cne $shown) { $Element.Text = $shown }
         }.GetNewClosure()
         $Adapter.__state['CommitEdit'] = $commit
-        $Element.Add_KeyDown({
+        # PreviewKeyDown, not KeyDown: a TextBox's class handler marks Up and Down handled (caret moves) before instance KeyDown handlers run.
+        # Up and Down step like the WinForms spin box and are marked handled here; Return commits and is left unhandled, as the WinForms box leaves it.
+        $Element.Add_PreviewKeyDown({
                 param($sender, $routed)
                 $direction = $null
                 if ($routed.Key -eq [System.Windows.Input.Key]::Return) { $direction = '' }
-                elseif ($routed.Key -eq [System.Windows.Input.Key]::Up) { $direction = 'Up' }
-                elseif ($routed.Key -eq [System.Windows.Input.Key]::Down) { $direction = 'Down' }
+                elseif ($routed.Key -eq [System.Windows.Input.Key]::Up) { $direction = 'Up'; $routed.Handled = $true }
+                elseif ($routed.Key -eq [System.Windows.Input.Key]::Down) { $direction = 'Down'; $routed.Handled = $true }
                 if ($null -ne $direction) { & $commit $direction }
             }.GetNewClosure())
         $Element.Add_LostKeyboardFocus({ param($sender, $routed) & $commit '' }.GetNewClosure())

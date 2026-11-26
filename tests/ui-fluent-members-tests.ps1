@@ -1166,6 +1166,18 @@ Check ($initFn[0].Body.Extent.Text -cmatch "ModelsContextUp'\]\.Add_Click\(\{[^}
 $homeAst=Get-FileAst (Join-Path $root 'src/FastLlm.UiFluentHome.ps1')
 $connectCtl=Get-AstFunction $homeAst 'Connect-FastLlmUiFluentControl'
 Check ($connectCtl.Count -eq 1 -and $connectCtl[0].Body.Extent.Text -cmatch '\$step = \$\{function:Step-FastLlmUiNumericValue\}' -and $connectCtl[0].Body.Extent.Text -cmatch '& \$step -Current \$value -Increment') 'the Number commit block steps through Step-FastLlmUiNumericValue'
+# The Number box's Up and Down keys: a WPF TextBox's class handler marks Up and Down handled before instance KeyDown handlers run, so the keys are read in
+# PreviewKeyDown and marked handled there (Return is read there too and left unhandled).
+function Test-NumberKeyWiring([string]$Body){
+    $m=[regex]::Match($Body,"(?s)elseif \(\`$Mode -ceq 'Number'\) \{\s*# Commits the typed text.*?\n    \}")
+    if(-not $m.Success){return $false}
+    $t=$m.Value
+    return ($t -cmatch '\$Element\.Add_PreviewKeyDown\(\{' -and $t -cnotmatch '\$Element\.Add_KeyDown\(' -and $t -cmatch "Key\]::Up\) \{ \`$direction = 'Up'; \`$routed\.Handled = \`$true \}" -and $t -cmatch "Key\]::Down\) \{ \`$direction = 'Down'; \`$routed\.Handled = \`$true \}" -and $t -cmatch "Key\]::Return\) \{ \`$direction = '' \}")
+}
+$numBody=$connectCtl[0].Body.Extent.Text
+Check (Test-NumberKeyWiring $numBody) 'the Number box reads Up, Down and Return in PreviewKeyDown, and marks only Up and Down handled'
+Check (-not (Test-NumberKeyWiring $numBody.Replace('$Element.Add_PreviewKeyDown({','$Element.Add_KeyDown({'))) 'self-check: the Number keys read in KeyDown (a TextBox swallows Up and Down there) are flagged'
+Check (-not (Test-NumberKeyWiring $numBody.Replace("`$direction = 'Up'; `$routed.Handled = `$true","`$direction = 'Up'"))) 'self-check: Up left unhandled (the caret also moves) is flagged'
 
 # The picker is computed once, by ShowUiSwitchPicker's opening statements ($status, its try, the picker call), inside an if on the Switch button's Enabled; that is the only call site in the file.
 function Get-PickerGuardFindings([string]$Text,[string]$ClassicText){
