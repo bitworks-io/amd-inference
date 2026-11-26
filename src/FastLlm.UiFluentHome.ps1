@@ -46,6 +46,13 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     WhyNoPreview         = 'Start once to preview a setup first'
     WhyBackgroundRun     = 'Available when the background run has ended'
     WhyNoLeftovers       = 'No leftover partial downloads were found'
+    # PR 3c: the Settings page headings, the Discard action and the unsaved-changes prompt (its title, Save and Cancel are today's strings).
+    SettingsServer       = 'Server'
+    SettingsStarting     = 'Starting'
+    SettingsComponents   = 'Components and updates'
+    Discard              = 'Discard'
+    SavePrompt           = 'Save your changes?'
+    DontSave             = "Don't save"
 }
 
 # Icon glyphs (Segoe Fluent Icons, falling back to Segoe MDL2 Assets: the same code points exist in both). They are drawn, never read.
@@ -201,7 +208,7 @@ function New-FastLlmUiFluentSink {
     param(
         [Parameter(Mandatory = $true)] $Adapter,
         [Parameter(Mandatory = $true)] $Element,
-        [Parameter(Mandatory = $true)][ValidateSet('TextBlock', 'Content', 'Header', 'Output', 'Visual', 'Combo', 'Number', 'Input')][string] $Mode,
+        [Parameter(Mandatory = $true)][ValidateSet('TextBlock', 'Content', 'Header', 'Output', 'Visual', 'Combo', 'Number', 'Input', 'Toggle')][string] $Mode,
         [string[]] $Flags = @()
     )
     $convert = ${function:ConvertTo-FastLlmUiAccessText}
@@ -228,6 +235,14 @@ function New-FastLlmUiFluentSink {
             if ([string] $Property -ceq 'Text') { if ($Element.Text -cne [string] $Value) { $Element.Text = [string] $Value }; return }
             if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
         }
+        if ($Mode -ceq 'Toggle') {
+            # The adapter's Checked, written to IsChecked unless it came from the element or the element already shows it. Text goes through the shared Content branch.
+            if ([string] $Property -ceq 'Checked') {
+                if ($Adapter.__state['FromElement']) { return }
+                if ($Element.IsChecked -ne [bool] $Value) { $Element.IsChecked = [bool] $Value }
+                return
+            }
+        }
         switch -CaseSensitive ([string] $Property) {
             'Text' {
                 if ($noText -or $Mode -ceq 'Visual') { break }
@@ -239,7 +254,7 @@ function New-FastLlmUiFluentSink {
                 }
                 else {
                     $caption = & $convert -Text ([string] $Value) -UseMnemonic ([bool] $Adapter.UseMnemonic)
-                    if ($Mode -ceq 'Content') { $Element.Content = $caption } else { $Element.Header = $caption }
+                    if ($Mode -ceq 'Content' -or $Mode -ceq 'Toggle') { $Element.Content = $caption } else { $Element.Header = $caption }
                 }
             }
             'Enabled' { $Element.IsEnabled = [bool] $Value }
@@ -276,12 +291,21 @@ function Connect-FastLlmUiFluentControl {
     elseif ($Mode -ceq 'Number') {
         foreach ($property in 'Value', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
     }
+    elseif ($Mode -ceq 'Toggle') {
+        foreach ($property in 'Checked', 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
     else {
         foreach ($property in 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
     }
     $setFrom = ${function:Set-FastLlmUiAdapterFromElement}
     if ($Mode -ceq 'Combo') {
         $Element.Add_SelectionChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'SelectedIndex' -Value ([int] $Element.SelectedIndex) }.GetNewClosure())
+    }
+    elseif ($Mode -ceq 'Toggle') {
+        # Checked, Unchecked and Indeterminate, never Click: a UIA Toggle (Narrator) does not raise Click. Each handler writes the adapter once.
+        $Element.Add_Checked({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)) }.GetNewClosure())
+        $Element.Add_Unchecked({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)) }.GetNewClosure())
+        $Element.Add_Indeterminate({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Checked' -Value ([bool] ($Element.IsChecked -eq $true)) }.GetNewClosure())
     }
     elseif ($Mode -ceq 'Input') {
         $Element.Add_TextChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Text' -Value ([string] $Element.Text) }.GetNewClosure())
@@ -314,7 +338,8 @@ function Connect-FastLlmUiFluentControl {
             }.GetNewClosure())
         $Element.Add_LostKeyboardFocus({ param($sender, $routed) & $commit '' }.GetNewClosure())
     }
-    if ($Event) {
+    # A Toggle never listens to Click (see above); its state travels on the Checked adapter property.
+    if ($Event -and $Mode -cne 'Toggle') {
         $invoke = ${function:Invoke-FastLlmUiAdapterEvent}
         $adapterEvent = $Event
         $handler = { param($sender, $routed) & $invoke -Adapter $Adapter -Event $adapterEvent }.GetNewClosure()
