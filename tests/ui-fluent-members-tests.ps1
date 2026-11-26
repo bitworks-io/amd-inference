@@ -526,6 +526,54 @@ function ShowDriverGuidance($Diagnostic) {
       Orig=@'
 function ShowDriverGuidance($Diagnostic) {
 '@}
+    @{Name='licence setting confirm dispatch'
+      Cur=@'
+function ShowLicenseSettingConfirm($Disclosure) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowLicenseSettingConfirm'] -Disclosure $Disclosure}
+'@
+      Orig=@'
+function ShowLicenseSettingConfirm($Disclosure) {
+'@}
+    @{Name='component consent dispatch'
+      Cur=@'
+function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowComponentConsent'] -Row $Row -ConsentRows $ConsentRows -Chosen $Chosen}
+'@
+      Orig=@'
+function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
+'@}
+    @{Name='exact model consent dispatch'
+      Cur=@'
+function ShowExactModelConsent($Plan) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowExactModelConsent'] -Plan $Plan}
+'@
+      Orig=@'
+function ShowExactModelConsent($Plan) {
+'@}
+    @{Name='VC install review dispatch'
+      Cur=@'
+function ShowVcInstallReview($Receipt,$Candidate) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowVcInstallReview'] -Receipt $Receipt -Candidate $Candidate}
+'@
+      Orig=@'
+function ShowVcInstallReview($Receipt,$Candidate) {
+'@}
+    @{Name='setup attention dispatch'
+      Cur=@'
+function ShowSetupAttention($Decision,$Diagnostic) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowSetupAttention'] -Decision $Decision -Diagnostic $Diagnostic}
+'@
+      Orig=@'
+function ShowSetupAttention($Decision,$Diagnostic) {
+'@}
+    @{Name='recipe chooser dispatch'
+      Cur=@'
+function ShowRecipeChooser($Rows) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowRecipeChooser'] -Rows $Rows}
+'@
+      Orig=@'
+function ShowRecipeChooser($Rows) {
+'@}
 )
 function Get-NormalizedText([string]$Path){
     $bytes=[IO.File]::ReadAllBytes($Path)
@@ -547,7 +595,7 @@ function Undo-NamedChanges([string]$Text){
     }
     return [pscustomobject]@{Text=$Text;Problems=$problems}
 }
-Check ($namedChanges.Count -eq 40) 'forty named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh, settings height call site, settings height body, dialog view init, ShowUiMessageBox, 18 box call sites, side result dispatch, driver guidance dispatch)'
+Check ($namedChanges.Count -eq 46) 'forty-six named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh, settings height call site, settings height body, dialog view init, ShowUiMessageBox, 18 box call sites, side result dispatch, driver guidance dispatch, six consent and dialog dispatches)'
 $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
@@ -2930,7 +2978,9 @@ $seamParams='$Owner,[string]$Text,[string]$Caption,[string]$Buttons=''OK'',[stri
 #  ShowUiMessageBox: the passthrough itself. ShowFailure and EnsureTrayIcon: the window cannot be restored (native by design, 6.6).
 #  BuildUiSettingsDialog and ShowUiSettings: the classic Settings dialog, unreachable in the Fluent window (its page replaces it); deleted at the flip.
 $seamNativeShows=@{ShowUiMessageBox=1;ShowFailure=1;EnsureTrayIcon=2;BuildUiSettingsDialog=3;ShowUiSettings=1}
-$seamViewKeys=@{MessageBox='Show-FastLlmUiFluentMessageBox';ShowUiSideResult='Show-FastLlmUiFluentSideResult';ShowDriverGuidance='Show-FastLlmUiFluentDriverGuidance'}
+$seamViewKeys=@{MessageBox='Show-FastLlmUiFluentMessageBox';ShowUiSideResult='Show-FastLlmUiFluentSideResult';ShowDriverGuidance='Show-FastLlmUiFluentDriverGuidance';ShowLicenseSettingConfirm='Show-FastLlmUiFluentLicenseSettingConfirm';ShowComponentConsent='Show-FastLlmUiFluentComponentConsent';ShowExactModelConsent='Show-FastLlmUiFluentExactModelConsent';ShowVcInstallReview='Show-FastLlmUiFluentVcInstallReview';ShowSetupAttention='Show-FastLlmUiFluentSetupAttention';ShowRecipeChooser='Show-FastLlmUiFluentRecipeChooser'}
+# 4b B1: the six consent and dialog functions dispatch on their first statement and RETURN the fluent result, passing every parameter by name.
+$seamDispatch46=[ordered]@{ShowLicenseSettingConfirm='-Disclosure $Disclosure';ShowComponentConsent='-Row $Row -ConsentRows $ConsentRows -Chosen $Chosen';ShowExactModelConsent='-Plan $Plan';ShowVcInstallReview='-Receipt $Receipt -Candidate $Candidate';ShowSetupAttention='-Decision $Decision -Diagnostic $Diagnostic';ShowRecipeChooser='-Rows $Rows'}
 function Get-SeamFindings([string]$UiText,[string]$ShellText){
     $f=New-Object System.Collections.ArrayList
     $e=$null
@@ -2961,7 +3011,7 @@ function Get-SeamFindings([string]$UiText,[string]$ShellText){
         $k=if($n.Index -is [System.Management.Automation.Language.StringConstantExpressionAst]){[string]$n.Index.Value}else{'(not a literal)'}
         $used[$k]=$true
     }
-    if($used.Count -ne 3){[void]$f.Add("the classic script reads $($used.Count) distinct view keys, expected 3")}
+    if($used.Count -ne 9){[void]$f.Add("the classic script reads $($used.Count) distinct view keys, expected 9")}
     $init=@($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:uiDialogView' -and $n.Right.Extent.Text -ceq '$null'},$true))
     if($init.Count -ne 1){[void]$f.Add('the classic script does not set $script:uiDialogView=$null exactly once')}
     foreach($k in @($used.Keys)){ if(-not $seamViewKeys.ContainsKey($k)){[void]$f.Add("the classic script reads view key '$k', which is not a known entry")} }
@@ -2985,6 +3035,12 @@ function Get-SeamFindings([string]$UiText,[string]$ShellText){
         $dn=$d[0]; $fn=@($ui.FindAll({param($n) & $isFn $n $dn},$true))
         if($fn.Count -ne 1 -or @($fn[0].Body.EndBlock.Statements).Count -lt 2 -or @($fn[0].Body.EndBlock.Statements)[0].Extent.Text -cne $d[1]){[void]$f.Add("$dn does not start with its dispatch line")}
     }
+    # 5. 4b B1: the six dialog functions: first statement is the dispatch line (returns the fluent result, every parameter named), then the classic body follows.
+    foreach($dn in @($seamDispatch46.Keys)){
+        $want='if($null -ne $script:uiDialogView){return & $script:uiDialogView['''+$dn+'''] '+$seamDispatch46[$dn]+'}'
+        $fn=@($ui.FindAll({param($n) & $isFn $n $dn},$true))
+        if($fn.Count -ne 1 -or @($fn[0].Body.EndBlock.Statements).Count -lt 2 -or @($fn[0].Body.EndBlock.Statements)[0].Extent.Text -cne $want){[void]$f.Add("$dn does not start with its dispatch line (return, every parameter by name)")}
+    }
     return ,$f.ToArray()
 }
 $seamFindings=Get-SeamFindings $seamUiText $seamShellText
@@ -3004,6 +3060,12 @@ $seamPlants=[ordered]@{
     'a view key misspelled in the shell table'=@($seamUiText,(Edit-SeamPlant $seamShellText 'ShowDriverGuidance = ${function:' 'ShowDriverGuidence = ${function:'))
     'a shell entry bound to the wrong function'=@($seamUiText,(Edit-SeamPlant $seamShellText 'MessageBox = ${function:Show-FastLlmUiFluentMessageBox}' 'MessageBox = ${function:Show-FastLlmUiFluentSideResult}'))
     'the side result dispatch missing'=@((Edit-SeamPlant $seamUiText "    if(`$null -ne `$script:uiDialogView){& `$script:uiDialogView['ShowUiSideResult'] -Title `$Title -Text `$Text;return}`n" ''),$seamShellText)
+    'the licence setting dispatch drops return'=@((Edit-SeamPlant $seamUiText "{return & `$script:uiDialogView['ShowLicenseSettingConfirm']" "{& `$script:uiDialogView['ShowLicenseSettingConfirm']"),$seamShellText)
+    'the component consent dispatch drops -Chosen'=@((Edit-SeamPlant $seamUiText ' -ConsentRows $ConsentRows -Chosen $Chosen}' ' -ConsentRows $ConsentRows}'),$seamShellText)
+    'the recipe chooser dispatch key misspelled'=@((Edit-SeamPlant $seamUiText "uiDialogView['ShowRecipeChooser']" "uiDialogView['ShowRecipeChoser']"),$seamShellText)
+    'the setup attention shell entry misspelled'=@($seamUiText,(Edit-SeamPlant $seamShellText 'ShowSetupAttention = ${function:' 'ShowSetupAttenton = ${function:'))
+    'the VC review dispatch drops return'=@((Edit-SeamPlant $seamUiText "{return & `$script:uiDialogView['ShowVcInstallReview']" "{& `$script:uiDialogView['ShowVcInstallReview']"),$seamShellText)
+    'the exact model consent dispatch is missing'=@((Edit-SeamPlant $seamUiText "    if(`$null -ne `$script:uiDialogView){return & `$script:uiDialogView['ShowExactModelConsent'] -Plan `$Plan}`n" ''),$seamShellText)
     'the table set in the Local scope'=@($seamUiText,(Edit-SeamPlant $seamShellText '-Name uiDialogView -Scope Script' '-Name uiDialogView -Scope Local'))
 }
 # CONTROL: the unmutated texts give exactly 0 findings (a counter that is always 1 or always 0 fails here or below). Each plant must also differ from the real text.

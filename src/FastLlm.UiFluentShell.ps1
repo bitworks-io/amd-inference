@@ -1158,6 +1158,12 @@ function Initialize-FastLlmUiFluentShell {
             MessageBox = ${function:Show-FastLlmUiFluentMessageBox}
             ShowUiSideResult = ${function:Show-FastLlmUiFluentSideResult}
             ShowDriverGuidance = ${function:Show-FastLlmUiFluentDriverGuidance}
+            ShowLicenseSettingConfirm = ${function:Show-FastLlmUiFluentLicenseSettingConfirm}
+            ShowComponentConsent = ${function:Show-FastLlmUiFluentComponentConsent}
+            ShowExactModelConsent = ${function:Show-FastLlmUiFluentExactModelConsent}
+            ShowVcInstallReview = ${function:Show-FastLlmUiFluentVcInstallReview}
+            ShowSetupAttention = ${function:Show-FastLlmUiFluentSetupAttention}
+            ShowRecipeChooser = ${function:Show-FastLlmUiFluentRecipeChooser}
         }
         # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
         $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
