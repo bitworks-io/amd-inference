@@ -512,7 +512,32 @@ try {
     # FastLlm.UiFlow.ps1 is the control window's own logic (its Settings opt-in and its picker); the window passes the opt-in only for a start the user made there.
     # FastLlm.UiSettings.ps1 holds the one reader of the saved opt-in, shared by the window and the sign-in start.
     # FastLlm.SignInStart.ps1 is the user's own start at sign-in: it passes the opt-in only when the user's saved setting (the one the window writes) is on.
-    $allowed=@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.BackgroundHost.ps1','FastLlm.UiFlow.ps1','FastLlm.UiSettings.ps1','FastLlm.SignInStart.ps1')
+    # The Fluent window (PR 3c): FastLlm.UiFluentSettings.ps1 is the window's Settings page, the writer of the saved opt-in (as the classic window, which
+    # this src scan never covered), and FastLlm.UiState.ps1 holds its pure held-edit machine, which carries the saved allowSwitch value. Neither passes
+    # -AllowSwitch to a start: pinned just below (the one AllowSwitch command is the saved-setting writer, its value read from the held settings).
+    $allowed=@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.BackgroundHost.ps1','FastLlm.UiFlow.ps1','FastLlm.UiSettings.ps1','FastLlm.SignInStart.ps1','FastLlm.UiFluentSettings.ps1','FastLlm.UiState.ps1')
+    function Get-FluentSwitchFindings([string]$Name,[string]$Text){
+        $f=New-Object System.Collections.ArrayList
+        if($Text -match '-AllowSwitch\b'){[void]$f.Add("$Name passes an -AllowSwitch parameter")}
+        if($Text -match 'SwitchAllowed'){[void]$f.Add("$Name names SwitchAllowed")}
+        $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+        $cmds=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -match 'AllowSwitch'},$true))
+        if($Name -ceq 'FastLlm.UiState.ps1'){ if($cmds.Count -ne 0){[void]$f.Add("$Name calls an AllowSwitch command")} }
+        else{
+            if($cmds.Count -ne 1 -or [string]$cmds[0].GetCommandName() -cne 'Set-FastLlmUiAllowSwitch' -or $cmds[0].Extent.Text -cne 'Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot -Value ([bool]$values.allowSwitch)'){[void]$f.Add("$Name does not write the saved opt-in exactly once from the held settings")}
+        }
+        return $f.ToArray()
+    }
+    foreach($fluentName in 'FastLlm.UiFluentSettings.ps1','FastLlm.UiState.ps1'){
+        $fluentText=[IO.File]::ReadAllText((Join-Path $root (Join-Path 'src' $fluentName)))
+        $ff=@(Get-FluentSwitchFindings $fluentName $fluentText)
+        Check ($ff.Count -eq 0) ("bench path: $fluentName names the opt-in only as the saved setting, never as a start's -AllowSwitch: ["+($ff -join '; ')+']')
+    }
+    $fsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentSettings.ps1'))
+    $usText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiState.ps1'))
+    Check (@(Get-FluentSwitchFindings 'FastLlm.UiState.ps1' ($usText+"`nfunction X { Start-FastLlmServer -AllowSwitch `$true }")).Count -ge 1) 'bench path self-check: a start passed -AllowSwitch from the held-edit file is flagged'
+    Check (@(Get-FluentSwitchFindings 'FastLlm.UiFluentSettings.ps1' $fsText.Replace('-Value ([bool]$values.allowSwitch)','-Value $true')).Count -ge 1) 'bench path self-check: the saved opt-in written from a literal is flagged'
+    Check (@(Get-FluentSwitchFindings 'FastLlm.UiFluentSettings.ps1' ($fsText+"`nfunction X { Set-FastLlmUiAllowSwitch -InstallRoot `$r -Value `$true }")).Count -ge 1) 'bench path self-check: a second opt-in write is flagged'
     $others=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File | Where-Object { $_.Extension -in @('.ps1','.psm1') -and $allowed -cnotcontains $_.Name -and ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
     $tools=@(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -File -Filter '*.ps1' | Where-Object { ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
     Check ($others.Count -eq 0 -and $tools.Count -eq 0) ('bench path: no lab, benchmark, diagnostic or tool source passes -AllowSwitch: ['+((@($others)+@($tools) | ForEach-Object Name) -join ',')+']')
