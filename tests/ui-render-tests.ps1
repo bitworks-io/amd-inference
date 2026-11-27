@@ -874,18 +874,49 @@ function Get-FastLlmServingSettings{
     if($null -ne $script:settingsOverride){foreach($k in @($script:settingsOverride.Keys)){$real.$k=$script:settingsOverride[$k]}}
     return $real
 }
+# Settings additions (named test change): the two availability probes are read on Enter and answer from the fixture (the real ones read the catalog and the planner's rows).
+$script:settingsEmbAvail=$false
+$script:settingsLongMeasured=$false
+function Test-FastLlmUiFluentEmbeddingsAvailable{return [bool]$script:settingsEmbAvail}
+function Test-FastLlmUiFluentLongMeasured{return [bool]$script:settingsLongMeasured}
 function Get-FastLlmSignInDefaultInstallRoot{return [string]$script:homeDir}
 function Get-FastLlmSignInSettingsView{param([string]$AppRoot,[string]$InstallRoot)return [pscustomobject]@{checked=$false;stateText='Starting FastLLM when you sign in is off.';lastResultText='No sign-in start has run yet.'}}
 # The fixtures: not set (the worst case: the long caption, the long thinking text, the biggest port), key on, key off, running (key on), unavailable (a launch is starting).
+# Settings additions (named test change): every fixture also says what the two probes answer (embAvail, longMeasured). The five original ones answer false and false, so
+# the Embeddings rows are hidden and Long is disabled with its reason. 'additions' has all four rows shown (Embeddings available and ticked, Long measured and saved,
+# slots 2), 'additionssame' is the same with the server port equal to the embeddings port (the inline message shows), and 'hiddenrows' is the hidden-and-disabled state
+# spelled out (nothing available, nothing saved).
 function Get-SettingsRenderFixture([string]$Kind){
     switch -CaseSensitive ($Kind){
-        'notset'{return @{override=@{serverPort=65535;thinking='off';chatPage='on';idleStopMinutes=60;apiKey='off';apiKeyUndetermined=$true};snap=@{};unavailable=$false;keyChecked=$null}}
-        'on'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=15;apiKey='on';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$true}}
-        'off'{return @{override=@{serverPort=8080;thinking='off';chatPage='on';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false}}
-        'running'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=30;apiKey='on';apiKeyUndetermined=$false};snap=@{ChildActive=$true;Step='serving';RunReady=$true};unavailable=$false;keyChecked=$true}}
-        'unavailable'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{Busy=$true;ChildActive=$true;Step='model download'};unavailable=$true;keyChecked=$false}}
+        'notset'{return @{override=@{serverPort=65535;thinking='off';chatPage='on';idleStopMinutes=60;apiKey='off';apiKeyUndetermined=$true};snap=@{};unavailable=$false;keyChecked=$null;embAvail=$false;longMeasured=$false}}
+        'on'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=15;apiKey='on';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$true;embAvail=$false;longMeasured=$false}}
+        'off'{return @{override=@{serverPort=8080;thinking='off';chatPage='on';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$false;longMeasured=$false}}
+        'running'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=30;apiKey='on';apiKeyUndetermined=$false};snap=@{ChildActive=$true;Step='serving';RunReady=$true};unavailable=$false;keyChecked=$true;embAvail=$false;longMeasured=$false}}
+        'unavailable'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{Busy=$true;ChildActive=$true;Step='model download'};unavailable=$true;keyChecked=$false;embAvail=$false;longMeasured=$false}}
+        'additions'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false;contextProfile='long';slots=2;embeddings='on';embeddingPort=8081};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$true;longMeasured=$true}}
+        'additionssame'{return @{override=@{serverPort=8081;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false;contextProfile='long';slots=2;embeddings='on';embeddingPort=8081};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$true;longMeasured=$true}}
+        'hiddenrows'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$false;longMeasured=$false}}
         default{throw "unknown Settings render state $Kind"}
     }
+}
+# What a fixture's Settings additions are once read: the store's defaults, then the fixture's overrides (a key the fixture does not name is the default).
+function Get-SettingsEffective($Fx){
+    $eff=@{contextProfile='default';slots=1;embeddings='off';embeddingPort=8081;serverPort=8080}
+    foreach($k in @($Fx.override.Keys)){$eff[[string]$k]=$Fx.override[$k]}
+    return $eff
+}
+# The authored Settings elements that must NOT be shown for a fixture (the unavailable line is judged on its own): the Embeddings rows unless the probe says available or
+# the saved value is on (A4), the port row unless Embeddings is on (A2), the inline message unless the ports are equal (A3), the Long reason line unless Long is disabled.
+function Get-SettingsExpectedHidden($Fx){
+    $eff=Get-SettingsEffective $Fx
+    $hid=New-Object System.Collections.ArrayList
+    $showEmb=[bool]($Fx.embAvail -or [string]$eff.embeddings -ceq 'on')
+    $portNames='SettingsEmbeddingPortGroup','SettingsEmbeddingPortLabel','SettingsEmbeddingPortRow','SettingsEmbeddingPortBox','SettingsEmbeddingPortUp','SettingsEmbeddingPortDown','SettingsEmbeddingPortSame'
+    if(-not $showEmb){foreach($n in (@('SettingsEmbeddingsGroup','SettingsEmbeddingsBox','SettingsEmbeddingsHelp')+$portNames)){[void]$hid.Add($n)}}
+    elseif([string]$eff.embeddings -cne 'on'){foreach($n in $portNames){[void]$hid.Add($n)}}
+    elseif([int]$eff.serverPort -ne [int]$eff.embeddingPort){[void]$hid.Add('SettingsEmbeddingPortSame')}
+    if([bool]$Fx.longMeasured -or [string]$eff.contextProfile -ceq 'long'){[void]$hid.Add('SettingsContextProfileWhy')}
+    return @($hid.ToArray())
 }
 function Initialize-SettingsRenderPage($Page){
     $fx=Get-SettingsRenderFixture $script:settingsKind
@@ -898,6 +929,8 @@ function Initialize-SettingsRenderPage($Page){
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     Connect-RenderBindingRows @(Get-FastLlmUiFluentSettingsBindings) $els
     $script:settingsOverride=$fx.override
+    $script:settingsEmbAvail=[bool]$fx.embAvail
+    $script:settingsLongMeasured=[bool]$fx.longMeasured
     $script:homeSnap=New-HomeSnap $fx.snap
     $script:settingsButton.Enabled=(-not [bool]$fx.unavailable)
     $script:renderFail=''
@@ -936,6 +969,15 @@ function Test-UiSelectionDrawn($Box){
     }
     return $false
 }
+# Settings additions (named test change): the same check for a box whose items are ComboBoxItems (the context profile), whose selected text is the item's Content.
+function Test-UiSelectionTextDrawn($Box,[string]$Selected){
+    if([string]::IsNullOrEmpty($Selected)){return $false}
+    foreach($v in (Get-UiVisualElements $Box)){
+        if($v -is [System.Windows.Controls.TextBlock] -and [string]$v.Text -ceq $Selected){return $true}
+        if($v -is [System.Windows.Controls.ContentPresenter] -and $v.Content -is [string] -and [string]$v.Content -ceq $Selected){return $true}
+    }
+    return $false
+}
 $plantedBox=New-Object System.Windows.Controls.ComboBox
 $plantedBox.Items.Add('') | Out-Null
 $plantedBox.SelectedIndex=0
@@ -947,7 +989,7 @@ function Test-SettingsCase([string]$Kind,$case){
     $script:settingsCaseHeight=[double]$case.height
     $script:homeCaseTheme=[string]$case.theme
     $pngName='FastLlm.Settings'
-    switch -CaseSensitive ($Kind){'on'{$pngName='FastLlm.SettingsKeyOn'}'off'{$pngName='FastLlm.SettingsKeyOff'}'running'{$pngName='FastLlm.SettingsRunning'}'unavailable'{$pngName='FastLlm.SettingsUnavailable'}}
+    switch -CaseSensitive ($Kind){'on'{$pngName='FastLlm.SettingsKeyOn'}'off'{$pngName='FastLlm.SettingsKeyOff'}'running'{$pngName='FastLlm.SettingsRunning'}'unavailable'{$pngName='FastLlm.SettingsUnavailable'}'additions'{$pngName='FastLlm.SettingsAdditions'}'additionssame'{$pngName='FastLlm.SettingsAdditionsSame'}'hiddenrows'{$pngName='FastLlm.SettingsRowsHidden'}}
     $label="Settings $Kind $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
     $r=$null
     try{$r=Invoke-UiRenderCase -Name 'FastLlm.Settings' -Case $case -OutFolder $out -Prepare $settingsPrepare -PngName $pngName -TabRegions @('SettingsScroll')}catch{Check $false "Settings renders at ${label}: $($_.Exception.Message)";return}
@@ -963,8 +1005,10 @@ function Test-SettingsCase([string]$Kind,$case){
     $t=$script:FastLlmUiFluentSettingsText
     Check ($script:renderFail -ceq '') "the Settings page filled without a failure at ${label}: '$($script:renderFail)'"
     # every authored element is shown, apart from the unavailable line (shown only while unavailable)
+    # Settings additions (named test change): the hidden elements are exactly the ones the fixture says (Get-SettingsExpectedHidden), no more and no fewer.
     $hidden=@((Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Settings']))|Where-Object{[string]$_ -cne 'SettingsUnavailableText' -and -not (Test-UiShown $e[[string]$_] $page)})
-    Check ($hidden.Count -eq 0) "no Settings control is hidden at ${label}: $($hidden -join ', ')"
+    $wantHidden=@(Get-SettingsExpectedHidden $fx)
+    Check ((@($hidden|Sort-Object) -join ',') -ceq (@($wantHidden|Sort-Object) -join ',')) "the hidden Settings controls are exactly the expected ones at ${label}: hidden=[$($hidden -join ', ')] expected=[$($wantHidden -join ', ')]"
     $line=($e['SettingsUnavailableText'].Visibility -eq [System.Windows.Visibility]::Visible)
     Check ($line -eq [bool]$fx.unavailable -and (-not $line -or [string]$e['SettingsUnavailableText'].Text -ceq [string]$script:FastLlmUiFluentStrings.WhyBusy)) "the unavailable line is shown exactly while unavailable, with WhyBusy, at $label (shown=$line text='$($e['SettingsUnavailableText'].Text)')"
     # the footer: Save and Discard inside the client area, never inside the scroll viewer; the scroll viewer fills what the footer leaves
@@ -1005,6 +1049,34 @@ function Test-SettingsCase([string]$Kind,$case){
         $selected=[string]$e[$n].SelectedItem
         Check (Test-UiSelectionDrawn $e[$n]) "the $n selection text is drawn at ${label} ('$selected')"
     }
+    # Settings additions (named test change): the four rows hold the saved values, are named by their labels, show their help, and follow the probes.
+    $str=$script:FastLlmUiFluentStrings
+    $eff=Get-SettingsEffective $fx
+    $wantProfile=[int]$(if([string]$eff.contextProfile -ceq 'long'){1}else{0})
+    $wantSlots=[int]$(if([int]$eff.slots -eq 2){1}else{0})
+    Check ([string]$e['SettingsContextProfileLabel'].Text -ceq [string]$str.ContextProfile -and [string]$e['SettingsRequestsLabel'].Text -ceq [string]$str.RequestsAtOnce -and [string]$e['SettingsContextProfileHelp'].Text -ceq [string]$str.ContextProfileHelp -and [string]$e['SettingsRequestsHelp'].Text -ceq [string]$str.RequestsAtOnceHelp -and (Test-UiShown $e['SettingsContextProfileHelp'] $page) -and (Test-UiShown $e['SettingsRequestsHelp'] $page)) "the context profile and requests at once rows carry their label and help text, shown, at $label"
+    Check ([string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsContextProfileBox']) -ceq [string]$str.ContextProfile -and [string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsRequestsBox']) -ceq [string]$str.RequestsAtOnce) "the context profile and requests boxes are named by their labels at $label"
+    Check ([int]$e['SettingsContextProfileBox'].SelectedIndex -eq $wantProfile -and [int]$e['SettingsRequestsBox'].SelectedIndex -eq $wantSlots) "the context profile and requests boxes show the saved values at $label (profile=$($e['SettingsContextProfileBox'].SelectedIndex) want $wantProfile, requests=$($e['SettingsRequestsBox'].SelectedIndex) want $wantSlots)"
+    $profileItem=$e['SettingsContextProfileBox'].SelectedItem
+    $profileText=''
+    if($null -ne $profileItem){$profileText=[string]$profileItem.Content}
+    Check ((Test-UiSelectionTextDrawn $e['SettingsContextProfileBox'] $profileText) -and (Test-UiSelectionDrawn $e['SettingsRequestsBox'])) "the context profile and requests selection texts are drawn at $label ('$profileText' '$($e['SettingsRequestsBox'].SelectedItem)')"
+    $wantLongEnabled=[bool]($fx.longMeasured -or [string]$eff.contextProfile -ceq 'long')
+    $whyShown=($e['SettingsContextProfileWhy'].Visibility -eq [System.Windows.Visibility]::Visible)
+    # an item's effective IsEnabled follows its box, so while the Server group is disabled (the unavailable case) only the reason line is judged
+    $itemsOk=$true
+    if([bool]$e['SettingsServerGroup'].IsEnabled){$itemsOk=([bool]$e['SettingsContextProfileBox'].Items[1].IsEnabled -eq $wantLongEnabled -and [bool]$e['SettingsContextProfileBox'].Items[0].IsEnabled)}
+    Check ($itemsOk -and $whyShown -eq (-not $wantLongEnabled) -and (-not $whyShown -or [string]$e['SettingsContextProfileWhy'].Text -ceq [string]$str.LongNotMeasured)) "Long is enabled exactly when measured or saved, and a disabled Long shows the LongNotMeasured reason, at $label (long enabled=$($e['SettingsContextProfileBox'].Items[1].IsEnabled) reason shown=$whyShown)"
+    if(-not (@($wantHidden) -contains 'SettingsEmbeddingsBox')){
+        $embOn=([string]$eff.embeddings -ceq 'on')
+        Check ($e['SettingsEmbeddingsBox'].IsChecked -eq $embOn -and [string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsEmbeddingsBox']) -ceq [string]$str.Embeddings -and [string]$e['SettingsEmbeddingsHelp'].Text -ceq [string]$str.EmbeddingsHelp) "the Embeddings box is shown with its caption name, its state and its help line at $label (checked=$($e['SettingsEmbeddingsBox'].IsChecked) want $embOn)"
+        if($embOn){
+            $same=([int]$eff.serverPort -eq [int]$eff.embeddingPort)
+            Check ([string]$e['SettingsEmbeddingPortBox'].Text -ceq ([int]$eff.embeddingPort).ToString() -and [string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsEmbeddingPortBox']) -ceq [string]$str.EmbeddingPort -and [string]$e['SettingsEmbeddingPortLabel'].Text -ceq [string]$str.EmbeddingPort) "the embeddings port row shows the saved port, named by its label, at $label (text='$($e['SettingsEmbeddingPortBox'].Text)')"
+            $sameShown=($e['SettingsEmbeddingPortSame'].Visibility -eq [System.Windows.Visibility]::Visible)
+            Check ($sameShown -eq $same -and (-not $sameShown -or ([string]$e['SettingsEmbeddingPortSame'].Text -ceq [string]$str.EmbeddingPortSame -and [System.Windows.Automation.AutomationProperties]::GetLiveSetting($e['SettingsEmbeddingPortSame']) -eq [System.Windows.Automation.AutomationLiveSetting]::Polite))) "the inline same-port message shows exactly when the ports are equal, with its text, as a polite live region, at $label (shown=$sameShown want $same)"
+        }
+    }
     $toggleBad=@('SettingsUpdateToggle','SettingsExperimentalToggle','SettingsLicenseToggle'|Where-Object{-not $e[[string]$_].IsEnabled -or [string]::IsNullOrWhiteSpace([string][System.Windows.Automation.AutomationProperties]::GetName($e[[string]$_]))})
     Check ($toggleBad.Count -eq 0) "the three Components toggles are enabled and named (also while unavailable) at ${label}: $($toggleBad -join ', ')"
     if($Kind -ceq 'unavailable'){
@@ -1024,19 +1096,35 @@ function Test-SettingsCase([string]$Kind,$case){
             Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
         }
         if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){Check ($seen -eq 3) "all three value boxes are inside the viewport and inked at 1000x680 (seen $seen) at $label"}
+        # Settings additions (named test change): the two new selection boxes are painted too, in the cases that show the additions.
+        if($Kind -ceq 'additions' -or $Kind -ceq 'additionssame' -or $Kind -ceq 'hiddenrows'){
+            foreach($n in 'SettingsContextProfileBox','SettingsRequestsBox'){
+                $br=Get-UiRelativeRect $e[$n] $scroll
+                if($null -eq $br -or $br.Top -lt 0 -or $br.Bottom -gt [double]$scroll.ViewportHeight){continue}
+                $pr=Get-UiRelativeRect $e[$n] $page
+                $ink=Get-UiRegionInk $r.png $pr ([double]$case.scale)
+                Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
+            }
+        }
     }
 }
 $settingsSw=[Diagnostics.Stopwatch]::StartNew()
 foreach($case in $matrix){Test-SettingsCase 'notset' $case}
-foreach($kind in 'on','off','running','unavailable'){
+# Settings additions (named test change): all four rows shown (Embeddings available and ticked, Long measured and saved, slots 2) across the 12-case grid.
+foreach($case in $matrix){Test-SettingsCase 'additions' $case}
+foreach($kind in 'on','off','running','unavailable','additionssame','hiddenrows'){
     foreach($theme in 'light','dark','high-contrast'){
         foreach($text in 1.0,2.25){Test-SettingsCase $kind @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
     }
 }
-Write-Host ('INFO: Settings render of {0} cases took {1:N1} s' -f ($matrix.Count+24),$settingsSw.Elapsed.TotalSeconds)
+Write-Host ('INFO: Settings render of {0} cases took {1:N1} s' -f ($matrix.Count*2+36),$settingsSw.Elapsed.TotalSeconds)
 $script:settingsKind='notset'
 $script:settingsCaseHeight=[double]480
 Test-PageReadingOrder 'Settings' 'FastLlm.Settings' 'FastLlm.SettingsReading' $settingsPrepare 13 @() @('SettingsScroll')
+# Settings additions (named test change): the reading order with all four rows shown (the two new boxes, the Embeddings box and its port box are four more tab stops).
+$script:settingsKind='additions'
+Test-PageReadingOrder 'Settings with the additions' 'FastLlm.Settings' 'FastLlm.SettingsAdditionsReading' $settingsPrepare 17 @() @('SettingsScroll')
+$script:settingsKind='notset'
 $script:settingsOverride=$null
 
 # ---- PR 4a: the dialogs (message box kinds and icons, the side result, the driver guidance). Each dialog is built by the product's own functions with
