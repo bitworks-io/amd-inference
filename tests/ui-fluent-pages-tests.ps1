@@ -566,9 +566,68 @@ function Invoke-PagesDialogTablePins([string]$Root) {
     $stepsBlock = [regex]::Match($selfText, '(?s)\$script:steps = @\((.*?)\r?\n\)')
     Check-BoxPin ($stepsBlock.Success -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P42-DialogKeys'") -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P43-DialogFlows'")) 'P42 pin: the step list names Invoke-P42-DialogKeys and Invoke-P43-DialogFlows' "stepsBlockFound=$($stepsBlock.Success)"
 }
+
+# ======================================================================================================================
+# D1 (concept: keyboard reachability and tab order) for the seven fluent dialogs. The classic dialogs kept `$accept.TabStop=$false` out of the consent form; the
+# fluent twin walks Tab through each dialog (step P44 below) and requires (a) every enabled button and check box (links are buttons) is visited, (b) the confirm
+# button is Focusable and a tab stop while enabled, (c) the walk comes back to the first stop. The pure judge of one walk and the source-level twin (the dialog host
+# keeps its Cycle navigation, no dialog source takes a button out of the tab order) run on every platform, with a control and mutants each.
+# ======================================================================================================================
+# Walk: Started, Stops (tokens in walk order, the first stop first), Cycled. Expected: the tokens of every enabled, visible button and check box of the dialog.
+# Confirm: Found, Enabled, Focusable, IsTabStop of the confirm button. Returns the problems (empty when the walk is right).
+function Get-PagesDialogWalkProblems($Walk, [string[]]$Expected, $Confirm) {
+    $problems = New-Object System.Collections.ArrayList
+    if (-not [bool]$Walk.Started) { [void]$problems.Add('the first focus is not inside the dialog'); return $problems.ToArray() }
+    $stops = @($Walk.Stops | ForEach-Object { [string]$_ })
+    foreach ($e in $Expected) { if ($stops -cnotcontains $e) { [void]$problems.Add("the walk never reaches $e") } }
+    if (-not [bool]$Confirm.Found) { [void]$problems.Add('the confirm button was not found') }
+    else {
+        if (-not [bool]$Confirm.Enabled) { [void]$problems.Add('the confirm button is disabled with every required box ticked') }
+        if (-not [bool]$Confirm.Focusable) { [void]$problems.Add('the confirm button is not Focusable') }
+        if (-not [bool]$Confirm.IsTabStop) { [void]$problems.Add('the confirm button is not a tab stop') }
+    }
+    if (-not [bool]$Walk.Cycled) { [void]$problems.Add('the walk does not come back to the first stop') }
+    return $problems.ToArray()
+}
+
+# The source twin: the dialog host window keeps Cycle for both tab navigations, and no dialog source takes an element out of the tab order (IsTabStop or Focusable set
+# to false in code) except the body scroller's own markup attribute. Returns the problems.
+function Get-PagesDialogTabSourceProblems([string]$DialogsText, [string]$ConsentText) {
+    $problems = New-Object System.Collections.ArrayList
+    if (-not $DialogsText.Contains('KeyboardNavigation.TabNavigation="Cycle"')) { [void]$problems.Add('the dialog host lost KeyboardNavigation.TabNavigation="Cycle"') }
+    if (-not $DialogsText.Contains('KeyboardNavigation.ControlTabNavigation="Cycle"')) { [void]$problems.Add('the dialog host lost KeyboardNavigation.ControlTabNavigation="Cycle"') }
+    foreach ($pair in @(@('UiFluentDialogs', $DialogsText), @('UiFluentConsent', $ConsentText))) {
+        if ([regex]::IsMatch([string]$pair[1], '(IsTabStop|Focusable)\s*=\s*\$false')) { [void]$problems.Add("$($pair[0]) takes an element out of the tab order in code") }
+        if ([regex]::IsMatch([string]$pair[1], 'SetIsTabStop\s*\(')) { [void]$problems.Add("$($pair[0]) calls SetIsTabStop") }
+    }
+    return $problems.ToArray()
+}
+
+function Invoke-PagesDialogTabPins([string]$Root) {
+    $dialogsText = [System.IO.File]::ReadAllText((Join-Path $Root 'src/FastLlm.UiFluentDialogs.ps1'))
+    $consentText = [System.IO.File]::ReadAllText((Join-Path $Root 'src/FastLlm.UiFluentConsent.ps1'))
+    Check-BoxPin (@(Get-PagesDialogTabSourceProblems $dialogsText $consentText).Count -eq 0) 'P44 pin: the dialog host keeps Cycle for both tab navigations and no dialog source takes an element out of the tab order' (@(Get-PagesDialogTabSourceProblems $dialogsText $consentText) -join '; ')
+    Check-BoxPin (@(Get-PagesDialogTabSourceProblems $dialogsText.Replace('KeyboardNavigation.TabNavigation="Cycle"', 'KeyboardNavigation.TabNavigation="None"') $consentText).Count -ge 1) 'P44 mutation check: a dialog host without Cycle tab navigation is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogTabSourceProblems $dialogsText.Replace('KeyboardNavigation.ControlTabNavigation="Cycle"', 'KeyboardNavigation.ControlTabNavigation="Once"') $consentText).Count -ge 1) 'P44 mutation check: a dialog host without Cycle control-tab navigation is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogTabSourceProblems $dialogsText ($consentText + "`n`$install.IsTabStop = `$false`n")).Count -ge 1) 'P44 mutation check: a consent dialog that takes its confirm button out of the tab order is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogTabSourceProblems ($dialogsText + "`n`$button.Focusable = `$false`n") $consentText).Count -ge 1) 'P44 mutation check: a dialog button that is not Focusable is flagged' ''
+    $walk = @{ Started = $true; Stops = @('Button:Cancel', 'Button:Open', 'Button:Install'); Cycled = $true }
+    $expected = @('Button:Cancel', 'Button:Open', 'Button:Install')
+    $confirm = @{ Found = $true; Enabled = $true; Focusable = $true; IsTabStop = $true }
+    Check-BoxPin (@(Get-PagesDialogWalkProblems $walk $expected $confirm).Count -eq 0) 'P44 mutation control: a walk that visits every button, with a focusable confirm button and a cycle, has no problems' (@(Get-PagesDialogWalkProblems $walk $expected $confirm) -join '; ')
+    Check-BoxPin (@(Get-PagesDialogWalkProblems @{ Started = $true; Stops = @('Button:Cancel', 'Button:Install'); Cycled = $true } $expected $confirm).Count -ge 1) 'P44 mutation check: a walk that skips a button is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogWalkProblems $walk $expected @{ Found = $true; Enabled = $true; Focusable = $true; IsTabStop = $false }).Count -ge 1) 'P44 mutation check: a confirm button that is not a tab stop is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogWalkProblems $walk $expected @{ Found = $true; Enabled = $true; Focusable = $false; IsTabStop = $true }).Count -ge 1) 'P44 mutation check: a confirm button that is not Focusable is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogWalkProblems $walk $expected @{ Found = $true; Enabled = $false; Focusable = $true; IsTabStop = $true }).Count -ge 1) 'P44 mutation check: a confirm button still disabled after every box is ticked is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogWalkProblems @{ Started = $true; Stops = @('Button:Cancel', 'Button:Open', 'Button:Install'); Cycled = $false } $expected $confirm).Count -ge 1) 'P44 mutation check: a walk that does not cycle back to the first stop is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogWalkProblems @{ Started = $false; Stops = @(); Cycled = $false } $expected $confirm).Count -ge 1) 'P44 mutation check: a first focus outside the dialog is flagged' ''
+    Check-BoxPin (@(Get-PagesDialogWalkProblems $walk $expected @{ Found = $false; Enabled = $false; Focusable = $false; IsTabStop = $false }).Count -ge 1) 'P44 mutation check: a missing confirm button is flagged' ''
+}
+
 # the P41 box table pins run here, after the P42 helpers they share are defined
 Invoke-PagesBoxTablePins (Join-Path $root 'fast-llm-ui.ps1')
 Invoke-PagesDialogTablePins $root
+Invoke-PagesDialogTabPins $root
 Write-Host ("INFO: P41 and P42 pins: $($script:boxPinPass) passed, $($script:boxPinFail) failed")
 if ($script:boxPinFail -gt 0) { Write-Host "$($script:boxPinFail) checks FAILED"; exit 1 }
 
@@ -5204,6 +5263,91 @@ function Invoke-P43-DialogFlows {
     Check-NoExceptions 'P43'
 }
 
+# ---- P44: the Tab walk of the seven fluent dialogs (D1, keyboard reachability). Each dialog is opened through its real caller (the P42 openers), every required box is
+# ticked (the component consent), a row is selected (the chooser, so Choose is enabled), and Tab is walked from the first focus with the dialog's own focus navigation:
+# every enabled button and check box (links are buttons) must be visited, the confirm button must be Focusable and a tab stop, and the walk must come back to the
+# first stop (Cycle). The dialog is then answered with Escape. The failure detail lists the walk.
+function Get-P44Rows {
+    return @(
+        @{ Id = 'license-setting'; Title = 'Install engine components automatically'; Confirm = 'Accept'; Fallback = 'Cancel' },
+        @{ Id = 'component-consent'; Title = 'Install engine components'; Confirm = 'Install'; Fallback = 'Cancel'; Tick = $true },
+        @{ Id = 'model-consent'; Title = 'Review exact model license and artifact'; Confirm = 'Accept'; Fallback = 'Cancel' },
+        @{ Id = 'vc-review'; Title = 'Review Microsoft VC++ package and installation'; Confirm = 'Install'; Fallback = 'Later' },
+        @{ Id = 'setup-check'; Title = 'FastLLM setup check'; Confirm = 'Recheck'; Fallback = 'Later' },
+        @{ Id = 'recipe-chooser'; Title = 'Choose another setup'; Confirm = 'Choose'; Fallback = 'Cancel'; Select = $true },
+        @{ Id = 'save-prompt'; Title = 'FastLLM settings'; Confirm = 'Save'; Fallback = 'Cancel' }
+    )
+}
+# The token of an element in a walk: its type and the readable name (the automation name, else the caption).
+function Get-P44Token($Element, $Peer) {
+    $name = ''
+    if ($Element -is [System.Windows.UIElement]) { $name = [string](& $Peer $Element) }
+    if ($name -eq '' -and $Element -is [System.Windows.Controls.ContentControl] -and $Element.Content -is [string]) { $name = ([string]$Element.Content).Replace('_', '') }
+    return ($Element.GetType().Name + ':' + $name)
+}
+function New-P44WalkStep($Row) {
+    $visuals = ${function:Get-ShellVisuals}
+    $peer = ${function:Get-ShellPeerName}
+    $token = ${function:Get-P44Token}
+    $findButton = ${function:Find-WpfBoxButton}
+    return {
+        param($w, $st)
+        $rec = @{ Started = $false; Stops = @(); Cycled = $false; Expected = @(); Confirm = @{ Found = $false; Enabled = $false; Focusable = $false; IsTabStop = $false }; Error = '' }
+        $st['p42']['Walk'] = $rec
+        try {
+            $all = @(& $visuals $w)
+            if ([bool]$Row.Tick) { foreach ($box in @($all | Where-Object { $_ -is [System.Windows.Controls.CheckBox] -and $_.IsEnabled })) { $box.IsChecked = $true } }
+            if ([bool]$Row.Select) { foreach ($lb in @($all | Where-Object { $_ -is [System.Windows.Controls.ListBox] -and [string]$_.Name -ceq 'ChooserList' })) { $lb.SelectedIndex = 0 } }
+            $null = $w.Activate()
+            $all = @(& $visuals $w)
+            $rec.Expected = @($all | Where-Object { ($_ -is [System.Windows.Controls.Button] -or $_ -is [System.Windows.Controls.CheckBox]) -and $_.IsVisible -and $_.IsEnabled } | ForEach-Object { & $token $_ $peer })
+            $confirm = & $findButton $w ([string]$Row.Confirm)
+            if ($null -ne $confirm) { $rec.Confirm = @{ Found = $true; Enabled = [bool]$confirm.IsEnabled; Focusable = [bool]$confirm.Focusable; IsTabStop = [bool]$confirm.IsTabStop } }
+            $first = [System.Windows.Input.Keyboard]::FocusedElement
+            $rec.Started = ($null -ne $first -and $first -is [System.Windows.DependencyObject] -and $w.IsAncestorOf($first))
+            if ($rec.Started) {
+                $stops = New-Object System.Collections.ArrayList
+                [void]$stops.Add((& $token $first $peer))
+                $cur = $first
+                for ($i = 0; $i -lt 40; $i++) {
+                    $null = $cur.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Next)))
+                    $cur = [System.Windows.Input.Keyboard]::FocusedElement
+                    if ($null -eq $cur) { break }
+                    if ([object]::ReferenceEquals($cur, $first)) { $rec.Cycled = $true; break }
+                    [void]$stops.Add((& $token $cur $peer))
+                }
+                $rec.Stops = $stops.ToArray()
+            }
+        }
+        catch { $rec.Error = [string]$_.Exception.Message }
+    }.GetNewClosure()
+}
+function Invoke-P44-DialogTabWalk {
+    if (-not $script:shellOk) { return }
+    $hwnd = Get-ModelsWindowHandle
+    Initialize-P42Fixtures
+    $global:FastLlmTestStartProcess['Block'] = $true
+    try {
+        foreach ($row in @(Get-P44Rows)) {
+            $id = [string]$row.Id
+            $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = [string]$row.Title; Do = (New-P44WalkStep $row) }, @{ Kind = 'box'; Caption = [string]$row.Title; Key = 0x1B; Fallback = [string]$row.Fallback }) { Invoke-P42Open $id }
+            Complete-P42Row $id
+            $walk = $r.D['p42']['Walk']
+            if ($null -eq $walk) { Check $false "P44 $id : the dialog appeared and the walk ran" "no walk record; error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"; continue }
+            $problems = @(Get-PagesDialogWalkProblems $walk @($walk.Expected) $walk.Confirm)
+            $listing = "walk=[$((@($walk.Stops) -join ' > '))] expected=[$((@($walk.Expected) -join ', '))] cycled=$($walk.Cycled) confirm=$(($walk.Confirm.Keys | Sort-Object | ForEach-Object { $_ + '=' + $walk.Confirm[$_] }) -join ',') walkError='$($walk.Error)'"
+            Write-Host "INFO: P44 $id $listing"
+            Check ($problems.Count -eq 0 -and [string]$walk.Error -ceq '') "P44 $id : Tab visits every enabled button and check box, the confirm button $($row.Confirm) is Focusable and a tab stop, and the walk comes back to the first stop" ("problems=[$($problems -join '; ')] $listing")
+            Check (Test-SettingsRecClean $r.D) "P44 $id : the dialog was answered by Escape, with nothing unexpected" "error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        }
+    }
+    finally {
+        $global:FastLlmTestStartProcess['Block'] = $false
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+    }
+    Check-NoExceptions 'P44'
+}
+
 $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
@@ -5212,7 +5356,7 @@ $script:steps = @(
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
-    'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows',
+    'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows', 'Invoke-P44-DialogTabWalk',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'
