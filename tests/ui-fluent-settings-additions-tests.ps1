@@ -30,12 +30,13 @@ function Get-PageSaveSnippet([string]$Text){
     $assigned=@('$values','$savedThinking','$savedIdle','$extra')
     foreach($st in @($try[0].Body.Statements)){
         $keep=$false
-        if($st -is [System.Management.Automation.Language.AssignmentStatementAst] -and $assigned -ccontains $st.Left.Extent.Text){$keep=$true}
+        if($st -is [System.Management.Automation.Language.AssignmentStatementAst] -and ($assigned -ccontains $st.Left.Extent.Text -or $st.Left.Extent.Text.StartsWith('$extra['))){$keep=$true}
         elseif($st -is [System.Management.Automation.Language.IfStatementAst] -and $st.Extent.Text.Contains('$extra[')){$keep=$true}
         elseif($st -is [System.Management.Automation.Language.PipelineAst] -and $st.Extent.Text.StartsWith('Set-FastLlmServingSettings ')){$keep=$true}
         if($keep){[void]$parts.Add($st.Extent.Text)}
     }
-    if($parts.Count -ne 9){return $null}
+    # Nine statements on the real page; a planted mutant may drop one of the four (a bare $extra[...]= assignment stands in for its if), so at least eight.
+    if($parts.Count -lt 8){return $null}
     return ($parts -join "`n")
 }
 $realSnippet=Get-PageSaveSnippet $pageText
@@ -144,9 +145,14 @@ try{
     foreach($k in $lines.Keys){ Check ($pageText.Contains($lines[$k])) "self-check: the $k changed-test line anchors for the planted mutants" }
     function Test-Mutant([string]$Name,[string]$Plant){
         Check ($Plant -cne $pageText) "mutant is a real change: $Name"
-        $found=@(Get-ByteFindings $Plant)
-        Check ($found.Count -ge 1) "mutation check: the byte-identical test flags $Name"
+        # The finder returns its list with a leading comma; wrapping the call in @() would nest it and always count 1.
+        $found=Get-ByteFindings $Plant
+        $bytesCaught=[bool](@($found|Where-Object{$_ -cne 'the page Save snippet is not found'}).Count -ge 1)
+        Check $bytesCaught "mutation check: the byte-identical test flags $Name on bytes (not only as a missing snippet)"
     }
+    # A permanent CONTROL: a comment-only change to the page text must give no finding on bytes, so a finder or counter that flags everything fails here.
+    $controlFound=Get-ByteFindings ($pageText+"`n# control: a comment-only change`n")
+    Check (@($controlFound|Where-Object{$_ -cne ''}).Count -eq 0) 'control check: a comment-only change to the page text is not flagged'
     Test-Mutant 'KvSlots always passed with 1 (it resets a saved 2)' $pageText.Replace($lines.slots,"        `$extra['KvSlots']=1`n")
     Test-Mutant 'KvSlots always passed from the held value (it rewrites a saved 3)' $pageText.Replace($lines.slots,"        `$extra['KvSlots']=[int]`$values.slots`n")
     Test-Mutant 'the Embeddings key always passed' $pageText.Replace($lines.embeddings,"        `$extra['Embeddings']=[string]`$values.embeddings`n")
