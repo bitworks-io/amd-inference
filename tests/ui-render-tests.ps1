@@ -186,7 +186,8 @@ Check ((@(Sort-UiReadingRows $planRows|ForEach-Object{$_.Name}) -join ',') -ceq 
 Check ((@(Sort-UiReadingRows @($planRows[0]))|Measure-Object).Count -eq 1 -and @(Sort-UiReadingRows @()).Count -eq 0) 'the reading sort keeps one stop and none'
 $dlgOrderText=[regex]::Match($selfText,'(?sm)^function Test-DialogReadingOrder.*?\r?\n}\r?\n').Value
 Check ($dlgOrderText.Contains("Get-UiTabRegion `$el `$built.Content @('DlgBodyScroll')") -and $dlgOrderText.Contains('Sort-UiReadingRows')) 'the dialog reading order sorts by the body scroll region first'
-Check ([regex]::Matches($selfText,"-TabRegions @\('DlgBodyScroll'\)").Count -eq 2) 'both dialog render calls name the body scroll as a tab region'
+Check ([regex]::Matches($selfText,"-TabRegions @\('DlgBodyScroll'\)").Count -eq 3) 'every dialog render call that checks tab order (the 4a box case, the 4b case and the reading-order walk) names the body scroll as a tab region'
+Check ($selfText.Contains('$alignVisuals=Get-UiVisualElements $built.Content') -and $selfText.Contains('$texts=@($alignVisuals|Where-Object{$_ -is [System.Windows.Controls.TextBlock]})') -and -not [regex]::IsMatch($selfText,'Get-UiVisualElements \$built\.Content\s*\|')) 'the chooser header check takes the visual list into a variable before piping it (a piped list is one array object and finds no text)'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -1058,6 +1059,29 @@ Check ($dlgCases.Count -eq 12) 'the dialog grid is 3 themes x 2 window sizes x 2
 $dlgShort='Remove the model? It is deleted from this PC.'
 $dlgLong=((1..40|ForEach-Object{"Line $_ of a long box body that is long enough to wrap at large text sizes and to scroll inside the dialog."}) -join "`n")
 # Builds the dialog for a spec and returns its content Grid (detached from the dialog Window) and the dialog's own width.
+# PR 4b: the fixtures of the seven 4b dialogs, built from the product's own functions (long lists, long rows, many chooser rows).
+if($null -eq (Get-Command -Name Format-FastLlmUiVcReview -ErrorAction SilentlyContinue)){. (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1')}
+$script:catalog=Get-FastLlmCatalog (Join-Path $root 'config/catalog.json')
+$script:experimentalBox=[pscustomobject]@{Checked=$false}
+$script:statusLabel=[pscustomobject]@{Text=''}
+$script:identifiedVariant='probe-card'
+$script:vcCacheRoot=Join-Path $root 'test-vc-cache'
+$d4Model=@($script:catalog.models|Where-Object{[string]$_.id -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35'})[0]
+if($null -eq $d4Model){$d4Model=$script:catalog.models[0]}
+$d4Candidate=[pscustomobject]@{version='14.51.36247.0';fileName='VC_redist.x64.exe';sizeBytes=18731856;sha256='843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c'
+    url='https://download.visualstudio.microsoft.com/download/pr/ebdab8e5-1d7b-4d9f-a11b-cbb1720c3b12/843068991DAAA1F73AD9F6239BCE4D0F6A07A51F18C37EA2A867E9BECA71295C/VC_redist.x64.exe'
+    signerSubject='CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'}
+$d4Receipt=[pscustomobject]@{status='prepared-not-installed';path=(Join-Path (Join-Path $script:vcCacheRoot ('vc-redist-'+('a'*32))) 'VC_redist.x64.exe');version=$d4Candidate.version;sizeBytes=$d4Candidate.sizeBytes
+    sha256=$d4Candidate.sha256;signatureStatus='Valid';installerExecuted=$false;compatibilityQualified=$false}
+function GetVcCandidate{return $d4Candidate}
+function GetVcInstallDecision($Inventory,$Candidate){return 'offer-install'}
+$d4Disclosure=[pscustomobject]@{canAccept=$true;identities=@();links=@(1..14|ForEach-Object{[pscustomobject]@{title="Licence $_";host='example.org';url=$(if($_ % 5 -eq 0){$null}else{"https://example.org/licence-$_"});linkText="Probe engine component licence number $_ with a long name that wraps at large text (example.org)"}})}
+$d4Chain=@(1..6|ForEach-Object{[pscustomobject]@{id="probe-comp-$_";displayName="Probe engine component number $_ with a long display name that wraps";version="1.$_";state='missing';sourceHosts=@('download.example.org','mirror.example.org');redirectHosts=@('cdn1.example.org','cdn2.example.org')
+    licenseLinks=@([pscustomobject]@{title="Licence of component $_";url="https://example.org/license-$_"},[pscustomobject]@{title="Second licence of component $_ with a long title";url="https://example.org/license-$_/second"})}})
+$d4ConsentRows=@(Get-FastLlmUiConsentRows -Chain $d4Chain)
+$d4Decision=[pscustomobject]@{canProceed=$false;missing64BitHost=$false;missingVcRuntimeFiles=@('MSVCP140.dll','VCRUNTIME140.dll');missingVulkanLoader=$true;advisoryWarnings=@(1..6|ForEach-Object{"Advisory warning $_ that is long enough to wrap in the read box at large text sizes."})}
+$d4Chooser=@(1..30|ForEach-Object{[pscustomobject]@{id="probe-recipe-$_";origin='bitworks';variant='probe-card';label="Probe setup number $_ with a long label that wraps";model=[string]$d4Model.id;contextSize=8192*$_;engineId="probe-engine-$_ with a long engine and sources text that wraps at large text sizes";chain=@();consentRequired=$false;installRequired=$false}})
+$d4SaveReason='Settings is unavailable while a model is starting. '*4
 function New-DialogRenderContent($Spec,$Case){
     $themeArgs=@{Theme=[string]$Case.theme;AccentPair=(Get-FastLlmUiAccentPair -Palette $null);TextScale=[double]$Case.textScale}
     if($Case.theme -ceq 'high-contrast'){$themeArgs['HighContrastPalette']=Get-UiRenderHighContrastPalette}
@@ -1069,6 +1093,17 @@ function New-DialogRenderContent($Spec,$Case){
         'box'{$null=Show-FastLlmUiFluentMessageBox -Owner $owner -Text ([string]$Spec.Text) -Caption 'FastLLM dialog render' -Buttons ([string]$Spec.Buttons) -Icon ([string]$Spec.Icon) -DefaultButton ([string]$Spec.Default)}
         'side'{Show-FastLlmUiFluentSideResult -Title 'FastLLM dialog render result' -Text ([string]$Spec.Text)}
         'guidance'{Show-FastLlmUiFluentDriverGuidance -Diagnostic $Spec.Diagnostic}
+        'license'{$null=Show-FastLlmUiFluentLicenseSettingConfirm -Disclosure $d4Disclosure}
+        'component'{$null=Show-FastLlmUiFluentComponentConsent -Row ([pscustomobject]@{model=[string]$d4Model.id;contextText='8,192 tokens'}) -ConsentRows $d4ConsentRows -Chosen $true}
+        'model'{$null=Show-FastLlmUiFluentExactModelConsent -Plan ([pscustomobject]@{model=$d4Model;hardwareFingerprint='probe-card';selectedAdapters=@()})}
+        'vc'{$null=Show-FastLlmUiFluentVcInstallReview -Receipt $d4Receipt -Candidate $d4Candidate}
+        'setup'{$null=Show-FastLlmUiFluentSetupAttention -Decision $d4Decision -Diagnostic ([pscustomobject]@{prerequisiteInventory=$null})}
+        'chooser'{
+            $chooserRows=$d4Chooser
+            if($Spec -is [hashtable] -and $Spec.ContainsKey('Rows')){$chooserRows=@($d4Chooser|Select-Object -First ([int]$Spec['Rows']))}
+            $null=Show-FastLlmUiFluentRecipeChooser -Rows $chooserRows
+        }
+        'save'{$null=Show-FastLlmUiFluentSavePrompt -SaveEnabled $false -Reason $d4SaveReason}
         default{throw "unknown dialog kind '$($Spec.Kind)'"}
     }
     if($null -eq $script:dlgCaptured){throw 'the dialog function did not build a dialog'}
@@ -1125,7 +1160,24 @@ foreach($icon in 'None','Information','Warning','Question','Error'){
 # the side result (long text) and the driver guidance over the 12-case grid
 foreach($case in $dlgCases){Test-DialogCase 'Side result' @{Kind='side';Text=((1..60|ForEach-Object{"Probe line $_ of a long side result that wraps at large text."}) -join "`n")} $case 'FastLlm.DialogSide' 1}
 foreach($case in $dlgCases){Test-DialogCase 'Driver guidance' @{Kind='guidance';Diagnostic=$dlgGuidance} $case 'FastLlm.DialogGuidance' 2}
-Write-Host ('INFO: dialog render of {0} cases took {1:N1} s' -f (12*6+30+24),$dlgSw.Elapsed.TotalSeconds)
+# PR 4b: the seven dialogs over the 12-case grid. The footer buttons are the dialog's own button table (links in the body are not counted), each one shown.
+function Test-Dialog4bCase([string]$Label,$Spec,$Case,[string]$PngName){
+    $caseLabel="$($Case.theme) $($Case.scale) $($Case.textScale) $($Case.width)x$($Case.height)"
+    $r=$null;$built=$null
+    try{
+        $built=New-DialogRenderContent $Spec $Case
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -TabRegions @('DlgBodyScroll') -ScrollOwners @('ChooserList')
+    }catch{Check $false "$Label renders at ${caseLabel}: $($_.Exception.Message)";return}
+    $diagText='';if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "$Label clean at ${caseLabel}: $(@($r.problems) -join '; ')$diagText"
+    $footer=@($built.Dialog['Buttons'].Values)
+    $shown=@($footer|Where-Object{Test-UiShown $_ $built.Content})
+    Check ($footer.Count -ge 1 -and $shown.Count -eq $footer.Count) "$Label shows all $($footer.Count) footer button(s) at ${caseLabel} (shown $($shown.Count))"
+    Check ($r.unmappedRects -eq 0) "$Label left no authored element unmapped at ${caseLabel} (got $($r.unmappedRects))"
+}
+$dlg4b=@(@('Licence setting','license','FastLlm.DialogLicense'),@('Component consent','component','FastLlm.DialogComponent'),@('Model consent','model','FastLlm.DialogModel'),@('VC++ review','vc','FastLlm.DialogVc'),@('Setup check','setup','FastLlm.DialogSetup'),@('Recipe chooser','chooser','FastLlm.DialogChooser'),@('Save prompt','save','FastLlm.DialogSave'))
+foreach($spec in $dlg4b){foreach($case in $dlgCases){Test-Dialog4bCase $spec[0] @{Kind=[string]$spec[1]} $case ([string]$spec[2])}}
+Write-Host ('INFO: dialog render of {0} cases took {1:N1} s' -f (12*6+30+24+7*12),$dlgSw.Elapsed.TotalSeconds)
 # reading order: no overlap, and the tab sequence is the reading order, at text 1.0, 2.0 and 2.25 (a YesNo box and the driver guidance, the one with a list, a text box and two buttons)
 function Test-DialogReadingOrder([string]$Label,$Spec,[string]$PngName,[int]$MinStops){
     foreach($text in 1.0,2.0,2.25){
@@ -1155,6 +1207,39 @@ function Test-DialogReadingOrder([string]$Label,$Spec,[string]$PngName,[int]$Min
 }
 Test-DialogReadingOrder 'YesNo box' @{Kind='box';Buttons='YesNo';Default='Button2';Icon='Question';Text=$dlgShort} 'FastLlm.DialogReadingYesNo' 2
 Test-DialogReadingOrder 'Driver guidance' @{Kind='guidance';Diagnostic=$dlgGuidance} 'FastLlm.DialogReadingGuidance' 4
+# PR 4b reading order. The stops counted are every authored focusable control: the footer buttons, the links, the check boxes, the read box or the list (the chooser's walk counts every
+# row item, so its minimum is the footer plus the list).
+Test-DialogReadingOrder 'Licence setting' @{Kind='license'} 'FastLlm.DialogReadingLicense' 4
+Test-DialogReadingOrder 'Component consent' @{Kind='component'} 'FastLlm.DialogReadingComponent' 8
+Test-DialogReadingOrder 'Model consent' @{Kind='model'} 'FastLlm.DialogReadingModel' 3
+Test-DialogReadingOrder 'VC++ review' @{Kind='vc'} 'FastLlm.DialogReadingVc' 3
+Test-DialogReadingOrder 'Setup check' @{Kind='setup'} 'FastLlm.DialogReadingSetup' 6
+# a 3-row fixture (every row inside the list's own fold; the 30-row list is the case grid's)
+Test-DialogReadingOrder 'Recipe chooser' @{Kind='chooser';Rows=3} 'FastLlm.DialogReadingChooser' 3
+Test-DialogReadingOrder 'Save prompt' @{Kind='save'} 'FastLlm.DialogReadingSave' 2
+# The chooser's header against its rows: each column header's left edge must be the left edge of that column's cells (2 px), with 30 rows so the scroll bar shows.
+foreach($case in $dlgCases){
+    $caseLabel="$($case.theme) $($case.textScale) $($case.width)x$($case.height)"
+    try{
+        $built=New-DialogRenderContent @{Kind='chooser'} $case
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName 'FastLlm.DialogChooserAlign' -ScrollOwners @('ChooserList')
+        # the visual list is one array object on the pipeline (the function returns it with a leading comma), so it is taken into a variable and piped from there
+        $alignVisuals=Get-UiVisualElements $built.Content
+        $texts=@($alignVisuals|Where-Object{$_ -is [System.Windows.Controls.TextBlock]})
+        $gaps=@()
+        foreach($col in @(@('Setup','label'),@('Model','model'),@('Context','contextText'),@('Engine and sources','engineText'))){
+            $head=@($texts|Where-Object{[string]$_.Text -ceq [string]$col[0] -and [string]$_.Name -ceq ''})[0]
+            $cell=@($texts|Where-Object{[string]$_.Name -ceq ('ChooserCell'+[string]$col[1])})[0]
+            $hr=$null;$cr=$null
+            if($null -ne $head){$hr=Get-UiRelativeRect $head $built.Content}
+            if($null -ne $cell){$cr=Get-UiRelativeRect $cell $built.Content}
+            if($null -eq $hr -or $null -eq $cr){$gaps+="$($col[0]): not found";continue}
+            $gaps+=('{0}: header {1:N1} cell {2:N1} (off by {3:N1})' -f $col[0],$hr.Left,$cr.Left,[Math]::Abs($hr.Left-$cr.Left))
+        }
+        $bad=@($gaps|Where-Object{$_ -like '*not found*' -or ($_ -match 'off by ([0-9.]+)\)' -and [double]$Matches[1] -gt 2.0)})
+        Check ($bad.Count -eq 0) "the chooser column headers line up with their cells at ${caseLabel}: $($gaps -join '; ')"
+    }catch{Check $false "the chooser header alignment check runs at ${caseLabel}: $($_.Exception.Message)"}
+}
 Set-Item -Path Function:\Show-FastLlmUiFluentDialog -Value $script:dlgRealShow
 $script:form=$null
 
@@ -1303,6 +1388,9 @@ $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsRea
     'FastLlm.Settings'=40;'FastLlm.SettingsKeyOn'=6;'FastLlm.SettingsKeyOff'=6;'FastLlm.SettingsRunning'=6;'FastLlm.SettingsUnavailable'=6;'FastLlm.SettingsReading'=3
     'FastLlm.DialogOKshort'=12;'FastLlm.DialogOKlong'=12;'FastLlm.DialogOKCancelshort'=12;'FastLlm.DialogOKCancellong'=12;'FastLlm.DialogYesNoshort'=12;'FastLlm.DialogYesNolong'=12
     'FastLlm.DialogIconNone'=6;'FastLlm.DialogIconInformation'=6;'FastLlm.DialogIconWarning'=6;'FastLlm.DialogIconQuestion'=6;'FastLlm.DialogIconError'=6;'FastLlm.DialogSide'=12;'FastLlm.DialogGuidance'=12;'FastLlm.DialogReadingYesNo'=3;'FastLlm.DialogReadingGuidance'=3
+    'FastLlm.DialogLicense'=12;'FastLlm.DialogComponent'=12;'FastLlm.DialogModel'=12;'FastLlm.DialogVc'=12;'FastLlm.DialogSetup'=12;'FastLlm.DialogChooser'=12;'FastLlm.DialogSave'=12
+    'FastLlm.DialogReadingLicense'=3;'FastLlm.DialogReadingComponent'=3;'FastLlm.DialogReadingModel'=3;'FastLlm.DialogReadingVc'=3;'FastLlm.DialogReadingSetup'=3;'FastLlm.DialogReadingChooser'=3;'FastLlm.DialogReadingSave'=3
+    'FastLlm.DialogChooserAlign'=12
     'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12;'FastLlm.ShellSettings'=12}
 foreach($prefix in $pngExpect.Keys){
     $got=Get-RenderPngCount $prefix

@@ -22,6 +22,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentSettings.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentConsent.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -1157,6 +1158,12 @@ function Initialize-FastLlmUiFluentShell {
             MessageBox = ${function:Show-FastLlmUiFluentMessageBox}
             ShowUiSideResult = ${function:Show-FastLlmUiFluentSideResult}
             ShowDriverGuidance = ${function:Show-FastLlmUiFluentDriverGuidance}
+            ShowLicenseSettingConfirm = ${function:Show-FastLlmUiFluentLicenseSettingConfirm}
+            ShowComponentConsent = ${function:Show-FastLlmUiFluentComponentConsent}
+            ShowExactModelConsent = ${function:Show-FastLlmUiFluentExactModelConsent}
+            ShowVcInstallReview = ${function:Show-FastLlmUiFluentVcInstallReview}
+            ShowSetupAttention = ${function:Show-FastLlmUiFluentSetupAttention}
+            ShowRecipeChooser = ${function:Show-FastLlmUiFluentRecipeChooser}
         }
         # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
         $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })

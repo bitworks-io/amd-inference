@@ -133,7 +133,209 @@ function Invoke-PagesBoxTablePins([string]$UiPath) {
     Check-BoxPin ($selfText.Contains(". (Join-Path `$root 'src/FastLlm.UiPrerequisite.ps1')") -and ([System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiPrerequisite.ps1'))).Contains('function Test-FastLlmUiVcActionAllowed')) 'P41 pin: the suite dot-sources the file that defines Test-FastLlmUiVcActionAllowed'
 }
 Invoke-PagesBoxTablePins (Join-Path $root 'fast-llm-ui.ps1')
-Write-Host ("INFO: P41 pins: $($script:boxPinPass) passed, $($script:boxPinFail) failed")
+
+# ======================================================================================================================
+# PR 4b Task B3 (P42): the seven fluent dialogs of 4b (licence setting, component consent, exact model consent, VC++ review, setup check, recipe chooser, the save prompt),
+# pinned on every platform. The hand table below is checked against the classic AST (the form's AcceptButton, CancelButton and every button's DialogResult and caption),
+# against the fluent function (its New-FastLlmUiFluentDialog -Enter and -Escape ids, its button table and the string table the captions come from), and against the
+# reveal and tray rules. The save prompt has no classic form in this file (the 3c WinForms prompt it replaces is gone), so its row is pinned to the ruled targets only.
+# ======================================================================================================================
+function Get-PagesDialogTable {
+    return @(
+        @{ Id = 'license-setting'; Classic = 'ShowLicenseSettingConfirm'; Fluent = 'Show-FastLlmUiFluentLicenseSettingConfirm'; File = 'src/FastLlm.UiFluentConsent.ps1'; Title = 'Install engine components automatically'; Reveal = $false
+           EnterId = 'Cancel'; EscapeId = 'Cancel'; Buttons = @(@{ Id = 'Accept'; Text = 'I accept these licenses'; DR = 'OK' }, @{ Id = 'Cancel'; Text = 'Cancel'; DR = 'Cancel' }) },
+        @{ Id = 'component-consent'; Classic = 'ShowComponentConsent'; Fluent = 'Show-FastLlmUiFluentComponentConsent'; File = 'src/FastLlm.UiFluentConsent.ps1'; Title = 'Install engine components'; Reveal = $true
+           EnterId = 'Cancel'; EscapeId = 'Cancel'; Buttons = @(@{ Id = 'Install'; Text = 'Install'; DR = 'OK' }, @{ Id = 'Cancel'; Text = 'Cancel'; DR = 'Cancel' }) },
+        @{ Id = 'model-consent'; Classic = 'ShowExactModelConsent'; Fluent = 'Show-FastLlmUiFluentExactModelConsent'; File = 'src/FastLlm.UiFluentConsent.ps1'; Title = 'Review exact model license and artifact'; Reveal = $true
+           EnterId = 'Cancel'; EscapeId = 'Cancel'; Buttons = @(@{ Id = 'Accept'; Text = 'Accept license && download'; DR = 'OK' }, @{ Id = 'Cancel'; Text = 'Cancel'; DR = 'Cancel' }) },
+        @{ Id = 'vc-review'; Classic = 'ShowVcInstallReview'; Fluent = 'Show-FastLlmUiFluentVcInstallReview'; File = 'src/FastLlm.UiFluentConsent.ps1'; Title = 'Review Microsoft VC++ package and installation'; Reveal = $true
+           EnterId = 'Later'; EscapeId = 'Later'; Buttons = @(@{ Id = 'Install'; Text = 'Install Microsoft runtime'; DR = 'OK' }, @{ Id = 'Later'; Text = 'Do later'; DR = 'Cancel' }) },
+        @{ Id = 'setup-check'; Classic = 'ShowSetupAttention'; Fluent = 'Show-FastLlmUiFluentSetupAttention'; File = 'src/FastLlm.UiFluentDialogs.ps1'; Title = 'FastLLM setup check'; Reveal = $true
+           EnterId = 'Recheck'; EscapeId = 'Later'; Buttons = @(@{ Id = 'Recheck'; Text = 'Recheck'; DR = 'Retry' }, @{ Id = 'Prepare'; Text = 'Prepare && review VC++'; DR = 'Yes' }, @{ Id = 'Later'; Text = 'Do later'; DR = 'Cancel' }) },
+        # the chooser's Enter target is Choose, but only while Choose is enabled: the fluent call starts with no Enter target ('') and the selection handler sets 'Choose'
+        @{ Id = 'recipe-chooser'; Classic = 'ShowRecipeChooser'; Fluent = 'Show-FastLlmUiFluentRecipeChooser'; File = 'src/FastLlm.UiFluentDialogs.ps1'; Title = 'Choose another setup'; Reveal = $true; EnterDynamic = $true
+           EnterId = 'Choose'; EscapeId = 'Cancel'; Buttons = @(@{ Id = 'Choose'; Text = 'Choose'; DR = 'OK' }, @{ Id = 'Cancel'; Text = 'Cancel'; DR = 'Cancel' }) },
+        @{ Id = 'save-prompt'; Classic = ''; Fluent = 'Show-FastLlmUiFluentSavePrompt'; File = 'src/FastLlm.UiFluentSettings.ps1'; Title = 'FastLLM settings'; Reveal = $false
+           EnterId = 'Cancel'; EscapeId = 'Cancel'; Buttons = @(@{ Id = 'Save'; Text = 'Save'; DR = '' }, @{ Id = 'DontSave'; Text = "Don't save"; DR = '' }, @{ Id = 'Cancel'; Text = 'Cancel'; DR = '' }) }
+    )
+}
+
+function Get-PagesFunctionAst([string]$Path, [string]$Name) {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+    $script:p42Want = $Name
+    $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $script:p42Want }, $true))
+    if ($found.Count -eq 1) { return $found[0] }
+    return $null
+}
+function ConvertTo-PagesPlainText([string]$Text) {
+    if ($Text -match "^'(.*)'$") { return $Matches[1].Replace("''", "'") }
+    if ($Text -match '^"([^"$`]*)"$') { return $Matches[1] }
+    return $Text
+}
+# The right side of the first assignment to $LeftText inside a function, as the text the source wrote ('' when there is none).
+function Get-PagesAssignedText($FnAst, [string]$LeftText) {
+    $script:p42Left = $LeftText
+    $hit = @($FnAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq $script:p42Left }, $true))
+    if ($hit.Count -eq 0) { return '' }
+    return [string]$hit[0].Right.Extent.Text
+}
+function Get-PagesDialogResultName([string]$Text) {
+    if ($Text -match '::(\w+)\s*$') { return [string]$Matches[1] }
+    return ''
+}
+# The facts of a classic form: its title, the AcceptButton and CancelButton variables, and for every button caption its DialogResult.
+function Get-PagesClassicFormFacts($FnAst) {
+    $facts = @{ Title = (ConvertTo-PagesPlainText (Get-PagesAssignedText $FnAst '$dialog.Text')); AcceptVar = (Get-PagesAssignedText $FnAst '$dialog.AcceptButton'); CancelVar = (Get-PagesAssignedText $FnAst '$dialog.CancelButton'); Texts = @{}; Results = @{} }
+    $assigns = @($FnAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))
+    foreach ($a in $assigns) {
+        $left = [string]$a.Left.Extent.Text
+        if ($left -match '^\$(\w+)\.Text$') { $facts.Texts['$' + $Matches[1]] = (ConvertTo-PagesPlainText ([string]$a.Right.Extent.Text)) }
+        elseif ($left -match '^\$(\w+)\.DialogResult$') { $facts.Results['$' + $Matches[1]] = (Get-PagesDialogResultName ([string]$a.Right.Extent.Text)) }
+    }
+    return $facts
+}
+# The named parameters of the one New-FastLlmUiFluentDialog call of a fluent function, as the source text of each argument.
+function Get-PagesFluentDialogParams($FnAst) {
+    $cmds = @($FnAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'New-FastLlmUiFluentDialog' }, $true))
+    $p = @{ Count = $cmds.Count }
+    if ($cmds.Count -ne 1) { return $p }
+    $els = @($cmds[0].CommandElements | Select-Object -Skip 1)
+    for ($i = 0; $i -lt $els.Count; $i++) {
+        $e = $els[$i]
+        if ($e -isnot [System.Management.Automation.Language.CommandParameterAst]) { continue }
+        if ($null -ne $e.Argument) { $p[[string]$e.ParameterName] = [string]$e.Argument.Extent.Text }
+        elseif ($i + 1 -lt $els.Count) { $p[[string]$e.ParameterName] = [string]$els[$i + 1].Extent.Text; $i++ }
+    }
+    return $p
+}
+# The fluent button table of a function ($buttons = [ordered] @{ Id = [string] $t.Key; ... }) as id -> the string table key (or the member of the other table).
+function Get-PagesFluentButtonKeys($FnAst) {
+    $script:p42Left = '$buttons'
+    $hit = @($FnAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq $script:p42Left }, $true))
+    $out = [ordered]@{}
+    if ($hit.Count -ne 1) { return $out }
+    $hash = $hit[0].Right.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+    if ($null -eq $hash) { return $out }
+    foreach ($kv in $hash.KeyValuePairs) {
+        $id = [string]$kv.Item1.Value
+        $valueText = [string]$kv.Item2.Extent.Text
+        if ($valueText -match '\$[ts]\.(\w+)') { $out[$id] = [string]$Matches[1] } else { $out[$id] = '' }
+    }
+    return $out
+}
+# Every key of the two fluent string tables the dialog captions come from, with the literal (the plain string constants only).
+function Get-PagesFluentTextTable([string]$Root) {
+    $map = @{}
+    foreach ($spec in @(@('src/FastLlm.UiFluentDialogs.ps1', '$script:FastLlmUiFluentDialogText'), @('src/FastLlm.UiFluentConsent.ps1', '$script:FastLlmUiFluentConsentText'))) {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $Root ([string]$spec[0])), [ref]$null, [ref]$null)
+        $script:p42Left = [string]$spec[1]
+        $assign = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq $script:p42Left }, $true))
+        if ($assign.Count -ne 1) { continue }
+        $hash = $assign[0].Right.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+        if ($null -eq $hash) { continue }
+        foreach ($kv in $hash.KeyValuePairs) {
+            $expr = $kv.Item2.PipelineElements[0].Expression
+            if ($expr -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $map[[string]$kv.Item1.Value] = [string]$expr.Value }
+        }
+    }
+    return $map
+}
+
+function Invoke-PagesDialogTablePins([string]$Root) {
+    $table = @(Get-PagesDialogTable)
+    $uiPath = Join-Path $Root 'fast-llm-ui.ps1'
+    $text = Get-PagesFluentTextTable $Root
+    Check-BoxPin ($table.Count -eq 7) 'P42 pin: the dialog table has the seven 4b dialogs' "rows=$($table.Count) expected=7"
+    Check-BoxPin ($text.Count -ge 40) 'P42 pin: the two fluent string tables were read from the source' "keys=$($text.Count)"
+    foreach ($row in $table) {
+        $id = [string]$row.Id
+        $fluentAst = Get-PagesFunctionAst (Join-Path $Root ([string]$row.File)) ([string]$row.Fluent)
+        Check-BoxPin ($null -ne $fluentAst) "P42 pin: row $id the fluent function $($row.Fluent) is in $($row.File) exactly once" ''
+        if ($null -eq $fluentAst) { continue }
+        $fluentText = [string]$fluentAst.Extent.Text
+        $p = Get-PagesFluentDialogParams $fluentAst
+        Check-BoxPin ([int]$p['Count'] -eq 1) "P42 pin: row $id builds exactly one dialog through New-FastLlmUiFluentDialog" "calls=$($p['Count'])"
+        if ([int]$p['Count'] -ne 1) { continue }
+        # the key targets: the dialog host's own -Enter and -Escape arguments (the chooser starts with none: the selection handler moves it)
+        $wantEnter = [string]$row.EnterId
+        if ($row.ContainsKey('EnterDynamic')) { $wantEnter = '' }
+        $gotEnter = ''; if ($p.ContainsKey('Enter')) { $gotEnter = ConvertTo-PagesPlainText ([string]$p['Enter']) }
+        $gotEscape = ''; if ($p.ContainsKey('Escape')) { $gotEscape = ConvertTo-PagesPlainText ([string]$p['Escape']) }
+        Check-BoxPin ($p.ContainsKey('Enter') -and $gotEnter -ceq $wantEnter) "P42 pin: row $id the fluent Enter target is '$wantEnter'" "actual Enter=$(if ($p.ContainsKey('Enter')) { "'$gotEnter'" } else { '(missing)' }) expected='$wantEnter'"
+        Check-BoxPin ($p.ContainsKey('Escape') -and $gotEscape -ceq [string]$row.EscapeId) "P42 pin: row $id the fluent Escape target is '$($row.EscapeId)'" "actual Escape=$(if ($p.ContainsKey('Escape')) { "'$gotEscape'" } else { '(missing)' }) expected='$($row.EscapeId)'"
+        Check-BoxPin (-not $p.ContainsKey('CloseEnabled')) "P42 pin: row $id keeps its close box (it answers the Escape target, as the classic form's X does)" "CloseEnabled argument=$(if ($p.ContainsKey('CloseEnabled')) { $p['CloseEnabled'] } else { '(none)' })"
+        # reveal and tray: the same as the classic function
+        Check-BoxPin (([bool]$fluentText.Contains('RevealUiForAction')) -eq [bool]$row.Reveal) "P42 pin: row $id reveals the window exactly when the classic dialog does ($($row.Reveal))" "fluent reveal=$($fluentText.Contains('RevealUiForAction')) expected=$($row.Reveal)"
+        Check-BoxPin ($fluentText.Contains('SetTrayMenuAvailable $false') -and $fluentText.Contains('SetTrayMenuAvailable $true')) "P42 pin: row $id turns the tray menu off while open and on again" ''
+        # the buttons: ids and captions (the fluent caption is the classic one, with the WinForms escape && shown as one &)
+        $keys = Get-PagesFluentButtonKeys $fluentAst
+        foreach ($b in @($row.Buttons)) {
+            $key = ''; if ($keys.Contains([string]$b.Id)) { $key = [string]$keys[[string]$b.Id] }
+            $fluentCaption = $null
+            if ($id -ceq 'save-prompt') { $fluentCaption = [string]$b.Text } elseif ($key -ne '' -and $text.ContainsKey($key)) { $fluentCaption = [string]$text[$key] }
+            Check-BoxPin ($keys.Contains([string]$b.Id)) "P42 pin: row $id has the button $($b.Id)" "buttons=$(@($keys.Keys) -join ',')"
+            if ($id -cne 'save-prompt') { Check-BoxPin ($null -ne $fluentCaption -and $fluentCaption -ceq ([string]$b.Text).Replace('&&', '&')) "P42 pin: row $id button $($b.Id) shows the classic caption '$(([string]$b.Text))'" "string key='$key' fluent caption='$fluentCaption' classic='$($b.Text)'" }
+        }
+        # the title
+        if ($id -cne 'save-prompt') {
+            $titleKey = ''; if ($p.ContainsKey('Title') -and ([string]$p['Title'] -match '\$t\.(\w+)')) { $titleKey = [string]$Matches[1] }
+            Check-BoxPin ($titleKey -ne '' -and $text.ContainsKey($titleKey) -and [string]$text[$titleKey] -ceq [string]$row.Title) "P42 pin: row $id the fluent title is '$($row.Title)'" "title key='$titleKey' value='$(if ($text.ContainsKey($titleKey)) { $text[$titleKey] })'"
+        }
+        if ([string]$row.Classic -ceq '') { continue }
+        # the classic form
+        $classicAst = Get-PagesFunctionAst $uiPath ([string]$row.Classic)
+        Check-BoxPin ($null -ne $classicAst) "P42 pin: row $id the classic function $($row.Classic) is in fast-llm-ui.ps1 exactly once" ''
+        if ($null -eq $classicAst) { continue }
+        $facts = Get-PagesClassicFormFacts $classicAst
+        Check-BoxPin ([string]$facts.Title -ceq [string]$row.Title) "P42 pin: row $id the classic form's title is '$($row.Title)'" "classic title='$($facts.Title)'"
+        $enterText = ''; $escapeText = ''
+        if ($facts.Texts.ContainsKey([string]$facts.AcceptVar)) { $enterText = [string]$facts.Texts[[string]$facts.AcceptVar] }
+        if ($facts.Texts.ContainsKey([string]$facts.CancelVar)) { $escapeText = [string]$facts.Texts[[string]$facts.CancelVar] }
+        $wantEnterText = ''; $wantEscapeText = ''
+        foreach ($b in @($row.Buttons)) { if ([string]$b.Id -ceq [string]$row.EnterId) { $wantEnterText = [string]$b.Text }; if ([string]$b.Id -ceq [string]$row.EscapeId) { $wantEscapeText = [string]$b.Text } }
+        Check-BoxPin ($enterText -ceq $wantEnterText -and $enterText -cne '') "P42 pin: row $id the classic AcceptButton (Enter) is '$wantEnterText'" "AcceptButton=$($facts.AcceptVar) text='$enterText' expected='$wantEnterText'"
+        Check-BoxPin ($escapeText -ceq $wantEscapeText -and $escapeText -cne '') "P42 pin: row $id the classic CancelButton (Escape and the close box) is '$wantEscapeText'" "CancelButton=$($facts.CancelVar) text='$escapeText' expected='$wantEscapeText'"
+        foreach ($b in @($row.Buttons)) {
+            $var = ''
+            foreach ($k in @($facts.Texts.Keys)) { if ([string]$facts.Texts[$k] -ceq [string]$b.Text) { $var = [string]$k } }
+            $dr = ''; if ($var -ne '' -and $facts.Results.ContainsKey($var)) { $dr = [string]$facts.Results[$var] }
+            Check-BoxPin ($var -ne '' -and $dr -ceq [string]$b.DR) "P42 pin: row $id the classic button '$($b.Text)' has DialogResult $($b.DR)" "variable='$var' DialogResult='$dr' expected='$($b.DR)'"
+        }
+        Check-BoxPin (([bool]([string]$classicAst.Extent.Text).Contains('RevealUiForAction')) -eq [bool]$row.Reveal) "P42 pin: row $id the classic function reveals the window exactly when the table says ($($row.Reveal))" "classic reveal=$(([string]$classicAst.Extent.Text).Contains('RevealUiForAction')) expected=$($row.Reveal)"
+        # the classic form's X is the CancelButton: the form has no ControlBox change and no FormClosing guard
+        Check-BoxPin (-not ([string]$classicAst.Extent.Text).Contains('ControlBox') -and -not ([string]$classicAst.Extent.Text).Contains('Add_FormClosing')) "P42 pin: row $id the classic form keeps its close box (the X answers the CancelButton)" ''
+    }
+    # the recipe chooser: Choose is disabled until a row is selected and the selection moves the Enter target; a double-click on a selected row chooses (classic: $list.Add_DoubleClick)
+    $chooserFluent = Get-PagesFunctionAst (Join-Path $Root 'src/FastLlm.UiFluentDialogs.ps1') 'Show-FastLlmUiFluentRecipeChooser'
+    $chooserClassic = Get-PagesFunctionAst $uiPath 'ShowRecipeChooser'
+    if ($null -ne $chooserFluent -and $null -ne $chooserClassic) {
+        $ft = [string]$chooserFluent.Extent.Text
+        $ct = [string]$chooserClassic.Extent.Text
+        $ctNoSpace = ($ct -replace '\s', '')
+        $classicDouble = @($chooserClassic.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_DoubleClick' }, $true))
+        Check-BoxPin ($classicDouble.Count -eq 1 -and ([string]$classicDouble[0].Extent.Text -replace '\s', '').Contains('$list.SelectedItems.Count-eq1') -and ([string]$classicDouble[0].Extent.Text).Contains('[Windows.Forms.DialogResult]::OK')) "P42 pin: the classic chooser double-clicks a selected row to OK (fast-llm-ui.ps1 line $(if ($classicDouble.Count -eq 1) { $classicDouble[0].Extent.StartLineNumber } else { '?' }), `$list.Add_DoubleClick)" "handlers=$($classicDouble.Count)"
+        $fluentDouble = @($chooserFluent.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_MouseDoubleClick' -and $n.Expression.Extent.Text -ceq '$listItem' }, $true))
+        $fluentDoubleText = ''; if ($fluentDouble.Count -eq 1) { $fluentDoubleText = ([string]$fluentDouble[0].Extent.Text -replace '\s', '') }
+        Check-BoxPin ($fluentDouble.Count -eq 1 -and $fluentDoubleText.Contains('$list.SelectedItems.Count-eq1') -and $fluentDoubleText.Contains("'Choose'") -and $fluentDoubleText.Contains('.Close()')) 'P42 pin: the fluent chooser double-click chooses only a selected row (it answers Choose and closes), on each row item and not on the list' "handlers=$($fluentDouble.Count) text=$fluentDoubleText"
+        Check-BoxPin ($ctNoSpace.Contains('$choose.Enabled=$false') -and $ctNoSpace.Contains('$choose.Enabled=($list.SelectedItems.Count-eq1)')) 'P42 pin: the classic Choose button is disabled until exactly one row is selected' ''
+        $ftNoSpace = ($ft -replace '\s', '')
+        Check-BoxPin ($ftNoSpace.Contains('$choose.IsEnabled=$false') -and $ftNoSpace.Contains('$enabled=($list.SelectedItems.Count-eq1)') -and $ftNoSpace.Contains('$choose.IsEnabled=$enabled') -and $ftNoSpace.Contains("if(`$enabled){`$state['Enter']='Choose'}else{`$state['Enter']=''}")) 'P42 pin: the fluent Choose button is disabled until exactly one row is selected, and the selection moves the Enter target (Choose with a selection, none without)' ''
+    }
+    else { Check-BoxPin $false 'P42 pin: the chooser functions were found' '' }
+    # the save prompt: its result strings and its Save button
+    $saveAst = Get-PagesFunctionAst (Join-Path $Root 'src/FastLlm.UiFluentSettings.ps1') 'Show-FastLlmUiFluentSavePrompt'
+    if ($null -ne $saveAst) {
+        $st = ([string]$saveAst.Extent.Text -replace '\s', '')
+        Check-BoxPin ($st.Contains("if(`$answer-ceq'Save'){return'save'}") -and $st.Contains("if(`$answer-ceq'DontSave'){return'discard'}") -and $st.Contains("return'cancel'")) 'P42 pin: the save prompt returns save, discard or cancel (anything else is cancel)' ''
+        Check-BoxPin ($st.Contains("['Save'].IsEnabled=`$SaveEnabled")) 'P42 pin: the save prompt disables Save when Settings is unavailable' ''
+    }
+    # the step list of this file runs P42 and P43
+    $selfText = [System.IO.File]::ReadAllText($PSCommandPath)
+    $stepsBlock = [regex]::Match($selfText, '(?s)\$script:steps = @\((.*?)\r?\n\)')
+    Check-BoxPin ($stepsBlock.Success -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P42-DialogKeys'") -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P43-DialogFlows'")) 'P42 pin: the step list names Invoke-P42-DialogKeys and Invoke-P43-DialogFlows' "stepsBlockFound=$($stepsBlock.Success)"
+}
+Invoke-PagesDialogTablePins $root
+Write-Host ("INFO: P41 and P42 pins: $($script:boxPinPass) passed, $($script:boxPinFail) failed")
 if ($script:boxPinFail -gt 0) { Write-Host "$($script:boxPinFail) checks FAILED"; exit 1 }
 
 
@@ -173,6 +375,8 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 # The classic file dot-sources its prerequisite file next to the flow file; the suite loads it the same way.
 . (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+# PR 4b (B3): the VC++ review and offer functions the setup check and the VC++ review read (the window script dot-sources this file too).
+if ($null -eq (Get-Command -Name Format-FastLlmUiVcReview -ErrorAction SilentlyContinue)) { . (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1') }
 
 # The real stop function exits the process, so a startup fault would end the suite silently: its text is kept for one check (P99), then a throwing one stands in.
 $script:realStopText = [string](Get-Command Stop-FastLlmUiFluentStartup -CommandType Function).Definition
@@ -221,7 +425,9 @@ function LaunchSideStep([string]$Step, [object[]]$Arguments) { if ($script:sideS
 function ShowConnectDialog { $script:connectDialogCalls++ }
 # The tray menu and reveal calls the driver-guidance dialog makes (fast-llm-ui.ps1 defines them); the suite records the tray calls.
 $script:trayAvailability = New-Object System.Collections.ArrayList
-function RevealUiForAction { }
+# PR 4b (named test change): the reveal stub counts its calls (the reveal column of the 4b evidence table: five of the seven dialogs reveal the window).
+$script:revealCalls = 0
+function RevealUiForAction { $script:revealCalls++ }
 function SetTrayMenuAvailable([bool]$Available) { [void]$script:trayAvailability.Add($Available) }
 # The two first-time dialogs P13 checks are the real ones: their definitions are taken by name from fast-llm-ui.ps1 with the PowerShell parser (nothing is run
 # from that file but these two functions), so the owner they pass is the one that ships. A missing function is a FAIL in P13.
@@ -411,6 +617,32 @@ foreach ($fnName in 'NewUiApiKey', 'ShowLicenseSettingConfirm') {
     if ($null -eq $def) { $script:p30Missing += $fnName; continue }
     . ([scriptblock]::Create([string]$def.Extent.Text))
 }
+# ---- PR 4b Task B3: the classic callers of the seven 4b dialogs ----
+# The six classic functions below are the real ones of fast-llm-ui.ps1 (taken by name with the parser): each begins with its dispatch line, so with the fluent view table
+# registered it returns what the fluent dialog returns, exactly as in the window. ContinueWithChosenRecipe is the real consumer of the chooser's row and of the component
+# consent's answer. Everything they call that is not in src (the launcher, the VC++ lookups) is a stub below that records.
+$script:p42Missing = @()
+foreach ($fnName in 'ShowSetupAttention', 'ShowVcInstallReview', 'ShowExactModelConsent', 'ShowRecipeChooser', 'ShowComponentConsent', 'ContinueWithChosenRecipe') {
+    $script:p13Want = $fnName
+    $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $script:p13Want }, $true)
+    if ($null -eq $def) { $script:p42Missing += $fnName; continue }
+    . ([scriptblock]::Create([string]$def.Extent.Text))
+}
+$script:p42Launch = New-Object System.Collections.ArrayList     # LaunchStep calls: step name and arguments
+$script:p42Begin = New-Object System.Collections.ArrayList      # BeginChosenRecipe calls: the row id
+$script:p42Candidate = $null
+$script:p42Fx = $null                                              # filled once by Initialize-P42Fixtures; StrictMode 2 needs it set before the first read
+$script:p42Result = $null
+$script:p42InstallDecision = 'offer-install'
+function LaunchStep([string]$Step, [object[]]$Arguments) { [void]$script:p42Launch.Add([pscustomobject]@{ Step = $Step; Arguments = @($Arguments) }) }
+function BeginChosenRecipe($Row) { [void]$script:p42Begin.Add([string]$Row.id) }
+function GetVcCandidate { return $script:p42Candidate }
+function GetVcInstallDecision($Inventory, $Candidate) { return [string]$script:p42InstallDecision }
+# Start-Process state for the dialogs' link handlers. A link handler is a .GetNewClosure() block made by a function this suite dot-sources, and it resolves
+# Start-Process through the SUITE's script scope: it reaches the script-scope recorder below (Task 7), never a global function. CI showed this: a global
+# throwing stub was never called. So that one recorder counts every call and throws while Block is on. Block is on only inside the steps that click a link.
+$global:FastLlmTestStartProcess = @{ Block = $false; Calls = 0 }
+
 # The real wiring statements, by their target and member (attached in P0 to the adapters the shell made).
 $script:settingsWiring = @{}
 foreach ($pair in @(@('$updateBox', 'Add_CheckedChanged'), @('$experimentalBox', 'Add_CheckedChanged'), @('$licenseBox', 'Add_CheckedChanged'), @('$settingsButton', 'Add_Click'))) {
@@ -1062,7 +1294,14 @@ $script:startedProcs = New-Object System.Collections.ArrayList
 function Get-FastLlmConnectionInfo { param($Status, $InstallRoot, $Settings) $script:connectInfoCalls++; return $script:connectFixture }
 function Get-FastLlmUiApiKeyRow { param($Info, $Settings, $ApiKeyStore) return $script:connectKeyRow }
 function Set-FastLlmUiFluentClipboardText { param([string]$Text) if ($script:fieldClipThrow) { throw 'clipboard boom' }; [void]$script:fieldClips.Add($Text) }
-function Start-Process { param([string]$FilePath) [void]$script:startedProcs.Add($FilePath) }
+# The ONE Start-Process stub of the suite (the dialogs' link closures resolve it too; see the state above): it counts each call, throws while Block is on
+# (the link-failure steps), and otherwise records the target instead of opening it.
+function Start-Process {
+    param([string]$FilePath)
+    $global:FastLlmTestStartProcess['Calls'] = [int]$global:FastLlmTestStartProcess['Calls'] + 1
+    if ([bool]$global:FastLlmTestStartProcess['Block']) { throw 'Start-Process is blocked in this test' }
+    [void]$script:startedProcs.Add($FilePath)
+}
 
 function New-ConnectFixture([hashtable]$O = @{}) {
     $d = @{ state = 'running'; baseUrl = 'http://127.0.0.1:8123/v1'; anthropicBaseUrl = 'http://127.0.0.1:8123'; modelName = 'probe-model'; contextTokens = 8192; apiKey = 'on'
@@ -2360,7 +2599,7 @@ function Open-SettingsPage([hashtable]$Fixture = @{}) {
 }
 
 # ---- the dialog driver: ONE WinForms timer answers a list of expected dialogs, in order ----
-# Steps: @{ Kind = 'prompt'; Action = 'Save' | 'Dont' | 'Cancel' | 'Escape' | 'Enter' } (the page's own WinForms form, found in Application.OpenForms and told apart
+# Steps: @{ Kind = 'prompt'; Action = 'Save' | 'Dont' | 'Cancel' | 'Escape' | 'Enter' } (the page's save prompt, a fluent dialog told apart by its DontSave button
 # from a message box that has the same caption because each step starts only after the one before it is gone), @{ Kind = 'box'; Caption; Id; Fallback; Key } (a native
 # box or form by its caption: press button Id, then the ladder BM_CLICK id, WM_COMMAND id, WM_COMMAND Fallback, WM_CLOSE; with Key, post that key first and press
 # Fallback at 1.5 s), and the last step @{ Kind = 'watch' } which answers anything the case did NOT expect (Cancel on a prompt, OK on a box) and counts it, so an
@@ -2443,41 +2682,43 @@ function New-PagesWpfRec($Wnd, [string]$Caption, [IntPtr]$MainHwnd) {
     $dh = [System.Windows.Interop.WindowInteropHelper]::new($Wnd).Handle
     $focus = ''
     try { $fe = [System.Windows.Input.FocusManager]::GetFocusedElement($Wnd); if ($null -ne $fe) { $focus = $fe.GetType().Name + ':' + [string]$fe.Name } } catch { $null = $_ }
+    # PR 4b (named test change): the record also says which window owns the dialog and whether that owner is disabled while the dialog is open (a link-error box over a dialog).
+    $ownerTitle = ''
+    $ownerEnabled = $true
+    try { $ownerWindow = $Wnd.Owner; if ($null -ne $ownerWindow) { $ownerTitle = [string]$ownerWindow.Title; $ownerEnabled = [bool]$script:native::IsWindowEnabled([System.Windows.Interop.WindowInteropHelper]::new($ownerWindow).Handle) } } catch { $null = $_ }
     return @{ Kind = 'box'; Found = $true; Path = 'wpf'; Caption = $Caption; Text = [string](Get-WpfBoxText $Wnd); Owner = $script:native::GetOwner($dh).ToInt64()
         WpfEnabledDuring = [bool]$script:native::IsWindowEnabled($MainHwnd)
+        OwnerTitle = $ownerTitle; OwnerWindowEnabled = $ownerEnabled
         HasYes = ($null -ne (Find-WpfBoxButton $Wnd 'Yes')); HasOk = ($null -ne (Find-WpfBoxButton $Wnd 'OK')); HasCancel = ($null -ne (Find-WpfBoxButton $Wnd 'Cancel'))
         Focus = $focus; Rung = ''; FellBack = $false; Closed = $false; Id = [long][System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Wnd) }
 }
 
-function Find-SettingsPrompt {
-    foreach ($candidate in @([System.Windows.Forms.Application]::OpenForms)) {
-        if ($candidate -is [System.Windows.Forms.Form] -and [string]$candidate.Text -ceq 'FastLLM settings' -and [bool]$candidate.Visible) { return $candidate }
-    }
-    return $null
+# PR 4b (named test change): the Settings save prompt is a fluent dialog on the dialog host, so the three WinForms helpers that found it in Application.OpenForms and read its
+# controls (Find-SettingsPrompt, Get-SettingsPromptButton, Get-SettingsPromptInfo) are gone. A dialog is the prompt when it has a DontSave button (the message box with the same
+# caption has none). Its facts are read from the dialog's own tables: the body is the TextBlock (Els Body), the caption of a button is its automation name.
+function Test-PagesIsSavePrompt($Wnd) {
+    $map = Get-WpfBoxTagMap $Wnd 'Buttons'
+    return [bool]($map -is [System.Collections.IDictionary] -and $map.Contains('DontSave') -and $map.Contains('Save') -and $map.Contains('Cancel'))
 }
-function Get-SettingsPromptButton($Form, [string]$Text) {
-    $stack = New-Object System.Collections.Stack
-    $stack.Push($Form)
-    while ($stack.Count -gt 0) {
-        $c = $stack.Pop()
-        if ($c -is [System.Windows.Forms.Button] -and [string]$c.Text -ceq $Text) { return $c }
-        foreach ($k in $c.Controls) { $stack.Push($k) }
-    }
-    return $null
+function Get-PagesButtonCaption($Button) {
+    if ($null -eq $Button) { return '' }
+    return [string][System.Windows.Automation.AutomationProperties]::GetName($Button)
 }
-function Get-SettingsPromptInfo($Form) {
-    $labels = New-Object System.Collections.ArrayList
+function Get-PagesPromptInfo($Wnd) {
     $buttons = New-Object System.Collections.ArrayList
-    $stack = New-Object System.Collections.Stack
-    $stack.Push($Form)
-    while ($stack.Count -gt 0) {
-        $c = $stack.Pop()
-        if ($c -is [System.Windows.Forms.Label]) { [void]$labels.Add([string]$c.Text) }
-        if ($c -is [System.Windows.Forms.Button]) { [void]$buttons.Add([string]$c.Text) }
-        foreach ($k in $c.Controls) { $stack.Push($k) }
-    }
+    $map = Get-WpfBoxTagMap $Wnd 'Buttons'
+    foreach ($k in @($map.Keys)) { [void]$buttons.Add((Get-PagesButtonCaption $map[$k])) }
     $sorted = @($buttons.ToArray() | Sort-Object { [string]$_ } -CaseSensitive)
-    return @{ Body = ($labels.ToArray() -join "`n"); Buttons = ($sorted -join '|') }
+    $body = ''
+    $els = Get-WpfBoxTagMap $Wnd 'Els'
+    if ($els -is [System.Collections.IDictionary] -and $els.Contains('Body') -and $els['Body'] -is [System.Windows.Controls.TextBlock]) { $body = [string]$els['Body'].Text }
+    $state = Get-WpfBoxTagMap $Wnd 'State'
+    $enterCaption = ''; $escapeCaption = ''
+    if ($state -is [System.Collections.IDictionary]) {
+        if ($map.Contains([string]$state['Enter'])) { $enterCaption = Get-PagesButtonCaption $map[[string]$state['Enter']] }
+        if ($map.Contains([string]$state['Escape'])) { $escapeCaption = Get-PagesButtonCaption $map[[string]$state['Escape']] }
+    }
+    return @{ Body = $body; Buttons = ($sorted -join '|'); SaveEnabled = [bool]$map['Save'].IsEnabled; EnterCaption = $enterCaption; EscapeCaption = $escapeCaption }
 }
 function New-SettingsWatch { return @{ Kind = 'watch'; Captions = @('FastLLM settings', 'Create a new key', 'Experimental community components'); Id = 2 } }
 function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
@@ -2490,18 +2731,18 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
     $list = @($Steps)
     $nat = $script:native
     $wpf = Get-ModelsWindowHandle
-    $find = ${function:Find-SettingsPrompt}
-    $button = ${function:Get-SettingsPromptButton}
-    $info = ${function:Get-SettingsPromptInfo}
+    $isPrompt = ${function:Test-PagesIsSavePrompt}
+    $promptInfo = ${function:Get-PagesPromptInfo}
     $findWpf = ${function:Find-PagesWpfBoxAny}
     $wpfButton = ${function:Get-PagesWpfButton}
     $wpfStop = ${function:Stop-PagesWpfBox}
     $wpfKey = ${function:Send-PagesWpfKey}
     $wpfRec = ${function:New-PagesWpfRec}
     $wpfFocus = ${function:Get-PagesWpfFocusInfo}
+    $tagMap = ${function:Get-WpfBoxTagMap}
     $pressBtn = ${function:Invoke-WpfBoxButton}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false; hwnd = [long]0 }
+    $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false; hwnd = [long]0; actAt = [long]-1 }
     $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND fallback', 'WM_CLOSE')
     $body = {
         $ms = $sw.ElapsedMilliseconds
@@ -2510,13 +2751,6 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
         $step = $list[$idx]
         $kind = [string]$step['Kind']
         if ($kind -ceq 'watch') {
-            $pf = & $find
-            if ($null -ne $pf) {
-                $st['unexpected'] = [int]$st['unexpected'] + 1
-                $cancelButton = & $button $pf 'Cancel'
-                if ($null -ne $cancelButton) { $cancelButton.PerformClick() }
-                return
-            }
             foreach ($caption in @($step['Captions'])) {
                 $wb = & $findWpf $wpf ([string]$caption)
                 if ($null -ne $wb) {
@@ -2534,20 +2768,50 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
             }
             return
         }
+        if ($kind -ceq 'act') {
+            # PR 4b (new step kind): once the dialog with this caption has been up for 150 ms, run Do ($Dialog window, $St) one time and go on to the next step at once, with
+            # the dialog still open (select a row, tick the boxes, post a link click). With Closes, the step waits for the dialog to go (Fallback is the button pressed after 1.5 s).
+            $wb = & $findWpf $wpf ([string]$step['Caption'])
+            if ($null -ne $wb) {
+                if ([long]$loc['actAt'] -lt 0) { $loc['actAt'] = $ms }
+                $age = $ms - [long]$loc['actAt']
+                if (-not [bool]$loc['acted']) {
+                    if ($age -ge 150) {
+                        $loc['acted'] = $true
+                        $loc['foundAt'] = $ms
+                        $closes = ($step['Closes'] -eq $true)
+                        if (-not $closes) { $st['i'] = $idx + 1; $loc['acted'] = $false; $loc['actAt'] = [long]-1; $loc['stepStart'] = $ms }
+                        try { $null = & $step['Do'] $wb $st } catch { $st['actError'] = [string]$_.Exception.Message }
+                    }
+                }
+                elseif ((($ms - [long]$loc['foundAt']) -ge 1500) -and -not [bool]$loc['fell']) {
+                    $loc['fell'] = $true
+                    $st['actFellBack'] = $true
+                    $fb = $step['Fallback']
+                    if ($null -ne $fb) { $null = & $pressBtn (& $wpfButton $wb $fb) 0 } else { & $wpfStop $wb }
+                }
+            }
+            elseif ([bool]$loc['acted']) {
+                $st['i'] = $idx + 1; $loc['acted'] = $false; $loc['fell'] = $false; $loc['actAt'] = [long]-1; $loc['stepStart'] = $ms
+            }
+            elseif (($ms - [long]$loc['stepStart']) -gt 8000) {
+                $st['timedOut'] = $true
+                $st['i'] = $idx + 1; $loc['stepStart'] = $ms
+            }
+            return
+        }
         if ($kind -ceq 'prompt') {
-            $pf = & $find
-            if ($null -ne $pf) {
+            # PR 4b (named test change): the Settings save prompt is a WPF dialog on the dialog host (caption 'FastLLM settings', told apart from the message box of the same
+            # caption by its DontSave button), found like any fluent dialog. The record has the fields the WinForms record had, plus the path.
+            $pw = & $findWpf $wpf 'FastLLM settings'
+            if ($null -ne $pw -and -not (& $isPrompt $pw)) { $pw = $null }
+            if ($null -ne $pw) {
                 if ($null -eq $loc['rec']) {
-                    $pi = & $info $pf
-                    $rec = @{ Kind = 'prompt'; Found = $true; Body = [string]$pi['Body']; Buttons = [string]$pi['Buttons']; SaveEnabled = $false; AcceptText = ''; CancelText = ''; ActiveText = ''
-                        Owner = [long]0; WpfEnabledDuring = $true; Action = [string]$step['Action']; FellBack = $false; Rung = ''; Closed = $false }
-                    $saveButton = & $button $pf 'Save'
-                    if ($null -ne $saveButton) { $rec['SaveEnabled'] = [bool]$saveButton.Enabled }
-                    if ($null -ne $pf.AcceptButton) { $rec['AcceptText'] = [string]$pf.AcceptButton.Text }
-                    if ($null -ne $pf.CancelButton) { $rec['CancelText'] = [string]$pf.CancelButton.Text }
-                    if ($null -ne $pf.ActiveControl) { $rec['ActiveText'] = [string]$pf.ActiveControl.Text }
-                    $rec['Owner'] = $nat::GetOwner($pf.Handle).ToInt64()
-                    $rec['WpfEnabledDuring'] = [bool]$nat::IsWindowEnabled($wpf)
+                    $pi = & $promptInfo $pw
+                    $rec = & $wpfRec $pw 'FastLLM settings' $wpf
+                    $rec['Kind'] = 'prompt'; $rec['Body'] = [string]$pi['Body']; $rec['Buttons'] = [string]$pi['Buttons']; $rec['SaveEnabled'] = [bool]$pi['SaveEnabled']
+                    $rec['AcceptText'] = [string]$pi['EnterCaption']; $rec['CancelText'] = [string]$pi['EscapeCaption']; $rec['ActiveText'] = ''
+                    $rec['Action'] = [string]$step['Action']
                     $loc['rec'] = $rec
                     $loc['foundAt'] = $ms
                     [void]$st['recs'].Add($rec)
@@ -2555,27 +2819,34 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
                 $rec = $loc['rec']
                 $age = $ms - [long]$loc['foundAt']
                 if (-not [bool]$loc['acted']) {
-                    $loc['acted'] = $true
-                    $action = [string]$step['Action']
-                    $rec['Rung'] = 'action ' + $action
-                    if ($action -ceq 'Enter') { $null = $nat::PostKey($pf.Handle, 0x0D) }
-                    elseif ($action -ceq 'Escape') { $null = $nat::PostKey($pf.Handle, 0x1B) }
-                    else {
-                        $caption = $action
-                        if ($action -ceq 'Dont') { $caption = "Don't save" }
-                        $target = & $button $pf $caption
-                        if ($null -ne $target) { $target.PerformClick() }
+                    # act once the dialog has had time to load and take its first focus; the focused button's caption is the first focus
+                    if ($age -ge 150) {
+                        $loc['acted'] = $true
+                        $focusInfo = & $wpfFocus $pw
+                        $focusMap = & $tagMap $pw 'Buttons'
+                        if ([string]$focusInfo['Id'] -cne '' -and $focusMap.Contains([string]$focusInfo['Id'])) { $rec['ActiveText'] = [string][System.Windows.Automation.AutomationProperties]::GetName($focusMap[[string]$focusInfo['Id']]) }
+                        $rec['Focus'] = [string]$focusInfo['Text']
+                        $rec['Active'] = [bool]$pw.IsActive
+                        $action = [string]$step['Action']
+                        $rec['Rung'] = 'action ' + $action
+                        if ($action -ceq 'Enter') { $rec['KeyPosted'] = [bool](& $wpfKey $pw 'Return') }
+                        elseif ($action -ceq 'Escape') { $rec['KeyPosted'] = [bool](& $wpfKey $pw 'Escape') }
+                        else {
+                            $id = $action
+                            if ($action -ceq 'Dont') { $id = 'DontSave' }
+                            $rec['KeyPosted'] = $false
+                            $null = & $pressBtn (& $wpfButton $pw $id) 0
+                        }
                     }
                 }
                 elseif ($age -ge 6000) {
-                    if (-not [bool]$st['hardStop']) { $st['hardStop'] = $true; $pf.DialogResult = [System.Windows.Forms.DialogResult]::Cancel }
+                    if (-not [bool]$st['hardStop']) { $st['hardStop'] = $true; & $wpfStop $pw }
                 }
                 elseif ($age -ge 1500 -and -not [bool]$loc['fell']) {
                     $loc['fell'] = $true
                     $rec['FellBack'] = $true
-                    $rec['Rung'] = 'did not close; Cancel clicked'
-                    $cancelButton = & $button $pf 'Cancel'
-                    if ($null -ne $cancelButton) { $cancelButton.PerformClick() }
+                    $rec['Rung'] = 'did not close; Cancel pressed'
+                    $null = & $pressBtn (& $wpfButton $pw 'Cancel') 0
                 }
             }
             elseif ($null -ne $loc['rec']) {
@@ -2638,7 +2909,9 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
                 elseif ($age -ge 1500 -and -not [bool]$loc['fell']) {
                     $loc['fell'] = $true
                     $rec['FellBack'] = $true
-                    if ([int]$step['Fallback'] -gt 0) { $rec['Rung'] = 'key did not close it; button fallback'; $null = & $pressBtn (& $wpfButton $wb ([int]$step['Fallback'])) 0 }
+                    # PR 4b (named test change): Fallback and Id may be a custom button id (a fluent dialog's own, such as Cancel or Later) as well as a Win32-style number
+                    $fbv = $step['Fallback']
+                    if ($null -ne $fbv -and [string]$fbv -cne '' -and [string]$fbv -cne '0') { $rec['Rung'] = 'key did not close it; button fallback'; $null = & $pressBtn (& $wpfButton $wb $fbv) 0 }
                     else { $rec['Rung'] = 'key did not close it; stop'; & $wpfStop $wb }
                 }
             }
@@ -2648,9 +2921,9 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
                     $loc['rungDone'] = $rung
                     $which = [Math]::Min($rung, 3)
                     $rec['Rung'] = [string]@('Invoke id', 'Click id', 'Invoke fallback', 'stop')[$which]
-                    if ($which -eq 0) { $null = & $pressBtn (& $wpfButton $wb ([int]$step['Id'])) 0 }
-                    elseif ($which -eq 1) { $null = & $pressBtn (& $wpfButton $wb ([int]$step['Id'])) 1 }
-                    elseif ($which -eq 2) { $null = & $pressBtn (& $wpfButton $wb ([int]$step['Fallback'])) 0 }
+                    if ($which -eq 0) { $null = & $pressBtn (& $wpfButton $wb $step['Id']) 0 }
+                    elseif ($which -eq 1) { $null = & $pressBtn (& $wpfButton $wb $step['Id']) 1 }
+                    elseif ($which -eq 2) { $null = & $pressBtn (& $wpfButton $wb $step['Fallback']) 0 }
                     else { & $wpfStop $wb }
                 }
             }
@@ -2740,11 +3013,14 @@ function Get-SettingsRec([hashtable]$D, [int]$Index) {
     if ($Index -lt $D['recs'].Count) { return $D['recs'][$Index] }
     return @{ Found = $false; Kind = 'missing' }
 }
-# PR 4a (named test change): a clean run is also one where every message box was a WPF dialog. In fluent mode no Win32 message box may appear; the only native
-# window left in these steps is the licence confirmation form (a WinForms form, 4b), which is a different caption and is not a message box.
+# PR 4a (named test change): a clean run is also one where every message box was a WPF dialog. In fluent mode no Win32 message box may appear.
+# PR 4b (named test changes): (1) the 4a exemption for the licence confirmation caption is gone, because that dialog is now a fluent dialog on the host too, so a WinForms
+# licence form would fail here; (2) a save prompt record must be a WPF dialog as well (its WinForms form is gone). The only native window left in these steps is the
+# SaveFileDialog after the support bundle box, which a step marks Native.
 function Test-SettingsRecClean([hashtable]$D) {
     foreach ($r in @($D['recs'].ToArray())) {
-        if ([string]$r['Kind'] -ceq 'box' -and [bool]$r['Found'] -and [string]$r['Caption'] -cne 'Install engine components automatically' -and [string]$r['Path'] -cne 'wpf' -and -not ($r.ContainsKey('Native') -and [bool]$r['Native'])) { return $false }
+        if ([string]$r['Kind'] -ceq 'box' -and [bool]$r['Found'] -and [string]$r['Path'] -cne 'wpf' -and -not ($r.ContainsKey('Native') -and [bool]$r['Native'])) { return $false }
+        if ([string]$r['Kind'] -ceq 'prompt' -and [bool]$r['Found'] -and [string]$r['Path'] -cne 'wpf') { return $false }
     }
     return (-not [bool]$D['timedOut'] -and -not [bool]$D['hardStop'] -and [int]$D['unexpected'] -eq 0)
 }
@@ -3717,6 +3993,411 @@ function Invoke-P41-DialogKeys {
     Check-NoExceptions 'P41'
 }
 
+# ---- P42: the T5 default-button test for the seven 4b dialogs (licence setting, component consent, exact model consent, VC++ review, setup check, recipe chooser, save prompt) ----
+# One data table (Get-PagesDialogTable pins its targets to the classic AST on every platform) plus the Windows table below. For each dialog: Enter, then Escape, then the close box
+# (SC_CLOSE), each through the dialog's real classic caller; the first focus, the owner and its disabled state, the tray calls, the reveal count and the result (read from what the
+# caller received) are checked. The recipe chooser adds Enter with a selection and a double-click. A tray-hidden open runs the VC++ review with the main window hidden.
+function Get-P42Rows {
+    return @(
+        @{ Id = 'license-setting'; Title = 'Install engine components automatically'; Fallback = 'Cancel'; Focus = 'Cancel'; Reveal = 0; Enter = 'declined'; Escape = 'declined'; X = 'declined' },
+        @{ Id = 'component-consent'; Title = 'Install engine components'; Fallback = 'Cancel'; Focus = 'Cancel'; Reveal = 1; Enter = 'cancelled'; Escape = 'cancelled'; X = 'cancelled' },
+        @{ Id = 'model-consent'; Title = 'Review exact model license and artifact'; Fallback = 'Cancel'; Focus = 'Cancel'; Reveal = 1; Enter = 'bool:False'; Escape = 'bool:False'; X = 'bool:False' },
+        @{ Id = 'vc-review'; Title = 'Review Microsoft VC++ package and installation'; Fallback = 'Later'; Focus = 'Later'; Reveal = 1; Enter = 'bool:False'; Escape = 'bool:False'; X = 'bool:False' },
+        @{ Id = 'setup-check'; Title = 'FastLLM setup check'; Fallback = 'Later'; Focus = 'Recheck'; Reveal = 1; Enter = 'str:recheck'; Escape = 'str:defer'; X = 'str:defer' },
+        @{ Id = 'recipe-chooser'; Title = 'Choose another setup'; Fallback = 'Cancel'; Focus = 'list'; Reveal = 1; Enter = 'null'; Escape = 'null'; X = 'null'; EnterStays = $true },
+        @{ Id = 'save-prompt'; Title = 'FastLLM settings'; Fallback = 'Cancel'; Focus = 'Cancel'; Reveal = 0; Enter = 'page:Settings'; Escape = 'page:Settings'; X = 'page:Settings' }
+    )
+}
+function New-P42Watch {
+    $caps = @('FastLLM settings', 'Create a new key', 'Experimental community components', 'Open license page', 'Install engine components automatically', 'Install engine components',
+        'Review exact model license and artifact', 'Review Microsoft VC++ package and installation', 'FastLLM setup check', 'Choose another setup')
+    return @{ Kind = 'watch'; Captions = $caps; Id = 2 }
+}
+function Initialize-P42Fixtures {
+    if ($null -ne $script:p42Fx) { return }
+    $model = @($script:catalog.models | Where-Object { [string]$_.id -ceq 'qwen3.8-27b-ud-q4-k-m-4af51b35' })[0]
+    if ($null -eq $model) { $model = $script:catalog.models[0] }
+    $cache = Join-Path $root 'test-vc-cache'
+    $script:vcCacheRoot = $cache
+    $candidate = [pscustomobject]@{ version = '14.51.36247.0'; fileName = 'VC_redist.x64.exe'; sizeBytes = 18731856
+        sha256 = '843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c'
+        url = 'https://download.visualstudio.microsoft.com/download/pr/ebdab8e5-1d7b-4d9f-a11b-cbb1720c3b12/843068991DAAA1F73AD9F6239BCE4D0F6A07A51F18C37EA2A867E9BECA71295C/VC_redist.x64.exe'
+        signerSubject = 'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US' }
+    $script:p42Candidate = $candidate
+    $run = Join-Path $cache ('vc-redist-' + ('a' * 32))
+    $receipt = [pscustomobject]@{ status = 'prepared-not-installed'; path = (Join-Path $run 'VC_redist.x64.exe'); version = $candidate.version; sizeBytes = $candidate.sizeBytes
+        sha256 = $candidate.sha256; signatureStatus = 'Valid'; installerExecuted = $false; compatibilityQualified = $false }
+    $decision = [pscustomobject]@{ canProceed = $false; missing64BitHost = $false; missingVcRuntimeFiles = @('MSVCP140.dll'); missingVulkanLoader = $false; advisoryWarnings = @('Probe advisory warning.') }
+    $diagnostic = [pscustomobject]@{ prerequisiteInventory = $null }
+    $plan = [pscustomobject]@{ model = $model; hardwareFingerprint = 'probe-card'; selectedAdapters = @([pscustomobject]@{ device = 'Vulkan0'; name = 'Probe adapter' }) }
+    $chain = @(
+        [pscustomobject]@{ id = 'probe-comp-a'; displayName = 'Probe component A'; version = '1.0'; state = 'missing'; sourceHosts = @('example.org'); redirectHosts = @(); licenseLinks = @([pscustomobject]@{ title = 'Probe licence A'; url = 'https://example.org/license-a' }) },
+        [pscustomobject]@{ id = 'probe-comp-b'; displayName = 'Probe component B'; version = '2.0'; state = 'missing'; sourceHosts = @('example.org'); redirectHosts = @('cdn.example.org'); licenseLinks = @([pscustomobject]@{ title = 'Probe licence B'; url = 'https://example.org/license-b' }) }
+    )
+    $consentRows = @(Get-FastLlmUiConsentRows -Chain $chain)
+    $componentRow = [pscustomobject]@{ id = 'probe-recipe-2'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup two'; model = [string]$model.id; contextSize = 8192; contextText = '8,192 tokens'; engineText = 'Probe component B (from example.org; missing); requires Probe component A (from example.org; missing)'; engineId = 'probe-engine'
+        chain = $chain; consentRequired = $true; installRequired = $true; experimental = $false; chainError = '' }
+    $chooserRows = @(
+        [pscustomobject]@{ id = 'probe-recipe-1'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup one'; model = [string]$model.id; contextSize = 8192; contextText = '8,192 tokens'; engineText = 'probe-engine'; engineId = 'probe-engine'; chain = @(); consentRequired = $false; installRequired = $false; experimental = $false; chainError = '' },
+        [pscustomobject]@{ id = 'probe-recipe-2'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup two'; model = [string]$model.id; contextSize = 16384; contextText = '16,384 tokens'; engineText = 'probe-engine'; engineId = 'probe-engine'; chain = @(); consentRequired = $false; installRequired = $false; experimental = $false; chainError = '' }
+    )
+    $disclosure = Get-FastLlmUiLicenseDisclosure -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
+    $script:identifiedVariant = 'probe-card'
+    $script:p42Fx = @{ Plan = $plan; Receipt = $receipt; Candidate = $candidate; Decision = $decision; Diagnostic = $diagnostic; ComponentRow = $componentRow; ConsentRows = $consentRows; ChooserRows = $chooserRows; Disclosure = $disclosure }
+}
+# Opens one dialog through its real classic caller and blocks until it is answered. The value the caller received is kept in $script:p42Result.
+function Invoke-P42Open([string]$Id) {
+    $fx = $script:p42Fx
+    $els = Get-SettingsEls
+    $script:p42Result = $null
+    switch ($Id) {
+        'license-setting' { $null = Open-SettingsPage @{}; $els.SettingsLicenseToggle.IsChecked = $true }
+        'component-consent' { $script:p42Launch.Clear(); $script:statusLabel.Text = 'status before the consent'; ContinueWithChosenRecipe $fx.ComponentRow }
+        'model-consent' { $script:p42Result = @(ShowExactModelConsent $fx.Plan) }
+        'vc-review' { $script:p42Result = @(ShowVcInstallReview $fx.Receipt $fx.Candidate) }
+        'setup-check' { $script:p42Result = @(ShowSetupAttention $fx.Decision $fx.Diagnostic) }
+        'recipe-chooser' { $script:p42Begin.Clear(); $script:p42Result = @(ShowRecipeChooser $fx.ChooserRows) }
+        'save-prompt' {
+            $null = Open-SettingsPage @{}
+            $els.SettingsPortBox.Text = '9001'
+            $els.SettingsThinkingBox.SelectedIndex = 1
+            Invoke-Pump 30
+            $els.NavList.SelectedIndex = 0
+            Invoke-Pump 100
+        }
+        default { throw "P42 has no opener for '$Id'" }
+    }
+}
+# What the caller got, as one comparable string ('bad-return ...' when a [bool] contract is not exactly one bool).
+function Get-P42Outcome([string]$Id) {
+    $els = Get-SettingsEls
+    $r = @($script:p42Result)
+    switch ($Id) {
+        'license-setting' {
+            if ($script:setLicWrites.Count -gt 0) { return ('written:' + ($script:setLicWrites.ToArray() -join ',')) }
+            if ($els.SettingsLicenseToggle.IsChecked -eq $false) { return 'declined' }
+            return 'toggle-still-on'
+        }
+        'component-consent' {
+            if ($script:p42Launch.Count -gt 0) { return ('launch:' + [string]$script:p42Launch[0].Step + ' x' + $script:p42Launch.Count) }
+            if ([string]$script:statusLabel.Text -ceq 'Component install cancelled. Nothing was downloaded.') { return 'cancelled' }
+            return ('status:' + [string]$script:statusLabel.Text)
+        }
+        { $_ -ceq 'model-consent' -or $_ -ceq 'vc-review' } {
+            if ($r.Count -ne 1 -or $r[0] -isnot [bool]) { return ("bad-return count=$($r.Count) type=$(if ($r.Count -gt 0 -and $null -ne $r[0]) { $r[0].GetType().Name } else { 'null' })") }
+            return ('bool:' + [string]$r[0])
+        }
+        'setup-check' {
+            if ($r.Count -ne 1 -or $r[0] -isnot [string]) { return "bad-return count=$($r.Count)" }
+            return ('str:' + [string]$r[0])
+        }
+        'recipe-chooser' {
+            if ($r.Count -ne 1) { return "bad-return count=$($r.Count)" }
+            if ($null -eq $r[0]) { return 'null' }
+            return ('row:' + [string]$r[0].id)
+        }
+        'save-prompt' { return ('page:' + (Get-FastLlmUiFluentCurrentPage)) }
+    }
+    return 'unknown'
+}
+function Complete-P42Row([string]$Id) {
+    if ($Id -ceq 'license-setting' -or $Id -ceq 'save-prompt') { Close-SettingsPage }
+}
+# One phase of one row. Returns $false when the dialog never appeared.
+function Test-P42Phase($Row, [string]$Action, [IntPtr]$MainHwnd) {
+    $id = [string]$Row.Id
+    $main = @{ Kind = 'box'; Caption = [string]$Row.Title; Fallback = [string]$Row.Fallback }
+    if ($Action -ceq 'enter') { $main['Key'] = 0x0D } elseif ($Action -ceq 'escape') { $main['Key'] = 0x1B } else { $main['Sys'] = $true }
+    $d = @{}
+    $err = ''
+    $script:trayAvailability.Clear()
+    $revealBefore = [int]$script:revealCalls
+    $timer = Start-SettingsDialogs @($main, (New-P42Watch)) $d
+    try { Invoke-P42Open $id } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+    Invoke-Pump 100
+    $rec = Get-SettingsRec $d 0
+    $outcome = Get-P42Outcome $id
+    $revealed = [int]$script:revealCalls - $revealBefore
+    $trayText = ($script:trayAvailability.ToArray() -join ',')
+    Complete-P42Row $id
+    $n = "P42 $id $Action"
+    $detail = (Get-SettingsRecDetail $d) + " outcome='$outcome' error='$err'"
+    $found = [bool]$rec['Found']
+    Check ($found -and (Test-SettingsRecClean $d)) "$n : the dialog appeared as a WPF dialog and was answered within 6 s, with nothing unexpected" $detail
+    if (-not $found) { return $false }
+    $want = [string]$Row[$(if ($Action -ceq 'enter') { 'Enter' } elseif ($Action -ceq 'escape') { 'Escape' } else { 'X' })]
+    Check ($outcome -ceq $want) "$n : the classic caller received $want" "actual='$outcome' expected='$want' $detail"
+    $stays = ($Action -ceq 'enter' -and $Row.ContainsKey('EnterStays'))
+    Check ([bool]$rec['FellBack'] -eq $stays) "$n : $(if ($stays) { 'Enter does nothing (no row is selected: the driver presses Cancel)' } else { 'the key or the close box answered it without the fallback' })" "fellBack=$($rec['FellBack']) expected=$stays keyPosted=$($rec['KeyPosted']) rung='$($rec['Rung'])'"
+    if ($Action -ceq 'enter') {
+        $fi = $rec['FocusInfo']
+        $focusOk = $false
+        $focusText = ''
+        if ($fi -is [System.Collections.IDictionary]) {
+            $focusText = "id='$($fi['Id'])' text='$($fi['Text'])'"
+            if ([string]$Row.Focus -ceq 'list') { $focusOk = ([string]$fi['Text'] -cmatch '^ListBox(Item)?:') } else { $focusOk = ([string]$fi['Id'] -ceq [string]$Row.Focus) }
+        }
+        Check $focusOk "$n : the first focus is $(if ([string]$Row.Focus -ceq 'list') { 'the list (Choose is disabled)' } else { "the Enter target button $($Row.Focus)" })" "actual $focusText expected='$($Row.Focus)'"
+        Check ([long]$rec['Owner'] -eq $MainHwnd.ToInt64() -and -not [bool]$rec['WpfEnabledDuring']) "$n : the dialog is owned by the main window, which is disabled while it is up" "owner=$($rec['Owner']) expected=$($MainHwnd.ToInt64()) mainEnabledDuring=$($rec['WpfEnabledDuring'])"
+        Check ($trayText -ceq 'False,True') "$n : the tray menu was turned off while open and on again after" "calls=$trayText"
+        Check ($revealed -eq [int]$Row.Reveal) "$n : the window was revealed $($Row.Reveal) time(s) (the classic dialog's rule)" "reveal calls=$revealed expected=$($Row.Reveal)"
+    }
+    return $true
+}
+function Invoke-P42-DialogKeys {
+    if (-not $script:shellOk) { return }
+    $win = $script:FastLlmUiFluent.Window
+    $hwnd = Get-ModelsWindowHandle
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $null = $win.Activate()
+    Invoke-Pump 100
+    Initialize-P42Fixtures
+    $fx = $script:p42Fx
+    Check (@($script:p42Missing).Count -eq 0 -and $null -ne $script:uiDialogView -and $null -ne $script:uiDialogView['ShowSetupAttention'] -and $null -ne $script:uiDialogView['ShowRecipeChooser']) 'P42 the six classic functions are loaded and the shell registered their fluent view keys' "missing=$(@($script:p42Missing) -join ',')"
+    $texts = ''
+    try { $texts = [string](Format-FastLlmUiModelConsent -Plan $fx.Plan) + [string](Format-FastLlmUiVcReview -Receipt $fx.Receipt -Candidate $fx.Candidate -CacheRoot $script:vcCacheRoot) } catch { $texts = '' ; Write-Host "INFO: P42 fixture error: $($_.Exception.Message)" }
+    Check ($texts -cne '' -and $fx.Disclosure.links.Count -gt 0 -and [bool]$fx.Disclosure.canAccept -and @($fx.ConsentRows).Count -eq 2) 'P42 the fixtures (model plan, VC++ receipt, the real licence disclosure, two consent rows) are usable' "texts=$($texts.Length) links=$($fx.Disclosure.links.Count) canAccept=$($fx.Disclosure.canAccept) rows=$(@($fx.ConsentRows).Count)"
+    $global:FastLlmTestStartProcess['Block'] = $true
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        foreach ($row in @(Get-P42Rows)) {
+            $start = $watch.ElapsedMilliseconds
+            foreach ($action in 'enter', 'escape', 'x') {
+                $go = Test-P42Phase $row $action $hwnd
+                if (-not $go) { break }
+            }
+            Write-Host ("INFO: P42 row $($row.Id) took " + ($watch.ElapsedMilliseconds - $start) + ' ms')
+        }
+        # The chooser with a selection: Enter chooses it; a double-click on a selected row chooses it; the real consumer receives the row.
+        $listOf = { param($w) @(Get-ShellVisuals $w | Where-Object { $_ -is [System.Windows.Controls.ListBox] -and [string]$_.Name -ceq 'ChooserList' })[0] }
+        $select = { param($w, $st) $l = & $listOf $w; $l.SelectedIndex = 1; $st['p42'] = @{ Enter = [string]$l.Items.Count } }.GetNewClosure()
+        $double = {
+            param($w, $st)
+            $l = & $listOf $w
+            $l.SelectedIndex = 0
+            $e = New-Object System.Windows.Input.MouseButtonEventArgs([System.Windows.Input.Mouse]::PrimaryDevice, [Environment]::TickCount, [System.Windows.Input.MouseButton]::Left)
+            $e.RoutedEvent = [System.Windows.Controls.Control]::MouseDoubleClickEvent
+            # raised on the selected row item (the handler is on each row; a double-click on the list's scrollbar or empty area chooses nothing)
+            $row = $l.Items[0]
+            $e.Source = $row
+            $row.RaiseEvent($e)
+        }.GetNewClosure()
+        foreach ($case in @(@('enter with a selection', 'probe-recipe-2', $true), @('double-click', 'probe-recipe-1', $false))) {
+            $steps = @(@{ Kind = 'act'; Caption = 'Choose another setup'; Do = $(if ($case[2]) { $select } else { $double }); Closes = (-not $case[2]); Fallback = 'Cancel' })
+            if ($case[2]) { $steps += @{ Kind = 'box'; Caption = 'Choose another setup'; Key = 0x0D; Fallback = 'Cancel' } }
+            $steps += (New-P42Watch)
+            $d = @{}
+            $script:trayAvailability.Clear()
+            $timer = Start-SettingsDialogs $steps $d
+            $err = ''
+            try { Invoke-P42Open 'recipe-chooser' } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+            Invoke-Pump 100
+            $outcome = Get-P42Outcome 'recipe-chooser'
+            Check ($outcome -ceq ('row:' + [string]$case[1]) -and (Test-SettingsRecClean $d) -and -not [bool]$d['actFellBack'] -and [string]$d['actError'] -ceq '') "P42 recipe-chooser $($case[0]) chooses the selected row" "actual='$outcome' expected='row:$($case[1])' actError='$($d['actError'])' fellBack=$($d['actFellBack']) error='$err' $(Get-SettingsRecDetail $d)"
+            # the real consumer of the picked row: not an install-required row, so BeginChosenRecipe gets it
+            $script:p42Begin.Clear()
+            ContinueWithChosenRecipe (@($script:p42Result)[0])
+            Check ($script:p42Begin.Count -eq 1 -and [string]$script:p42Begin[0] -ceq [string]$case[1]) "P42 recipe-chooser $($case[0]): ContinueWithChosenRecipe begins the picked setup" "begin=$($script:p42Begin.ToArray() -join ',') expected=$($case[1])"
+        }
+        # Tray-hidden open: the main window is hidden (as in the tray); the VC++ review still shows (unowned, centred), disables the hidden window, and Enter answers Do later.
+        $script:form.Hide()
+        Invoke-Pump 100
+        $d = @{}
+        $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Review Microsoft VC++ package and installation'; Key = 0x0D; Fallback = 'Later' }, (New-P42Watch)) $d
+        $err = ''
+        try { Invoke-P42Open 'vc-review' } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+        Invoke-Pump 100
+        $script:form.Show()
+        $script:form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        $script:form.Activate()
+        Invoke-Pump 150
+        $rec = Get-SettingsRec $d 0
+        $outcome = Get-P42Outcome 'vc-review'
+        Check ([bool]$rec['Found'] -and (Test-SettingsRecClean $d) -and [long]$rec['Owner'] -eq 0 -and -not [bool]$rec['WpfEnabledDuring'] -and -not [bool]$rec['FellBack'] -and $outcome -ceq 'bool:False') 'P42 a VC++ review opened while the window is in the tray shows (unowned), the hidden main window is disabled while it is open, and Enter answers Do later (false)' ((Get-SettingsRecDetail $d) + " owner=$($rec['Owner']) expected=0 outcome='$outcome' error='$err'")
+        Check ($win.IsVisible -and [bool]$script:native::IsWindowEnabled($hwnd)) 'P42 after the tray-hidden VC++ review the window is back, visible and enabled' "visible=$($win.IsVisible) enabled=$($script:native::IsWindowEnabled($hwnd))"
+    }
+    finally {
+        $global:FastLlmTestStartProcess['Block'] = $false
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+    }
+    Write-Host ("INFO: P42 took " + $watch.ElapsedMilliseconds + ' ms')
+    Check-NoExceptions 'P42'
+}
+
+# ---- P43: flow steps of the 4b dialogs: consent accept (every box ticked) and cancel, the licence setting accept, the setup check with each answer, the VC++ review (install and
+# do later), the exact model consent (accept and cancel), and the link that fails to open inside the licence dialog and the component consent (the warning box is owned by the dialog).
+# The setup check, the VC++ review and the model consent run the real statements of fast-llm-ui.ps1 that consume their answers (taken by the parser); their callees are step stubs.
+function Get-P43Statements {
+    $ast = $script:uiAst
+    $out = @{}
+    $a = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text -like '$choice=ShowSetupAttention*' }, $true))
+    if ($a.Count -eq 1) {
+        $sibs = @($a[0].Parent.Statements)
+        $i = [array]::IndexOf($sibs, $a[0])
+        if ($i -ge 0 -and $i + 1 -lt $sibs.Count -and $sibs[$i + 1] -is [System.Management.Automation.Language.SwitchStatementAst]) {
+            $out['Setup'] = [scriptblock]::Create('param($decision, $diagnostic) ' + [string]$a[0].Extent.Text + "`n" + [string]$sibs[$i + 1].Extent.Text)
+        }
+    }
+    $v = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text.Contains('ShowVcInstallReview') }, $true))
+    if ($v.Count -eq 1) { $out['Vc'] = [scriptblock]::Create('param($receipt, $candidate) ' + [string]$v[0].Extent.Text) }
+    $m = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -ceq '$script:flow.phase -eq ''consent''' -and $n.Extent.Text.Contains('ShowExactModelConsent') }, $true))
+    if ($m.Count -eq 1) { $out['Model'] = [scriptblock]::Create('param($Plan) ' + [string]$m[0].Extent.Text) }
+    return $out
+}
+# Runs one step list around an opener. Returns the record table and the opener's error text.
+function Invoke-P43Run([object[]]$Steps, [scriptblock]$Open) {
+    $d = @{ p42 = @{} }
+    $err = ''
+    $script:trayAvailability.Clear()
+    $timer = Start-SettingsDialogs (@($Steps) + @((New-P42Watch))) $d
+    try { & $Open } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+    Invoke-Pump 100
+    return @{ D = $d; Err = $err }
+}
+# A link click posted to the dispatcher (never run inside the answerer's tick, which would stop its timer in the nested frame the warning box opens).
+# It is posted at Normal priority: it runs as soon as the tick returns. At Background priority it never ran on the Windows runner while the dialog was up
+# (CI: the link was found, Start-Process was never reached and no exception was recorded). The likely cause: the WPF dispatcher defers Background items while it
+# sees input pending. The other posted items in these suites use Input, Normal or Loaded.
+# ClickRan, ClickDone and the operation's status are recorded, so a click that does not run is named in the failure detail.
+function New-P43LinkClick([string]$LinkText) {
+    $visuals = ${function:Get-ShellVisuals}
+    return {
+        param($w, $st)
+        $link = @(& $visuals $w | Where-Object { $_ -is [System.Windows.Controls.Button] -and [System.Windows.Automation.AutomationProperties]::GetName($_) -ceq $LinkText })[0]
+        $st['p42']['LinkFound'] = ($null -ne $link)
+        $st['p42']['DialogHwnd'] = [System.Windows.Interop.WindowInteropHelper]::new($w).Handle.ToInt64()
+        $st['p42']['ClickRan'] = $false
+        $st['p42']['ClickDone'] = $false
+        if ($null -eq $link) { return }
+        $click = {
+            $st['p42']['ClickRan'] = $true
+            $link.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $link)))
+            $st['p42']['ClickDone'] = $true
+        }.GetNewClosure()
+        $st['p42']['ClickOp'] = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action]$click)
+    }.GetNewClosure()
+}
+function Invoke-P43-DialogFlows {
+    if (-not $script:shellOk) { return }
+    $hwnd = Get-ModelsWindowHandle
+    $els = Get-SettingsEls
+    Initialize-P42Fixtures
+    $fx = $script:p42Fx
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $global:FastLlmTestStartProcess['Block'] = $true
+    $script:p43Log = New-Object System.Collections.ArrayList
+    # step stubs for what the consumed statements call (local functions: seen by the parser-made script blocks through the call stack)
+    function Move-FastLlmUiFlow { param($Flow, [Alias('Event')][string]$FlowEvent, [Parameter(ValueFromRemainingArguments = $true)]$Rest) [void]$script:p43Log.Add('move:' + $FlowEvent); return $Flow }
+    function LaunchUiPhase { [void]$script:p43Log.Add('launch-phase') }
+    function SetBusy([bool]$Busy) { [void]$script:p43Log.Add('busy:' + $Busy) }
+    function StartVcBroker($Receipt) { [void]$script:p43Log.Add('broker') }
+    $stmt = Get-P43Statements
+    try {
+        Check ($stmt.ContainsKey('Setup') -and $stmt.ContainsKey('Vc') -and $stmt.ContainsKey('Model')) 'P43 the three statements that consume the answers (setup check, VC++ review, model consent) were found in fast-llm-ui.ps1' "found=$(@($stmt.Keys) -join ',')"
+        # ---- consent: accept with every box ticked ----
+        $ticks = {
+            param($w, $st)
+            $boxes = @(Get-ShellVisuals $w | Where-Object { $_ -is [System.Windows.Controls.CheckBox] })
+            $install = Find-WpfBoxButton $w 'Install'
+            $states = New-Object System.Collections.ArrayList
+            [void]$states.Add($boxes.Count)
+            [void]$states.Add([bool]$install.IsEnabled)
+            $boxes[0].IsChecked = $true; [void]$states.Add([bool]$install.IsEnabled)
+            $boxes[1].IsChecked = $true; [void]$states.Add([bool]$install.IsEnabled)
+            $boxes[1].IsChecked = $false; [void]$states.Add([bool]$install.IsEnabled)
+            $boxes[1].IsChecked = $true; [void]$states.Add([bool]$install.IsEnabled)
+            $st['p42']['States'] = ($states.ToArray() -join ',')
+        }
+        $openConsent = { $script:p42Launch.Clear(); $script:statusLabel.Text = 'status before the consent'; ContinueWithChosenRecipe $fx.ComponentRow }
+        $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = 'Install engine components'; Do = $ticks }, @{ Kind = 'box'; Caption = 'Install engine components'; Id = 'Install'; Fallback = 'Cancel' }) $openConsent
+        $d = $r.D
+        $args0 = ''; if ($script:p42Launch.Count -gt 0) { $args0 = (@($script:p42Launch[0].Arguments) -join ' ') }
+        Check ([string]$d['p42']['States'] -ceq '2,False,False,True,False,True' -and [string]$d['actError'] -ceq '') 'P43 consent: Install is disabled until every box is ticked, and un-ticking one disables it again (2 boxes: none, one, both, one, both)' "states='$($d['p42']['States'])' expected='2,False,False,True,False,True' actError='$($d['actError'])' $(Get-SettingsRecDetail $d)"
+        Check ($script:p42Launch.Count -eq 1 -and [string]$script:p42Launch[0].Step -ceq 'component install' -and $args0.Contains('-Install probe-engine') -and $args0.Contains('-AcceptLicense') -and (Test-SettingsRecClean $d)) 'P43 consent accept (every box ticked): the real caller launches the component install for the engine with -AcceptLicense' "launches=$($script:p42Launch.Count) step='$(if ($script:p42Launch.Count -gt 0) { $script:p42Launch[0].Step })' args='$args0' error='$($r.Err)' $(Get-SettingsRecDetail $d)"
+        # ---- consent: Cancel (a click, with the boxes ticked) downloads nothing ----
+        $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = 'Install engine components'; Do = $ticks }, @{ Kind = 'box'; Caption = 'Install engine components'; Id = 'Cancel'; Fallback = 'Cancel' }) $openConsent
+        Check ($script:p42Launch.Count -eq 0 -and [string]$script:statusLabel.Text -ceq 'Component install cancelled. Nothing was downloaded.' -and (Test-SettingsRecClean $r.D)) 'P43 consent Cancel (boxes ticked): nothing is launched and the status says nothing was downloaded' "launches=$($script:p42Launch.Count) status='$($script:statusLabel.Text)' $(Get-SettingsRecDetail $r.D)"
+        # ---- licence setting: accept writes accept-automatically; Cancel (click) writes nothing ----
+        # A toggle that is already on raises no change, so the page opens with the toggle (and the classic box behind it) put to off without the handler, then turned on.
+        $openLicense = { $null = Open-SettingsPage @{}; $script:licenseRevert = $true; try { $els.SettingsLicenseToggle.IsChecked = $false; $script:licenseBox.Checked = $false } finally { $script:licenseRevert = $false }; $script:setLicWrites.Clear(); $els.SettingsLicenseToggle.IsChecked = $true }
+        $r = Invoke-P43Run @(@{ Kind = 'box'; Caption = 'Install engine components automatically'; Id = 'Accept'; Fallback = 'Cancel' }) $openLicense
+        Check (($script:setLicWrites.ToArray() -join ',') -ceq 'accept-automatically' -and $els.SettingsLicenseToggle.IsChecked -eq $true -and (Test-SettingsRecClean $r.D)) 'P43 licence setting Accept: the setting is written (accept-automatically) and the toggle stays on' "writes=$($script:setLicWrites.ToArray() -join ',') toggle=$($els.SettingsLicenseToggle.IsChecked) error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        Close-SettingsPage
+        $r = Invoke-P43Run @(@{ Kind = 'box'; Caption = 'Install engine components automatically'; Id = 'Cancel'; Fallback = 'Cancel' }) $openLicense
+        Check ($script:setLicWrites.Count -eq 0 -and $els.SettingsLicenseToggle.IsChecked -eq $false -and (Test-SettingsRecClean $r.D)) 'P43 licence setting Cancel (click): nothing is written and the toggle is reverted' "writes=$($script:setLicWrites.ToArray() -join ',') toggle=$($els.SettingsLicenseToggle.IsChecked) $(Get-SettingsRecDetail $r.D)"
+        Close-SettingsPage
+        # ---- licence setting, a disclosure that cannot be accepted (canAccept false): Accept is disabled, and Enter and Escape both answer Cancel (false) ----
+        $offDisclosure = [pscustomobject]@{ canAccept = $false; identities = @(); links = @($fx.Disclosure.links) }
+        $accState = {
+            param($w, $st)
+            $accept = Find-WpfBoxButton $w 'Accept'
+            $st['p42']['AcceptFound'] = ($null -ne $accept)
+            if ($null -ne $accept) { $st['p42']['AcceptEnabled'] = [bool]$accept.IsEnabled }
+        }
+        foreach ($case in @(@('Enter', 0x0D), @('Escape', 0x1B))) {
+            $script:p43Licence = 'unset'
+            $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = 'Install engine components automatically'; Do = $accState }, @{ Kind = 'box'; Caption = 'Install engine components automatically'; Key = [int]$case[1]; Fallback = 'Cancel' }) { $script:p43Licence = Show-FastLlmUiFluentLicenseSettingConfirm -Disclosure $offDisclosure }
+            Check ([bool]$r.D['p42']['AcceptFound'] -and $r.D['p42']['AcceptEnabled'] -eq $false -and $script:p43Licence -is [bool] -and $script:p43Licence -eq $false -and -not [bool]$r.D['actFellBack'] -and (Test-SettingsRecClean $r.D)) "P43 licence setting with canAccept false: Accept is disabled and $($case[0]) answers Cancel (false)" "found=$($r.D['p42']['AcceptFound']) acceptEnabled=$($r.D['p42']['AcceptEnabled']) answer='$($script:p43Licence)' fellBack=$($r.D['actFellBack']) error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        }
+        # ---- setup check: each answer ----
+        $script:flow = [pscustomobject]@{ phase = 'setup-attention' }
+        $script:statusLabel.Text = ''
+        foreach ($case in @(@('Recheck', 'move:setup-recheck,launch-phase', ''), @('Prepare', '', ''), @('Later', 'move:setup-defer', 'Setup deferred. No software was installed.'))) {
+            $script:p43Log.Clear(); $script:p42Launch.Clear(); $script:statusLabel.Text = ''
+            $decision = $fx.Decision; $diagnostic = $fx.Diagnostic
+            $r = Invoke-P43Run @(@{ Kind = 'box'; Caption = 'FastLLM setup check'; Id = [string]$case[0]; Fallback = 'Later' }) { & $stmt['Setup'] $decision $diagnostic }
+            $launch = ''; if ($script:p42Launch.Count -gt 0) { $launch = [string]$script:p42Launch[0].Step }
+            $wantLaunch = ''; if ($case[0] -ceq 'Prepare') { $wantLaunch = 'vc prepare' }
+            Check (($script:p43Log.ToArray() -join ',') -ceq [string]$case[1] -and $launch -ceq $wantLaunch -and [string]$script:statusLabel.Text -ceq [string]$case[2] -and (Test-SettingsRecClean $r.D)) "P43 setup check $($case[0]): the real consumer does today's step" "log='$($script:p43Log.ToArray() -join ',')' expected='$($case[1])' launch='$launch' expected='$wantLaunch' status='$($script:statusLabel.Text)' expected='$($case[2])' error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        }
+        # ---- VC++ review: install and do later ----
+        foreach ($case in @(@('Install', 'broker', ''), @('Later', 'move:setup-defer', 'Microsoft VC++ download prepared; installation deferred.'))) {
+            $script:p43Log.Clear(); $script:statusLabel.Text = ''
+            $receipt = $fx.Receipt; $candidate = $fx.Candidate
+            $r = Invoke-P43Run @(@{ Kind = 'box'; Caption = 'Review Microsoft VC++ package and installation'; Id = [string]$case[0]; Fallback = 'Later' }) { & $stmt['Vc'] $receipt $candidate }
+            Check (($script:p43Log.ToArray() -join ',') -ceq [string]$case[1] -and [string]$script:statusLabel.Text -ceq [string]$case[2] -and (Test-SettingsRecClean $r.D)) "P43 VC++ review $($case[0]): the real consumer starts the broker only on Install, and defers otherwise" "log='$($script:p43Log.ToArray() -join ',')' expected='$($case[1])' status='$($script:statusLabel.Text)' expected='$($case[2])' error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        }
+        # ---- exact model consent: accept and cancel (the caret is at the start) ----
+        $caret = { param($w, $st) $tb = @(Get-ShellVisuals $w | Where-Object { $_ -is [System.Windows.Controls.TextBox] -and [string]$_.Name -ceq 'ModelConsentText' })[0]; $st['p42']['Caret'] = "$($tb.SelectionStart),$($tb.SelectionLength)" }
+        foreach ($case in @(@('Accept', 'move:consent-approved', ''), @('Cancel', 'move:consent-declined,busy:False', 'Model download declined. No new license receipt was created.'))) {
+            $script:p43Log.Clear(); $script:statusLabel.Text = ''
+            $script:flow = [pscustomobject]@{ phase = 'consent' }
+            $plan = $fx.Plan
+            $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = 'Review exact model license and artifact'; Do = $caret }, @{ Kind = 'box'; Caption = 'Review exact model license and artifact'; Id = [string]$case[0]; Fallback = 'Cancel' }) { & $stmt['Model'] $plan }
+            Check (($script:p43Log.ToArray() -join ',') -ceq [string]$case[1] -and [string]$script:statusLabel.Text -ceq [string]$case[2] -and [string]$r.D['p42']['Caret'] -ceq '0,0' -and (Test-SettingsRecClean $r.D)) "P43 model consent $($case[0]): the real consumer moves the flow as today, and the review text opens with the caret at the start" "log='$($script:p43Log.ToArray() -join ',')' expected='$($case[1])' status='$($script:statusLabel.Text)' caret='$($r.D['p42']['Caret'])' error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        }
+        # ---- a link that fails to open: the warning box is owned by the dialog, which is disabled while it is up ----
+        $licenseLink = @($fx.Disclosure.links | Where-Object { $_.url })[0]
+        $componentLink = @($fx.ConsentRows)[0].links[0]
+        $linkCases = @(
+            @{ Name = 'licence setting'; Title = 'Install engine components automatically'; Text = [string]$licenseLink.linkText; Body = 'Unable to open the license page. Check your default browser. Nothing was changed.'; Open = $openLicense; After = { Close-SettingsPage } },
+            @{ Name = 'component consent'; Title = 'Install engine components'; Text = [string]$componentLink.linkText; Body = 'Unable to open the license page. Check your default browser. Nothing was downloaded.'; Open = $openConsent; After = { } }
+        )
+        foreach ($case in $linkCases) {
+            $global:FastLlmTestStartProcess['Calls'] = 0
+            $steps = @(@{ Kind = 'act'; Caption = [string]$case.Title; Do = (New-P43LinkClick ([string]$case.Text)) },
+                @{ Kind = 'box'; Caption = 'Open license page'; Key = 0x0D; Fallback = 1 },
+                @{ Kind = 'box'; Caption = [string]$case.Title; Key = 0x1B; Fallback = 'Cancel' })
+            $r = Invoke-P43Run $steps $case.Open
+            & $case.After
+            $d = $r.D
+            $warn = Get-SettingsRec $d 0
+            $opStatus = 'none'; if ($null -ne $d['p42']['ClickOp']) { $opStatus = [string]$d['p42']['ClickOp'].Status }
+            Check ([bool]$d['p42']['LinkFound'] -and [bool]$d['p42']['ClickRan'] -and $global:FastLlmTestStartProcess['Calls'] -ge 1) "P43 $($case.Name): the link was found and clicked, and Start-Process was reached (so the stub threw)" "linkFound=$($d['p42']['LinkFound']) clickRan=$($d['p42']['ClickRan']) clickDone=$($d['p42']['ClickDone']) op=$opStatus startProcessCalls=$($global:FastLlmTestStartProcess['Calls']) link='$($case.Text)' $(Get-SettingsRecDetail $d)"
+            Check ([bool]$warn['Found'] -and [string]$warn['Caption'] -ceq 'Open license page' -and ([string]$warn['Text']).Contains([string]$case.Body)) "P43 $($case.Name): the warning box shows today's text" "text='$($warn['Text'])' expected to contain '$($case.Body)'"
+            Check ([bool]$warn['Found'] -and [long]$warn['Owner'] -eq [long]$d['p42']['DialogHwnd'] -and [string]$warn['OwnerTitle'] -ceq [string]$case.Title -and -not [bool]$warn['OwnerWindowEnabled']) "P43 $($case.Name): the warning box is owned by the dialog (not the main window), and the dialog is disabled while it is open" "owner=$($warn['Owner']) dialog=$($d['p42']['DialogHwnd']) ownerTitle='$($warn['OwnerTitle'])' expected='$($case.Title)' ownerEnabled=$($warn['OwnerWindowEnabled'])"
+            Check ((Test-SettingsRecClean $d) -and [string]$d['actError'] -ceq '') "P43 $($case.Name): the warning box and the dialog were answered by their keys, with nothing unexpected" "actError='$($d['actError'])' error='$($r.Err)' $(Get-SettingsRecDetail $d)"
+        }
+    }
+    finally {
+        $global:FastLlmTestStartProcess['Block'] = $false
+        Remove-Variable -Name flow -Scope Script -ErrorAction SilentlyContinue
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+    }
+    Write-Host ("INFO: P43 took " + $watch.ElapsedMilliseconds + ' ms')
+    Check-NoExceptions 'P43'
+}
+
 $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
@@ -3725,7 +4406,7 @@ $script:steps = @(
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane',
-    'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys',
+    'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'

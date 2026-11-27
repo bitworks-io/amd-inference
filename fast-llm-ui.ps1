@@ -252,6 +252,7 @@ $experimentalBox.Add_CheckedChanged({
     }
 })
 function ShowLicenseSettingConfirm($Disclosure) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowLicenseSettingConfirm'] -Disclosure $Disclosure}
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='Install engine components automatically';$dialog.Size=New-Object Drawing.Size(700,420)
     $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
@@ -703,6 +704,7 @@ function StopUiOperation {
     }
 }
 function ShowSetupAttention($Decision,$Diagnostic) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowSetupAttention'] -Decision $Decision -Diagnostic $Diagnostic}
     RevealUiForAction
     $lines=New-Object 'System.Collections.Generic.List[string]'
     [void]$lines.Add('This PC is missing a required component for the current Vulkan lane. Review the latest setup check before continuing.')
@@ -753,6 +755,7 @@ function ShowSetupAttention($Decision,$Diagnostic) {
     }finally{$dialog.Dispose();SetTrayMenuAvailable $true}
 }
 function ShowVcInstallReview($Receipt,$Candidate) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowVcInstallReview'] -Receipt $Receipt -Candidate $Candidate}
     RevealUiForAction
     $review=Format-FastLlmUiVcReview -Receipt $Receipt -Candidate $Candidate -CacheRoot $script:vcCacheRoot
     $dialog=New-Object Windows.Forms.Form
@@ -809,6 +812,7 @@ function HandleVcBrokerResult($Result) {
     }
 }
 function ShowExactModelConsent($Plan) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowExactModelConsent'] -Plan $Plan}
     RevealUiForAction
     $reviewText=Format-FastLlmUiModelConsent -Plan $Plan
     $dialog=New-Object Windows.Forms.Form
@@ -1575,6 +1579,7 @@ function StartRecipeList {
     LaunchStep 'recipe list' @('recipes','-Detail','-AsJson','-InstallRoot',$script:installPath)
 }
 function ShowRecipeChooser($Rows) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowRecipeChooser'] -Rows $Rows}
     RevealUiForAction
     $switchValue=if($experimentalBox.Checked){'on'}else{'off'}
     $variant=[string]$script:identifiedVariant
@@ -1631,6 +1636,7 @@ function UpdateConsentInstallState {
     $view.install.Enabled=[bool](Test-FastLlmUiConsentComplete -RowCount $view.boxes.Count -Ticked $ticked)
 }
 function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowComponentConsent'] -Row $Row -ConsentRows $ConsentRows -Chosen $Chosen}
     RevealUiForAction
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='Install engine components';$dialog.Size=New-Object Drawing.Size(800,620)
