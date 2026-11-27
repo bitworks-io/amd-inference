@@ -1623,5 +1623,55 @@ Check ((Get-HostTextFindings $shellText $harnessText.Replace("    `$sv.SetResour
 Check ((Get-HostTextFindings $shellText.Replace('FontSize="{DynamicResource FastLlm.BodySize}"','FontSize="14"') $harnessText).Count -ge 1) 'mutation check: a Window with a literal font size is flagged (D)'
 # ===== end PR 3b review fix round 1 =====
 
+# ===== PR 3b: every new user-visible fluent string, exact text (lead gate F3/F9) =====
+# The approved wording, written out here as literals (never read back from the table), so a one-character change to any of them fails on macOS.
+# The Windows steps compare against the table entry and cannot see a changed string.
+$approvedStrings3b=[ordered]@{
+    ModelsStartWith        = 'Model to start with'
+    ModelsStartOptions     = 'Start options'
+    ModelsComponents       = 'Engine components'
+    RemoveFormat           = 'Remove {0}'
+    SpinUp                 = 'Increase'
+    SpinDown               = 'Decrease'
+    CopyFullOutputActivity = 'Copy full output (Activity)'
+    WhyNoPreview           = 'Start once to preview a setup first'
+    WhyBackgroundRun       = 'Available when the background run has ended'
+    WhyNoLeftovers         = 'No leftover partial downloads were found'
+    WhyBusy                = 'Available when the current task has finished'
+}
+# The string table's value for each key, read from the Home.ps1 AST (the [ordered]@{...} assigned to $script:FastLlmUiFluentStrings); $null when missing.
+function Get-FluentStringTableValues([string]$Text){
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $assign=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentStrings'},$true))
+    $values=@{}
+    if($assign.Count -ne 1){return $values}
+    $table=@($assign[0].Right.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))
+    if($table.Count -lt 1){return $values}
+    foreach($pair in $table[0].KeyValuePairs){
+        $k=[string]$pair.Item1.Extent.Text
+        $v=@($pair.Item2.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))
+        if($v.Count -eq 1){$values[$k]=[string]$v[0].Value}
+    }
+    return $values
+}
+function Get-ApprovedStringFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $actual=Get-FluentStringTableValues $Text
+    foreach($k in $approvedStrings3b.Keys){
+        if(-not $actual.ContainsKey($k)){[void]$f.Add("$k is missing from the string table");continue}
+        if([string]$actual[$k] -cne [string]$approvedStrings3b[$k]){[void]$f.Add("$k is '$($actual[$k])', approved '$($approvedStrings3b[$k])'")}
+    }
+    return $f.ToArray()
+}
+$homeStringsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentHome.ps1'))
+$asf=@(Get-ApprovedStringFindings $homeStringsText)
+foreach($x in $asf){Write-Host "FINDING: $x"}
+Check ($asf.Count -eq 0) 'every new 3b user-visible fluent string (3 headings, Remove {0}, Increase/Decrease, Copy full output (Activity), the greyed reasons) is exactly its approved text'
+Check (@(Get-ApprovedStringFindings $homeStringsText.Replace("'Available when the background run has ended'","'Available when the background run has finished'")).Count -ge 1) 'mutation check (lead F3): WhyBackgroundRun "has ended" changed to "has finished" is flagged'
+Check (@(Get-ApprovedStringFindings $homeStringsText.Replace("'Remove {0}'","'Remove'")).Count -ge 1) 'mutation check (lead F9): RemoveFormat "Remove {0}" changed to "Remove" is flagged'
+Check (@(Get-ApprovedStringFindings $homeStringsText.Replace("'Engine components'","'Engine component'")).Count -ge 1) 'mutation check: a one-character change to a heading is flagged'
+Check (@(Get-ApprovedStringFindings $homeStringsText.Replace("    SpinDown             = 'Decrease'`n",'')).Count -ge 1 -or @(Get-ApprovedStringFindings $homeStringsText.Replace("    SpinDown             = 'Decrease'`r`n",'')).Count -ge 1) 'mutation check: a missing approved key is flagged'
+# ===== end PR 3b: approved strings =====
+
 
 Write-Host "UI fluent member coverage tests passed: $checks"
