@@ -1123,6 +1123,18 @@ Check ($proof.install -ceq 'Install && start') 'a button keeps its classic text 
 # Test-FastLlmUiFluentHost, and Invoke-FastLlmUiFluentAccessibilityProbe, the body of doctor's child process); the first two are reachable only
 # through the fluent guard of the support-check statement, and the probe is never called in-process (checked below).
 function Get-FileAst([string]$Path){ return [System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$null) }
+# A fluent text table against its frozen literal: the same keys (sorted, so a plain hashtable also compares) and the same value for every key.
+function Get-FrozenTableProblems($Actual,$Frozen){
+    $found=New-Object System.Collections.ArrayList
+    $ak=@($Actual.Keys|ForEach-Object{[string]$_}|Sort-Object {$_} -CaseSensitive)
+    $fk=@($Frozen.Keys|ForEach-Object{[string]$_}|Sort-Object {$_} -CaseSensitive)
+    if(($ak -join "`n") -cne ($fk -join "`n")){[void]$found.Add("the table keys ($($ak -join ',')) differ from the frozen keys ($($fk -join ','))")}
+    foreach($k in $fk){
+        if($Actual.Contains($k) -and ([string]$Actual[$k]) -cne ([string]$Frozen[$k])){[void]$found.Add("the value of $k is '$($Actual[$k])', frozen '$($Frozen[$k])'")}
+    }
+    return ,$found.ToArray()
+}
+function Copy-Table($Table){ $c=[ordered]@{}; foreach($k in @($Table.Keys)){$c[$k]=$Table[$k]}; return $c }
 function Get-CommandCalls($Ast,[string]$CommandName){ return ,@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $CommandName},$true)) }
 function Get-Ancestor($Node,[type]$Type){ $a=$Node.Parent; while($null -ne $a -and $a -isnot $Type){$a=$a.Parent}; return $a }
 # 5b-delete-begin
@@ -1195,11 +1207,11 @@ $statement=([string]$supportLines[0]).Replace('$PSScriptRoot',"'"+$scratch.Repla
 $guardCounter=@{ setter = 0; dot = 0 }
 function Set-FastLlmUiFluentAccessibilitySwitches { $guardCounter.setter++ }
 try{
-    # 5b-delete-begin
+# 5b-delete-begin
     # A classic start never executes the accessibility setter: the same statement with $Window=classic.
     & { $Window='classic'; Invoke-Expression $statement }
     Check ($guardCounter.setter -eq 0 -and $guardCounter.dot -eq 0) 'a classic start never executes the accessibility setter (nor dot-sources the shell file)'
-    # 5b-delete-end
+# 5b-delete-end
     & { $Window='fluent'; Invoke-Expression $statement }
     Check ($guardCounter.setter -eq 1 -and $guardCounter.dot -eq 1) 'positive control: a start through the same statement dot-sources the shell file and runs the setter'
     # Mutant: a statement that no longer dot-sources the shell file does not run the setter, so the control above would fail on it.
@@ -1217,6 +1229,39 @@ Check ($connectAssign.Count -eq 1) 'the Connect text table is assigned exactly o
 $connectTable=& ([scriptblock]::Create($connectAssign[0].Right.Extent.Text))
 $connectKeys=@('Title','IntroRunning','IntroNotRunning','BaseUrl','AnthropicBaseUrl','ModelName','ContextLimit','ShownWhenRunning','ApiKey','Show','Hide','Copy','KeyUnreadable','CouldNotCopy','Endpoints','EndpointIndent','EndpointSeparator','Documentation','CheckFormats')
 Check ((@($connectTable.Keys) -join ',') -ceq ($connectKeys -join ',')) 'the Connect text table has the 19 planned keys, in order'
+# The frozen Connect table: the 19 values, written out as literals. Every value is a string constant of the classic ShowConnectDialog (the unconditional
+# check below, deleted with the dialog at the flip); the check here reads only the fluent source.
+$connectFrozen=[ordered]@{
+    Title='Connect an app'
+    IntroRunning='FastLLM is running. Use these values in your app. They stay on this computer (127.0.0.1).'
+    IntroNotRunning='FastLLM is not running. The model name and context limit appear once it is running; the address below is where it will listen.'
+    BaseUrl='Base URL'
+    AnthropicBaseUrl='Anthropic base URL'
+    ModelName='Model name'
+    ContextLimit='Context limit (tokens)'
+    ShownWhenRunning='(shown when running)'
+    ApiKey='API key'
+    Show='Show'
+    Hide='Hide'
+    Copy='Copy'
+    KeyUnreadable='The stored API key cannot be read.'
+    CouldNotCopy='Could not copy: '
+    Endpoints='Endpoints on the base URL:'
+    EndpointIndent='  '
+    EndpointSeparator=' - '
+    Documentation='Documentation: '
+    CheckFormats='Check the API formats'
+}
+Check ($connectFrozen.Count -eq 19 -and ((@($connectFrozen.Keys) -join ',') -ceq ($connectKeys -join ','))) 'the frozen Connect table holds the 19 planned keys, in order'
+Check ((Get-FrozenTableProblems $connectTable $connectFrozen).Count -eq 0) 'the Connect text table equals its frozen literal (19 keys, every value)'
+$cnMutValue=Copy-Table $connectTable; $cnMutValue['KeyUnreadable']='The stored API key cannot be read'
+$cnMutKey=Copy-Table $connectTable; $cnMutKey['Extra']='A new caption'
+$cnMutDrop=Copy-Table $connectTable; $cnMutDrop.Remove('Hide')
+Check ((Get-FrozenTableProblems $cnMutValue $connectFrozen).Count -ge 1) 'mutation check: a changed Connect table value fails the frozen literal'
+Check ((Get-FrozenTableProblems $cnMutKey $connectFrozen).Count -ge 1) 'mutation check: a new Connect table key fails the frozen literal'
+Check ((Get-FrozenTableProblems $cnMutDrop $connectFrozen).Count -ge 1) 'mutation check: a dropped Connect table key fails the frozen literal'
+Check ((Get-FrozenTableProblems (Copy-Table $connectTable) $connectFrozen).Count -eq 0) 'control: an unchanged copy of the Connect table passes the frozen literal'
+# 5b-delete-begin
 $dialogFn=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowConnectDialog'},$true))
 Check ($dialogFn.Count -eq 1) 'ShowConnectDialog is found by AST'
 $dialogConstants=@($dialogFn[0].FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true)|ForEach-Object{[string]$_.Value})
@@ -1246,6 +1291,11 @@ foreach($key in @($connectTable.Keys)){$mutatedTable[$key]=[string]$connectTable
 $mutatedTable['KeyUnreadable']='The stored API key cannot be read'
 Check ((Get-ConnectDriftProblems $mutatedTable $dialogConstants $dialogTextConstants).Count -ge 1) 'mutation check: a changed table value fails the drift pin'
 Check ((Get-ConnectDriftProblems $connectTable $dialogConstants @($dialogTextConstants.ToArray()+'A new caption')).Count -ge 1) 'mutation check: a new .Text constant in the dialog that the table lacks fails the drift pin'
+# The frozen literal against the classic dialog, unconditional: ShowConnectDialog must be found (checked above), and the literal must pass the same drift pin.
+$cnFrozenDrift=Get-ConnectDriftProblems $connectFrozen $dialogConstants $dialogTextConstants
+foreach($pr in $cnFrozenDrift){Write-Host "FINDING: $pr"}
+Check ($dialogFn.Count -eq 1 -and $cnFrozenDrift.Count -eq 0 -and $dialogTextConstants.Count -gt 10) 'the frozen Connect literal equals the classic ShowConnectDialog texts (every value is a classic constant, every classic .Text constant is in the literal or is Close)'
+# 5b-delete-end
 
 # ===== PR 3b: input style pins (Task 3) =====
 # The shell's TextBox, ComboBox, ComboBoxItem and spin button styles, read from the registered shell markup (XML), so they run on every platform. Each pin names
@@ -1508,7 +1558,7 @@ Check (-not (Test-NumberKeyWiring $numBody.Replace('$Element.Add_PreviewKeyDown(
 Check (-not (Test-NumberKeyWiring $numBody.Replace("`$direction = 'Up'; `$routed.Handled = `$true","`$direction = 'Up'"))) 'self-check: Up left unhandled (the caret also moves) is flagged'
 
 # The picker is computed once, by ShowUiSwitchPicker's opening statements ($status, its try, the picker call), inside an if on the Switch button's Enabled; that is the only call site in the file.
-function Get-PickerGuardFindings([string]$Text,[string]$ClassicText){
+function Get-PickerGuardFindings([string]$Text,[string[]]$Want){
     $found=New-Object System.Collections.ArrayList
     $a=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
     $calls=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Get-FastLlmUiSwitchPickerModel'},$true))
@@ -1517,21 +1567,33 @@ function Get-PickerGuardFindings([string]$Text,[string]$ClassicText){
     while($null -ne $p){ if($p -is [System.Management.Automation.Language.IfStatementAst]){$guard=$p;break}; $p=$p.Parent }
     if($null -eq $guard -or $guard.Clauses[0].Item1.Extent.Text -cnotmatch '\$script:switchButton\.Enabled'){[void]$found.Add('the picker call is not inside an if on $script:switchButton.Enabled');return ,$found.ToArray()}
     $body=@($guard.Clauses[0].Item2.Statements|ForEach-Object{$_.Extent.Text})
-    $ca=[System.Management.Automation.Language.Parser]::ParseInput($ClassicText,[ref]$null,[ref]$null)
-    $cf=@($ca.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowUiSwitchPicker'},$true))
-    if($cf.Count -ne 1){[void]$found.Add('ShowUiSwitchPicker is not found');return ,$found.ToArray()}
-    $want=@($cf[0].Body.EndBlock.Statements|Select-Object -First 3|ForEach-Object{$_.Extent.Text.Replace('(Join-Path $PSScriptRoot','(Join-Path $script:FastLlmUiFluentSourceRoot')})
-    if($body.Count -ne 4 -or $body[0] -cne $want[0] -or $body[1] -cne $want[1] -or $body[2] -cne $want[2]){[void]$found.Add('the guarded statements are not the first three statements of ShowUiSwitchPicker (status, its try, the picker call), with the source root, then the message write')}
+    $want=@($Want|ForEach-Object{([string]$_).Replace("`r`n","`n")})
+    if($body.Count -ne 4 -or $want.Count -ne 3 -or ([string]$body[0]).Replace("`r`n","`n") -cne $want[0] -or ([string]$body[1]).Replace("`r`n","`n") -cne $want[1] -or ([string]$body[2]).Replace("`r`n","`n") -cne $want[2]){[void]$found.Add('the guarded statements are not the first three statements of ShowUiSwitchPicker (status, its try, the picker call), with the source root, then the message write')}
     elseif($body[3] -cne "`$m['SwitchMessage'].Text = [string] `$picker.message"){[void]$found.Add('the fourth guarded statement is not the picker message write (the message is written only when the picker is computed)')}
     return ,$found.ToArray()
 }
-$classicUiText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
-$pickerFindings=Get-PickerGuardFindings $modelsText $classicUiText
+# The three statements ShowUiSwitchPicker opens with, as literals (the source root in place of the script root); the check against the classic function is below.
+$pickerWant=@(
+    '$status=$null',
+    'try{$status=Get-FastLlmStatus -InstallRoot $script:installPath}catch{}',
+    '$picker=Get-FastLlmUiSwitchPickerModel -InstallRoot $script:installPath -CatalogPath (Join-Path $script:FastLlmUiFluentSourceRoot ''config/catalog.json'') -Status $status'
+)
+$pickerFindings=Get-PickerGuardFindings $modelsText $pickerWant
 foreach($f in $pickerFindings){Write-Host "FINDING: $f"}
 Check ($pickerFindings.Count -eq 0) 'the picker is computed by ShowUiSwitchPicker statements inside the Switch-button-enabled guard, at one call site'
-Check ((Get-PickerGuardFindings $modelsText.Replace('if ([bool] $script:switchButton.Enabled) {','if ($true) {') $classicUiText).Count -ge 1) 'mutation check: a picker without the switchButton.Enabled guard is flagged'
-Check ((Get-PickerGuardFindings $modelsText.Replace("-CatalogPath (Join-Path `$script:FastLlmUiFluentSourceRoot 'config/catalog.json') -Status `$status","-CatalogPath (Join-Path `$script:FastLlmUiFluentSourceRoot 'config/other.json') -Status `$status") $classicUiText).Count -ge 1) 'mutation check: a changed picker statement is flagged'
-Check ((Get-PickerGuardFindings ($modelsText+"`nfunction Plant { Get-FastLlmUiSwitchPickerModel -InstallRoot x -CatalogPath y }") $classicUiText).Count -ge 1) 'mutation check: a second picker call site is flagged'
+Check ((Get-PickerGuardFindings $modelsText.Replace('if ([bool] $script:switchButton.Enabled) {','if ($true) {') $pickerWant).Count -ge 1) 'mutation check: a picker without the switchButton.Enabled guard is flagged'
+Check ((Get-PickerGuardFindings $modelsText.Replace("-CatalogPath (Join-Path `$script:FastLlmUiFluentSourceRoot 'config/catalog.json') -Status `$status","-CatalogPath (Join-Path `$script:FastLlmUiFluentSourceRoot 'config/other.json') -Status `$status") $pickerWant).Count -ge 1) 'mutation check: a changed picker statement is flagged'
+Check ((Get-PickerGuardFindings ($modelsText+"`nfunction Plant { Get-FastLlmUiSwitchPickerModel -InstallRoot x -CatalogPath y }") $pickerWant).Count -ge 1) 'mutation check: a second picker call site is flagged'
+Check ((Get-PickerGuardFindings $modelsText.Replace('try{$status=Get-FastLlmStatus -InstallRoot $script:installPath}catch{}','$status=$null') $pickerWant).Count -ge 1) 'mutation check: a picker without its status statement is flagged'
+Check ((Get-PickerGuardFindings $modelsText $pickerWant).Count -eq 0) 'control: the unmutated Models page passes the picker guard pin'
+# 5b-delete-begin
+# The literal statements against the classic ShowUiSwitchPicker, unconditional: the function must be found, and its first three statements are the literals.
+$pickerClassicAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$null,[ref]$null)
+$pickerClassicFn=@($pickerClassicAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowUiSwitchPicker'},$true))
+Check ($pickerClassicFn.Count -eq 1) 'ShowUiSwitchPicker is found in the classic window script'
+$pickerClassicWant=@($pickerClassicFn[0].Body.EndBlock.Statements|Select-Object -First 3|ForEach-Object{([string]$_.Extent.Text).Replace('(Join-Path $PSScriptRoot','(Join-Path $script:FastLlmUiFluentSourceRoot')})
+Check ($pickerClassicWant.Count -eq 3 -and ($pickerClassicWant -join "`n") -ceq ($pickerWant -join "`n")) 'the literal picker statements equal the first three statements of the classic ShowUiSwitchPicker'
+# 5b-delete-end
 # The tick hook: the helper may be called only inside the If of the edge; the edge compares the stored state with the button.
 $tickFn=Get-AstFunction $modelsAst 'Update-FastLlmUiFluentModels'
 Check ($tickFn.Count -eq 1 -and $tickFn[0].Body.Extent.Text -cmatch 'if \(\[bool\] \$script:switchButton\.Enabled -ne \[bool\] \$m\[''SwitchWas''\]\) \{ Update-FastLlmUiFluentModelsPicker \}') 'the tick hook computes the picker only on the Switch button edge'
@@ -1578,6 +1640,38 @@ $modelsTextAssign=@($modelsAst.FindAll({param($n) $n -is [System.Management.Auto
 Check ($modelsTextAssign.Count -eq 1) 'the Models text table is assigned exactly once'
 $modelsTable=& ([scriptblock]::Create($modelsTextAssign[0].Right.Extent.Text))
 Check ((@($modelsTable.Keys) -join ',') -ceq 'Model,Context,Folder,Bar,SwitchTitle,SwitchIntro,SwitchNow,DownloadedModels,RemoveLeftovers,Remove,NoModels,NoComponents,FreeFormat,ModelRowFormat,InUseFormat,LeftoversFormat,ModelListReadFormat,ComponentListReadFormat') 'the Models text table has the 18 planned keys, in order'
+# The frozen Models table: the 18 values as literals. Every value is a constant or a format template of the four classic functions (the unconditional check
+# below, deleted with them at the flip); the check here reads only the fluent source.
+$modelsFrozen=[ordered]@{
+    Model='Model'
+    Context='Context (0 = catalog default)'
+    Folder='Install and model cache folder'
+    Bar='Resizable BAR workaround'
+    SwitchTitle='Switch model'
+    SwitchIntro='FastLLM finishes the requests in progress, stops the running model and starts the one you pick. If the new model cannot start, the old one is started again. "Fits" is an estimate; FastLLM checks again when it switches.'
+    SwitchNow='Switch'
+    DownloadedModels='Downloaded models'
+    RemoveLeftovers='Remove leftover partial downloads'
+    Remove='Remove'
+    NoModels='No models are downloaded.'
+    NoComponents='No engine components are installed.'
+    FreeFormat='Free disk space: {0} GB'
+    ModelRowFormat='{0}  -  {1} GB'
+    InUseFormat='  (in use: {0})'
+    LeftoversFormat='{0} leftover file(s), {1} GB'
+    ModelListReadFormat='The model list could not be read: {0}'
+    ComponentListReadFormat='The component list could not be read: {0}'
+}
+Check ($modelsFrozen.Count -eq 18 -and ((@($modelsFrozen.Keys) -join ',') -ceq (@($modelsTable.Keys) -join ','))) 'the frozen Models table holds the 18 planned keys, in order'
+Check ((Get-FrozenTableProblems $modelsTable $modelsFrozen).Count -eq 0) 'the Models text table equals its frozen literal (18 keys, every value)'
+$mdMutValue=Copy-Table $modelsTable; $mdMutValue['NoModels']='No models are downloaded'
+$mdMutTemplate=Copy-Table $modelsTable; $mdMutTemplate['FreeFormat']='Free disk space: {0} GiB'
+$mdMutKey=Copy-Table $modelsTable; $mdMutKey['Extra']='A new caption'
+Check ((Get-FrozenTableProblems $mdMutValue $modelsFrozen).Count -ge 1) 'mutation check: a changed Models table value fails the frozen literal'
+Check ((Get-FrozenTableProblems $mdMutTemplate $modelsFrozen).Count -ge 1) 'mutation check: an edited Models template fails the frozen literal'
+Check ((Get-FrozenTableProblems $mdMutKey $modelsFrozen).Count -ge 1) 'mutation check: a new Models table key fails the frozen literal'
+Check ((Get-FrozenTableProblems (Copy-Table $modelsTable) $modelsFrozen).Count -eq 0) 'control: an unchanged copy of the Models table passes the frozen literal'
+# 5b-delete-begin
 $classicFns=@('ShowUiSwitchPicker','ShowModelsWindow','FillModelsPanel','FillComponentsPanel')
 function Get-TemplateText($Expandable){
     $text=[string]$Expandable.Value
@@ -1628,6 +1722,12 @@ $mutatedModels=[ordered]@{}; foreach($key in @($modelsTable.Keys)){$mutatedModel
 $mutatedModels['FreeFormat']='Free disk space: {0} GiB'
 Check ((Get-ModelsDriftProblems $mutatedModels $classicValues.ToArray() $classicAssigned.ToArray()).Count -ge 1) 'mutation check: an edited template fails the Models drift pin'
 Check ((Get-ModelsDriftProblems $modelsTable $classicValues.ToArray() @($classicAssigned.ToArray()+'A new caption')).Count -ge 1) 'mutation check: a new .Text literal in the classic code that the table lacks fails the Models drift pin'
+# The frozen literal against the classic code, unconditional: each of the four functions must be found, and the literal passes the same drift pin.
+foreach($cfn in $classicFns){ Check ((Get-AstFunction $classicAst $cfn).Count -eq 1) "the classic function $cfn is found in the window script" }
+$mdFrozenDrift=Get-ModelsDriftProblems $modelsFrozen $classicValues.ToArray() $classicAssigned.ToArray()
+foreach($pr in $mdFrozenDrift){Write-Host "FINDING: $pr"}
+Check ($mdFrozenDrift.Count -eq 0 -and $classicAssigned.Count -gt 8) "the frozen Models literal equals the classic Models texts (every value is a classic constant or template, every classic .Text constant is in the literal; $($classicAssigned.Count) assigned)"
+# 5b-delete-end
 
 # The list models (pure), with the store functions shadowed. The real functions are taken from the file by AST; the text table is the real one.
 $script:FastLlmUiFluentModelsText=$modelsTable
@@ -1718,7 +1818,7 @@ $msgLine="        # The picker's message is written only when the picker is comp
 Check ($modelsLf.Contains($msgLine)) 'the message write and its comment are found in the real text (the plant below moves them)'
 $movedOut=$modelsLf.Replace($msgLine,'').Replace("    foreach (`$pickerItem in @(`$picker.items)) { `$null = `$list.Items.Add([string] `$pickerItem.text) }`n","    foreach (`$pickerItem in @(`$picker.items)) { `$null = `$list.Items.Add([string] `$pickerItem.text) }`n    `$m['SwitchMessage'].Text = [string] `$picker.message`n")
 Check ($movedOut -cne $modelsLf -and (Get-PickerMessageFindings $movedOut).Count -ge 1) 'mutation check: the message write moved out of the on branch is flagged (B1)'
-Check ((Get-PickerGuardFindings $movedOut $classicUiText).Count -ge 1) 'mutation check: the message write moved out of the guard fails the picker guard pin too (B1)'
+Check ((Get-PickerGuardFindings $movedOut $pickerWant).Count -ge 1) 'mutation check: the message write moved out of the guard fails the picker guard pin too (B1)'
 Check ((Get-PickerMessageFindings $modelsLf.Replace("`$m['SwitchWas'] = `$enabled","`$null = `$enabled")).Count -ge 1) 'mutation check: SwitchWas not assigned is flagged (C-a)'
 Check ((Get-PickerMessageFindings $modelsLf.Replace("`$m['SwitchWas'] = `$enabled","`$m['SwitchWas'] = `$true")).Count -ge 1) 'mutation check: SwitchWas assigned a constant is flagged (C-a)'
 
@@ -2143,24 +2243,6 @@ function Get-EffectSequence($Scope){
     foreach($r in $ordered){ [void]$out.Add([string]$r.Tok) }
     return ,$out.ToArray()
 }
-function Get-ClassicEffectParts($Ast){
-    $parts=@{}
-    $bd=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'BuildUiSettingsDialog'},$true))
-    $show=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowUiSettings'},$true))
-    if($bd.Count -ne 1 -or $show.Count -ne 1){return $null}
-    $click=@($bd[0].FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Value -ceq 'Add_Click' -and $n.Expression.Extent.Text -ceq '$saveButton'},$true))
-    if($click.Count -ne 1){return $null}
-    $try=@($click[0].Arguments[0].ScriptBlock.EndBlock.Statements)[0]
-    $okIf=@($show[0].FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -cmatch "-ceq 'OK'"},$true))
-    $wrap=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Value -ceq 'Add_Click' -and $n.Expression.Extent.Text -ceq '$settingsButton'},$true))
-    if($try -isnot [System.Management.Automation.Language.TryStatementAst] -or $okIf.Count -ne 1 -or $wrap.Count -ne 1){return $null}
-    $wtry=@($wrap[0].Arguments[0].ScriptBlock.EndBlock.Statements)[0]
-    $parts['Try']=Get-EffectSequence $try.Body
-    $parts['Catch']=Get-EffectSequence $try.CatchClauses[0].Body
-    $parts['Ok']=Get-EffectSequence $okIf[0].Clauses[0].Item2
-    $parts['WrapCatch']=Get-EffectSequence $wtry.CatchClauses[0].Body
-    return $parts
-}
 function Get-EffectFindings([string]$Text,$Classic){
     $found=New-Object System.Collections.ArrayList
     $a=ConvertTo-PinAst $Text
@@ -2181,11 +2263,15 @@ function Get-EffectFindings([string]$Text,$Classic){
     }
     return ,$found.ToArray()
 }
-$classicParts=Get-ClassicEffectParts $classicAst
-Check ($null -ne $classicParts) 'the classic Save closure, the OK block and the settingsButton wrapper are found by AST'
-Check ((@($classicParts['Try']) -join ' | ') -ceq 'Get-FastLlmUiApiKeySaveAction | Get-FastLlmUiApiKeyChoiceText | Invoke-FastLlmApiKeySetting -Action on | NewUiApiKey | Invoke-FastLlmApiKeySetting -Action on | Invoke-FastLlmApiKeySetting -Action off | assign $script:apiKeyStore=$null | Set-FastLlmServingSettings | Set-FastLlmUiAllowSwitch | assign $script:uiSettings.allowSwitch') 'the classic save try projects to the ten steps (key decision, key write, store cleared, serving, switch)'
-Check ((@($classicParts['Catch']) -join ' | ') -ceq "MessageBox 'FastLLM settings' 'Warning' keyfree") 'the classic refusal catch projects to the one Warning box whose text is key-free'
-Check ((@($classicParts['Ok']) -join ' | ') -ceq "RefreshUiSwitchState | Get-FastLlmUiSettingsSavedNote | Get-FastLlmUiChatPageOffNote | MessageBox 'FastLLM settings' 'Information' raw" -and (@($classicParts['WrapCatch']) -join ' | ') -ceq 'ShowFailure') 'the classic after-OK block and the click wrapper project to the refresh, the notes, the Information box and ShowFailure'
+# The frozen effect sequences of today's Save closure (the try), its refusal catch, the after-OK block and the click wrapper's failure path, as literal token lists.
+# The tokens are the projection of Get-EffectSequence; the check against the classic closure is below the pin (deleted with the dialog at the flip).
+$effectFrozen=@{
+    Try=@('Get-FastLlmUiApiKeySaveAction','Get-FastLlmUiApiKeyChoiceText','Invoke-FastLlmApiKeySetting -Action on','NewUiApiKey','Invoke-FastLlmApiKeySetting -Action on','Invoke-FastLlmApiKeySetting -Action off','assign $script:apiKeyStore=$null','Set-FastLlmServingSettings','Set-FastLlmUiAllowSwitch','assign $script:uiSettings.allowSwitch')
+    Catch=@('MessageBox ''FastLLM settings'' ''Warning'' keyfree')
+    Ok=@('RefreshUiSwitchState','Get-FastLlmUiSettingsSavedNote','Get-FastLlmUiChatPageOffNote','MessageBox ''FastLLM settings'' ''Information'' raw')
+    WrapCatch=@('ShowFailure')
+}
+Check ($effectFrozen.Try.Count -eq 10 -and $effectFrozen.Catch.Count -eq 1 -and $effectFrozen.Ok.Count -eq 4 -and $effectFrozen.WrapCatch.Count -eq 1) 'the frozen effect sequences hold the ten save steps, the one refusal box, the four after-OK steps and ShowFailure'
 $fxGood=@'
 function Invoke-FastLlmUiFluentSettingsSave {
     $null = $script:settingsPortCommit
@@ -2229,7 +2315,7 @@ function Invoke-FastLlmUiFluentSettingsSave {
     return $true
 }
 '@
-$fxGoodFindings=Get-EffectFindings $fxGood $classicParts
+$fxGoodFindings=Get-EffectFindings $fxGood $effectFrozen
 foreach($f in $fxGoodFindings){Write-Host "FINDING: $f"}
 Check ($fxGoodFindings.Count -eq 0) 'self-check: a well formed Save copy has today''s effect sequence in both segments'
 function Edit-FxPlant([string]$From,[string]$To){ if($fxGood.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: plant anchor missing: $From"}; return $fxGood.Replace($From,$To) }
@@ -2250,12 +2336,12 @@ $fxPlants=[ordered]@{
     'the key decision dropped'=(Edit-FxPlant "        `$keyAction = Get-FastLlmUiApiKeySaveAction -Current ([string] `$current.apiKey) -Undetermined ([bool] `$current.apiKeyUndetermined) -BoxState (ConvertTo-FastLlmUiKeyBoxState -IsChecked `$x) -Touched ([bool] `$held.keyTouched)" "        `$keyAction = 'on'")
 }
 foreach($k in $fxPlants.Keys){
-    Check ($fxPlants[$k] -cne $fxGood -and (Get-EffectFindings $fxPlants[$k] $classicParts).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
+    Check ($fxPlants[$k] -cne $fxGood -and (Get-EffectFindings $fxPlants[$k] $effectFrozen).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
 }
 # The fluent box is the same effect as the system box: the well formed copy with both boxes as Show-FastLlmUiFluentMessageBox has no finding, and its mutants are flagged.
 $fxFluent=$fxGood.Replace("[void] [Windows.Forms.MessageBox]::Show(`$script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref] `$saveFailureText)), 'FastLLM settings', 'OK', 'Warning')","[void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] `$saveFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning')").Replace("[void] [Windows.Forms.MessageBox]::Show(`$script:form, [string] `$script:statusLabel.Text, 'FastLLM settings', 'OK', 'Information')","[void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text ([string] `$script:statusLabel.Text) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Information')")
 Check ($fxFluent -cne $fxGood -and $fxFluent.Contains('Show-FastLlmUiFluentMessageBox') -and -not $fxFluent.Contains('MessageBox]::Show')) 'self-check: the fluent variant of the well formed Save copy uses only the fluent box'
-$fxFluentFindings=Get-EffectFindings $fxFluent $classicParts
+$fxFluentFindings=Get-EffectFindings $fxFluent $effectFrozen
 foreach($f in $fxFluentFindings){Write-Host "FINDING: $f"}
 Check ($fxFluentFindings.Count -eq 0) 'self-check: the fluent box projects as the classic box (same caption, icon and key-free state, no finding)'
 $fxFluentPlants=[ordered]@{
@@ -2267,11 +2353,37 @@ $fxFluentPlants=[ordered]@{
     'fluent refusal box without its text'=$fxFluent.Replace('-Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] $saveFailureText)) ','')
 }
 foreach($k in $fxFluentPlants.Keys){
-    Check ($fxFluentPlants[$k] -cne $fxFluent -and (Get-EffectFindings $fxFluentPlants[$k] $classicParts).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
+    Check ($fxFluentPlants[$k] -cne $fxFluent -and (Get-EffectFindings $fxFluentPlants[$k] $effectFrozen).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
 }
-$fxReal=Get-EffectFindings $settingsText $classicParts
+$fxReal=Get-EffectFindings $settingsText $effectFrozen
 foreach($f in $fxReal){Write-Host "FINDING: $f"}
 Check ($settingsText -ne '' -and $fxReal.Count -eq 0) 'the Settings page Save copy has the effect sequence of today''s Save and after-OK block (two segments)'
+# 5b-delete-begin
+function Get-ClassicEffectParts($Ast){
+    $parts=@{}
+    $bd=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'BuildUiSettingsDialog'},$true))
+    $show=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ShowUiSettings'},$true))
+    if($bd.Count -ne 1 -or $show.Count -ne 1){return $null}
+    $click=@($bd[0].FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Value -ceq 'Add_Click' -and $n.Expression.Extent.Text -ceq '$saveButton'},$true))
+    if($click.Count -ne 1){return $null}
+    $try=@($click[0].Arguments[0].ScriptBlock.EndBlock.Statements)[0]
+    $okIf=@($show[0].FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -cmatch "-ceq 'OK'"},$true))
+    $wrap=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Value -ceq 'Add_Click' -and $n.Expression.Extent.Text -ceq '$settingsButton'},$true))
+    if($try -isnot [System.Management.Automation.Language.TryStatementAst] -or $okIf.Count -ne 1 -or $wrap.Count -ne 1){return $null}
+    $wtry=@($wrap[0].Arguments[0].ScriptBlock.EndBlock.Statements)[0]
+    $parts['Try']=Get-EffectSequence $try.Body
+    $parts['Catch']=Get-EffectSequence $try.CatchClauses[0].Body
+    $parts['Ok']=Get-EffectSequence $okIf[0].Clauses[0].Item2
+    $parts['WrapCatch']=Get-EffectSequence $wtry.CatchClauses[0].Body
+    return $parts
+}
+$classicParts=Get-ClassicEffectParts $classicAst
+Check ($null -ne $classicParts) 'the classic Save closure, the OK block and the settingsButton wrapper are found by AST'
+foreach($fxPart in 'Try','Catch','Ok','WrapCatch'){ Check ($null -ne $classicParts -and (@($classicParts[$fxPart]) -join ' | ') -ceq (@($effectFrozen[$fxPart]) -join ' | ')) "the frozen $fxPart effect sequence equals the classic one" }
+Check ((@($classicParts['Try']) -join ' | ') -ceq 'Get-FastLlmUiApiKeySaveAction | Get-FastLlmUiApiKeyChoiceText | Invoke-FastLlmApiKeySetting -Action on | NewUiApiKey | Invoke-FastLlmApiKeySetting -Action on | Invoke-FastLlmApiKeySetting -Action off | assign $script:apiKeyStore=$null | Set-FastLlmServingSettings | Set-FastLlmUiAllowSwitch | assign $script:uiSettings.allowSwitch') 'the classic save try projects to the ten steps (key decision, key write, store cleared, serving, switch)'
+Check ((@($classicParts['Catch']) -join ' | ') -ceq "MessageBox 'FastLLM settings' 'Warning' keyfree") 'the classic refusal catch projects to the one Warning box whose text is key-free'
+Check ((@($classicParts['Ok']) -join ' | ') -ceq "RefreshUiSwitchState | Get-FastLlmUiSettingsSavedNote | Get-FastLlmUiChatPageOffNote | MessageBox 'FastLLM settings' 'Information' raw" -and (@($classicParts['WrapCatch']) -join ' | ') -ceq 'ShowFailure') 'the classic after-OK block and the click wrapper project to the refresh, the notes, the Information box and ShowFailure'
+# 5b-delete-end
 
 # ---- (2) The mapping pin: held values to saved values, and saved values to held ones, for every input, from the classic AST and the fluent functions ----
 function Get-PinFunctionText([string]$Rel,[string]$Name){
@@ -2289,6 +2401,79 @@ if($mapFrom){ . ([scriptblock]::Create($mapFromText)) }
 if($mapTo){ . ([scriptblock]::Create($mapToText)) }
 if($mapBox){ . ([scriptblock]::Create($mapBoxText)) }
 Check ($mapFrom -and $mapTo -and $mapBox) 'ConvertFrom-FastLlmUiSettingsHeld, ConvertTo-FastLlmUiSettingsHeld and Get-FastLlmUiApiKeyBoxState are each defined once'
+# The frozen expectations of today's dialog expressions, one table per expression and input: what the held value saves as (thinking, idle, port, chat, switch) and
+# what each saved value is held as (thinking, idle, chat, port). The check against the classic dialog expressions is below the pin (deleted at the flip).
+$mapWantFrozen=@{
+    Thinking=@{'-1'='auto';'0'='auto';'1'='off';'2'='auto'}
+    Idle=@{'-1'=0;'0'=0;'1'=15;'2'=30;'3'=60}
+    Port=@{'1024'=1024;'11434'=11434;'65535'=65535}
+    Chat=@{'True'='on';'False'='off'}
+    Switch=@{'True'=$true;'False'=$false}
+    InitThinking=@{'auto'=0;'off'=1;'weird'=0;''=0}
+    InitIdle=@{'0'=0;'15'=1;'30'=2;'60'=3;'45'=0;'-1'=0;'999'=0}
+    InitChat=@{'on'=$true;'off'=$false;''=$false}
+    InitPort=@{'8080'=8080}
+}
+function Get-MappingDisagreements([scriptblock]$From,[scriptblock]$To,$Want){
+    $bad=New-Object System.Collections.ArrayList
+    foreach($port in 1024,11434,65535){foreach($think in -1,0,1,2){foreach($chat in $true,$false){foreach($idle in -1,0,1,2,3){foreach($sw in $true,$false){
+        $held=[pscustomobject]@{port=$port;thinkingIndex=$think;chatPage=$chat;idleIndex=$idle;keyBox='unchecked';keyTouched=$false;allowSwitch=$sw}
+        $got=& $From -Held $held
+        $wantThinking=[string]$Want.Thinking[[string]$think]
+        $wantIdle=[int]$Want.Idle[[string]$idle]
+        $wantPort=[int]$Want.Port[[string]$port]
+        $wantChat=[string]$Want.Chat[[string]$chat]
+        $wantSwitch=[bool]$Want.Switch[[string]$sw]
+        if([string]$got.thinking -cne $wantThinking){[void]$bad.Add("thinkingIndex $think saves '$($got.thinking)', today saves '$wantThinking'")}
+        if([int]$got.idleStopMinutes -ne $wantIdle -or $got.idleStopMinutes -isnot [int]){[void]$bad.Add("idleIndex $idle saves '$($got.idleStopMinutes)', today saves $wantIdle")}
+        if([int]$got.serverPort -ne $wantPort -or $got.serverPort -isnot [int]){[void]$bad.Add("port $port saves '$($got.serverPort)', today saves $wantPort")}
+        if([string]$got.chatPage -cne $wantChat){[void]$bad.Add("chat $chat saves '$($got.chatPage)', today saves '$wantChat'")}
+        if([bool]$got.allowSwitch -ne $wantSwitch){[void]$bad.Add("switch $sw saves '$($got.allowSwitch)', today saves $wantSwitch")}
+    }}}}}
+    foreach($think in 'auto','off','weird',''){foreach($idle in 0,15,30,60,45,-1,999){foreach($chat in 'on','off',''){foreach($keyCase in @(@{apiKey='on';apiKeyUndetermined=$false},@{apiKey='off';apiKeyUndetermined=$false},@{apiKey='on';apiKeyUndetermined=$true})){
+        $cur=[pscustomobject]@{serverPort=8080;thinking=$think;chatPage=$chat;idleStopMinutes=$idle;apiKey=$keyCase.apiKey;apiKeyUndetermined=$keyCase.apiKeyUndetermined;allowSwitch=$false}
+        $h=& $To -Current $cur
+        $wantT=[int]$Want.InitThinking[[string]$think]
+        $wantI=[int]$Want.InitIdle[[string]$idle]
+        $wantC=[bool]$Want.InitChat[[string]$chat]
+        $wantP=[int]$Want.InitPort['8080']
+        if([int]$h.thinkingIndex -ne $wantT){[void]$bad.Add("saved thinking '$think' is held as $($h.thinkingIndex), today shows $wantT")}
+        if([int]$h.idleIndex -ne $wantI){[void]$bad.Add("saved idle $idle is held as $($h.idleIndex), today shows $wantI")}
+        if([bool]$h.chatPage -ne $wantC){[void]$bad.Add("saved chat '$chat' is held as $($h.chatPage), today shows $wantC")}
+        if([int]$h.port -ne $wantP){[void]$bad.Add("saved port is held as $($h.port), today shows $wantP")}
+        $state=[string](Get-FastLlmUiApiKeyBoxState -Settings $cur)
+        if([string]$h.keyBox -cne $state){[void]$bad.Add("the key box is held as '$($h.keyBox)', today shows '$state'")}
+    }}}}
+    return ,@($bad.ToArray()|Select-Object -Unique)
+}
+if($mapFrom -and $mapTo -and $mapBox){
+    $mapReal=Get-MappingDisagreements ${function:ConvertFrom-FastLlmUiSettingsHeld} ${function:ConvertTo-FastLlmUiSettingsHeld} $mapWantFrozen
+    foreach($m in $mapReal){Write-Host "FINDING: $m"}
+    Check ($mapReal.Count -eq 0) 'the held-to-saved and saved-to-held mappings agree with today''s dialog expressions for every input (thinking, idle table, port cast, chat on/off, switch)'
+    # Mutants of the fluent functions, each written whole so the comparison is what is proven.
+    $fromGood={param($Held) [pscustomobject]@{serverPort=[int]$Held.port;thinking=[string]$(if([int]$Held.thinkingIndex -eq 1){'off'}else{'auto'});chatPage=[string]$(if([bool]$Held.chatPage){'on'}else{'off'});idleStopMinutes=[int]@(0,15,30,60)[[Math]::Max(0,[int]$Held.idleIndex)];allowSwitch=[bool]$Held.allowSwitch}}
+    $toGood={param($Current) [pscustomobject]@{port=[int]$Current.serverPort;thinkingIndex=[int]$(if([string]$Current.thinking -ceq 'off'){1}else{0});chatPage=[bool]([string]$Current.chatPage -ceq 'on');idleIndex=[int]$(switch([int]$Current.idleStopMinutes){15{1}30{2}60{3}default{0}});keyBox=[string](Get-FastLlmUiApiKeyBoxState -Settings $Current);keyTouched=$false;allowSwitch=[bool]$Current.allowSwitch}}
+    Check ((Get-MappingDisagreements $fromGood $toGood $mapWantFrozen).Count -eq 0) 'self-check: a correct pair of mapping functions agrees with today''s expressions'
+    $mapPlants=[ordered]@{
+        'thinking off at index 0'=@($fromGood.ToString().Replace('-eq 1)','-eq 0)'),$toGood)
+        'idle table with 45'=@($fromGood.ToString().Replace('@(0,15,30,60)','@(0,15,30,45)'),$toGood)
+        'idle index not clamped at 0'=@($fromGood.ToString().Replace('[Math]::Max(0,[int]$Held.idleIndex)','([int]$Held.idleIndex+0)'),$toGood)
+        'chat on and off swapped'=@($fromGood.ToString().Replace("{'on'}else{'off'}","{'off'}else{'on'}"),$toGood)
+        'port off by one'=@($fromGood.ToString().Replace('[int]$Held.port','([int]$Held.port+1)'),$toGood)
+        'switch inverted'=@($fromGood.ToString().Replace('allowSwitch=[bool]$Held.allowSwitch','allowSwitch=-not [bool]$Held.allowSwitch'),$toGood)
+        'saved idle 30 held as 3'=@($fromGood,$toGood.ToString().Replace('30{2}','30{3}'))
+        'saved thinking never held off'=@($fromGood,$toGood.ToString().Replace("-ceq 'off'","-ceq 'never'"))
+        'saved chat held inverted'=@($fromGood,$toGood.ToString().Replace("-ceq 'on')","-ceq 'off')"))
+        'the key box state invented'=@($fromGood,$toGood.ToString().Replace('keyBox=[string](Get-FastLlmUiApiKeyBoxState -Settings $Current)',"keyBox='unchecked'"))
+    }
+    foreach($k in $mapPlants.Keys){
+        $pf=[scriptblock]::Create($mapPlants[$k][0].ToString()); $pt=[scriptblock]::Create($mapPlants[$k][1].ToString())
+        Check ($mapPlants[$k][0].ToString() -cne $fromGood.ToString() -or $mapPlants[$k][1].ToString() -cne $toGood.ToString()) "the mapping plant '$k' changed the text"
+        Check ((Get-MappingDisagreements $pf $pt $mapWantFrozen).Count -ge 1) "mutation check: the mapping pin flags: $k"
+    }
+}
+
+# 5b-delete-begin
 $settingsDialogFn=@($classicAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'BuildUiSettingsDialog'},$true))[0]
 function Get-AssignRight($Scope,[string]$LeftText){
     $m=@($Scope.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and ($n.Left.Extent.Text -replace '\s','') -ceq $LeftText},$true))
@@ -2317,66 +2502,26 @@ function Invoke-ClassicExpr([string]$Expr,[string]$Param,$Value){
     $argsList=@(); foreach($n in $names){ if($n -ceq $Param){$argsList+=,$Value}else{$argsList+=,$null} }
     return (& $sb @argsList)
 }
-function Get-MappingDisagreements([scriptblock]$From,[scriptblock]$To){
-    $bad=New-Object System.Collections.ArrayList
-    foreach($port in 1024,11434,65535){foreach($think in -1,0,1,2){foreach($chat in $true,$false){foreach($idle in -1,0,1,2,3){foreach($sw in $true,$false){
-        $held=[pscustomobject]@{port=$port;thinkingIndex=$think;chatPage=$chat;idleIndex=$idle;keyBox='unchecked';keyTouched=$false;allowSwitch=$sw}
-        $got=& $From -Held $held
-        $wantThinking=[string](Invoke-ClassicExpr $clThinking 'thinkingBox' ([pscustomobject]@{SelectedIndex=$think}))
-        $wantIdle=[int](Invoke-ClassicExpr $clIdle 'idleBox' ([pscustomobject]@{SelectedIndex=$idle}))
-        $wantPort=[int](Invoke-ClassicExpr $clPort 'portBox' ([pscustomobject]@{Value=[decimal]$port}))
-        $wantChat=[string](Invoke-ClassicExpr $clChat 'chatBox' ([pscustomobject]@{Checked=$chat}))
-        $wantSwitch=[bool](Invoke-ClassicExpr $clSwitch 'switchBox' ([pscustomobject]@{Checked=$sw}))
-        if([string]$got.thinking -cne $wantThinking){[void]$bad.Add("thinkingIndex $think saves '$($got.thinking)', today saves '$wantThinking'")}
-        if([int]$got.idleStopMinutes -ne $wantIdle -or $got.idleStopMinutes -isnot [int]){[void]$bad.Add("idleIndex $idle saves '$($got.idleStopMinutes)', today saves $wantIdle")}
-        if([int]$got.serverPort -ne $wantPort -or $got.serverPort -isnot [int]){[void]$bad.Add("port $port saves '$($got.serverPort)', today saves $wantPort")}
-        if([string]$got.chatPage -cne $wantChat){[void]$bad.Add("chat $chat saves '$($got.chatPage)', today saves '$wantChat'")}
-        if([bool]$got.allowSwitch -ne $wantSwitch){[void]$bad.Add("switch $sw saves '$($got.allowSwitch)', today saves $wantSwitch")}
-    }}}}}
-    foreach($think in 'auto','off','weird',''){foreach($idle in 0,15,30,60,45,-1,999){foreach($chat in 'on','off',''){foreach($keyCase in @(@{apiKey='on';apiKeyUndetermined=$false},@{apiKey='off';apiKeyUndetermined=$false},@{apiKey='on';apiKeyUndetermined=$true})){
-        $cur=[pscustomobject]@{serverPort=8080;thinking=$think;chatPage=$chat;idleStopMinutes=$idle;apiKey=$keyCase.apiKey;apiKeyUndetermined=$keyCase.apiKeyUndetermined;allowSwitch=$false}
-        $h=& $To -Current $cur
-        $wantT=[int](Invoke-ClassicExpr $clInitThinking 'current' $cur)
-        $wantI=[int](Invoke-ClassicExpr $clInitIdle 'current' $cur)
-        $wantC=[bool](Invoke-ClassicExpr $clInitChat 'current' $cur)
-        $wantP=[int](Invoke-ClassicExpr $clInitPort 'current' $cur)
-        if([int]$h.thinkingIndex -ne $wantT){[void]$bad.Add("saved thinking '$think' is held as $($h.thinkingIndex), today shows $wantT")}
-        if([int]$h.idleIndex -ne $wantI){[void]$bad.Add("saved idle $idle is held as $($h.idleIndex), today shows $wantI")}
-        if([bool]$h.chatPage -ne $wantC){[void]$bad.Add("saved chat '$chat' is held as $($h.chatPage), today shows $wantC")}
-        if([int]$h.port -ne $wantP){[void]$bad.Add("saved port is held as $($h.port), today shows $wantP")}
-        $state=[string](Get-FastLlmUiApiKeyBoxState -Settings $cur)
-        if([string]$h.keyBox -cne $state){[void]$bad.Add("the key box is held as '$($h.keyBox)', today shows '$state'")}
-    }}}}
-    return ,@($bad.ToArray()|Select-Object -Unique)
+function Get-MappingWantFromClassic{
+    $w=@{Thinking=@{};Idle=@{};Port=@{};Chat=@{};Switch=@{};InitThinking=@{};InitIdle=@{};InitChat=@{};InitPort=@{}}
+    foreach($think in -1,0,1,2){ $w.Thinking[[string]$think]=[string](Invoke-ClassicExpr $clThinking 'thinkingBox' ([pscustomobject]@{SelectedIndex=$think})) }
+    foreach($idle in -1,0,1,2,3){ $w.Idle[[string]$idle]=[int](Invoke-ClassicExpr $clIdle 'idleBox' ([pscustomobject]@{SelectedIndex=$idle})) }
+    foreach($port in 1024,11434,65535){ $w.Port[[string]$port]=[int](Invoke-ClassicExpr $clPort 'portBox' ([pscustomobject]@{Value=[decimal]$port})) }
+    foreach($chat in $true,$false){ $w.Chat[[string]$chat]=[string](Invoke-ClassicExpr $clChat 'chatBox' ([pscustomobject]@{Checked=$chat})) }
+    foreach($sw in $true,$false){ $w.Switch[[string]$sw]=[bool](Invoke-ClassicExpr $clSwitch 'switchBox' ([pscustomobject]@{Checked=$sw})) }
+    $base=@{serverPort=8080;apiKey='on';apiKeyUndetermined=$false;allowSwitch=$false}
+    foreach($think in 'auto','off','weird',''){ $cur=[pscustomobject]($base+@{thinking=$think;chatPage='on';idleStopMinutes=0}); $w.InitThinking[[string]$think]=[int](Invoke-ClassicExpr $clInitThinking 'current' $cur) }
+    foreach($idle in 0,15,30,60,45,-1,999){ $cur=[pscustomobject]($base+@{thinking='auto';chatPage='on';idleStopMinutes=$idle}); $w.InitIdle[[string]$idle]=[int](Invoke-ClassicExpr $clInitIdle 'current' $cur) }
+    foreach($chat in 'on','off',''){ $cur=[pscustomobject]($base+@{thinking='auto';chatPage=$chat;idleStopMinutes=0}); $w.InitChat[[string]$chat]=[bool](Invoke-ClassicExpr $clInitChat 'current' $cur) }
+    $cur=[pscustomobject]($base+@{thinking='auto';chatPage='on';idleStopMinutes=0}); $w.InitPort['8080']=[int](Invoke-ClassicExpr $clInitPort 'current' $cur)
+    return $w
 }
-if($mapFrom -and $mapTo -and $mapBox){
-    $mapReal=Get-MappingDisagreements ${function:ConvertFrom-FastLlmUiSettingsHeld} ${function:ConvertTo-FastLlmUiSettingsHeld}
-    foreach($m in $mapReal){Write-Host "FINDING: $m"}
-    Check ($mapReal.Count -eq 0) 'the held-to-saved and saved-to-held mappings agree with today''s dialog expressions for every input (thinking, idle table, port cast, chat on/off, switch)'
-    # Mutants of the fluent functions, each written whole so the comparison is what is proven.
-    $fromGood={param($Held) [pscustomobject]@{serverPort=[int]$Held.port;thinking=[string]$(if([int]$Held.thinkingIndex -eq 1){'off'}else{'auto'});chatPage=[string]$(if([bool]$Held.chatPage){'on'}else{'off'});idleStopMinutes=[int]@(0,15,30,60)[[Math]::Max(0,[int]$Held.idleIndex)];allowSwitch=[bool]$Held.allowSwitch}}
-    $toGood={param($Current) [pscustomobject]@{port=[int]$Current.serverPort;thinkingIndex=[int]$(if([string]$Current.thinking -ceq 'off'){1}else{0});chatPage=[bool]([string]$Current.chatPage -ceq 'on');idleIndex=[int]$(switch([int]$Current.idleStopMinutes){15{1}30{2}60{3}default{0}});keyBox=[string](Get-FastLlmUiApiKeyBoxState -Settings $Current);keyTouched=$false;allowSwitch=[bool]$Current.allowSwitch}}
-    Check ((Get-MappingDisagreements $fromGood $toGood).Count -eq 0) 'self-check: a correct pair of mapping functions agrees with today''s expressions'
-    $mapPlants=[ordered]@{
-        'thinking off at index 0'=@($fromGood.ToString().Replace('-eq 1)','-eq 0)'),$toGood)
-        'idle table with 45'=@($fromGood.ToString().Replace('@(0,15,30,60)','@(0,15,30,45)'),$toGood)
-        'idle index not clamped at 0'=@($fromGood.ToString().Replace('[Math]::Max(0,[int]$Held.idleIndex)','([int]$Held.idleIndex+0)'),$toGood)
-        'chat on and off swapped'=@($fromGood.ToString().Replace("{'on'}else{'off'}","{'off'}else{'on'}"),$toGood)
-        'port off by one'=@($fromGood.ToString().Replace('[int]$Held.port','([int]$Held.port+1)'),$toGood)
-        'switch inverted'=@($fromGood.ToString().Replace('allowSwitch=[bool]$Held.allowSwitch','allowSwitch=-not [bool]$Held.allowSwitch'),$toGood)
-        'saved idle 30 held as 3'=@($fromGood,$toGood.ToString().Replace('30{2}','30{3}'))
-        'saved thinking never held off'=@($fromGood,$toGood.ToString().Replace("-ceq 'off'","-ceq 'never'"))
-        'saved chat held inverted'=@($fromGood,$toGood.ToString().Replace("-ceq 'on')","-ceq 'off')"))
-        'the key box state invented'=@($fromGood,$toGood.ToString().Replace('keyBox=[string](Get-FastLlmUiApiKeyBoxState -Settings $Current)',"keyBox='unchecked'"))
-    }
-    foreach($k in $mapPlants.Keys){
-        $pf=[scriptblock]::Create($mapPlants[$k][0].ToString()); $pt=[scriptblock]::Create($mapPlants[$k][1].ToString())
-        Check ($mapPlants[$k][0].ToString() -cne $fromGood.ToString() -or $mapPlants[$k][1].ToString() -cne $toGood.ToString()) "the mapping plant '$k' changed the text"
-        Check ((Get-MappingDisagreements $pf $pt).Count -ge 1) "mutation check: the mapping pin flags: $k"
-    }
-}
-
+function Format-MappingWant($Want){ return (@($Want.Keys|Sort-Object|ForEach-Object{ $sec=$_; $sec+'{'+((@($Want[$sec].Keys|Sort-Object|ForEach-Object{ "$_="+[string]$Want[$sec][$_] })) -join ';')+'}' }) -join ' ') }
+$mapWantClassic=Get-MappingWantFromClassic
+Check ((Format-MappingWant $mapWantClassic) -ceq (Format-MappingWant $mapWantFrozen)) 'the frozen mapping expectations equal what the classic dialog expressions give for every input'
+# 5b-delete-end
 # ---- (3) The text drift pin, extended from 3b's: constants, templates, Items.Add arguments, and a +[string][char]0x2026 concatenation as that character ----
+# 5b-delete-begin
 function Test-ConstantOnlyNode($Node){
     return (@($Node.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -or $n -is [System.Management.Automation.Language.CommandAst] -or $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -or $n -is [System.Management.Automation.Language.MemberExpressionAst] -or $n -is [System.Management.Automation.Language.SubExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] -or $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -or $n -is [System.Management.Automation.Language.IndexExpressionAst]},$true)).Count -eq 0)
 }
@@ -2445,13 +2590,59 @@ Check ((Get-SettingsDriftProblems $refTable $settingsClassic.Values @($settingsC
 $driftPlant=[ordered]@{}; foreach($key in $refTable.Keys){$driftPlant[$key]=[string]$refTable[$key]}
 foreach($key in @($driftPlant.Keys)){ if($driftPlant[$key] -ceq ('Create a new key'+[string][char]0x2026)){$driftPlant[$key]='Create a new key...'} }
 Check ((Get-SettingsDriftProblems $driftPlant $settingsClassic.Values $settingsClassic.Assigned).Count -ge 1) 'mutation check: the ellipsis built as three dots fails the Settings drift pin'
+# 5b-delete-end
 $settingsAst=ConvertTo-PinAst $settingsText
 $settingsTextAssign=@($settingsAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentSettingsText'},$true))
 Check ($settingsTextAssign.Count -eq 1) 'the Settings text table is assigned exactly once'
 $settingsTable=& ([scriptblock]::Create($settingsTextAssign[0].Right.Extent.Text))
+# The frozen Settings table: the 24 values as literals (the ellipsis is character 0x2026). Every value is a constant, a template or a built string of the classic Settings
+# dialog, and every text the dialog shows is in it (the unconditional check below, deleted with the dialog at the flip); the check here reads only the fluent source.
+$settingsFrozen=[ordered]@{
+    Title='FastLLM settings'
+    Port='Port (127.0.0.1 only)'
+    Thinking='Thinking'
+    ThinkingAuto='Auto (recommended)'
+    ThinkingOff='Off: faster answers. Quality with thinking off is not measured by Bitworks.'
+    Chat='Local chat page (off by default)'
+    ChatHelp='Chats are kept by your browser, not by FastLLM.'
+    Idle='Stop the model when idle'
+    IdleNever='Never (default)'
+    IdleAfter15='After 15 minutes'
+    IdleAfter30='After 30 minutes'
+    IdleAfter60='After 60 minutes'
+    IdleHelp='Frees the GPU memory. Apps get no answer until you start FastLLM again.'
+    Key='Require an API key (off by default)'
+    KeyNotSet='Require an API key (not set: tick or clear this box to choose)'
+    KeyHelp='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.'
+    NewKey='Create a new key'+[string][char]0x2026
+    SignIn='Start FastLLM when I sign in'
+    SignInUnreadable='Start at sign-in could not be read on this PC.'
+    Switch='Allow switching models while FastLLM runs'
+    SwitchHelp='Off by default; applies from the next start. A switch checks the new model again and starts the old one if it cannot start. Stop always wins.'
+    Save='Save'
+    Cancel='Cancel'
+    NotTurnedOn='The API key was not turned on: the stored key cannot be read and no new key was created. Nothing was changed.'
+}
+Check ($settingsFrozen.Count -eq 24 -and ((@($settingsFrozen.Keys) -join ',') -ceq (@($settingsTable.Keys) -join ','))) 'the frozen Settings table holds the 24 keys of the Settings text table, in order'
+Check ((Get-FrozenTableProblems $settingsTable $settingsFrozen).Count -eq 0) 'the Settings text table equals its frozen literal (24 keys, every value)'
+Check ($settingsFrozen['NewKey'] -ceq ('Create a new key'+[string][char]0x2026) -and $settingsTable['NewKey'].EndsWith([string][char]0x2026) -and $settingsTable['NewKey'].Length -eq 17) 'the Create a new key caption ends in the single ellipsis character, not three dots'
+$stMutIdle=Copy-Table $settingsTable; $stMutIdle['IdleAfter15']='After 15 min'
+$stMutHelp=Copy-Table $settingsTable; $stMutHelp['IdleHelp']='Frees GPU memory.'
+$stMutDots=Copy-Table $settingsTable; $stMutDots['NewKey']='Create a new key...'
+$stMutKey=Copy-Table $settingsTable; $stMutKey['Extra']='A new caption'
+Check ((Get-FrozenTableProblems $stMutIdle $settingsFrozen).Count -ge 1) 'mutation check: a changed idle choice fails the Settings frozen literal'
+Check ((Get-FrozenTableProblems $stMutHelp $settingsFrozen).Count -ge 1) 'mutation check: an edited help line fails the Settings frozen literal'
+Check ((Get-FrozenTableProblems $stMutDots $settingsFrozen).Count -ge 1) 'mutation check: the ellipsis built as three dots fails the Settings frozen literal'
+Check ((Get-FrozenTableProblems $stMutKey $settingsFrozen).Count -ge 1) 'mutation check: a new Settings table key fails the Settings frozen literal'
+Check ((Get-FrozenTableProblems (Copy-Table $settingsTable) $settingsFrozen).Count -eq 0) 'control: an unchanged copy of the Settings table passes the frozen literal'
+# 5b-delete-begin
 $settingsDrift=Get-SettingsDriftProblems $settingsTable $settingsClassic.Values $settingsClassic.Assigned
 foreach($pr in $settingsDrift){Write-Host "FINDING: $pr"}
 Check ($settingsDrift.Count -eq 0) 'every Settings text value is a classic constant, template or built string, and every classic .Text and Items text is in the table'
+$settingsFrozenDrift=Get-SettingsDriftProblems $settingsFrozen $settingsClassic.Values $settingsClassic.Assigned
+foreach($pr in $settingsFrozenDrift){Write-Host "FINDING: $pr"}
+Check ($null -ne $settingsDialogFn -and $settingsFrozenDrift.Count -eq 0 -and $settingsClassic.Assigned.Count -gt 20) 'the frozen Settings literal equals the classic Settings dialog texts (every value is a classic constant, template or built string, every classic text is in the literal)'
+# 5b-delete-end
 # Cancel is used only by the prompt: the key whose value is 'Cancel' is read only inside Show-FastLlmUiFluentSavePrompt.
 $cancelKeys=@($settingsTable.Keys|Where-Object{[string]$settingsTable[$_] -ceq 'Cancel'})
 Check ($cancelKeys.Count -eq 1) 'the Settings text table has exactly one Cancel value'
@@ -3034,14 +3225,19 @@ Check ($script:FastLlmUiXaml.ContainsKey('FastLlm.Dialog') -and [string]$script:
 # shell has set that table (and is exactly MessageBox.Show's six-argument owner overload otherwise); the two custom dialogs dispatch on their own first line.
 $seamUiText=Get-NormalizedText $path
 $seamShellText=Get-NormalizedText (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+# 5b-delete-begin
 $seamDispatchLine='if($null -ne $script:uiDialogView){return & $script:uiDialogView[''MessageBox''] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}'
 $seamPassLine='return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)'
+# 5b-delete-end
 $seamParams='$Owner,[string]$Text,[string]$Caption,[string]$Buttons=''OK'',[string]$Icon=''None'',[string]$DefaultButton=''Button1'''
 # Ruling c: every direct MessageBox.Show left in the window script, by enclosing function and count. A new direct call anywhere fails the suite.
 #  ShowUiMessageBox: the passthrough itself. ShowFailure and EnsureTrayIcon: the window cannot be restored (native by design, 6.6).
 #  BuildUiSettingsDialog and ShowUiSettings: the classic Settings dialog, unreachable in the Fluent window (its page replaces it); deleted at the flip.
+# 5b-delete-begin
 $seamNativeShows=@{ShowUiMessageBox=1;ShowFailure=1;EnsureTrayIcon=2;BuildUiSettingsDialog=3;ShowUiSettings=1}
+# 5b-delete-end
 $seamViewKeys=@{MessageBox='Show-FastLlmUiFluentMessageBox';ShowUiSideResult='Show-FastLlmUiFluentSideResult';ShowDriverGuidance='Show-FastLlmUiFluentDriverGuidance';ShowLicenseSettingConfirm='Show-FastLlmUiFluentLicenseSettingConfirm';ShowComponentConsent='Show-FastLlmUiFluentComponentConsent';ShowExactModelConsent='Show-FastLlmUiFluentExactModelConsent';ShowVcInstallReview='Show-FastLlmUiFluentVcInstallReview';ShowSetupAttention='Show-FastLlmUiFluentSetupAttention';ShowRecipeChooser='Show-FastLlmUiFluentRecipeChooser'}
+# 5b-delete-begin
 # 4b B1: the six consent and dialog functions dispatch on their first statement and RETURN the fluent result, passing every parameter by name.
 $seamDispatch46=[ordered]@{ShowLicenseSettingConfirm='-Disclosure $Disclosure';ShowComponentConsent='-Row $Row -ConsentRows $ConsentRows -Chosen $Chosen';ShowExactModelConsent='-Plan $Plan';ShowVcInstallReview='-Receipt $Receipt -Candidate $Candidate';ShowSetupAttention='-Decision $Decision -Diagnostic $Diagnostic';ShowRecipeChooser='-Rows $Rows'}
 function Get-SeamFindings([string]$UiText,[string]$ShellText){
@@ -3135,7 +3331,109 @@ $seamPlants=[ordered]@{
 Check ((Get-SeamFindings $seamUiText $seamShellText).Count -eq 0) 'control: the unmutated classic and shell texts give no classic-seam findings'
 foreach($k in $seamPlants.Keys){ Check (($seamPlants[$k][0] -cne $seamUiText) -or ($seamPlants[$k][1] -cne $seamShellText)) "the seam plant changes the text: $k" }
 foreach($k in $seamPlants.Keys){ Check ((Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1]).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
-# Ruling a (the fluent box returns [System.Windows.Forms.DialogResult], never a string) is pinned with the dialog host above; the view entry is that function (the key pin).
+# 5b-delete-end
+# The dispatch table, frozen: each of the nine dispatch functions of the window script has one call of its view entry, `& $script:uiDialogView['<Key>'] <arguments>`, in
+# its first statement (the whole statement or, while the classic body follows, the guard around it), with every parameter passed by name; the box and the six consent and
+# dialog functions return its result, the side result and the driver guidance do not. The literal is checked against the classic dispatch lines below (deleted at the flip).
+$dispatchFrozen=[ordered]@{
+    ShowUiMessageBox=@{Key='MessageBox';Args='-Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton';Return=$true}
+    ShowUiSideResult=@{Key='ShowUiSideResult';Args='-Title $Title -Text $Text';Return=$false}
+    ShowDriverGuidance=@{Key='ShowDriverGuidance';Args='-Diagnostic $Diagnostic';Return=$false}
+    ShowLicenseSettingConfirm=@{Key='ShowLicenseSettingConfirm';Args='-Disclosure $Disclosure';Return=$true}
+    ShowComponentConsent=@{Key='ShowComponentConsent';Args='-Row $Row -ConsentRows $ConsentRows -Chosen $Chosen';Return=$true}
+    ShowExactModelConsent=@{Key='ShowExactModelConsent';Args='-Plan $Plan';Return=$true}
+    ShowVcInstallReview=@{Key='ShowVcInstallReview';Args='-Receipt $Receipt -Candidate $Candidate';Return=$true}
+    ShowSetupAttention=@{Key='ShowSetupAttention';Args='-Decision $Decision -Diagnostic $Diagnostic';Return=$true}
+    ShowRecipeChooser=@{Key='ShowRecipeChooser';Args='-Rows $Rows';Return=$true}
+}
+function Get-DispatchFindings([string]$UiText,[string]$ShellText){
+    $f=New-Object System.Collections.ArrayList
+    $e=$null
+    $ui=[System.Management.Automation.Language.Parser]::ParseInput($UiText,[ref]$null,[ref]$e)
+    $sh=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$e)
+    foreach($dn in @($dispatchFrozen.Keys)){
+        $want=$dispatchFrozen[$dn]
+        $fn=@($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $dn},$true))
+        if($fn.Count -ne 1){[void]$f.Add("$dn is not defined exactly once");continue}
+        if($dn -ceq 'ShowUiMessageBox'){
+            $ps=@($fn[0].Parameters|ForEach-Object{[string]$_.Extent.Text}) -join ','
+            if($ps -cne $seamParams){[void]$f.Add("ShowUiMessageBox parameters changed: $ps")}
+        }
+        $calls=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and $n.CommandElements[0] -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.CommandElements[0].Target.Extent.Text -ceq '$script:uiDialogView'},$true))
+        if($calls.Count -ne 1){[void]$f.Add("$dn calls the dialog view table $($calls.Count) times, expected once");continue}
+        $c=$calls[0]
+        $idx=$c.CommandElements[0].Index
+        if($idx -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or [string]$idx.Value -cne [string]$want.Key){[void]$f.Add("$dn dispatches to view entry '$($idx.Extent.Text)', expected '$($want.Key)'")}
+        $argText=@($c.CommandElements|Select-Object -Skip 1|ForEach-Object{$_.Extent.Text}) -join ' '
+        if($argText -cne [string]$want.Args){[void]$f.Add("$dn passes ($argText), expected ($($want.Args)) (every parameter by name)")}
+        $first=@($fn[0].Body.EndBlock.Statements)[0]
+        if($null -eq $first -or $c.Extent.StartOffset -lt $first.Extent.StartOffset -or $c.Extent.EndOffset -gt $first.Extent.EndOffset){[void]$f.Add("$dn does not dispatch in its first statement")}
+        $inReturn=$false; $q=$c.Parent
+        while($null -ne $q -and -not [object]::ReferenceEquals($q,$fn[0])){ if($q -is [System.Management.Automation.Language.ReturnStatementAst]){$inReturn=$true}; $q=$q.Parent }
+        if($inReturn -ne [bool]$want.Return){[void]$f.Add("$dn $(if($want.Return){'does not return'}else{'returns'}) the dispatch result")}
+    }
+    # Every view key the window script reads exists in the shell's table, bound to the named Fluent function.
+    $used=@{}
+    foreach($n in @($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Target -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$n.Target.VariablePath.UserPath -ceq 'script:uiDialogView'},$true))){
+        $k=if($n.Index -is [System.Management.Automation.Language.StringConstantExpressionAst]){[string]$n.Index.Value}else{'(not a literal)'}
+        $used[$k]=$true
+    }
+    if($used.Count -ne 9){[void]$f.Add("the window script reads $($used.Count) distinct view keys, expected 9")}
+    $init=@($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:uiDialogView' -and $n.Right.Extent.Text -ceq '$null'},$true))
+    if($init.Count -ne 1){[void]$f.Add('the window script does not set $script:uiDialogView=$null exactly once')}
+    foreach($k in @($used.Keys)){ if(-not $seamViewKeys.ContainsKey($k)){[void]$f.Add("the window script reads view key '$k', which is not a known entry")} }
+    $setv=@($sh.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Set-Variable' -and $n.Extent.Text -cmatch '-Name uiDialogView\b'},$true))
+    if($setv.Count -ne 1){[void]$f.Add('Initialize-FastLlmUiFluentShell does not set uiDialogView exactly once')}
+    else{
+        $inFn=$setv[0].Parent; while($null -ne $inFn -and $inFn -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$inFn=$inFn.Parent}
+        if($null -eq $inFn -or $inFn.Name -cne 'Initialize-FastLlmUiFluentShell'){[void]$f.Add('uiDialogView is not set inside Initialize-FastLlmUiFluentShell')}
+        if($setv[0].Extent.Text -cnotmatch '-Scope Script\b'){[void]$f.Add('uiDialogView is not set in the Script scope')}
+        $hash=$setv[0].Find({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)
+        if($null -eq $hash){[void]$f.Add('the uiDialogView value is not a hashtable literal')}
+        else{
+            $tbl=@{}; foreach($kv in $hash.KeyValuePairs){$tbl[[string]$kv.Item1.Extent.Text]=[string]$kv.Item2.Extent.Text}
+            foreach($k in @($used.Keys)){ if(-not $tbl.ContainsKey($k)){[void]$f.Add("view key '$k' is read by the window script but is not in the shell's table")} }
+            foreach($k in @($seamViewKeys.Keys)){ if(-not $tbl.ContainsKey($k) -or $tbl[$k] -cne ('${function:'+$seamViewKeys[$k]+'}')){[void]$f.Add("the shell's table entry $k is not `${function:$($seamViewKeys[$k])}")} }
+            if($tbl.Count -ne $seamViewKeys.Count){[void]$f.Add("the shell's table has $($tbl.Count) entries, expected $($seamViewKeys.Count)")}
+        }
+    }
+    return ,$f.ToArray()
+}
+function Remove-SeamLine([string]$Text,[string]$Needle){
+    $lines=@($Text.Split("`n")|Where-Object{-not $_.Contains($Needle)})
+    return ($lines -join "`n")
+}
+$dispFindings=Get-DispatchFindings $seamUiText $seamShellText
+foreach($x in $dispFindings){Write-Host "FINDING: $x"}
+Check ($dispFindings.Count -eq 0) 'the dispatch table: each of the nine dispatch functions passes every parameter to its own view entry in its first statement, and every view key is present in the shell table'
+$dispPlants=[ordered]@{
+    'a DefaultButton default changed'=@((Edit-SeamPlant $seamUiText "[string]`$DefaultButton='Button1'){" "[string]`$DefaultButton='Button2'){"),$seamShellText)
+    'the dispatch line forgets to pass DefaultButton'=@((Edit-SeamPlant $seamUiText ' -Icon $Icon -DefaultButton $DefaultButton' ' -Icon $Icon'),$seamShellText)
+    'a view key misspelled in the window script'=@((Edit-SeamPlant $seamUiText "uiDialogView['MessageBox']" "uiDialogView['MessageBoks']"),$seamShellText)
+    'a view key misspelled in the shell table'=@($seamUiText,(Edit-SeamPlant $seamShellText 'ShowDriverGuidance = ${function:' 'ShowDriverGuidence = ${function:'))
+    'a shell entry bound to the wrong function'=@($seamUiText,(Edit-SeamPlant $seamShellText 'MessageBox = ${function:Show-FastLlmUiFluentMessageBox}' 'MessageBox = ${function:Show-FastLlmUiFluentSideResult}'))
+    'the side result dispatch missing'=@((Remove-SeamLine $seamUiText "uiDialogView['ShowUiSideResult']"),$seamShellText)
+    'the licence setting dispatch drops return'=@((Edit-SeamPlant $seamUiText "return & `$script:uiDialogView['ShowLicenseSettingConfirm']" "& `$script:uiDialogView['ShowLicenseSettingConfirm']"),$seamShellText)
+    'the component consent dispatch drops -Chosen'=@((Edit-SeamPlant $seamUiText ' -ConsentRows $ConsentRows -Chosen $Chosen' ' -ConsentRows $ConsentRows'),$seamShellText)
+    'the recipe chooser dispatch key misspelled'=@((Edit-SeamPlant $seamUiText "uiDialogView['ShowRecipeChooser']" "uiDialogView['ShowRecipeChoser']"),$seamShellText)
+    'the setup attention shell entry misspelled'=@($seamUiText,(Edit-SeamPlant $seamShellText 'ShowSetupAttention = ${function:' 'ShowSetupAttenton = ${function:'))
+    'the VC review dispatch drops return'=@((Edit-SeamPlant $seamUiText "return & `$script:uiDialogView['ShowVcInstallReview']" "& `$script:uiDialogView['ShowVcInstallReview']"),$seamShellText)
+    'the exact model consent dispatch is missing'=@((Remove-SeamLine $seamUiText "uiDialogView['ShowExactModelConsent']"),$seamShellText)
+    'the table set in the Local scope'=@($seamUiText,(Edit-SeamPlant $seamShellText '-Name uiDialogView -Scope Script' '-Name uiDialogView -Scope Local'))
+}
+Check ((Get-DispatchFindings $seamUiText $seamShellText).Count -eq 0) 'control: the unmutated window script and shell texts give no dispatch findings'
+foreach($k in $dispPlants.Keys){ Check (($dispPlants[$k][0] -cne $seamUiText) -or ($dispPlants[$k][1] -cne $seamShellText)) "the dispatch plant changes the text: $k" }
+foreach($k in $dispPlants.Keys){ Check ((Get-DispatchFindings $dispPlants[$k][0] $dispPlants[$k][1]).Count -ge 1) "mutation check: the dispatch pin flags: $k" }
+# 5b-delete-begin
+# The frozen dispatch table against the classic dispatch lines, unconditional: each function is found once and its first statement is the guarded dispatch line built from the literal.
+foreach($dn in @($dispatchFrozen.Keys)){
+    $want=$dispatchFrozen[$dn]
+    $classicFn=@($tree.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $dn},$true))
+    $classicFirst=''; if($classicFn.Count -eq 1){ $classicFirst=[string]@($classicFn[0].Body.EndBlock.Statements)[0].Extent.Text }
+    $wantLine='if($null -ne $script:uiDialogView){'+$(if($want.Return){'return '}else{''})+'& $script:uiDialogView['''+$want.Key+'''] '+$want.Args+$(if($want.Return){''}else{';return'})+'}'
+    Check ($classicFn.Count -eq 1 -and $classicFirst -ceq $wantLine) "the frozen dispatch literal of $dn equals the first statement of the classic function"
+}
+# 5b-delete-end
 # ===== end PR 4a Task 4 =====
 
 # ===== PR 4a Task 5: side result and driver guidance (builder D) =====
@@ -3147,6 +3445,60 @@ Check ($sdTextAssign.Count -eq 1) 'the dialog text table is assigned exactly onc
 $sdTable=& ([scriptblock]::Create($sdTextAssign[0].Right.Extent.Text))
 Check ((@($sdTable.Keys)[0..12] -join ',') -ceq 'SideClose,GuidanceTitle,GuidanceLabel,OpenPage,GuidanceClose,NoReport,NoEntries,NoEntriesStatus,TooMany,Invalid,OpenFailed,Viewed,Url') 'the dialog text table starts with the 13 planned 4a keys, in order (the 4b keys follow, pinned in their own block)'
 $sd4aTable=[ordered]@{}; foreach($key in @($sdTable.Keys)[0..12]){$sd4aTable[$key]=[string]$sdTable[$key]}
+# The frozen dialog text table: the 38 values as literals (the 13 side result and driver guidance texts, then the 25 setup check and chooser texts; a WinForms && is one & here).
+# Every value is a string of the classic functions (the unconditional checks below, deleted with them at the flip); the check here reads only the fluent source.
+$dlgFrozen=[ordered]@{
+    SideClose='Close'
+    GuidanceTitle='AMD driver guidance - read-only'
+    GuidanceLabel='Choose a detected display device (not a verified serving-GPU match)'
+    OpenPage='Open official AMD page'
+    GuidanceClose='Close'
+    NoReport='No Windows driver guidance report was returned.'
+    NoEntries='No readable display-device guidance is available. Use Diagnostics for the inventory error and AMD Windows drivers to select your product manually.'
+    NoEntriesStatus='Driver guidance unavailable. No driver changes made.'
+    TooMany='Driver guidance exceeds the display-device limit.'
+    Invalid='The advisory could not be validated. Use the main AMD Windows drivers link.'
+    OpenFailed='Unable to open the official AMD page. No driver changes were made.'
+    Viewed='Driver guidance viewed. No driver changes made.'
+    Url='https://www.amd.com/en/support/download/drivers.html'
+    SetupTitle='FastLLM setup check'
+    SetupIntro='This PC is missing a required component for the current Vulkan lane. Review the latest setup check before continuing.'
+    SetupNeed64='Use 64-bit Windows PowerShell or PowerShell 7.'
+    SetupVcMissing='Install the current Microsoft Visual C++ 2015-2022 Redistributable (x64). Missing: {0}.'
+    SetupNoLoader='Install an AMD Windows driver with Vulkan support. The System32 Vulkan loader is not present.'
+    SetupAfter='After prerequisite setup and any required reboot, choose Recheck. This reruns read-only diagnostics. Compatibility and GPU performance remain unqualified.'
+    SetupMsLink='Official Microsoft VC++ download information'
+    SetupAmdLink='Official AMD driver downloads'
+    SetupMsUrl='https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'
+    SetupAmdUrl='https://www.amd.com/en/support/download/drivers.html'
+    SetupMsFailed='Unable to open the official Microsoft page. No software was installed.'
+    SetupAmdFailed='Unable to open the official AMD page. No driver changes were made.'
+    SetupRecheck='Recheck'
+    SetupPrepare='Prepare & review VC++'
+    SetupLater='Do later'
+    ChooserTitle='Choose another setup'
+    ChooserIntro='Setups for your card. Pick one, then Choose. Experimental setups are shown only while Experimental community components is on. Nothing is downloaded until you confirm.'
+    ChooserNotice=' {0}'
+    ChooserSetup='Setup'
+    ChooserModel='Model'
+    ChooserContext='Context'
+    ChooserEngine='Engine and sources'
+    ChooserChoose='Choose'
+    ChooserCancel='Cancel'
+    ChooserCellName='{0}: {1}'
+}
+Check ($dlgFrozen.Count -eq 38 -and ((@($dlgFrozen.Keys) -join ',') -ceq (@($sdTable.Keys) -join ','))) 'the frozen dialog text table holds the 38 keys of the dialog text table, in order'
+Check ((Get-FrozenTableProblems $sdTable $dlgFrozen).Count -eq 0) 'the dialog text table (side result, driver guidance, setup check, chooser) equals its frozen literal (38 keys, every value)'
+$dtMutValue=Copy-Table $sdTable; $dtMutValue['NoEntriesStatus']=[string]$sdTable['NoEntriesStatus']+'.'
+$dtMutAmp=Copy-Table $sdTable; $dtMutAmp['SetupPrepare']='Prepare && review VC++'
+$dtMutKey=Copy-Table $sdTable; $dtMutKey['Extra']='A new caption'
+$dtMutDrop=Copy-Table $sdTable; $dtMutDrop.Remove('ChooserCancel')
+Check ((Get-FrozenTableProblems $dtMutValue $dlgFrozen).Count -ge 1) 'mutation check: a changed side result or driver guidance text fails the frozen dialog literal'
+Check ((Get-FrozenTableProblems $dtMutAmp $dlgFrozen).Count -ge 1) 'mutation check: the classic && copied as && (not the displayed &) fails the frozen dialog literal'
+Check ((Get-FrozenTableProblems $dtMutKey $dlgFrozen).Count -ge 1) 'mutation check: a new dialog text key fails the frozen dialog literal'
+Check ((Get-FrozenTableProblems $dtMutDrop $dlgFrozen).Count -ge 1) 'mutation check: a dropped dialog text key fails the frozen dialog literal'
+Check ((Get-FrozenTableProblems (Copy-Table $sdTable) $dlgFrozen).Count -eq 0) 'control: an unchanged copy of the dialog text table passes the frozen literal'
+# 5b-delete-begin
 function Get-SideDriftLiterals($Ast){
     $vals=New-Object System.Collections.ArrayList
     foreach($fnName in 'ShowUiSideResult','ShowDriverGuidance'){
@@ -3170,11 +3522,17 @@ foreach($sdKey in @($sd4aTable.Keys)){
     $mut[$sdKey]=[string]$sd4aTable[$sdKey]+'.'
     Check ((Get-SideDriftProblems $mut $sdClassic).Count -ge 1) "mutation check: a changed $sdKey literal fails the dialog text drift pin"
 }
+# The frozen literal against the classic functions, unconditional: both are found, and the first 13 literals are strings of them.
+$sd4aFrozen=[ordered]@{}; foreach($key in @($dlgFrozen.Keys)[0..12]){$sd4aFrozen[$key]=[string]$dlgFrozen[$key]}
+$sdFrozenDrift=Get-SideDriftProblems $sd4aFrozen $sdClassic
+foreach($pr in $sdFrozenDrift){Write-Host "FINDING: $pr"}
+Check ((Get-AstFunction $classicAst 'ShowUiSideResult').Count -eq 1 -and (Get-AstFunction $classicAst 'ShowDriverGuidance').Count -eq 1 -and $sdFrozenDrift.Count -eq 0 -and $sdClassic.Count -gt 20) 'the frozen side result and driver guidance literal equals the classic ShowUiSideResult and ShowDriverGuidance strings'
 # The classic key targets, read from the classic AST: the side result has AcceptButton and CancelButton = Close; driver guidance has CancelButton only.
 $sdSideClassic=(Get-AstFunction $classicAst 'ShowUiSideResult')[0].Extent.Text
 $sdDriverClassic=(Get-AstFunction $classicAst 'ShowDriverGuidance')[0].Extent.Text
 Check ($sdSideClassic.Contains('$dialog.AcceptButton=$close') -and $sdSideClassic.Contains('$dialog.CancelButton=$close')) 'classic ShowUiSideResult: Close is both AcceptButton and CancelButton'
 Check ($sdDriverClassic.Contains('$dialog.CancelButton=$close') -and -not $sdDriverClassic.Contains('AcceptButton')) 'classic ShowDriverGuidance: Close is the CancelButton and there is no AcceptButton'
+# 5b-delete-end
 function Get-SideKeyTargets([string]$Text,[string]$FnName){
     $fn=Get-DlgFn $Text $FnName
     if($null -eq $fn){return $null}
