@@ -3465,4 +3465,397 @@ $r4Plants=[ordered]@{
 foreach($k in $r4Plants.Keys){ Check ($r4Plants[$k] -cne $sdText -and (Get-R4Findings $r4Plants[$k]).Count -ge 1) "mutation check: the setup check and chooser pins flag: $k" }
 # ===== end PR 4b Task B2 (builder R) =====
 
+# ===== PR 4b Task B2 (builder K): the four consent-family dialogs, src/FastLlm.UiFluentConsent.ps1 =====
+# Every pin reads the dialog file (AST) and the classic functions (AST), and runs again on planted mutants, so each is proven on every platform.
+$ckText=Get-OptionalText 'src/FastLlm.UiFluentConsent.ps1'
+$ckShell=Get-OptionalText 'src/FastLlm.UiFluentShell.ps1'
+Check ($ckText -ne '') 'src/FastLlm.UiFluentConsent.ps1 exists'
+Check ($ckShell.Contains(". (Join-Path `$PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')`r`n. (Join-Path `$PSScriptRoot 'FastLlm.UiFluentConsent.ps1')") -or $ckShell.Contains(". (Join-Path `$PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')`n. (Join-Path `$PSScriptRoot 'FastLlm.UiFluentConsent.ps1')")) 'the shell dot-sources the consent dialogs right after the dialog host'
+# The fluent function that answers each classic function.
+$ckPairs=[ordered]@{
+    ShowLicenseSettingConfirm='Show-FastLlmUiFluentLicenseSettingConfirm'
+    ShowComponentConsent='Show-FastLlmUiFluentComponentConsent'
+    ShowExactModelConsent='Show-FastLlmUiFluentExactModelConsent'
+    ShowVcInstallReview='Show-FastLlmUiFluentVcInstallReview'
+}
+$ckKeys='LicenseTitle,LicenseIntro,LicensePlain,LicenseLinkError,LinkErrorCaption,LicenseAccept,ConsentCancel,ComponentTitle,ComponentNameFmt,ComponentSource,ComponentRedirect,ComponentJoin,ComponentPlain,ComponentLinkError,ComponentInstall,ModelTitle,ModelAccept,VcTitle,VcInstall,VcLater'
+# Replaces From with To once, inside one function of the text (the key targets of three dialogs share one spelling).
+function Edit-CkFn([string]$Text,[string]$FnName,[string]$From,[string]$To){
+    $fn=Get-DlgFn $Text $FnName
+    if($null -eq $fn){throw "FAIL: consent plant function missing: $FnName"}
+    $body=$fn.Extent.Text
+    $i=$body.IndexOf($From,[StringComparison]::Ordinal)
+    if($i -lt 0){throw "FAIL: consent plant anchor missing in ${FnName}: $From"}
+    $new=$body.Substring(0,$i)+$To+$body.Substring($i+$From.Length)
+    return $Text.Substring(0,$fn.Extent.StartOffset)+$new+$Text.Substring($fn.Extent.EndOffset)
+}
+function Edit-CkFnLast([string]$Text,[string]$FnName,[string]$From,[string]$To){
+    $fn=Get-DlgFn $Text $FnName
+    if($null -eq $fn){throw "FAIL: consent plant function missing: $FnName"}
+    $body=$fn.Extent.Text
+    $i=$body.LastIndexOf($From,[StringComparison]::Ordinal)
+    if($i -lt 0){throw "FAIL: consent plant anchor missing in ${FnName}: $From"}
+    return $Text.Substring(0,$fn.Extent.StartOffset)+$body.Substring(0,$i)+$To+$body.Substring($i+$From.Length)+$Text.Substring($fn.Extent.EndOffset)
+}
+function Get-CkTable([string]$Text){
+    $a=ConvertTo-PinAst $Text
+    $asg=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentConsentText'},$true))
+    if($asg.Count -ne 1){return $null}
+    return (& ([scriptblock]::Create($asg[0].Right.Extent.Text)))
+}
+# --- 1. The text table: a classic literal each (the one rule: a WinForms && is shown as &), merged once into the shared table, no literal left in a function ---
+function Get-CkClassicLiterals($Ast){
+    $const=New-Object System.Collections.ArrayList; $expand=New-Object System.Collections.ArrayList
+    foreach($fnName in $ckPairs.Keys){
+        foreach($fnAst in (Get-AstFunction $Ast $fnName)){
+            foreach($k in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){ [void]$const.Add([string]$k.Value) }
+            foreach($k in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]},$true))){ [void]$expand.Add([string]$k.Value) }
+        }
+    }
+    return @{Const=$const.ToArray();Expand=$expand.ToArray()}
+}
+function Get-CkDriftProblems($Table,$Classic){
+    $p=New-Object System.Collections.ArrayList
+    if($null -eq $Table){[void]$p.Add('the consent text table is not assigned exactly once');return ,$p.ToArray()}
+    $mapped=@($Classic.Const|ForEach-Object{$_.Replace('&&','&')})
+    foreach($key in @($Table.Keys)){
+        $v=[string]$Table[$key]
+        if($v.Contains('&&')){[void]$p.Add("table value $key keeps the WinForms && escape (shown as &)");continue}
+        $isExpandPrefix=@($Classic.Expand|Where-Object{$_.StartsWith($v+'$(',[StringComparison]::Ordinal)}).Count -gt 0
+        if($mapped -cnotcontains $v -and -not $isExpandPrefix){[void]$p.Add("table value $key is not a classic literal (with && shown as &) of the four consent functions")}
+    }
+    return ,$p.ToArray()
+}
+$ckTable=Get-CkTable $ckText
+Check ($null -ne $ckTable -and (@($ckTable.Keys) -join ',') -ceq $ckKeys) 'the consent text table has the 20 planned keys, in order'
+$ckClassic=Get-CkClassicLiterals $classicAst
+$ckDrift=Get-CkDriftProblems $ckTable $ckClassic
+foreach($x in $ckDrift){Write-Host "FINDING: $x"}
+Check ($ckDrift.Count -eq 0 -and $ckClassic.Const.Count -gt 30) "every consent text value is a classic literal of the four consent functions ($($ckClassic.Const.Count) literals read)"
+foreach($key in @($ckTable.Keys)){
+    $mut=[ordered]@{}; foreach($k2 in @($ckTable.Keys)){$mut[$k2]=[string]$ckTable[$k2]}
+    $mut[$key]=[string]$ckTable[$key]+'.'
+    Check ((Get-CkDriftProblems $mut $ckClassic).Count -ge 1) "mutation check: a changed $key literal fails the consent text drift pin"
+}
+# The && rule: exactly one classic caption has the escape, its table value shows one &, and no classic caption has a lone & (which would be a mnemonic).
+$ckAmp=@($ckClassic.Const|Where-Object{$_.Contains('&')})
+Check ($ckAmp.Count -eq 1 -and $ckAmp[0] -ceq 'Accept license && download' -and ([string]$ckTable['ModelAccept']) -ceq 'Accept license & download') 'the && rule: the one classic caption with the WinForms escape is shown with a single & in the table'
+$ckAmpMut=[ordered]@{}; foreach($k2 in @($ckTable.Keys)){$ckAmpMut[$k2]=[string]$ckTable[$k2]}
+$ckAmpMut['ModelAccept']='Accept license && download'
+Check ((Get-CkDriftProblems $ckAmpMut $ckClassic).Count -ge 1) 'mutation check: a table caption that keeps && fails the && rule'
+$ckAmpMut['ModelAccept']='Accept license and download'
+Check ((Get-CkDriftProblems $ckAmpMut $ckClassic).Count -ge 1) 'mutation check: a table caption that drops the & fails the && rule'
+function Get-CkTextFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $a=ConvertTo-PinAst $Text
+    $merge=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentDialogText[$consentKey]' -and $n.Right.Extent.Text -ceq '$script:FastLlmUiFluentConsentText[$consentKey]'},$true))
+    if($merge.Count -ne 1){[void]$f.Add('the consent table is not merged into $script:FastLlmUiFluentDialogText exactly once')}
+    foreach($name in @($ckPairs.Values)+'New-FastLlmUiFluentConsentLink'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){[void]$f.Add("$name is not defined once");continue}
+        foreach($k in @($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]},$true))){
+            if(([string]$k.Value).Contains(' ')){[void]$f.Add("$name has the literal '$($k.Value)' (every word lives in the text table)")}
+        }
+    }
+    if($Text -cmatch '\bWidth\s*=\s*"|\bWidth="|IsDefault|IsCancel'){[void]$f.Add('the consent file sets Width= markup, IsDefault or IsCancel')}
+    return ,$f.ToArray()
+}
+$ckTextReal=Get-CkTextFindings $ckText
+foreach($x in $ckTextReal){Write-Host "FINDING: $x"}
+Check ($ckTextReal.Count -eq 0) 'the consent table is merged once into the shared dialog table and no function carries a literal word'
+$ckDlgTable=$null
+$ckDlgAsg=@((ConvertTo-PinAst $sdText).FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentDialogText'},$true))
+if($ckDlgAsg.Count -eq 1){$ckDlgTable=& ([scriptblock]::Create($ckDlgAsg[0].Right.Extent.Text))}
+Check ($null -ne $ckDlgTable -and @($ckDlgTable.Keys|Where-Object{$ckTable.Contains($_)}).Count -eq 0) 'no consent text key collides with a key of the dialog host table'
+# --- 2. The parameters are the classic ones (the shell's dispatch passes them by name) ---
+function Get-CkParamNames($FnAst){
+    if($null -ne $FnAst.Parameters){return (@($FnAst.Parameters|ForEach-Object{[string]$_.Name.VariablePath.UserPath}) -join ',')}
+    if($null -ne $FnAst.Body.ParamBlock){return (@($FnAst.Body.ParamBlock.Parameters|ForEach-Object{[string]$_.Name.VariablePath.UserPath}) -join ',')}
+    return ''
+}
+function Get-CkParamFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    foreach($c in $ckPairs.Keys){
+        $cl=(Get-AstFunction $classicAst $c)[0]; $fl=Get-DlgFn $Text $ckPairs[$c]
+        if($null -eq $fl){[void]$f.Add("$($ckPairs[$c]) is not defined once");continue}
+        if((Get-CkParamNames $cl) -cne (Get-CkParamNames $fl)){[void]$f.Add("$($ckPairs[$c]) takes ($(Get-CkParamNames $fl)), classic $c takes ($(Get-CkParamNames $cl))")}
+    }
+    return ,$f.ToArray()
+}
+$ckParam=Get-CkParamFindings $ckText
+foreach($x in $ckParam){Write-Host "FINDING: $x"}
+Check ($ckParam.Count -eq 0) 'each fluent consent function takes the parameters of its classic function'
+Check ((Get-CkParamFindings (Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' 'param($Plan)' 'param($Model)')).Count -ge 1) 'mutation check: a renamed parameter fails the consent parameter pin'
+# --- 3. Key targets: Enter and Escape are the classic AcceptButton and CancelButton, read from the classic AST ---
+# The classic caption of the button the form assigns to AcceptButton / CancelButton, and of the one with DialogResult OK (the accept button).
+function Get-CkClassicTargets($Ast,[string]$Fn){
+    $fnAst=(Get-AstFunction $Ast $Fn)[0]
+    $assign={param($left) @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq $left},$true))}
+    $caption={param($var) $t=@(& $assign ($var+'.Text')); if($t.Count -ne 1){return $null}; return ([string]$t[0].Right.Expression.Value).Replace('&&','&')}
+    $r=@{}
+    foreach($m in 'AcceptButton','CancelButton'){ $a=@(& $assign ('$dialog.'+$m)); if($a.Count -ne 1){return $null}; $r[$m]=& $caption $a[0].Right.Extent.Text }
+    $ok=@($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -cmatch '^\$\w+\.DialogResult$' -and $n.Right.Extent.Text -ceq '[Windows.Forms.DialogResult]::OK'},$true))
+    if($ok.Count -ne 1){return $null}
+    $r['Ok']=& $caption (($ok[0].Left.Extent.Text) -replace '\.DialogResult$','')
+    return $r
+}
+# The same from the fluent function: the Enter and Escape ids of its New-FastLlmUiFluentDialog call and the id -> caption table of its $buttons, as captions.
+function Get-CkFluentTargets([string]$Text,[string]$FnName,$Table){
+    $fn=Get-DlgFn $Text $FnName
+    if($null -eq $fn){return $null}
+    $calls=@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true))
+    if($calls.Count -ne 1){return $null}
+    $bt=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$buttons'},$true))
+    if($bt.Count -ne 1){return $null}
+    $h=$bt[0].Right.Find({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)
+    if($null -eq $h){return $null}
+    $cap=@{}
+    foreach($kv in $h.KeyValuePairs){ $mm=[regex]::Match([string]$kv.Item2.Extent.Text,'^\[string\] \$t\.(\w+)$'); if(-not $mm.Success -or -not $Table.Contains($mm.Groups[1].Value)){return $null}; $cap[[string]$kv.Item1.Extent.Text]=[string]$Table[$mm.Groups[1].Value] }
+    $idOf={param($p) $x=Get-DlgParamText $calls[0] $p; if($null -eq $x){return '<none>'}; return $x.Trim("'")}
+    $enter=& $idOf 'Enter'; $esc=& $idOf 'Escape'
+    # The accept answer: the id the [bool] return (or the component's confirmed) compares the dialog's answer with.
+    $okId=$null
+    $mm=[regex]::Match($fn.Extent.Text,"(?:return|\`$confirmed =) \[bool\] \(\`$answer -ceq '(\w+)'\)")
+    if($mm.Success){$okId=$mm.Groups[1].Value}
+    return @{Enter=$(if($cap.ContainsKey($enter)){$cap[$enter]}else{"<$enter>"});Escape=$(if($cap.ContainsKey($esc)){$cap[$esc]}else{"<$esc>"});Ok=$(if($null -ne $okId -and $cap.ContainsKey($okId)){$cap[$okId]}else{$null})}
+}
+function Get-CkTargetFindings([string]$Text,$Table){
+    $f=New-Object System.Collections.ArrayList
+    foreach($c in $ckPairs.Keys){
+        $cl=Get-CkClassicTargets $classicAst $c; $fl=Get-CkFluentTargets $Text $ckPairs[$c] $Table
+        if($null -eq $cl -or $null -eq $fl){[void]$f.Add("${c}: the classic or the fluent targets could not be read");continue}
+        if($fl.Enter -cne $cl.AcceptButton){[void]$f.Add("${c}: Enter answers '$($fl.Enter)', the classic AcceptButton is '$($cl.AcceptButton)'")}
+        if($fl.Escape -cne $cl.CancelButton){[void]$f.Add("${c}: Escape answers '$($fl.Escape)', the classic CancelButton is '$($cl.CancelButton)'")}
+        # A bool function (and the component object's confirmed) is true only for the classic DialogResult OK button.
+        if($fl.Ok -cne $cl.Ok){[void]$f.Add("${c}: the result is true for '$($fl.Ok)', the classic OK button is '$($cl.Ok)'")}
+    }
+    return ,$f.ToArray()
+}
+$ckClassicTargets=Get-CkClassicTargets $classicAst 'ShowVcInstallReview'
+Check ($null -ne $ckClassicTargets -and $ckClassicTargets.AcceptButton -ceq 'Do later' -and $ckClassicTargets.CancelButton -ceq 'Do later' -and $ckClassicTargets.Ok -ceq 'Install Microsoft runtime') 'classic VC review: Enter and Escape are Do later; OK is Install Microsoft runtime'
+foreach($c in 'ShowLicenseSettingConfirm','ShowComponentConsent','ShowExactModelConsent'){ $t0=Get-CkClassicTargets $classicAst $c; Check ($null -ne $t0 -and $t0.AcceptButton -ceq 'Cancel' -and $t0.CancelButton -ceq 'Cancel') "classic ${c}: Enter and Escape are Cancel" }
+$ckTarget=Get-CkTargetFindings $ckText $ckTable
+foreach($x in $ckTarget){Write-Host "FINDING: $x"}
+Check ($ckTarget.Count -eq 0) 'every consent dialog answers Enter and Escape with the classic AcceptButton and CancelButton, and is true only for the classic OK button'
+$ckPlants=[ordered]@{
+    'licence: Enter = accept'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' "-Enter 'Cancel'" "-Enter 'Accept'")
+    'licence: Escape = accept'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' "-Escape 'Cancel'" "-Escape 'Accept'")
+    'component: Enter = Install'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' "-Enter 'Cancel'" "-Enter 'Install'")
+    'component: Escape removed'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' " -Escape 'Cancel'" '')
+    'model: Enter = accept'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' "-Enter 'Cancel'" "-Enter 'Accept'")
+    'model: Escape removed'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' " -Escape 'Cancel'" '')
+    'VC: Enter = Install'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' "-Enter 'Later'" "-Enter 'Install'")
+    'VC: Escape = Install'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' "-Escape 'Later'" "-Escape 'Install'")
+    'licence: true for Cancel'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' "-ceq 'Accept'" "-ceq 'Cancel'")
+    'model: true for Cancel'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' "-ceq 'Accept'" "-ceq 'Cancel'")
+    'VC: true for Later'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' "-ceq 'Install'" "-ceq 'Later'")
+    'VC: the buttons swapped'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' '@{ Install = [string] $t.VcInstall; Later = [string] $t.VcLater }' '@{ Install = [string] $t.VcLater; Later = [string] $t.VcInstall }')
+}
+foreach($k in $ckPlants.Keys){ Check ($ckPlants[$k] -cne $ckText -and (Get-CkTargetFindings $ckPlants[$k] $ckTable).Count -ge 1) "mutation check: the consent key-target pin flags: $k" }
+# --- 4. The return contract: one [bool] for three dialogs; the component object has today's properties, in today's order ---
+function Get-CkReturnFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    foreach($name in 'Show-FastLlmUiFluentLicenseSettingConfirm','Show-FastLlmUiFluentExactModelConsent','Show-FastLlmUiFluentVcInstallReview'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){[void]$f.Add("$name is not defined once");continue}
+        $shows=@($fn.FindAll({param($n) Test-DlgCall $n 'Show-FastLlmUiFluentDialog'},$true))
+        if($shows.Count -ne 1 -or $shows[0].Parent.Parent -isnot [System.Management.Automation.Language.AssignmentStatementAst] -or $shows[0].Parent.Parent.Left.Extent.Text -cne '$answer'){[void]$f.Add("$name does not keep the dialog's answer (a leaked string would break its one-bool contract)")}
+        # No bare expression at the top of the function (it would join the [bool] in the output): only the reveal, the void AutomationProperties setters, the tray call and the Loaded hook are bare.
+        foreach($st in @($fn.Body.EndBlock.Statements)){
+            if($st -is [System.Management.Automation.Language.PipelineAst] -and $st.Extent.Text -cnotmatch '^(RevealUiForAction|\[System\.Windows\.Automation\.AutomationProperties\]::Set(Name|LabeledBy)\(|SetTrayMenuAvailable \$false|\$dialog\[''Window''\]\.Add_Loaded\()'){[void]$f.Add("$name has a bare statement that would leak into its result: $($st.Extent.Text)")}
+        }
+        $ret=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst]},$true))
+        if($ret.Count -ne 1 -or $ret[0].Extent.Text -cnotmatch "^return \[bool\] \(\`$answer -ceq '\w+'\)$"){[void]$f.Add("$name does not end in exactly one 'return [bool] (`$answer -ceq ...)'")}
+    }
+    $cc=Get-DlgFn $Text 'Show-FastLlmUiFluentComponentConsent'
+    $clFn=(Get-AstFunction $classicAst 'ShowComponentConsent')[0]
+    if($null -eq $cc){[void]$f.Add('the component consent is not defined once');return ,$f.ToArray()}
+    $obj=@($cc.FindAll({param($n) $n -is [System.Management.Automation.Language.ConvertExpressionAst] -and $n.Type.TypeName.Name -ceq 'pscustomobject'},$true))
+    $clObj=@($clFn.FindAll({param($n) $n -is [System.Management.Automation.Language.ConvertExpressionAst] -and $n.Type.TypeName.Name -ceq 'pscustomobject'},$true))
+    if($obj.Count -ne 1 -or $clObj.Count -ne 1){[void]$f.Add('the component result is not one [pscustomobject] literal (fluent or classic)');return ,$f.ToArray()}
+    $keysOf={param($c) $h=$c.Child.Find({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true); (@($h.KeyValuePairs|ForEach-Object{[string]$_.Item1.Extent.Text}) -join ',')}
+    $fluentKeys=& $keysOf $obj[0]; $classicKeys=& $keysOf $clObj[0]
+    if($fluentKeys -cne $classicKeys){[void]$f.Add("the component result has ($fluentKeys), today's object has ($classicKeys)")}
+    $ret=@($cc.FindAll({param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst]},$true))
+    if($ret.Count -ne 1 -or $ret[0].Extent.Text -cne 'return [pscustomobject] @{ confirmed = $confirmed; ticked = $ticked }'){[void]$f.Add('the component consent does not return the object with confirmed and ticked as variables')}
+    if(-not $cc.Extent.Text.Contains('$confirmed = [bool] ($answer -ceq ''Install'')') -or -not $cc.Extent.Text.Contains('$ticked = @($boxes | ForEach-Object { [bool] ($_.IsChecked -eq $true) })')){[void]$f.Add('confirmed is not the Install answer, or ticked is not the state of every box')}
+    return ,$f.ToArray()
+}
+$ckRet=Get-CkReturnFindings $ckText
+foreach($x in $ckRet){Write-Host "FINDING: $x"}
+Check ($ckRet.Count -eq 0) 'the licence, model and VC dialogs return one [bool] each; the component dialog returns {confirmed, ticked} as today'
+$ckRetPlants=[ordered]@{
+    'the component result drops ticked'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' 'return [pscustomobject] @{ confirmed = $confirmed; ticked = $ticked }' 'return [pscustomobject] @{ confirmed = $confirmed }')
+    'the component result drops confirmed'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' 'return [pscustomobject] @{ confirmed = $confirmed; ticked = $ticked }' 'return [pscustomobject] @{ ticked = $ticked }')
+    'the component result renames ticked'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' 'ticked = $ticked }' 'checked = $ticked }')
+    'the component result swaps its order'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' 'confirmed = $confirmed; ticked = $ticked' 'ticked = $ticked; confirmed = $confirmed')
+    'the component confirmed ignores the answer'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' "`$confirmed = [bool] (`$answer -ceq 'Install')" '$confirmed = $true')
+    'the licence dialog leaks the answer string'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' 'try { $answer = Show-FastLlmUiFluentDialog' 'try { Show-FastLlmUiFluentDialog')
+    'the model dialog returns the string'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' "return [bool] (`$answer -ceq 'Accept')" 'return $answer')
+    'the VC dialog returns a second value'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' "return [bool] (`$answer -ceq 'Install')" "`$true`n    return [bool] (`$answer -ceq 'Install')")
+}
+foreach($k in $ckRetPlants.Keys){ Check ($ckRetPlants[$k] -cne $ckText -and (Get-CkReturnFindings $ckRetPlants[$k]).Count -ge 1) "mutation check: the consent return pin flags: $k" }
+# --- 5. Lead condition 2: Install is enabled only when every box is ticked; the same boxes and the same condition as the classic dialog ---
+# Classic: a box for each row with needsAccept, enabled unless the row is blocked; Install starts disabled and UpdateConsentInstallState sets it from
+# Test-FastLlmUiConsentComplete over the row count and the state of every box. The fluent function must read the same.
+function Get-CkInstallFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $cl=(Get-AstFunction $classicAst 'ShowComponentConsent')[0]
+    $upd=(Get-AstFunction $classicAst 'UpdateConsentInstallState')[0]
+    $fn=Get-DlgFn $Text 'Show-FastLlmUiFluentComponentConsent'
+    if($null -eq $fn){[void]$f.Add('the component consent is not defined once');return ,$f.ToArray()}
+    # which rows have a box: the if around the CheckBox
+    $ifOf={param($ast,$ctor) @($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item2.Extent.Text.Contains($ctor)},$true))}
+    $ci=@(& $ifOf $cl 'New-Object Windows.Forms.CheckBox'); $fi=@(& $ifOf $fn 'New-Object System.Windows.Controls.CheckBox')
+    if($ci.Count -ne 1 -or $fi.Count -ne 1 -or $ci[0].Clauses[0].Item1.Extent.Text -cne '$consentRow.needsAccept' -or $fi[0].Clauses[0].Item1.Extent.Text -cne $ci[0].Clauses[0].Item1.Extent.Text){[void]$f.Add('the boxes are not the classic ones (a box for each row with needsAccept)')}
+    $cb=@($cl.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$box.Enabled'},$true))
+    $fb=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$box.IsEnabled'},$true))
+    if($cb.Count -ne 1 -or $fb.Count -ne 1 -or $fb[0].Right.Extent.Text -cne $cb[0].Right.Extent.Text){[void]$f.Add('a box is not enabled by the classic rule (a blocked row cannot be ticked)')}
+    # Install starts disabled
+    $ca=@($cl.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$install.Enabled' -and $n.Right.Extent.Text -ceq '$false'},$true))
+    $fa=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$install.IsEnabled' -and $n.Right.Extent.Text -ceq '$false'},$true))
+    if($ca.Count -ne 1 -or $fa.Count -ne 1){[void]$f.Add('Install does not start disabled (as the classic one)')}
+    # the enable rule: the same function over the same row count and the state of every box
+    $cc=@($upd.FindAll({param($n) Test-DlgCall $n 'Test-FastLlmUiConsentComplete'},$true))
+    $classicRow=''; $classicTicked=''
+    if($cc.Count -eq 1){ $classicRow=(Get-DlgParamText $cc[0] 'RowCount') -replace '\$view\.boxes','$boxes'; $classicTicked=Get-DlgParamText $cc[0] 'Ticked' }
+    $fu=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$update'},$true))
+    if($cc.Count -ne 1 -or $classicRow -cne '$boxes.Count' -or $classicTicked -cne '$ticked'){[void]$f.Add('the classic enable rule could not be read (Test-FastLlmUiConsentComplete -RowCount $view.boxes.Count -Ticked $ticked)')}
+    elseif($fu.Count -ne 1){[void]$f.Add('the fluent dialog has no $update block')}
+    else{
+        $ut=$fu[0].Right.Extent.Text
+        $uc=@($fu[0].Right.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and $n.CommandElements[0].Extent.Text -ceq '$complete'},$true))
+        if($uc.Count -ne 1 -or (Get-DlgParamText $uc[0] 'RowCount') -cne $classicRow -or (Get-DlgParamText $uc[0] 'Ticked') -cne $classicTicked){[void]$f.Add('the enable rule is not Test-FastLlmUiConsentComplete over the box count and every box state')}
+        # The block is exactly two statements: the state of every box, then Install from the rule over it (no box skipped, no other source).
+        $sb=$fu[0].Right.Find({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true)
+        $stm=@(); if($null -ne $sb){$stm=@($sb.ScriptBlock.EndBlock.Statements|ForEach-Object{[string]$_.Extent.Text})}
+        if($stm.Count -ne 2 -or $stm[0] -cne '$ticked = @($boxes | ForEach-Object { [bool] ($_.IsChecked -eq $true) })' -or $stm[1] -cne '$install.IsEnabled = [bool] (& $complete -RowCount $boxes.Count -Ticked $ticked)'){[void]$f.Add('the enable block is not exactly: read every box, then Install.IsEnabled from the rule')}
+        if([regex]::Matches($fn.Extent.Text,[regex]::Escape('@($boxes | ForEach-Object { [bool] ($_.IsChecked -eq $true) })')).Count -ne 2){[void]$f.Add('the state of every box is not read the same way for the enable rule and for the result')}
+    }
+    if($fn.Extent.Text -cnotmatch '\$complete = \$\{function:Test-FastLlmUiConsentComplete\}'){[void]$f.Add('the rule is not the function Test-FastLlmUiConsentComplete (captured by ${function:...})')}
+    # every box (checked or cleared) re-evaluates it
+    if(@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -ceq '$boxes' -and $n.Body.Extent.Text -ceq '{ $box.Add_Checked($update); $box.Add_Unchecked($update) }'},$true)).Count -ne 1){[void]$f.Add('every box does not re-evaluate Install when it is checked or cleared')}
+    return ,$f.ToArray()
+}
+$ckInst=Get-CkInstallFindings $ckText
+foreach($x in $ckInst){Write-Host "FINDING: $x"}
+Check ($ckInst.Count -eq 0) 'component consent: Install starts disabled and is enabled only when every box is ticked, the same boxes and condition as the classic dialog'
+$ckInstPlants=[ordered]@{
+    'one box is not required (the first is skipped, the count one short)'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '$update = {' "`$update = {`n        `$boxes = @(`$boxes | Select-Object -Skip 1)")
+    'the box count one short'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '-RowCount $boxes.Count' '-RowCount ($boxes.Count - 1)')
+    'an indeterminate box counts as ticked'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '[bool] ($_.IsChecked -eq $true)' '[bool] ($_.IsChecked -ne $false)')
+    'Install starts enabled'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '$install.IsEnabled = $false' '$install.IsEnabled = $true')
+    'Install is not re-evaluated when a box is cleared'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '; $box.Add_Unchecked($update)' '')
+    'Install is not re-evaluated when a box is checked'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '$box.Add_Checked($update); ' '')
+    'a blocked row can be ticked'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '$box.IsEnabled = (-not $consentRow.blocked)' '$box.IsEnabled = $true')
+    'a row without needsAccept gets a box'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' 'if ($consentRow.needsAccept) {' 'if ($true) {')
+    'the rule is a hand-written all-ticked test'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '$complete = ${function:Test-FastLlmUiConsentComplete}' '$complete = { param($RowCount, $Ticked) $true }')
+    'ticked is read after the dialog from the wrong source'=(Edit-CkFnLast $ckText 'Show-FastLlmUiFluentComponentConsent' '[bool] ($_.IsChecked -eq $true)' '$true')
+}
+foreach($k in $ckInstPlants.Keys){ Check ($ckInstPlants[$k] -cne $ckText -and (Get-CkInstallFindings $ckInstPlants[$k]).Count -ge 1) "mutation check: the consent Install enablement pin flags: $k" }
+# --- 6. Reveal and tray: as the classic functions (reveal where classic reveals; the tray menu off before the try and on in its finally) ---
+function Get-CkFlowFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    foreach($c in $ckPairs.Keys){
+        $cl=(Get-AstFunction $classicAst $c)[0]; $fn=Get-DlgFn $Text $ckPairs[$c]
+        if($null -eq $fn){[void]$f.Add("$($ckPairs[$c]) is not defined once");continue}
+        $isCall={param($n,$name) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $name}
+        $cr=@($cl.FindAll({param($n) & $isCall $n 'RevealUiForAction'},$true)).Count; $fr=@($fn.FindAll({param($n) & $isCall $n 'RevealUiForAction'},$true)).Count
+        if($cr -ne $fr){[void]$f.Add("$($ckPairs[$c]) calls RevealUiForAction $fr time(s), classic $c calls it $cr")}
+        $trays=@($fn.FindAll({param($n) & $isCall $n 'SetTrayMenuAvailable'},$true))
+        $off=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $false'}); $on=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $true'})
+        $tries=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.TryStatementAst]},$true))
+        if($off.Count -ne 1 -or $on.Count -ne 1 -or $tries.Count -ne 1 -or $null -eq $tries[0].Finally){[void]$f.Add("$($ckPairs[$c]) does not call SetTrayMenuAvailable `$false once and `$true once around one try with a finally");continue}
+        if($off[0].Extent.EndOffset -gt $tries[0].Extent.StartOffset){[void]$f.Add("$($ckPairs[$c]): the tray menu is not turned off before the try")}
+        if($on[0].Extent.StartOffset -lt $tries[0].Finally.Extent.StartOffset -or $on[0].Extent.EndOffset -gt $tries[0].Finally.Extent.EndOffset){[void]$f.Add("$($ckPairs[$c]): the tray menu is not restored in the finally")}
+        $show=@($fn.FindAll({param($n) & $isCall $n 'Show-FastLlmUiFluentDialog'},$true))
+        if($show.Count -ne 1 -or $show[0].Extent.StartOffset -lt $tries[0].Body.Extent.StartOffset -or $show[0].Extent.EndOffset -gt $tries[0].Body.Extent.EndOffset){[void]$f.Add("$($ckPairs[$c]): the dialog is not shown inside the try")}
+        $own=@($fn.FindAll({param($n) & $isCall $n 'New-FastLlmUiFluentDialog'},$true))
+        if($own.Count -ne 1 -or (Get-DlgParamText $own[0] 'Owner') -cne '$script:form'){[void]$f.Add("$($ckPairs[$c]) does not own its dialog by the main window")}
+    }
+    return ,$f.ToArray()
+}
+$ckFlow=Get-CkFlowFindings $ckText
+foreach($x in $ckFlow){Write-Host "FINDING: $x"}
+Check ($ckFlow.Count -eq 0) 'the consent dialogs reveal the window where classic does, and turn the tray menu off before and on in a finally, owned by the main window'
+$ckFlowPlants=[ordered]@{
+    'model: no reveal'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' "    RevealUiForAction`n" '')
+    'VC: no reveal'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' "    RevealUiForAction`n" '')
+    'component: no reveal'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' "    RevealUiForAction`n" '')
+    'licence: a reveal the classic one does not have'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' '$t = $script:FastLlmUiFluentDialogText' "RevealUiForAction`n    `$t = `$script:FastLlmUiFluentDialogText")
+    'licence: the tray menu is not restored in a finally'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' "    finally { SetTrayMenuAvailable `$true }`n" "    finally { }`n    SetTrayMenuAvailable `$true`n")
+    'model: the tray menu stays on'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' "    SetTrayMenuAvailable `$false`n" '')
+    'component: owned by nothing'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '-Escape ''Cancel'' -Owner $script:form' '-Escape ''Cancel'' -Owner $null')
+}
+foreach($k in $ckFlowPlants.Keys){ Check ($ckFlowPlants[$k] -cne $ckText -and (Get-CkFlowFindings $ckFlowPlants[$k]).Count -ge 1) "mutation check: the consent reveal and tray pin flags: $k" }
+# --- 7. Links and accessibility: links open only through the safe-url check, the error box is owned by this dialog, every input and button is named ---
+function Get-CkA11yFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $lk=Get-DlgFn $Text 'New-FastLlmUiFluentConsentLink'
+    if($null -eq $lk){[void]$f.Add('the link helper is not defined once');return ,$f.ToArray()}
+    $names=@($lk.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and [string]$n.Member.Value -ceq 'SetName'},$true)).Count
+    if($names -lt 1){[void]$f.Add('a link button is not named')}
+    $catch=@($lk.FindAll({param($n) $n -is [System.Management.Automation.Language.CatchClauseAst]},$true))
+    if($catch.Count -ne 1){[void]$f.Add('the link click does not have exactly one catch')}
+    else{
+        $mb=@($catch[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and $n.CommandElements[0].Extent.Text -ceq '$messageBox'},$true))
+        if($mb.Count -ne 1 -or (Get-DlgParamText $mb[0] 'Owner') -cne '$Context[''Dialog'']'){[void]$f.Add('the link-error box is not owned by the consent dialog ($Context[''Dialog''])')}
+        if($mb.Count -eq 1 -and ((Get-DlgParamText $mb[0] 'Buttons') -cne "'OK'" -or (Get-DlgParamText $mb[0] 'Icon') -cne "'Warning'" -or (Get-DlgParamText $mb[0] 'Text') -cne '$ErrorText' -or (Get-DlgParamText $mb[0] 'Caption') -cne '$errorCaption')){[void]$f.Add('the link-error box is not an OK warning with the dialog text and the Open license page caption')}
+    }
+    if($lk.Extent.Text -cnotmatch '\$safeUrl = \$\{function:Get-FastLlmUiSafeLicenseUrl\}' -or $lk.Extent.Text -cnotmatch '\$target = & \$safeUrl -Url \(\[string\] \$sender\.Tag\)' -or $lk.Extent.Text -cnotmatch 'if \(\$target\) \{ Start-Process \$target \}'){[void]$f.Add('a link does not open only through Get-FastLlmUiSafeLicenseUrl')}
+    if($lk.Extent.Text -cnotmatch 'if \(\$LicenseLink\.url\)'){[void]$f.Add('a licence without a url is not plain text')}
+    foreach($name in 'Show-FastLlmUiFluentLicenseSettingConfirm','Show-FastLlmUiFluentComponentConsent'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){[void]$f.Add("$name is not defined once");continue}
+        $set=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$context[''Dialog'']' -and $n.Right.Extent.Text -ceq '$dialog'},$true))
+        if($set.Count -ne 1){[void]$f.Add("$name does not hand the dialog to its link-error box")}
+        $calls=@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentConsentLink'},$true))
+        if($calls.Count -ne 1 -or (Get-DlgParamText $calls[0] 'Context') -cne '$context'){[void]$f.Add("$name does not pass its context to its links")}
+    }
+    $cc=Get-DlgFn $Text 'Show-FastLlmUiFluentComponentConsent'
+    if($null -ne $cc){
+        $setNames=@($cc.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and [string]$n.Member.Value -in @('SetName','SetLabeledBy')},$true)).Count
+        if($setNames -lt 2){[void]$f.Add('an accept check box does not carry Name and LabeledBy')}
+        if($cc.Extent.Text -cnotmatch "SetResourceReference\(\[System\.Windows\.FrameworkElement\]::StyleProperty, 'FastLlm\.CheckBoxStyle'\)"){[void]$f.Add('an accept check box does not use the 3c check box style (wrapping caption)')}
+    }
+    foreach($name in 'Show-FastLlmUiFluentExactModelConsent','Show-FastLlmUiFluentVcInstallReview'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){continue}
+        if(-not $fn.Extent.Text.Contains('[System.Windows.Automation.AutomationProperties]::SetName($details,')){[void]$f.Add("$name does not name its read-only box")}
+        if(@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialogReadBox'},$true)).Count -ne 1){[void]$f.Add("$name does not use the read box")}
+    }
+    $mc=Get-DlgFn $Text 'Show-FastLlmUiFluentExactModelConsent'
+    if($null -ne $mc -and ($mc.Extent.Text -cnotmatch '(?s)\$details\.SelectionStart = 0\s+\$details\.SelectionLength = 0\s+\$buttons' -or $mc.Extent.Text -cnotmatch 'Add_Loaded\(\{ \$details\.SelectionStart = 0; \$details\.SelectionLength = 0 \}')){[void]$f.Add('the model review caret is not reset to the start (before and when shown)')}
+    return ,$f.ToArray()
+}
+$ckA11y=Get-CkA11yFindings $ckText
+foreach($x in $ckA11y){Write-Host "FINDING: $x"}
+Check ($ckA11y.Count -eq 0) 'consent links open only when safe, the link-error box is owned by its dialog, inputs and links are named, the model caret starts at the top'
+$ckA11yPlants=[ordered]@{
+    'the link error is owned by the main window'=$ckText.Replace('-Owner $Context[''Dialog'']','-Owner $script:form')
+    'the link error is owned by nothing'=$ckText.Replace('-Owner $Context[''Dialog''] -Text $ErrorText','-Text $ErrorText')
+    'the link error is not a warning'=$ckText.Replace("-Buttons 'OK' -Icon 'Warning'","-Buttons 'OK' -Icon 'None'")
+    'a link opens the raw url'=$ckText.Replace('$target = & $safeUrl -Url ([string] $sender.Tag)','$target = [string] $sender.Tag')
+    'a link is not named'=$ckText.Replace('[System.Windows.Automation.AutomationProperties]::SetName($link, $linkText)','')
+    'the dialog is not handed to the licence box'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' '$context[''Dialog''] = $dialog' '')
+    'the dialog is not handed to the component box'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '$context[''Dialog''] = $dialog' '')
+    'a check box loses its LabeledBy'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '[System.Windows.Automation.AutomationProperties]::SetLabeledBy($box, $nameLabel)' '')
+    'a check box loses its name'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' '[System.Windows.Automation.AutomationProperties]::SetName($box, (ConvertTo-FastLlmUiDisplayText -Text $acceptText -UseMnemonic $true))' '')
+    'a check box loses the wrapping style'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentComponentConsent' "'FastLlm.CheckBoxStyle'" "'FastLlm.ButtonStyle'")
+    'the model box is not named'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' '[System.Windows.Automation.AutomationProperties]::SetName($details, [string] $t.ModelTitle)' '')
+    'the VC box is not named'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' '[System.Windows.Automation.AutomationProperties]::SetName($details, [string] $t.VcTitle)' '')
+    'the model caret is left alone'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentExactModelConsent' '$details.SelectionLength = 0 }.GetNewClosure()' '}.GetNewClosure()')
+    'a plain licence becomes a link'=$ckText.Replace('if ($LicenseLink.url) {','if ($true) {')
+}
+foreach($k in $ckA11yPlants.Keys){ Check ($ckA11yPlants[$k] -cne $ckText -and (Get-CkA11yFindings $ckA11yPlants[$k]).Count -ge 1) "mutation check: the consent link and accessibility pin flags: $k" }
+foreach($k in 'a literal word in a function','Width markup','IsDefault'){ }
+$ckLitPlants=[ordered]@{
+    'a literal word in a function'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentVcInstallReview' '[string] $t.VcLater }' "'Do later' }")
+    'IsDefault set'=($ckText+"`n# `$b.IsDefault = `$true`n")
+    'the table merge dropped'=$ckText.Replace('$script:FastLlmUiFluentDialogText[$consentKey] = $script:FastLlmUiFluentConsentText[$consentKey]','$null = 1')
+}
+foreach($k in $ckLitPlants.Keys){ Check ($ckLitPlants[$k] -cne $ckText -and (Get-CkTextFindings $ckLitPlants[$k]).Count -ge 1) "mutation check: the consent text pin flags: $k" }
+# ===== end PR 4b Task B2 (builder K) =====
+
+
 Write-Host "UI fluent member coverage tests passed: $checks"
