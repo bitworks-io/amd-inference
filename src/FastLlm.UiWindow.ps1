@@ -103,7 +103,7 @@ function New-FastLlmUiThemeDictionary {
             $hiText = $sc::HighlightTextBrush
         }
         $map = [ordered]@{
-            Layer = $win; Card = $win; CardStroke = $text
+            Layer = $win; Card = $win; CardStroke = $text; Flyout = $win
             TextPrimary = $text; TextSecondary = $text
             ControlStroke = $text; ControlStrongStroke = $text
             AccentFill = $hi; TextOnAccent = $hiText
