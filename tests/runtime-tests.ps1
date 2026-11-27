@@ -1082,8 +1082,12 @@ try {
     $startFunctionText=(& $module { (Get-Command Start-FastLlmServer).ScriptBlock.ToString() })
     Check ($startFunctionText -match 'ValidateSet\(0,\s*15,\s*30,\s*60\)\]\s*\[int\]\s*\$IdleStopMinutes\s*=\s*0' -and $startFunctionText.Contains('$supervisorOptions.IdleStopMinutes') -and $startFunctionText.Contains('$startAgain.IdleStopMinutes')) 'idle-start: Start-FastLlmServer defaults to 0, passes it on and keeps it for the stand-in start'
     # The bench path never opts in: no bench caller passes IdleStopMinutes, so a direct caller gets 0.
-    $benchCallers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1') -and ([IO.File]::ReadAllText($_.FullName)).Contains('IdleStopMinutes') })
+    # The Fluent window's Settings page (PR 3c) is the window's settings writer, as fast-llm-ui.ps1 is (which this src scan never covered): its one use is
+    # the saved idle setting written by Set-FastLlmServingSettings, pinned just below, so it is not a bench caller.
+    $benchCallers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1','FastLlm.UiFluentSettings.ps1') -and ([IO.File]::ReadAllText($_.FullName)).Contains('IdleStopMinutes') })
     Check ($benchCallers.Count -eq 0) ('idle-bench: no lab, benchmark or diagnostic source passes IdleStopMinutes: ['+(($benchCallers | ForEach-Object Name) -join ',')+']')
+    $fluentSettingsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentSettings.ps1'))
+    Check ([regex]::Matches($fluentSettingsText,'IdleStopMinutes').Count -eq 1 -and [regex]::Matches($fluentSettingsText,'Set-FastLlmServingSettings [^\r\n]*-IdleStopMinutes \$savedIdle').Count -eq 1) 'idle-bench: the Fluent Settings page names IdleStopMinutes once, only as the saved setting passed to Set-FastLlmServingSettings'
     # no argument text: the idle stop never reaches the server arguments.
     Check (-not ($runtimeText -match "--sleep-idle-seconds") -and -not ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw) -match '--sleep-idle-seconds')) 'idle-args: the engine sleep option is not used'
     $suitePassed=$true
