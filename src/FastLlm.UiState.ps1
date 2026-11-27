@@ -303,6 +303,11 @@ function ConvertTo-FastLlmUiSettingsHeld {
         keyBox        = [string](Get-FastLlmUiApiKeyBoxState -Settings $Current)
         keyTouched    = $false
         allowSwitch   = [bool]$Current.allowSwitch
+        # The serving keys of the Settings additions, as the reader normalises them. A missing one is the store's default.
+        contextProfile = [string]$(if ($Current.PSObject.Properties['contextProfile'] -and [string]$Current.contextProfile -ceq 'long') { 'long' } else { 'default' })
+        slots          = [int]$(if ($Current.PSObject.Properties['slots'] -and [int]$Current.slots -eq 2) { 2 } else { 1 })
+        embeddings     = [string]$(if ($Current.PSObject.Properties['embeddings'] -and [string]$Current.embeddings -ceq 'on') { 'on' } else { 'off' })
+        embeddingPort  = [int]$(if ($Current.PSObject.Properties['embeddingPort']) { [int]$Current.embeddingPort } else { 8081 })
     }
 }
 
@@ -315,6 +320,10 @@ function ConvertFrom-FastLlmUiSettingsHeld {
         chatPage        = [string]$(if ([bool]$Held.chatPage) { 'on' } else { 'off' })
         idleStopMinutes = [int]@(0,15,30,60)[[Math]::Max(0,[int]$Held.idleIndex)]
         allowSwitch     = [bool]$Held.allowSwitch
+        contextProfile  = [string]$(if ($Held.PSObject.Properties['contextProfile']) { [string]$Held.contextProfile } else { 'default' })
+        slots           = [int]$(if ($Held.PSObject.Properties['slots']) { [int]$Held.slots } else { 1 })
+        embeddings      = [string]$(if ($Held.PSObject.Properties['embeddings']) { [string]$Held.embeddings } else { 'off' })
+        embeddingPort   = [int]$(if ($Held.PSObject.Properties['embeddingPort']) { [int]$Held.embeddingPort } else { 8081 })
     }
 }
 
@@ -335,8 +344,47 @@ function Test-FastLlmUiSettingsDirty {
     if ([int]$Saved.idleIndex -ne [int]$Held.idleIndex) { return $true }
     if ([bool]$Saved.allowSwitch -ne [bool]$Held.allowSwitch) { return $true }
     if ([string]$Saved.keyBox -cne [string]$Held.keyBox) { return $true }
+    # The Settings additions are read tolerantly: a side that has none holds the store's defaults.
+    $savedProfile = if ($Saved.PSObject.Properties['contextProfile']) { [string]$Saved.contextProfile } else { 'default' }
+    $heldProfile = if ($Held.PSObject.Properties['contextProfile']) { [string]$Held.contextProfile } else { 'default' }
+    if ($savedProfile -cne $heldProfile) { return $true }
+    $savedSlots = if ($Saved.PSObject.Properties['slots']) { [int]$Saved.slots } else { 1 }
+    $heldSlots = if ($Held.PSObject.Properties['slots']) { [int]$Held.slots } else { 1 }
+    if ($savedSlots -ne $heldSlots) { return $true }
+    $savedEmb = if ($Saved.PSObject.Properties['embeddings']) { [string]$Saved.embeddings } else { 'off' }
+    $heldEmb = if ($Held.PSObject.Properties['embeddings']) { [string]$Held.embeddings } else { 'off' }
+    if ($savedEmb -cne $heldEmb) { return $true }
+    $savedEmbPort = if ($Saved.PSObject.Properties['embeddingPort']) { [int]$Saved.embeddingPort } else { 8081 }
+    $heldEmbPort = if ($Held.PSObject.Properties['embeddingPort']) { [int]$Held.embeddingPort } else { 8081 }
+    if ($savedEmbPort -ne $heldEmbPort) { return $true }
     if ([string]$Saved.keyBox -ceq 'indeterminate' -and [bool]$Held.keyTouched) { return $true }
     return $false
+}
+
+# What the Settings additions rows show. Both Embeddings rows show when an approved, measured embedding model is available or the saved setting is
+# already on (so it can be turned off); otherwise they are hidden. Long and "2 requests at once" are each enabled when the install has a measured row for
+# them (LongMeasured: Long at the held slots; TwoMeasured: the held profile at 2) AND the Models page's Context is 0 (a Context above 0 is refused by the
+# planner for either), or when that value is already the saved one. A disabled one gets a reason code: 'needs-catalog-context' (the actionable one, so it
+# wins when both apply) or 'long-not-measured' (matching the start's refusal).
+function Get-FastLlmUiSettingsAdditionsView {
+    param(
+        [Parameter(Mandatory=$true)][bool]$EmbeddingsAvailable,
+        [Parameter(Mandatory=$true)][string]$SavedEmbeddings,
+        [Parameter(Mandatory=$true)][bool]$LongMeasured,
+        [Parameter(Mandatory=$true)][string]$SavedContextProfile,
+        [Parameter(Mandatory=$true)][bool]$TwoMeasured,
+        [Parameter(Mandatory=$true)][int]$SavedSlots,
+        [Parameter(Mandatory=$true)][int]$ContextSize
+    )
+    $showEmbeddings = [bool]($EmbeddingsAvailable -or ($SavedEmbeddings -ceq 'on'))
+    $catalogContext = [bool]($ContextSize -le 0)
+    $longEnabled = [bool](($LongMeasured -and $catalogContext) -or ($SavedContextProfile -ceq 'long'))
+    $twoEnabled = [bool](($TwoMeasured -and $catalogContext) -or ($SavedSlots -eq 2))
+    $longReason = ''
+    if (-not $longEnabled) { $longReason = 'long-not-measured'; if (-not $catalogContext) { $longReason = 'needs-catalog-context' } }
+    $twoReason = ''
+    if (-not $twoEnabled) { $twoReason = 'long-not-measured'; if (-not $catalogContext) { $twoReason = 'needs-catalog-context' } }
+    return @{ showEmbeddings = $showEmbeddings; longEnabled = $longEnabled; longReasonCode = $longReason; twoEnabled = $twoEnabled; twoReasonCode = $twoReason }
 }
 
 # What leaving the Settings page does: go, stay, save (run Save first) or discard-go (drop the edits and go).

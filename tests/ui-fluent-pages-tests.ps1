@@ -587,9 +587,14 @@ function Update-FastLlmUiFluentComponentsList {
 # ShowLicenseSettingConfirm (functions), and the wiring statements of the update, experimental and licence boxes and of settingsButton.Add_Click. The effect log
 # holds only WRITES (reads are counted apart), in call order, so the Save sequence is one comparable string.
 $script:setLog = New-Object System.Collections.ArrayList
-$script:setFx = @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; apiKeyUndetermined = $false }
+$script:setFx = @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; apiKeyUndetermined = $false
+    contextProfile = 'default'; slots = 1; embeddings = 'off'; embeddingPort = 8081; embAvail = $false; longMeasured = $false }
 $script:setReads = 0
 $script:setLastServing = $null
+$script:setProbeSlots = New-Object System.Collections.ArrayList   # the -Slots each long-probe read was given
+$script:setProbeAsked = New-Object System.Collections.ArrayList   # 'profile:slots' of each probe read (Long at the held slots, and the held profile at 2)
+$script:setProbeCalls = @{ emb = 0; long = 0 }   # how often Enter read each availability probe (never per tick, never on a Save's reload)
+$script:setLastNew = $null             # the Settings additions the last serving write was GIVEN (name to value); a field the page did not pass is absent
 $script:setAllowStored = $null
 $script:setApiUnavailable = $false      # true: an 'on' throws api-key-unavailable until a rotate happened
 $script:setRotateThrows = ''            # a message: rotate throws it
@@ -656,13 +661,34 @@ function Get-FastLlmServingSettings {
     param([string]$InstallRoot)
     $script:setReads++
     return [pscustomobject]@{ serverPort = [int]$script:setFx.serverPort; thinking = [string]$script:setFx.thinking; chatPage = [string]$script:setFx.chatPage; idleStopMinutes = [int]$script:setFx.idleStopMinutes
-        apiKey = [string]$script:setFx.apiKey; apiKeyUndetermined = [bool]$script:setFx.apiKeyUndetermined; malformed = $false }
+        apiKey = [string]$script:setFx.apiKey; apiKeyUndetermined = [bool]$script:setFx.apiKeyUndetermined; malformed = $false
+        contextProfile = [string]$script:setFx.contextProfile; slots = [int]$script:setFx.slots; embeddings = [string]$script:setFx.embeddings; embeddingPort = [int]$script:setFx.embeddingPort }
 }
+# Settings additions (named test change): the stub takes the four new parameters untyped and records exactly the ones it was GIVEN ($PSBoundParameters), like the real
+# writer, which leaves a key alone when its parameter is not bound. A given value is stored in the fixture, so the next read shows it.
 function Set-FastLlmServingSettings {
-    param([string]$InstallRoot, [int]$ServerPort, [string]$Thinking, [string]$ChatPage, [int]$IdleStopMinutes)
+    param([string]$InstallRoot, [int]$ServerPort, [string]$Thinking, [string]$ChatPage, [int]$IdleStopMinutes, $KvContextProfile, $KvSlots, $Embeddings, $EmbeddingPort)
     [void]$script:setLog.Add('serving')
     $script:setLastServing = @{ port = $ServerPort; thinking = $Thinking; chat = $ChatPage; idle = $IdleStopMinutes }
     $script:setFx.serverPort = $ServerPort; $script:setFx.thinking = $Thinking; $script:setFx.chatPage = $ChatPage; $script:setFx.idleStopMinutes = $IdleStopMinutes
+    $given = @{}
+    foreach ($pair in @(@('KvContextProfile', 'contextProfile'), @('KvSlots', 'slots'), @('Embeddings', 'embeddings'), @('EmbeddingPort', 'embeddingPort'))) {
+        if ($PSBoundParameters.ContainsKey([string]$pair[0])) { $given[[string]$pair[0]] = $PSBoundParameters[[string]$pair[0]]; $script:setFx[[string]$pair[1]] = $PSBoundParameters[[string]$pair[0]] }
+    }
+    $script:setLastNew = $given
+}
+# Settings additions (named test change): the two availability probes are read on Enter, so the fixture decides them ('embAvail', 'longMeasured').
+function Test-FastLlmUiFluentEmbeddingsAvailable { $script:setProbeCalls['emb']++; return [bool]$script:setFx['embAvail'] }
+# The long probe takes the held requests-at-once value (it is read again when the requests box changes). A fixture with 'longAt' (a list of slot counts) is measured only for those.
+# The Default profile at 2 is measured unless a fixture's 'twoMeasured' says otherwise (so the older sections test Long alone); the long profile follows longAt or longMeasured.
+function Test-FastLlmUiFluentLongMeasured {
+    param([int]$Slots = 1, [string]$ProfileId = 'long')
+    $script:setProbeCalls['long']++
+    [void]$script:setProbeSlots.Add([int]$Slots)
+    [void]$script:setProbeAsked.Add($ProfileId + ':' + [string][int]$Slots)
+    if ($ProfileId -ceq 'default') { if ($script:setFx.ContainsKey('twoMeasured')) { return [bool]$script:setFx['twoMeasured'] }; return $true }
+    if ($script:setFx.ContainsKey('longAt')) { return [bool](@($script:setFx['longAt']) -contains [int]$Slots) }
+    return [bool]$script:setFx['longMeasured']
 }
 function Set-FastLlmUiAllowSwitch {
     param([string]$InstallRoot, [bool]$Value)
@@ -2568,15 +2594,18 @@ function Get-SettingsLogText { return (@($script:setLog.ToArray()) -join ',') }
 
 # The stores, the toggles' write lists, the snapshot and the adapters back to a quiet, available start. The key is known (off) unless the case says otherwise.
 function Reset-SettingsFixture([hashtable]$O = @{}) {
-    $fx = @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; apiKeyUndetermined = $false }
+    $fx = @{ serverPort = 8080; thinking = 'auto'; chatPage = 'off'; idleStopMinutes = 0; apiKey = 'off'; apiKeyUndetermined = $false
+        contextProfile = 'default'; slots = 1; embeddings = 'off'; embeddingPort = 8081; embAvail = $false; longMeasured = $false }
     foreach ($k in $O.Keys) { $fx[$k] = $O[$k] }
     $script:setFx = $fx
     $script:setLog.Clear(); $script:setSignInSets.Clear(); $script:setUpdateWrites.Clear(); $script:setExpWrites.Clear(); $script:setLicWrites.Clear(); $script:setExpEvents.Clear()
-    $script:setReads = 0; $script:setLastServing = $null; $script:setAllowStored = $null
+    $script:setReads = 0; $script:setLastServing = $null; $script:setLastNew = $null; $script:setAllowStored = $null
     $script:setApiUnavailable = $false; $script:setRotateThrows = ''; $script:setRefreshThrows = 0
     $script:setSignInChecked = $false; $script:setSignInReads = 0; $script:setSignInReadThrows = $false; $script:setSignInSetThrows = $false
     $script:uiSettings.allowSwitch = $false
     $script:child = $null
+    # The Models page's Context (the value ReadSelection reads): 0 unless a fixture sets 'context' (a Context above 0 disables Long and 2).
+    $script:contextBox.Value = [decimal]$(if ($fx.ContainsKey('context')) { $fx['context'] } else { 0 })
     $script:bgState = Get-UiBackgroundFixture -Name 'none'
     $script:shellSnap = New-ShellSnap
     $script:settingsButton.Enabled = $true
@@ -3040,7 +3069,11 @@ function Get-SettingsEditTable {
 }
 
 function Get-SettingsBeforeObject([hashtable]$Fx) {
-    return [pscustomobject]@{ serverPort = [int]$Fx.serverPort; thinking = [string]$Fx.thinking; chatPage = [string]$Fx.chatPage; idleStopMinutes = [int]$Fx.idleStopMinutes; apiKey = [string]$Fx.apiKey; allowSwitch = $false }
+    # Settings additions (named test change): the before object also carries the four serving additions (the fixture's value, or the store's default when it has none).
+    $add = @{ contextProfile = 'default'; slots = 1; embeddings = 'off'; embeddingPort = 8081 }
+    foreach ($k in @($add.Keys)) { if ($Fx.ContainsKey($k)) { $add[$k] = $Fx[$k] } }
+    return [pscustomobject]@{ serverPort = [int]$Fx.serverPort; thinking = [string]$Fx.thinking; chatPage = [string]$Fx.chatPage; idleStopMinutes = [int]$Fx.idleStopMinutes; apiKey = [string]$Fx.apiKey; allowSwitch = $false
+        contextProfile = [string]$add.contextProfile; slots = [int]$add.slots; embeddings = [string]$add.embeddings; embeddingPort = [int]$add.embeddingPort }
 }
 
 # ---- P30: Save ----
@@ -3570,6 +3603,498 @@ function Invoke-P36-Pane {
     Check ($walk.Started -and $settingsStops.Count -eq 0) 'P36 with Home selected, the Tab walk from the pane never stops on the Settings item (the second list is skipped)' "started=$($walk.Started) stops=$($walk.Stops.Count) settingsStops=$($settingsStops.Count)"
     Close-SettingsPage
     Check-NoExceptions 'P36'
+}
+
+# ---- P38: the Settings additions (context profile, requests at once, embeddings and its port) ----
+# Settings additions (new step): the four rows are held Server edits. Their availability is read on Enter through the two probes (stubbed by the fixture: 'embAvail' and
+# 'longMeasured'); the recorder sees exactly the Set-FastLlmServingSettings parameters the page GAVE (an untouched field is not passed, a changed one is, with its held value).
+function Get-P38Bound {
+    if ($null -eq $script:setLastNew) { return '' }
+    $keys = [string[]]@($script:setLastNew.Keys)
+    [Array]::Sort($keys, [System.StringComparer]::Ordinal)
+    return ($keys -join ',')
+}
+# The stops of a Tab walk from the Settings pane item that lie inside an element.
+function Get-P38StopsInside($Walk, $Group) {
+    $in = New-Object System.Collections.ArrayList
+    foreach ($stop in @($Walk.Stops)) {
+        if ($stop.Element -is [System.Windows.DependencyObject] -and ([object]::ReferenceEquals($stop.Element, $Group) -or $Group.IsAncestorOf($stop.Element))) { [void]$in.Add($stop) }
+    }
+    return $in.ToArray()
+}
+function Invoke-P38SaveWithDialogs {
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 50 } finally { $timer.Stop() }
+    $script:p38Save = @{ R = $r; D = $d }
+}
+function Invoke-P38-SettingsAdditions {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $win = $f.Window
+    $s = $script:FastLlmUiFluentStrings
+    $hidden = [System.Windows.Visibility]::Collapsed
+    $shown = [System.Windows.Visibility]::Visible
+    $two = $els.SettingsRequestsBox
+
+    # A. The Embeddings rows follow the two answers read on Enter and the saved value (lead ruling A4): neither hides them, an available model or a saved 'on' shows them.
+    # The measured-setup probe answers two questions on Enter: Long at the held requests value, and 2 for the held profile (fixture: default, 1).
+    $probesBefore = @{ emb = [int]$script:setProbeCalls['emb']; long = [int]$script:setProbeCalls['long']; asked = [int]$script:setProbeAsked.Count }
+    $null = Open-SettingsPage @{ embAvail = $false; embeddings = 'off' }
+    $st = Get-SettingsState
+    $askedOnEnter = @($script:setProbeAsked.ToArray() | Select-Object -Skip $probesBefore.asked)
+    $askedSorted = (@($askedOnEnter | Sort-Object -CaseSensitive) -join ',')
+    Check ([int]$script:setProbeCalls['emb'] -eq $probesBefore.emb + 1 -and [int]$script:setProbeCalls['long'] -eq $probesBefore.long + 2 -and $askedSorted -ceq 'default:2,long:1') 'P38 opening the page reads the embeddings probe once and the measured-setup probe once per question (Long at the held requests value, 2 for the held profile)' "emb=$($script:setProbeCalls['emb']) long=$($script:setProbeCalls['long']) before=$($probesBefore.emb)/$($probesBefore.long) asked='$($askedOnEnter -join ',')'"
+    Check ($els.SettingsEmbeddingsGroup.Visibility -eq $hidden -and -not $els.SettingsEmbeddingsBox.IsVisible -and -not $els.SettingsEmbeddingPortRow.IsVisible -and -not $els.SettingsEmbeddingsHelp.IsVisible) 'P38 embeddings unavailable and saved off: both Embeddings rows (the box with its help, and the port row) are hidden' "group=$($els.SettingsEmbeddingsGroup.Visibility) box=$($els.SettingsEmbeddingsBox.IsVisible) port=$($els.SettingsEmbeddingPortRow.IsVisible)"
+    $null = Open-SettingsPage @{ embAvail = $true; embeddings = 'off' }
+    $st = Get-SettingsState
+    Check ($els.SettingsEmbeddingsGroup.Visibility -eq $shown -and $els.SettingsEmbeddingsBox.IsVisible -and $els.SettingsEmbeddingsBox.IsChecked -eq $false -and $els.SettingsEmbeddingPortGroup.Visibility -eq $hidden -and -not $els.SettingsEmbeddingPortRow.IsVisible -and -not [bool]$st['Dirty']) 'P38 embeddings available and saved off: the box shows, unticked, and the port row is collapsed' "group=$($els.SettingsEmbeddingsGroup.Visibility) checked=$($els.SettingsEmbeddingsBox.IsChecked) portGroup=$($els.SettingsEmbeddingPortGroup.Visibility)"
+    Check ([string]$els.SettingsEmbeddingsHelp.Text -ceq [string]$s.EmbeddingsHelp -and $els.SettingsEmbeddingsHelp.IsVisible -and [string][System.Windows.Automation.AutomationProperties]::GetName($els.SettingsEmbeddingsBox) -ceq [string]$s.Embeddings) 'P38 the Embeddings box has its caption as its name and its help line is shown' "help='$($els.SettingsEmbeddingsHelp.Text)' name='$([System.Windows.Automation.AutomationProperties]::GetName($els.SettingsEmbeddingsBox))'"
+    $null = Open-SettingsPage @{ embAvail = $false; embeddings = 'on'; embeddingPort = 9100 }
+    $st = Get-SettingsState
+    Check ($els.SettingsEmbeddingsGroup.Visibility -eq $shown -and $els.SettingsEmbeddingsBox.IsVisible -and $els.SettingsEmbeddingsBox.IsChecked -eq $true -and $els.SettingsEmbeddingPortGroup.Visibility -eq $shown -and [string]$els.SettingsEmbeddingPortBox.Text -ceq '9100' -and -not [bool]$st['Dirty']) 'P38 embeddings unavailable but saved on (set by the CLI): the rows show with the saved values so the user can turn it off' "group=$($els.SettingsEmbeddingsGroup.Visibility) checked=$($els.SettingsEmbeddingsBox.IsChecked) portGroup=$($els.SettingsEmbeddingPortGroup.Visibility) text='$($els.SettingsEmbeddingPortBox.Text)'"
+    $els.SettingsEmbeddingsBox.IsChecked = $false
+    Invoke-Pump 50
+    Check ($els.SettingsEmbeddingsBox.IsEnabled -and [string]$st['Held'].embeddings -ceq 'off' -and [int]$st['Held'].embeddingPort -eq 9100 -and [bool]$st['Dirty'] -and $els.SettingsEmbeddingPortGroup.Visibility -eq $hidden -and $els.SettingsEmbeddingsGroup.Visibility -eq $shown) 'P38 a saved-on box (model unavailable) can be unticked: held off, dirty, the port row collapses, the port is kept as a held value, the box stays shown' "enabled=$($els.SettingsEmbeddingsBox.IsEnabled) held=$($st['Held'].embeddings)/$($st['Held'].embeddingPort) dirty=$($st['Dirty']) portGroup=$($els.SettingsEmbeddingPortGroup.Visibility)"
+    $d = @{}
+    $timer = Start-SettingsDialogs @((New-SettingsWatch)) $d
+    try { $r = @(Invoke-FastLlmUiFluentSettingsSave); Invoke-Pump 50 } finally { $timer.Stop() }
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-P38Bound) -ceq 'Embeddings' -and [string]$script:setLastNew['Embeddings'] -ceq 'off' -and (Test-SettingsRecClean $d)) 'P38 unticking a saved-on box and saving passes exactly -Embeddings off (not the port)' "bound=$(Get-P38Bound) log=$(Get-SettingsLogText)"
+    Check ($els.SettingsEmbeddingsGroup.Visibility -eq $hidden -and $els.SettingsEmbeddingsBox.IsChecked -eq $false -and -not [bool]$st['Dirty'] -and [int]$script:setProbeCalls['emb'] -eq $probesBefore.emb + 3) 'P38 after that Save the page is reloaded without reading the probes again, and with the saved value now off and no model available the Embeddings rows are hidden (A4)' "group=$($els.SettingsEmbeddingsGroup.Visibility) emb=$($script:setProbeCalls['emb']) want=$($probesBefore.emb + 3)"
+    # the probes are read on Enter only, never on a tick
+    $callsBeforeTicks = @{ emb = [int]$script:setProbeCalls['emb']; long = [int]$script:setProbeCalls['long'] }
+    for ($i = 0; $i -lt 3; $i++) { Invoke-FastLlmUiFluentTick; Invoke-Pump 30 }
+    Check ([int]$script:setProbeCalls['emb'] -eq $callsBeforeTicks.emb -and [int]$script:setProbeCalls['long'] -eq $callsBeforeTicks.long) 'P38 three ticks on the page read neither probe' "emb=$($script:setProbeCalls['emb']) long=$($script:setProbeCalls['long']) before=$($callsBeforeTicks.emb)/$($callsBeforeTicks.long)"
+
+    # B. The port row collapses and expands with the box, and focus is never left on a collapsed row.
+    $null = Open-SettingsPage @{ embAvail = $true }
+    $st = Get-SettingsState
+    $null = $win.Activate()
+    $null = $els.SettingsEmbeddingsBox.Focus()
+    Invoke-Pump 100
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    Invoke-Pump 80
+    Check ($els.SettingsEmbeddingPortGroup.Visibility -eq $shown -and $els.SettingsEmbeddingPortRow.IsVisible -and [string]$els.SettingsEmbeddingPortBox.Text -ceq '8081' -and [string]$st['Held'].embeddings -ceq 'on' -and [bool]$st['Dirty']) 'P38 ticking Embeddings shows the port row with the saved port 8081, and the page is dirty' "portGroup=$($els.SettingsEmbeddingPortGroup.Visibility) text='$($els.SettingsEmbeddingPortBox.Text)' held=$($st['Held'].embeddings) dirty=$($st['Dirty'])"
+    Check ([string][System.Windows.Automation.AutomationProperties]::GetName($els.SettingsEmbeddingPortBox) -ceq [string]$s.EmbeddingPort -and [string]$els.SettingsEmbeddingPortLabel.Text -ceq [string]$s.EmbeddingPort) 'P38 the port box is named with its label text' "name='$([System.Windows.Automation.AutomationProperties]::GetName($els.SettingsEmbeddingPortBox))' label='$($els.SettingsEmbeddingPortLabel.Text)'"
+    $walk = Get-PagesTabWalk $els.NavSettings
+    $portStops = @($walk.Stops | Where-Object { [object]::ReferenceEquals($_.Element, $els.SettingsEmbeddingPortBox) })
+    $boxStops = @($walk.Stops | Where-Object { [object]::ReferenceEquals($_.Element, $els.SettingsEmbeddingsBox) })
+    Check ($walk.Started -and $boxStops.Count -eq 1 -and $portStops.Count -eq 1) 'P38 with Embeddings ticked, the Tab walk stops once on the Embeddings box and once on the port box' "started=$($walk.Started) box=$($boxStops.Count) port=$($portStops.Count) stops=$($walk.Stops.Count)"
+    # focus is in the port row; the row collapses (Discard), and the keyboard is not left on it
+    $null = $win.Activate()
+    $null = $els.SettingsEmbeddingPortBox.Focus()
+    Invoke-Pump 100
+    Invoke-FastLlmUiFluentSettingsDiscard
+    Invoke-Pump 80
+    $kb = [System.Windows.Input.Keyboard]::FocusedElement
+    $kbInGroup = ($null -ne $kb -and $kb -is [System.Windows.DependencyObject] -and ([object]::ReferenceEquals($kb, $els.SettingsEmbeddingPortGroup) -or $els.SettingsEmbeddingPortGroup.IsAncestorOf($kb)))
+    Check ($els.SettingsEmbeddingPortGroup.Visibility -eq $hidden -and -not $els.SettingsEmbeddingPortBox.IsVisible -and -not $kbInGroup -and -not [bool]$st['Dirty']) 'P38 Discard with the keyboard focus in the port row collapses the row and the keyboard focus is not left inside it' "portGroup=$($els.SettingsEmbeddingPortGroup.Visibility) focus=$(if ($null -ne $kb) { $kb.GetType().Name } else { 'none' }) inGroup=$kbInGroup dirty=$($st['Dirty'])"
+    Write-Host ("INFO: P38 after the port row collapsed with the focus in it, the keyboard focus is on " + $(if ($null -ne $kb) { $kb.GetType().Name + ':' + [string]$kb.Name } else { 'nothing' }))
+    $walk = Get-PagesTabWalk $els.NavSettings
+    $inGroup = @(Get-P38StopsInside $walk $els.SettingsEmbeddingPortGroup)
+    $inPage = @(Get-PagesStopsIn $walk $f.Pages['Settings']['Element'])
+    Check ($walk.Started -and $inGroup.Count -eq 0 -and $inPage.Count -gt 5) 'P38 with the row collapsed the Tab walk never stops inside it and still walks the page (no stranded focus)' "started=$($walk.Started) inGroup=$($inGroup.Count) inPage=$($inPage.Count)"
+    # the focus is on the box itself while it is ticked and unticked (set directly, not by a key press): the box keeps the focus and the row goes
+    $null = $win.Activate()
+    $null = $els.SettingsEmbeddingsBox.Focus()
+    Invoke-Pump 80
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    Invoke-Pump 50
+    $els.SettingsEmbeddingsBox.IsChecked = $false
+    Invoke-Pump 80
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ($els.SettingsEmbeddingPortGroup.Visibility -eq $hidden -and [object]::ReferenceEquals($logical, $els.SettingsEmbeddingsBox) -and -not [bool]$st['Dirty']) 'P38 ticking and unticking from the box leaves the focus on the box, the row collapsed and the page clean again' "portGroup=$($els.SettingsEmbeddingPortGroup.Visibility) focus=$(if ($null -ne $logical) { $logical.GetType().Name + ':' + $logical.Name } else { 'none' }) dirty=$($st['Dirty'])"
+
+    # C. A3: the same port as the server's. The message shows at once (polite), Save is refused with no write and the edits stay, and changing the port clears the message.
+    $null = Open-SettingsPage @{ embAvail = $true }
+    $st = Get-SettingsState
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    Invoke-Pump 50
+    Check ($els.SettingsEmbeddingPortSame.Visibility -eq $hidden -and [string]$els.SettingsEmbeddingPortSame.Text -ceq '') 'P38 ticking Embeddings with different ports (8080 and 8081) shows no same-port message' "visibility=$($els.SettingsEmbeddingPortSame.Visibility) text='$($els.SettingsEmbeddingPortSame.Text)'"
+    $els.SettingsEmbeddingPortBox.Text = '8080'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    $live = [System.Windows.Automation.AutomationProperties]::GetLiveSetting($els.SettingsEmbeddingPortSame)
+    Check ($els.SettingsEmbeddingPortSame.Visibility -eq $shown -and $els.SettingsEmbeddingPortSame.IsVisible -and [string]$els.SettingsEmbeddingPortSame.Text -ceq [string]$s.EmbeddingPortSame -and $live -eq [System.Windows.Automation.AutomationLiveSetting]::Polite) 'P38 setting the embeddings port equal to the server port shows the inline EmbeddingPortSame message at once, as a polite live region' "visibility=$($els.SettingsEmbeddingPortSame.Visibility) text='$($els.SettingsEmbeddingPortSame.Text)' live=$live"
+    Check ((Get-SettingsLogText) -ceq '') 'P38 the inline message wrote nothing' "log=$(Get-SettingsLogText)"
+    $null = $win.Activate()
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq '' -and $null -eq $script:setLastServing -and $null -eq $script:setLastNew -and $null -eq $script:setAllowStored -and (Test-SettingsRecClean $script:p38Save.D) -and $script:p38Save.D['recs'].Count -eq 0) 'P38 Save with equal ports returns one bool (false), writes nothing at all and shows no box' ("count=$($r.Count) value=$($r -join ',') log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $script:p38Save.D))
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Settings' -and [bool]$st['Dirty'] -and [string]$st['Held'].embeddings -ceq 'on' -and [int]$st['Held'].embeddingPort -eq 8080 -and [string]$els.SettingsEmbeddingPortBox.Text -ceq '8080' -and $els.SettingsEmbeddingsBox.IsChecked -eq $true -and $els.SettingsEmbeddingPortSame.Visibility -eq $shown) 'P38 after the refused Save the page and every edit stay, and the message still shows' "dirty=$($st['Dirty']) held=$($st['Held'].embeddings)/$($st['Held'].embeddingPort) text='$($els.SettingsEmbeddingPortBox.Text)' msg=$($els.SettingsEmbeddingPortSame.Visibility)"
+    Check ([object]::ReferenceEquals($logical, $els.SettingsEmbeddingPortBox)) 'P38 the refused Save puts the focus on the port box' "focus=$(if ($null -ne $logical) { $logical.GetType().Name + ':' + $logical.Name } else { 'none' })"
+    $els.SettingsEmbeddingPortBox.Text = '9100'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Check ($els.SettingsEmbeddingPortSame.Visibility -eq $hidden -and [string]$els.SettingsEmbeddingPortSame.Text -ceq '' -and [int]$st['Held'].embeddingPort -eq 9100) 'P38 changing the embeddings port clears the message' "visibility=$($els.SettingsEmbeddingPortSame.Visibility) text='$($els.SettingsEmbeddingPortSame.Text)' held=$($st['Held'].embeddingPort)"
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and (Get-P38Bound) -ceq 'EmbeddingPort,Embeddings' -and [string]$script:setLastNew['Embeddings'] -ceq 'on' -and [int]$script:setLastNew['EmbeddingPort'] -eq 9100 -and (Test-SettingsRecClean $script:p38Save.D)) 'P38 after the change the same Save goes through and passes exactly -Embeddings on and -EmbeddingPort 9100' ("bound=$(Get-P38Bound) log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $script:p38Save.D))
+    # the server port moved onto the embeddings port shows the message too; unticking hides it; with Embeddings off equal ports are not refused
+    $null = Open-SettingsPage @{ embAvail = $true }
+    $st = Get-SettingsState
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    $els.SettingsPortBox.Text = '8081'
+    $null = Send-ModelsKey $els.SettingsPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Check ($els.SettingsEmbeddingPortSame.Visibility -eq $shown -and [string]$els.SettingsEmbeddingPortSame.Text -ceq [string]$s.EmbeddingPortSame) 'P38 moving the server port onto the embeddings port (8081) shows the message' "visibility=$($els.SettingsEmbeddingPortSame.Visibility) held=$($st['Held'].port)/$($st['Held'].embeddingPort)"
+    $els.SettingsEmbeddingsBox.IsChecked = $false
+    Invoke-Pump 50
+    Check ($els.SettingsEmbeddingPortSame.Visibility -eq $hidden -and $els.SettingsEmbeddingPortGroup.Visibility -eq $hidden) 'P38 unticking Embeddings hides the message with the port row' "visibility=$($els.SettingsEmbeddingPortSame.Visibility)"
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and [int]$script:setFx.serverPort -eq 8081 -and (Get-P38Bound) -ceq '') 'P38 with Embeddings off, equal ports are not refused (the guard is only for Embeddings on) and no addition is passed' ("bound=$(Get-P38Bound) log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $script:p38Save.D))
+
+    # D. Long: disabled with its reason unless it is measured or already saved.
+    $null = Open-SettingsPage @{ longMeasured = $false; contextProfile = 'default' }
+    $st = Get-SettingsState
+    $why = $els.SettingsContextProfileWhy
+    Check (-not [bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and [bool]$els.SettingsContextProfileBox.Items[0].IsEnabled -and [int]$els.SettingsContextProfileBox.SelectedIndex -eq 0 -and $why.Visibility -eq $shown -and $why.IsVisible -and [string]$why.Text -ceq [string]$s.LongNotMeasured) 'P38 Long not measured and saved Default: the Long item is disabled, Default is selected and the reason line shows the LongNotMeasured text' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) default=$($els.SettingsContextProfileBox.Items[0].IsEnabled) selected=$($els.SettingsContextProfileBox.SelectedIndex) why=$($why.Visibility) text='$($why.Text)'"
+    Check ([System.Windows.Automation.AutomationProperties]::GetLiveSetting($why) -eq [System.Windows.Automation.AutomationLiveSetting]::Polite -and [string][System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsContextProfileBox) -ceq [string]$s.LongNotMeasured -and [string]$els.SettingsContextProfileHelp.Text -ceq [string]$s.ContextProfileHelp) 'P38 the reason is a polite live region and the help text of the box; the ordinary help line stays' "live=$([System.Windows.Automation.AutomationProperties]::GetLiveSetting($why)) help='$([System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsContextProfileBox))'"
+    $null = Open-SettingsPage @{ longAt = @(2); contextProfile = 'long' }
+    $st = Get-SettingsState
+    Check ([bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and [int]$els.SettingsContextProfileBox.SelectedIndex -eq 1 -and $els.SettingsContextProfileWhy.Visibility -eq $hidden -and [string]$st['Held'].contextProfile -ceq 'long' -and -not [bool]$st['Dirty']) 'P38 Long not measured but already saved: the Long item is enabled and selected, no reason line, and the page is clean' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) selected=$($els.SettingsContextProfileBox.SelectedIndex) why=$($els.SettingsContextProfileWhy.Visibility) held=$($st['Held'].contextProfile)"
+    $null = Open-SettingsPage @{ longMeasured = $true; contextProfile = 'default' }
+    $st = Get-SettingsState
+    Check ([bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and $els.SettingsContextProfileWhy.Visibility -eq $hidden -and [string]$els.SettingsContextProfileWhy.Text -ceq '') 'P38 Long measured: the Long item is enabled and there is no reason line' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) why=$($els.SettingsContextProfileWhy.Visibility)"
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    Invoke-Pump 30
+    Check ([string]$st['Held'].contextProfile -ceq 'long' -and [bool]$st['Dirty']) 'P38 with Long measured, choosing Long holds long and makes the page dirty' "held=$($st['Held'].contextProfile) dirty=$($st['Dirty'])"
+
+    # D2. The long probe follows the held requests-at-once value: measured at 1 only, so choosing 2 disables Long (with the reason) and going back to 1 enables it again.
+    $null = Open-SettingsPage @{ longAt = @(1); contextProfile = 'default' }
+    $st = Get-SettingsState
+    Check ([bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and $els.SettingsContextProfileWhy.Visibility -eq $hidden -and @($script:setProbeAsked) -contains 'long:1') 'P38 Long measured at one request at once: on Enter the probe is asked for Long with slots 1 and Long is enabled' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) slots=$($script:setProbeSlots[$script:setProbeSlots.Count - 1])"
+    $callsBefore = [int]$script:setProbeCalls['long']
+    $els.SettingsRequestsBox.SelectedIndex = 1
+    Invoke-Pump 50
+    Check ((-not [bool]$els.SettingsContextProfileBox.Items[1].IsEnabled) -and $els.SettingsContextProfileWhy.Visibility -eq $shown -and [string]$els.SettingsContextProfileWhy.Text -ceq [string]$s.LongNotMeasured -and [int]$script:setProbeCalls['long'] -eq $callsBefore + 1 -and [int]$script:setProbeSlots[$script:setProbeSlots.Count - 1] -eq 2) 'P38 choosing 2 requests at once asks the probe again with slots 2: Long is disabled and the reason shows' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) why=$($els.SettingsContextProfileWhy.Visibility) calls=$($script:setProbeCalls['long']) want=$($callsBefore + 1)"
+    $els.SettingsRequestsBox.SelectedIndex = 0
+    Invoke-Pump 50
+    Check ([bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and $els.SettingsContextProfileWhy.Visibility -eq $hidden -and [int]$script:setProbeCalls['long'] -eq $callsBefore + 2) 'P38 choosing 1 again enables Long and hides the reason' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) calls=$($script:setProbeCalls['long'])"
+    $els.SettingsRequestsBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $callsBefore = [int]$script:setProbeCalls['long']
+    Invoke-FastLlmUiFluentSettingsDiscard
+    Invoke-Pump 50
+    Check ([bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and $els.SettingsContextProfileWhy.Visibility -eq $hidden -and [int]$script:setProbeCalls['long'] -eq $callsBefore + 1) 'P38 Discard of the requests edit asks the probe for the saved slots (1) again: Long is enabled again' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) calls=$($script:setProbeCalls['long']) want=$($callsBefore + 1)"
+    $callsBefore = [int]$script:setProbeCalls['long']
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    for ($i = 0; $i -lt 3; $i++) { Invoke-FastLlmUiFluentTick; Invoke-Pump 30 }
+    Check ([int]$script:setProbeCalls['long'] -eq $callsBefore) 'P38 an unrelated edit and three ticks do not read the long probe again' "calls=$($script:setProbeCalls['long']) before=$callsBefore"
+
+    # E. Each new row edits the held value and marks the page dirty; Discard puts it back.
+    $edits = @(
+        @{ Name = 'Context profile'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsContextProfileBox.SelectedIndex = 1 }; Held = { [string]$st['Held'].contextProfile -ceq 'long' }; Back = { [int]$els.SettingsContextProfileBox.SelectedIndex -eq 0 -and [string]$st['Held'].contextProfile -ceq 'default' } },
+        @{ Name = 'Requests at once'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsRequestsBox.SelectedIndex = 1 }; Held = { [int]$st['Held'].slots -eq 2 }; Back = { [int]$els.SettingsRequestsBox.SelectedIndex -eq 0 -and [int]$st['Held'].slots -eq 1 } },
+        @{ Name = 'Embeddings'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsEmbeddingsBox.IsChecked = $true }; Held = { [string]$st['Held'].embeddings -ceq 'on' }; Back = { $els.SettingsEmbeddingsBox.IsChecked -eq $false -and [string]$st['Held'].embeddings -ceq 'off' -and $els.SettingsEmbeddingPortGroup.Visibility -eq $hidden } },
+        @{ Name = 'Embeddings port'; Fixture = @{ embAvail = $true; longMeasured = $true; embeddings = 'on' }; Do = { $els.SettingsEmbeddingPortBox.Text = '9100'; $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return) }; Held = { [int]$st['Held'].embeddingPort -eq 9100 }; Back = { [string]$els.SettingsEmbeddingPortBox.Text -ceq '8081' -and [int]$st['Held'].embeddingPort -eq 8081 } }
+    )
+    foreach ($edit in $edits) {
+        $null = Open-SettingsPage $edit.Fixture
+        $st = Get-SettingsState
+        & $edit.Do
+        Invoke-Pump 30
+        $heldOk = [bool](& $edit.Held)
+        Check ([bool]$st['Dirty'] -and $heldOk) "P38 an edit to $($edit.Name) makes the page dirty and writes the held value" "dirty=$($st['Dirty']) held=$heldOk"
+        Invoke-FastLlmUiFluentSettingsDiscard
+        Invoke-Pump 30
+        $backOk = [bool](& $edit.Back)
+        Check ((-not [bool]$st['Dirty']) -and $backOk) "P38 Discard puts $($edit.Name) back to the saved value and the page is clean again" "dirty=$($st['Dirty']) back=$backOk"
+    }
+    Check ((Get-SettingsLogText) -ceq '') 'P38 the edits and Discards wrote nothing' "log=$(Get-SettingsLogText)"
+    # Discard reverts all four at once and re-collapses the port row
+    $null = Open-SettingsPage @{ embAvail = $true; longMeasured = $true }
+    $st = Get-SettingsState
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    $els.SettingsRequestsBox.SelectedIndex = 1
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    $els.SettingsEmbeddingPortBox.Text = '9100'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Check ([bool]$st['Dirty'] -and [string]$st['Held'].contextProfile -ceq 'long' -and [int]$st['Held'].slots -eq 2 -and [string]$st['Held'].embeddings -ceq 'on' -and [int]$st['Held'].embeddingPort -eq 9100 -and $els.SettingsEmbeddingPortGroup.Visibility -eq $shown) 'P38 all four edits together are dirty and held, with the port row shown' "dirty=$($st['Dirty']) held=$($st['Held'].contextProfile)/$($st['Held'].slots)/$($st['Held'].embeddings)/$($st['Held'].embeddingPort)"
+    Invoke-FastLlmUiFluentSettingsDiscard
+    Invoke-Pump 50
+    Check ((-not [bool]$st['Dirty']) -and [int]$els.SettingsContextProfileBox.SelectedIndex -eq 0 -and [int]$els.SettingsRequestsBox.SelectedIndex -eq 0 -and $els.SettingsEmbeddingsBox.IsChecked -eq $false -and [string]$els.SettingsEmbeddingPortBox.Text -ceq '8081' -and $els.SettingsEmbeddingPortGroup.Visibility -eq $hidden -and [string]$st['Held'].contextProfile -ceq 'default' -and [int]$st['Held'].slots -eq 1 -and [string]$st['Held'].embeddings -ceq 'off' -and [int]$st['Held'].embeddingPort -eq 8081) 'P38 Discard reverts all four rows, re-collapses the port row and leaves the page clean' "dirty=$($st['Dirty']) profile=$($els.SettingsContextProfileBox.SelectedIndex) slots=$($els.SettingsRequestsBox.SelectedIndex) emb=$($els.SettingsEmbeddingsBox.IsChecked) port='$($els.SettingsEmbeddingPortBox.Text)' portGroup=$($els.SettingsEmbeddingPortGroup.Visibility)"
+    Check ((Get-SettingsLogText) -ceq '') 'P38 Discard wrote nothing' "log=$(Get-SettingsLogText)"
+
+    # F. Save passes exactly the changed parameters (a changed field with its held value, an untouched field not at all).
+    $null = Open-SettingsPage @{ embAvail = $true; longMeasured = $true }
+    $st = Get-SettingsState
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    $els.SettingsRequestsBox.SelectedIndex = 1
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    $els.SettingsEmbeddingPortBox.Text = '9100'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0] -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and (Test-SettingsRecClean $script:p38Save.D)) 'P38 Save with all four rows changed returns one bool (true) and keeps classic order' ("count=$($r.Count) log=$(Get-SettingsLogText) " + (Get-SettingsRecDetail $script:p38Save.D))
+    Check ((Get-P38Bound) -ceq 'EmbeddingPort,Embeddings,KvContextProfile,KvSlots' -and [string]$script:setLastNew['KvContextProfile'] -ceq 'long' -and [int]$script:setLastNew['KvSlots'] -eq 2 -and [string]$script:setLastNew['Embeddings'] -ceq 'on' -and [int]$script:setLastNew['EmbeddingPort'] -eq 9100) 'P38 Save passes the four changed parameters with their held values: -KvContextProfile long, -KvSlots 2, -Embeddings on, -EmbeddingPort 9100' "bound=$(Get-P38Bound)"
+    Check ((-not [bool]$st['Dirty']) -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2 -and [string]$script:setFx.embeddings -ceq 'on' -and [int]$script:setFx.embeddingPort -eq 9100 -and [int]$els.SettingsRequestsBox.SelectedIndex -eq 1 -and [int]$els.SettingsContextProfileBox.SelectedIndex -eq 1) 'P38 after that Save the page is clean and shows the saved values (the reload reads them back)' "dirty=$($st['Dirty']) fixture=$($script:setFx.contextProfile)/$($script:setFx.slots)/$($script:setFx.embeddings)/$($script:setFx.embeddingPort)"
+    $singles = @(
+        @{ Name = 'only Embeddings toggled'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsEmbeddingsBox.IsChecked = $true }; Want = 'Embeddings' },
+        @{ Name = 'only requests at once changed'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsRequestsBox.SelectedIndex = 1 }; Want = 'KvSlots' },
+        @{ Name = 'only the context profile changed'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsContextProfileBox.SelectedIndex = 1 }; Want = 'KvContextProfile' },
+        @{ Name = 'only the embeddings port changed (saved on)'; Fixture = @{ embAvail = $true; longMeasured = $true; embeddings = 'on' }; Do = { $els.SettingsEmbeddingPortBox.Text = '9100'; $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return) }; Want = 'EmbeddingPort' },
+        @{ Name = 'only an unrelated field changed'; Fixture = @{ embAvail = $true; longMeasured = $true; contextProfile = 'long'; slots = 2 }; Do = { $els.SettingsThinkingBox.SelectedIndex = 1 }; Want = '' },
+        @{ Name = 'Embeddings ticked and unticked again, plus an unrelated field'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsEmbeddingsBox.IsChecked = $true; $els.SettingsEmbeddingsBox.IsChecked = $false; $els.SettingsThinkingBox.SelectedIndex = 1 }; Want = '' }
+    )
+    foreach ($case in $singles) {
+        $null = Open-SettingsPage $case.Fixture
+        $st = Get-SettingsState
+        $fixtureBefore = @{ contextProfile = [string]$script:setFx.contextProfile; slots = [int]$script:setFx.slots; embeddings = [string]$script:setFx.embeddings; embeddingPort = [int]$script:setFx.embeddingPort }
+        & $case.Do
+        Invoke-Pump 50
+        Invoke-P38SaveWithDialogs
+        $r = @($script:p38Save.R)
+        Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and (Get-P38Bound) -ceq $case.Want) "P38 Save with $($case.Name) passes exactly [$($case.Want)] of the four additions" "bound=$(Get-P38Bound) log=$(Get-SettingsLogText)"
+        if ($case.Want -ceq '') {
+            Check ([string]$script:setFx.contextProfile -ceq $fixtureBefore.contextProfile -and [int]$script:setFx.slots -eq $fixtureBefore.slots -and [string]$script:setFx.embeddings -ceq $fixtureBefore.embeddings -and [int]$script:setFx.embeddingPort -eq $fixtureBefore.embeddingPort) "P38 Save with $($case.Name) leaves the four stored additions as they were" "fixture=$($script:setFx.contextProfile)/$($script:setFx.slots)/$($script:setFx.embeddings)/$($script:setFx.embeddingPort)"
+        }
+        if ($case.Name -ceq 'only Embeddings toggled') {
+            Check ($script:setLastNew.ContainsKey('Embeddings') -and -not $script:setLastNew.ContainsKey('KvContextProfile') -and -not $script:setLastNew.ContainsKey('KvSlots') -and -not $script:setLastNew.ContainsKey('EmbeddingPort')) 'P38 toggling only Embeddings does not touch the context profile, the slots or the port' "bound=$(Get-P38Bound)"
+        }
+    }
+
+    # G. The saved note while a run is active (the note is also the Information box text), one change at a time.
+    $notes = @(
+        @{ Name = 'context profile'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsContextProfileBox.SelectedIndex = 1 }; Note = 'The new context profile applies at the next start.' },
+        @{ Name = 'requests at once'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsRequestsBox.SelectedIndex = 1 }; Note = 'The new requests at once setting applies at the next start.' },
+        @{ Name = 'embeddings'; Fixture = @{ embAvail = $true; longMeasured = $true }; Do = { $els.SettingsEmbeddingsBox.IsChecked = $true }; Note = 'The new embeddings setting applies at the next start.' },
+        @{ Name = 'embeddings port'; Fixture = @{ embAvail = $true; longMeasured = $true; embeddings = 'on' }; Do = { $els.SettingsEmbeddingPortBox.Text = '9100'; $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return) }; Note = 'The new embeddings port applies at the next start.' }
+    )
+    foreach ($case in $notes) {
+        $null = Open-SettingsPage $case.Fixture
+        $st = Get-SettingsState
+        $script:child = [pscustomobject]@{ probe = $true }
+        & $case.Do
+        Invoke-Pump 50
+        $d = @{}
+        $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'FastLLM settings'; Id = 2; Fallback = 2 }, (New-SettingsWatch)) $d
+        try {
+            $els.SettingsSaveButton.RaiseEvent((New-ShellClick $els.SettingsSaveButton ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+            Invoke-Pump 150
+        }
+        finally { $timer.Stop(); $script:child = $null }
+        $rec = Get-SettingsRec $d 0
+        Check ([bool]$rec['Found'] -and (ConvertTo-ModelsPlainBoxText ([string]$rec['Text'])) -ceq $case.Note -and [string]$script:statusLabel.Text -ceq $case.Note -and (Test-SettingsRecClean $d)) "P38 while a run is active a changed $($case.Name) shows the saved note in the Information box and the status line" ("want='$($case.Note)' status='$($script:statusLabel.Text)' " + (Get-SettingsRecDetail $d))
+        Check ((Get-SettingsLogText) -ceq 'serving,allow,refresh') "P38 the Save button for a changed $($case.Name) writes once, in classic order" "log=$(Get-SettingsLogText)"
+    }
+    Check ([string]$script:setFx.embeddingPort -ceq '9100' -and [string]$script:setFx.embeddings -ceq 'on') 'P38 the last run-active Save stored the embeddings port 9100 (the fixture holds what was passed)' "fixture=$($script:setFx.embeddings)/$($script:setFx.embeddingPort)"
+
+    # H. A value saved by the CLI shows, and survives an unrelated Save.
+    $null = Open-SettingsPage @{ slots = 2 }
+    $st = Get-SettingsState
+    Check ([int]$els.SettingsRequestsBox.SelectedIndex -eq 1 -and [string]$els.SettingsRequestsBox.SelectedItem.Content -ceq [string]$s.RequestsAtOnceTwo -and [int]$st['Held'].slots -eq 2 -and -not [bool]$st['Dirty']) 'P38 a saved slots=2 shows 2 and the page opens clean' "selected=$($els.SettingsRequestsBox.SelectedIndex) item='$($els.SettingsRequestsBox.SelectedItem)' held=$($st['Held'].slots) dirty=$($st['Dirty'])"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-SettingsLogText) -ceq 'serving,allow,refresh' -and -not $script:setLastNew.ContainsKey('KvSlots') -and (Get-P38Bound) -ceq '' -and [int]$script:setFx.slots -eq 2) 'P38 an unrelated Save does not pass -KvSlots, so slots=2 is kept' "bound=$(Get-P38Bound) slots=$($script:setFx.slots) log=$(Get-SettingsLogText)"
+    Check ([int]$els.SettingsRequestsBox.SelectedIndex -eq 1 -and -not [bool]$st['Dirty']) 'P38 after the unrelated Save the page still shows 2 and is clean' "selected=$($els.SettingsRequestsBox.SelectedIndex) dirty=$($st['Dirty'])"
+    $null = Open-SettingsPage @{ contextProfile = 'long'; slots = 2; embeddings = 'on'; embeddingPort = 9100; embAvail = $false; longMeasured = $false }
+    $st = Get-SettingsState
+    Check ([int]$els.SettingsContextProfileBox.SelectedIndex -eq 1 -and [int]$els.SettingsRequestsBox.SelectedIndex -eq 1 -and $els.SettingsEmbeddingsBox.IsChecked -eq $true -and [string]$els.SettingsEmbeddingPortBox.Text -ceq '9100' -and -not [bool]$st['Dirty']) 'P38 a file holding all four non-default values (CLI) opens showing all four, clean' "profile=$($els.SettingsContextProfileBox.SelectedIndex) slots=$($els.SettingsRequestsBox.SelectedIndex) emb=$($els.SettingsEmbeddingsBox.IsChecked) port='$($els.SettingsEmbeddingPortBox.Text)' dirty=$($st['Dirty'])"
+    $els.SettingsIdleBox.SelectedIndex = 2
+    Invoke-Pump 30
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-P38Bound) -ceq '' -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2 -and [string]$script:setFx.embeddings -ceq 'on' -and [int]$script:setFx.embeddingPort -eq 9100) 'P38 an unrelated Save passes none of the four, so all four non-default values are kept' "bound=$(Get-P38Bound) fixture=$($script:setFx.contextProfile)/$($script:setFx.slots)/$($script:setFx.embeddings)/$($script:setFx.embeddingPort)"
+
+    # I. The Long Save guard: Long held at a requests-at-once value where it is not measured (and not the saved pair) is refused by Save, with no write, the edits kept and
+    # the focus on the context profile box; the probe is asked again with the new slots. A saved unmeasured pair is exempt.
+    $null = Open-SettingsPage @{ longAt = @(1); contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $callsBefore = [int]$script:setProbeCalls['long']
+    $els.SettingsRequestsBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $lastSlots = if ($script:setProbeSlots.Count -gt 0) { [int]$script:setProbeSlots[$script:setProbeSlots.Count - 1] } else { -1 }
+    Check ([int]$script:setProbeCalls['long'] -eq $callsBefore + 1 -and $lastSlots -eq 2) 'P38 I1 Long chosen at 1, then Requests at once changed to 2: the probe is asked again with slots 2' "calls=$($script:setProbeCalls['long']) want=$($callsBefore + 1) lastSlots=$lastSlots want=2"
+    Check ($els.SettingsContextProfileWhy.Visibility -eq $shown -and $els.SettingsContextProfileWhy.IsVisible -and [string]$els.SettingsContextProfileWhy.Text -ceq [string]$s.LongNotMeasured) 'P38 I1 Long held at 2 (not measured, not the saved pair): the reason line shows the LongNotMeasured text' "visibility=$($els.SettingsContextProfileWhy.Visibility) text='$($els.SettingsContextProfileWhy.Text)' want='$($s.LongNotMeasured)'"
+    $null = $win.Activate()
+    $null = $els.SettingsThinkingBox.Focus()
+    Invoke-Pump 50
+    $script:setLastNew = $null
+    $script:setLastServing = $null
+    $logBefore = Get-SettingsLogText
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq $logBefore -and $null -eq $script:setLastServing -and $null -eq $script:setLastNew -and (Test-SettingsRecClean $script:p38Save.D) -and $script:p38Save.D['recs'].Count -eq 0) 'P38 I1 Save with the unmeasured Long returns one bool (false), writes nothing and shows no box' ("count=$($r.Count) value=$(if ($r.Count -gt 0) { $r[0] } else { 'none' }) log='$(Get-SettingsLogText)' want='$logBefore' serving=$($null -ne $script:setLastServing) bound=$(Get-P38Bound)")
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ([object]::ReferenceEquals($logical, $els.SettingsContextProfileBox)) 'P38 I1 the refused Save puts the focus on the context profile box' "focus=$(if ($null -ne $logical) { $logical.GetType().Name + ':' + $logical.Name } else { 'none' }) want=SettingsContextProfileBox"
+    Check ([string]$st['Held'].contextProfile -ceq 'long' -and [int]$st['Held'].slots -eq 2 -and [bool]$st['Dirty'] -and [int]$els.SettingsRequestsBox.SelectedIndex -eq 1 -and $els.SettingsContextProfileWhy.Visibility -eq $shown) 'P38 I1 the refused Save keeps the edits (held long and 2, dirty, requests box on 2) and the reason line' "held=$($st['Held'].contextProfile)/$($st['Held'].slots) dirty=$($st['Dirty']) requests=$($els.SettingsRequestsBox.SelectedIndex) why=$($els.SettingsContextProfileWhy.Visibility)"
+    Write-Host ("INFO: P38 I1 after the refused Save the logical focus is on " + $(if ($null -ne $logical) { $logical.GetType().Name + ':' + [string]$logical.Name } else { 'nothing' }) + "; the probe was asked with slots " + (@($script:setProbeSlots) -join ','))
+    $callsBefore = [int]$script:setProbeCalls['long']
+    $els.SettingsRequestsBox.SelectedIndex = 0
+    Invoke-Pump 50
+    Check ($els.SettingsContextProfileWhy.Visibility -eq $shown -and [string]$els.SettingsContextProfileWhy.Text -ceq [string]$s.LongNotMeasured -and -not [bool]$two.Items[1].IsEnabled -and [int]$script:setProbeCalls['long'] -eq $callsBefore + 1) 'P38 I1 changing Requests at once back to 1 asks the probe again; the line stays only because the 2 item is still disabled (2 is not measured for Long), and Save is no longer refused' "why=$($els.SettingsContextProfileWhy.Visibility) text='$($els.SettingsContextProfileWhy.Text)' calls=$($script:setProbeCalls['long']) want=$($callsBefore + 1)"
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0] -and (Get-P38Bound) -ceq 'KvContextProfile' -and [string]$script:setLastNew['KvContextProfile'] -ceq 'long' -and -not $script:setLastNew.ContainsKey('KvSlots') -and (Test-SettingsRecClean $script:p38Save.D)) 'P38 I1 back at 1, Save writes -KvContextProfile long and no -KvSlots (the slots are the saved ones)' "count=$($r.Count) value=$(if ($r.Count -gt 0) { $r[0] } else { 'none' }) bound='$(Get-P38Bound)' want='KvContextProfile' log=$(Get-SettingsLogText)"
+
+    # I2. A saved Long at 2, not measured: nothing is refused while the pair is the saved one, and an untouched or unrelated Save passes neither field.
+    $null = Open-SettingsPage @{ contextProfile = 'long'; slots = 2; longMeasured = $false }
+    $st = Get-SettingsState
+    Check ($els.SettingsContextProfileWhy.Visibility -eq $hidden -and [string]$els.SettingsContextProfileWhy.Text -ceq '' -and [string]$st['Held'].contextProfile -ceq 'long' -and [int]$st['Held'].slots -eq 2 -and -not [bool]$st['Dirty']) 'P38 I2 a saved Long at 2 that is not measured opens with no reason line and a clean page (the saved-pair exception)' "why=$($els.SettingsContextProfileWhy.Visibility) text='$($els.SettingsContextProfileWhy.Text)' held=$($st['Held'].contextProfile)/$($st['Held'].slots) dirty=$($st['Dirty'])"
+    $script:setLastNew = $null
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ((Get-P38Bound) -ceq '' -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2 -and $els.SettingsContextProfileWhy.Visibility -eq $hidden) 'P38 I2 an untouched Save writes nothing new: neither -KvContextProfile nor -KvSlots is passed, the stored pair is kept and no reason line shows' "bound='$(Get-P38Bound)' stored=$($script:setFx.contextProfile)/$($script:setFx.slots) why=$($els.SettingsContextProfileWhy.Visibility) result=$(if ($r.Count -gt 0) { $r[0] } else { 'none' })"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $script:setLastNew = $null
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0] -and (Get-P38Bound) -ceq '' -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2) 'P38 I2 an unrelated Save at the saved unmeasured Long pair is not refused and passes none of the four' "count=$($r.Count) value=$(if ($r.Count -gt 0) { $r[0] } else { 'none' }) bound='$(Get-P38Bound)' stored=$($script:setFx.contextProfile)/$($script:setFx.slots)"
+
+    # J. "2 requests at once" (P1): never offered where it can only fail. The 2 item is disabled with the one reason line unless 2 is already saved; Save refuses a held 2
+    # that is not measured for the held profile (no write, edits kept, focus on the requests box); the probe is asked again when the profile changes.
+    $null = Open-SettingsPage @{ longMeasured = $true; twoMeasured = $false; contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    Check ((-not [bool]$two.Items[1].IsEnabled) -and [bool]$two.Items[0].IsEnabled -and $els.SettingsContextProfileWhy.Visibility -eq $shown -and [string]$els.SettingsContextProfileWhy.Text -ceq [string]$s.LongNotMeasured -and [bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and (@($script:setProbeAsked) -contains 'default:2')) 'P38 J1 2 not measured for Default: the 2 item is disabled with the LongNotMeasured reason, Long (measured) stays enabled, and the probe was asked for default at 2' "two=$($two.Items[1].IsEnabled) why=$($els.SettingsContextProfileWhy.Visibility) asked=$(@($script:setProbeAsked) -join ',')"
+    Check ([string][System.Windows.Automation.AutomationProperties]::GetHelpText($two) -ceq [string]$s.LongNotMeasured) 'P38 J1 the requests box reads the reason as its help text' "help=$([System.Windows.Automation.AutomationProperties]::GetHelpText($two))"
+    $two.SelectedIndex = 1
+    Invoke-Pump 50
+    Check ([int]$st['Held'].slots -eq 2 -and [bool]$st['Dirty']) 'P38 J1 a held 2 (set past the disabled item) makes the page dirty' "held=$($st['Held'].slots) dirty=$($st['Dirty'])"
+    $null = $win.Activate()
+    $null = $els.SettingsThinkingBox.Focus()
+    Invoke-Pump 50
+    $script:setLastNew = $null; $script:setLastServing = $null
+    $logBefore = Get-SettingsLogText
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq $logBefore -and $null -eq $script:setLastServing -and $null -eq $script:setLastNew -and (Test-SettingsRecClean $script:p38Save.D) -and $script:p38Save.D['recs'].Count -eq 0) 'P38 J2 Save with the unmeasured 2 returns one bool (false), writes nothing and shows no box' "count=$($r.Count) log=$(Get-SettingsLogText)"
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ([object]::ReferenceEquals($logical, $two) -and [int]$st['Held'].slots -eq 2 -and [bool]$st['Dirty'] -and [int]$two.SelectedIndex -eq 1) 'P38 J2 the refused Save puts the focus on the requests box and keeps the edit' "focus=$(if ($null -ne $logical) { $logical.GetType().Name + ':' + $logical.Name } else { 'none' })"
+    $two.SelectedIndex = 0
+    Invoke-Pump 50
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0] -and -not $script:setLastNew.ContainsKey('KvSlots')) 'P38 J2 back at 1 (nothing else changed) Save goes through and passes no -KvSlots' "count=$($r.Count) bound=$(Get-P38Bound)"
+    # the probe is asked again for the held profile when the profile changes (2 measured for Long only)
+    $null = Open-SettingsPage @{ longAt = @(1, 2); twoMeasured = $false; contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    Check (-not [bool]$two.Items[1].IsEnabled) 'P38 J3 2 is not measured for Default: the 2 item is disabled' "two=$($two.Items[1].IsEnabled)"
+    $askedBefore = @($script:setProbeAsked).Count
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $asked = @($script:setProbeAsked)
+    Check ($asked.Count -gt $askedBefore -and $asked[$asked.Count - 1] -ceq 'long:2' -and [bool]$two.Items[1].IsEnabled) 'P38 J3 choosing Long asks the probe for the long profile at 2 again, and the 2 item is enabled (measured for Long)' "asked=$($asked -join ',')"
+    $els.SettingsContextProfileBox.SelectedIndex = 0
+    Invoke-Pump 50
+    Check (-not [bool]$two.Items[1].IsEnabled -and [string]$st['Held'].contextProfile -ceq 'default') 'P38 J3 choosing Default asks again and the 2 item is disabled again' "two=$($two.Items[1].IsEnabled)"
+    # a saved 2 is never disabled (the saved-value exception), and an unrelated Save passes no -KvSlots
+    $null = Open-SettingsPage @{ longMeasured = $false; twoMeasured = $false; contextProfile = 'default'; slots = 2 }
+    $st = Get-SettingsState
+    Check ([bool]$two.Items[1].IsEnabled -and [int]$two.SelectedIndex -eq 1 -and -not [bool]$st['Dirty']) 'P38 J4 a saved 2 stays enabled and selected, and the page is clean' "two=$($two.Items[1].IsEnabled) selected=$($two.SelectedIndex)"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $script:setLastNew = $null
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-P38Bound) -ceq '' -and [int]$script:setFx.slots -eq 2) 'P38 J4 an unrelated Save with a saved unmeasured 2 is not refused and passes no -KvSlots' "bound=$(Get-P38Bound) slots=$($script:setFx.slots)"
+    # a saved Long at 2 does not make Default at 2 safe: only the saved PAIR is exempt, so switching to Default while 2 is not measured for Default is refused
+    $null = Open-SettingsPage @{ longAt = @(2); twoMeasured = $false; contextProfile = 'long'; slots = 2 }
+    $st = Get-SettingsState
+    $els.SettingsContextProfileBox.SelectedIndex = 0
+    Invoke-Pump 50
+    $null = $win.Activate()
+    $script:setLastNew = $null; $script:setLastServing = $null
+    $logBefore = Get-SettingsLogText
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq $logBefore -and $null -eq $script:setLastNew -and [object]::ReferenceEquals($logical, $two) -and [string]$st['Held'].contextProfile -ceq 'default' -and [int]$st['Held'].slots -eq 2) 'P38 J5 a saved Long at 2 switched to Default (2 not measured for Default): Save is refused, nothing is written, the edit stays and the focus is on the requests box' "count=$($r.Count) log=$(Get-SettingsLogText) focus=$(if ($null -ne $logical) { $logical.Name } else { 'none' })"
+
+    # K. A Context above 0 on the Models page (4096): Long and 2 are shown DISABLED with NeedsCatalogContext (it wins over LongNotMeasured), unless already saved; Save refuses a held change into the state.
+    $null = Open-SettingsPage @{ context = 4096; longMeasured = $false; twoMeasured = $false; contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    $why = $els.SettingsContextProfileWhy
+    Check ((-not [bool]$els.SettingsContextProfileBox.Items[1].IsEnabled) -and (-not [bool]$two.Items[1].IsEnabled) -and $why.Visibility -eq $shown -and [string]$why.Text -ceq [string]$s.NeedsCatalogContext) 'P38 K1 Context 4096 (and not measured): Long and 2 are disabled and the reason line says NeedsCatalogContext, not LongNotMeasured' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) two=$($two.Items[1].IsEnabled) text='$($why.Text)'"
+    $null = Open-SettingsPage @{ context = 4096; longMeasured = $true; twoMeasured = $true; contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    Check ((-not [bool]$els.SettingsContextProfileBox.Items[1].IsEnabled) -and (-not [bool]$two.Items[1].IsEnabled) -and [string]$why.Text -ceq [string]$s.NeedsCatalogContext) 'P38 K1 Context 4096 with both measured: still disabled for the context' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) two=$($two.Items[1].IsEnabled)"
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $null = $win.Activate()
+    $script:setLastNew = $null; $script:setLastServing = $null
+    $logBefore = Get-SettingsLogText
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq $logBefore -and $null -eq $script:setLastServing -and $null -eq $script:setLastNew -and (Test-SettingsRecClean $script:p38Save.D)) 'P38 K2 Save with Long held while Context is above 0 returns one bool (false) and writes nothing' "count=$($r.Count) log=$(Get-SettingsLogText)"
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ([object]::ReferenceEquals($logical, $els.SettingsContextProfileBox) -and [string]$st['Held'].contextProfile -ceq 'long' -and [bool]$st['Dirty'] -and [string]$why.Text -ceq [string]$s.NeedsCatalogContext) 'P38 K2 the refused Save focuses the context profile box, keeps the edit and shows NeedsCatalogContext' "focus=$(if ($null -ne $logical) { $logical.GetType().Name + ':' + $logical.Name } else { 'none' })"
+    $els.SettingsContextProfileBox.SelectedIndex = 0
+    $two.SelectedIndex = 1
+    Invoke-Pump 50
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ($r.Count -eq 1 -and -not $r[0] -and $null -eq $script:setLastNew -and [object]::ReferenceEquals($logical, $two)) 'P38 K2 Save with 2 held while Context is above 0 is refused too, with the focus on the requests box' "count=$($r.Count) focus=$(if ($null -ne $logical) { $logical.Name } else { 'none' })"
+    $null = Open-SettingsPage @{ context = 4096; longMeasured = $false; contextProfile = 'long'; slots = 2 }
+    $st = Get-SettingsState
+    Check ([bool]$els.SettingsContextProfileBox.Items[1].IsEnabled -and [bool]$two.Items[1].IsEnabled -and -not [bool]$st['Dirty']) 'P38 K3 a saved Long and a saved 2 stay enabled with Context above 0, and the page is clean' "long=$($els.SettingsContextProfileBox.Items[1].IsEnabled) two=$($two.Items[1].IsEnabled)"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $script:setLastNew = $null
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -and (Get-P38Bound) -ceq '') 'P38 K3 an unrelated Save with a saved Long and 2 under Context above 0 is not refused and passes none of the four' "bound=$(Get-P38Bound)"
+
+    # L. Live regions: a change of the reason line or of the same-port line is announced once (the view runs several times per edit), and the same-port message is the
+    # embeddings port box's help text while it shows.
+    $null = Open-SettingsPage @{ embAvail = $true; longMeasured = $true; twoMeasured = $false; contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    $whyLive = $els.SettingsContextProfileWhy
+    $base = Get-LiveCount $whyLive
+    Check ([string]$whyLive.Text -ceq [string]$s.LongNotMeasured -and $base -ge 1) 'P38 L1 opening with 2 unmeasured announced the reason line' "count=$base text='$($whyLive.Text)'"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $els.SettingsIdleBox.SelectedIndex = 1
+    Invoke-Pump 30
+    Check ((Get-LiveCount $whyLive) -eq $base) 'P38 L1 unrelated edits re-run the view but do not announce the unchanged reason again' "count=$(Get-LiveCount $whyLive) base=$base"
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $els.SettingsContextProfileBox.SelectedIndex = 0
+    Invoke-Pump 50
+    Check ((Get-LiveCount $whyLive) -eq $base + 1) 'P38 L1 choosing Long clears the reason (2 is measured for Long: nothing announced), and choosing Default brings it back (announced once more)' "count=$(Get-LiveCount $whyLive) want=$($base + 1)"
+    $null = Open-SettingsPage @{ embAvail = $true; longMeasured = $true; twoMeasured = $true; contextProfile = 'default'; slots = 1; context = 4096 }
+    $st = Get-SettingsState
+    $countCtx = Get-LiveCount $whyLive
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    Check ([string]$whyLive.Text -ceq [string]$s.NeedsCatalogContext -and (Get-LiveCount $whyLive) -eq $countCtx) 'P38 L1 the context reason shows and is not announced again by an unrelated edit' "count=$(Get-LiveCount $whyLive) was=$countCtx"
+    $null = Open-SettingsPage @{ embAvail = $true; longMeasured = $true; twoMeasured = $true; contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    $same = $els.SettingsEmbeddingPortSame
+    $els.SettingsEmbeddingsBox.IsChecked = $true
+    Invoke-Pump 50
+    $c0 = Get-LiveCount $same
+    Check ($same.Visibility -eq $hidden -and [string][System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsEmbeddingPortBox) -ceq '') 'P38 L2 with different ports there is no message and the port box has no help text' "help='$([System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsEmbeddingPortBox))'"
+    $els.SettingsEmbeddingPortBox.Text = '8080'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Check ($same.Visibility -eq $shown -and (Get-LiveCount $same) -eq $c0 + 1 -and [string][System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsEmbeddingPortBox) -ceq [string]$s.EmbeddingPortSame) 'P38 L2 the port equal to the server port announces the same-port line once, and the message is the port box help text' "count=$(Get-LiveCount $same) want=$($c0 + 1) help='$([System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsEmbeddingPortBox))'"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $els.SettingsIdleBox.SelectedIndex = 2
+    Invoke-Pump 30
+    Check ((Get-LiveCount $same) -eq $c0 + 1) 'P38 L2 unrelated edits run the view again and do not announce the same message again' "count=$(Get-LiveCount $same) want=$($c0 + 1)"
+    $els.SettingsEmbeddingPortBox.Text = '9100'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Check ($same.Visibility -eq $hidden -and [string][System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsEmbeddingPortBox) -ceq '' -and (Get-LiveCount $same) -eq $c0 + 1) 'P38 L2 clearing the message clears the help text and announces nothing' "count=$(Get-LiveCount $same) help='$([System.Windows.Automation.AutomationProperties]::GetHelpText($els.SettingsEmbeddingPortBox))'"
+    $els.SettingsEmbeddingPortBox.Text = '8080'
+    $null = Send-ModelsKey $els.SettingsEmbeddingPortBox ([System.Windows.Input.Key]::Return)
+    Invoke-Pump 50
+    Check ((Get-LiveCount $same) -eq $c0 + 2) 'P38 L2 the message coming back is announced again (one more, once)' "count=$(Get-LiveCount $same) want=$($c0 + 2)"
+    Close-SettingsPage
+    Check-NoExceptions 'P38'
 }
 
 # Faults are injected last: each Initialize run replaces the shell state, so nothing after this may use the real shell.
@@ -4405,7 +4930,7 @@ $script:steps = @(
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
-    'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane',
+    'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
     'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99

@@ -58,6 +58,23 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     BoxCancel            = 'Cancel'
     BoxYes               = 'Yes'
     BoxNo                = 'No'
+    # Settings additions: the context profile, requests at once and the embeddings server (held Server edits; each applies at the next start).
+    # LongNotMeasured is the reason line of a disabled Long: it follows the planner's refusal ('Not measured for this model and engine.') and the start text of
+    # serving-profile-not-measured, which says the same thing in full.
+    ContextProfile       = 'Context profile'
+    ContextProfileDefault = 'Default (recommended)'
+    ContextProfileLong   = 'Long: the measured long-context setup'
+    ContextProfileHelp   = 'Long uses the measured long-context setup of the model and engine; a start is refused when none is measured. Applies at the next start.'
+    LongNotMeasured      = 'Not measured for this model and engine, so a start with it would be refused.'
+    NeedsCatalogContext  = 'Needs Context set to 0 (catalog default) on the Models page.'
+    RequestsAtOnce       = 'Requests at once'
+    RequestsAtOnceOne    = '1 (default)'
+    RequestsAtOnceTwo    = '2'
+    RequestsAtOnceHelp   = '2 needs a measured setup that allows it, and each request then gets half the context. Applies at the next start.'
+    Embeddings           = 'Embeddings server (off by default)'
+    EmbeddingsHelp       = 'Starts a second local server for embeddings (/v1/embeddings) on the CPU after the model is ready. A start is refused when no approved, measured embedding model is installed. Applies at the next start.'
+    EmbeddingPort        = 'Embeddings port (127.0.0.1 only)'
+    EmbeddingPortSame    = 'The embeddings port must differ from the server port. Nothing was saved.'
 }
 
 # Icon glyphs (Segoe Fluent Icons, falling back to Segoe MDL2 Assets: the same code points exist in both). They are drawn, never read.
