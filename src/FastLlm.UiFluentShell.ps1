@@ -20,6 +20,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentSettings.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -256,7 +257,16 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                       BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4"/>
               <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False"
                                 Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}">
+                <ContentPresenter.Resources>
+                  <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="TextWrapping" Value="NoWrap"/>
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                  </Style>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
               <TextBlock Text="&#xE70D;" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="12" Margin="0,0,10,0" HorizontalAlignment="Right"
                          VerticalAlignment="Center" IsHitTestVisible="False"/>
               <ToggleButton ClickMode="Press" Focusable="False" Background="Transparent" Opacity="0.01"
@@ -309,6 +319,108 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                 <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
                 <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.DisabledFillBrush}"/>
                 <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="FastLlm.CheckBoxStyle" TargetType="CheckBox">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Padding" Value="8,0,0,0"/>
+      <Setter Property="MinHeight" Value="{DynamicResource FastLlm.ControlHeight}"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Grid Background="Transparent" SnapsToDevicePixels="True">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <Grid Grid.Column="0" Width="20" Height="20" VerticalAlignment="Center" Margin="0,2,0,2">
+                <Border x:Name="Box" Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}"
+                        BorderThickness="1" CornerRadius="4"/>
+                <TextBlock x:Name="Check" Text="&#xE73E;" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="12" Visibility="Collapsed"
+                           Foreground="{DynamicResource FastLlm.TextOnAccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Rectangle x:Name="Dash" Width="10" Height="2" Visibility="Collapsed" Fill="{DynamicResource FastLlm.TextOnAccentBrush}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Border x:Name="Ring" Margin="-3" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="6"
+                        Visibility="Collapsed" IsHitTestVisible="False"/>
+              </Grid>
+              <ContentPresenter Grid.Column="1" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" RecognizesAccessKey="True">
+                <ContentPresenter.Resources>
+                  <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+                <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="{x:Null}">
+                <Setter TargetName="Box" Property="Background" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+                <Setter TargetName="Dash" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="Opacity" Value="0.85"/></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Ring" Property="Visibility" Value="Visible"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+                <Setter TargetName="Box" Property="Opacity" Value="0.6"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="FastLlm.ToggleSwitchStyle" TargetType="CheckBox">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="MinHeight" Value="{DynamicResource FastLlm.ControlHeight}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Grid Background="Transparent" SnapsToDevicePixels="True">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <ContentPresenter Grid.Column="0" Margin="0,0,12,0" VerticalAlignment="Center" RecognizesAccessKey="True">
+                <ContentPresenter.Resources>
+                  <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                  <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
+              <Grid Grid.Column="1" Width="40" Height="20" VerticalAlignment="Center">
+                <Border x:Name="Track" Background="Transparent" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="10"/>
+                <Ellipse x:Name="Thumb" Width="12" Height="12" Margin="4,0,4,0" HorizontalAlignment="Left" VerticalAlignment="Center"
+                         Fill="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+                <Border x:Name="Ring" Margin="-3" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="13"
+                        Visibility="Collapsed" IsHitTestVisible="False"/>
+              </Grid>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Track" Property="Background" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+                <Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+                <Setter TargetName="Thumb" Property="Fill" Value="{DynamicResource FastLlm.TextOnAccentBrush}"/>
+                <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Track" Property="Opacity" Value="0.85"/></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Ring" Property="Visibility" Value="Visible"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
+                <Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+                <Setter TargetName="Track" Property="Opacity" Value="0.6"/>
+                <Setter TargetName="Thumb" Property="Opacity" Value="0.6"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -382,7 +494,7 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
         @{ Name = 'failureCopyLink';   Element = 'ActivityCopyButton'; Mode = 'Content';  Event = 'LinkClicked'; Flags = @(); Also = $true }
     )
-    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings) + @(Get-FastLlmUiFluentModelsBindings))
+    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings) + @(Get-FastLlmUiFluentModelsBindings) + @(Get-FastLlmUiFluentSettingsBindings))
 }
 
 # An unsupported-at-initialisation window (the theme or the markup failed) is a fault in FastLLM: the approved text, the run-log reason, exit code 3.
@@ -594,29 +706,77 @@ function Set-FastLlmUiFluentPage {
     $pageHost.Child = $null
     $pageHost.Child = $page['Element']
     $item = $null
-    foreach ($nav in @($f['NavItems'])) { if ([string] $nav['Id'] -ceq [string] $page['Nav']) { $item = $nav['Item'] } }
+    $itemList = 'NavList'
+    foreach ($nav in @($f['NavItems'])) { if ([string] $nav['Id'] -ceq [string] $page['Nav']) { $item = $nav['Item']; $itemList = [string] $nav['List'] } }
     if ($null -ne $item) {
-        # Selecting the item raises the NavList handler, which must not navigate again.
+        # Selecting the item raises a pane handler, which must not navigate again.
         $keys = $f['Keys']
         $previous = [bool] $keys['NavGuard']
         $keys['NavGuard'] = $true
         try { $item.IsSelected = $true } finally { $keys['NavGuard'] = $previous }
+        # The other list is cleared and the tab stop moves to the list that holds this page.
+        Update-FastLlmUiFluentNavLists -Holder $itemList
     }
     if ([string] $page['Enter'] -ne '') { $enterName = [string] $page['Enter']; $null = & $enterName }
     if ($FocusNav -and $null -ne $item) { $null = $item.Focus() }
     return $true
 }
 
-# The NavList SelectionChanged handler. A registered item navigates; a null selection, an item with no page or a refused Leave puts the selection
-# back on the current page's item. NavGuard stops the re-selection from running this again.
-function Invoke-FastLlmUiFluentNavSelection {
+# The list (NavList or NavSettingsList) that holds the current page's pane item; NavList when the current page has none.
+function Get-FastLlmUiFluentNavHolder {
     [CmdletBinding()] param()
+    $f = $script:FastLlmUiFluent
+    $current = Get-FastLlmUiFluentCurrentPage
+    if ($current -ne '' -and $f['Pages'].ContainsKey($current)) {
+        foreach ($nav in @($f['NavItems'])) {
+            if ([string] $nav['Id'] -ceq [string] $f['Pages'][$current]['Nav']) { return [string] $nav['List'] }
+        }
+    }
+    return 'NavList'
+}
+
+# One selection, one tab stop: the list that holds the current page keeps TabNavigation Once, the other is cleared and set to None, so the two
+# lists stay a single tab stop. Runs under NavGuard (the clearing raises SelectionChanged).
+function Update-FastLlmUiFluentNavLists {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Holder)
+    $f = $script:FastLlmUiFluent
+    $keys = $f['Keys']
+    $previous = [bool] $keys['NavGuard']
+    $keys['NavGuard'] = $true
+    try {
+        foreach ($name in 'NavList', 'NavSettingsList') {
+            $list = $f['Els'][$name]
+            if ($name -ceq $Holder) { [System.Windows.Input.KeyboardNavigation]::SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::Once) }
+            else {
+                if ($list.SelectedIndex -ne -1) { $list.SelectedIndex = -1 }
+                [System.Windows.Input.KeyboardNavigation]::SetTabNavigation($list, [System.Windows.Input.KeyboardNavigationMode]::None)
+            }
+            # TabNavigation None does not clear the item WPF remembers as last focused in a list that held focus, so that item would stay a second tab stop:
+            # each item is a tab stop only in the list that holds the current page. The items are ListBoxItems (iterated in place, no enumerator is kept).
+            for ($i = 0; $i -lt $list.Items.Count; $i++) {
+                $item = $list.Items[$i]
+                if ($item -isnot [System.Windows.Controls.ListBoxItem]) { $item = $list.ItemContainerGenerator.ContainerFromIndex($i) }
+                if ($null -ne $item) { [System.Windows.Input.KeyboardNavigation]::SetIsTabStop($item, ($name -ceq $Holder)) }
+            }
+        }
+    }
+    finally { $keys['NavGuard'] = $previous }
+}
+
+# The SelectionChanged handler of either pane list. A registered item navigates; an item with no page or a refused Leave puts the selection back on the
+# current page's item and clears the other list. A null selection in the list that does not hold the current page is ignored (it is the clearing).
+# NavGuard stops the re-selection from running this again.
+function Invoke-FastLlmUiFluentNavSelection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][ValidateSet('NavList', 'NavSettingsList')][string] $List)
     $f = $script:FastLlmUiFluent
     $keys = $f['Keys']
     if ([bool] $keys['NavGuard']) { return }
+    $selected = $f['Els'][$List].SelectedItem
+    if ($null -eq $selected -and (Get-FastLlmUiFluentNavHolder) -cne $List) { return }
     $keys['NavGuard'] = $true
     try {
-        $selected = $f['Els']['NavList'].SelectedItem
         $target = ''
         if ($null -ne $selected) {
             foreach ($nav in @($f['NavItems'])) {
@@ -625,7 +785,7 @@ function Invoke-FastLlmUiFluentNavSelection {
         }
         $moved = $false
         if ($target -ne '') {
-            # Set-FastLlmUiFluentPage sets the guard again around its own selection and restores it.
+            # Set-FastLlmUiFluentPage sets the guard again around its own selection and restores it; it also clears the other list.
             $moved = [bool] (Set-FastLlmUiFluentPage -Id $target)
         }
         if (-not $moved) {
@@ -635,9 +795,39 @@ function Invoke-FastLlmUiFluentNavSelection {
                     if ([string] $nav['Id'] -ceq [string] $f['Pages'][$current]['Nav']) { $nav['Item'].IsSelected = $true }
                 }
             }
+            Update-FastLlmUiFluentNavLists -Holder (Get-FastLlmUiFluentNavHolder)
         }
     }
     finally { $keys['NavGuard'] = $false }
+}
+
+# Arrow keys across the two lists: Down on the last enabled item of NavList (Tools) moves to Settings, Up on the Settings item moves back to the
+# last enabled item of NavList. Disabled items are skipped. Handled either way, so a refused Leave leaves the focus where it was.
+function Invoke-FastLlmUiFluentNavKey {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('NavList', 'NavSettingsList')][string] $List,
+        [Parameter(Mandatory = $true)] $Routed
+    )
+    $f = $script:FastLlmUiFluent
+    $key = $Routed.Key
+    $first = $null
+    $lastEnabled = $null
+    foreach ($nav in @($f['NavItems'])) {
+        if ([string] $nav['List'] -ceq 'NavList' -and [bool] $nav['Enabled']) { $lastEnabled = $nav }
+        if ([string] $nav['List'] -ceq 'NavSettingsList' -and [bool] $nav['Enabled']) { $first = $nav }
+    }
+    $destination = $null
+    if ($List -ceq 'NavList' -and $key -eq [System.Windows.Input.Key]::Down -and $null -ne $first -and $null -ne $lastEnabled) {
+        if ([object]::ReferenceEquals($f['Els']['NavList'].SelectedItem, $lastEnabled['Item'])) { $destination = $first }
+    }
+    elseif ($List -ceq 'NavSettingsList' -and $key -eq [System.Windows.Input.Key]::Up -and $null -ne $first -and $null -ne $lastEnabled) {
+        $destination = $lastEnabled
+    }
+    if ($null -eq $destination) { return }
+    $Routed.Handled = $true
+    $pageId = Get-FastLlmUiFluentPageIdByNav -NavId ([string] $destination['Id'])
+    if ($pageId -ne '') { $null = Set-FastLlmUiFluentPage -Id $pageId -FocusNav }
 }
 
 # The tooltip and help text of one pane item: enabled items show their label as a tooltip only while collapsed; a disabled item says it is coming.
@@ -695,7 +885,7 @@ function Initialize-FastLlmUiFluentPane {
         $item.Content = $panel
         [System.Windows.Automation.AutomationProperties]::SetName($item, [string] $row.Label)
         $item.IsEnabled = $enabled
-        $nav = @{ Item = $item; Label = $label; Text = [string] $row.Label; Enabled = $enabled; Id = [string] $row.Id }
+        $nav = @{ Item = $item; Label = $label; Text = [string] $row.Label; Enabled = $enabled; Id = [string] $row.Id; List = [string] $row.List }
         Set-FastLlmUiFluentNavTip -Nav $nav
         [void] $f['Els'][$row.List].Items.Add($item)
         [void] $items.Add($nav)
@@ -704,14 +894,19 @@ function Initialize-FastLlmUiFluentPane {
     $f['Els']['NavModels'] = $items[1].Item
     $f['Els']['NavConnect'] = $items[2].Item
     $f['Els']['NavTools'] = $items[3].Item
-    # The Settings list has one item, disabled for now: it is named so it is never an anonymous list. Home stays selected (Ctrl+Click cannot empty it).
+    $f['Els']['NavSettings'] = $items[4].Item
+    # The Settings list has one item, disabled until the Settings page registers: it is named so it is never an anonymous list. Home stays selected (Ctrl+Click cannot empty it).
     [System.Windows.Automation.AutomationProperties]::SetName($f['Els']['NavSettingsList'], [string] $s.NavSettings)
     $f['NavItems'] = $items.ToArray()
     if ((Get-FastLlmUiFluentCurrentPage) -ceq '') { $f['Current'] = 'Home' }
     $keys = $f['Keys']
     $keys['NavGuard'] = $true
     try { $f['Els']['NavHome'].IsSelected = $true } finally { $keys['NavGuard'] = $false }
-    $f['Els']['NavList'].Add_SelectionChanged({ Invoke-FastLlmUiFluentNavSelection })
+    Update-FastLlmUiFluentNavLists -Holder (Get-FastLlmUiFluentNavHolder)
+    $f['Els']['NavList'].Add_SelectionChanged({ Invoke-FastLlmUiFluentNavSelection -List NavList })
+    $f['Els']['NavSettingsList'].Add_SelectionChanged({ Invoke-FastLlmUiFluentNavSelection -List NavSettingsList })
+    $f['Els']['NavList'].Add_PreviewKeyDown({ param($sender, $routed) Invoke-FastLlmUiFluentNavKey -List NavList -Routed $routed })
+    $f['Els']['NavSettingsList'].Add_PreviewKeyDown({ param($sender, $routed) Invoke-FastLlmUiFluentNavKey -List NavSettingsList -Routed $routed })
 }
 
 # Expanded or collapsed by the window width; an enabled item shows its label as a tooltip only while collapsed, a disabled one says it is coming.
@@ -862,6 +1057,7 @@ function Initialize-FastLlmUiFluentShell {
         $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
         $connectPage = New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
         $modelsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Models'
+        $settingsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Settings'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -890,10 +1086,12 @@ function Initialize-FastLlmUiFluentShell {
         [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentSettings -Page $settingsPage -Els $f['Els'])
         Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
         Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
         Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $f['Els']
         Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $f['Els']
+        Register-FastLlmUiFluentSettingsPage -Page $settingsPage -Els $f['Els']
         $f['Current'] = 'Home'
         $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane
@@ -910,6 +1108,8 @@ function Initialize-FastLlmUiFluentShell {
         # The form adapter takes over the window's handle; from here the orchestration's $form is the adapter (owner of every dialog and message box).
         $formAdapter = New-FastLlmUiFormAdapter -Window $win
         Set-Variable -Name form -Scope Script -Value $formAdapter
+        # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
+        $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
         try { $classicForm.Dispose() } catch { $null = $_ }
 
         $stage = 'theme-init'

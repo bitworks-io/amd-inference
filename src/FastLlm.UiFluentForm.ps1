@@ -37,7 +37,7 @@ function New-FastLlmUiFormAdapter {
     # Captured scriptblocks: a closure runs in its own module scope and cannot see this file's functions.
     $toForm = ${function:ConvertTo-FastLlmUiFormWindowState}
     $toWpf = ${function:ConvertTo-FastLlmUiWpfWindowState}
-    $state = @{ Shown = (New-Object System.Collections.ArrayList); FormClosing = (New-Object System.Collections.ArrayList); ShownDone = $false; Closing = $false; Window = $Window; Form = $native }
+    $state = @{ Shown = (New-Object System.Collections.ArrayList); FormClosing = (New-Object System.Collections.ArrayList); BeforeClosing = $null; ShownDone = $false; Closing = $false; Window = $Window; Form = $native }
 
     # Same font as the classic form (fast-llm-ui.ps1 line 51). The title is not set here; the Text member maps to Window.Title.
     $font = New-Object System.Drawing.Font('Segoe UI', 10)
@@ -81,6 +81,8 @@ function New-FastLlmUiFormAdapter {
     $native | Add-Member -MemberType ScriptMethod -Name Dispose -Value ({ if ($this.Handle -ne [IntPtr]::Zero) { $this.ReleaseHandle() } })
     $native | Add-Member -MemberType ScriptMethod -Name Add_Shown -Value ({ param($handler) [void] $state.Shown.Add($handler) }.GetNewClosure())
     $native | Add-Member -MemberType ScriptMethod -Name Add_FormClosing -Value ({ param($handler) [void] $state.FormClosing.Add($handler) }.GetNewClosure())
+    # One hook that runs before the FormClosing handlers (the Settings page's save prompt). A second call replaces it. Hide never reaches it.
+    $native | Add-Member -MemberType ScriptMethod -Name Add_BeforeClosing -Value ({ param($handler) $state['BeforeClosing'] = $handler }.GetNewClosure())
     $native | Add-Member -MemberType NoteProperty -Name Controls -Value $controls
     # Stored, never applied: the XAML window owns its size, start position and colours.
     foreach ($name in 'Size', 'MinimumSize', 'StartPosition', 'BackColor') { $native | Add-Member -MemberType NoteProperty -Name $name -Value $null }
@@ -102,6 +104,12 @@ function Invoke-FastLlmUiFormClosing {
     $prev = $state['Closing']
     $state['Closing'] = $true
     try {
+        # The Settings page's unsaved-edits prompt runs first, so Cancel runs no guard. Not at sign-out: the edits are discarded there (an open classic
+        # dialog's edits are lost at sign-out too) and no modal may open. A throw cancels the close, as for the guards.
+        $hook = $state['BeforeClosing']
+        if ($null -ne $hook -and $CloseReason -ne [System.Windows.Forms.CloseReason]::WindowsShutDown) {
+            if ([bool] (@(& $hook) | Select-Object -Last 1)) { return $true }
+        }
         foreach ($h in @($state.FormClosing)) { $null = & $h $Form $fcArgs }
     }
     catch {

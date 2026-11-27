@@ -1002,8 +1002,8 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
 function FitUiSettingsDialog($Dialog,[int]$MaxHeight){
     if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight);$Dialog.Width=$Dialog.Width+[Windows.Forms.SystemInformation]::VerticalScrollBarWidth}
 }
-function GetUiSettingsDialogMaxHeight($Owner){
-    return [int][Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height
+function GetUiSettingsDialogMaxHeight($OwnerHandle){
+    return [int][Windows.Forms.Screen]::FromHandle($OwnerHandle).WorkingArea.Height
 }
 # The Settings dialog is built here and nothing else: ShowUiSettings runs it in its OWN scope (". BuildUiSettingsDialog"), so every control and
 # handler variable lives where it always did. tests/settings-dialog-render-tests.ps1 builds the same function off-screen to render the layout.
@@ -1115,7 +1115,7 @@ function ShowUiSettings {
     $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
     $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
     . BuildUiSettingsDialog
-    FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form)
+    FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form.Handle)
     SetTrayMenuAvailable $false
     $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey;$script:settingsSavedSwitch=[bool]$current.allowSwitch
     try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}

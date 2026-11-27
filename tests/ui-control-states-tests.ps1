@@ -102,7 +102,7 @@ Check $threw 'an unknown UpdateKind is refused'
 
 
 # Greyed-reason codes: pure codes, '' exactly when the control state is true, over all 2,230 rows.
-$reasonActions=@('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck','chooseSetup','startInputs')
+$reasonActions=@('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck','chooseSetup','startInputs','settings')
 function Get-ReasonPropertyFailures([string]$Fn,[switch]$First){
     $bad=New-Object System.Collections.ArrayList
     foreach($r in $matrix){
@@ -197,11 +197,95 @@ Check ((Test-ReasonMutant "return 'background' }`n            if (-not `$Snapsho
 Check ((Test-ReasonMutant "if (Test-FastLlmUiStateOccupied -Background `$bg) { return 'background' }`n            return ''" "return ''") -gt 0) 'mutation: dropping the start-inputs background rule fails the property'
 Check ((Test-ReasonMutant "if (`$vc) { return 'microsoft-setup' }`n            if (`$busy) { return 'busy' }" "if (`$busy) { return 'busy' }") -gt 0) 'mutation: dropping the chooseSetup Microsoft rule fails the property'
 
+# Settings greyed reason (PR 3c): microsoft-setup, else busy, else ''. The property loop above covers 'settings' on every row.
+Check ((Reason 'settings' (New-ReasonSnapshot)) -ceq '') 'idle: settings has no reason'
+Check ((Reason 'settings' (New-ReasonSnapshot @{VcBrokerActive=$true;Busy=$true})) -ceq 'microsoft-setup') 'Microsoft setup greys settings with microsoft-setup'
+Check ((Reason 'settings' (New-ReasonSnapshot @{Busy=$true})) -ceq 'busy') 'a launch in progress greys settings with busy'
+Check ((Reason 'settings' (New-ReasonSnapshot @{UpdateKind='update'})) -ceq 'busy') 'an update run greys settings with busy'
+Check ($fnText.Contains("if (`$vc) { return 'microsoft-setup' }`n            return 'busy'")) 'the settings reason anchor is present'
+Check ((Test-ReasonMutant "if (`$vc) { return 'microsoft-setup' }`n            return 'busy'" "if (`$vc) { return 'microsoft-setup' }`n            return ''") -gt 0) 'mutation: settings busy to empty fails the property'
+
+
 # The matrix has no attachable run with a case-different pending id, so this mutant is caught by the direct case row.
 $ceqFrom='-ceq [string]$bg.pendingRequestId'
 Check ($fnText.Contains($ceqFrom)) 'the case-sensitive request comparison anchor is present'
 Set-Item -Path function:script:Get-ReasonMutant -Value ([scriptblock]::Create($fnText.Replace($ceqFrom,'-eq [string]$bg.pendingRequestId')))
 Check ((Get-ReasonMutant -Action 'backgroundAttach' -Snapshot $caseSnap) -cne 'no-run') 'mutation: a case-insensitive request comparison fails the case row'
+
+# Settings held-edit machine (PR 3c Task 1): pure, no text.
+function New-SettingsCurrent([hashtable]$Over=@{}){
+    $c=[ordered]@{serverPort=11434;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false;allowSwitch=$false}
+    foreach($k in $Over.Keys){$c[$k]=$Over[$k]}
+    return [pscustomobject]$c
+}
+function Copy-Held($H,[hashtable]$Over=@{}){
+    $c=[ordered]@{};foreach($p in $H.PSObject.Properties){$c[$p.Name]=$p.Value}
+    foreach($k in $Over.Keys){$c[$k]=$Over[$k]}
+    return [pscustomobject]$c
+}
+$held0=ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent)
+Check ($held0.port -is [int] -and $held0.port -eq 11434 -and $held0.thinkingIndex -eq 0 -and $held0.chatPage -eq $false -and $held0.idleIndex -eq 0 -and $held0.keyBox -ceq 'unchecked' -and $held0.keyTouched -eq $false -and $held0.allowSwitch -eq $false) 'the held edits start from the saved settings'
+$heldOn=ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent @{thinking='off';chatPage='on';idleStopMinutes=30;apiKey='on';allowSwitch=$true;serverPort='8080'})
+Check ($heldOn.port -eq 8080 -and $heldOn.thinkingIndex -eq 1 -and $heldOn.chatPage -eq $true -and $heldOn.idleIndex -eq 2 -and $heldOn.keyBox -ceq 'checked' -and $heldOn.allowSwitch -eq $true) 'held edits map thinking off, chat on, idle 30, key on and switch on'
+Check ((ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent @{apiKey='on';apiKeyUndetermined=$true})).keyBox -ceq 'indeterminate') 'an undetermined key is held indeterminate'
+# Round trip: every thinking and idle value comes back as saved; an unknown idle gives 0.
+foreach($th in 'auto','off'){foreach($idle in 0,15,30,60,45,-1,999){
+    $back=ConvertFrom-FastLlmUiSettingsHeld -Held (ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent @{thinking=$th;idleStopMinutes=$idle;chatPage='on';allowSwitch=$true;serverPort=9000}))
+    $wantIdle=$(if(@(15,30,60) -contains $idle){$idle}else{0})
+    Check ($back.thinking -ceq $th -and $back.idleStopMinutes -eq $wantIdle -and $back.serverPort -eq 9000 -and $back.chatPage -ceq 'on' -and $back.allowSwitch -eq $true) "round trip thinking=$th idle=$idle"
+}}
+$offBack=ConvertFrom-FastLlmUiSettingsHeld -Held $held0
+Check ($offBack.chatPage -ceq 'off' -and $offBack.thinking -ceq 'auto' -and $offBack.serverPort -is [int]) 'the saved values from untouched held edits are chat off, thinking auto and an int port'
+Check ((ConvertFrom-FastLlmUiSettingsHeld -Held (Copy-Held $held0 @{thinkingIndex=7})).thinking -ceq 'auto') 'only index 1 is thinking off'
+Check ((ConvertFrom-FastLlmUiSettingsHeld -Held (Copy-Held $held0 @{idleIndex=-3})).idleStopMinutes -eq 0) 'a negative idle index saves 0'
+# The key box states and the click sequence.
+Check ((ConvertTo-FastLlmUiKeyBoxState -IsChecked $true) -ceq 'checked' -and (ConvertTo-FastLlmUiKeyBoxState -IsChecked $false) -ceq 'unchecked' -and (ConvertTo-FastLlmUiKeyBoxState -IsChecked $null) -ceq 'indeterminate') 'the key box maps true, false and null to checked, unchecked and indeterminate'
+function Click-KeyBox($State){switch -CaseSensitive ($State){'indeterminate'{return 'unchecked'}'unchecked'{return 'checked'}default{return 'unchecked'}}}
+$seq=@();$st='indeterminate';$touched=$false
+for($i=0;$i -lt 4;$i++){$st=Click-KeyBox $st;$touched=$true;$seq+=$st}
+Check (($seq -join ',') -ceq 'unchecked,checked,unchecked,checked') 'the key box goes indeterminate, unchecked, checked, unchecked and never back to indeterminate'
+# Dirty.
+$saved=$held0
+Check ((Test-FastLlmUiSettingsDirty -Saved $saved -Held $held0) -is [bool]) 'dirty is one bool'
+Check (-not (Test-FastLlmUiSettingsDirty -Saved $saved -Held $held0)) 'untouched edits are not dirty'
+foreach($f in @(@{port=1},@{thinkingIndex=1},@{chatPage=$true},@{idleIndex=1},@{keyBox='checked'},@{allowSwitch=$true})){
+    $name=@($f.Keys)[0]
+    Check (Test-FastLlmUiSettingsDirty -Saved $saved -Held (Copy-Held $held0 $f)) "a changed $name is dirty"
+}
+$savedUnknown=ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent @{apiKeyUndetermined=$true})
+Check (-not (Test-FastLlmUiSettingsDirty -Saved $savedUnknown -Held $savedUnknown)) 'an untouched indeterminate key is not dirty'
+Check (Test-FastLlmUiSettingsDirty -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true})) 'a touched key box on a saved indeterminate counts as dirty'
+Check (-not (Test-FastLlmUiSettingsDirty -Saved $saved -Held (Copy-Held $held0 @{keyTouched=$true}))) 'a touched key box on a known saved key with the same state is not dirty'
+# The exit decision table (lead rulings: signout discards, hide keeps the edits).
+function Decide([bool]$Dirty,[string]$Answer,[bool]$SaveOk,[string]$Reason){return [string](Get-FastLlmUiSettingsExitDecision -Dirty $Dirty -Answer $Answer -SaveOk $SaveOk -Reason $Reason)}
+foreach($rs in 'leave','close'){Check ([string](Get-FastLlmUiSettingsExitDecision -Dirty $true -Answer 'save' -Reason $rs) -ceq 'save') "$rs save answered before Save ran says save"}
+Check ([string](Get-FastLlmUiSettingsExitDecision -Dirty $true -Answer 'save' -Reason 'hide') -ceq 'go') 'hide never needs Save'
+Check ([string](Get-FastLlmUiSettingsExitDecision -Dirty $true -Answer 'save' -Reason 'signout') -ceq 'discard-go') 'sign-out never needs Save'
+foreach($rs in 'leave','close','signout','hide'){foreach($an in 'save','discard','cancel','none'){foreach($ok in $true,$false){
+    Check ((Decide $false $an $ok $rs) -ceq 'go') "not dirty goes ($rs/$an/$ok)"
+}}}
+foreach($an in 'save','discard','cancel','none'){foreach($ok in $true,$false){
+    Check ((Decide $true $an $ok 'hide') -ceq 'go') "hide keeps the edits and goes ($an/$ok)"
+    Check ((Decide $true $an $ok 'signout') -ceq 'discard-go') "sign-out with edits discards ($an/$ok)"
+}}
+foreach($rs in 'leave','close'){
+    Check ((Decide $true 'save' $true $rs) -ceq 'go') "$rs save ok goes"
+    Check ((Decide $true 'save' $false $rs) -ceq 'stay') "$rs save refused stays"
+    Check ((Decide $true 'discard' $true $rs) -ceq 'discard-go') "$rs discard goes and drops the edits"
+    Check ((Decide $true 'discard' $false $rs) -ceq 'discard-go') "$rs discard ignores SaveOk"
+    Check ((Decide $true 'cancel' $true $rs) -ceq 'stay') "$rs cancel stays"
+    Check ((Decide $true 'cancel' $false $rs) -ceq 'stay') "$rs cancel stays whatever SaveOk"
+    Check ((Decide $true 'none' $true $rs) -ceq 'stay') "$rs dirty with no answer stays"
+}
+# Mutants on scratch copies of the functions: each must fail a check above.
+function Test-SettingsMutant([string]$Fn,[string]$From,[string]$To,[scriptblock]$Probe){
+    $text=(Get-Command $Fn -CommandType Function).ScriptBlock.ToString()
+    if(-not $text.Contains($From)){throw "FAIL: mutation anchor missing in ${Fn}: $From"}
+    Set-Item -Path function:script:Get-SettingsMutant -Value ([scriptblock]::Create($text.Replace($From,$To)))
+    return [bool](& $Probe)
+}
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { return 'stay' }" "default { return 'go' }" {(Get-SettingsMutant -Dirty $true -Answer 'cancel' -SaveOk $true -Reason 'leave') -ceq 'stay'})) 'mutation: cancel to go fails the table'
+Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and `$false" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))})) 'mutation: dirty ignoring keyTouched fails the touched-indeterminate check'
 
 Write-Host "UI control states tests passed: $checks"
 exit 0

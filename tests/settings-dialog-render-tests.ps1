@@ -184,8 +184,16 @@ New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
 
 try {
     $probeForm = New-Object Windows.Forms.Form
-    try { $screenCap = [int](GetUiSettingsDialogMaxHeight $probeForm) } finally { $probeForm.Dispose() }
+    $fromControl = [int]-1; $fromHandle = [int]-2
+    try {
+        $screenCap = [int](GetUiSettingsDialogMaxHeight $probeForm.Handle)
+        # ruling I1: Screen.FromControl(form) and Screen.FromHandle(form.Handle) are the same screen (MonitorFromWindow on the handle), so the classic dialog gets the same cap
+        $fromControl = [int][Windows.Forms.Screen]::FromControl($probeForm).WorkingArea.Height
+        $fromHandle = [int][Windows.Forms.Screen]::FromHandle($probeForm.Handle).WorkingArea.Height
+        $sameArea = ([Windows.Forms.Screen]::FromControl($probeForm).WorkingArea -eq [Windows.Forms.Screen]::FromHandle($probeForm.Handle).WorkingArea)
+    } finally { $probeForm.Dispose() }
     Check ($screenCap -gt 0) "the working-area height of the screen is read ($screenCap px)"
+    Check ($sameArea -and $fromControl -eq $fromHandle -and $screenCap -eq $fromHandle) "ruling I1: Screen.FromControl and Screen.FromHandle give the same working area on a real form (control $fromControl, handle $fromHandle, cap $screenCap)"
     $cases = @(
         @{ scale = 1.0; name = '100'; cap = 0 },
         @{ scale = 1.5; name = '150'; cap = $screenCap },

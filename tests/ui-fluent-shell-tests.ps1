@@ -299,11 +299,27 @@ function Invoke-A10-Owner {
     Check-NoExceptions 'A10'
 }
 
+# PR 3c (named test change, ruling I1): the 3a known gap is closed. The classic call site is now GetUiSettingsDialogMaxHeight $form.Handle (Screen.FromHandle), and
+# it works through the form adapter: the REAL function of fast-llm-ui.ps1 (taken by name with the parser) returns the working-area height of the adapter window's
+# screen, the same number Screen.FromHandle gives for the real hwnd. Screen.FromControl($form) still throws on the adapter (the reason for the ruling).
 function Invoke-A11-ScreenGap {
     $s = New-Scn 'a11'; $form = $s.Form
     $msg = ''
     try { $null = [System.Windows.Forms.Screen]::FromControl($form) } catch { $msg = $_.Exception.Message }
-    Check ($msg -ne '') 'A11 known gap, carried to PR 3: Screen.FromControl($form) throws on the adapter' 'FromControl returned without throwing; the gap at GetUiSettingsDialogMaxHeight may be closed, update the pin'
+    Check ($msg -ne '') 'A11 Screen.FromControl($form) still throws on the adapter (which is why the call site passes the handle)' 'FromControl returned without throwing'
+    $uiAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'), [ref]$null, [ref]$null)
+    $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'GetUiSettingsDialogMaxHeight' }, $true)
+    Check ($null -ne $def) 'A11 GetUiSettingsDialogMaxHeight was found in fast-llm-ui.ps1' ''
+    if ($null -ne $def) {
+        . ([scriptblock]::Create([string]$def.Extent.Text))
+        $got = -1; $want = -2; $err = ''
+        try {
+            $got = [int](GetUiSettingsDialogMaxHeight $form.Handle)
+            $want = [int][System.Windows.Forms.Screen]::FromHandle($s.Hwnd).WorkingArea.Height
+        }
+        catch { $err = $_.Exception.Message }
+        Check ($err -eq '' -and $got -gt 0 -and $got -eq $want) 'A11 GetUiSettingsDialogMaxHeight $form.Handle returns the working-area height of the adapter window''s screen (the same as Screen.FromHandle of the real hwnd)' "got=$got want=$want hwnd=$($s.Hwnd) formHandle=$($form.Handle) error=$err"
+    }
     Check-NoExceptions 'A11'
 }
 
@@ -1564,18 +1580,25 @@ function Invoke-S16-PaneCollapse {
     foreach ($nav in $f.NavItems) { if ($nav['Label'].Visibility -ne [System.Windows.Visibility]::Collapsed) { $labelsHidden = $false } }
     $homeTip = [string]$f.NavItems[0]['Item'].ToolTip
     $homeText = [string]$f.NavItems[0]['Text']
-    # PR 3b: Models is a registered page, so the disabled item is Settings (the last pane item)
-    $disabledNav = @($f.NavItems | Where-Object { [string]$_['Id'] -ceq 'NavSettings' })[0]
+    # PR 3c (named test change): every pane item is a registered page now, so no real item is disabled. The disabled branch of Set-FastLlmUiFluentNavTip is the
+    # fail-safe for an unregistered page: a SCRATCH nav entry (never added to NavItems) stands in for the disabled item, driven through the same tooltip function.
+    $disabledNav = @{ Item = (New-Object System.Windows.Controls.ListBoxItem); Label = $null; Text = 'Probe item'; Enabled = $false; Id = 'NavProbe'; List = 'NavList' }
+    Set-FastLlmUiFluentNavTip -Nav $disabledNav
     $disabledTip = [string]$disabledNav['Item'].ToolTip
     $laterCollapsed = ([string]$script:FastLlmUiFluentStrings.ComingLaterFormat) -f [string]$disabledNav['Text']
-    Check ($col -lt 100 -and $labelsHidden -and $homeTip -ceq $homeText -and $disabledTip -ceq $laterCollapsed) 'S16 below 900 wide the pane collapses: narrow column, labels hidden, Home tooltip is its label, disabled items keep their tooltip' "column=$col labelsHidden=$labelsHidden homeTip='$homeTip' (expected '$homeText') disabledTip='$disabledTip' (expected '$laterCollapsed') width=$($win.ActualWidth)"
+    $stillEnabled = @(@($f.NavItems) | Where-Object { -not [bool]$_['Item'].IsEnabled } | ForEach-Object { [string]$_['Id'] })
+    Check ($stillEnabled.Count -eq 0) 'S16 no real pane item is disabled any more (all five have a registered page)' "disabled=[$($stillEnabled -join ',')]"
+    Check ($col -lt 100 -and $labelsHidden -and $homeTip -ceq $homeText -and $disabledTip -ceq $laterCollapsed) 'S16 below 900 wide the pane collapses: narrow column, labels hidden, Home tooltip is its label, a disabled (scratch) entry keeps its collapsed tooltip' "column=$col labelsHidden=$labelsHidden homeTip='$homeTip' (expected '$homeText') disabledTip='$disabledTip' (expected '$laterCollapsed') width=$($win.ActualWidth)"
     $win.Width = 1000
     Invoke-Pump 800 ({ [double]$script:FastLlmUiFluent.Els.PaneColumn.Width.Value -gt 100 })
     $col2 = [double]$els.PaneColumn.Width.Value
     $labelsShown = $true
     foreach ($nav in $f.NavItems) { if ($nav['Label'].Visibility -ne [System.Windows.Visibility]::Visible) { $labelsShown = $false } }
+    # the pane now reads as expanded: the same scratch entry says the plain coming-later text (the tooltip function reads the pane state the shell just set)
+    Set-FastLlmUiFluentNavTip -Nav $disabledNav
     $disabledTip2 = [string]$disabledNav['Item'].ToolTip
-    Check ($col2 -gt 100 -and $labelsShown -and $null -eq $f.NavItems[0]['Item'].ToolTip -and $disabledTip2 -ceq $later) 'S16 at 900 and above the pane expands again: wide column, labels shown, no Home tooltip' "column=$col2 labelsShown=$labelsShown homeTip='$($f.NavItems[0]['Item'].ToolTip)' disabledTip='$disabledTip2' width=$($win.ActualWidth)"
+    $settingsTip = $f.NavItems[4]['Item'].ToolTip
+    Check ($col2 -gt 100 -and $labelsShown -and $null -eq $f.NavItems[0]['Item'].ToolTip -and $disabledTip2 -ceq $later -and $null -eq $settingsTip) 'S16 at 900 and above the pane expands again: wide column, labels shown, no Home tooltip, the scratch disabled entry says ComingLater and Settings has no tooltip' "column=$col2 labelsShown=$labelsShown homeTip='$($f.NavItems[0]['Item'].ToolTip)' disabledTip='$disabledTip2' settingsTip='$settingsTip' width=$($win.ActualWidth)"
     Check-NoExceptions 'S16'
 }
 

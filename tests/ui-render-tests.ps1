@@ -84,6 +84,69 @@ if($modelsMatch.Success -and $listMatch.Success){
     Check ($notInMarkup.Count -eq 0) "the Initialize list names no element that is not in the Models markup (extra: $($notInMarkup -join ', '))"
     Check (@('Bd','Hd','Arrow','Body','Bar'|Where-Object{$modelsPageNames -contains $_}).Count -eq 0) 'the Models page names hold no template part name'
 }
+# The clipped rule's arithmetic (pure, any OS; the derivation is in the harness above Get-UiTextGapBound). The planted numbers are the PR 3c CI rounds' own.
+function Test-UiNear([double]$A,[double]$B){return ([Math]::Abs($A-$B) -lt 0.0000001)}
+Check (Test-UiNear (Get-UiTextGapBound 1.0 $true 0) 0.500001) 'gap bound: half a device pixel is 0.5 DIP at live scale 1.0'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $true 0) 0.400001) 'gap bound: half a device pixel is 0.4 DIP at live scale 1.25'
+Check (Test-UiNear (Get-UiTextGapBound 1.5 $true 0) (0.5/1.5+0.000001)) 'gap bound: half a device pixel is a third of a DIP at live scale 1.5'
+Check (Test-UiNear (Get-UiTextGapBound 2.0 $true 0) 0.250001) 'gap bound: half a device pixel is 0.25 DIP at live scale 2.0'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $false 0) 0.000001) 'gap bound: without layout rounding only the float noise is left'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $true 12) 0.400001) 'gap bound: a margin of whole pixels (12 DIP = 15 px at 1.25) adds nothing'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $true 10.2) 0.600001) 'gap bound: a margin off the pixel grid (10.2 DIP = 12.75 px, rounded to 10.4) adds its own rounding'
+# Round 2, NoWrap 'Driver guidance': one ideal width (97.2 to 97.5) is 97.0 on the live block's grid (scale 1.0) and 97.6 on the clone's (the case scale 1.25).
+Check ((Test-UiNear (Get-UiRoundedLayoutValue 97.3 1.0) 97.0) -and (Test-UiNear (Get-UiRoundedLayoutValue 97.3 1.25) 97.6)) 'round 2: an ideal width of 97.3 rounds to 97.0 at scale 1.0 and to 97.6 at scale 1.25'
+Check ((Get-UiRoundedLayoutValue 97.3 1.25) -gt ((Get-UiRoundedLayoutValue 97.3 1.0)+0.5)) 'round 2: the clone rounded at the case scale is more than 0.5 above the live block (the false positive)'
+Check ((Get-UiTextGapState (97.3-(Get-UiRoundedLayoutValue 97.3 1.0)) (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'ok') 'the unrounded clone is inside the bound of the live block for the same width'
+Check ((Test-UiNear (Get-UiRoundedLayoutValue 18.62 1.0) 19.0) -and (Test-UiNear (Get-UiRoundedLayoutValue 18.62 1.25) 18.4) -and (Test-UiNear (Get-UiRoundedLayoutValue 37.24 1.5) (56.0/1.5))) 'round 2: the line heights 18.62 and 37.24 give the logged 19.0, 18.4 and 37.3'
+# The bound holds for every ideal size at every live scale (a rounded live size is never further than the bound from the ideal one), and it is tight:
+# at scale 1.25 a gap of 0.45 DIP is more than half a device pixel.
+$sweepBad=0
+foreach($liveScale in 1.0,1.25,1.5,2.0){
+    $liveBound=Get-UiTextGapBound $liveScale $true 0
+    for($i=0;$i -lt 4000;$i++){
+        $ideal=$i*0.0731
+        if((Get-UiTextGapState ($ideal-(Get-UiRoundedLayoutValue $ideal $liveScale)) $liveBound $false) -cne 'ok'){$sweepBad++}
+    }
+}
+Check ($sweepBad -eq 0) "an ideal size is never further than the bound from its layout-rounded size (4000 sizes at each of 4 scales, outside: $sweepBad)"
+Check ((Get-UiTextGapState 0.45 (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'ok' -and (Get-UiTextGapState 0.45 (Get-UiTextGapBound 1.25 $true 0) $false) -ceq 'over') 'the bound follows the live scale: 0.45 DIP is inside it at 1.0 and above it at 1.25'
+# Real clipping stays above the bound: round 1's NoWrap caption (645.1 wide in a 505.0 slot) and a fixed-width box (also with an explicit size).
+Check ((Get-UiTextGapState (645.1-505.0) (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'over') 'a NoWrap caption wider than its slot is above the bound'
+Check ((Get-UiTextGapState (400.0-60.0) (Get-UiTextGapBound 1.0 $true 0) $true) -ceq 'over') 'text wider than its explicit width is above the bound'
+Check ((Get-UiTextGapState 0.6 (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'over') 'a gap of 0.6 DIP at live scale 1.0 is above the bound'
+Check ((Get-UiTextGapState (-8.0) (Get-UiTextGapBound 1.0 $true 0) $true) -ceq 'sized' -and (Get-UiTextGapState (-8.0) (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'under') 'a clone smaller than the live block is sized with an explicit size and under without one'
+# Wrapping text is measured at the live desired text width plus the bound: round 1's one-line caption (171.0 for 171.x) fits, and round 2's
+# ConnectAgentWarningText (desired 511.0, arranged 533.0) is no longer measured wider than the live block (534.0).
+$nan=[double]::NaN
+$infinite=[double]::PositiveInfinity
+Check (Test-UiNear (Get-UiWrapMeasureWidth 171.0 0.500001 $nan 0 $infinite 1.0 $true) 171.500001) 'a wrapping clone is measured at the desired text width plus the bound (171.0 gives 171.5)'
+Check ((Get-UiWrapMeasureWidth 511.0 0.500001 $nan 0 $infinite 1.0 $true) -lt 533.0) 'a wrapping clone is never measured wider than the live block was arranged (511.5, not 534.0)'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 60.0 0.500001 60.0 0 $infinite 1.0 $true) 60.0) 'a wrapping clone in a fixed-width box is measured at the box width'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 277.5 0.250001 296.0 0 $infinite 2.0 $true) 296.0) 'a fixed-width box whose slot cut its desired width is still measured at the box width (296.0, not 277.75)'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 900.0 0.500001 $nan 0 900.0 1.0 $true) 900.0) 'a wrapping clone is never measured above MaxWidth'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 40.0 0.500001 $nan 120.0 $infinite 1.0 $true) 120.0) 'a wrapping clone is never measured below MinWidth'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 61.0 0.500001 60.6 0 $infinite 1.0 $true) 61.0) 'an explicit width off the pixel grid is measured at its rounded value (60.6 gives 61.0)'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 61.0 0.000001 60.6 0 $infinite 1.0 $false) 60.6) 'without layout rounding an explicit width is measured as it is'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 300.0 0.500001 500.0 0 200.0 1.0 $true) 200.0) 'MaxWidth below an explicit Width wins, as in WPF'
+Check (Test-UiNear (Get-UiWrapMeasureWidth (-4.0) 0.500001 $nan 0 $infinite 1.0 $true) 0.500001) 'a negative desired text width measures at the bound'
+Check ((Test-UiOnLayoutGrid 593.0 1.0) -and -not (Test-UiOnLayoutGrid 593.0 1.25) -and (Test-UiOnLayoutGrid 97.6 1.25) -and -not (Test-UiOnLayoutGrid 97.6 1.0) -and (Test-UiOnLayoutGrid (415.0/1.5) 1.5)) 'the pixel grid test tells the scale 1.0 grid from the 1.25 and 1.5 grids'
+# The summary folds the per-case records per device scale and text scale, in that order.
+$plantStatA=New-UiTextGapStat;$plantStatA['n']=2;Add-UiTextGapValue $plantStatA 'W' (-0.31);Add-UiTextGapValue $plantStatA 'W' 0.42;Add-UiTextGapValue $plantStatA 'H' (-0.38)
+$plantStatB=New-UiTextGapStat;$plantStatB['n']=3;Add-UiTextGapValue $plantStatB 'W' 0.49;Add-UiTextGapValue $plantStatB 'H' 0.24
+$plantStatC=New-UiTextGapStat;$plantStatC['n']=1;Add-UiTextGapValue $plantStatC 'W' (-0.7);Add-UiTextGapValue $plantStatC 'H' 0.1
+$plantRecords=@(
+    @{label='Plant.B light 1.25 2.0 640x480';scale=[double]1.25;textScale=[double]2.0;bound=[double]0.500001;liveScales=[string[]]@('1.0');nowrap=$plantStatC;wrap=(New-UiTextGapStat);over=0;under=1;offGrid=0;sized=0;accessKey=0;trimmed=0;remeasured=0;notes=[string[]]@('below the bound on W: PlantText')},
+    @{label='Plant.A light 1.0 1.0 640x480';scale=[double]1.0;textScale=[double]1.0;bound=[double]0.500001;liveScales=[string[]]@('1.0');nowrap=$plantStatA;wrap=$plantStatB;over=1;under=0;offGrid=0;sized=2;accessKey=1;trimmed=1;remeasured=1;notes=[string[]]@()},
+    @{label='Plant.A dark 1.0 1.0 640x480';scale=[double]1.0;textScale=[double]1.0;bound=[double]0.400001;liveScales=[string[]]@('1.25');nowrap=$plantStatA;wrap=(New-UiTextGapStat);over=0;under=0;offGrid=2;sized=0;accessKey=0;trimmed=0;remeasured=0;notes=[string[]]@('off the pixel grid: PlantText')})
+$plantRows=@(Get-UiTextGapSummary $plantRecords)
+Check ($plantRows.Count -eq 2 -and [double]$plantRows[0]['scale'] -eq 1.0 -and [double]$plantRows[1]['scale'] -eq 1.25) "the gap summary has one row per scale and text scale, lowest scale first (got $($plantRows.Count))"
+if($plantRows.Count -eq 2){
+    $pr=$plantRows[0]
+    Check ([int]$pr['cases'] -eq 2 -and [int]$pr['nowrap']['n'] -eq 4 -and [int]$pr['wrap']['n'] -eq 3 -and [int]$pr['over'] -eq 1 -and [int]$pr['offGrid'] -eq 2 -and [int]$pr['sized'] -eq 2 -and [int]$pr['accessKey'] -eq 1 -and [int]$pr['trimmed'] -eq 1 -and [int]$pr['remeasured'] -eq 1) 'the gap summary adds the counts of the cases of one row'
+    Check ((Test-UiNear ([double]$pr['bound']) 0.500001) -and (Test-UiNear ([double]$pr['nowrap']['minW']) (-0.31)) -and (Test-UiNear ([double]$pr['nowrap']['maxW']) 0.42) -and (Test-UiNear ([double]$pr['wrap']['maxW']) 0.49) -and [string]$pr['liveScales'] -ceq '1.0, 1.25') "the gap summary keeps the largest bound, the gap range and every live scale (live scales '$($pr['liveScales'])')"
+    Check ([string]$pr['line'] -ceq 'scale 1.0 text 1.0: cases 2; live layout scale 1.0, 1.25; bound 0.500; NoWrap n=4 gap W [-0.310, 0.420] H [-0.380, -0.380]; Wrap n=3 gap W [0.490, 0.490] H [0.240, 0.240]; above the bound (reported clipped) 1; below the bound 0; off the pixel grid 2; below it by an explicit size 2; below it by an access key split 1; trimmed with a tooltip 1; wraps re-measured 1') "the gap summary line reads as pinned (got '$($pr['line'])')"
+    Check ([int]$plantRows[1]['under'] -eq 1 -and @($plantRows[1]['notes']).Count -eq 1 -and [string]@($plantRows[1]['notes'])[0] -ceq 'Plant.B light 1.25 2.0 640x480: below the bound on W: PlantText' -and [string]$plantRows[1]['line'] -like '*Wrap n=0 gap W none H none; above the bound (reported clipped) 0; below the bound 1;*') "the gap summary carries a case's notes with its label and prints an empty range as none (line '$($plantRows[1]['line'])')"
+}
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -302,6 +365,11 @@ foreach($case in $matrix){
     Check ([string]$r.inheritedForeground -ceq $expFg) "inherited body text uses the theme text colour at ${label} (got $($r.inheritedForeground), want $expFg)"
     Check ($r.labeledInputs -ge 1) "the label-mismatch check saw at least 1 labelled input at ${label} (got $($r.labeledInputs))"
     Check ($r.textBlocks -ge 6) "the clipped check examined at least 6 text blocks at ${label} (got $($r.textBlocks))"
+    # The clipped rule's evidence on the harness's own page, where every caption is plain text: wrapping and NoWrap blocks were both measured, each live size is on
+    # its device-pixel grid, and each clone reproduces its live block to within the derived bound in BOTH directions (above the bound is reported as clipped).
+    $tg=$r.textGap
+    Check ([int]$tg['wrap']['n'] -ge 4 -and [int]$tg['nowrap']['n'] -ge 1) "the text gap was measured for wrapping and NoWrap text at ${label} (wrap $($tg['wrap']['n']), NoWrap $($tg['nowrap']['n']))"
+    Check ([int]$tg['over'] -eq 0 -and [int]$tg['under'] -eq 0 -and [int]$tg['offGrid'] -eq 0 -and [double]$tg['bound'] -gt 0) "every sample text clone is within the derived bound of its live block at ${label} (bound $($tg['bound']), above $($tg['over']), below $($tg['under']), off the pixel grid $($tg['offGrid'])): $(@($tg['notes']) -join '; ')"
     Check ($r.namedControls -ge 4) "the unnamed check examined at least 4 controls at ${label} (got $($r.namedControls))"
     Check ($r.tabStops -eq 4) "the tab-order check saw 4 tab stops at ${label} (got $($r.tabStops))"
     Check ($r.unmappedRects -eq 0) "no authored element was left unmapped at ${label} (got $($r.unmappedRects))"
@@ -692,7 +760,7 @@ foreach($theme in 'light','dark','high-contrast'){
 Write-Host ('INFO: Models render of {0} cases took {1:N1} s' -f ($matrix.Count+6),$modelsSw.Elapsed.TotalSeconds)
 
 # ---- Reading order of the Tools, Connect and Models pages at text 1.0, 2.0 and 2.25: no overlap, and the whole tab sequence is the reading order.
-function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops,[string[]]$ScrollOwners=@()){
+function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName,[scriptblock]$Prepare,[int]$MinStops,[string[]]$ScrollOwners=@(),[string[]]$TabRegions=@()){
     foreach($text in 1.0,2.0,2.25){
         $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
         $script:homeCaseTheme='light'
@@ -701,7 +769,7 @@ function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName
         $script:pinInner=$Prepare
         $pinPrepare={param($page) $script:pinPage=$page; & $script:pinInner $page}
         $r=$null
-        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName -ScrollOwners $ScrollOwners}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
+        try{$r=Invoke-UiRenderCase -Name $XamlName -Case $case -OutFolder $out -Prepare $pinPrepare -PngName $PngName -ScrollOwners $ScrollOwners -TabRegions $TabRegions}catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
         $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
         Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
         $stops=New-Object System.Collections.ArrayList
@@ -712,10 +780,10 @@ function Test-PageReadingOrder([string]$Label,[string]$XamlName,[string]$PngName
         $order=0
         foreach($el in $stops){
             $rect=Get-UiRelativeRect $el $script:pinPage
-            if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+            if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Region=(Get-UiTabRegion $el $script:pinPage $TabRegions);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
             $order++
         }
-        $byRead=@($rows|Sort-Object -Property @{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
+        $byRead=@($rows|Sort-Object -Property @{Expression='Region'},@{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
         $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
         $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
         Write-Host "INFO: $Label tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
@@ -732,6 +800,189 @@ Test-PageReadingOrder 'Connect' 'FastLlm.Connect' 'FastLlm.ConnectReading' $conn
 $script:modelsFx=New-ModelsRenderFixture 'long'
 Test-PageReadingOrder 'Models' 'FastLlm.Models' 'FastLlm.ModelsReading' $modelsPrepare 12 @('ModelsSwitchList')
 Write-Host ('INFO: Tools, Connect and Models reading order of 9 cases took {0:N1} s' -f $orderSw.Elapsed.TotalSeconds)
+
+# ---- The Settings page (PR 3c): the fluent replacement for settings-dialog-render-tests (the table is in the PR body).
+# The serving settings and the sign-in view are fixtures over the real functions; the page, its bindings, its reasons and its Enter are the product's.
+# The harness wraps a page in a ScrollViewer with unlimited height, so a bounded page height (the window's) is set in the prepare step: row 0 (the page's own
+# ScrollViewer) then fills what the footer leaves, and the footer is always in view, as in the app. Tab regions: the page's scroll content first, the footer last.
+$script:settingsOverride=$null
+$script:settingsKind='notset'
+$script:settingsCaseHeight=[double]480
+$script:settingsPageEl=$null
+$script:settingsEls=$null
+$script:uiSettings=$script:homeSettings
+# The function's script block, not a FunctionInfo: a FunctionInfo is updated in place when the function is redefined below, so the wrapper would call itself.
+$script:realGetServingSettings=${function:Get-FastLlmServingSettings}
+function Get-FastLlmServingSettings{
+    param([string]$InstallRoot)
+    $real=& $script:realGetServingSettings -InstallRoot $InstallRoot
+    if($null -ne $script:settingsOverride){foreach($k in @($script:settingsOverride.Keys)){$real.$k=$script:settingsOverride[$k]}}
+    return $real
+}
+function Get-FastLlmSignInDefaultInstallRoot{return [string]$script:homeDir}
+function Get-FastLlmSignInSettingsView{param([string]$AppRoot,[string]$InstallRoot)return [pscustomobject]@{checked=$false;stateText='Starting FastLLM when you sign in is off.';lastResultText='No sign-in start has run yet.'}}
+# The fixtures: not set (the worst case: the long caption, the long thinking text, the biggest port), key on, key off, running (key on), unavailable (a launch is starting).
+function Get-SettingsRenderFixture([string]$Kind){
+    switch -CaseSensitive ($Kind){
+        'notset'{return @{override=@{serverPort=65535;thinking='off';chatPage='on';idleStopMinutes=60;apiKey='off';apiKeyUndetermined=$true};snap=@{};unavailable=$false;keyChecked=$null}}
+        'on'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=15;apiKey='on';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$true}}
+        'off'{return @{override=@{serverPort=8080;thinking='off';chatPage='on';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false}}
+        'running'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=30;apiKey='on';apiKeyUndetermined=$false};snap=@{ChildActive=$true;Step='serving';RunReady=$true};unavailable=$false;keyChecked=$true}}
+        'unavailable'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{Busy=$true;ChildActive=$true;Step='model download'};unavailable=$true;keyChecked=$false}}
+        default{throw "unknown Settings render state $Kind"}
+    }
+}
+function Initialize-SettingsRenderPage($Page){
+    $fx=Get-SettingsRenderFixture $script:settingsKind
+    $els=@{}
+    $script:FastLlmUiFluent=@{Window=$null;Els=$els;Keys=@{};Tick=1;Theme=[string]$script:homeCaseTheme;Pages=@{};Current=''}
+    [void](Initialize-FastLlmUiFluentSettings -Page $Page -Els $els)
+    $pageNames=Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Settings'])
+    $absent=@($pageNames|Where-Object{-not $els.ContainsKey([string]$_)})
+    if($absent.Count -gt 0){throw ('Settings names missing from the element map: '+($absent -join ', '))}
+    $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
+    Connect-RenderBindingRows @(Get-FastLlmUiFluentSettingsBindings) $els
+    $script:settingsOverride=$fx.override
+    $script:homeSnap=New-HomeSnap $fx.snap
+    $script:settingsButton.Enabled=(-not [bool]$fx.unavailable)
+    $script:renderFail=''
+    Enter-FastLlmUiFluentSettings
+    $Page.Height=[double]$script:settingsCaseHeight
+    $script:settingsPageEl=$Page
+    $script:settingsEls=$els
+}
+$settingsPrepare={param($page) Initialize-SettingsRenderPage $page}
+# Pixels of a box's text area that differ from the area's most common colour (the box background): 0 means the box is blank. -1: the area is outside the bitmap.
+function Get-UiRegionInk([string]$PngPath,$Rect,[double]$Scale){
+    $stream=[System.IO.File]::OpenRead($PngPath)
+    try{
+        $decoder=New-Object System.Windows.Media.Imaging.PngBitmapDecoder($stream,[System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+        $conv=New-Object System.Windows.Media.Imaging.FormatConvertedBitmap($decoder.Frames[0],[System.Windows.Media.PixelFormats]::Pbgra32,$null,0)
+        $x0=[int][Math]::Ceiling(($Rect.Left+6)*$Scale);$y0=[int][Math]::Ceiling(($Rect.Top+5)*$Scale)
+        $w=[int][Math]::Floor(($Rect.Width*0.5)*$Scale);$h=[int][Math]::Floor(($Rect.Height-10)*$Scale)
+        if($w -le 0 -or $h -le 0 -or $x0 -lt 0 -or $y0 -lt 0 -or ($x0+$w) -gt $conv.PixelWidth -or ($y0+$h) -gt $conv.PixelHeight){return -1}
+        $stride=$w*4
+        $pixels=New-Object byte[] ($stride*$h)
+        $conv.CopyPixels((New-Object System.Windows.Int32Rect($x0,$y0,$w,$h)),$pixels,$stride,0)
+        $counts=@{}
+        for($i=0;$i -lt $pixels.Length;$i+=4){$v=[BitConverter]::ToInt32($pixels,$i);if($counts.ContainsKey($v)){$counts[$v]++}else{$counts[$v]=1}}
+        $mode=0;foreach($c in $counts.Values){if($c -gt $mode){$mode=$c}}
+        return [int]($w*$h-$mode)
+    }finally{$stream.Dispose()}
+}
+# PR 3c CI round 1 (F6): a selection box shows its selection when a non-empty selected string reaches the box's own presenter (a TextBlock or the ContentPresenter that
+# holds the string), whichever template draws it. An empty or missing selection is never drawn. The ink check below still judges the pixels of the box's own rectangle.
+function Test-UiSelectionDrawn($Box){
+    $selected=[string]$Box.SelectedItem
+    if([string]::IsNullOrEmpty($selected)){return $false}
+    foreach($v in (Get-UiVisualElements $Box)){
+        if($v -is [System.Windows.Controls.TextBlock] -and [string]$v.Text -ceq $selected){return $true}
+        if($v -is [System.Windows.Controls.ContentPresenter] -and $v.Content -is [string] -and [string]$v.Content -ceq $selected){return $true}
+    }
+    return $false
+}
+$plantedBox=New-Object System.Windows.Controls.ComboBox
+$plantedBox.Items.Add('') | Out-Null
+$plantedBox.SelectedIndex=0
+Check (-not (Test-UiSelectionDrawn $plantedBox)) 'planted: a box whose selected text is empty is not drawn'
+$plantedBox.SelectedIndex=-1
+Check (-not (Test-UiSelectionDrawn $plantedBox)) 'planted: a box with no selection is not drawn'
+function Test-SettingsCase([string]$Kind,$case){
+    $script:settingsKind=$Kind
+    $script:settingsCaseHeight=[double]$case.height
+    $script:homeCaseTheme=[string]$case.theme
+    $pngName='FastLlm.Settings'
+    switch -CaseSensitive ($Kind){'on'{$pngName='FastLlm.SettingsKeyOn'}'off'{$pngName='FastLlm.SettingsKeyOff'}'running'{$pngName='FastLlm.SettingsRunning'}'unavailable'{$pngName='FastLlm.SettingsUnavailable'}}
+    $label="Settings $Kind $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
+    $r=$null
+    try{$r=Invoke-UiRenderCase -Name 'FastLlm.Settings' -Case $case -OutFolder $out -Prepare $settingsPrepare -PngName $pngName -TabRegions @('SettingsScroll')}catch{Check $false "Settings renders at ${label}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "Settings clean at ${label}: $(@($r.problems) -join '; ')$diagText"
+    $real=$false
+    if($r.png -and (Test-Path -LiteralPath $r.png)){$info=Get-UiPngInfo -Path $r.png;$real=$info.hasContent}
+    Check $real "the Settings render is real at $label"
+    $e=$script:settingsEls
+    $page=$script:settingsPageEl
+    $fx=Get-SettingsRenderFixture $Kind
+    $t=$script:FastLlmUiFluentSettingsText
+    Check ($script:renderFail -ceq '') "the Settings page filled without a failure at ${label}: '$($script:renderFail)'"
+    # every authored element is shown, apart from the unavailable line (shown only while unavailable)
+    $hidden=@((Get-UiPageElementNames ([string]$script:FastLlmUiXaml['FastLlm.Settings']))|Where-Object{[string]$_ -cne 'SettingsUnavailableText' -and -not (Test-UiShown $e[[string]$_] $page)})
+    Check ($hidden.Count -eq 0) "no Settings control is hidden at ${label}: $($hidden -join ', ')"
+    $line=($e['SettingsUnavailableText'].Visibility -eq [System.Windows.Visibility]::Visible)
+    Check ($line -eq [bool]$fx.unavailable -and (-not $line -or [string]$e['SettingsUnavailableText'].Text -ceq [string]$script:FastLlmUiFluentStrings.WhyBusy)) "the unavailable line is shown exactly while unavailable, with WhyBusy, at $label (shown=$line text='$($e['SettingsUnavailableText'].Text)')"
+    # the footer: Save and Discard inside the client area, never inside the scroll viewer; the scroll viewer fills what the footer leaves
+    $scroll=$e['SettingsScroll']
+    $badFooter=@()
+    foreach($n in 'SettingsSaveButton','SettingsDiscardButton'){
+        $rect=Get-UiRelativeRect $e[$n] $page
+        if($null -eq $rect -or $rect.Top -lt -0.5 -or $rect.Bottom -gt ([double]$case.height+0.5) -or $rect.Right -gt ([double]$case.width+0.5) -or $scroll.IsAncestorOf($e[$n])){$badFooter+="$n rect=$rect inScroll=$($scroll.IsAncestorOf($e[$n]))"}
+    }
+    Check ($badFooter.Count -eq 0) "Save and Discard are in the footer, inside the client area and outside the scroll viewer at ${label}: $($badFooter -join '; ')"
+    Check ([Math]::Abs([double]$scroll.ActualHeight+[double]$e['SettingsFooter'].ActualHeight-[double]$case.height) -le 1.0) "the Settings scroll viewer fills the page above the footer at ${label} (scroll $($scroll.ActualHeight) + footer $($e['SettingsFooter'].ActualHeight) of $($case.height))"
+    $outside=@('SettingsServerGroup','SettingsStartingGroup','SettingsComponentsGroup'|Where-Object{-not $scroll.IsAncestorOf($e[[string]$_])})
+    Check ($outside.Count -eq 0) "every Settings group is inside the scroll content at ${label}: $($outside -join ', ')"
+    if([double]$case.textScale -ge 2.25 -and [int]$case.width -eq 640){
+        Check ([double]$scroll.ExtentHeight -gt [double]$scroll.ViewportHeight) "at text 2.25 the Settings content needs scrolling at ${label} (extent $($scroll.ExtentHeight), viewport $($scroll.ViewportHeight))"
+    }
+    # The PR 3c plan, Task 4, Layout: "Row 1 is the **footer**, outside the scroll, so Save and Discard are always in view (today's docked button row)".
+    # That is the requirement, so it is checked in EVERY Settings case: the whole footer is shown, inside the window and outside the scroll viewer. The plan does
+    # not ask for the Server group to fit the viewport (with the Fluent control styles it is 585 DIP tall and starts 98 DIP down a 623 DIP viewport at 1000x680,
+    # so it scrolls), so the earlier check of that, which a test builder added for the three 1000x680 cases only, is replaced by this one.
+    $footer=$e['SettingsFooter']
+    $footerRect=Get-UiRelativeRect $footer $page
+    $footerIn=($null -ne $footerRect -and (Test-UiShown $footer $page) -and $footerRect.Width -gt 0 -and $footerRect.Height -gt 0 -and $footerRect.Left -ge -0.5 -and $footerRect.Top -ge -0.5 -and $footerRect.Right -le ([double]$case.width+0.5) -and $footerRect.Bottom -le ([double]$case.height+0.5))
+    Check ($footerIn -and -not $scroll.IsAncestorOf($footer)) "the Settings footer is fully inside the window and outside the scroll viewer at ${label} (footer $footerRect, window $($case.width)x$($case.height), inScroll=$($scroll.IsAncestorOf($footer)))"
+    # the texts: each label is on its element; the three help lines are shown; the key box has its caption and state
+    Check ([string]$e['SettingsPortLabel'].Text -ceq [string]$t.Port -and [string]$e['SettingsThinkingLabel'].Text -ceq [string]$t.Thinking -and [string]$e['SettingsIdleLabel'].Text -ceq [string]$t.Idle -and [string]$e['SettingsServerHeading'].Text -ceq [string]$script:FastLlmUiFluentStrings.SettingsServer) "the Settings labels and headings carry their text-table strings at $label"
+    $helpBad=@('SettingsChatHelp','SettingsIdleHelp','SettingsKeyHelp','SettingsSwitchHelp'|Where-Object{[string]::IsNullOrEmpty([string]$e[[string]$_].Text) -or $e[[string]$_].Visibility -ne [System.Windows.Visibility]::Visible})
+    Check ($helpBad.Count -eq 0) "the Settings help lines are shown with their text at ${label}: $($helpBad -join ', ')"
+    $wantKeyName=[string]$t.Key
+    if($Kind -ceq 'notset'){$wantKeyName=[string]$t.KeyNotSet}
+    $keyChecked=$e['SettingsKeyBox'].IsChecked
+    $keyOk=([string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsKeyBox']) -ceq $wantKeyName)
+    if($Kind -ceq 'notset'){$keyOk=($keyOk -and $null -eq $keyChecked -and [bool]$e['SettingsKeyBox'].IsThreeState)}else{$keyOk=($keyOk -and $null -ne $keyChecked -and $keyChecked -eq [bool]$fx.keyChecked)}
+    Check $keyOk "the key box shows the right caption and state for the $Kind fixture at ${label} (name='$([System.Windows.Automation.AutomationProperties]::GetName($e['SettingsKeyBox']))' checked=$keyChecked)"
+    # the three value boxes hold the saved values and a selection
+    Check ([string]$e['SettingsPortBox'].Text -ceq ([int]$fx.override.serverPort).ToString() -and [int]$e['SettingsThinkingBox'].SelectedIndex -ge 0 -and [int]$e['SettingsIdleBox'].SelectedIndex -ge 0) "Port shows the saved port and Thinking and the idle stop have a selection at $label (port='$($e['SettingsPortBox'].Text)' thinking=$($e['SettingsThinkingBox'].SelectedIndex) idle=$($e['SettingsIdleBox'].SelectedIndex))"
+    foreach($n in 'SettingsThinkingBox','SettingsIdleBox'){
+        $selected=[string]$e[$n].SelectedItem
+        Check (Test-UiSelectionDrawn $e[$n]) "the $n selection text is drawn at ${label} ('$selected')"
+    }
+    $toggleBad=@('SettingsUpdateToggle','SettingsExperimentalToggle','SettingsLicenseToggle'|Where-Object{-not $e[[string]$_].IsEnabled -or [string]::IsNullOrWhiteSpace([string][System.Windows.Automation.AutomationProperties]::GetName($e[[string]$_]))})
+    Check ($toggleBad.Count -eq 0) "the three Components toggles are enabled and named (also while unavailable) at ${label}: $($toggleBad -join ', ')"
+    if($Kind -ceq 'unavailable'){
+        Check (-not $e['SettingsServerGroup'].IsEnabled -and -not $e['SettingsStartingGroup'].IsEnabled -and -not $e['SettingsFooter'].IsEnabled) "the Server group, the Starting group and the footer are disabled while unavailable at $label"
+    }else{
+        Check ($e['SettingsServerGroup'].IsEnabled -and $e['SettingsStartingGroup'].IsEnabled -and $e['SettingsFooter'].IsEnabled) "the Settings groups are enabled while available at $label"
+    }
+    # ink: the value boxes are painted (the classic blank-list regression). Only boxes inside the viewport can be seen in the picture.
+    if($r.png -and (Test-Path -LiteralPath $r.png)){
+        $seen=0
+        foreach($n in 'SettingsPortBox','SettingsThinkingBox','SettingsIdleBox'){
+            $br=Get-UiRelativeRect $e[$n] $scroll
+            if($null -eq $br -or $br.Top -lt 0 -or $br.Bottom -gt [double]$scroll.ViewportHeight){continue}
+            $pr=Get-UiRelativeRect $e[$n] $page
+            $ink=Get-UiRegionInk $r.png $pr ([double]$case.scale)
+            $seen++
+            Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
+        }
+        if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){Check ($seen -eq 3) "all three value boxes are inside the viewport and inked at 1000x680 (seen $seen) at $label"}
+    }
+}
+$settingsSw=[Diagnostics.Stopwatch]::StartNew()
+foreach($case in $matrix){Test-SettingsCase 'notset' $case}
+foreach($kind in 'on','off','running','unavailable'){
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($text in 1.0,2.25){Test-SettingsCase $kind @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
+    }
+}
+Write-Host ('INFO: Settings render of {0} cases took {1:N1} s' -f ($matrix.Count+24),$settingsSw.Elapsed.TotalSeconds)
+$script:settingsKind='notset'
+$script:settingsCaseHeight=[double]480
+Test-PageReadingOrder 'Settings' 'FastLlm.Settings' 'FastLlm.SettingsReading' $settingsPrepare 13 @() @('SettingsScroll')
+$script:settingsOverride=$null
 
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
@@ -760,10 +1011,14 @@ function New-ShellRenderPage($Case,[string]$PageId='Home'){
     # PR 3b: Models is registered the same way (the binding table includes its rows, bound by the same loop below as Tools and Connect).
     $modelsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Models'
     [void](Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $els)
+    # PR 3c (named test change): Settings is registered the same way (the binding table includes its rows), so every pane item has a page, as in the window.
+    $settingsPage=New-FastLlmUiXamlElement -Name 'FastLlm.Settings'
+    [void](Initialize-FastLlmUiFluentSettings -Page $settingsPage -Els $els)
     Register-FastLlmUiFluentHomePage -Page $homePage -Els $els
     Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $els
     Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $els
     Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $els
+    Register-FastLlmUiFluentSettingsPage -Page $settingsPage -Els $els
     Initialize-FastLlmUiFluentPane
     $null=Initialize-FastLlmUiFluentBindings -InstallRoot $script:InstallRoot -Catalog $script:homeCatalog -UiSettings $script:homeSettings
     Connect-RenderBindingRows @(Get-FastLlmUiFluentBindingTable) $els
@@ -786,6 +1041,7 @@ function New-ShellRenderPage($Case,[string]$PageId='Home'){
         Set-ModelsRenderFixtureState $script:modelsFx $els
         $script:catalog=$script:modelsFx.catalog
     }
+    if($PageId -ceq 'Settings'){$script:settingsOverride=$null;$script:settingsButton.Enabled=$true}
     if($PageId -cne 'Home'){
         $script:renderFail=''
         $hosted=Set-FastLlmUiFluentPage -Id $PageId
@@ -802,7 +1058,7 @@ $shellPrepare={
     foreach($k in @($script:shellRp.Resources.Keys)){$page.Resources[$k]=([object]$script:shellRp.Resources[$k]).psobject.BaseObject}
 }
 $shellSw=[Diagnostics.Stopwatch]::StartNew()
-foreach($pageId in 'Home','Tools','Connect','Models'){
+foreach($pageId in 'Home','Tools','Connect','Models','Settings'){
     $pageSw=[Diagnostics.Stopwatch]::StartNew()
     $shellPng='FastLlm.Shell'
     if($pageId -cne 'Home'){$shellPng='FastLlm.Shell'+$pageId}
@@ -816,7 +1072,7 @@ foreach($pageId in 'Home','Tools','Connect','Models'){
                 $r=$null
                 try{
                     $script:shellRp=New-ShellRenderPage $case $pageId
-                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList') -ScrollOwners @('ModelsSwitchList')
+                    $r=Invoke-UiRenderCase -Name 'FastLlm.Shell' -Case $case -OutFolder $out -Element $script:shellRp.Content -Prepare $shellPrepare -PngName $shellPng -TabRegions @('NavList','NavSettingsList') -ScrollOwners @('ModelsSwitchList')
                 }catch{Check $false "Shell renders at ${label}: $($_.Exception.Message)";continue}
                 $diagText=''
                 if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
@@ -840,7 +1096,28 @@ foreach($pageId in 'Home','Tools','Connect','Models'){
     }
     Write-Host ('INFO: Shell with {0} render of 12 cases took {1:N1} s' -f $pageId,$pageSw.Elapsed.TotalSeconds)
 }
-Write-Host ('INFO: Shell render of 48 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
+Write-Host ('INFO: Shell render of 60 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
+
+# ---- The clipped rule's evidence, per device scale and text scale, over EVERY render case of this run (the harness records each case; the derivation of the
+# bound is above Get-UiTextGapBound). For each examined text block the gap is: the unrounded clone's size minus the live block's desired size without margin.
+# A gap above the bound is the clipped problem itself, so it fails the clean check of its case (the two planted pages, Test.Clipped and Test.ClippedButton,
+# show one each by design). The checks here fail the run when the bound's own premise does not hold: a layout-rounded live size off its device-pixel grid, or
+# a block that is above the bound and was not reported. A clone below the bound cannot cause a false clipped report; it is printed with its numbers, and it
+# fails the run on the sample page (above), where every caption is plain text.
+$gapRows=@(Get-UiTextGapSummary $script:UiRenderTextGapLog)
+foreach($row in $gapRows){
+    Write-Host ('INFO: text gap '+[string]$row['line'])
+    foreach($note in @($row['notes'])){Write-Host ('INFO: text gap note '+[string]$note)}
+    $at="device scale $($row['scale']) and text scale $($row['textScale'])"
+    $seen=[int]$row['nowrap']['n']+[int]$row['wrap']['n']
+    Check ($seen -gt 0 -and [double]$row['bound'] -gt 0) "the text gap was measured at $at (blocks $seen, bound $($row['bound']))"
+    Check ([int]$row['offGrid'] -eq 0) "every layout-rounded live text size is on its own device-pixel grid at $at (off the grid: $($row['offGrid']))"
+    $highest=[double]0
+    foreach($kind in 'nowrap','wrap'){foreach($axis in 'maxW','maxH'){if($null -ne $row[$kind][$axis] -and [double]$row[$kind][$axis] -gt $highest){$highest=[double]$row[$kind][$axis]}}}
+    Check ($highest -le [double]$row['bound']) "no text block is above the derived bound without being reported clipped at $at (highest gap $highest, bound $($row['bound']))"
+}
+$gapPairs=@($matrix|ForEach-Object{"$([double]$_.scale)|$([double]$_.textScale)"}|Sort-Object -Unique)
+Check ($gapRows.Count -eq $gapPairs.Count -and $gapRows.Count -eq 13) "the text gap summary covers the 13 device scale and text scale pairs of the matrix (rows $($gapRows.Count), pairs $($gapPairs.Count))"
 
 # PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
@@ -849,7 +1126,8 @@ function Get-RenderPngCount([string]$Prefix){
 Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
     'FastLlm.Models'=40;'FastLlm.ModelsEmpty'=6;'FastLlm.ModelsReading'=3
-    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12}
+    'FastLlm.Settings'=40;'FastLlm.SettingsKeyOn'=6;'FastLlm.SettingsKeyOff'=6;'FastLlm.SettingsRunning'=6;'FastLlm.SettingsUnavailable'=6;'FastLlm.SettingsReading'=3
+    'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12;'FastLlm.ShellSettings'=12}
 foreach($prefix in $pngExpect.Keys){
     $got=Get-RenderPngCount $prefix
     Check ($got -eq $pngExpect[$prefix]) ("the render folder holds $($pngExpect[$prefix]) $prefix PNGs written by this run (got $got)")
