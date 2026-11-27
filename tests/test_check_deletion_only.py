@@ -107,6 +107,14 @@ class DeletionOnlyTests(unittest.TestCase):
         code, out, _ = self.check(old, new)
         self.assertEqual(code, 1, out)
 
+    def test_deleting_the_changelog_file_fails(self):
+        # The exception allows only added lines: deleting CHANGELOG.md outright is not a deletion the flip may make.
+        old = self.commit({"CHANGELOG.md": CHANGELOG_OLD, "a.txt": BODY}, "old")
+        new = self.commit({"CHANGELOG.md": None}, "new")
+        code, out, _ = self.check(old, new)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL CHANGELOG.md: deleted (the exception allows only added lines)", out)
+
     def test_changelog_deleted_line_elsewhere_fails_even_with_an_addition_under_unreleased(self):
         old = self.commit({"CHANGELOG.md": CHANGELOG_OLD}, "old")
         edited = CHANGELOG_OLD.replace("- released\n", "").replace("- first\n", "- first\n- second\n")
