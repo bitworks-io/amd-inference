@@ -2567,6 +2567,31 @@ function Invoke-P21-TwoWay {
     $els.ModelsModelBox.SelectedIndex = 1
     Invoke-Pump 50
     Check ([int]$script:modelBox.SelectedIndex -eq 1 -and ($script:p21Events['model'] - $model0) -eq 1) 'P21 a model pick reaches the adapter once' "adapterIndex=$($script:modelBox.SelectedIndex) events=$($script:p21Events['model'] - $model0)"
+    # The drop-down popup is its own window, so its surface must be opaque (FastLlm.FlyoutBrush), light and dark: the template's PART_Popup child Border
+    $mergedDicts = $f.Window.Resources.MergedDictionaries
+    $origDict = $mergedDicts[0]
+    $modelBoxEl = $els.ModelsModelBox
+    foreach ($popTheme in 'light', 'dark') {
+        $popAlpha = -1; $popKind = 'none'
+        try {
+            $mergedDicts.Clear()
+            $mergedDicts.Add((New-FastLlmUiThemeDictionary -Theme $popTheme -AccentPair (Get-FastLlmUiAccentPair $null) -TextScale 1.0))
+            $null = $modelBoxEl.ApplyTemplate()
+            $popup = $modelBoxEl.Template.FindName('PART_Popup', $modelBoxEl)
+            $modelBoxEl.IsDropDownOpen = $true
+            Invoke-Pump 150
+            $popBorder = $null; if ($null -ne $popup) { $popBorder = $popup.Child }
+            if ($popBorder -is [System.Windows.Controls.Border] -and $popBorder.Background -is [System.Windows.Media.SolidColorBrush]) { $popKind = 'SolidColorBrush'; $popAlpha = [int]$popBorder.Background.Color.A }
+        }
+        finally {
+            $modelBoxEl.IsDropDownOpen = $false
+            Invoke-Pump 50
+        }
+        Check ($popKind -ceq 'SolidColorBrush' -and $popAlpha -eq 255) "P21 the Models model drop-down popup surface is an opaque SolidColorBrush in the $popTheme theme" "kind=$popKind alpha=$popAlpha"
+    }
+    $mergedDicts.Clear()
+    $mergedDicts.Add($origDict)
+    Invoke-Pump 50
     # The context box: typed 40000 and committed with Enter becomes 32768; abc reverts; Up from 32000 steps to 32768
     $ctx = $els.ModelsContextBox
     $ctx.Text = '40000'

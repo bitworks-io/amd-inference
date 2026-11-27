@@ -1378,6 +1378,47 @@ foreach($plant in $stylePlants){
     $mutated=$shellLf.Replace([string]$plant.Old,[string]$plant.New)
     Check ((Get-StylePinFailures $mutated).Count -ge 1) "self-check: a style mutant is flagged ($($plant.Name))"
 }
+# ===== Opaque flyout pin: a popup is its own window, so its surface must not be the translucent Card =====
+# Every <Popup> Border and every ContextMenu / ToolTip template in src/FastLlm.UiFluent*.ps1 paints FastLlm.FlyoutBrush, never FastLlm.CardBrush; the Models and Settings
+# drop-downs all use the one FastLlm.ComboBoxStyle that owns the popup. Cards on the page itself keep CardBrush.
+function Get-FlyoutPinFailures([hashtable]$Sources){
+    $fails=New-Object System.Collections.ArrayList
+    $popups=0
+    foreach($name in $Sources.Keys){
+        $t=[string]$Sources[$name]
+        foreach($pm in [regex]::Matches($t,'(?s)<Popup\b.*?</Popup>')){
+            $popups++
+            $b=[regex]::Match($pm.Value,'<Border\b[^>]*?\sBackground="([^"]*)"')
+            if(-not $b.Success -or $b.Groups[1].Value -cne '{DynamicResource FastLlm.FlyoutBrush}'){[void]$fails.Add("$name`: a Popup Border does not use FastLlm.FlyoutBrush")}
+            if($pm.Value.Contains('FastLlm.CardBrush')){[void]$fails.Add("$name`: a Popup uses FastLlm.CardBrush")}
+        }
+        foreach($tm in [regex]::Matches($t,'(?s)<ControlTemplate\s+TargetType="(ContextMenu|ToolTip|MenuItem)">.*?</ControlTemplate>')){
+            if($tm.Value.Contains('FastLlm.CardBrush') -or $tm.Value -cnotmatch 'Background="\{DynamicResource FastLlm\.FlyoutBrush\}"'){[void]$fails.Add("$name`: a $($tm.Groups[1].Value) template does not use FastLlm.FlyoutBrush")}
+        }
+        foreach($st in [regex]::Matches($t,'(?s)<Style\b[^>]*TargetType="(ContextMenu|ToolTip)"[^>]*>.*?</Style>')){
+            if($st.Value.Contains('FastLlm.CardBrush')){[void]$fails.Add("$name`: a $($st.Groups[1].Value) style uses FastLlm.CardBrush")}
+        }
+        foreach($cm in [regex]::Matches($t,"(?s)ContextMenu[^\r\n]*\r?\n[^\r\n]*SetResourceReference[^\r\n]*'FastLlm\.CardBrush'")){[void]$fails.Add("$name`: a ContextMenu is painted with FastLlm.CardBrush")}
+    }
+    if($popups -lt 1){[void]$fails.Add('no Popup was found in the Fluent sources')}
+    return ,@($fails)
+}
+$flyoutSources=@{}
+foreach($f in Get-ChildItem -Path (Join-Path $root 'src') -Filter 'FastLlm.UiFluent*.ps1'){$flyoutSources[$f.Name]=[System.IO.File]::ReadAllText($f.FullName)}
+$flyoutFails=Get-FlyoutPinFailures $flyoutSources
+foreach($pr in $flyoutFails){Write-Host "FINDING: $pr"}
+Check ($flyoutFails.Count -eq 0) 'every Fluent popup, context menu and tooltip surface uses the opaque FastLlm.FlyoutBrush'
+Check ($flyoutSources['FastLlm.UiFluentShell.ps1'] -cmatch '(?s)<Popup x:Name="PART_Popup".*?<Border Background="\{DynamicResource FastLlm\.FlyoutBrush\}"') 'the ComboBox popup Border paints FastLlm.FlyoutBrush'
+$mutShell=$flyoutSources.Clone(); $mutShell['FastLlm.UiFluentShell.ps1']=$flyoutSources['FastLlm.UiFluentShell.ps1'].Replace('<Border Background="{DynamicResource FastLlm.FlyoutBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"','<Border Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"')
+Check ($mutShell['FastLlm.UiFluentShell.ps1'] -cne $flyoutSources['FastLlm.UiFluentShell.ps1'] -and (Get-FlyoutPinFailures $mutShell).Count -ge 1) 'mutation check: CardBrush put back into the popup is flagged'
+$mutMenu=$flyoutSources.Clone(); $mutMenu['FastLlm.UiFluentHome.ps1']=$flyoutSources['FastLlm.UiFluentHome.ps1']+"`n<ControlTemplate TargetType=`"ContextMenu`"><Border Background=`"{DynamicResource FastLlm.CardBrush}`"/></ControlTemplate>"
+Check ((Get-FlyoutPinFailures $mutMenu).Count -ge 1) 'mutation check: a ContextMenu template on CardBrush is flagged'
+$settingsSrc=$flyoutSources['FastLlm.UiFluentSettings.ps1']
+$settingsCombos=@([regex]::Matches($settingsSrc,'<ComboBox\b[^>]*>'))
+Check ($settingsCombos.Count -ge 4 -and @($settingsCombos|Where-Object{$_.Value -cnotmatch 'Style="\{DynamicResource FastLlm\.ComboBoxStyle\}"'}).Count -eq 0) 'the Settings drop-downs all use FastLlm.ComboBoxStyle (the one popup)'
+Check ($flyoutSources['FastLlm.UiFluentModels.ps1'] -cmatch 'x:Name="ModelsModelBox"[^>]*Style="\{DynamicResource FastLlm\.ComboBoxStyle\}"') 'ModelsModelBox uses the same FastLlm.ComboBoxStyle'
+Check ((Get-FlyoutPinFailures @{x='<Popup x:Name="P"><Border Background="{DynamicResource FastLlm.CardBrush}"/></Popup>'}).Count -ge 1) 'mutation check: a bare Popup on CardBrush is flagged'
+
 # ===== PR 3c review fix: caption wrapping (a non-wrapping AccessText clips at 2.25 text scale) =====
 # The caption presenter of the CheckBox and the switch, and the selection presenter of the ComboBox, each carry a Resources dictionary whose AccessText and TextBlock styles set TextWrapping Wrap.
 function Get-WrapPinFailures([string]$ShellText){
