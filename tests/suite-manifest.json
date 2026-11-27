@@ -487,6 +487,11 @@
       "reason": "The Settings additions availability probes run for real: the Long probe (and the same probe for the Default profile at 2 requests at once) against a temporary serving-profiles.json with one long row at slots 1 (true at 1 for the matching model, false at 2, false for another model or file revision, false for an unreadable file) and the embeddings probe with no embedding model installed; pure file work through the module's own row source, no WPF, GPU, network or bench; wired in test.yml."
     },
     {
+      "suite": "ui-fluent-keeplist-tests",
+      "class": "ci",
+      "reason": "The flip-ready pins on the window script: the keep-list (a SHA-256 for every top-level item the flip leaves untouched, a modify list and a delete list so a new top-level statement fails), the allowed readers of the Window parameter, and the window title constant; pure parsing of fast-llm-ui.ps1 and the shell, with planted one-letter mutants; no WPF, GPU, network or bench; wired in test.yml."
+    },
+    {
       "suite": "ui-fluent-shell-tests",
       "class": "ci",
       "reason": "Windows-only checks of the Fluent window pieces on a real STA dispatcher: the form adapter (close guards, owner, session end), the app icon, the window message hooks; skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
