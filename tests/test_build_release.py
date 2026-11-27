@@ -302,6 +302,18 @@ class ProductToolsRealTreeTests(unittest.TestCase):
             self.assertIn(rel, self.members, rel + " is not in the package file list")
             self.assertIn(rel, manifest, rel + " is not in MANIFEST.json")
 
+    def test_package_includes_fluent_window_scripts(self):
+        # The Fluent window's shell and page scripts are dot-sourced by name from the installed src/ folder, so a package that dropped one (the Models page included)
+        # would break the window the same way a missing C# file would.
+        manifest = {e["path"] for e in json.loads(self.members["MANIFEST.json"])["files"]}
+        on_disk = sorted(p.name for p in (ROOT / "src").glob("FastLlm.UiFluent*.ps1"))
+        for name in ("FastLlm.UiFluentShell.ps1", "FastLlm.UiFluentTools.ps1", "FastLlm.UiFluentConnect.ps1", "FastLlm.UiFluentModels.ps1"):
+            self.assertIn(name, on_disk, name + " is missing from src/")
+        for name in on_disk:
+            rel = "src/" + name
+            self.assertIn(rel, self.members, rel + " is not in the package file list")
+            self.assertIn(rel, manifest, rel + " is not in MANIFEST.json")
+
     def test_packaged_tools_equal_the_allowlist(self):
         packaged = sorted(n[len("tools/"):] for n in self.members if n.startswith("tools/"))
         self.assertEqual(packaged, self.allow)

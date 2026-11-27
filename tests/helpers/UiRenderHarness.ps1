@@ -110,6 +110,11 @@ function Get-UiVisibleRect($Text, $Stop) {
     return $visible
 }
 
+# Names of controls (a ListBox) whose own viewer a case treats as a content scroller (set by Invoke-UiRenderCase -ScrollOwners; empty by default, so every
+# existing case is judged exactly as before). The Models switch list scrolls its long rows inside a fixed-height ListBox: a row below its fold or beyond its width
+# is scrolled, not clipped or outside.
+$script:UiRenderScrollOwners = @()
+
 # The scroll presenter an element scrolls in: the nearest ScrollContentPresenter above it that belongs to an authored ScrollViewer (one that is not a part of
 # another control's template, as a TextBox's own is), else $Default. A page with a ScrollViewer of its own is judged against that viewer's content, not the
 # harness wrapper's. The ScrollViewer is the presenter's TemplatedParent.
@@ -119,6 +124,7 @@ function Get-UiScrollPresenter($Element, $Default) {
         if ($node -is [System.Windows.Controls.ScrollContentPresenter]) {
             $owner = $node.TemplatedParent
             if ($owner -is [System.Windows.Controls.ScrollViewer] -and $null -eq $owner.TemplatedParent) { return $node }
+            if ($owner -is [System.Windows.Controls.ScrollViewer] -and $owner.TemplatedParent -is [System.Windows.FrameworkElement] -and (@($script:UiRenderScrollOwners) -ccontains [string]$owner.TemplatedParent.Name)) { return $node }
         }
         $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
     }
@@ -213,8 +219,11 @@ function Invoke-UiRenderCase {
         # Optional: names the PNG instead of $Name, so two states of one page (same size, theme and scales) never write the same file.
         [string]$PngName = '',
         # Optional: names of region roots (in order). Stops inside a region are one contiguous block, in that order, each in reading order; the rest come last.
-        [string[]]$TabRegions = @()
+        [string[]]$TabRegions = @(),
+        # Optional: names of ListBoxes whose own viewer is a content scroller for the clipped and outside rules (see $script:UiRenderScrollOwners).
+        [string[]]$ScrollOwners = @()
     )
+    $script:UiRenderScrollOwners = @($ScrollOwners)
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $theme = [string]$Case.theme
     $scale = [double]$Case.scale
@@ -240,6 +249,12 @@ function Invoke-UiRenderCase {
     $sv.UseLayoutRounding = $true
     $sv.Background = $dict['FastLlm.LayerBrush']
     $sv.Content = $page
+    # In the app a page inherits its font, size and colour from the Window (FontFamily, FontSize and Foreground there are the same three resources). The host
+    # takes them from the case's theme dictionary, shared with the page, so body text in every case scales with the text scale the way it does in the app.
+    $sv.Resources = $dict
+    $sv.SetResourceReference([System.Windows.Documents.TextElement]::FontSizeProperty, 'FastLlm.BodySize')
+    $sv.SetResourceReference([System.Windows.Documents.TextElement]::FontFamilyProperty, 'FastLlm.TextFont')
+    $sv.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
     [System.Windows.Media.VisualTreeHelper]::SetRootDpi($sv, (New-Object System.Windows.DpiScale($scale, $scale)))
     $sv.Measure((New-Object System.Windows.Size($width, $height)))
     $sv.Arrange((New-Object System.Windows.Rect(0, 0, $width, $height)))
@@ -332,6 +347,11 @@ function Invoke-UiRenderCase {
         $scroller = Get-UiScrollPresenter $el $presenter
         $scrollOwner = $scroller.TemplatedParent
         $elViewportWidth = [double]$scrollOwner.ViewportWidth
+        # Only a viewer the case names (-ScrollOwners, a ListBox that scrolls sideways) holds a row wider than its viewport in its extent; every other viewer is judged as before.
+        $ownerParent = $scrollOwner.TemplatedParent
+        if ($ownerParent -is [System.Windows.FrameworkElement] -and (@($script:UiRenderScrollOwners) -ccontains [string]$ownerParent.Name) -and $scrollOwner.HorizontalScrollBarVisibility -ne [System.Windows.Controls.ScrollBarVisibility]::Disabled) {
+            $elViewportWidth = [Math]::Max($elViewportWidth, [double]$scrollOwner.ExtentWidth)
+        }
         # The content presenter stretches a short page to the viewport, so the bottom limit is the larger of the extent and the viewport.
         $elBottomLimit = [Math]::Max([double]$scrollOwner.ExtentHeight, [double]$scrollOwner.ViewportHeight)
         $r = Get-UiRelativeRect $el $scroller
@@ -427,17 +447,27 @@ function Invoke-UiRenderCase {
     $titleFontSize = $null
     $bodyFontSize = $null
     $titleForeground = ''
+    $inheritedFontSize = $null
+    $inheritedFontFamily = ''
+    $inheritedForeground = ''
     foreach ($el in $all) {
         if ($el -is [System.Windows.FrameworkElement] -and $el -is [System.Windows.Controls.TextBlock]) {
             if ($el.Name -ceq 'TitleText') {
                 $titleFontSize = [double]$el.FontSize
                 if ($el.Foreground -is [System.Windows.Media.SolidColorBrush]) { $titleForeground = $el.Foreground.Color.ToString() }
             } elseif ($el.Name -ceq 'BodyText') { $bodyFontSize = [double]$el.FontSize }
+            elseif ($el.Name -ceq 'InheritedText') {
+                # a text block with no size, family or colour of its own: what the host hands down
+                $inheritedFontSize = [double]$el.FontSize
+                $inheritedFontFamily = [string]$el.FontFamily.Source
+                if ($el.Foreground -is [System.Windows.Media.SolidColorBrush]) { $inheritedForeground = $el.Foreground.Color.ToString() }
+            }
         }
     }
     return @{
         problems = [string[]]@($problems.ToArray()); diagnostics = [string[]]@($diagnostics.ToArray()); png = $png
         titleFontSize = $titleFontSize; bodyFontSize = $bodyFontSize; titleForeground = $titleForeground
+        inheritedFontSize = $inheritedFontSize; inheritedFontFamily = $inheritedFontFamily; inheritedForeground = $inheritedForeground
         labeledInputs = $labeledInputs; textBlocks = $textBlocksSeen; namedControls = $namedControlsSeen; tabStops = @($stops).Count; unmappedRects = $unmappedRects
     }
 }

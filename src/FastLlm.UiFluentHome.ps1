@@ -34,6 +34,18 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     WhyAttached          = 'Already attached to the background run'
     WhyNoBackgroundRun   = 'No background run is ready to attach'
     WhyNotRunning        = 'Start FastLLM first'
+    # PR 3b: the automation name of the Copy full output button in the Activity header (the failure bar's keeps the adapter caption).
+    CopyFullOutputActivity = 'Copy full output (Activity)'
+    # PR 3b: the Models page headings, the Remove and spin button names and the three greyed-reason lines.
+    ModelsStartWith      = 'Model to start with'
+    ModelsStartOptions   = 'Start options'
+    ModelsComponents     = 'Engine components'
+    RemoveFormat         = 'Remove {0}'
+    SpinUp               = 'Increase'
+    SpinDown             = 'Decrease'
+    WhyNoPreview         = 'Start once to preview a setup first'
+    WhyBackgroundRun     = 'Available when the background run has ended'
+    WhyNoLeftovers       = 'No leftover partial downloads were found'
 }
 
 # Icon glyphs (Segoe Fluent Icons, falling back to Segoe MDL2 Assets: the same code points exist in both). They are drawn, never read.
@@ -41,6 +53,12 @@ $script:FastLlmUiFluentGlyphs = @{
     Home = 0xE80F; Models = 0xE8F1; Connect = 0xE71B; Tools = 0xE90F; Settings = 0xE713; Copy = 0xE8C8; More = 0xE70D
     StepDone = 0xE73E; StepActive = 0xE768; StepWait = 0xE739; StepAttention = 0xE7BA
 }
+
+# Where the Activity header's Copy full output button is hosted. The button is built in code (registered XAML is constant markup only) and put in the slot
+# this value names. 'Tag' (the plan's first choice) puts it in the Expander's Tag, which the shell's Expander style presents beside the toggle. If the Windows
+# check (pages step P16) shows the Tag hosting fails, change this ONE value to 'Body': the button becomes the first child of the Expander's body (the named
+# ActivityBody panel), right-aligned above the Activity box (the tab order stays toggle, copy, box). Nothing else changes.
+$script:FastLlmUiFluentActivityCopySlot = 'Tag'
 
 # Home reads its markup text only from the string table above and from the adapters; the markup itself carries no visible text.
 $script:FastLlmUiXaml['FastLlm.Home'] = @'
@@ -105,7 +123,7 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <TextBlock x:Name="WillStartText" Grid.Column="0" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
-          <Button x:Name="ChangeButton" Grid.Column="1" IsEnabled="False" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>
+          <Button x:Name="ChangeButton" Grid.Column="1" Style="{DynamicResource FastLlm.LinkButtonStyle}"/>
         </Grid>
         <TextBlock x:Name="NotesText" Margin="0,12,0,0" TextWrapping="Wrap"/>
         <WrapPanel Margin="0,4,0,0">
@@ -127,10 +145,12 @@ $script:FastLlmUiXaml['FastLlm.Home'] = @'
       <Expander.Header>
         <TextBlock x:Name="ActivityHeader" FontWeight="{DynamicResource FastLlm.BodyStrongWeight}"/>
       </Expander.Header>
-      <TextBox x:Name="ActivityBox" Margin="0,8,0,0" FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Height="220" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
-               VerticalScrollBarVisibility="Auto" FontFamily="{DynamicResource FastLlm.MonoFont}"
-               Background="{DynamicResource FastLlm.CardBrush}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"
-               BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
+      <StackPanel x:Name="ActivityBody">
+        <TextBox x:Name="ActivityBox" Margin="0,8,0,0" FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Height="220" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+                 VerticalScrollBarVisibility="Auto" FontFamily="{DynamicResource FastLlm.MonoFont}"
+                 Background="{DynamicResource FastLlm.CardBrush}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"
+                 BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
+      </StackPanel>
     </Expander>
   </StackPanel>
   </Grid>
@@ -161,7 +181,7 @@ function Get-FastLlmUiFluentHomeBindings {
         @{ Name = 'output';                Element = 'ActivityBox';         Mode = 'Output';    Event = '';            Flags = @() },
         @{ Name = 'openChatButton';        Element = 'OpenChatButton';      Mode = 'Content';   Event = 'Click';       Flags = @() },
         @{ Name = 'connectButton';         Element = 'ConnectButton';       Mode = 'Content';   Event = '';            Flags = @() },
-        @{ Name = 'switchButton';          Element = 'SwitchButton';        Mode = 'Content';   Event = 'Click';       Flags = @() },
+        @{ Name = 'switchButton';          Element = 'SwitchButton';        Mode = 'Content';   Event = '';            Flags = @() },
         @{ Name = 'switchLabel';           Element = 'SwitchLine';          Mode = 'TextBlock'; Event = '';            Flags = @() }
     )
 }
@@ -181,7 +201,7 @@ function New-FastLlmUiFluentSink {
     param(
         [Parameter(Mandatory = $true)] $Adapter,
         [Parameter(Mandatory = $true)] $Element,
-        [Parameter(Mandatory = $true)][ValidateSet('TextBlock', 'Content', 'Header', 'Output', 'Visual')][string] $Mode,
+        [Parameter(Mandatory = $true)][ValidateSet('TextBlock', 'Content', 'Header', 'Output', 'Visual', 'Combo', 'Number', 'Input')][string] $Mode,
         [string[]] $Flags = @()
     )
     $convert = ${function:ConvertTo-FastLlmUiAccessText}
@@ -190,6 +210,24 @@ function New-FastLlmUiFluentSink {
     $noText = ($Flags -contains 'NoText')
     $sink = {
         param($Property, $Value)
+        # The two-way modes. An element write that came from the element itself (FromElement) is skipped, and so is one the element already shows.
+        if ($Mode -ceq 'Combo') {
+            if ($Adapter.__state['FromElement']) { return }
+            if ([string] $Property -ceq 'SelectedIndex') { if ($Element.SelectedIndex -ne [int] $Value) { $Element.SelectedIndex = [int] $Value }; return }
+            if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
+            if ([string] $Property -ceq 'Text') { return }
+        }
+        if ($Mode -ceq 'Number') {
+            if ($Adapter.__state['FromElement']) { return }
+            if ([string] $Property -ceq 'Value') { $shown = ([decimal] $Value).ToString('F0'); if ($Element.Text -cne $shown) { $Element.Text = $shown }; return }
+            if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
+            if ([string] $Property -ceq 'Text') { return }
+        }
+        if ($Mode -ceq 'Input') {
+            if ($Adapter.__state['FromElement']) { return }
+            if ([string] $Property -ceq 'Text') { if ($Element.Text -cne [string] $Value) { $Element.Text = [string] $Value }; return }
+            if ([string] $Property -ceq 'Enabled') { $Element.IsEnabled = [bool] $Value; return }
+        }
         switch -CaseSensitive ([string] $Property) {
             'Text' {
                 if ($noText -or $Mode -ceq 'Visual') { break }
@@ -230,7 +268,52 @@ function Connect-FastLlmUiFluentControl {
     $sink = New-FastLlmUiFluentSink -Adapter $Adapter -Element $Element -Mode $Mode -Flags $Flags
     # Also joins an adapter that is already bound (each element keeps its own Mode and Flags); without it a second bind throws.
     Add-FastLlmUiAdapterSink -Adapter $Adapter -Sink $sink -Also:$Also
-    foreach ($property in 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    if ($Mode -ceq 'Combo') {
+        # Fill the element's items once from the adapter's strings, then push the selection.
+        foreach ($item in $Adapter.Items) { $null = $Element.Items.Add([string] $item) }
+        foreach ($property in 'SelectedIndex', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
+    elseif ($Mode -ceq 'Number') {
+        foreach ($property in 'Value', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
+    else {
+        foreach ($property in 'Text', 'Enabled', 'Visible') { & $sink $property $Adapter.$property }
+    }
+    $setFrom = ${function:Set-FastLlmUiAdapterFromElement}
+    if ($Mode -ceq 'Combo') {
+        $Element.Add_SelectionChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'SelectedIndex' -Value ([int] $Element.SelectedIndex) }.GetNewClosure())
+    }
+    elseif ($Mode -ceq 'Input') {
+        $Element.Add_TextChanged({ param($sender, $routed) & $setFrom -Adapter $Adapter -Property 'Text' -Value ([string] $Element.Text) }.GetNewClosure())
+    }
+    elseif ($Mode -ceq 'Number') {
+        # Commits the typed text through the WinForms clamp (minimum 0; Maximum and Increment come from the adapter), or steps first when
+        # $direction is Up or Down. The shown text is then normalised to the committed value. The page Leave calls the same block (kept on the adapter).
+        $parse = ${function:ConvertTo-FastLlmUiNumericValue}
+        $step = ${function:Step-FastLlmUiNumericValue}
+        $commit = {
+            param($direction)
+            $maximum = [decimal] $Adapter.Maximum
+            $value = & $parse -Text ([string] $Element.Text) -Current ([decimal] $Adapter.Value) -Minimum ([decimal] 0) -Maximum $maximum
+            if ($direction -ceq 'Up') { $value = & $step -Current $value -Increment ([decimal] $Adapter.Increment) -Minimum ([decimal] 0) -Maximum $maximum -Up }
+            elseif ($direction -ceq 'Down') { $value = & $step -Current $value -Increment ([decimal] $Adapter.Increment) -Minimum ([decimal] 0) -Maximum $maximum }
+            & $setFrom -Adapter $Adapter -Property 'Value' -Value $value
+            $shown = $value.ToString('F0')
+            if ($Element.Text -cne $shown) { $Element.Text = $shown }
+        }.GetNewClosure()
+        $Adapter.__state['CommitEdit'] = $commit
+        # PreviewKeyDown, not KeyDown: a TextBox's class handler marks Up and Down handled (caret moves) before instance KeyDown handlers run.
+        # Up and Down step like the WinForms spin box and are marked handled here; Return commits and is left unhandled, as the WinForms box leaves it.
+        $Element.Add_PreviewKeyDown({
+                param($sender, $routed)
+                $direction = $null
+                if ($routed.Key -eq [System.Windows.Input.Key]::Return) { $direction = '' }
+                elseif ($routed.Key -eq [System.Windows.Input.Key]::Up) { $direction = 'Up'; $routed.Handled = $true }
+                elseif ($routed.Key -eq [System.Windows.Input.Key]::Down) { $direction = 'Down'; $routed.Handled = $true }
+                if ($null -ne $direction) { & $commit $direction }
+            }.GetNewClosure())
+        $Element.Add_LostKeyboardFocus({ param($sender, $routed) & $commit '' }.GetNewClosure())
+    }
     if ($Event) {
         $invoke = ${function:Invoke-FastLlmUiAdapterEvent}
         $adapterEvent = $Event
@@ -264,7 +347,7 @@ function Initialize-FastLlmUiFluentHome {
     foreach ($name in 'HeaderGrid', 'TitleText', 'NoticeText', 'TrayButton', 'StatusCard', 'StatusDot', 'StatusHeadline', 'StartSplit', 'InstallButton',
         'MoreStartButton', 'StopButton', 'AttachButton', 'StatusDetail', 'BackgroundLine', 'HomeProgress', 'StepsBlock', 'StepsSummary', 'StepsPanel', 'FactsPanel', 'AddressLabel',
         'AddressText', 'CopyButton', 'WillStartPanel', 'WillStartText', 'ChangeButton', 'NotesText', 'ResultsLink', 'BarLink', 'QuickPanel', 'QuickHeading',
-        'OpenChatButton', 'ConnectButton', 'SwitchButton', 'SwitchLine', 'ActivityExpander', 'ActivityHeader', 'ActivityBox') {
+        'OpenChatButton', 'ConnectButton', 'SwitchButton', 'SwitchLine', 'ActivityExpander', 'ActivityHeader', 'ActivityBody', 'ActivityBox') {
         $Els[$name] = Get-FastLlmUiFluentElement -Root $Page -Name $name
     }
 
@@ -316,8 +399,6 @@ function Initialize-FastLlmUiFluentHome {
 
     $Els['AddressLabel'].Text = [string] $s.Address
     $Els['ChangeButton'].Content = [string] $s.Change
-    $Els['ChangeButton'].ToolTip = [string] $s.ComingLater
-    [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els['ChangeButton'], $true)
     $Els['QuickHeading'].Text = [string] $s.QuickActions
 
     # The only input on Home is the read-only Activity box: explicit name and LabeledBy, both from one constant.
@@ -328,6 +409,21 @@ function Initialize-FastLlmUiFluentHome {
     [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els['OpenChatButton'], $true)
     # Connect an app: a plain handler (the row has no adapter event), so the page opens once Connect is registered and the dialog stays until then.
     $Els['ConnectButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentHomeConnect })
+    # Switch and Change go to the Models page (plain handlers; the Switch row has no adapter event, so today's picker dialog never opens from here).
+    $Els['SwitchButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentHomeSwitch })
+    $Els['ChangeButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentHomeChange })
+    # The Activity header's Copy full output button is built in code, with the failure bar link's style; its caption is bound by the shell row, its name is its own.
+    $copy = New-Object System.Windows.Controls.Button
+    $copy.Name = 'ActivityCopyButton'
+    $copy.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.LinkButtonStyle')
+    [System.Windows.Automation.AutomationProperties]::SetName($copy, [string] $s.CopyFullOutputActivity)
+    if ($script:FastLlmUiFluentActivityCopySlot -ceq 'Body') {
+        $copy.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
+        $copy.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+        $Els['ActivityBody'].Children.Insert(0, $copy)
+    }
+    else { $Els['ActivityExpander'].Tag = $copy }
+    $Els['ActivityCopyButton'] = $copy
     return $Els
 }
 
@@ -344,6 +440,33 @@ function Invoke-FastLlmUiFluentHomeConnect {
     [CmdletBinding()] param()
     if (Test-FastLlmUiFluentPageRegistered -Id 'Connect') { $null = Set-FastLlmUiFluentPage -Id 'Connect' -FocusNav }
     else { Invoke-FastLlmUiAdapterEvent -Adapter $script:connectButton -Event 'Click' }
+}
+
+# Switch model on Home. Once the Models page is registered it opens that page and puts the focus on its pane item; until then (Task 6 registers it)
+# it raises the adapter click, which runs the orchestration's picker dialog exactly as before.
+function Invoke-FastLlmUiFluentHomeSwitch {
+    [CmdletBinding()] param()
+    if (Test-FastLlmUiFluentPageRegistered -Id 'Models') { $null = Set-FastLlmUiFluentPage -Id 'Models' -FocusNav }
+    else { Invoke-FastLlmUiAdapterEvent -Adapter $script:switchButton -Event 'Click' }
+}
+
+# Change (the model to start with). Once the Models page is registered it opens that page and focuses the model box; until then it does nothing.
+function Invoke-FastLlmUiFluentHomeChange {
+    [CmdletBinding()] param()
+    if (-not (Test-FastLlmUiFluentPageRegistered -Id 'Models')) { return }
+    $null = Set-FastLlmUiFluentPage -Id 'Models'
+    $box = $script:FastLlmUiFluent['Els']['ModelsModelBox']
+    $nav = $script:FastLlmUiFluent['Els']['NavModels']
+    # Keyboard focus is never lost: a model box that is missing or disabled (a run is active), or one that cannot take the focus, leaves it on the Models pane item.
+    if ($null -eq $box -or -not [bool] $box.IsEnabled) {
+        if ($null -ne $nav) { $null = $nav.Focus() }
+        return
+    }
+    if (-not [bool] $box.Focus()) {
+        # The page was only just attached: focus once its layout has run, and fall back to the pane item if the box still cannot take it.
+        $focusLater = { if (-not [bool] $box.Focus() -and $null -ne $nav) { $null = $nav.Focus() } }.GetNewClosure()
+        $null = $box.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input, [Action] $focusLater)
+    }
 }
 
 # One 250 ms refresh of the card from the state the window already holds. The text of the detail line comes from the statusLabel adapter's sink.

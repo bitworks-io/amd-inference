@@ -170,3 +170,46 @@ function Invoke-FastLlmUiAdapterEvent {
     }
     foreach($h in @($list)){& $h $Adapter $EventArgs}
 }
+
+# The WinForms NumericUpDown ParseEditText rule: parse with the current culture (NumberStyles.Number, so '1,024' is 1024 and '1500.7' keeps
+# its fraction), clamp to [Minimum, Maximum]; text that does not parse leaves the Current value. No rounding: the display is ToString('F0').
+function ConvertTo-FastLlmUiNumericValue {
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$Text,
+        [Parameter(Mandatory)][decimal]$Current,
+        [Parameter(Mandatory)][decimal]$Minimum,
+        [Parameter(Mandatory)][decimal]$Maximum
+    )
+    $parsed=[decimal]0
+    if(-not [decimal]::TryParse([string]$Text,[Globalization.NumberStyles]::Number,[Globalization.CultureInfo]::CurrentCulture,[ref]$parsed)){return [decimal]$Current}
+    return [decimal][Math]::Min($Maximum,[Math]::Max($Minimum,$parsed))
+}
+
+# One spin step (Up or Down key, spin button), clamped.
+function Step-FastLlmUiNumericValue {
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory)][decimal]$Current,
+        [Parameter(Mandatory)][decimal]$Increment,
+        [Parameter(Mandatory)][decimal]$Minimum,
+        [Parameter(Mandatory)][decimal]$Maximum,
+        [switch]$Up
+    )
+    if($Up){$next=$Current+$Increment}else{$next=$Current-$Increment}
+    return [decimal][Math]::Min($Maximum,[Math]::Max($Minimum,$next))
+}
+
+# The one element-to-adapter write. FromElement is set for the duration (the sink then skips the element write, so nothing echoes back) and
+# restored in finally; the member's setter raises the change event once when the value changed.
+function Set-FastLlmUiAdapterFromElement {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Adapter,[Parameter(Mandatory)][string]$Property,[AllowNull()]$Value)
+    $st=$Adapter.__state
+    $previous=$false; if($st.ContainsKey('FromElement')){$previous=[bool]$st['FromElement']}
+    $st['FromElement']=$true
+    try{$Adapter.$Property=$Value}
+    finally{$st['FromElement']=$previous}
+}

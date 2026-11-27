@@ -102,7 +102,7 @@ Check $threw 'an unknown UpdateKind is refused'
 
 
 # Greyed-reason codes: pure codes, '' exactly when the control state is true, over all 2,230 rows.
-$reasonActions=@('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck')
+$reasonActions=@('diagnostics','driverGuidance','saveBundle','backgroundCheck','backgroundAttach','apiCheck','chooseSetup','startInputs')
 function Get-ReasonPropertyFailures([string]$Fn,[switch]$First){
     $bad=New-Object System.Collections.ArrayList
     foreach($r in $matrix){
@@ -111,7 +111,7 @@ function Get-ReasonPropertyFailures([string]$Fn,[switch]$First){
         $api=Get-FastLlmUiSnapshotAvailability -Snapshot $snap
         foreach($a in $reasonActions){
             foreach($running in @($true,$false)){
-                if($a -ceq 'apiCheck'){$enabled=[bool]($running -and $api.apiCheck)}else{if(-not $running){continue};$enabled=[bool]$states.$a}
+                if($a -ceq 'apiCheck'){$enabled=[bool]($running -and $api.apiCheck)}elseif($a -ceq 'startInputs'){if(-not $running){continue};$enabled=[bool]$states.model}else{if(-not $running){continue};$enabled=[bool]$states.$a}
                 $code=[string](& $Fn -Action $a -Snapshot $snap -ConnectRunning $running)
                 if(($code -ceq '') -ne $enabled){[void]$bad.Add($r.key+' '+$a+' running='+$running+' code='+$code+' enabled='+$enabled);if($First){return ,$bad}}
             }
@@ -121,9 +121,9 @@ function Get-ReasonPropertyFailures([string]$Fn,[switch]$First){
 }
 $reasonBad=Get-ReasonPropertyFailures 'Get-FastLlmUiGreyedReason'
 Check ($reasonBad.Count -eq 0) ('a greyed-reason code is empty exactly when the control state is true on every row (first: '+((@($reasonBad)|Select-Object -First 3) -join ' | ')+')')
-$codeSet=@('','microsoft-setup','busy','side-step','attached','no-run','not-running')
+$codeSet=@('','microsoft-setup','busy','side-step','attached','no-run','not-running','background','no-preview')
 $unknownCodes=@(foreach($r in $matrix){$s=New-RowSnapshot $r;foreach($a in $reasonActions){$c=[string](Get-FastLlmUiGreyedReason -Action $a -Snapshot $s -ConnectRunning $true);if($codeSet -cnotcontains $c){$a+':'+$c}}})
-Check ($unknownCodes.Count -eq 0) 'every greyed-reason code is one of the seven known codes'
+Check ($unknownCodes.Count -eq 0) 'every greyed-reason code is one of the nine known codes'
 
 function New-ReasonSnapshot([hashtable]$Over=@{},[string]$Background='none'){
     $p=@{Busy=$false;UpdateKind='';ChildActive=$false;Step='';RunReady=$false;SideChildActive=$false;VcBrokerActive=$false;PreviewReady=$false;SwitchGap=$false;ChatUrlSet=$false;BackgroundStopRequested=$false}
@@ -145,6 +145,18 @@ Check ((Reason 'backgroundAttach' (New-ReasonSnapshot @{} 'ready-attachable')) -
 Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true}) $false) -ceq 'not-running') 'Connect not running greys the API check with not-running'
 Check ((Reason 'apiCheck' (New-ReasonSnapshot @{}) $true) -ceq 'not-running') 'a snapshot that is not serving greys the API check with not-running'
 Check ((Reason 'apiCheck' (New-ReasonSnapshot @{RunReady=$true}) $true) -ceq '') 'a serving, running API check has no reason'
+Check ((Reason 'chooseSetup' (New-ReasonSnapshot @{VcBrokerActive=$true;Busy=$true;PreviewReady=$true})) -ceq 'microsoft-setup') 'Microsoft setup greys Choose another setup with microsoft-setup'
+Check ((Reason 'chooseSetup' (New-ReasonSnapshot @{Busy=$true;PreviewReady=$true})) -ceq 'busy') 'a busy window greys Choose another setup with busy'
+Check ((Reason 'chooseSetup' (New-ReasonSnapshot @{UpdateKind='update';PreviewReady=$true})) -ceq 'busy') 'an update run greys Choose another setup with busy'
+Check ((Reason 'chooseSetup' (New-ReasonSnapshot @{PreviewReady=$true} 'ready-attached')) -ceq 'background') 'an occupied background greys Choose another setup with background'
+Check ((Reason 'chooseSetup' (New-ReasonSnapshot @{PreviewReady=$false})) -ceq 'no-preview') 'no preview greys Choose another setup with no-preview'
+Check ((Reason 'chooseSetup' (New-ReasonSnapshot @{PreviewReady=$true})) -ceq '') 'an idle window with a preview leaves Choose another setup enabled'
+Check ((Reason 'startInputs' (New-ReasonSnapshot @{VcBrokerActive=$true;Busy=$true})) -ceq 'microsoft-setup') 'Microsoft setup greys the start inputs with microsoft-setup'
+Check ((Reason 'startInputs' (New-ReasonSnapshot @{Busy=$true})) -ceq 'busy') 'a busy window greys the start inputs with busy'
+Check ((Reason 'startInputs' (New-ReasonSnapshot @{} 'ready-attached')) -ceq 'background') 'an occupied background greys the start inputs with background'
+Check ((Reason 'startInputs' (New-ReasonSnapshot @{})) -ceq '') 'an idle window leaves the start inputs enabled'
+$modelRowsDiffer=@(foreach($r in $matrix){$st=Get-FastLlmUiControlStates -Snapshot (New-RowSnapshot $r);if(-not ($st.model -eq $st.path -and $st.model -eq $st.context -and $st.model -eq $st.bar)){$r.key}})
+Check ($modelRowsDiffer.Count -eq 0) 'the model, path, context and BAR states are equal on every row'
 # The greyed-reason function copies the attachable and requestMatches expressions of the control-state function; the copies must stay text-identical.
 $uiStateAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'src/FastLlm.UiState.ps1'),[ref]$null,[ref]$null)
 function Get-UiStateExpression([string]$Function,[string]$Variable){
@@ -179,6 +191,11 @@ function Test-ReasonMutant([string]$From,[string]$To){
 Check ((Test-ReasonMutant "if (`$bg.attachedRequestId) { return 'attached' }" "if (`$false) { return 'attached' }") -gt 0) 'mutation: dropping the attached rule fails the property'
 Check ((Test-ReasonMutant 'if ($availability.saveBundle) { return '''' }' 'if (-not $availability.saveBundle) { return '''' }') -gt 0) 'mutation: swapping the bundle availability sub-expression fails the property'
 Check ((Test-ReasonMutant 'if ($busy -or $Snapshot.ChildActive)' 'if ($busy)') -gt 0) 'mutation: dropping ChildActive from the busy rules fails the property'
+
+Check ((Test-ReasonMutant "return 'no-preview'" "return ''") -gt 0) 'mutation: dropping the no-preview code fails the property'
+Check ((Test-ReasonMutant "return 'background' }`n            if (-not `$Snapshot.PreviewReady)" "return '' }`n            if (-not `$Snapshot.PreviewReady)") -gt 0) 'mutation: dropping the chooseSetup background code fails the property'
+Check ((Test-ReasonMutant "if (Test-FastLlmUiStateOccupied -Background `$bg) { return 'background' }`n            return ''" "return ''") -gt 0) 'mutation: dropping the start-inputs background rule fails the property'
+Check ((Test-ReasonMutant "if (`$vc) { return 'microsoft-setup' }`n            if (`$busy) { return 'busy' }" "if (`$busy) { return 'busy' }") -gt 0) 'mutation: dropping the chooseSetup Microsoft rule fails the property'
 
 # The matrix has no attachable run with a case-different pending id, so this mutant is caught by the direct case row.
 $ceqFrom='-ceq [string]$bg.pendingRequestId'

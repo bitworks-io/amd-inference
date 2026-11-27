@@ -160,7 +160,7 @@ function Invoke-A3-BoxNo {
         if ($r -ne 'Yes') { $event.Cancel = $true } }).GetNewClosure())
     Show-Scn $s
     $box = @{}
-    $t = Start-BoxAnswer $cap 7 $s.Hwnd $box
+    $t = Start-BoxAnswer $cap 7 $s.Hwnd $box -FallbackId 7
     try { $form.Close() } finally { $t.Stop() }
     Invoke-Pump 100
     Check ($box.found -and -not $box.timedOut -and -not $box.hardStop) 'A3 the guard message box appeared and closed within 6 s' "found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) lastRung=$($box.rung)"
@@ -185,7 +185,7 @@ function Invoke-A4-BoxYes {
         if ($r -ne 'Yes') { $event.Cancel = $true } }).GetNewClosure())
     Show-Scn $s
     $box = @{}
-    $t = Start-BoxAnswer $cap 6 $s.Hwnd $box
+    $t = Start-BoxAnswer $cap 6 $s.Hwnd $box -FallbackId 7
     try { $form.Close() } finally { $t.Stop() }
     Invoke-Pump 150 ({ $s.Closed.n -ge 1 }).GetNewClosure()
     Check ($box.found -and $st.answer -eq 'Yes') 'A4 the same box answered Yes' "found=$($box.found) answer=$($st.answer)"
@@ -291,7 +291,7 @@ function Invoke-A10-Owner {
     foreach ($c in $cases) {
         $cap = 'FastLLM shell owner ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $box = @{}
-        $t = Start-BoxAnswer $cap $c.id $s.Hwnd $box
+        $t = Start-BoxAnswer $cap $c.id $s.Hwnd $box -FallbackId $(if ($c.id -eq 7) { 7 } else { 2 })
         try { $null = & $c.call $cap } finally { $t.Stop() }
         Check ($box.found -and -not $box.timedOut -and -not $box.hardStop) ("A10 " + $c.tag + ' appeared and closed within 6 s') "found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) lastRung=$($box.rung) closedBy=$($box.closedBy)"
         Check ($box.owner -eq $hw) ("A10 " + $c.tag + ' owner is the WPF window handle') "GW_OWNER=$($box.owner) expected=$hw"
@@ -388,6 +388,28 @@ function Invoke-A14-LeakyHandler {
     Invoke-Pump 150 ({ $s.Closed.n -ge 1 }).GetNewClosure()
     Check ($s.Closed.n -eq 1) 'A14 the window closes after a leaky non-cancelling handler' "closedEvents=$($s.Closed.n)"
     Check-NoExceptions 'A14'
+}
+
+function Invoke-A15-BeginInvoke {
+    $s = New-Scn 'a15'; $form = $s.Form; $w = $s.Window
+    Show-Scn $s
+    $log = New-Object System.Collections.ArrayList
+    $returned = @{ op = $null }
+    # Runs as a dispatcher item (like a Click handler): queues a Normal item with the form adapter, then an Input item, then returns.
+    # An inner .GetNewClosure() does not capture the outer closure's variables, so the handler copies them to locals first.
+    $handler = {
+        $logHere = $log
+        $null = $logHere.Add('handler-start')
+        $returned.op = $form.BeginInvoke([Action]{ $null = $logHere.Add('normal') }.GetNewClosure())
+        $null = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Input, [Action]{ $null = $logHere.Add('input') }.GetNewClosure())
+        $null = $logHere.Add('handler-end')
+    }.GetNewClosure()
+    $null = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Loaded, [Action]$handler)
+    Invoke-Pump 1000 ({ $log.Count -ge 4 }).GetNewClosure()
+    Invoke-Pump 100
+    Check (($log -join ',') -ceq 'handler-start,handler-end,normal,input') 'A15 form.BeginInvoke runs the action after the handler returns and before an Input item queued after it' "log=$($log -join ',')"
+    Check ($returned.op -is [System.Windows.Threading.DispatcherOperation] -and [string]$returned.op.Priority -ceq 'Normal') 'A15 BeginInvoke returns the DispatcherOperation at Normal priority' "type=$(if ($null -ne $returned.op) { $returned.op.GetType().Name } else { 'null' }) priority=$(if ($null -ne $returned.op) { $returned.op.Priority } else { '' })"
+    Check-NoExceptions 'A15'
 }
 
 # ======================================================================================================================
@@ -889,8 +911,14 @@ $script:shellParity = @(
     @{ El = 'UpdateNotesButton'; Ad = 'bannerNotes'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
     @{ El = 'UpdateButton'; Ad = 'bannerButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
     @{ El = 'ReinstallButton'; Ad = 'reinstallButton'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
-    @{ El = 'FailureCopyButton'; Ad = 'failureCopyLink'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false }
+    @{ El = 'FailureCopyButton'; Ad = 'failureCopyLink'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false },
+    # PR 3b: failureCopyLink is bound to a second element, the Copy full output button in the Activity header (the Also row of the binding table)
+    @{ El = 'ActivityCopyButton'; Ad = 'failureCopyLink'; Mode = 'Content'; Kind = 'named'; NoText = $false; NoVisible = $false }
 )
+
+# Counts the adapter LinkClicked events a click on either failureCopyLink element raises (S3).
+$script:s3CopyEvents = 0
+function Add-S3CopyEvent { $script:s3CopyEvents++ }
 
 function Get-ShellElementText($Element, [string]$Mode) {
     if ($Mode -ceq 'Content') { return [string]$Element.Content }
@@ -950,6 +978,15 @@ function Invoke-S3-HomeParity {
     Check (($barOn -eq [System.Windows.Visibility]::Visible) -and ($barOff -eq [System.Windows.Visibility]::Collapsed)) 'S3 the update bar follows the message logic (an offer shows it, none hides it)' "with offer=$barOn without=$barOff"
     $script:bannerLabel.Visible = $origBanner; $script:reinstallButton.Visible = $origReinstall
     Invoke-FastLlmUiFluentTick
+    # The two failureCopyLink elements (the failure bar button and the Activity header button) each raise exactly one adapter LinkClicked per click
+    [void]$script:failureCopyLink.PSObject.Methods['Add_LinkClicked'].Invoke([scriptblock]::Create('Add-S3CopyEvent'))
+    foreach ($copyName in 'FailureCopyButton', 'ActivityCopyButton') {
+        $copyEl = $els[$copyName]
+        $script:s3CopyEvents = 0
+        $copyEl.RaiseEvent((New-ShellClick $copyEl ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+        Invoke-Pump 50
+        Check ($script:s3CopyEvents -eq 1) "S3 a click on $copyName raises exactly one failureCopyLink LinkClicked" "events=$($script:s3CopyEvents)"
+    }
     Check-NoExceptions 'S3'
 }
 
@@ -1038,7 +1075,7 @@ function Invoke-S6-Nav {
     catch { $threw = $_.Exception.Message }
     Invoke-Pump 150
     Check ($threw -eq '') 'S6 a Down arrow KeyDown on the nav item raises no exception' $threw
-    # selection moves: Connect (index 2) is a real registered page; Models stays disabled
+    # selection moves: Connect (index 2) is a real registered page
     $second = $f.NavItems[2]['Item']
     $script:shellFailCalls.Clear()
     $list.SelectedIndex = 2
@@ -1527,15 +1564,17 @@ function Invoke-S16-PaneCollapse {
     foreach ($nav in $f.NavItems) { if ($nav['Label'].Visibility -ne [System.Windows.Visibility]::Collapsed) { $labelsHidden = $false } }
     $homeTip = [string]$f.NavItems[0]['Item'].ToolTip
     $homeText = [string]$f.NavItems[0]['Text']
-    $disabledTip = [string]$f.NavItems[1]['Item'].ToolTip
-    $laterCollapsed = ([string]$script:FastLlmUiFluentStrings.ComingLaterFormat) -f [string]$f.NavItems[1]['Text']
+    # PR 3b: Models is a registered page, so the disabled item is Settings (the last pane item)
+    $disabledNav = @($f.NavItems | Where-Object { [string]$_['Id'] -ceq 'NavSettings' })[0]
+    $disabledTip = [string]$disabledNav['Item'].ToolTip
+    $laterCollapsed = ([string]$script:FastLlmUiFluentStrings.ComingLaterFormat) -f [string]$disabledNav['Text']
     Check ($col -lt 100 -and $labelsHidden -and $homeTip -ceq $homeText -and $disabledTip -ceq $laterCollapsed) 'S16 below 900 wide the pane collapses: narrow column, labels hidden, Home tooltip is its label, disabled items keep their tooltip' "column=$col labelsHidden=$labelsHidden homeTip='$homeTip' (expected '$homeText') disabledTip='$disabledTip' (expected '$laterCollapsed') width=$($win.ActualWidth)"
     $win.Width = 1000
     Invoke-Pump 800 ({ [double]$script:FastLlmUiFluent.Els.PaneColumn.Width.Value -gt 100 })
     $col2 = [double]$els.PaneColumn.Width.Value
     $labelsShown = $true
     foreach ($nav in $f.NavItems) { if ($nav['Label'].Visibility -ne [System.Windows.Visibility]::Visible) { $labelsShown = $false } }
-    $disabledTip2 = [string]$f.NavItems[1]['Item'].ToolTip
+    $disabledTip2 = [string]$disabledNav['Item'].ToolTip
     Check ($col2 -gt 100 -and $labelsShown -and $null -eq $f.NavItems[0]['Item'].ToolTip -and $disabledTip2 -ceq $later) 'S16 at 900 and above the pane expands again: wide column, labels shown, no Home tooltip' "column=$col2 labelsShown=$labelsShown homeTip='$($f.NavItems[0]['Item'].ToolTip)' disabledTip='$disabledTip2' width=$($win.ActualWidth)"
     Check-NoExceptions 'S16'
 }
@@ -1997,7 +2036,7 @@ function Invoke-H9-DisplayTextOracle {
 $script:steps = @(
     'Invoke-A1-CloseCancelled', 'Invoke-A1c-CloseCancelledClosure', 'Invoke-A2-CloseAllowed', 'Invoke-A3-BoxNo', 'Invoke-A4-BoxYes', 'Invoke-A5-CloseInsideHandler',
     'Invoke-A6-ThrowingHandler', 'Invoke-A7-Visible', 'Invoke-A8-RestoreFromTray', 'Invoke-A9-Shown', 'Invoke-A10-Owner',
-    'Invoke-A11-ScreenGap', 'Invoke-A12-SessionEnd', 'Invoke-A12b-SessionEndPlain', 'Invoke-A13-Members', 'Invoke-A14-LeakyHandler',
+    'Invoke-A11-ScreenGap', 'Invoke-A12-SessionEnd', 'Invoke-A12b-SessionEndPlain', 'Invoke-A13-Members', 'Invoke-A14-LeakyHandler', 'Invoke-A15-BeginInvoke',
     'Invoke-B1-GdiLeak', 'Invoke-B2-IconSizes', 'Invoke-B3-AppIcon', 'Invoke-B4-ThemeHook', 'Invoke-B5-SettingChangeString',
     'Invoke-B6-HookFailure', 'Invoke-B7-Unregister',
     'Invoke-H1-ReentrantQuery', 'Invoke-H2-ThrowingQuery', 'Invoke-H3-UnregisterOnClosed', 'Invoke-H4-ThemeCallbackThrows', 'Invoke-H5-EndSession',

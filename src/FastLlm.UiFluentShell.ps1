@@ -19,6 +19,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentHome.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentTools.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -119,7 +120,12 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
         <Setter.Value>
           <ControlTemplate TargetType="Expander">
             <DockPanel>
-              <ToggleButton x:Name="Hd" DockPanel.Dock="Top" Content="{TemplateBinding Header}" Foreground="{TemplateBinding Foreground}"
+              <Grid DockPanel.Dock="Top">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+              <ToggleButton x:Name="Hd" Grid.Column="0" Content="{TemplateBinding Header}" Foreground="{TemplateBinding Foreground}"
                             IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                             FocusVisualStyle="{DynamicResource FastLlm.FocusVisual}" Background="Transparent" Padding="4,6,4,6" HorizontalContentAlignment="Left">
                 <ToggleButton.Template>
@@ -136,6 +142,8 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                   </ControlTemplate>
                 </ToggleButton.Template>
               </ToggleButton>
+              <ContentPresenter x:Name="TagHost" Grid.Column="1" Content="{TemplateBinding Tag}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+              </Grid>
               <ContentPresenter x:Name="Body" Visibility="Collapsed"/>
             </DockPanel>
             <ControlTemplate.Triggers>
@@ -168,6 +176,140 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
                 <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="FastLlm.TextBoxStyle" TargetType="TextBox">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
+      <Setter Property="CaretBrush" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8,5,8,5"/>
+      <Setter Property="MinHeight" Value="{DynamicResource FastLlm.ControlHeight}"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Grid>
+              <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4"/>
+              <Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" Focusable="False"
+                            HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Ring" Property="Visibility" Value="Visible"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
+                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.DisabledFillBrush}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="FastLlm.ComboBoxItemStyle" TargetType="ComboBoxItem">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="Padding" Value="8,5,8,5"/>
+      <Setter Property="MinHeight" Value="{DynamicResource FastLlm.ControlHeight}"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBoxItem">
+            <Border x:Name="Bd" Background="Transparent" BorderBrush="Transparent" BorderThickness="2" CornerRadius="4">
+              <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.ControlStrokeBrush}"/></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.FocusBrush}"/></Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextOnAccentBrush}"/>
+                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.AccentFillBrush}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="FastLlm.ComboBoxStyle" TargetType="ComboBox">
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrongStrokeBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8,5,32,5"/>
+      <Setter Property="MinHeight" Value="{DynamicResource FastLlm.ControlHeight}"/>
+      <Setter Property="ItemContainerStyle" Value="{StaticResource FastLlm.ComboBoxItemStyle}"/>
+      <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4"/>
+              <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False"
+                                Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+              <TextBlock Text="&#xE70D;" FontFamily="{DynamicResource FastLlm.IconFont}" FontSize="12" Margin="0,0,10,0" HorizontalAlignment="Right"
+                         VerticalAlignment="Center" IsHitTestVisible="False"/>
+              <ToggleButton ClickMode="Press" Focusable="False" Background="Transparent" Opacity="0.01"
+                            IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"/>
+              <Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>
+              <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"
+                     IsOpen="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                <Border Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"
+                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                  <ScrollViewer CanContentScroll="True" Padding="2">
+                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                  </ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Ring" Property="Visibility" Value="Visible"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
+                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.DisabledFillBrush}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="FastLlm.SpinButtonStyle" TargetType="RepeatButton">
+      <Setter Property="IsTabStop" Value="False"/>
+      <Setter Property="FocusVisualStyle" Value="{DynamicResource FastLlm.FocusVisual}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource FastLlm.IconFont}"/>
+      <Setter Property="FontSize" Value="10"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
+      <Setter Property="Background" Value="{DynamicResource FastLlm.CardBrush}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource FastLlm.ControlStrokeBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="MinWidth" Value="24"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RepeatButton">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{DynamicResource FastLlm.ControlCornerRadius}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.85"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="Bd" Property="Opacity" Value="0.7"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource FastLlm.DisabledTextBrush}"/>
+                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource FastLlm.DisabledFillBrush}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource FastLlm.DisabledStrokeBrush}"/>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -237,9 +379,10 @@ function Get-FastLlmUiFluentBindingTable {
         @{ Name = 'bannerNotes';       Element = 'UpdateNotesButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
         @{ Name = 'bannerButton';      Element = 'UpdateButton';      Mode = 'Content';   Event = 'Click';       Flags = @() },
         @{ Name = 'reinstallButton';   Element = 'ReinstallButton';   Mode = 'Content';   Event = 'Click';       Flags = @() },
-        @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() }
+        @{ Name = 'failureCopyLink';   Element = 'FailureCopyButton'; Mode = 'Content';   Event = 'LinkClicked'; Flags = @() },
+        @{ Name = 'failureCopyLink';   Element = 'ActivityCopyButton'; Mode = 'Content';  Event = 'LinkClicked'; Flags = @(); Also = $true }
     )
-    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings))
+    return @(@(Get-FastLlmUiFluentHomeBindings) + $shell + @(Get-FastLlmUiFluentToolsBindings) + @(Get-FastLlmUiFluentModelsBindings))
 }
 
 # An unsupported-at-initialisation window (the theme or the markup failed) is a fault in FastLLM: the approved text, the run-log reason, exit code 3.
@@ -558,6 +701,7 @@ function Initialize-FastLlmUiFluentPane {
         [void] $items.Add($nav)
     }
     $f['Els']['NavHome'] = $items[0].Item
+    $f['Els']['NavModels'] = $items[1].Item
     $f['Els']['NavConnect'] = $items[2].Item
     $f['Els']['NavTools'] = $items[3].Item
     # The Settings list has one item, disabled for now: it is named so it is never an anonymous list. Home stays selected (Ctrl+Click cannot empty it).
@@ -717,6 +861,7 @@ function Initialize-FastLlmUiFluentShell {
         $homePage = New-FastLlmUiXamlElement -Name 'FastLlm.Home'
         $toolsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Tools'
         $connectPage = New-FastLlmUiXamlElement -Name 'FastLlm.Connect'
+        $modelsPage = New-FastLlmUiXamlElement -Name 'FastLlm.Models'
         $f['Window'] = $win
         $stage = 'theme-init'
         Set-FastLlmUiFluentTheme -ThemeState $themeState
@@ -744,9 +889,11 @@ function Initialize-FastLlmUiFluentShell {
         [void] (Initialize-FastLlmUiFluentHome -Page $homePage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentTools -Page $toolsPage -Els $f['Els'])
         [void] (Initialize-FastLlmUiFluentConnect -Page $connectPage -Els $f['Els'])
+        [void] (Initialize-FastLlmUiFluentModels -Page $modelsPage -Els $f['Els'])
         Register-FastLlmUiFluentHomePage -Page $homePage -Els $f['Els']
         Register-FastLlmUiFluentToolsPage -Page $toolsPage -Els $f['Els']
         Register-FastLlmUiFluentConnectPage -Page $connectPage -Els $f['Els']
+        Register-FastLlmUiFluentModelsPage -Page $modelsPage -Els $f['Els']
         $f['Current'] = 'Home'
         $f['Els']['PageHost'].Child = $homePage
         Initialize-FastLlmUiFluentPane
