@@ -22,6 +22,9 @@ STAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(STAGE)
 
 REPO = Path(__file__).resolve().parents[1]
+# Every git call here runs with automatic gc and maintenance off: a large fixture commit can otherwise start a DETACHED "git gc --auto" that
+# keeps writing into .git after the command returns, so the temp-dir cleanup races it (OSError 66 on macOS). Each subprocess.run waits for git itself.
+GIT_NO_BACKGROUND = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"]
 
 
 def remove_tree_tolerant(target, attempts=10, delay=0.3):
@@ -405,12 +408,12 @@ class PublicSourceTests(unittest.TestCase):
         STAGE.stage(self.source, staged)
         expected_catalog = (staged / "config/catalog.json").read_bytes()
         expected_manifest = (staged / STAGE.MANIFEST_NAME).read_bytes()
-        subprocess.run(["git", "init", "-q", str(staged)], check=True)
-        subprocess.run(["git", "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)
-        subprocess.run(["git", "-C", str(staged), "-c", "user.name=FastLLM test",
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "init", "-q", str(staged)], check=True)
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "-C", str(staged), "-c", "user.name=FastLLM test",
                         "-c", "user.email=test@example.invalid", "commit", "-qm", "source fixture"], check=True)
         checked_out = self.base / "autocrlf-true-checkout"
-        subprocess.run(["git", "-c", "core.autocrlf=true", "clone", "-q",
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "-c", "core.autocrlf=true", "clone", "-q",
                         str(staged), str(checked_out)], check=True)
         self.assertEqual((checked_out / "config/catalog.json").read_bytes(), expected_catalog)
         self.assertEqual((checked_out / STAGE.MANIFEST_NAME).read_bytes(), expected_manifest)
@@ -423,12 +426,12 @@ class PublicSourceTests(unittest.TestCase):
                                public_tree=not (SCRIPT.parents[1] / "ops").exists())
         catalog_digest = "f80159beaa90b53a4ed452cfb433884cc586bbb2accd7f7145d2f84ca7161041"
         self.assertEqual(hashlib.sha256((staged / "config/catalog.json").read_bytes()).hexdigest(), catalog_digest)
-        subprocess.run(["git", "init", "-q", str(staged)], check=True)
-        subprocess.run(["git", "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)
-        subprocess.run(["git", "-C", str(staged), "-c", "user.name=FastLLM test",
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "init", "-q", str(staged)], check=True)
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "-C", str(staged), "-c", "core.autocrlf=false", "add", "."], check=True)
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "-C", str(staged), "-c", "user.name=FastLLM test",
                         "-c", "user.email=test@example.invalid", "commit", "-qm", "source fixture"], check=True)
         checked_out = self.base / "real-autocrlf-true-checkout"
-        subprocess.run(["git", "-c", "core.autocrlf=true", "clone", "-q",
+        subprocess.run(["git", *GIT_NO_BACKGROUND, "-c", "core.autocrlf=true", "clone", "-q",
                         str(staged), str(checked_out)], check=True)
         self.assertEqual(hashlib.sha256((checked_out / "config/catalog.json").read_bytes()).hexdigest(), catalog_digest)
         self.assertEqual((checked_out / STAGE.MANIFEST_NAME).read_bytes(),
