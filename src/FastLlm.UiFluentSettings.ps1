@@ -276,7 +276,7 @@ function Initialize-FastLlmUiFluentSettings {
         [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els[$name], $true)
     }
     $f = $script:FastLlmUiFluent
-    $f['Settings'] = @{ Saved = $null; Held = $null; Current = $null; Dirty = $false; Loading = $false; KeyMarked = $false; PromptOpen = $false; EmbeddingsAvailable = $false; LongMeasured = $false }
+    $f['Settings'] = @{ Saved = $null; Held = $null; Current = $null; Dirty = $false; Loading = $false; KeyMarked = $false; PromptOpen = $false; EmbeddingsAvailable = $false; LongMeasured = $false; LongSlots = 1 }
     return $Els
 }
 
@@ -348,6 +348,7 @@ function Set-FastLlmUiFluentSettingsAdditionsView {
     $e['SettingsContextProfileBox'].Items[1].IsEnabled = [bool] $view['longEnabled']
     $why = ''
     if ([string] $view['longReasonCode'] -ceq 'long-not-measured') { $why = [string] $s.LongNotMeasured }
+    if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) { $why = [string] $s.LongNotMeasured }
     $e['SettingsContextProfileWhy'].Text = $why
     if ($why -ne '') { $e['SettingsContextProfileWhy'].Visibility = [System.Windows.Visibility]::Visible } else { $e['SettingsContextProfileWhy'].Visibility = [System.Windows.Visibility]::Collapsed }
     [System.Windows.Automation.AutomationProperties]::SetHelpText($e['SettingsContextProfileBox'], $why)
@@ -388,22 +389,35 @@ function Test-FastLlmUiFluentEmbeddingsAvailable {
     catch { return $false }
 }
 
-# Does this install have a measured long-context row for the model a start would use? The planner's own source (config/serving-profiles.json through
-# Read-FastLlmServingProfiles and Find-FastLlmServingProfileRow, for the built-in engine id and profile id 'long'). The model is the Home model box as
-# ReadSelection reads it (a chosen model, or any model the planner may pick when it is on Automatic). The backend is not probed: a row of any backend
-# counts, so a hardware mismatch is left to the start's own check. Read-only. Any failure to read is $false. Exactly one [bool]. Read on Enter only.
+# Does this install have a measured long-context row for the model a start would use, at the requests-at-once value the user holds? The planner's own
+# source (config/serving-profiles.json through Read-FastLlmServingProfiles and Find-FastLlmServingProfileRow, for the built-in engine id and profile id
+# 'long', asked with -Slots as the planner asks it). The model is the Home model box as ReadSelection reads it (a chosen model, or any model the planner may
+# pick when it is on Automatic). The planner matches the backend of the probed hardware, which only a hardware probe can give, and the window holds none:
+# so the backends asked are only those a start could run on, the ones whose engine is installed under this install (Get-FastLlmEngineExecutable, a path
+# check only), or, with no engine installed yet, those the catalog enables (what an install would fetch). Read-only. Any failure to read is $false.
+# Exactly one [bool]. Read on Enter, and again only when the requests box changes.
 function Test-FastLlmUiFluentLongMeasured {
-    [CmdletBinding()] param()
+    [CmdletBinding()] param([int] $Slots = 1)
     try {
         $modelId = ''
         if ([int] $script:modelBox.SelectedIndex -gt 0) { $modelId = [string] $script:modelBox.SelectedItem }
         $configRoot = Join-Path $script:FastLlmUiFluentSourceRoot 'config'
         $measured = & (Get-Module FastLlm) {
-            param($ConfigRoot, $ModelId)
+            param($ConfigRoot, $ModelId, $InstallRoot, $HeldSlots)
             $catalog = Get-FastLlmCatalog -CatalogPath (Join-Path $ConfigRoot 'catalog.json')
             $engineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
             $rows = @(Read-FastLlmServingProfiles -Path (Join-Path $ConfigRoot 'serving-profiles.json'))
-            $backends = @($rows | ForEach-Object { Get-FastLlmServingProfileValue -Row $_ -Name 'backend' } | Where-Object { $_ -is [string] } | Select-Object -Unique)
+            $version = [string] $catalog.engine.version
+            $enabled = @()
+            $installed = @()
+            foreach ($key in @('rocm', 'vulkan')) {
+                $asset = $catalog.engine.assets.$key
+                if (-not [bool] $asset.enabled) { continue }
+                $enabled += $key
+                if ($null -ne (Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion $version -BackendKey $key -EntryPoint ([string] $asset.entryPoint))) { $installed += $key }
+            }
+            $backends = @($installed)
+            if ($backends.Count -eq 0) { $backends = @($enabled) }
             foreach ($model in @($catalog.models)) {
                 if ($ModelId -and [string] $model.id -ne $ModelId) { continue }
                 if (Get-FastLlmModelSupersededBy -Model $model) { continue }
@@ -411,14 +425,41 @@ function Test-FastLlmUiFluentLongMeasured {
                 $autoEligible = $model.PSObject.Properties['autoEligible']
                 if (-not $ModelId -and $autoEligible -and -not [bool] $autoEligible.Value) { continue }
                 foreach ($backend in $backends) {
-                    if ($null -ne (Find-FastLlmServingProfileRow -Rows $rows -Model $model -EngineId $engineId -Backend ([string] $backend) -ProfileId 'long' -Slots 1)) { return $true }
+                    if ($null -ne (Find-FastLlmServingProfileRow -Rows $rows -Model $model -EngineId $engineId -Backend ([string] $backend) -ProfileId 'long' -Slots $HeldSlots)) { return $true }
                 }
             }
             return $false
-        } $configRoot $modelId
+        } $configRoot $modelId $script:installPath $Slots
         return [bool] (@($measured) | Select-Object -Last 1)
     }
     catch { return $false }
+}
+
+# Is the held context profile Long at a requests-at-once value where Long is not measured, and not exactly what is already saved? Such a pair can only fail
+# at the next start (serving-profile-not-measured), so the reason line shows and Save refuses it. Read from the page state only (LongMeasured is read for the
+# held slots); nothing is probed here. Exactly one [bool].
+function Test-FastLlmUiFluentSettingsLongUnmeasuredHeld {
+    [CmdletBinding()] param()
+    $st = $script:FastLlmUiFluent['Settings']
+    $held = $st['Held']
+    if ($null -eq $held) { return $false }
+    if ([string] $held.contextProfile -cne 'long') { return $false }
+    if ([bool] $st['LongMeasured']) { return $false }
+    if ([string] $st['Saved'].contextProfile -ceq 'long' -and [int] $st['Saved'].slots -eq [int] $held.slots) { return $false }
+    return $true
+}
+
+# Reads the long probe for the held requests-at-once value and shows its answer. Run on Enter (always) and again when the requests box changed since the last
+# read (an edit or a discard), never on a tick or a reload, so a Long that only fails at 2 at once is never offered at 2.
+function Update-FastLlmUiFluentSettingsLongState {
+    [CmdletBinding()] param([switch] $Force)
+    $st = $script:FastLlmUiFluent['Settings']
+    $slots = 1
+    if ($null -ne $st['Held']) { $slots = [int] $st['Held'].slots }
+    if (-not $Force -and [int] $st['LongSlots'] -eq $slots) { return }
+    $st['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured -Slots $slots)
+    $st['LongSlots'] = $slots
+    Set-FastLlmUiFluentSettingsAdditionsView
 }
 
 # Reads the settings again: a fresh Current, Saved = Held (two objects with the same values), the controls filled. Enter and a saved Save both run it, so the
@@ -479,8 +520,8 @@ function Enter-FastLlmUiFluentSettings {
         Set-FastLlmUiFluentSettingsKeyMark -On $false
         # What the additions rows may show is read here, once per visit (never on a tick, never on a Save's reload).
         $script:FastLlmUiFluent['Settings']['EmbeddingsAvailable'] = [bool] (Test-FastLlmUiFluentEmbeddingsAvailable)
-        $script:FastLlmUiFluent['Settings']['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured)
         Update-FastLlmUiFluentSettingsLoad
+        Update-FastLlmUiFluentSettingsLongState -Force
         # The three immediate toggles name themselves with the caption their adapter shows.
         foreach ($pair in @(@('SettingsUpdateToggle', 'updateBox'), @('SettingsExperimentalToggle', 'experimentalBox'), @('SettingsLicenseToggle', 'licenseBox'))) {
             [System.Windows.Automation.AutomationProperties]::SetName($e[[string] $pair[0]], [string] (Get-Variable -Name ([string] $pair[1]) -Scope Script -ValueOnly).Text)
@@ -576,6 +617,8 @@ function Invoke-FastLlmUiFluentSettingsEdit {
     $held.contextProfile = [string] $(if ([int] $e['SettingsContextProfileBox'].SelectedIndex -eq 1) { 'long' } else { 'default' })
     $held.slots = [int] $(if ([int] $e['SettingsRequestsBox'].SelectedIndex -eq 1) { 2 } else { 1 })
     $held.embeddings = [string] $(if ($e['SettingsEmbeddingsBox'].IsChecked -eq $true) { 'on' } else { 'off' })
+    Update-FastLlmUiFluentSettingsLongState
+    Set-FastLlmUiFluentSettingsAdditionsView
     Update-FastLlmUiFluentSettingsEmbeddingPortView
     $st['Dirty'] = [bool] (Test-FastLlmUiSettingsDirty -Saved $st['Saved'] -Held $held)
 }
@@ -642,6 +685,7 @@ function Invoke-FastLlmUiFluentSettingsDiscard {
     }
     Set-FastLlmUiFluentSettingsKeyMark -On $false
     Set-FastLlmUiFluentSettingsView
+    Update-FastLlmUiFluentSettingsLongState
 }
 
 # Create a new key...: today's handler with the owner changed. It takes effect at once, as today, and is not a held edit.
@@ -691,6 +735,13 @@ function Invoke-FastLlmUiFluentSettingsSave {
         $null = $e['SettingsEmbeddingPortBox'].Focus()
         return $false
     }
+    # A fluent-only guard: Long held at a requests-at-once value where it is not measured (and not the saved pair) can only fail at the next start, so nothing is
+    # written and the edits stay. The reason line (already showing) says why, and the focus goes to the context profile box.
+    if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) {
+        Set-FastLlmUiFluentSettingsAdditionsView
+        $null = $e['SettingsContextProfileBox'].Focus()
+        return $false
+    }
     $keyBox = $e['SettingsKeyBox']
     $stage = 'key'
     $saved = $false
@@ -716,7 +767,14 @@ function Invoke-FastLlmUiFluentSettingsSave {
         $stage = 'serving'
         $savedApiKey=$(if($wantKey){'on'}else{'off'})
         $script:apiKeyStore=$null
-        Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$values.serverPort) -Thinking $savedThinking -ChatPage ([string]$values.chatPage) -IdleStopMinutes $savedIdle -KvContextProfile ([string]$values.contextProfile) -KvSlots ([int]$values.slots) -Embeddings ([string]$values.embeddings) -EmbeddingPort ([int]$values.embeddingPort)
+        # The four serving additions are passed only when the user changed them (held differs from saved), so an untouched Save leaves a stored value as it was
+        # (a saved value the reader normalises, such as slots 3, is never rewritten). Each key comes from $values, under its own test.
+        $extra=@{}
+        if([string]$values.contextProfile -cne [string]$st['Saved'].contextProfile){$extra['KvContextProfile']=[string]$values.contextProfile}
+        if([int]$values.slots -ne [int]$st['Saved'].slots){$extra['KvSlots']=[int]$values.slots}
+        if([string]$values.embeddings -cne [string]$st['Saved'].embeddings){$extra['Embeddings']=[string]$values.embeddings}
+        if([int]$values.embeddingPort -ne [int]$st['Saved'].embeddingPort){$extra['EmbeddingPort']=[int]$values.embeddingPort}
+        Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$values.serverPort) -Thinking $savedThinking -ChatPage ([string]$values.chatPage) -IdleStopMinutes $savedIdle @extra
         Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot -Value ([bool]$values.allowSwitch)
         $script:uiSettings.allowSwitch=[bool]$values.allowSwitch
         $after=[pscustomobject]@{serverPort=[int]$values.serverPort;thinking=$savedThinking;chatPage=[string]$values.chatPage;idleStopMinutes=$savedIdle;apiKey=[string]$savedApiKey;allowSwitch=[bool]$values.allowSwitch;contextProfile=[string]$values.contextProfile;slots=[int]$values.slots;embeddings=[string]$values.embeddings;embeddingPort=[int]$values.embeddingPort}
