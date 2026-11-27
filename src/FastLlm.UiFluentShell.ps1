@@ -278,7 +278,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
               <Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>
               <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"
                      IsOpen="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
-                <Border Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"
+                <Border Background="{DynamicResource FastLlm.FlyoutBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"
                         MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
                   <ScrollViewer CanContentScroll="True" Padding="2">
                     <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
@@ -600,6 +600,8 @@ function Set-FastLlmUiFluentTheme {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledFillBrush' -Value ([System.Windows.SystemColors]::ControlBrush)
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
+        # A popup is its own window, so its surface is opaque: the system Window colour here, the opaque Flyout token otherwise.
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FlyoutBrush' -Value ([System.Windows.SystemColors]::WindowBrush)
     }
     else {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value $dictionary['FastLlm.AccentFillBrush']
