@@ -188,6 +188,8 @@ function Test-ReasonMutant([string]$From,[string]$To){
     Set-Item -Path function:script:Get-ReasonMutant -Value ([scriptblock]::Create($fnText.Replace($From,$To)))
     return (Get-ReasonPropertyFailures 'Get-ReasonMutant' -First).Count
 }
+# CONTROL: a mutant that changes nothing (the same text through the same mutation path) gives exactly 0 property failures, so a counter that is always positive fails here.
+Check ((Test-ReasonMutant "return 'no-preview'" "return 'no-preview'") -eq 0) 'control: an unchanged copy of the greyed-reason function has no property failures through the mutation path'
 Check ((Test-ReasonMutant "if (`$bg.attachedRequestId) { return 'attached' }" "if (`$false) { return 'attached' }") -gt 0) 'mutation: dropping the attached rule fails the property'
 Check ((Test-ReasonMutant 'if ($availability.saveBundle) { return '''' }' 'if (-not $availability.saveBundle) { return '''' }') -gt 0) 'mutation: swapping the bundle availability sub-expression fails the property'
 Check ((Test-ReasonMutant 'if ($busy -or $Snapshot.ChildActive)' 'if ($busy)') -gt 0) 'mutation: dropping ChildActive from the busy rules fails the property'
@@ -209,6 +211,8 @@ Check ((Test-ReasonMutant "if (`$vc) { return 'microsoft-setup' }`n            r
 # The matrix has no attachable run with a case-different pending id, so this mutant is caught by the direct case row.
 $ceqFrom='-ceq [string]$bg.pendingRequestId'
 Check ($fnText.Contains($ceqFrom)) 'the case-sensitive request comparison anchor is present'
+Set-Item -Path function:script:Get-ReasonMutant -Value ([scriptblock]::Create($fnText.Replace($ceqFrom,$ceqFrom)))
+Check ((Get-ReasonMutant -Action 'backgroundAttach' -Snapshot $caseSnap) -ceq 'no-run') 'control: an unchanged copy greys Attach with no-run on the case row'
 Set-Item -Path function:script:Get-ReasonMutant -Value ([scriptblock]::Create($fnText.Replace($ceqFrom,'-eq [string]$bg.pendingRequestId')))
 Check ((Get-ReasonMutant -Action 'backgroundAttach' -Snapshot $caseSnap) -cne 'no-run') 'mutation: a case-insensitive request comparison fails the case row'
 
@@ -284,6 +288,9 @@ function Test-SettingsMutant([string]$Fn,[string]$From,[string]$To,[scriptblock]
     Set-Item -Path function:script:Get-SettingsMutant -Value ([scriptblock]::Create($text.Replace($From,$To)))
     return [bool](& $Probe)
 }
+# CONTROL: an unchanged copy through the same mutation path passes both probes, so the probes below can fail.
+Check (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { return 'stay' }" "default { return 'stay' }" {(Get-SettingsMutant -Dirty $true -Answer 'cancel' -SaveOk $true -Reason 'leave') -ceq 'stay'}) 'control: an unchanged exit-decision copy passes the cancel probe through the mutation path'
+Check (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))}) 'control: an unchanged dirty-test copy passes the touched-indeterminate probe through the mutation path'
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { return 'stay' }" "default { return 'go' }" {(Get-SettingsMutant -Dirty $true -Answer 'cancel' -SaveOk $true -Reason 'leave') -ceq 'stay'})) 'mutation: cancel to go fails the table'
 Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and `$false" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))})) 'mutation: dirty ignoring keyTouched fails the touched-indeterminate check'
 
@@ -328,6 +335,8 @@ function Test-KeyPlanMutant([string]$From,[string]$To){
     $mutant=[scriptblock]::Create($text.Replace($From,$To))
     return (Get-KeyPlanProblems $mutant).Count
 }
+# CONTROL: an unchanged copy through the same mutation path gives exactly 0 key-plan problems.
+Check ((Test-KeyPlanMutant "closeEnabled=`$false" "closeEnabled=`$false") -eq 0) 'control: an unchanged copy of the key plan has no table problems through the mutation path'
 Check ((Test-KeyPlanMutant "order=[string[]]@('Yes','No'); enter=`$enter; escape=''" "order=[string[]]@('Yes','No'); enter=`$enter; escape='No'") -gt 0) 'mutation: a YesNo box answering No on Escape fails the key-plan table'
 Check ((Test-KeyPlanMutant "`$enter='Yes'; if(`$second){`$enter='No'}" "`$enter='Yes'") -gt 0) 'mutation: Button2 on a YesNo box answering Yes on Enter fails the key-plan table'
 Check ((Test-KeyPlanMutant "closeEnabled=`$false" "closeEnabled=`$true") -gt 0) 'mutation: an enabled YesNo close box fails the key-plan table'
