@@ -503,6 +503,14 @@ Remove-Item -LiteralPath $roundRoot -Recurse -Force
 # 5b-delete-begin
 Check ($ui.Contains("`$form.Text='Bitworks FastLLM (Preview)'") -and -not $ui.Contains('lab alpha')) 'the window title is Bitworks FastLLM (Preview)'
 # 5b-delete-end
+# Twin: the Fluent window takes its title from the shell constant (D7), which holds the classic literal.
+Test-FluentTwin 'the Fluent window title is Bitworks FastLLM (Preview), from the shell constant' (Get-FluentSrc 'UiFluentShell') {
+    param($s)
+    $s.Contains("`$script:FastLlmUiFluentWindowTitle = 'Bitworks FastLLM (Preview)'") -and $s.Contains('$windowTitle = [string] $script:FastLlmUiFluentWindowTitle') -and -not $s.Contains('lab alpha')
+} ([ordered]@{
+    'the constant changed' = { param($s) $s.Replace("`$script:FastLlmUiFluentWindowTitle = 'Bitworks FastLLM (Preview)'", "`$script:FastLlmUiFluentWindowTitle = 'Bitworks FastLLM'") }
+    'the title read from elsewhere' = { param($s) $s.Replace('$windowTitle = [string] $script:FastLlmUiFluentWindowTitle', '$windowTitle = [string] $classicForm.Text') }
+})
 Check ($ui.Contains("src/FastLlm.Update.ps1") -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Update')) 'the UI dot-sources the update script'
 Check ($ui.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot') -and -not [regex]::IsMatch($ui, '(?i)-Silent(?!ly)')) 'the UI runs the verified update without -Silent'
 # 5b-delete-begin
