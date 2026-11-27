@@ -143,16 +143,19 @@ try{
         port="        if([int]`$values.embeddingPort -ne [int]`$st['Saved'].embeddingPort){`$extra['EmbeddingPort']=[int]`$values.embeddingPort}`n"
     }
     foreach($k in $lines.Keys){ Check ($pageText.Contains($lines[$k])) "self-check: the $k changed-test line anchors for the planted mutants" }
+    # ONE predicate decides "caught on bytes": a mutant expects it true and the comment-only control expects it false. The finder returns its list with a leading
+    # comma; wrapping the call in @() would nest it and always count 1, so the list is read as it is, and a missing snippet does not count.
+    function Test-BytesCaught([string]$Text){
+        $found=Get-ByteFindings $Text
+        return [bool](@($found|Where-Object{$_ -cne 'the page Save snippet is not found'}).Count -ge 1)
+    }
     function Test-Mutant([string]$Name,[string]$Plant){
         Check ($Plant -cne $pageText) "mutant is a real change: $Name"
-        # The finder returns its list with a leading comma; wrapping the call in @() would nest it and always count 1.
-        $found=Get-ByteFindings $Plant
-        $bytesCaught=[bool](@($found|Where-Object{$_ -cne 'the page Save snippet is not found'}).Count -ge 1)
+        $bytesCaught=Test-BytesCaught $Plant
         Check $bytesCaught "mutation check: the byte-identical test flags $Name on bytes (not only as a missing snippet)"
     }
     # A permanent CONTROL: a comment-only change to the page text must give no finding on bytes, so a finder or counter that flags everything fails here.
-    $controlFound=Get-ByteFindings ($pageText+"`n# control: a comment-only change`n")
-    Check (@($controlFound|Where-Object{$_ -cne ''}).Count -eq 0) 'control check: a comment-only change to the page text is not flagged'
+    Check (-not (Test-BytesCaught ($pageText+"`n# control: a comment-only change`n"))) 'control check: a comment-only change to the page text is not flagged'
     Test-Mutant 'KvSlots always passed with 1 (it resets a saved 2)' $pageText.Replace($lines.slots,"        `$extra['KvSlots']=1`n")
     Test-Mutant 'KvSlots always passed from the held value (it rewrites a saved 3)' $pageText.Replace($lines.slots,"        `$extra['KvSlots']=[int]`$values.slots`n")
     Test-Mutant 'the Embeddings key always passed' $pageText.Replace($lines.embeddings,"        `$extra['Embeddings']=[string]`$values.embeddings`n")

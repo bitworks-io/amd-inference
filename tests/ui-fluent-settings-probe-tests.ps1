@@ -34,12 +34,13 @@ try{
     $other=$models[1]
     $modelIndex=[Array]::IndexOf(@($catalog.models|ForEach-Object{[string]$_.id}),[string]$model.id)+1
     $otherIndex=[Array]::IndexOf(@($catalog.models|ForEach-Object{[string]$_.id}),[string]$other.id)+1
+    # The JSON is written as literal text (not through ConvertTo-Json, whose array handling differs between Windows PowerShell 5.1 and pwsh 7).
     function New-Row([string]$ModelId,[string]$Sha,[string]$Profile,[int[]]$Slots){
-        return [ordered]@{ modelId=$ModelId; modelSha256=$Sha; engineId=$engineId; backend=[string]$backend; id=$Profile; contextTotal=65536; slotsAllowed=@($Slots); cacheTypeK='q8_0'; cacheTypeV='q8_0'; requiredFreeVramMiB=9000; fitTargetMiB=512; evidence=[ordered]@{resultId='probe-test-1'} }
+        return ('{{"modelId":"{0}","modelSha256":"{1}","engineId":"{2}","backend":"{3}","id":"{4}","contextTotal":65536,"slotsAllowed":[{5}],"cacheTypeK":"q8_0","cacheTypeV":"q8_0","requiredFreeVramMiB":9000,"fitTargetMiB":512,"evidence":{{"resultId":"probe-test-1"}}}}' -f $ModelId,$Sha,$engineId,[string]$backend,$Profile,(@($Slots) -join ','))
     }
     function Write-Profiles($Rows){
-        $doc=[ordered]@{ schema='bitworks.fastllm-serving-profiles/v1'; profiles=@($Rows) }
-        [IO.File]::WriteAllText((Join-Path $configRoot 'serving-profiles.json'),($doc|ConvertTo-Json -Depth 8),$noBom)
+        $json='{"schema":"bitworks.fastllm-serving-profiles/v1","profiles":['+(@($Rows) -join ',')+']}'
+        [IO.File]::WriteAllText((Join-Path $configRoot 'serving-profiles.json'),$json,$noBom)
     }
     function Set-Box([int]$Index,[string]$Item){ $script:modelBox=[pscustomobject]@{SelectedIndex=$Index;SelectedItem=$Item} }
     function One-Bool($Value){ $r=@($Value); return [bool]($r.Count -eq 1 -and $r[0] -is [bool]) }
@@ -79,6 +80,11 @@ try{
     Check ((Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $false) 'an unreadable serving-profiles.json is not measured (the probe fails closed, without throwing)'
 
     # The embeddings probe: no approved embedding model is installed under this install, so it is false (and it does not throw).
+    # The refusal is real (the start check throws), not a swallowed missing command: the same check, called in the module scope, refuses.
+    $refusal=''
+    try{ & (Get-Module FastLlm) { param($Catalog,$Install) Assert-FastLlmEmbeddingsAvailable -CatalogPath $Catalog -InstallRoot $Install } (Join-Path $configRoot 'catalog.json') $installRoot }
+    catch{ $refusal=[string]$_.Exception.Message }
+    Check ($refusal -ne '' -and $refusal -notmatch 'is not recognized') 'the start check Assert-FastLlmEmbeddingsAvailable itself refuses with no embedding model installed (the probe false is a real refusal, not a swallowed error)'
     Check ((Test-FastLlmUiFluentEmbeddingsAvailable) -eq $false -and (One-Bool (Test-FastLlmUiFluentEmbeddingsAvailable))) 'the embeddings probe is false with no embedding model installed (one bool, no throw)'
     Write-Host "Settings probe tests passed ($($script:count) checks)."
 }
