@@ -1418,6 +1418,30 @@ $settingsCombos=@([regex]::Matches($settingsSrc,'<ComboBox\b[^>]*>'))
 Check ($settingsCombos.Count -ge 4 -and @($settingsCombos|Where-Object{$_.Value -cnotmatch 'Style="\{DynamicResource FastLlm\.ComboBoxStyle\}"'}).Count -eq 0) 'the Settings drop-downs all use FastLlm.ComboBoxStyle (the one popup)'
 Check ($flyoutSources['FastLlm.UiFluentModels.ps1'] -cmatch 'x:Name="ModelsModelBox"[^>]*Style="\{DynamicResource FastLlm\.ComboBoxStyle\}"') 'ModelsModelBox uses the same FastLlm.ComboBoxStyle'
 Check ((Get-FlyoutPinFailures @{x='<Popup x:Name="P"><Border Background="{DynamicResource FastLlm.CardBrush}"/></Popup>'}).Count -ge 1) 'mutation check: a bare Popup on CardBrush is flagged'
+# High contrast: the popup surface is the system Window colour (the opaque Flyout token is for light and dark only). The pin is anchored in the high-contrast
+# branch of Set-FastLlmUiFluentTheme, not anywhere in the file, and the other branch leaves FlyoutBrush to the token.
+function Get-HcFlyoutPinFailures([string]$ShellText){
+    $fails=New-Object System.Collections.ArrayList
+    $hcErr=$null; $hcAst=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$hcErr)
+    $fn=@($hcAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Set-FastLlmUiFluentTheme'},$true))
+    if($fn.Count -ne 1){[void]$fails.Add('Set-FastLlmUiFluentTheme is not defined once');return ,@($fails)}
+    $hcIf=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and [string]$n.Clauses[0].Item1.Extent.Text -cmatch "-ceq 'high-contrast'"},$true))
+    if($hcIf.Count -ne 1){[void]$fails.Add('the high-contrast branch is not found once');return ,@($fails)}
+    $isFlyoutSet={param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Set-FastLlmUiResourceValue' -and $n.Extent.Text.Contains("-Key 'FastLlm.FlyoutBrush'")}
+    $inHc=@($hcIf[0].Clauses[0].Item2.FindAll($isFlyoutSet,$true))
+    if($inHc.Count -ne 1 -or -not $inHc[0].Extent.Text.Contains('-Value ([System.Windows.SystemColors]::WindowBrush)')){[void]$fails.Add('the high-contrast branch does not set FastLlm.FlyoutBrush to SystemColors.WindowBrush once')}
+    if($null -ne $hcIf[0].ElseClause -and @($hcIf[0].ElseClause.FindAll($isFlyoutSet,$true)).Count -ne 0){[void]$fails.Add('the light/dark branch overrides FastLlm.FlyoutBrush (it must come from the opaque token)')}
+    return ,@($fails)
+}
+$hcShell=[string]$flyoutSources['FastLlm.UiFluentShell.ps1']
+$hcFails=Get-HcFlyoutPinFailures $hcShell
+foreach($pr in $hcFails){Write-Host "FINDING: $pr"}
+Check ($hcFails.Count -eq 0) 'high contrast: the theme sets the popup surface (FastLlm.FlyoutBrush) to SystemColors.WindowBrush, in the high-contrast branch only'
+$hcLine="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.FlyoutBrush' -Value ([System.Windows.SystemColors]::WindowBrush)"
+$hcGone=$hcShell.Replace($hcLine,'# (the high-contrast FlyoutBrush override was here)')
+Check ($hcGone -cne $hcShell -and (Get-HcFlyoutPinFailures $hcGone).Count -ge 1) 'mutation check: the high-contrast FlyoutBrush override replaced by a comment is flagged (lead gate F6)'
+$hcMoved=$hcGone.Replace("Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value `$dictionary['FastLlm.ControlStrokeBrush']","Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value `$dictionary['FastLlm.ControlStrokeBrush']`n        $hcLine")
+Check ($hcMoved -cne $hcGone -and (Get-HcFlyoutPinFailures $hcMoved).Count -ge 1) 'mutation check: the override moved into the light/dark branch is flagged'
 # The shared Expander style sets its text colour. Without it the header (Home's Activity, Models' Start options) takes WPF's SystemColors.ControlText, which is
 # black and about 1.3:1 on the dark layer (lab canary observation).
 function Test-ExpanderForegroundPin([string]$ShellText){
