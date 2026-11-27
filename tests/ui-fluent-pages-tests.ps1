@@ -2624,6 +2624,25 @@ function Invoke-P21-TwoWay {
         }
         Check ($popKind -ceq 'SolidColorBrush' -and $popAlpha -eq 255) "P21 the Models model drop-down popup surface is an opaque SolidColorBrush in the $popTheme theme" "kind=$popKind alpha=$popAlpha"
     }
+    # High contrast, through the shell's own theme setter: the popup surface is the system Window colour. The window's theme state is restored after.
+    $savedTheme = $f['Theme']; $savedKey = $f['ThemeKey']
+    $hcColor = 'none'; $hcWant = [string][System.Windows.SystemColors]::WindowColor.ToString()
+    try {
+        Set-FastLlmUiFluentTheme -ThemeState ([pscustomobject]@{ Choice = 'high-contrast'; Pair = (Get-FastLlmUiAccentPair $null); Scale = 1.0; Backdrop = 'solid'; Key = 'p21-high-contrast' })
+        Invoke-Pump 100
+        $null = $modelBoxEl.ApplyTemplate()
+        $popup = $modelBoxEl.Template.FindName('PART_Popup', $modelBoxEl)
+        $modelBoxEl.IsDropDownOpen = $true
+        Invoke-Pump 150
+        $popBorder = $null; if ($null -ne $popup) { $popBorder = $popup.Child }
+        if ($popBorder -is [System.Windows.Controls.Border] -and $popBorder.Background -is [System.Windows.Media.SolidColorBrush]) { $hcColor = [string]$popBorder.Background.Color.ToString() }
+    }
+    finally {
+        $modelBoxEl.IsDropDownOpen = $false
+        Invoke-Pump 50
+        $f['Theme'] = $savedTheme; $f['ThemeKey'] = $savedKey; $f['Keys']['Dot'] = $null
+    }
+    Check ($hcColor -ceq $hcWant) 'P21 in high contrast the Models model drop-down popup surface is the system Window colour (SystemColors.WindowBrush)' "got=$hcColor want=$hcWant"
     $mergedDicts.Clear()
     $mergedDicts.Add($origDict)
     Invoke-Pump 50
