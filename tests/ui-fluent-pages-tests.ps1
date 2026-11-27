@@ -4253,6 +4253,10 @@ function Invoke-P43Run([object[]]$Steps, [scriptblock]$Open) {
     return @{ D = $d; Err = $err }
 }
 # A link click posted to the dispatcher (never run inside the answerer's tick, which would stop its timer in the nested frame the warning box opens).
+# It is posted at Normal priority: it runs as soon as the tick returns. At Background priority it never ran on the Windows runner while the dialog was up
+# (CI: the link was found, Start-Process was never reached and no exception was recorded). The likely cause: the WPF dispatcher defers Background items while it
+# sees input pending. The other posted items in these suites use Input, Normal or Loaded.
+# ClickRan, ClickDone and the operation's status are recorded, so a click that does not run is named in the failure detail.
 function New-P43LinkClick([string]$LinkText) {
     $visuals = ${function:Get-ShellVisuals}
     return {
@@ -4260,9 +4264,15 @@ function New-P43LinkClick([string]$LinkText) {
         $link = @(& $visuals $w | Where-Object { $_ -is [System.Windows.Controls.Button] -and [System.Windows.Automation.AutomationProperties]::GetName($_) -ceq $LinkText })[0]
         $st['p42']['LinkFound'] = ($null -ne $link)
         $st['p42']['DialogHwnd'] = [System.Windows.Interop.WindowInteropHelper]::new($w).Handle.ToInt64()
+        $st['p42']['ClickRan'] = $false
+        $st['p42']['ClickDone'] = $false
         if ($null -eq $link) { return }
-        $click = { $link.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $link))) }.GetNewClosure()
-        $null = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [Action]$click)
+        $click = {
+            $st['p42']['ClickRan'] = $true
+            $link.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $link)))
+            $st['p42']['ClickDone'] = $true
+        }.GetNewClosure()
+        $st['p42']['ClickOp'] = $w.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action]$click)
     }.GetNewClosure()
 }
 function Invoke-P43-DialogFlows {
@@ -4370,7 +4380,8 @@ function Invoke-P43-DialogFlows {
             & $case.After
             $d = $r.D
             $warn = Get-SettingsRec $d 0
-            Check ([bool]$d['p42']['LinkFound'] -and $global:FastLlmTestStartProcess['Calls'] -ge 1) "P43 $($case.Name): the link was found and clicked, and Start-Process was reached (so the stub threw)" "linkFound=$($d['p42']['LinkFound']) startProcessCalls=$($global:FastLlmTestStartProcess['Calls']) link='$($case.Text)' $(Get-SettingsRecDetail $d)"
+            $opStatus = 'none'; if ($null -ne $d['p42']['ClickOp']) { $opStatus = [string]$d['p42']['ClickOp'].Status }
+            Check ([bool]$d['p42']['LinkFound'] -and [bool]$d['p42']['ClickRan'] -and $global:FastLlmTestStartProcess['Calls'] -ge 1) "P43 $($case.Name): the link was found and clicked, and Start-Process was reached (so the stub threw)" "linkFound=$($d['p42']['LinkFound']) clickRan=$($d['p42']['ClickRan']) clickDone=$($d['p42']['ClickDone']) op=$opStatus startProcessCalls=$($global:FastLlmTestStartProcess['Calls']) link='$($case.Text)' $(Get-SettingsRecDetail $d)"
             Check ([bool]$warn['Found'] -and [string]$warn['Caption'] -ceq 'Open license page' -and ([string]$warn['Text']).Contains([string]$case.Body)) "P43 $($case.Name): the warning box shows today's text" "text='$($warn['Text'])' expected to contain '$($case.Body)'"
             Check ([bool]$warn['Found'] -and [long]$warn['Owner'] -eq [long]$d['p42']['DialogHwnd'] -and [string]$warn['OwnerTitle'] -ceq [string]$case.Title -and -not [bool]$warn['OwnerWindowEnabled']) "P43 $($case.Name): the warning box is owned by the dialog (not the main window), and the dialog is disabled while it is open" "owner=$($warn['Owner']) dialog=$($d['p42']['DialogHwnd']) ownerTitle='$($warn['OwnerTitle'])' expected='$($case.Title)' ownerEnabled=$($warn['OwnerWindowEnabled'])"
             Check ((Test-SettingsRecClean $d) -and [string]$d['actError'] -ceq '') "P43 $($case.Name): the warning box and the dialog were answered by their keys, with nothing unexpected" "actError='$($d['actError'])' error='$($r.Err)' $(Get-SettingsRecDetail $d)"
