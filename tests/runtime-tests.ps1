@@ -1086,8 +1086,20 @@ try {
     # the saved idle setting written by Set-FastLlmServingSettings, pinned just below, so it is not a bench caller.
     $benchCallers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1','FastLlm.UiFluentSettings.ps1') -and ([IO.File]::ReadAllText($_.FullName)).Contains('IdleStopMinutes') })
     Check ($benchCallers.Count -eq 0) ('idle-bench: no lab, benchmark or diagnostic source passes IdleStopMinutes: ['+(($benchCallers | ForEach-Object Name) -join ',')+']')
+    # Since this narrows a guarded rule, the value source is fixed too: IdleStopMinutes appears once, only as the Set-FastLlmServingSettings argument, and
+    # its value is $savedIdle, assigned once from the held settings' idleStopMinutes ($values = ConvertFrom-FastLlmUiSettingsHeld -Held $held), never a literal.
+    function Test-FluentIdleWriter([string]$Text){
+        return ([regex]::Matches($Text,'IdleStopMinutes').Count -eq 1 -and
+            [regex]::Matches($Text,'Set-FastLlmServingSettings [^\r\n]*-IdleStopMinutes \$savedIdle(\s|$)').Count -eq 1 -and
+            [regex]::Matches($Text,'\$savedIdle\s*=').Count -eq 1 -and
+            [regex]::Matches($Text,'\$savedIdle=\[int\]\$values\.idleStopMinutes\r?\n').Count -eq 1 -and
+            [regex]::Matches($Text,'\$values = ConvertFrom-FastLlmUiSettingsHeld -Held \$held\r?\n').Count -eq 1)
+    }
     $fluentSettingsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentSettings.ps1'))
-    Check ([regex]::Matches($fluentSettingsText,'IdleStopMinutes').Count -eq 1 -and [regex]::Matches($fluentSettingsText,'Set-FastLlmServingSettings [^\r\n]*-IdleStopMinutes \$savedIdle').Count -eq 1) 'idle-bench: the Fluent Settings page names IdleStopMinutes once, only as the saved setting passed to Set-FastLlmServingSettings'
+    Check (Test-FluentIdleWriter $fluentSettingsText) 'idle-bench: the Fluent Settings page names IdleStopMinutes once, only as Set-FastLlmServingSettings -IdleStopMinutes $savedIdle, with $savedIdle taken once from the held settings'
+    Check (-not (Test-FluentIdleWriter $fluentSettingsText.Replace('-IdleStopMinutes $savedIdle','-IdleStopMinutes 0'))) 'idle-bench self-check: a literal 0 passed for IdleStopMinutes is flagged'
+    Check (-not (Test-FluentIdleWriter $fluentSettingsText.Replace('$savedIdle=[int]$values.idleStopMinutes','$savedIdle=[int]15'))) 'idle-bench self-check: $savedIdle taken from a literal is flagged'
+    Check (-not (Test-FluentIdleWriter $fluentSettingsText.Replace('$values = ConvertFrom-FastLlmUiSettingsHeld -Held $held','$values = $script:uiSettings'))) 'idle-bench self-check: the values taken from another source are flagged'
     # no argument text: the idle stop never reaches the server arguments.
     Check (-not ($runtimeText -match "--sleep-idle-seconds") -and -not ((Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw) -match '--sleep-idle-seconds')) 'idle-args: the engine sleep option is not used'
     $suitePassed=$true
