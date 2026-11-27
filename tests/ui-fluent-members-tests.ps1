@@ -2674,9 +2674,20 @@ function Get-SettingsFlowFindings([string]$Text){
     $prompt=@(& $fnOf 'Show-FastLlmUiFluentSavePrompt')
     if($prompt.Count -ne 1){[void]$found.Add('Show-FastLlmUiFluentSavePrompt is not defined exactly once')}
     else{
-        foreach($member in 'AcceptButton','CancelButton','ActiveControl'){
-            $asg=@($prompt[0].FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq "`$dialog.$member"},$true))
-            if($asg.Count -ne 1 -or $asg[0].Right.Extent.Text -cne '$cancel'){[void]$found.Add("the prompt's $member is not the Cancel button")}
+        # 4b: the prompt is on the dialog host: Enter and Escape are the Enter and Escape targets of its one dialog call (the host focuses the Enter target first).
+        $dlgCalls=@($prompt[0].FindAll({param($n) & $isCall $n 'New-FastLlmUiFluentDialog'},$true))
+        if($dlgCalls.Count -ne 1){[void]$found.Add('the prompt does not build exactly one host dialog')}
+        else{
+            foreach($param in 'Enter','Escape'){
+                $els=@($dlgCalls[0].CommandElements); $val=$null
+                for($i=1;$i -lt $els.Count-1;$i++){ if($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and [string]$els[$i].ParameterName -ceq $param){$val=[string]$els[$i+1].Extent.Text} }
+                if($val -cne "'Cancel'"){[void]$found.Add("the prompt's $param target is not the Cancel button")}
+            }
+            $captions=@($prompt[0].FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)|ForEach-Object{ ($_.KeyValuePairs|ForEach-Object{[string]$_.Item1.Extent.Text}) -join ',' })
+            if(@($captions) -cnotcontains 'Save,DontSave,Cancel'){[void]$found.Add('the prompt buttons are not Save, DontSave and Cancel in that order')}
+            $saveOn=@($prompt[0].FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq "`$dialog['Buttons']['Save'].IsEnabled" -and $n.Right.Extent.Text -ceq '$SaveEnabled'},$true))
+            if($saveOn.Count -ne 1){[void]$found.Add('the Save button is not enabled by SaveEnabled')}
+            if($prompt[0].Extent.Text -cmatch 'System\.Windows\.Forms|ShowDialog'){[void]$found.Add('the prompt still builds a WinForms form')}
         }
         $trays=@($prompt[0].FindAll({param($n) & $isCall $n 'SetTrayMenuAvailable'},$true))
         $off=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $false'}); $on=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $true'})
@@ -2712,13 +2723,15 @@ Check ($settingsText -ne '' -and $flowFindings.Count -eq 0) 'the Settings close 
 $flowPlants=[ordered]@{
     'a close that discards (the guard removed)'=$settingsText.Replace("if (`$Reason -ceq 'leave') { Invoke-FastLlmUiFluentSettingsDiscard }","Invoke-FastLlmUiFluentSettingsDiscard")
     'a close that discards (the guard on close)'=$settingsText.Replace("if (`$Reason -ceq 'leave') { Invoke-FastLlmUiFluentSettingsDiscard }","if (`$Reason -ceq 'close') { Invoke-FastLlmUiFluentSettingsDiscard }")
-    'Enter saves (AcceptButton = save)'=$settingsText.Replace('$dialog.AcceptButton = $cancel','$dialog.AcceptButton = $save')
-    'Escape saves (CancelButton = save)'=$settingsText.Replace('$dialog.CancelButton = $cancel','$dialog.CancelButton = $save')
-    'the first focus on Save (ActiveControl = save)'=$settingsText.Replace('$dialog.ActiveControl = $cancel','$dialog.ActiveControl = $save')
+    'Enter saves (-Enter Save; the host also focuses the Enter target)'=$settingsText.Replace("-Enter 'Cancel' -Escape 'Cancel'","-Enter 'Save' -Escape 'Cancel'")
+    'Escape saves (-Escape Save)'=$settingsText.Replace("-Enter 'Cancel' -Escape 'Cancel'","-Enter 'Cancel' -Escape 'Save'")
+    'the first focus on Dont save (-Enter DontSave)'=$settingsText.Replace("-Enter 'Cancel' -Escape 'Cancel'","-Enter 'DontSave' -Escape 'Cancel'")
+    'Save always enabled'=$settingsText.Replace("`$dialog['Buttons']['Save'].IsEnabled = `$SaveEnabled","`$dialog['Buttons']['Save'].IsEnabled = `$true")
+    'the prompt back on a WinForms form'=$settingsText.Replace('    $body = New-Object System.Windows.Controls.TextBlock','    $body = New-Object System.Windows.Forms.Label')
     'the refused-save return dropped'=$settingsText.Replace("    if(-not `$saved){return `$false}`n",'')
     'the unavailable guard dropped'=$settingsText.Replace("    if (-not [bool] `$script:settingsButton.Enabled) {`n        Update-FastLlmUiFluentSettings`n        return `$false`n    }`n",'')
     'the reload after Save dropped'=$settingsText.Replace("        Update-FastLlmUiFluentSettingsLoad`n    }catch{ShowFailure",'        $null = 1'+"`n    }catch{ShowFailure")
-    'the tray restore moved out of the finally'=$settingsText.Replace('finally { $dialog.Dispose(); SetTrayMenuAvailable $true }','finally { $dialog.Dispose() }')
+    'the tray restore moved out of the finally'=$settingsText.Replace('finally { SetTrayMenuAvailable $true }','finally { }')
     'the tray never made unavailable'=$settingsText.Replace("    SetTrayMenuAvailable `$false`n",'')
 }
 foreach($k in $flowPlants.Keys){ Check ($flowPlants[$k] -cne $settingsText -and (Get-SettingsFlowFindings $flowPlants[$k]).Count -ge 1) "mutation check: the Settings flow pin flags: $k" }
@@ -3082,7 +3095,8 @@ $sdText=Get-OptionalText 'src/FastLlm.UiFluentDialogs.ps1'
 $sdTextAssign=@((ConvertTo-PinAst $sdText).FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentDialogText'},$true))
 Check ($sdTextAssign.Count -eq 1) 'the dialog text table is assigned exactly once'
 $sdTable=& ([scriptblock]::Create($sdTextAssign[0].Right.Extent.Text))
-Check ((@($sdTable.Keys) -join ',') -ceq 'SideClose,GuidanceTitle,GuidanceLabel,OpenPage,GuidanceClose,NoReport,NoEntries,NoEntriesStatus,TooMany,Invalid,OpenFailed,Viewed,Url') 'the dialog text table has the 13 planned keys, in order'
+Check ((@($sdTable.Keys)[0..12] -join ',') -ceq 'SideClose,GuidanceTitle,GuidanceLabel,OpenPage,GuidanceClose,NoReport,NoEntries,NoEntriesStatus,TooMany,Invalid,OpenFailed,Viewed,Url') 'the dialog text table starts with the 13 planned 4a keys, in order (the 4b keys follow, pinned in their own block)'
+$sd4aTable=[ordered]@{}; foreach($key in @($sdTable.Keys)[0..12]){$sd4aTable[$key]=[string]$sdTable[$key]}
 function Get-SideDriftLiterals($Ast){
     $vals=New-Object System.Collections.ArrayList
     foreach($fnName in 'ShowUiSideResult','ShowDriverGuidance'){
@@ -3098,12 +3112,12 @@ function Get-SideDriftProblems($Table,[string[]]$Values){
     return ,$problems.ToArray()
 }
 $sdClassic=Get-SideDriftLiterals $classicAst
-$sdDrift=Get-SideDriftProblems $sdTable $sdClassic
+$sdDrift=Get-SideDriftProblems $sd4aTable $sdClassic
 foreach($pr in $sdDrift){Write-Host "FINDING: $pr"}
 Check ($sdDrift.Count -eq 0 -and $sdClassic.Count -gt 20) "every dialog text value is a classic literal of ShowUiSideResult or ShowDriverGuidance ($($sdClassic.Count) literals read)"
-foreach($sdKey in @($sdTable.Keys)){
-    $mut=[ordered]@{}; foreach($key in @($sdTable.Keys)){$mut[$key]=[string]$sdTable[$key]}
-    $mut[$sdKey]=[string]$sdTable[$sdKey]+'.'
+foreach($sdKey in @($sd4aTable.Keys)){
+    $mut=[ordered]@{}; foreach($key in @($sd4aTable.Keys)){$mut[$key]=[string]$sd4aTable[$key]}
+    $mut[$sdKey]=[string]$sd4aTable[$sdKey]+'.'
     Check ((Get-SideDriftProblems $mut $sdClassic).Count -ge 1) "mutation check: a changed $sdKey literal fails the dialog text drift pin"
 }
 # The classic key targets, read from the classic AST: the side result has AcceptButton and CancelButton = Close; driver guidance has CancelButton only.
@@ -3211,5 +3225,244 @@ $snPlants=[ordered]@{
 foreach($k in $snPlants.Keys){ Check ($snPlants[$k] -cne $snText -and (Get-SignInNoticeFindings $snPlants[$k]).Count -ge 1) "mutation check: the SignInNotice pins flag: $k" }
 # ===== end PR 4a Task 6 (#84 lines) =====
 
+
+# ===== PR 4b Task B2 (builder R): the setup check, the recipe chooser and the save prompt on the host =====
+# Texts are the classic literals (drift pin, with the pinned rule that a WinForms && is one & here), the key targets are the classic AcceptButton and CancelButton
+# read from the classic AST, the setup check returns today's three strings, Choose is disabled until a row is selected, and a double-click on a selected row
+# chooses (classic: the ListView's Add_DoubleClick in ShowRecipeChooser, so it is today's behaviour, not an addition). Each runs again on planted mutants.
+$r4Keys=@('SetupTitle','SetupIntro','SetupNeed64','SetupVcMissing','SetupNoLoader','SetupAfter','SetupMsLink','SetupAmdLink','SetupMsUrl','SetupAmdUrl','SetupMsFailed','SetupAmdFailed','SetupRecheck','SetupPrepare','SetupLater','ChooserTitle','ChooserIntro','ChooserNotice','ChooserSetup','ChooserModel','ChooserContext','ChooserEngine','ChooserChoose','ChooserCancel','ChooserCellName')
+Check ($sdTable.Count -eq 13+$r4Keys.Count -and (@($sdTable.Keys)[13..(12+$r4Keys.Count)] -join ',') -ceq ($r4Keys -join ',')) 'the dialog text table has the 4b setup check and chooser keys after the 4a keys, in order'
+$r4Str='System.Management.Automation.Language.StringConstantExpressionAst'
+function Get-R4Norm($Node){
+    $v=[string]$Node.Value
+    if($Node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]){$v=[regex]::Replace($v,'\$\(.*\)','{0}')}
+    return $v
+}
+# The string node a statement assigns directly (a constant or an expandable string), else $null.
+function Get-R4RightText($Right){
+    $e=$Right
+    if($e -is [System.Management.Automation.Language.PipelineAst] -and $e.PipelineElements.Count -eq 1){$e=$e.PipelineElements[0]}
+    if($e -is [System.Management.Automation.Language.CommandExpressionAst]){$e=$e.Expression}
+    if(Test-R4Text $e){return $e}
+    return $null
+}
+function Test-R4Text($Node){ return ($Node -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $Node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) }
+# Every string of the two classic functions (a $(...) part is {0}), and the texts the user can see: assigned to .Text, added to the lines or the columns, or opened.
+function Get-R4Classic($Ast){
+    $all=New-Object System.Collections.ArrayList; $shown=New-Object System.Collections.ArrayList
+    foreach($fnName in 'ShowSetupAttention','ShowRecipeChooser'){
+        foreach($fnAst in (Get-AstFunction $Ast $fnName)){
+            foreach($k in @($fnAst.FindAll({param($n) Test-R4Text $n},$true))){ [void]$all.Add((Get-R4Norm $k)) }
+            foreach($a in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -cmatch '\.Text$'},$true))){
+                $r=Get-R4RightText $a.Right
+                if($null -ne $r){ [void]$shown.Add((Get-R4Norm $r)) }
+            }
+            foreach($m in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add' -and $n.Expression.Extent.Text -cin @('$lines','$list.Columns')},$true))){
+                foreach($arg in @($m.Arguments)){ if(Test-R4Text $arg){ [void]$shown.Add((Get-R4Norm $arg)) } }
+            }
+            foreach($c in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Start-Process'},$true))){
+                if($c.CommandElements.Count -ge 2 -and (Test-R4Text $c.CommandElements[1])){ [void]$shown.Add((Get-R4Norm $c.CommandElements[1])) }
+            }
+        }
+    }
+    $shown2=@($shown|Where-Object{$_ -cne ''}|Select-Object -Unique)
+    return [pscustomobject]@{All=@($all);Shown=$shown2}
+}
+# The table against the classic: every value is a classic string (a & is && in WinForms; ChooserCellName is the one non-classic text), and every classic shown text is in the table.
+function Get-R4DriftProblems($Table,$Classic,[string[]]$Extra=@()){
+    $problems=New-Object System.Collections.ArrayList
+    $norm=@{}
+    foreach($key in $r4Keys){
+        $v=[string]$Table[$key]
+        if($key -ceq 'ChooserCellName'){ if($v -cne '{0}: {1}'){[void]$problems.Add("the non-classic $key is not '{0}: {1}'")}; continue }
+        $c=$v.Replace('&','&&'); $norm[$c]=$true
+        if($Classic.All -cnotcontains $c){[void]$problems.Add("table value $key is not a string of ShowSetupAttention or ShowRecipeChooser")}
+    }
+    foreach($s in @($Classic.Shown)+@($Extra)){ if(-not $norm.ContainsKey([string]$s)){[void]$problems.Add("the classic text '$s' is not in the table")} }
+    return ,$problems.ToArray()
+}
+$r4Classic=Get-R4Classic $classicAst
+$r4Drift=Get-R4DriftProblems $sdTable $r4Classic
+foreach($pr in $r4Drift){Write-Host "FINDING: $pr"}
+Check ($r4Drift.Count -eq 0 -and $r4Classic.Shown.Count -ge 20) "every setup check and chooser text value is a classic string (&& read as &), and every classic text is in the table ($($r4Classic.Shown.Count) classic texts read)"
+foreach($rk in $r4Keys){
+    if($rk -ceq 'ChooserCellName'){continue}
+    $mut=[ordered]@{}; foreach($key in @($sdTable.Keys)){$mut[$key]=[string]$sdTable[$key]}
+    $mut[$rk]=[string]$sdTable[$rk]+'.'
+    Check ((Get-R4DriftProblems $mut $r4Classic).Count -ge 1) "mutation check: a changed $rk literal fails the setup check and chooser drift pin"
+}
+$mut=[ordered]@{}; foreach($key in @($sdTable.Keys)){$mut[$key]=[string]$sdTable[$key]}; $mut['ChooserCellName']='{1}: {0}'
+Check ((Get-R4DriftProblems $mut $r4Classic).Count -ge 1) 'mutation check: a changed ChooserCellName fails the drift pin'
+$mut=[ordered]@{}; foreach($key in @($sdTable.Keys)){$mut[$key]=[string]$sdTable[$key]}; $mut['SetupPrepare']='Prepare && review VC++'
+Check ((Get-R4DriftProblems $mut $r4Classic).Count -ge 1) 'mutation check: the classic && copied as && (not the displayed &) fails the drift pin'
+Check ((Get-R4DriftProblems $sdTable $r4Classic @('A new caption')).Count -ge 1) 'mutation check: a new shown literal in the classic functions that the table lacks fails the drift pin'
+
+# --- the classic key targets, read from the classic AST ---
+function Get-R4ClassicKeys($Ast,[string]$FnName){
+    $fn=(Get-AstFunction $Ast $FnName)[0]
+    $caption=@{}
+    foreach($a in @($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -cmatch '^\$\w+\.Text$'},$true))){
+        $r=Get-R4RightText $a.Right; if($null -ne $r){ $caption[($a.Left.Extent.Text -replace '\.Text$','')]=(Get-R4Norm $r).Replace('&&','&') }
+    }
+    $out=@{}
+    foreach($pair in @(@('Enter','AcceptButton'),@('Escape','CancelButton'))){
+        $asg=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq ('$dialog.'+$pair[1])},$true))
+        $out[$pair[0]]=if($asg.Count -eq 1 -and $caption.ContainsKey($asg[0].Right.Extent.Text)){$caption[$asg[0].Right.Extent.Text]}else{'<none>'}
+    }
+    return $out
+}
+$r4SetupKeys=Get-R4ClassicKeys $classicAst 'ShowSetupAttention'
+$r4ChooserKeys=Get-R4ClassicKeys $classicAst 'ShowRecipeChooser'
+Check ($r4SetupKeys['Enter'] -ceq 'Recheck' -and $r4SetupKeys['Escape'] -ceq 'Do later') 'classic ShowSetupAttention: Enter = Recheck, Escape = Do later'
+Check ($r4ChooserKeys['Enter'] -ceq 'Choose' -and $r4ChooserKeys['Escape'] -ceq 'Cancel') 'classic ShowRecipeChooser: Enter = Choose, Escape = Cancel'
+$r4SetupFn=(Get-AstFunction $classicAst 'ShowSetupAttention')[0]; $r4ChooserFn=(Get-AstFunction $classicAst 'ShowRecipeChooser')[0]
+function Get-R4Returns($Fn){
+    $r=New-Object System.Collections.ArrayList
+    foreach($x in @($Fn.FindAll({param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst]},$true))){ if($null -ne $x.Pipeline -and $x.Pipeline.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst] -and (Test-R4Text $x.Pipeline.PipelineElements[0].Expression)){[void]$r.Add([string]$x.Pipeline.PipelineElements[0].Expression.Value)} }
+    return ,$r.ToArray()
+}
+Check (((Get-R4Returns $r4SetupFn) -join ',') -ceq 'recheck,prepare,defer') 'classic ShowSetupAttention returns recheck, prepare or defer'
+# Lead condition 1: the classic chooser has a double-click on the list that chooses a selected row.
+$r4Dbl=@($r4ChooserFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_DoubleClick' -and $n.Expression.Extent.Text -ceq '$list'},$true))
+Check ($r4Dbl.Count -eq 1 -and $r4Dbl[0].Extent.Text -cmatch '\$list\.SelectedItems\.Count -eq 1\)\{\$dialog\.DialogResult=\[Windows\.Forms\.DialogResult\]::OK\}') 'classic ShowRecipeChooser: a double-click on the list, with one row selected, answers OK (Choose); so the fluent double-click is today''s behaviour'
+Check ($r4ChooserFn.Extent.Text.Contains('$choose.Enabled=$false') -and $r4ChooserFn.Extent.Text.Contains('$list.Add_SelectedIndexChanged({$choose.Enabled=($list.SelectedItems.Count -eq 1)}')) 'classic ShowRecipeChooser: Choose is disabled until one row is selected'
+
+# --- the fluent side ---
+function Get-R4Table([string]$Text){
+    $a=@((ConvertTo-PinAst $Text).FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentDialogText'},$true))
+    if($a.Count -ne 1){return $null}
+    return (& ([scriptblock]::Create($a[0].Right.Extent.Text)))
+}
+function Get-R4Keys([string]$Text,[string]$FnName,$Table){
+    $fn=Get-DlgFn $Text $FnName
+    if($null -eq $fn){return $null}
+    $calls=@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true))
+    if($calls.Count -ne 1){return $null}
+    $asg=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$buttons'},$true))
+    if($asg.Count -ne 1){return $null}
+    $ids=@{}
+    foreach($h in @($asg[0].Right.FindAll({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true))){
+        foreach($kv in $h.KeyValuePairs){ $m=[regex]::Match($kv.Item2.Extent.Text,'\$t\.(\w+)'); if($m.Success -and $Table.Contains($m.Groups[1].Value)){$ids[[string]$kv.Item1.Extent.Text]=[string]$Table[$m.Groups[1].Value]} }
+    }
+    $out=@{}
+    foreach($p in 'Enter','Escape'){
+        $raw=Get-DlgParamText $calls[0] $p
+        $id=if($null -eq $raw){''}else{$raw.Trim("'")}
+        $out[$p+'Id']=$id
+        $out[$p]=if($id -ceq ''){'<none>'}elseif($ids.ContainsKey($id)){$ids[$id]}else{'<unknown id>'}
+    }
+    $out['Ids']=$ids
+    return $out
+}
+function Get-R4Findings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $table=Get-R4Table $Text
+    if($null -eq $table){return ,@('the dialog text table is not assigned exactly once')}
+    foreach($name in 'Show-FastLlmUiFluentSetupAttention','Show-FastLlmUiFluentRecipeChooser'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){[void]$f.Add("$name is not defined once");continue}
+        if($fn.Extent.Text -cmatch 'IsDefault|IsCancel|AcceptButton|CancelButton'){[void]$f.Add("$name sets IsDefault, IsCancel, AcceptButton or CancelButton")}
+        $first=@($fn.Body.EndBlock.Statements)[0]
+        if($null -eq $first -or $first.Extent.Text -cne 'RevealUiForAction'){[void]$f.Add("$name does not reveal the window first")}
+        $trays=@($fn.FindAll({param($n) Test-DlgCall $n 'SetTrayMenuAvailable'},$true))
+        $off=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $false'}); $on=@($trays|Where-Object{$_.Extent.Text -ceq 'SetTrayMenuAvailable $true'})
+        $tries=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $null -ne $n.Finally},$true))
+        if($off.Count -ne 1 -or $on.Count -ne 1 -or $tries.Count -ne 1){[void]$f.Add("$name does not make the tray menu unavailable once, show inside one try, and restore it in the finally")}
+        elseif($off[0].Extent.EndOffset -gt $tries[0].Extent.StartOffset -or $on[0].Extent.StartOffset -lt $tries[0].Finally.Extent.StartOffset -or $on[0].Extent.EndOffset -gt $tries[0].Finally.Extent.EndOffset){[void]$f.Add("$name does not restore the tray menu in the finally")}
+        $owners=@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true)|Where-Object{(Get-DlgParamText $_ 'Owner') -ceq '$script:form'})
+        if($owners.Count -ne 1){[void]$f.Add("$name does not own its dialog by the main window")}
+        if($fn.Extent.Text -cmatch '\bWidth\s*=\s*"|Width="'){[void]$f.Add("$name sets a Width attribute")}
+    }
+    # setup check: Enter = Recheck, Escape = Do later (the classic AcceptButton and CancelButton); the three result strings; Prepare gated by the offer.
+    $su=Get-R4Keys $Text 'Show-FastLlmUiFluentSetupAttention' $table
+    if($null -eq $su){[void]$f.Add('the setup check has no single dialog call or button table')}
+    else{
+        if($su['Enter'] -cne $r4SetupKeys['Enter']){[void]$f.Add("the setup check Enter answers '$($su['Enter'])', the classic AcceptButton is '$($r4SetupKeys['Enter'])'")}
+        if($su['Escape'] -cne $r4SetupKeys['Escape']){[void]$f.Add("the setup check Escape answers '$($su['Escape'])', the classic CancelButton is '$($r4SetupKeys['Escape'])'")}
+        if(-not (@($su['Ids'].Values) -ccontains 'Prepare & review VC++')){[void]$f.Add('the setup check has no Prepare & review VC++ button')}
+    }
+    $suFn=Get-DlgFn $Text 'Show-FastLlmUiFluentSetupAttention'
+    if($null -ne $suFn){
+        if(((Get-R4Returns $suFn) -join ',') -cne 'recheck,prepare,defer'){[void]$f.Add("the setup check returns '$((Get-R4Returns $suFn) -join ',')', not recheck, prepare, defer")}
+        $t=$suFn.Extent.Text
+        if($t -cnotmatch [regex]::Escape("if (`$answer -ceq 'Recheck') { return 'recheck' }") -or $t -cnotmatch [regex]::Escape("if (`$answer -ceq 'Prepare' -and `$offer.canPrepare) { return 'prepare' }")){[void]$f.Add('the setup check does not map Recheck to recheck and Prepare (only when the offer allows it) to prepare')}
+        if($t -cnotmatch [regex]::Escape("`$dialog['Buttons']['Prepare'].IsEnabled = [bool] `$offer.canPrepare")){[void]$f.Add('the Prepare button is not enabled by the offer (canPrepare)')}
+        foreach($need in 'SetupMicrosoftLink','SetupAmdLink'){ if($t -cnotmatch [regex]::Escape("-Name '$need'")){[void]$f.Add("the setup check has no $need link")} }
+        if(@($suFn.FindAll({param($n) Test-DlgCall $n 'Start-Process'},$true)).Count -ne 2){[void]$f.Add('the setup check does not open exactly its two links')}
+        if($t -cnotmatch [regex]::Escape('catch { $details.Text = $msFailed }') -or $t -cnotmatch [regex]::Escape('catch { $details.Text = $amdFailed }')){[void]$f.Add('a link that fails to open does not say so in the text box')}
+        if($t -cnotmatch [regex]::Escape('SetName($details,')){[void]$f.Add('the setup check text box has no automation name')}
+    }
+    $linkFn=Get-DlgFn $Text 'New-FastLlmUiFluentDialogLinkButton'
+    if($null -eq $linkFn -or -not $linkFn.Extent.Text.Contains('SetName($link, $Text)') -or -not $linkFn.Extent.Text.Contains('$link.Name = $Name')){[void]$f.Add('a link button is not named')}
+    # recipe chooser
+    $ch=Get-R4Keys $Text 'Show-FastLlmUiFluentRecipeChooser' $table
+    $chFn=Get-DlgFn $Text 'Show-FastLlmUiFluentRecipeChooser'
+    if($null -eq $ch -or $null -eq $chFn){[void]$f.Add('the chooser has no single dialog call or button table')}
+    else{
+        $ct=$chFn.Extent.Text
+        if($ch['EnterId'] -cne ''){[void]$f.Add('the chooser starts with an Enter target (Choose is disabled until a row is selected)')}
+        if($ch['Escape'] -cne $r4ChooserKeys['Escape']){[void]$f.Add("the chooser Escape answers '$($ch['Escape'])', the classic CancelButton is '$($r4ChooserKeys['Escape'])'")}
+        $sel=@($chFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_SelectionChanged' -and $n.Expression.Extent.Text -ceq '$list'},$true))
+        if($sel.Count -ne 1){[void]$f.Add('the chooser has no single selection handler')}
+        else{
+            $h=$sel[0].Extent.Text
+            if($h -cnotmatch [regex]::Escape('$enabled = ($list.SelectedItems.Count -eq 1)') -or $h -cnotmatch [regex]::Escape('$choose.IsEnabled = $enabled')){[void]$f.Add('Choose is not enabled exactly while one row is selected')}
+            $m=[regex]::Match($h,"if \(\`$enabled\) \{ \`$state\['Enter'\] = '(\w+)' \} else \{ \`$state\['Enter'\] = '' \}")
+            if(-not $m.Success){[void]$f.Add('the Enter target does not follow the selection (Choose when enabled, nothing otherwise)')}
+            elseif($ch['Ids'].ContainsKey($m.Groups[1].Value) -and $ch['Ids'][$m.Groups[1].Value] -cne $r4ChooserKeys['Enter']){[void]$f.Add("the chooser Enter answers '$($ch['Ids'][$m.Groups[1].Value])', the classic AcceptButton is '$($r4ChooserKeys['Enter'])'")}
+            elseif(-not $ch['Ids'].ContainsKey($m.Groups[1].Value)){[void]$f.Add('the chooser Enter target is not a button')}
+        }
+        if($ct -cnotmatch [regex]::Escape('$choose.IsEnabled = $false')){[void]$f.Add('Choose is enabled before a row is selected')}
+        $dbl=@($chFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_MouseDoubleClick' -and $n.Expression.Extent.Text -ceq '$list'},$true))
+        if($dbl.Count -ne 1 -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape('if ($list.SelectedItems.Count -eq 1)') -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape("`$state['Result'] = 'Choose'") -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape('$win.Close()')){[void]$f.Add('a double-click on a selected row does not choose (classic: Add_DoubleClick, one row selected, OK)')}
+        if($ct -cnotmatch [regex]::Escape('SetCanContentScroll($list, $false)')){[void]$f.Add('the chooser list scrolls by item (CanContentScroll is not False)')}
+        if($ct -cnotmatch [regex]::Escape('SetName($list, $introText)') -or $ct -cnotmatch [regex]::Escape('SetLabeledBy($list, $intro)')){[void]$f.Add('the chooser list has no Name and LabeledBy')}
+        if($ct -cnotmatch [regex]::Escape('$win.Add_Loaded({ $null = $list.Focus() }')){[void]$f.Add('the first focus is not the list while Choose is disabled')}
+        if($ct -cnotmatch [regex]::Escape('SetName($cell,') -or $ct -cnotmatch [regex]::Escape('$cell.Name =') -or $ct -cnotmatch [regex]::Escape('SetName($item, [string] $row.label)')){[void]$f.Add('a chooser cell or row has no name')}
+        if($ct -cnotmatch [regex]::Escape('if ($answer -ceq ''Choose'' -and $list.SelectedItems.Count -eq 1)')){[void]$f.Add('the chooser returns a row without Choose and one selected row')}
+        if($ct -cnotmatch [regex]::Escape('if ($shown.Count -eq 0) { return $null }') -or $ct -cnotmatch [regex]::Escape('$script:statusLabel.Text = $script:chooserNotice')){[void]$f.Add('the chooser lost its empty-list return or its notice on the status line')}
+        foreach($col in @('label','model','contextText','engineText')){ if($ct -cnotmatch "Key = '$col'"){[void]$f.Add("the chooser has no $col column")} }
+    }
+    return ,$f.ToArray()
+}
+$r4Real=Get-R4Findings $sdText
+foreach($pr in $r4Real){Write-Host "FINDING: $pr"}
+Check ($r4Real.Count -eq 0) 'setup check and chooser: Enter and Escape are the classic AcceptButton and CancelButton, the result strings, Prepare gated by the offer, Choose disabled until a selection, the double-click, names, focus, reveal and tray in a finally'
+function Edit-R4Plant([string]$From,[string]$To){ if($sdText.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: 4b plant anchor missing: $From"}; return $sdText.Replace($From,$To) }
+$r4Plants=[ordered]@{
+    'the setup Enter is Do later'=Edit-R4Plant "-Buttons `$buttons -Enter 'Recheck' -Escape 'Later'" "-Buttons `$buttons -Enter 'Later' -Escape 'Later'"
+    'the setup Escape is Recheck'=Edit-R4Plant "-Enter 'Recheck' -Escape 'Later'" "-Enter 'Recheck' -Escape 'Recheck'"
+    'the setup Enter removed'=Edit-R4Plant "-Enter 'Recheck' -Escape 'Later'" "-Escape 'Later'"
+    'the prepare string changed to yes'=Edit-R4Plant "return 'prepare'" "return 'yes'"
+    'the recheck string changed'=Edit-R4Plant "return 'recheck'" "return 'retry'"
+    'the defer string changed'=Edit-R4Plant "return 'defer'" "return 'later'"
+    'prepare returned without the offer'=Edit-R4Plant "-ceq 'Prepare' -and `$offer.canPrepare" "-ceq 'Prepare'"
+    'Prepare always enabled'=Edit-R4Plant "`$dialog['Buttons']['Prepare'].IsEnabled = [bool] `$offer.canPrepare" "`$dialog['Buttons']['Prepare'].IsEnabled = `$true"
+    'a link failure silent'=Edit-R4Plant 'catch { $details.Text = $msFailed }' 'catch { $null = $msFailed }'
+    'a link button unnamed'=Edit-R4Plant '[System.Windows.Automation.AutomationProperties]::SetName($link, $Text)' '$null = $Text'
+    'the setup check owner dropped'=Edit-R4Plant "-Enter 'Recheck' -Escape 'Later' -Owner `$script:form" "-Enter 'Recheck' -Escape 'Later'"
+    'the setup tray restore out of the finally'=Edit-R4Plant 'try { $answer = Show-FastLlmUiFluentDialog -Dialog $dialog } finally { SetTrayMenuAvailable $true }' "try { `$answer = Show-FastLlmUiFluentDialog -Dialog `$dialog } finally { }`n    SetTrayMenuAvailable `$true"
+    'the setup reveal dropped'=Edit-R4Plant "    RevealUiForAction`n    `$t = `$script:FastLlmUiFluentDialogText`n    `$lines" "    `$t = `$script:FastLlmUiFluentDialogText`n    `$lines"
+    'the chooser starts with Enter = Choose'=Edit-R4Plant "-Enter '' -Escape 'Cancel'" "-Enter 'Choose' -Escape 'Cancel'"
+    'the chooser Escape is Choose'=Edit-R4Plant "-Enter '' -Escape 'Cancel'" "-Enter '' -Escape 'Choose'"
+    'Choose enabled at the start'=Edit-R4Plant '$choose.IsEnabled = $false' '$choose.IsEnabled = $true'
+    'Choose enabled without a selection'=Edit-R4Plant '$enabled = ($list.SelectedItems.Count -eq 1)' '$enabled = ($list.SelectedItems.Count -ge 0)'
+    'the Enter target always Choose'=Edit-R4Plant "if (`$enabled) { `$state['Enter'] = 'Choose' } else { `$state['Enter'] = '' }" "`$state['Enter'] = 'Choose'"
+    'the Enter target Cancel on selection'=Edit-R4Plant "if (`$enabled) { `$state['Enter'] = 'Choose' }" "if (`$enabled) { `$state['Enter'] = 'Cancel' }"
+    'the double-click without a selection guard'=Edit-R4Plant "        if (`$list.SelectedItems.Count -eq 1) {`n            if ([string] `$state['Result'] -ceq '')" "        if (`$true) {`n            if ([string] `$state['Result'] -ceq '')"
+    'the double-click answers Cancel'=Edit-R4Plant "`$state['Result'] = 'Choose'" "`$state['Result'] = 'Cancel'"
+    'the double-click removed'=Edit-R4Plant '$list.Add_MouseDoubleClick({' '$list.Add_MouseRightButtonUp({'
+    'the list scrolls by item'=Edit-R4Plant 'SetCanContentScroll($list, $false)' 'SetCanContentScroll($list, $true)'
+    'the list LabeledBy dropped'=Edit-R4Plant '[System.Windows.Automation.AutomationProperties]::SetLabeledBy($list, $intro)' '$null = $intro'
+    'the first focus not the list'=Edit-R4Plant '$win.Add_Loaded({ $null = $list.Focus() }.GetNewClosure())' '$win.Add_Loaded({ $null = $choose.Focus() }.GetNewClosure())'
+    'a cell unnamed'=Edit-R4Plant '            $cell.Name = ''ChooserCell'' + [string] $column[''Key'']' '            $null = $column'
+    'a row returned without Choose'=Edit-R4Plant "if (`$answer -ceq 'Choose' -and `$list.SelectedItems.Count -eq 1)" 'if ($list.SelectedItems.Count -eq 1)'
+    'the chooser notice off the status line'=Edit-R4Plant 'if ($script:chooserNotice) { $script:statusLabel.Text = $script:chooserNotice }' '$null = 1'
+    'the chooser tray restore out of the finally'=Edit-R4Plant "    finally { SetTrayMenuAvailable `$true }`n    return `$picked" "    finally { }`n    SetTrayMenuAvailable `$true`n    return `$picked"
+    'the chooser column dropped'=Edit-R4Plant "        @{ Key = 'model'; Header = [string] `$t.ChooserModel; Weight = 170 },`n" ''
+    'IsDefault on a chooser button'=Edit-R4Plant '    $choose.IsEnabled = $false' "    `$choose.IsEnabled = `$false; `$choose.IsDefault = `$true"
+}
+foreach($k in $r4Plants.Keys){ Check ($r4Plants[$k] -cne $sdText -and (Get-R4Findings $r4Plants[$k]).Count -ge 1) "mutation check: the setup check and chooser pins flag: $k" }
+# ===== end PR 4b Task B2 (builder R) =====
 
 Write-Host "UI fluent member coverage tests passed: $checks"
