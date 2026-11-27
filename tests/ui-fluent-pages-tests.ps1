@@ -2514,6 +2514,51 @@ function Invoke-P21b-ExpanderContrast {
     }
     Check-NoExceptions 'P21b'
 }
+# Lab canary observation: in dark, a disabled button (Home's Open chat with nothing running) looked enabled, because the disabled brushes were the enabled ones.
+# On Home with nothing running, OpenChatButton is disabled and its text is the dictionary's DisabledText colour, at least 3x less contrast than an enabled
+# button's (ConnectButton). The dictionary is swapped for each theme and restored after.
+function Invoke-P21c-DisabledButtons {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $mergedDicts = $f.Window.Resources.MergedDictionaries
+    $origDict = $mergedDicts[0]
+    try {
+        foreach ($theme in 'dark', 'light') {
+            $mergedDicts.Clear()
+            $dict = New-FastLlmUiThemeDictionary -Theme $theme -AccentPair (Get-FastLlmUiAccentPair $null) -TextScale 1.0
+            $mergedDicts.Add($dict)
+            Invoke-Pump 100
+            $tokens = Get-FastLlmUiThemeTokens -Theme $theme
+            $off = $els.OpenChatButton
+            $on = $els.ConnectButton
+            Check (-not [bool]$off.IsEnabled -and [bool]$on.IsEnabled) "P21c Home with nothing running: OpenChatButton is disabled and ConnectButton is enabled ($theme)" "off=$($off.IsEnabled) on=$($on.IsEnabled)"
+            $want = [string]$dict['FastLlm.DisabledTextBrush'].Color.ToString()
+            $gotOff = 'none'; if ($off.Foreground -is [System.Windows.Media.SolidColorBrush]) { $gotOff = [string]$off.Foreground.Color.ToString() }
+            $gotOn = 'none'; if ($on.Foreground -is [System.Windows.Media.SolidColorBrush]) { $gotOn = [string]$on.Foreground.Color.ToString() }
+            Check ($gotOff -ceq $want -and $gotOff -cne $gotOn) "P21c the disabled button text is the DisabledText colour and differs from an enabled button's ($theme)" "off=$gotOff want=$want on=$gotOn"
+            $q = 0.0
+            if ($gotOff -cne 'none' -and $gotOn -cne 'none') {
+                $cOff = [double](Get-FastLlmUiContrastRatio -Foreground $gotOff -Background ([string]$tokens.Card) -Layer ([string]$tokens.Layer))
+                $cOn = [double](Get-FastLlmUiContrastRatio -Foreground $gotOn -Background ([string]$tokens.Card) -Layer ([string]$tokens.Layer))
+                $q = $cOn / $cOff
+            }
+            Check ($q -ge 3) "P21c the enabled/disabled text contrast quotient is at least 3 ($theme)" "quotient=$([Math]::Round($q, 2))"
+            $bd = $null; try { $bd = $off.Template.FindName('Bd', $off) } catch { $bd = $null }
+            if ($null -ne $bd -and $bd.Background -is [System.Windows.Media.SolidColorBrush]) {
+                Check ([string]$bd.Background.Color.ToString() -ceq [string]$dict['FastLlm.DisabledFillBrush'].Color.ToString()) "P21c the disabled button body is the DisabledFill colour ($theme)"
+            }
+        }
+    }
+    finally {
+        $mergedDicts.Clear()
+        $mergedDicts.Add($origDict)
+        Invoke-Pump 50
+    }
+    Check-NoExceptions 'P21c'
+}
 function Invoke-P21-TwoWay {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -5337,7 +5382,7 @@ $script:steps = @(
     'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
-    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
+    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P21c-DisabledButtons', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
     'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows', 'Invoke-P44-DialogTabWalk',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',

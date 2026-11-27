@@ -595,7 +595,7 @@ function Set-FastLlmUiFluentTheme {
     param([Parameter(Mandatory = $true)] $ThemeState)
     $f = $script:FastLlmUiFluent
     $dictionary = New-FastLlmUiThemeDictionary -Theme $ThemeState.Choice -AccentPair $ThemeState.Pair -TextScale $ThemeState.Scale
-    # The focus ring and the disabled text: accent and secondary text, or the system Highlight and GrayText colours in high contrast.
+    # The focus ring and the disabled colours: accent and the Fluent disabled tokens, or the system Highlight, GrayText and Control colours in high contrast.
     if ([string] $ThemeState.Choice -ceq 'high-contrast') {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value ([System.Windows.SystemColors]::HighlightBrush)
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
@@ -606,9 +606,6 @@ function Set-FastLlmUiFluentTheme {
     }
     else {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value $dictionary['FastLlm.AccentFillBrush']
-        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value $dictionary['FastLlm.TextSecondaryBrush']
-        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledFillBrush' -Value $dictionary['FastLlm.CardBrush']
-        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value $dictionary['FastLlm.ControlStrokeBrush']
     }
     $merged = $f['Window'].Resources.MergedDictionaries
     $merged.Clear()

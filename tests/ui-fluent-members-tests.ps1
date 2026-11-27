@@ -971,8 +971,44 @@ Check ($hcFails.Count -eq 0) 'high contrast: the theme sets the popup surface (F
 $hcLine="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.FlyoutBrush' -Value ([System.Windows.SystemColors]::WindowBrush)"
 $hcGone=$hcShell.Replace($hcLine,'# (the high-contrast FlyoutBrush override was here)')
 Check ($hcGone -cne $hcShell -and (Get-HcFlyoutPinFailures $hcGone).Count -ge 1) 'mutation check: the high-contrast FlyoutBrush override replaced by a comment is flagged (lead gate F6)'
-$hcMoved=$hcGone.Replace("Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value `$dictionary['FastLlm.ControlStrokeBrush']","Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value `$dictionary['FastLlm.ControlStrokeBrush']`n        $hcLine")
+$hcMoved=$hcGone.Replace("Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.FocusBrush' -Value `$dictionary['FastLlm.AccentFillBrush']","Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.FocusBrush' -Value `$dictionary['FastLlm.AccentFillBrush']`n        $hcLine")
 Check ($hcMoved -cne $hcGone -and (Get-HcFlyoutPinFailures $hcMoved).Count -ge 1) 'mutation check: the override moved into the light/dark branch is flagged'
+# Disabled controls look disabled (lab canary): high contrast keeps GrayText, Control and GrayText; light and dark take the Fluent disabled tokens, so the
+# light/dark branch must not override the three disabled brushes with TextSecondary, Card or ControlStroke (that made a disabled button look enabled).
+function Get-DisabledBrushPinFailures([string]$ShellText){
+    $fails=New-Object System.Collections.ArrayList
+    $dErr=$null; $dAst=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$dErr)
+    $fn=@($dAst.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Set-FastLlmUiFluentTheme'},$true))
+    if($fn.Count -ne 1){[void]$fails.Add('Set-FastLlmUiFluentTheme is not defined once');return ,@($fails)}
+    $hcIf=@($fn[0].Body.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and [string]$n.Clauses[0].Item1.Extent.Text -cmatch "-ceq 'high-contrast'"},$true))
+    if($hcIf.Count -ne 1){[void]$fails.Add('the high-contrast branch is not found once');return ,@($fails)}
+    $want=@{DisabledTextBrush='GrayTextBrush';DisabledFillBrush='ControlBrush';DisabledStrokeBrush='GrayTextBrush'}
+    foreach($name in $want.Keys){
+        $isSet={param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Set-FastLlmUiResourceValue' -and $n.Extent.Text.Contains("-Key 'FastLlm.$name'")}.GetNewClosure()
+        $inHc=@($hcIf[0].Clauses[0].Item2.FindAll($isSet,$true))
+        if($inHc.Count -ne 1 -or -not $inHc[0].Extent.Text.Contains('-Value ([System.Windows.SystemColors]::'+$want[$name]+')')){[void]$fails.Add("the high-contrast branch does not set FastLlm.$name to SystemColors.$($want[$name]) once")}
+        if($null -ne $hcIf[0].ElseClause -and @($hcIf[0].ElseClause.FindAll($isSet,$true)).Count -ne 0){[void]$fails.Add("the light/dark branch overrides FastLlm.$name (it must come from the Disabled token)")}
+    }
+    return ,@($fails)
+}
+$dbFails=Get-DisabledBrushPinFailures $hcShell
+foreach($pr in $dbFails){Write-Host "FINDING: $pr"}
+Check ($dbFails.Count -eq 0) 'disabled brushes: GrayText, Control and GrayText in the high-contrast branch; the light/dark branch leaves them to the tokens'
+$dbLines=@{
+    Text="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledTextBrush' -Value `$dictionary['FastLlm.TextSecondaryBrush']"
+    Fill="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledFillBrush' -Value `$dictionary['FastLlm.CardBrush']"
+    Stroke="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value `$dictionary['FastLlm.ControlStrokeBrush']"
+}
+$focusLine="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.FocusBrush' -Value `$dictionary['FastLlm.AccentFillBrush']"
+foreach($k in 'Text','Fill','Stroke'){
+    $mutBack=$hcShell.Replace($focusLine,$focusLine+"`n        "+$dbLines[$k])
+    Check ($mutBack -cne $hcShell -and (Get-DisabledBrushPinFailures $mutBack).Count -ge 1) "mutation check: the Disabled$k brush overridden again in the light/dark branch is flagged"
+}
+$hcGrayLine="Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledTextBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)"
+$mutHc=$hcShell.Replace($hcGrayLine,"Set-FastLlmUiResourceValue -Dictionary `$dictionary -Key 'FastLlm.DisabledTextBrush' -Value `$dictionary['FastLlm.TextSecondaryBrush']")
+Check ($mutHc -cne $hcShell -and (Get-DisabledBrushPinFailures $mutHc).Count -ge 1) 'mutation check: the high-contrast DisabledText no longer GrayText is flagged'
+$mutHcGone=$hcShell.Replace($hcGrayLine,'# (removed)')
+Check ($mutHcGone -cne $hcShell -and (Get-DisabledBrushPinFailures $mutHcGone).Count -ge 1) 'mutation check: the high-contrast DisabledText override removed is flagged'
 # The shared Expander style sets its text colour. Without it the header (Home's Activity, Models' Start options) takes WPF's SystemColors.ControlText, which is
 # black and about 1.3:1 on the dark layer (lab canary observation).
 function Test-ExpanderForegroundPin([string]$ShellText){
