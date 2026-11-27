@@ -65,6 +65,78 @@ Check ($null -eq $c.steps -and $c.stepsText -ceq '') '14 no steps'
 [void](Expect '26 starting-case' @{Background='starting-case'} 'starting' 'accent' '' 'stop')
 $c=Expect '27 bare-ready' @{Background='bare-ready'} 'background-found' 'neutral' '' 'attach'
 
+# The attach-ready rule (the canary's "Starting" card that never offered Attach): a pending start whose Ready identity is observed is a background run to attach.
+$r1=$script:UiMatrixR1;$r2=$script:UiMatrixR2
+function New-AttachBg([bool]$Pending,[bool]$Attachable,[bool]$Verified,[bool]$Match,[bool]$Attached,[bool]$Attention){
+    $bg=New-FastLlmUiBackgroundState
+    $ready=[bool]($Attachable -or $Verified)
+    $obs=[pscustomobject]@{phase=$(if($ready){'ready'}else{'starting'});active=$true;attachable=$Attachable;occupied=$true;requestId=$r1
+        runId=$script:UiMatrixRun;hostIdentity=@{pid=4242;startUtcTicks=1}}
+    if($Verified){$obs|Add-Member -NotePropertyName readyIdentityVerified -NotePropertyValue $true}
+    $bg.observation=$obs
+    if($Pending){$bg.pendingRequestId=$(if($Match){$r1}else{$r2})}
+    if($Attached){$bg.attachedRequestId=$r1}
+    if($Attention){$bg.attention='x'}
+    return $bg
+}
+$c=Expect '28 canary: pending start, Ready + attachable, same request' @{Background=(New-AttachBg $true $true $true $true $false $false)} 'background-found' 'neutral' '' 'attach'
+Check ($c.headline -ceq 'Background run found') '28 canary headline'
+$c=Expect '29 canary without the identity flag' @{Background=(New-AttachBg $true $true $false $true $false $false)} 'background-found' 'neutral' '' 'attach'
+$c=Expect '30 verified-only (attachable false), same request' @{Background=(New-AttachBg $true $false $true $true $false $false)} 'background-found' 'neutral' '' 'attach'
+Check ($c.headline -ceq 'Background run found') '30 verified-only headline'
+[void](Expect '31 verified-only, nothing pending' @{Background=(New-AttachBg $false $false $true $true $false $false)} 'background-found' 'neutral' '' 'attach')
+[void](Expect '32 mismatched request id stays starting' @{Background=(New-AttachBg $true $true $true $false $false $false)} 'starting' 'accent' '' 'stop')
+[void](Expect '33 pending start not yet observed Ready stays starting' @{Background=(New-AttachBg $true $false $false $true $false $false)} 'starting' 'accent' '' 'stop')
+$bgAtt=New-AttachBg $false $true $true $true $true $false
+$bgAtt.observation|Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true
+$bgAtt.observation|Add-Member -NotePropertyName servingHealthy -NotePropertyValue $true
+[void](Expect '34 attached and health checked stays running-background' @{Background=$bgAtt} 'running-background' 'success' '' 'stop')
+[void](Expect '35 attached, health not yet checked is not offered Attach' @{Background=(New-AttachBg $false $true $true $true $true $false)} 'not-running' 'neutral' '' 'start')
+
+# Parity: over background snapshots the card offers Attach only when the Attach control is enabled, and (without an attention note, which the card shows first) whenever it is.
+$parityRows=0;$parityAttach=0
+foreach($pending in $false,$true){foreach($att in $false,$true){foreach($ver in $false,$true){foreach($match in $true,$false){foreach($attached in $false,$true){foreach($attn in $false,$true){
+    if(-not $pending -and -not $match){continue}
+    $snap=Snap @{Background=(New-AttachBg $pending $att $ver $match $attached $attn)}
+    $card=Get-FastLlmUiCardState -Snapshot $snap
+    $ctl=[bool](Get-FastLlmUiControlStates -Snapshot $snap).backgroundAttach
+    $why="pending=$pending attachable=$att verified=$ver match=$match attached=$attached attention=$attn card=$($card.state)/$($card.mainAction) control=$ctl"
+    $parityRows++
+    if($card.mainAction -ceq 'attach'){$parityAttach++;Check $ctl "parity: the card offers Attach only when the control is enabled ($why)"}
+    if($ctl -and -not $attn){Check ($card.mainAction -ceq 'attach') "parity: an enabled Attach control is offered on the card ($why)"}
+}}}}}}
+Check ($parityRows -ge 40 -and $parityAttach -gt 0) "the parity matrix ran ($parityRows rows, $parityAttach with Attach)"
+# The helper's two expressions are copies of the control-state ones.
+$uiStateAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'src/FastLlm.UiState.ps1'),[ref]$null,[ref]$null)
+function Get-UiStateExpression([string]$Function,[string]$Variable){
+    $fn=@($uiStateAst.FindAll({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Function},$true))
+    if($fn.Count -ne 1){throw "FAIL: function $Function not found once"}
+    $as=@($fn[0].FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq ('$'+$Variable)},$true))
+    if($as.Count -ne 1){throw "FAIL: $Function does not assign `$$Variable exactly once"}
+    return ([regex]::Replace($as[0].Right.Extent.Text,'\s+',' ')).Trim()
+}
+foreach($v in 'attachable','requestMatches'){
+    $a=Get-UiStateExpression 'Get-FastLlmUiControlStates' $v
+    $b=Get-UiStateExpression 'Test-FastLlmUiBackgroundAttachReady' $v
+    Check ($a.Length -gt 20 -and $a -ceq $b) "the attach-ready helper $v expression is text-identical to the control-state one"
+}
+Check ((Get-Command Get-FastLlmUiCardState -CommandType Function).ScriptBlock.ToString().Contains('Test-FastLlmUiBackgroundAttachReady')) 'the card state uses the attach-ready helper'
+# Mutants on a scratch copy of the card function: each must fail its probe.
+function Test-CardMutant([string]$From,[string]$To,[scriptblock]$Probe){
+    $text=(Get-Command Get-FastLlmUiCardState -CommandType Function).ScriptBlock.ToString()
+    if(-not $text.Contains($From)){throw "FAIL: mutation anchor missing: $From"}
+    Set-Item -Path function:script:Get-CardMutant -Value ([scriptblock]::Create($text.Replace($From,$To)))
+    return [bool](& $Probe)
+}
+$canarySnap=Snap @{Background=(New-AttachBg $true $true $true $true $false $false)}
+$verifiedSnap=Snap @{Background=(New-AttachBg $false $false $true $true $false $false)}
+$canaryProbe={$x=Get-CardMutant -Snapshot $canarySnap;$x.state -ceq 'background-found' -and $x.mainAction -ceq 'attach'}
+$verifiedProbe={$x=Get-CardMutant -Snapshot $verifiedSnap;$x.state -ceq 'background-found' -and $x.mainAction -ceq 'attach'}
+Check (Test-CardMutant 'elseif ($attachReady) {' 'elseif ($attachReady) {' $canaryProbe) 'control: an unchanged card copy passes the canary probe through the mutation path'
+Check (Test-CardMutant 'elseif ($attachReady) {' 'elseif ($attachReady) {' $verifiedProbe) 'control: an unchanged card copy passes the verified-only probe through the mutation path'
+Check (-not (Test-CardMutant '-not $attachReady -and ((' '$true -and ((' $canaryProbe)) 'mutation: the old row 5 (a pending start wins over attach-ready) fails the canary probe'
+Check (-not (Test-CardMutant 'elseif ($attachReady) {' 'elseif ($attachable -and -not $attached) {' $verifiedProbe)) 'mutation: the old row 10 (observation.attachable only) fails the verified-only probe'
+
 # Every state's headline.
 $headlines=@{'not-running'='Not running';'starting'='Starting';'running'='Running';'running-background'='Running in background';'background-found'='Background run found'
     'needs-attention'='Needs attention';'switching'='Switching models';'stopping'='Stopping';'working'='Working';'waiting-microsoft'='Waiting for Microsoft setup'

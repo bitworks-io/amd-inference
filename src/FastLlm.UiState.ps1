@@ -217,6 +217,21 @@ function Get-FastLlmUiCardStepIndex {
     }
 }
 
+# One attach-ready rule: a run is attachable (or its Ready identity is verified), it is our pending request (or none is pending) and nothing is attached.
+# The attachable and requestMatches expressions are copies of the ones in Get-FastLlmUiControlStates; the card-state suite pins them text-identical and checks
+# the card offers Attach exactly when the Attach control is enabled, so the two cannot drift apart.
+function Test-FastLlmUiBackgroundAttachReady {
+    param([Parameter(Mandatory=$true)]$Background)
+    $bg = $Background
+    $observation = $bg.observation
+    $attachable = [bool]($observation -and
+        ((Get-FastLlmUiStateProperty $observation 'attachable') -or
+         ((Get-FastLlmUiStateProperty $observation 'readyIdentityVerified'))))
+    $requestMatches = [bool](-not $bg.pendingRequestId -or
+        [string](Get-FastLlmUiStateProperty $observation 'requestId') -ceq [string]$bg.pendingRequestId)
+    return [bool](-not $bg.attachedRequestId -and $attachable -and $requestMatches)
+}
+
 # The status card: one state, its headline, tone, reason, main action and start steps, from one snapshot. First match wins.
 function Get-FastLlmUiCardState {
     param([Parameter(Mandatory=$true)]$Snapshot)
@@ -235,6 +250,7 @@ function Get-FastLlmUiCardState {
     $healthChecked = [bool](Get-FastLlmUiStateProperty $obs 'uiHealthChecked')
     $servingHealthy = Get-FastLlmUiStateProperty $obs 'servingHealthy'
     $attached = [bool]$bg.attachedRequestId
+    $attachReady = Test-FastLlmUiBackgroundAttachReady -Background $bg
     $stepIndex = Get-FastLlmUiCardStepIndex -Name ([string]$Snapshot.Step)
     $flowIndex = Get-FastLlmUiCardStepIndex -Name ([string]$Snapshot.FlowPhase)
 
@@ -256,7 +272,7 @@ function Get-FastLlmUiCardState {
               ($Snapshot.FlowPhase -ceq 'setup-attention' -or $Snapshot.FlowPhase -ceq 'consent')) {   # row 5: flow waiting
         $state = 'starting'; $tone = 'accent'; $action = 'stop'
         $steps = New-FastLlmUiCardSteps -Current $flowIndex -CurrentState $(if ($Snapshot.FlowPhase -ceq 'setup-attention') { 'needs attention' } else { 'in progress' })
-    } elseif (($bg.pendingRequestId -and -not $bg.attention) -or ($active -and $phase -cne 'ready')) {   # row 5: background start, no steps
+    } elseif (-not $attachReady -and (($bg.pendingRequestId -and -not $bg.attention) -or ($active -and $phase -cne 'ready'))) {   # row 5: background start, no steps (not once Attach is ready)
         $state = 'starting'; $tone = 'accent'; $action = 'stop'
     } elseif ($attached -and $healthChecked -and $servingHealthy -eq $false) {   # row 6: attached run failed its health check
         $state = 'needs-attention'; $tone = 'critical'; $reason = 'health-failed'
@@ -276,7 +292,7 @@ function Get-FastLlmUiCardState {
         $state = 'working'; $tone = 'accent'
     } elseif ($Snapshot.FailureHeld) {                                # row 9: a held failure
         $state = 'needs-attention'; $tone = 'critical'; $reason = 'failure'
-    } elseif ($attachable -and -not $attached) {                      # row 10: a run to attach to
+    } elseif ($attachReady) {                                         # row 10: a run to attach to
         $state = 'background-found'; $action = 'attach'
     }                                                                 # row 11: not running (the defaults)
 
