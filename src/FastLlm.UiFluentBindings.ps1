@@ -51,8 +51,7 @@ function Get-FastLlmUiFluentControlTable {
         @('contextBox','NumericUpDown',''),
         @('pathBox','TextBox',''),
         @('output','TextBox',''),
-        @('progress','ProgressBar',''),
-        @('statusTip','ToolTip','')
+        @('progress','ProgressBar','')
     )
 }
 

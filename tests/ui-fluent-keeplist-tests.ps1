@@ -264,202 +264,6 @@ $modify=@(
 
 # DELETE: items the flip deletes whole, by hash. Empty once the flip has landed.
 $deleteSha=@()
-# 5b-delete-begin
-$deleteSha=@(
-    '9b0f92f433c0174d763a6779c51e7ace0a46e2ec4dbb38d8b213a614d3af9212' # L48 $form=New-Object Windows.Forms.Form
-    '98158ab992fc547c2535087dbe1f60cbd71e985f453f29973d270b3f7a850501' # L49 $form.Text='Bitworks FastLLM (Preview)'
-    '7841cbaf8a2891797bc8a8a647b1a93b0e9e03373d3aa7e7e265e5c9f5903d05' # L50 $form.Size=New-Object Drawing.Size(880,941)
-    '0700f3e2ab836ad63ff5d1cb180931b2dd0377b8b78e291303166802ff930584' # L51 $form.MinimumSize=$form.Size
-    'c9eb84933b25f3f299c006167134a0dfe67af98caf6c03fbcdb5d11b838e8cb6' # L52 $form.StartPosition='CenterScreen'
-    'ae70449f28b6cc171a7adacf7cfe6fdb0bbc7884016225b47516d9850a439f89' # L53 $form.Font=New-Object Drawing.Font('Segoe UI',10)
-    '586bef1cc2a090f83896292a1657fbae3b284633a665632dc857060a0e339009' # L54 $form.BackColor=[Drawing.Color]::FromArgb(245,247,250)
-    '6e27201e9ed982f3f7b3ff807241b487d98f47309669ac5cd143c318045e534e' # L55 function LabelAt
-    '48d5094992210300b9b05ba54229ed0480fc2cb06efd7856a72c8e04f62db207' # L61 $title=LabelAt 'Local AMD inference, managed on this PC' 24 
-    'ffb7e08c12e04f90d4f61fa3e6f686d7406317583df639cef8b4d1afb2b14f74' # L62 $title.Font=New-Object Drawing.Font('Segoe UI',18,[Drawing.F
-    'f69852a57cb67a2931f6e9acf73d8dfd2ff1a61d8c5e263f8f6c782c0ac3ee0c' # L62 $title.Height=40
-    '94a5446f542b4a8c71e8c9af165896c8f79c95bdc843c413f393fba3db8d365c' # L63 $notice=LabelAt 'Preview. Windows + AMD Radeon. Vulkan or HI
-    '6a839a87e4118b31d99cd2fe6ac7af879b8012700f17b71d46a57050c10269e7' # L64 $notice.ForeColor=[Drawing.Color]::DarkRed
-    'd959f04e292fa5445991f4a80f69a38821d3f31bbbe4593721d9af90201666e4' # L65 $null=LabelAt 'Model' 24 110 220
-    '21f9c913da772955ed29d86c1a90f904309d0ae4b7847b76723d21978af7e56d' # L66 $modelBox=New-Object Windows.Forms.ComboBox
-    '439218fca2bf778ceda637e9945a55a4a4a7afc5f794a0fc5c56c9e8d8eaf835' # L67 $modelBox.Location=New-Object Drawing.Point(24,138)
-    '07a04f74e8199d185ce31bd6feb874880991629b98b2a9a21f2562953310e841' # L67 $modelBox.Size=New-Object Drawing.Size(510,30)
-    'fdfc5f3348db773cec4072f10db73801938d62ded51ae7e398db7943ce5114ad' # L67 $modelBox.DropDownStyle='DropDownList'
-    '59e12197c4a9c01898154f34a0dd77713816e0b7cc5ece925cf2cb731370c3e0' # L68 $modelBox.Items.Add('Recommended for installed GPU')|Out-Nul
-    '1d55d5f1423a0943913a95dd881b13edde9641d832e311a67837f3321b96e1c4' # L69 foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog 
-    'ba29f5e9fd683f6f12464b11a27c10508c66625c6badc20e3778893c8839e5aa' # L70 $modelBox.SelectedIndex=0
-    'd3c27be3e574b40a62c3776cd9858ea91a6673c22d11e2583d9a2a4072fe4ef9' # L70 $form.Controls.Add($modelBox)
-    '785020705b1e7cbe78f0706a41f9ab8c7cba92de644a9f75b9cd92d4e390a06f' # L71 $null=LabelAt 'Context (0 = catalog default)' 560 110 280
-    '6dda2ed3af81b1670bfb20d6c3f2291e2bf01c60054fa29f99bb7b91d92f5e01' # L72 $contextBox=New-Object Windows.Forms.NumericUpDown
-    '5513fe34cacb31c202073a4f5da718dc263b4175482bac31609dd2d01f58273a' # L73 $contextBox.Location=New-Object Drawing.Point(560,138)
-    '980bc15897a27dab396150ce57bce7e4f7c170d2ee394aa9b47511bb097803c6' # L73 $contextBox.Size=New-Object Drawing.Size(260,30)
-    '14b488e15ec7fd109cf7b2cd4afaf9a6a8e65366ae6bc60bd5cab66f63d859e7' # L73 $contextBox.Maximum=32768
-    '72b35300aafdcade4a995c0f50330c586e80697a0b5165a8307df14e49a982ab' # L73 $contextBox.Increment=1024
-    'cb00740b153e300edba9682f700b19fce3511f3952e0671bd9c11135fdae0b08' # L73 $form.Controls.Add($contextBox)
-    'f97d8710b45421cf20454d4e5d244744938a51130828940df171848c7f9572a5' # L74 $null=LabelAt 'Install and model cache folder' 24 180
-    '4be081250efd55ae9c34e3822be4de61988ecc197bb1be208961b8154914f084' # L75 $pathBox=New-Object Windows.Forms.TextBox
-    '9df57733d91db4988551c7aa4ad5455ce327393b4cd48d5811f74ee2e5b0d909' # L76 $pathBox.Location=New-Object Drawing.Point(24,208)
-    '09051935416548581511302ccd841a2eb1919eba4a90edc5087511559a70c1a6' # L76 $pathBox.Size=New-Object Drawing.Size(510,30)
-    '5f1c2134d3644d1dbbbf62d763654fb5a7de2f7111d3a24c44a9723a4b0e86c5' # L76 $pathBox.Text=$InstallRoot
-    'c09f04f4082870e7db97b629f4a342f53e75dc457b763c229e8c487ab3eff562' # L76 $form.Controls.Add($pathBox)
-    'e4e45bb9e5c534a7b47ef00128cc78f72d8d54ece8abd33373b15631fc8b1d14' # L77 $null=LabelAt 'Resizable BAR workaround' 560 180 260
-    '91b1e306d11db5dfc7eda442a775a682af57914641b92e5b7cdb0109f696d02d' # L78 $barBox=New-Object Windows.Forms.ComboBox
-    '9df40c343bc0e97b6ac7af089e05cd8f6f7836309094ad06bb3bc4d0724a2a10' # L79 $barBox.Location=New-Object Drawing.Point(560,208)
-    '6f12d4dd439e75407e552e58a022d1789201224ac2f355e1d7672969b499679c' # L79 $barBox.Size=New-Object Drawing.Size(260,30)
-    'cb2682bbc46dfb90d70c352c17a586808dbee69824b2ec2194f813542c8dc409' # L79 $barBox.DropDownStyle='DropDownList'
-    '5b3fed6de94cc738681cfcaf63f784e65c9458dd13c8b0b14311c8760adbb9d3' # L81 foreach($barItem in @('Auto (recommended)','On','Off')){[voi
-    '6ccddf2cd1ca19f50d1a14fb3fdcfd3591efa3763812a6ad50d4beff7de60fa7' # L89 $barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[st
-    '8ace325ffcd7e17f4f49b31892417274eb81e93b293fc41cb4c6ac98f071d334' # L90 $form.Controls.Add($barBox)
-    '51d71f9c4eaa717de8022acf3034abb73f653091ef46797dc68bbffaf0d1f222' # L92 function ButtonAt
-    '708fb3fbfc7cc7e65643cf1c46d216d490de11d9937020ab76ea464437c0eb3f' # L97 $rowSlotX=@(24,162,300,438,576,714)
-    '0cd5fa28a694aff352da992f9d261c883ce0b0768829a0e5dbda809957914b4d' # L97 $rowY=350
-    '0b72564e76d849f852c48c91c6181bcc844fb30ad7e0dd9435016668f5588a3b' # L97 $rowWidth=128
-    'f60335deeee748ca214fe0a720371dbde2df4620973a6aa26c5aa7aa77542b78' # L98 $installButton=ButtonAt 'Install && start' 24 255 180
-    '5473c210258ebf6677d25ffade3a0fb58689fb9317e6c406d98f6bb6732132b3' # L99 $startButton=ButtonAt 'Start / download' 220 255 180
-    '8d81acbc6db0f1ebb3a5cae52a5872d6ceeacf4f9c4065ad000602bc5fb17edf' # L100 $stopButton=ButtonAt 'Stop' 416 255 110
-    '5f3d72eddbca0bc1aced2c07b858de16435acb0d3883641609264595c3adbd83' # L101 $doctorButton=ButtonAt 'Diagnostics' 542 255 130
-    'e39cfd436155ed44cb9ac08607a3a39e077c3f82b1fa3d748e89bb0ddb84ea15' # L102 $copyButton=ButtonAt 'Copy API URL' 688 255 132
-    'ebf02b14fe91bf28cd8342818241978e2575577b97b7ce12753e37a01b70968a' # L103 $backgroundStartButton=ButtonAt 'Start in background' 24 303
-    '4e6d43ae139151fc362505bd21cb14cc41c614f520d35fcfbdd76876562305ce' # L104 $backgroundAttachButton=ButtonAt 'Attach running' 202 303 13
-    'cf88265ead796bada79dbd6a2ca0b4afdd131f5a28fc261d8c6300a980e3e5af' # L105 $backgroundCheckButton=ButtonAt 'Recheck background' 340 303
-    'bfd5eb6809bbfd3bb488b2028950a6027060f96d6e7a668228e52552240d9e8d' # L106 $componentsButton=ButtonAt 'Components' 508 303 120
-    'e88610b53d923eeb75210ad86945aa03a77663621d6e6d051639b9ba41d3506c' # L107 $chooseButton=ButtonAt 'Choose another setup' 636 303 184
-    'a4c36f1558106644a23f88f3110775541515ca6e913ca2ae779bc9a0d993dff4' # L108 $settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $
-    'd05a34acdd2440f6009c80225ab04c28aa93843da95d6c68bd04701d8a935b24' # L109 $connectButton=ButtonAt 'Connect an app' $rowSlotX[1] $rowY 
-    '4413d1466f5901f818c2571a6088e245fe01e8fabcb65be417720cdde4f71660' # L110 $openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $row
-    '607c770385f5b77c81c6727ce4fa9cd1e0a88073500a86c7712aec81de02064d' # L111 $modelsButton=ButtonAt 'Downloaded models' $rowSlotX[3] $row
-    '6f0a36e9bbcc97668a5a498f5fe52b4ac5e8511d71500671af69318b3af39eea' # L112 $bundleButton=ButtonAt ('Save support bundle'+[string][char]
-    '798f2f0d154e2262f36f89db2dbfb2e6092850eea802519d874b2e02348c4caf' # L113 $logsButton=ButtonAt 'Open logs' $rowSlotX[5] $rowY $rowWidt
-    '0374818c76452e4c422e82b25c60e27b1835c93f166b8eae32dae4c604dc8b76' # L114 $openChatButton.Enabled=$false
-    '61ec02762b2e525b777a6bb2de2f6a8abb9fc5c4204b1d638d4c7dbe6f87622a' # L125 $chooseButton.Enabled=$false
-    '3e971070a41f28e755cda21038ad78b8ec842a835d11e8ee6d2fc2a59acf2d22' # L126 $backgroundLabel=LabelAt 'Checking background host ownership
-    '2154dde525a036fa08c7c15473811e32efbb8c3d519e20e5a3434612100ea516' # L127 $statusLabel=LabelAt 'Not running. Install & start sets up a
-    '2b1ce8216c756d6a3849b46bb7e75572254b328657be31b51927b3e22f507aa2' # L129 $statusLabel.AutoEllipsis=$true
-    'a2ac74e3162d89417a6d8537f350e0c02ebe27b655c21446b1492090bb5102cd' # L130 $statusTip=New-Object Windows.Forms.ToolTip
-    '3f0c6a96202348a765a9929b5a14ddc6b504f9af5b67902d1027776b33e329ef' # L131 $statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusL
-    'af28d0454a1e63fb4d48b0fb1c0f0ef04bf58020360afa902a5156dcd8d3bc4b' # L132 $statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text
-    '7acf7525d0041720de7e000fa806d9e54e1a777f351f5584f604df65e107e868' # L133 $progress=New-Object Windows.Forms.ProgressBar
-    '77fc92eb1053fea69fd13746f8c3a5d10144414296969da0dbaa827b1fc6f0b9' # L134 $progress.Location=New-Object Drawing.Point(24,458)
-    '6e49db9f84a753eefe9b80dd5a9673b4679ead49ebbd9d0265abb393839e2651' # L134 $progress.Size=New-Object Drawing.Size(796,8)
-    '5255fbd333f3eee39c99688aeaa6d2cf25871c7d342f9fb2c3c8494643f82949' # L134 $progress.Style='Marquee'
-    'e13bb0a8c06a962908ea3e472f53e0b58606c97ba2a126a3f978bfd5782e5cc6' # L134 $progress.Visible=$false
-    '8b1908d87fcc06f7fb08d088b1c3c8ebc2651c686d9db2658dc89916d0e4882c' # L134 $form.Controls.Add($progress)
-    'abee7b11d732b39adedc026c3bdd2b43eae3580f2bdd000157fbfac4be5be817' # L135 $output=New-Object Windows.Forms.TextBox
-    '92aee124d2b96875cb73dd6166fe71af17bf8f1740991db4b46dd902841baba3' # L136 $output.Location=New-Object Drawing.Point(24,512)
-    '2e8b9dd14c309f62d17b735c99bc12c142f32ed2dae9372bb13005b432310c5d' # L136 $output.Size=New-Object Drawing.Size(796,134)
-    '9b16a9e0e8e3fb6f2c2e3dad1edc00021ab35048c92d4df179dfe7bc46994afb' # L136 $output.Multiline=$true
-    '19d3335aba1379af08ac630c11c8ef64b25ea277e72f8cd8d4eda1ec49d55590' # L136 $output.ReadOnly=$true
-    'd4447fe42db59a380a339168726e43e35abf4858b05aa91cc677b962fcbe4480' # L136 $output.ScrollBars='Vertical'
-    '304646fe4154a193ff89b08caa785482bf0fbdcf63ea6331b4f3c126bc7002bd' # L136 $form.Controls.Add($output)
-    'b14e222561f56930ffb9e4d5776c031b2844a4ec204f3e60be1b09fcd1126c64' # L138 $switchLabel=New-Object Windows.Forms.Label
-    '6f9b49f8845c19177828a43e80cd3114e11a1f157158fae8770d47485c68e01f' # L139 $switchLabel.Location=New-Object Drawing.Point(24,474)
-    'e72a66e715a701667b530d8c8a31bc1fe2b692478840009ffc9266595ab64aa2' # L139 $switchLabel.Size=New-Object Drawing.Size(640,26)
-    '90d5964e439077a874013e744b4b05d8561e5afd87fb0be308e5fa2a9bbcee21' # L139 $switchLabel.Text=''
-    '54abdab833699f1ebc37227e8f0bb7ac87fe6fbab40069c7f106534f11de9ea3' # L139 $switchLabel.UseMnemonic=$false
-    'd7bb585084380918fb00c69f8d53ee4960525eb28eb83e69588964389ff6ad7b' # L139 $switchLabel.AutoEllipsis=$true
-    'f4915d3ffb4c9495d5106cbf6302775825ff0bbef2713dafb1388515dd8ce170' # L139 $form.Controls.Add($switchLabel)
-    '04734536676eb0eb789ae53b96ed2570eceb809997362df241731ae8570c4410' # L140 $switchButton=ButtonAt ('Switch model'+[string][char]0x2026)
-    'e2caf572bad8e0952461c1ce3a39b887780440a3dc003becb582faa98aea68ef' # L141 $switchButton.Enabled=$false
-    'a996dd9b96fb534a5e2ae56ccb6b278c4a21310bbfb960a046691489eb4a9420' # L144 $resultsLink=New-Object Windows.Forms.LinkLabel
-    '94c631c256c065348cf48e2d455c6753e53603ff192b2ba1bb695c1e131985a3' # L144 $resultsLink.Text='See results'
-    '051ba5540fd7fc80fd201d546c57dbc0c23d2a6b80abd71c57d23df82194252b' # L144 $resultsLink.Location=New-Object Drawing.Point(24,652)
-    'eeb3a5665e7904dfcacf31a576c2a1daa284313d8e2c145332abfe187b733e7f' # L144 $resultsLink.AutoSize=$true
-    '26cfbbb220ff300f802f9d37b89fc236fffd1a715f36484beb46ce6b06973e5f' # L144 $resultsLink.Visible=$false
-    'ff6275dfc16a1e0f1c81226c9941e1f2c657d1282ee451e6b5aba9e2e67fb12c' # L144 $form.Controls.Add($resultsLink)
-    'd5a3069e9da97ba2735b59a1988db46b475c6f98c460865706cfa381f237824c' # L148 $failureCopyLink=New-Object Windows.Forms.LinkLabel
-    '279749bd345abf991576b7c7d23b0d4ce04c4bfb4d8126e5cbe36ee0c8639779' # L148 $failureCopyLink.Text='Copy full output'
-    '804740001d807cf66fc7696bc9bf4fda759676844f9ace06fe3bfac2f9bab7c8' # L148 $failureCopyLink.AutoSize=$true
-    'c4bdcf9429a8c14a9b45b3db3df6bcb8dfae56734b27946778238276bd46c9c7' # L148 $failureCopyLink.Visible=$false
-    '84e7155f49696960d3e0986e543ffdfc5c4bc804efab14d073216b0267b2f90c' # L149 $failureCopyLink.Location=New-Object Drawing.Point((820-$fai
-    '3ab19a1f50d6346ebf60aa67c16f48b6bc860eb468e94e9dcb149145e09839dc' # L150 $failureCopyLink.TabStop=$true
-    '2150cadc5141445636c68e0388d5d145b435cdb5a6c4c78f044e01ae9919473f' # L150 $failureCopyLink.TabIndex=$output.TabIndex+1
-    'c702e01a6338310a9d02a33d751a905a501b21d80506970eece97d479e2c3430' # L150 $failureCopyLink.AccessibleName='Copy full output'
-    '42a6fdcf23bd45db82f14d8e0e87af66a9822841b5b152fe9e70192b58602cdb' # L150 $form.Controls.Add($failureCopyLink)
-    'caa226c1640c481e29b417dfa90c22c806fc5b73609cf7214f5e8c5b2a916f2e' # L153 $notesLabel=New-Object Windows.Forms.Label
-    '81801705ec2da019b3ba7f82478c51fc171313f1f4b19c37fd5f9164b753f6b1' # L154 $notesLabel.Location=New-Object Drawing.Point(24,676)
-    'feda8c6b2d35561afe91a8c589981059cd682479a4c15b64a4f465fb3382363c' # L154 $notesLabel.Size=New-Object Drawing.Size(796,80)
-    '8dd68164de77cbb3c8230e19ff8aace776836a320bd5570dc740368e51ced254' # L154 $notesLabel.Text=''
-    '76bbcf2dcac1b7ec7a9cafd1bfae0834384b0daaf06c7e5c7bc29e975b175fd4' # L154 $form.Controls.Add($notesLabel)
-    '94d0f87a180a106fde3acfd61ec6ae2c939c4ffc3bdba06dba902449cbec468c' # L155 $barLink=New-Object Windows.Forms.LinkLabel
-    '587621a434d9197eed1fb1bc9cb56b49832b008afec3476eb944f77c1cf85524' # L155 $barLink.Text='How to turn it on'
-    'd3c1c6a9365d1cb773cd2850246a22f50f9b54541910ab6e2605471a7c358e6f' # L155 $barLink.Location=New-Object Drawing.Point(24,758)
-    '5739ed840a7ec13a8597703ad2d375eb2091fcc9848b3a4eb4bf873f8037f6fb' # L155 $barLink.AutoSize=$true
-    '9cbbef5401a53091c24578f1ac437d24691c6b63f54b9c2a32fa21755e252fd5' # L155 $barLink.Visible=$false
-    'e7145d4e1eb402029eab9cf0b4aad40fbb2dba91e784aac1edaf4e1442dda6f6' # L155 $form.Controls.Add($barLink)
-    'e3221ec5e3482f512c8d5ed705edcc3c31d62e3e705f702de726f8064b48e74e' # L159 $vc=New-Object Windows.Forms.LinkLabel
-    '133aa4c511da7eaee5eedd3a6987e830eb5e387f2bc735fd33d9747411afcdcd' # L159 $vc.Text='Microsoft VC++ prerequisite'
-    'dd33d4d2602b4703095920296970fd2a60bd5978a3cafad9295f2001f17e73a4' # L159 $vc.Location=New-Object Drawing.Point(24,785)
-    '35a9e0b58259eadd45828c9dd98390a15ea484934a2f11c7731ea1ad0fcf58a8' # L159 $vc.AutoSize=$true
-    'd279f7839d89271180b5a2a50a4212b48e0426352c130cdf861184bcc8b50f41' # L159 $form.Controls.Add($vc)
-    'ee986c986d44aaa8b4366e1604675a83674611b894d8b9729b63e771b4c0e1c4' # L160 $amd=New-Object Windows.Forms.LinkLabel
-    '2db7a486b81a261faf31736f715744d153a95473e0316e5b7fde0e5741ff4c82' # L160 $amd.Text='AMD Windows drivers'
-    '7a377b190c25de8857efbfb0bccd183fb6a3e98b4e06027182ba99912e2fb561' # L160 $amd.Location=New-Object Drawing.Point(290,785)
-    '5939098c1a969181ff860c30bb899d544e2d95158dc0c6eb5a772479285920d3' # L160 $amd.AutoSize=$true
-    '43207491583d0df3eae75d505318a3ac67cc122687335e67989ba3309e1b671a' # L160 $form.Controls.Add($amd)
-    'eb03aff6e9964e3b060ddce875280cc63d6c2f337bd0005cc757ff72e0f00f99' # L161 $trayButton=ButtonAt 'Minimize to tray' 440 778 175
-    'a639b81aca5ade5128f5dbf4b9c8398643557f27a985cf2750d1ee63118f5fb9' # L162 $driverButton=ButtonAt 'Driver guidance' 630 778 190
-    'f8dc7f18bbca581bb2c0a18159c119640d12caaa345e79bbf72c24e8bc9d9ef6' # L163 $updateBox=New-Object Windows.Forms.CheckBox
-    '74ff9a5d1fe8fc3872f20720c6a35e62c0793bceca22f5a5cb30f7d9fdce19c7' # L164 $updateBox.Text='Check for updates'
-    '86f200432dc769fde4ac38c4f9ba29191347961455edabde22ca5eadf461418d' # L164 $updateBox.Location=New-Object Drawing.Point(300,757)
-    '4984a007aadfe956a915b193002f635dfc64d9af6d3b334292f58fe396d6267b' # L164 $updateBox.AutoSize=$true
-    'badd40d3944ee448bce44f629236b377d3603f168fa714dffa7f4586539d33fb' # L165 $updateBox.Checked=([string]$script:uiSettings.updateCheck -
-    '4f9945ad26a55533462f513a77585fffa024dacf717d4d3e7799781c05a651f4' # L165 $form.Controls.Add($updateBox)
-    'c1a7cb420c433203b97fd622f392c7cb0f26cf0c0e819e104a28329e9282ad7a' # L166 $experimentalBox=New-Object Windows.Forms.CheckBox
-    '235ab226b023eb05e485a6ec8f5c24e4ddc588a805730272578273ccbef9c6bf' # L167 $experimentalBox.Text='Experimental community components'
-    '877b5c838be5c9a35ac5f6c2549922a595a630b851fb0cb6622703d5b1ac6d63' # L167 $experimentalBox.Location=New-Object Drawing.Point(480,757)
-    'e0736b785f9cf360945a525a6c23503b885a1e4558077a06d3a1eefd79d62357' # L167 $experimentalBox.AutoSize=$true
-    'd9cb2f060455c96e16ad6ae8f3c9e25534dd6316e0ed9234ac406724348ae0c4' # L168 $experimentalBox.Checked=([string]$script:uiSettings.experim
-    'f6a6ded0646c7ae228a684e6cef41604df865ea9cf4b3fb875783a3fe8576343' # L168 $form.Controls.Add($experimentalBox)
-    '52ea16f14e5d4ccdade027bcc8506ea00849f18a060e91588405f6ed040e06bb' # L169 $script:experimentalRevert=$false
-    '1a6fe2dc796b716b833e46265ca982e799e1b529bc35a22f4e69dbbecfdda98d' # L170 $licenseBox=New-Object Windows.Forms.CheckBox
-    '69544f785a4289b15ceccb238a61dbda4ae38619223388312fb2ea32da7e5bf6' # L171 $licenseBox.Text='Install engine components automatically (a
-    'cc1ebef877b39adf8dd3a387d62e0d2947ad443aab3eaa1a7352aebb98c71950' # L171 $licenseBox.Location=New-Object Drawing.Point(24,822)
-    'a5590c9610d94b2ef48d3e38545137ee95086e49d4df3882ea1568a40faf4e07' # L171 $licenseBox.AutoSize=$true
-    'edcae9b90e5fd4cae9d96cf51385a46e9d5350d1d9ead0615edf1fea5f78c146' # L172 $licenseBox.Checked=([string](Get-FastLlmComponentLicenseSet
-    '6ecd749f956ceeb40e347445cf8a8e57228445a094c2a8c56e2a8a2c3936b6bb' # L172 $form.Controls.Add($licenseBox)
-    '33df2bb4da5990aaeea2012d180b9974d0dd3afc55c832a7391427915d5598ff' # L176 $script:bannerHeight=36
-    '0d4fb92fc3b05d651c94bb8fa348bdc68a91cf929ccd0a244b49360464a3f339' # L177 foreach($shifted in @($form.Controls)){$shifted.Top+=$script
-    '430c66c5dea98a2d2eef570c513978f2e11e1d1de7b976a0dff3d3aab55c14df' # L178 $bannerLabel=New-Object Windows.Forms.Label
-    'e2ac0ab62ac440c0bf94e6a6cd4aa02729315a1a8145e081b84d73f195f126b4' # L179 $bannerLabel.Location=New-Object Drawing.Point(24,6)
-    'cf0100c9089981552744895c0d6493d1b57e4cbf5fc6888f78d4961ac9cda22b' # L179 $bannerLabel.Size=New-Object Drawing.Size(300,26)
-    '2d097d79bf2d9fce8b46d341b903eb67e71336ff02ba91a6b7c95c9e7964e017' # L179 $bannerLabel.TextAlign='MiddleLeft'
-    '1c2ab29ea9ac555f598d4120a5f5fd478f4494babd38f7731c056770e3d7e642' # L179 $bannerLabel.Visible=$false
-    'd929f724c0bd6a036b92c0c4812db3a865319a25a3c5950d01e0dc57d5df3316' # L179 $form.Controls.Add($bannerLabel)
-    '123e9ac4dbc35ad06b288a4389d76e55fd87864ab11bb7538c6dd2859139c0b3' # L180 $bannerNotes=New-Object Windows.Forms.LinkLabel
-    'a6283405487448d042314c662748c886147a5dff3f903f2a4a70f0ab0c554b9f' # L181 $bannerNotes.Text='Release notes'
-    'c6ec73ade8b0dfde54ec5f271a3538004dedf30cd3e93b758515b9a5d2f85564' # L181 $bannerNotes.Location=New-Object Drawing.Point(340,11)
-    '6e15e604d4ee40f780878b58b19f7a15ddb3dee62f22e5cde71675e0896e61b7' # L181 $bannerNotes.AutoSize=$true
-    'a17e3cdaed6cc69d4bd061ca1ca5f99dbadcb37c8b1e8c06a1d7a74735cc1dea' # L181 $bannerNotes.Visible=$false
-    '0ab82ffe851ed5b42955f061376f4f91e2bc47acf29c1d1ccbfb808dbc4806a9' # L181 $form.Controls.Add($bannerNotes)
-    '657f286c0fc1692a3f24bf61c8ef30826df18b7e9331baf3b423f0571fd35411' # L182 $bannerButton=New-Object Windows.Forms.Button
-    '020167568f0a09d211c0ce48921ce75efe6f99d79e814ca227b25780e25a5550' # L183 $bannerButton.Text='Update'
-    '60b4fafa8cd5170b68148f96f323fad5f0e652acb259cf5ee667b193e07986ad' # L183 $bannerButton.Location=New-Object Drawing.Point(480,4)
-    '4509538205a13de9a93181b8ff045599f31f0cbed6033e0d79a1017750c682ce' # L183 $bannerButton.Size=New-Object Drawing.Size(110,28)
-    '524ebe33bcb83889e0feeaf7c3971bbb1f1dbce0ada1842e200b4d5609f645cd' # L183 $bannerButton.Visible=$false
-    'cbf178565dcbf37e0b68a4f927fce31534c2215030a0472c35c6b3537ca0d486' # L183 $form.Controls.Add($bannerButton)
-    '6a31f99d313c90f723564612b8ca06de7882a059690fe606bf1aa69fc2560d43' # L185 $reinstallButton=New-Object Windows.Forms.Button
-    '2f2f6cdd20ffb6e935c03845fb4b0974c0cc942b26f68e1dda499dc83a73af87' # L186 $reinstallButton.Text='Reinstall previous version'
-    'be5e782c07196421535fa3156fbfe79082a384662348a1ec84b3036266c20493' # L186 $reinstallButton.Location=New-Object Drawing.Point(640,4)
-    'cb1abf49f01bd935f42891be12e09c7f6372d6a8c3389ec69882de9ef961f70f' # L186 $reinstallButton.Size=New-Object Drawing.Size(180,28)
-    'ca6545ebf1c99c519a79e2c0fd0ec79955cae3ce43e758e048e153880903de1a' # L186 $reinstallButton.Visible=$false
-    'aa99e3382df1f0f1492de3e6b51a41de5274d608d5a2c30e17bb9ebc56c8db13' # L186 $form.Controls.Add($reinstallButton)
-    '9b1e7c9d20fa95031df44f934a37585876c80707619dc9d540685e50ee60c9ac' # L1013 function FitUiSettingsDialog
-    '699f18ffed8006ddc8c526452edef66625a03fa24c7452a094c6f5986a6914d2' # L1016 function GetUiSettingsDialogMaxHeight
-    'ac89d7888eddaf74395a45fea4b9f958a759a4eeccf1ab2cff92520348a44816' # L1021 function BuildUiSettingsDialog
-    '6b74e8a0535b29d83fdd56f1d492de68637a2e2defaffd24dee75ba4e296827e' # L1125 function ShowUiSettings
-    'ed1917fc6151e1bc378d76e220c3dd16c19e434f47848535e45c117de6834dd7' # L1271 function ShowComponentsWindow
-    '0bd3712499a57ea5c7b678dbd70432c95bdc2389fda1be6545c7f611aabd0b30' # L1287 $componentsButton.Add_Click({try{ShowComponentsWindow}catch{
-    '924ce03b840249709f8b0cc7081b2edda1aa99d1aa5c53faf5e44478dc22c714' # L1367 function ShowModelsWindow
-    '3874a18365e2f8c50571a4dd1850feadfae70eacfd9b4d700dee044713682bdb' # L1388 $modelsButton.Add_Click({try{ShowModelsWindow}catch{ShowFail
-    'b87693689eae0b8f0aee0b83f42134bb2d5367b925d55ce3d6e8c5fa37b4bc65' # L1391 $script:switchPickerRequested=''
-    '6957c7ca2271bbc908dd5a96dddc5636ea18be30c40d99d3952a5ec9e2900457' # L1392 function ShowUiSwitchPicker
-    'f7748d519b56c5bfdd8cdf0c0a905ba8055ed9a3d5f96e2210becfff7c018fba' # L1429 $switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFa
-    '8899de141f7d43637478b19479c4c2ea7ad77fcf1ed7b6af86b8fa808b04c123' # L1475 function ShowConnectDialog
-    'd3c5b5ec56a458d8204e7cca20cfe66490a4f7138d5177dff8253187bb2648c8' # L1572 $connectButton.Add_Click({try{ShowConnectDialog}catch{ShowFa
-    '87dd6996e6975146bd6c7669e1165ca45b9b6d7fbeac89d5896bf318b899c169' # L1631 $script:consentView=$null
-    'c3ccdf487055d6f766ffd56240601c78ea9acf271277a6873e3054a3e9917fb0' # L1632 function UpdateConsentInstallState
-    '91c6419fcc4ed0c1803ead28d5074212f0ea0bdaeeb9da8f7530217637844bad' # L1876 $settingsButton.Add_Click({try{ShowUiSettings}catch{ShowFail
-)
-# 5b-delete-end
 
 function Test-ModifyMatch($Entry,$Item){
     switch([string]$Entry.Kind){
@@ -573,39 +377,11 @@ Check ($found.Count -gt 0) 'mutation check: a deleted kept statement fails the k
 # Control: the unmodified text passes (it is the same call as above, on the same text).
 Check (@(Get-KeepProblems $uiText).Count -eq 0) 'control: the unmodified window script passes the keep-list pin.'
 
-# 5b-delete-begin
-# Each item the flip deletes whole is still there exactly once, and the keep and delete lists do not overlap.
-Check ($deleteSha.Count -eq 192) "The delete list holds 192 hashes (it holds $($deleteSha.Count))."
-Check ((@($deleteSha|Select-Object -Unique)).Count -eq $deleteSha.Count) 'The delete list has no repeated hash.'
-foreach($h in $deleteSha){
-    $hits=@($uiItems|Where-Object{$_.Sha -ceq [string]$h})
-    Check ($hits.Count -eq 1) "A delete-list item (hash $([string]$h)) appears $($hits.Count) times instead of once."
-    Check (-not ($keepSha -contains $h)) "A delete-list hash is not also on the keep list ($([string]$h))."
-}
-$deleteItems=@($uiItems|Where-Object{$deleteSha -contains $_.Sha})
-Check ($deleteItems.Count -eq $deleteSha.Count) 'Every delete-list hash has an item.'
-$deleteMutant=Get-ItemMutant $uiText $deleteItems[0]
-$parsedMutant=Get-Parsed $deleteMutant
-$mutantItems=Get-TopLevelItems $parsedMutant.Ast
-Check (@($mutantItems|Where-Object{$_.Sha -ceq $deleteSha[0]}).Count -eq 0) 'mutation check: a one-letter change in a delete-list item makes its hash disappear.'
-# 5b-delete-end
 
 # --- 2. Readers of $Window ------------------------------------------------------------------------------------------------------------------------
 # A reader is any variable AST named Window or script:Window (or global:/local:), except the param declaration itself. Each ALLOWED entry names the
 # top-level item the reader sits in (a function name, or a substring of the item's text).
 $allowedReaders=@()
-# 5b-delete-begin
-$allowedReaders+=@{Name='support-check guard (line 34)';Fn='';Needle='Test-FastLlmUiFluentHost'}
-# 5b-delete-end
-# 5b-delete-begin
-$allowedReaders+=@{Name='shell rebinding guard (line 188)';Fn='';Needle='Initialize-FastLlmUiFluentShell'}
-# 5b-delete-end
-# 5b-delete-begin
-$allowedReaders+=@{Name='GetUiTrayIcon';Fn='GetUiTrayIcon';Needle=''}
-# 5b-delete-end
-# 5b-delete-begin
-$allowedReaders+=@{Name='main-loop guard';Fn='';Needle='Start-FastLlmUiFluentLoop'}
-# 5b-delete-end
 
 function Get-WindowReaderProblems([string]$Text){
     $problems=New-Object System.Collections.ArrayList
@@ -639,12 +415,6 @@ function Get-WindowReaderProblems([string]$Text){
 }
 $readerProblems=@(Get-WindowReaderProblems $uiText)
 Check ($readerProblems.Count -eq 0) ('Every reader of $Window is an allowed switch site: '+($readerProblems -join ' | '))
-# 5b-delete-begin
-$paramVars=@($parsedUi.Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -imatch '^(script:|global:|local:)?Window$'},$true))
-$readerVars=@($paramVars|Where-Object{$_.Parent -isnot [System.Management.Automation.Language.ParameterAst]})
-Check ($paramVars.Count -eq 5 -and $readerVars.Count -eq 4) "Today the window script has the Window param and four readers (it has $($paramVars.Count) variable uses)."
-Check ($allowedReaders.Count -eq 4) 'Four allowed readers are listed today.'
-# 5b-delete-end
 $extraReader=Add-AfterBigTry $uiText '$sneakWindow=$Window' 
 Check ($extraReader -cne $uiText) 'The extra-reader mutant changes the text.'
 $found=@(Get-WindowReaderProblems $extraReader)
@@ -703,25 +473,5 @@ $found=@(Get-TitleProblems $twiceShell)
 Check ($found.Count -ge 1) 'mutation check: a second assignment of the constant fails.'
 Check (@(Get-TitleProblems $shellText).Count -eq 0) 'control: the unmodified shell passes the title check.'
 
-# 5b-delete-begin
-# The expected text is the classic form's Text today. Unconditional: if the classic assignment is not found exactly once, this fails.
-function Get-ClassicTitleProblems([string]$UiText){
-    $problems=New-Object System.Collections.ArrayList
-    $ast=(Get-Parsed $UiText).Ast
-    $sets=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.Left.Expression.VariablePath.UserPath) -ceq 'form' -and [string]$n.Left.Member.Extent.Text -ceq 'Text'},$true))
-    if($sets.Count -ne 1){[void]$problems.Add("The classic window sets form.Text $($sets.Count) times instead of once.");return $problems.ToArray()}
-    $inner=$sets[0].Right
-    if($inner -is [System.Management.Automation.Language.CommandExpressionAst]){$inner=$inner.Expression}
-    if($inner -isnot [System.Management.Automation.Language.StringConstantExpressionAst]){[void]$problems.Add('The classic form Text is not a plain string.')}
-    elseif([string]$inner.Value -cne $expectedTitle){[void]$problems.Add("The classic form Text is '$([string]$inner.Value)', not the expected text.")}
-    return $problems.ToArray()
-}
-$classicProblems=@(Get-ClassicTitleProblems $uiText)
-Check ($classicProblems.Count -eq 0) ('The shell constant equals the classic form Text: '+($classicProblems -join ' | '))
-$found=@(Get-ClassicTitleProblems ($uiText.Replace("`$form.Text='Bitworks FastLLM (Preview)'","`$form.Text='Bitworks FastLLM (Beta)'")))
-Check ($found.Count -eq 1) 'mutation check: a classic form Text that drifts from the expected text fails.'
-$found=@(Get-ClassicTitleProblems ($uiText.Replace('$form.Text=','$formTitle.Text=')))
-Check ($found.Count -eq 1) 'mutation check: a classic window with no form.Text assignment fails (the check is not conditional on finding it).'
-# 5b-delete-end
 
 Write-Host "ui-fluent-keeplist-tests: $checks checks passed."

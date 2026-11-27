@@ -262,11 +262,6 @@
       "reason": "PowerShell 7 mock fixtures; no Radeon adapter or collector execution required; wired in the pwsh step in test.yml."
     },
     {
-      "suite": "settings-dialog-render-tests",
-      "class": "ci",
-      "reason": "Builds the real Settings dialog off-screen (never shown), asserts its layout and saves 100% and 150% PNGs for the run's artifact; Windows only, skips elsewhere; no network, model, GPU or admin; wired in test.yml."
-    },
-    {
       "suite": "serving-settings-tests",
       "class": "ci",
       "reason": "Serving settings (port) read/write, validation, precedence and the bench-path tripwire; temp folders only, no engine, GPU or network. Wired in test.yml."
@@ -475,11 +470,6 @@
       "suite": "ui-fluent-pages-tests",
       "class": "ci",
       "reason": "Windows-only checks of the Fluent window pages (the page host, Tools and Connect) in the real shell on a real STA dispatcher: navigation, status line, greyed reasons, the key box and its guarded Copy; skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
-    },
-    {
-      "suite": "ui-fluent-parity-tests",
-      "class": "ci",
-      "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
     },
     {
       "suite": "ui-fluent-startup-smoke-tests",

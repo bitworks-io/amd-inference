@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([string]$InstallRoot,[ValidateSet('classic','fluent',IgnoreCase=$false)][string]$Window='classic')
+param([string]$InstallRoot)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
 if ($env:OS -ne 'Windows_NT') { throw 'The control window requires Windows PowerShell on Windows.' }
@@ -30,8 +30,8 @@ Import-Module (Join-Path $PSScriptRoot 'src/FastLlm.psm1') -Force
 . (Join-Path $PSScriptRoot 'src/FastLlm.ConnectInfo.ps1')
 & (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
 if (-not $InstallRoot) { $InstallRoot=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Bitworks\FastLLM' }
-# The Fluent window (opt-in with -Window fluent) is checked before anything else is built; an unsupported PC opens no window.
-if ($Window -ceq 'fluent') { . (Join-Path $PSScriptRoot 'src/FastLlm.UiFluentShell.ps1'); $fluentSupport=Test-FastLlmUiFluentHost; if (-not $fluentSupport.supported) { Show-FastLlmUiUnsupported -Reason $fluentSupport.reason -InstallRoot $InstallRoot -Folder $PSScriptRoot; exit 3 } }
+# The Fluent window is checked before anything else is built; an unsupported PC opens no window.
+. (Join-Path $PSScriptRoot 'src/FastLlm.UiFluentShell.ps1'); $fluentSupport=Test-FastLlmUiFluentHost; if (-not $fluentSupport.supported) { Show-FastLlmUiUnsupported -Reason $fluentSupport.reason -InstallRoot $InstallRoot -Folder $PSScriptRoot; exit 3 }
 $catalog=Get-FastLlmCatalog (Join-Path $PSScriptRoot 'config/catalog.json')
 # The UI settings file lives under the launch root only (never the editable folder box), so it is read and written from the same place.
 $script:settingsRoot=$InstallRoot
@@ -45,40 +45,7 @@ $script:bgStopRequested=$false
 $script:bgEndedByUserStop=$false
 $script:bgPoll=$null
 $script:startupRun=$null; $script:updateRun=$null; $script:updateOffer=$null; $script:reinstallOffer=$null; $script:updateOutcome=$false; $script:bannerUrl=$null
-$form=New-Object Windows.Forms.Form
-$form.Text='Bitworks FastLLM (Preview)'
-$form.Size=New-Object Drawing.Size(880,941)
-$form.MinimumSize=$form.Size
-$form.StartPosition='CenterScreen'
-$form.Font=New-Object Drawing.Font('Segoe UI',10)
-$form.BackColor=[Drawing.Color]::FromArgb(245,247,250)
-function LabelAt($Text,$X,$Y,$Width=800) {
-    $control=New-Object Windows.Forms.Label
-    $control.Text=$Text;$control.Location=New-Object Drawing.Point($X,$Y);$control.Size=New-Object Drawing.Size($Width,27)
-    $control.UseMnemonic=$false
-    $form.Controls.Add($control);return $control
-}
-$title=LabelAt 'Local AMD inference, managed on this PC' 24 20
-$title.Font=New-Object Drawing.Font('Segoe UI',18,[Drawing.FontStyle]::Bold);$title.Height=40
-$notice=LabelAt 'Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models.' 24 68
-$notice.ForeColor=[Drawing.Color]::DarkRed
-$null=LabelAt 'Model' 24 110 220
-$modelBox=New-Object Windows.Forms.ComboBox
-$modelBox.Location=New-Object Drawing.Point(24,138);$modelBox.Size=New-Object Drawing.Size(510,30);$modelBox.DropDownStyle='DropDownList'
-$modelBox.Items.Add('Recommended for installed GPU')|Out-Null
-foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $catalog)) { $modelBox.Items.Add($pickerId)|Out-Null }
-$modelBox.SelectedIndex=0;$form.Controls.Add($modelBox)
-$null=LabelAt 'Context (0 = catalog default)' 560 110 280
-$contextBox=New-Object Windows.Forms.NumericUpDown
-$contextBox.Location=New-Object Drawing.Point(560,138);$contextBox.Size=New-Object Drawing.Size(260,30);$contextBox.Maximum=32768;$contextBox.Increment=1024;$form.Controls.Add($contextBox)
-$null=LabelAt 'Install and model cache folder' 24 180
-$pathBox=New-Object Windows.Forms.TextBox
-$pathBox.Location=New-Object Drawing.Point(24,208);$pathBox.Size=New-Object Drawing.Size(510,30);$pathBox.Text=$InstallRoot;$form.Controls.Add($pathBox)
-$null=LabelAt 'Resizable BAR workaround' 560 180 260
-$barBox=New-Object Windows.Forms.ComboBox
-$barBox.Location=New-Object Drawing.Point(560,208);$barBox.Size=New-Object Drawing.Size(260,30);$barBox.DropDownStyle='DropDownList'
 $script:barValues=@('auto','on','off')
-foreach($barItem in @('Auto (recommended)','On','Off')){[void]$barBox.Items.Add($barItem)}
 $script:uiSettings=Read-FastLlmUiSettings -InstallRoot $script:settingsRoot -AppRoot $PSScriptRoot
 $script:lastUserStoppedRequestId=[string]$script:uiSettings.lastUserStoppedBackgroundRequestId
 # Saved or cleared with the background run the user stopped; a failed write only means the cautious text later.
@@ -86,32 +53,7 @@ function SaveUserStoppedBackgroundRequestId([string]$RequestId) {
     $script:lastUserStoppedRequestId=$RequestId
     try{Write-FastLlmUiSettings -InstallRoot $script:settingsRoot -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue);lastUserStoppedBackgroundRequestId=$RequestId})}catch{}
 }
-$barBox.SelectedIndex=[Array]::IndexOf($script:barValues,[string]$script:uiSettings.vulkanBarMitigation)
-$form.Controls.Add($barBox)
 function GetBarValue { return [string]$script:barValues[[Math]::Max(0,$barBox.SelectedIndex)] }
-function ButtonAt($Text,$X,$Y,$Width=150) {
-    $button=New-Object Windows.Forms.Button;$button.Text=$Text;$button.Location=New-Object Drawing.Point($X,$Y);$button.Size=New-Object Drawing.Size($Width,38);$form.Controls.Add($button);return $button
-}
-# The third button row (Y=350, width 128) has six fixed slots; each later task adds only its own button in its slot.
-# Slot owners: 0 Settings (port, thinking, local chat page), 1 Connect an app, 2 Open chat, 3 Downloaded models, 4 Save support bundle, 5 Open logs.
-$rowSlotX=@(24,162,300,438,576,714);$rowY=350;$rowWidth=128
-$installButton=ButtonAt 'Install && start' 24 255 180
-$startButton=ButtonAt 'Start / download' 220 255 180
-$stopButton=ButtonAt 'Stop' 416 255 110
-$doctorButton=ButtonAt 'Diagnostics' 542 255 130
-$copyButton=ButtonAt 'Copy API URL' 688 255 132
-$backgroundStartButton=ButtonAt 'Start in background' 24 303 170
-$backgroundAttachButton=ButtonAt 'Attach running' 202 303 130
-$backgroundCheckButton=ButtonAt 'Recheck background' 340 303 160
-$componentsButton=ButtonAt 'Components' 508 303 120
-$chooseButton=ButtonAt 'Choose another setup' 636 303 184
-$settingsButton=ButtonAt ('Settings'+[string][char]0x2026) $rowSlotX[0] $rowY $rowWidth
-$connectButton=ButtonAt 'Connect an app' $rowSlotX[1] $rowY $rowWidth
-$openChatButton=ButtonAt 'Open chat' $rowSlotX[2] $rowY $rowWidth
-$modelsButton=ButtonAt 'Downloaded models' $rowSlotX[3] $rowY $rowWidth
-$bundleButton=ButtonAt ('Save support bundle'+[string][char]0x2026) $rowSlotX[4] $rowY $rowWidth
-$logsButton=ButtonAt 'Open logs' $rowSlotX[5] $rowY $rowWidth
-$openChatButton.Enabled=$false
 $script:chatUrl=$null
 # A read-only side step (API check, support bundle) runs in its own slot, so a serving child keeps $script:child and $script:step to itself.
 $script:sideChild=$null;$script:sideStep='idle';$script:runReady=$false;$script:servingSettingsNotice=''
@@ -122,73 +64,22 @@ $script:pendingRecipeRow=$null
 $script:servingPreviousRunId='';$script:bundlePath=''
 $script:identifiedVariant=''
 $script:chooserNotice=''
-$chooseButton.Enabled=$false
-$backgroundLabel=LabelAt 'Checking background host ownership.' 24 394
-$statusLabel=LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 426
-# One line does not fit every status: cut it with an ellipsis and keep the full text in a tooltip.
-$statusLabel.AutoEllipsis=$true
-$statusTip=New-Object Windows.Forms.ToolTip
-$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})
-$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)
-$progress=New-Object Windows.Forms.ProgressBar
-$progress.Location=New-Object Drawing.Point(24,458);$progress.Size=New-Object Drawing.Size(796,8);$progress.Style='Marquee';$progress.Visible=$false;$form.Controls.Add($progress)
-$output=New-Object Windows.Forms.TextBox
-$output.Location=New-Object Drawing.Point(24,512);$output.Size=New-Object Drawing.Size(796,134);$output.Multiline=$true;$output.ReadOnly=$true;$output.ScrollBars='Vertical';$form.Controls.Add($output)
-# The model switch row under the status line: the switch line, or why Switch model is off, and the Switch model button.
-$switchLabel=New-Object Windows.Forms.Label
-$switchLabel.Location=New-Object Drawing.Point(24,474);$switchLabel.Size=New-Object Drawing.Size(640,26);$switchLabel.Text='';$switchLabel.UseMnemonic=$false;$switchLabel.AutoEllipsis=$true;$form.Controls.Add($switchLabel)
-$switchButton=ButtonAt ('Switch model'+[string][char]0x2026) 672 470 148
-$switchButton.Enabled=$false
 $script:switchGap=$false
 $script:evidenceUrl=$null
-$resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text='See results';$resultsLink.Location=New-Object Drawing.Point(24,652);$resultsLink.AutoSize=$true;$resultsLink.Visible=$false;$form.Controls.Add($resultsLink)
 # "Copy full output": shown only while a failure from a child's capture is held; the copy is the raw capture, unchanged.
 $script:failureCapture=$null
 $script:failureHeld=$false;$script:failureViewText=''
-$failureCopyLink=New-Object Windows.Forms.LinkLabel;$failureCopyLink.Text='Copy full output';$failureCopyLink.AutoSize=$true;$failureCopyLink.Visible=$false
-$failureCopyLink.Location=New-Object Drawing.Point((820-$failureCopyLink.PreferredWidth),652)
-$failureCopyLink.TabStop=$true;$failureCopyLink.TabIndex=$output.TabIndex+1;$failureCopyLink.AccessibleName='Copy full output';$form.Controls.Add($failureCopyLink)
 function ClearFailureCapture {$script:failureCapture=$null;$script:failureHeld=$false;$script:failureViewText='';$failureCopyLink.Visible=$false}
 function SetFailureCapture([string]$Capture) {$script:failureCapture=$Capture;$failureCopyLink.Visible=-not [string]::IsNullOrEmpty($Capture)}
-$notesLabel=New-Object Windows.Forms.Label
-$notesLabel.Location=New-Object Drawing.Point(24,676);$notesLabel.Size=New-Object Drawing.Size(796,80);$notesLabel.Text='';$form.Controls.Add($notesLabel)
-$barLink=New-Object Windows.Forms.LinkLabel;$barLink.Text='How to turn it on';$barLink.Location=New-Object Drawing.Point(24,758);$barLink.AutoSize=$true;$barLink.Visible=$false;$form.Controls.Add($barLink)
 $script:servingNotesDone=$false
 # A new foreground start flow drops the previous run's notes and links so the preview does not show them.
 function ClearPreviousRunNotes {$notesLabel.Text='';$resultsLink.Visible=$false;$barLink.Visible=$false;$script:evidenceUrl=$null;$script:servingNotesDone=$false}
-$vc=New-Object Windows.Forms.LinkLabel;$vc.Text='Microsoft VC++ prerequisite';$vc.Location=New-Object Drawing.Point(24,785);$vc.AutoSize=$true;$form.Controls.Add($vc)
-$amd=New-Object Windows.Forms.LinkLabel;$amd.Text='AMD Windows drivers';$amd.Location=New-Object Drawing.Point(290,785);$amd.AutoSize=$true;$form.Controls.Add($amd)
-$trayButton=ButtonAt 'Minimize to tray' 440 778 175
-$driverButton=ButtonAt 'Driver guidance' 630 778 190
-$updateBox=New-Object Windows.Forms.CheckBox
-$updateBox.Text='Check for updates';$updateBox.Location=New-Object Drawing.Point(300,757);$updateBox.AutoSize=$true
-$updateBox.Checked=([string]$script:uiSettings.updateCheck -ceq 'on');$form.Controls.Add($updateBox)
-$experimentalBox=New-Object Windows.Forms.CheckBox
-$experimentalBox.Text='Experimental community components';$experimentalBox.Location=New-Object Drawing.Point(480,757);$experimentalBox.AutoSize=$true
-$experimentalBox.Checked=([string]$script:uiSettings.experimentalComponents -ceq 'on');$form.Controls.Add($experimentalBox)
-$script:experimentalRevert=$false
-$licenseBox=New-Object Windows.Forms.CheckBox
-$licenseBox.Text='Install engine components automatically (accept their licenses for me)';$licenseBox.Location=New-Object Drawing.Point(24,822);$licenseBox.AutoSize=$true
-$licenseBox.Checked=([string](Get-FastLlmComponentLicenseSettings -InstallRoot $script:settingsRoot).mode -ceq 'accept-automatically');$form.Controls.Add($licenseBox)
 $script:licenseRevert=$false
 $script:fallbackRequest='';$script:setupNotice='';$script:planComponentInstall=$false
-# The top row is reserved for the banner, so everything above is shifted down by its height. Banner controls are added after the shift.
-$script:bannerHeight=36
-foreach($shifted in @($form.Controls)){$shifted.Top+=$script:bannerHeight}
-$bannerLabel=New-Object Windows.Forms.Label
-$bannerLabel.Location=New-Object Drawing.Point(24,6);$bannerLabel.Size=New-Object Drawing.Size(300,26);$bannerLabel.TextAlign='MiddleLeft';$bannerLabel.Visible=$false;$form.Controls.Add($bannerLabel)
-$bannerNotes=New-Object Windows.Forms.LinkLabel
-$bannerNotes.Text='Release notes';$bannerNotes.Location=New-Object Drawing.Point(340,11);$bannerNotes.AutoSize=$true;$bannerNotes.Visible=$false;$form.Controls.Add($bannerNotes)
-$bannerButton=New-Object Windows.Forms.Button
-$bannerButton.Text='Update';$bannerButton.Location=New-Object Drawing.Point(480,4);$bannerButton.Size=New-Object Drawing.Size(110,28);$bannerButton.Visible=$false;$form.Controls.Add($bannerButton)
-# Offered only while the reinstall decision allows it (Get-FastLlmUiReinstallOffer); a click asks for confirmation and re-decides before anything is changed.
-$reinstallButton=New-Object Windows.Forms.Button
-$reinstallButton.Text='Reinstall previous version';$reinstallButton.Location=New-Object Drawing.Point(640,4);$reinstallButton.Size=New-Object Drawing.Size(180,28);$reinstallButton.Visible=$false;$form.Controls.Add($reinstallButton)
 $script:uiDialogView=$null
-if ($Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }
+Initialize-FastLlmUiFluentShell
 function ShowUiMessageBox($Owner,[string]$Text,[string]$Caption,[string]$Buttons='OK',[string]$Icon='None',[string]$DefaultButton='Button1'){
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['MessageBox'] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}
-    return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)
+    return & $script:uiDialogView['MessageBox'] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton
 }
 function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate) {
     $script:bannerUrl=$Url
@@ -252,44 +143,7 @@ $experimentalBox.Add_CheckedChanged({
     }
 })
 function ShowLicenseSettingConfirm($Disclosure) {
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowLicenseSettingConfirm'] -Disclosure $Disclosure}
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Install engine components automatically';$dialog.Size=New-Object Drawing.Size(700,420)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $intro=New-Object Windows.Forms.Label
-    $intro.Text='With this on, FastLLM installs engine components without asking again, and counts that as accepting the licenses below. Open each link and read it first. You can turn this off at any time.'
-    $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(640,64);$dialog.Controls.Add($intro)
-    $top=86
-    foreach($licenseLink in @($Disclosure.links)){
-        if($licenseLink.url){
-            $link=New-Object Windows.Forms.LinkLabel
-            $link.Text=[string]$licenseLink.linkText;$link.Tag=[string]$licenseLink.url
-            $link.Location=New-Object Drawing.Point(30,$top);$link.AutoSize=$true
-            $link.Add_LinkClicked({param($sender,$clickArgs)
-                try{
-                    $target=Get-FastLlmUiSafeLicenseUrl -Url ([string]$sender.Tag)
-                    if($target){Start-Process $target}
-                }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was changed.' 'Open license page' 'OK' 'Warning'}
-            })
-            $dialog.Controls.Add($link)
-        }else{
-            $plain=New-Object Windows.Forms.Label
-            $plain.Text=("{0} (this link cannot be opened from here)" -f [string]$licenseLink.title);$plain.Location=New-Object Drawing.Point(30,$top);$plain.AutoSize=$true
-            $dialog.Controls.Add($plain)
-        }
-        $top+=26
-    }
-    $accept=New-Object Windows.Forms.Button
-    $accept.Text='I accept these licenses';$accept.Location=New-Object Drawing.Point(300,330);$accept.Size=New-Object Drawing.Size(210,38)
-    $accept.Anchor='Bottom,Right';$accept.Enabled=[bool]$Disclosure.canAccept
-    $accept.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($accept)
-    $cancel=New-Object Windows.Forms.Button
-    $cancel.Text='Cancel';$cancel.Location=New-Object Drawing.Point(530,330);$cancel.Size=New-Object Drawing.Size(120,38)
-    $cancel.Anchor='Bottom,Right';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($cancel)
-    # Enter and Escape cancel; accepting needs a click on the accept button.
-    $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
-    SetTrayMenuAvailable $false
-    try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    return & $script:uiDialogView['ShowLicenseSettingConfirm'] -Disclosure $Disclosure
 }
 # The CLI children read the setting from the install folder shown in the window, so it is stored under the launch root and mirrored there. Cancel,
 # or any failure, puts the box back to what it showed.
@@ -542,14 +396,7 @@ function LaunchSideStep([string]$Step,[object[]]$Arguments) {
     $statusLabel.Text=$(if($Step -ceq 'api check'){'Checking the API formats...'}else{'Preparing the support bundle...'})
 }
 function ShowUiSideResult([string]$Title,[string]$Text) {
-    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowUiSideResult'] -Title $Title -Text $Text;return}
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text=$Title;$dialog.Size=New-Object Drawing.Size(760,480);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $box=New-Object Windows.Forms.TextBox;$box.Multiline=$true;$box.ReadOnly=$true;$box.ScrollBars='Vertical';$box.Location=New-Object Drawing.Point(16,16);$box.Size=New-Object Drawing.Size(710,360)
-    $box.Text=($Text -replace "(?<!\r)\n",[Environment]::NewLine)
-    $close=New-Object Windows.Forms.Button;$close.Text='Close';$close.Location=New-Object Drawing.Point(606,390);$close.Size=New-Object Drawing.Size(120,36);$close.DialogResult=[Windows.Forms.DialogResult]::OK
-    $dialog.Controls.Add($box);$dialog.Controls.Add($close);$dialog.AcceptButton=$close;$dialog.CancelButton=$close
-    try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose()}
+    & $script:uiDialogView['ShowUiSideResult'] -Title $Title -Text $Text
 }
 function CompleteUiSideStep {
     if(-not $script:sideChild){return}
@@ -619,7 +466,7 @@ function DisposeTrayControls {
     if($script:trayMenu){try{$script:trayMenu.Dispose()}catch{};$script:trayMenu=$null}
 }
 # The tray icon: the stock application icon, or the drawn one in the Fluent window.
-function GetUiTrayIcon { if ($script:Window -ceq 'fluent') { return Get-FastLlmUiFluentTrayIcon } ; return [Drawing.SystemIcons]::Application }
+function GetUiTrayIcon { return Get-FastLlmUiFluentTrayIcon }
 function EnsureTrayIcon {
     if($script:trayIcon){return}
     try{
@@ -704,79 +551,10 @@ function StopUiOperation {
     }
 }
 function ShowSetupAttention($Decision,$Diagnostic) {
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowSetupAttention'] -Decision $Decision -Diagnostic $Diagnostic}
-    RevealUiForAction
-    $lines=New-Object 'System.Collections.Generic.List[string]'
-    [void]$lines.Add('This PC is missing a required component for the current Vulkan lane. Review the latest setup check before continuing.')
-    [void]$lines.Add('')
-    if($Decision.missing64BitHost){[void]$lines.Add('Use 64-bit Windows PowerShell or PowerShell 7.')}
-    if(@($Decision.missingVcRuntimeFiles).Count -gt 0){
-        [void]$lines.Add("Install the current Microsoft Visual C++ 2015-2022 Redistributable (x64). Missing: $(@($Decision.missingVcRuntimeFiles) -join ', ').")
-    }
-    $candidate=GetVcCandidate
-    $offer=Get-FastLlmUiVcOffer -Decision $Decision -InstallDecision (GetVcInstallDecision $Diagnostic.prerequisiteInventory $candidate)
-    if(@($Decision.missingVcRuntimeFiles).Count -gt 0){[void]$lines.Add($offer.message)}
-    if($Decision.missingVulkanLoader){[void]$lines.Add('Install an AMD Windows driver with Vulkan support. The System32 Vulkan loader is not present.')}
-    [void]$lines.Add('')
-    [void]$lines.Add('After prerequisite setup and any required reboot, choose Recheck. This reruns read-only diagnostics. Compatibility and GPU performance remain unqualified.')
-    foreach($warning in @($Decision.advisoryWarnings)){[void]$lines.Add([string]$warning)}
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM setup check';$dialog.Size=New-Object Drawing.Size(720,450)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $details=New-Object Windows.Forms.TextBox
-    $details.Location=New-Object Drawing.Point(20,20);$details.Size=New-Object Drawing.Size(660,280)
-    $details.Multiline=$true;$details.ReadOnly=$true;$details.ScrollBars='Vertical';$details.Text=($lines -join "`r`n")
-    $dialog.Controls.Add($details)
-    $msLink=New-Object Windows.Forms.LinkLabel
-    $msLink.Text='Official Microsoft VC++ download information';$msLink.Location=New-Object Drawing.Point(20,315)
-    $msLink.AutoSize=$true;$dialog.Controls.Add($msLink)
-    $amdLink=New-Object Windows.Forms.LinkLabel
-    $amdLink.Text='Official AMD driver downloads';$amdLink.Location=New-Object Drawing.Point(360,315)
-    $amdLink.AutoSize=$true;$dialog.Controls.Add($amdLink)
-    $msLink.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{$details.Text='Unable to open the official Microsoft page. No software was installed.'}})
-    $amdLink.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{$details.Text='Unable to open the official AMD page. No driver changes were made.'}})
-    $recheck=New-Object Windows.Forms.Button
-    $recheck.Text='Recheck';$recheck.Location=New-Object Drawing.Point(390,355);$recheck.Size=New-Object Drawing.Size(130,38)
-    $recheck.DialogResult=[Windows.Forms.DialogResult]::Retry;$dialog.Controls.Add($recheck)
-    $later=New-Object Windows.Forms.Button
-    $later.Text='Do later';$later.Location=New-Object Drawing.Point(540,355);$later.Size=New-Object Drawing.Size(140,38)
-    $later.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($later)
-    $prepare=New-Object Windows.Forms.Button
-    $prepare.Text='Prepare && review VC++';$prepare.Location=New-Object Drawing.Point(20,355);$prepare.Size=New-Object Drawing.Size(225,38)
-    $prepare.DialogResult=[Windows.Forms.DialogResult]::Yes;$prepare.Enabled=$offer.canPrepare
-    $dialog.Controls.Add($prepare)
-    $dialog.AcceptButton=$recheck;$dialog.CancelButton=$later
-    SetTrayMenuAvailable $false
-    try{
-        $choice=$dialog.ShowDialog($form)
-        if($choice -eq [Windows.Forms.DialogResult]::Retry){return 'recheck'}
-        if($choice -eq [Windows.Forms.DialogResult]::Yes -and $offer.canPrepare){return 'prepare'}
-        return 'defer'
-    }finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    return & $script:uiDialogView['ShowSetupAttention'] -Decision $Decision -Diagnostic $Diagnostic
 }
 function ShowVcInstallReview($Receipt,$Candidate) {
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowVcInstallReview'] -Receipt $Receipt -Candidate $Candidate}
-    RevealUiForAction
-    $review=Format-FastLlmUiVcReview -Receipt $Receipt -Candidate $Candidate -CacheRoot $script:vcCacheRoot
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Review Microsoft VC++ package and installation';$dialog.Size=New-Object Drawing.Size(850,680)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $details=New-Object Windows.Forms.TextBox
-    $details.Location=New-Object Drawing.Point(20,20);$details.Size=New-Object Drawing.Size(790,545)
-    $details.Anchor='Top,Bottom,Left,Right';$details.Multiline=$true;$details.ReadOnly=$true
-    $details.WordWrap=$true;$details.ScrollBars='Vertical';$details.Text=$review;$dialog.Controls.Add($details)
-    $install=New-Object Windows.Forms.Button
-    $install.Text='Install Microsoft runtime';$install.Location=New-Object Drawing.Point(465,585)
-    $install.Size=New-Object Drawing.Size(210,42);$install.Anchor='Bottom,Right'
-    $install.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($install)
-    $cancel=New-Object Windows.Forms.Button
-    $cancel.Text='Do later';$cancel.Location=New-Object Drawing.Point(690,585)
-    $cancel.Size=New-Object Drawing.Size(120,42);$cancel.Anchor='Bottom,Right'
-    $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($cancel)
-    $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
-    SetTrayMenuAvailable $false
-    try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}
-    finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    return & $script:uiDialogView['ShowVcInstallReview'] -Receipt $Receipt -Candidate $Candidate
 }
 function StartVcBroker($Receipt) {
     if($script:child -or $script:vcBroker -or -not $script:flow -or $script:flow.phase -cne 'setup-attention'){
@@ -812,32 +590,7 @@ function HandleVcBrokerResult($Result) {
     }
 }
 function ShowExactModelConsent($Plan) {
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowExactModelConsent'] -Plan $Plan}
-    RevealUiForAction
-    $reviewText=Format-FastLlmUiModelConsent -Plan $Plan
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Review exact model license and artifact';$dialog.Size=New-Object Drawing.Size(850,680)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $details=New-Object Windows.Forms.TextBox
-    $details.Location=New-Object Drawing.Point(20,20);$details.Size=New-Object Drawing.Size(790,545)
-    $details.Anchor='Top,Bottom,Left,Right';$details.Multiline=$true;$details.ReadOnly=$true
-    $details.WordWrap=$true;$details.ScrollBars='Vertical';$details.Text=$reviewText
-    $dialog.Controls.Add($details)
-    $accept=New-Object Windows.Forms.Button
-    $accept.Text='Accept license && download';$accept.Location=New-Object Drawing.Point(470,585)
-    $accept.Size=New-Object Drawing.Size(205,42);$accept.Anchor='Bottom,Right'
-    $accept.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($accept)
-    $cancel=New-Object Windows.Forms.Button
-    $cancel.Text='Cancel';$cancel.Location=New-Object Drawing.Point(690,585)
-    $cancel.Size=New-Object Drawing.Size(120,42);$cancel.Anchor='Bottom,Right'
-    $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$dialog.Controls.Add($cancel)
-    # Enter initially invokes Cancel. A deliberately focused Accept button remains
-    # keyboard-accessible; Escape and closing without acceptance cancel.
-    $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
-    # The read-only box takes focus first and WinForms would open it with everything selected.
-    $dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}.GetNewClosure())
-    SetTrayMenuAvailable $false
-    try{return $dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
+    return & $script:uiDialogView['ShowExactModelConsent'] -Plan $Plan
 }
 function LaunchUiPhase {
     if(-not $script:flow){throw 'No active control-window workflow.'}
@@ -922,53 +675,7 @@ function ContinueUiAfterPreview($Plan) {
     LaunchUiPhase
 }
 function ShowDriverGuidance($Diagnostic) {
-    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowDriverGuidance'] -Diagnostic $Diagnostic;return}
-    RevealUiForAction
-    if (-not $Diagnostic.PSObject.Properties['driverGuidance'] -or -not $Diagnostic.windows) {
-        throw 'No Windows driver guidance report was returned.'
-    }
-    $entries=@($Diagnostic.driverGuidance)
-    if ($entries.Count -eq 0) {
-        $output.Text='No readable display-device guidance is available. Use Diagnostics for the inventory error and AMD Windows drivers to select your product manually.'
-        $statusLabel.Text='Driver guidance unavailable. No driver changes made.'
-        return
-    }
-    if ($entries.Count -gt 128) { throw 'Driver guidance exceeds the display-device limit.' }
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='AMD driver guidance - read-only';$dialog.Size=New-Object Drawing.Size(780,590)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $label=New-Object Windows.Forms.Label
-    $label.Text='Choose a detected display device (not a verified serving-GPU match)'
-    $label.Location=New-Object Drawing.Point(20,18);$label.Size=New-Object Drawing.Size(720,28);$dialog.Controls.Add($label)
-    $devices=New-Object Windows.Forms.ComboBox
-    $devices.Location=New-Object Drawing.Point(20,52);$devices.Size=New-Object Drawing.Size(720,30);$devices.DropDownStyle='DropDownList'
-    for($i=0;$i -lt $entries.Count;$i++){[void]$devices.Items.Add("$($i+1). $($entries[$i].inputGpuName)")}
-    $dialog.Controls.Add($devices)
-    $details=New-Object Windows.Forms.TextBox
-    $details.Location=New-Object Drawing.Point(20,96);$details.Size=New-Object Drawing.Size(720,390)
-    $details.Multiline=$true;$details.ReadOnly=$true;$details.ScrollBars='Vertical';$dialog.Controls.Add($details)
-    $openPage=New-Object Windows.Forms.Button
-    $openPage.Text='Open official AMD page';$openPage.Location=New-Object Drawing.Point(20,498);$openPage.Size=New-Object Drawing.Size(220,36);$dialog.Controls.Add($openPage)
-    $close=New-Object Windows.Forms.Button
-    $close.Text='Close';$close.Location=New-Object Drawing.Point(620,498);$close.Size=New-Object Drawing.Size(120,36)
-    $close.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($close);$dialog.CancelButton=$close
-    $devices.Add_SelectedIndexChanged({
-        try{$details.Text=Format-FastLlmDriverGuidance -Guidance $entries[$devices.SelectedIndex];$openPage.Enabled=$true}
-        catch{$details.Text='The advisory could not be validated. Use the main AMD Windows drivers link.';$openPage.Enabled=$false}
-    })
-    $openPage.Add_Click({
-        try{
-            $chosen=$entries[$devices.SelectedIndex]
-            if($chosen.knownFocusModel){
-                # Revalidate before opening; do not execute a URL from an unvalidated diagnostic.
-                $null=Format-FastLlmDriverGuidance -Guidance $chosen
-                Start-Process ([string]$chosen.productUrl)
-            }else{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}
-        }catch{$details.Text='Unable to open the official AMD page. No driver changes were made.'}
-    })
-    SetTrayMenuAvailable $false
-    try{$devices.SelectedIndex=0;[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
-    $statusLabel.Text='Driver guidance viewed. No driver changes made.'
+    & $script:uiDialogView['ShowDriverGuidance'] -Diagnostic $Diagnostic
 }
 # The optional API key. The window never keeps the key: what it remembers is the store state (readable or not, and the key's public id),
 # re-read only when the store file changed. The key itself is read from the store at the moment of a Show or a Copy and goes nowhere else.
@@ -1006,141 +713,6 @@ function ShowUiApiKeyFailure([string]$Code,[string]$Text) {
     if($failure.offerNewKey){
         try{if(NewUiApiKey $form){$statusLabel.Text='A new API key was created. Give it to your apps (Connect an app), then start again.'}}
         catch{$newKeyFailureText=[string]$_.Exception.Message;$output.Text=[string]$output.Text+[Environment]::NewLine+'A new key could not be created: '+(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText))}
-    }
-}
-# The dialog is at most as tall as the screen's working area; the anchors then shrink the scrolling panel and lift Save and Cancel with the bottom edge.
-# A shortened dialog is also widened by the vertical scroll bar, so the widest setting still fits beside it and needs no horizontal scrolling.
-function FitUiSettingsDialog($Dialog,[int]$MaxHeight){
-    if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight);$Dialog.Width=$Dialog.Width+[Windows.Forms.SystemInformation]::VerticalScrollBarWidth}
-}
-function GetUiSettingsDialogMaxHeight($OwnerHandle){
-    return [int][Windows.Forms.Screen]::FromHandle($OwnerHandle).WorkingArea.Height
-}
-# The Settings dialog is built here and nothing else: ShowUiSettings runs it in its OWN scope (". BuildUiSettingsDialog"), so every control and
-# handler variable lives where it always did. tests/settings-dialog-render-tests.ps1 builds the same function off-screen to render the layout.
-function BuildUiSettingsDialog {
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM settings';$dialog.Size=New-Object Drawing.Size(560,628);$dialog.StartPosition='CenterParent'
-    $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false;$dialog.Font=$form.Font
-    # The settings sit in a scrolling panel that fills the dialog above a button row docked to its bottom edge (Save and Cancel in it, right-aligned).
-    # Docking is laid out again after every resize, so a small screen or large text never hides Save and Cancel. At 100% the panel is 536 px tall
-    # and Save and Cancel are at y=544, as before. The row gets its full width before the buttons are added, so their right anchors hold.
-    # Tab order is the settings first, then Save and Cancel, as before.
-    $buttonRow=New-Object Windows.Forms.Panel;$buttonRow.Size=New-Object Drawing.Size($dialog.ClientSize.Width,[Math]::Max(46,$dialog.ClientSize.Height-536));$buttonRow.Dock='Bottom';$buttonRow.TabIndex=1;$dialog.Controls.Add($buttonRow)
-    $settingsPanel=New-Object Windows.Forms.Panel;$settingsPanel.Dock='Fill';$settingsPanel.AutoScroll=$true;$settingsPanel.TabIndex=0;$dialog.Controls.Add($settingsPanel);$settingsPanel.BringToFront()
-    $portLabel=New-Object Windows.Forms.Label;$portLabel.Text='Port (127.0.0.1 only)';$portLabel.Location=New-Object Drawing.Point(20,24);$portLabel.Size=New-Object Drawing.Size(200,27);$portLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($portLabel)
-    $portBox=New-Object Windows.Forms.NumericUpDown
-    $portBox.Minimum=1024;$portBox.Maximum=65535;$portBox.DecimalPlaces=0;$portBox.Location=New-Object Drawing.Point(230,22);$portBox.Size=New-Object Drawing.Size(150,27)
-    $portBox.Value=[decimal][int]$current.serverPort;$settingsPanel.Controls.Add($portBox)
-    $thinkingLabel=New-Object Windows.Forms.Label;$thinkingLabel.Text='Thinking';$thinkingLabel.Location=New-Object Drawing.Point(20,64);$thinkingLabel.Size=New-Object Drawing.Size(95,27);$thinkingLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($thinkingLabel)
-    $thinkingBox=New-Object Windows.Forms.ComboBox
-    $thinkingBox.DropDownStyle='DropDownList';$thinkingBox.Location=New-Object Drawing.Point(120,62);$thinkingBox.Size=New-Object Drawing.Size(410,27)
-    [void]$thinkingBox.Items.Add('Auto (recommended)');[void]$thinkingBox.Items.Add('Off: faster answers. Quality with thinking off is not measured by Bitworks.')
-    $thinkingBox.SelectedIndex=$(if([string]$current.thinking -ceq 'off'){1}else{0});$settingsPanel.Controls.Add($thinkingBox)
-    $chatBox=New-Object Windows.Forms.CheckBox;$chatBox.Text='Local chat page (off by default)';$chatBox.Location=New-Object Drawing.Point(20,104);$chatBox.Size=New-Object Drawing.Size(510,27)
-    $chatBox.Checked=([string]$current.chatPage -ceq 'on');$settingsPanel.Controls.Add($chatBox)
-    $chatPrivacy=New-Object Windows.Forms.Label;$chatPrivacy.Text='Chats are kept by your browser, not by FastLLM.';$chatPrivacy.Location=New-Object Drawing.Point(44,130);$chatPrivacy.Size=New-Object Drawing.Size(486,24);$chatPrivacy.UseMnemonic=$false;$settingsPanel.Controls.Add($chatPrivacy)
-    $idleLabel=New-Object Windows.Forms.Label;$idleLabel.Text='Stop the model when idle';$idleLabel.Location=New-Object Drawing.Point(20,168);$idleLabel.Size=New-Object Drawing.Size(200,27);$idleLabel.UseMnemonic=$false;$settingsPanel.Controls.Add($idleLabel)
-    $idleBox=New-Object Windows.Forms.ComboBox
-    $idleBox.DropDownStyle='DropDownList';$idleBox.Location=New-Object Drawing.Point(230,166);$idleBox.Size=New-Object Drawing.Size(300,27)
-    foreach($idleChoice in @('Never (default)','After 15 minutes','After 30 minutes','After 60 minutes')){[void]$idleBox.Items.Add($idleChoice)}
-    $idleBox.SelectedIndex=$(switch([int]$current.idleStopMinutes){15{1}30{2}60{3}default{0}});$settingsPanel.Controls.Add($idleBox)
-    $idleHelp=New-Object Windows.Forms.Label;$idleHelp.Text='Frees the GPU memory. Apps get no answer until you start FastLLM again.';$idleHelp.Location=New-Object Drawing.Point(44,196);$idleHelp.Size=New-Object Drawing.Size(486,24);$idleHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($idleHelp)
-    # The API key (off by default). The box only sets the flag; turning it on creates a key when there is none. The key is shown in Connect an app.
-    $keyBox=New-Object Windows.Forms.CheckBox;$keyBox.Text='Require an API key (off by default)';$keyBox.Location=New-Object Drawing.Point(20,232);$keyBox.Size=New-Object Drawing.Size(510,27)
-    # When the setting cannot be known (a key is stored, but the saved settings do not say whether to use it) the box is neither ticked nor
-    # clear, and Save is refused until the user ticks or clears it: the first click clears it, the next one ticks it.
-    $keyBoxState=Get-FastLlmUiApiKeyBoxState -Settings $current
-    $script:settingsKeyTouched=$false
-    if($keyBoxState -ceq 'indeterminate'){$keyBox.ThreeState=$true;$keyBox.CheckState=[Windows.Forms.CheckState]::Indeterminate;$keyBox.Text='Require an API key (not set: tick or clear this box to choose)'}
-    else{$keyBox.Checked=($keyBoxState -ceq 'checked')}
-    $keyBox.Add_Click({$script:settingsKeyTouched=$true;$keyBox.ThreeState=$false})
-    $settingsPanel.Controls.Add($keyBox)
-    $keyHelp=New-Object Windows.Forms.Label;$keyHelp.Text='Apps must then send the key. It keeps web pages and other Windows accounts on this PC out; it does not stop programs you run. Applies at the next start.';$keyHelp.Location=New-Object Drawing.Point(44,258);$keyHelp.Size=New-Object Drawing.Size(486,44);$keyHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($keyHelp)
-    $newKeyButton=New-Object Windows.Forms.Button;$newKeyButton.Text='Create a new key'+[string][char]0x2026;$newKeyButton.Location=New-Object Drawing.Point(44,306);$newKeyButton.Size=New-Object Drawing.Size(190,34);$settingsPanel.Controls.Add($newKeyButton)
-    $newKeyButton.Add_Click({
-        try{[void](NewUiApiKey $dialog)}
-        catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
-    })
-    $startBox=New-Object Windows.Forms.CheckBox;$startBox.Text='Start FastLLM when I sign in';$startBox.Location=New-Object Drawing.Point(20,346);$startBox.Size=New-Object Drawing.Size(510,27);$settingsPanel.Controls.Add($startBox)
-    $startState=New-Object Windows.Forms.Label;$startState.Location=New-Object Drawing.Point(44,372);$startState.Size=New-Object Drawing.Size(486,40);$startState.UseMnemonic=$false;$settingsPanel.Controls.Add($startState)
-    $startLast=New-Object Windows.Forms.Label;$startLast.Location=New-Object Drawing.Point(44,414);$startLast.Size=New-Object Drawing.Size(486,40);$startLast.UseMnemonic=$false;$settingsPanel.Controls.Add($startLast)
-    # The Run entry is the truth (never settings.json): the checkbox shows what was read back after each change.
-    $showSignIn={
-        param($View)
-        $startBox.Checked=[bool]$View.checked;$startState.Text=[string]$View.stateText;$startLast.Text=[string]$View.lastResultText
-    }
-    try{& $showSignIn (Get-FastLlmSignInSettingsView -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}
-    catch{$startBox.Enabled=$false;$startState.Text='Start at sign-in could not be read on this PC.'}
-    $startBox.Add_Click({
-        try{& $showSignIn (Set-FastLlmSignInStartEnabled -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot) -Enabled ([bool]$startBox.Checked))}
-        catch{
-            [void][Windows.Forms.MessageBox]::Show($dialog,[string]$_.Exception.Message,'FastLLM settings','OK','Warning')
-            try{& $showSignIn (Get-FastLlmSignInSettingsView -AppRoot $PSScriptRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}catch{$null=$_}
-        }
-    })
-    $switchBox=New-Object Windows.Forms.CheckBox;$switchBox.Text='Allow switching models while FastLLM runs';$switchBox.Location=New-Object Drawing.Point(20,458);$switchBox.Size=New-Object Drawing.Size(510,27)
-    $switchBox.Checked=[bool]$script:uiSettings.allowSwitch;$settingsPanel.Controls.Add($switchBox)
-    $switchHelp=New-Object Windows.Forms.Label;$switchHelp.Text='Off by default; applies from the next start. A switch checks the new model again and starts the old one if it cannot start. Stop always wins.';$switchHelp.Location=New-Object Drawing.Point(44,486);$switchHelp.Size=New-Object Drawing.Size(486,48);$switchHelp.UseMnemonic=$false;$settingsPanel.Controls.Add($switchHelp)
-    $saveButton=New-Object Windows.Forms.Button;$saveButton.Text='Save';$saveButton.Location=New-Object Drawing.Point(300,8);$saveButton.Size=New-Object Drawing.Size(100,38);$saveButton.Anchor='Top,Right';$buttonRow.Controls.Add($saveButton)
-    $cancelButton=New-Object Windows.Forms.Button;$cancelButton.Text='Cancel';$cancelButton.Location=New-Object Drawing.Point(420,8);$cancelButton.Size=New-Object Drawing.Size(100,38);$cancelButton.Anchor='Top,Right';$buttonRow.Controls.Add($cancelButton)
-    $dialog.AcceptButton=$saveButton;$dialog.CancelButton=$cancelButton
-    $cancelButton.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
-    $saveButton.Add_Click({
-        try{
-            $savedThinking=$(if($thinkingBox.SelectedIndex -eq 1){'off'}else{'auto'})
-            $savedIdle=@(0,15,30,60)[[Math]::Max(0,[int]$idleBox.SelectedIndex)]
-            # The API key first, so a refusal leaves every setting as it was. On creates a key only when there is none; when the stored key
-            # cannot be read it is refused, and the one offer is to create a new key (asked, never silent).
-            $keyAction=Get-FastLlmUiApiKeySaveAction -Current ([string]$current.apiKey) -Undetermined ([bool]$current.apiKeyUndetermined) -BoxState ([string]$keyBox.CheckState).ToLowerInvariant() -Touched ([bool]$script:settingsKeyTouched)
-            if($keyAction -ceq 'ask'){throw (Get-FastLlmUiApiKeyChoiceText)}
-            $wantKey=[bool]$keyBox.Checked
-            if($keyAction -ceq 'on'){
-                try{$null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action on}
-                catch{
-                    if([string]$_.Exception.Data['FastLlmFailureCode'] -cne 'api-key-unavailable'){throw}
-                    if(-not (NewUiApiKey $dialog)){throw 'The API key was not turned on: the stored key cannot be read and no new key was created. Nothing was changed.'}
-                    $null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action on
-                }
-            }elseif($keyAction -ceq 'off'){
-                $null=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action off
-            }
-            $script:settingsSavedApiKey=$(if($wantKey){'on'}else{'off'})
-            $script:apiKeyStore=$null
-            Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$portBox.Value) -Thinking $savedThinking -ChatPage $(if($chatBox.Checked){'on'}else{'off'}) -IdleStopMinutes $savedIdle
-            Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot -Value ([bool]$switchBox.Checked)
-            $script:uiSettings.allowSwitch=[bool]$switchBox.Checked
-            $script:settingsSavedSwitch=[bool]$switchBox.Checked
-            $script:settingsSavedIdle=[int]$savedIdle
-            $script:settingsSavedChatPage=$(if($chatBox.Checked){'on'}else{'off'})
-            $script:settingsSavedPort=[int]$portBox.Value
-            $script:settingsSavedThinking=$savedThinking
-            $dialog.DialogResult='OK';$dialog.Close()
-        }catch{
-            $saveFailureText=[string]$_.Exception.Message
-            [void][Windows.Forms.MessageBox]::Show($dialog,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)),'FastLLM settings','OK','Warning')
-        }
-    })
-}
-function ShowUiSettings {
-    $current=Get-FastLlmServingSettings -InstallRoot $script:installPath
-    $current | Add-Member -NotePropertyName allowSwitch -NotePropertyValue ([bool]$script:uiSettings.allowSwitch) -Force
-    . BuildUiSettingsDialog
-    FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form.Handle)
-    SetTrayMenuAvailable $false
-    $result='Cancel';$script:settingsSavedPort=[int]$current.serverPort;$script:settingsSavedThinking=[string]$current.thinking;$script:settingsSavedChatPage=[string]$current.chatPage;$script:settingsSavedIdle=[int]$current.idleStopMinutes;$script:settingsSavedApiKey=[string]$current.apiKey;$script:settingsSavedSwitch=[bool]$current.allowSwitch
-    try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
-    if([string]$result -ceq 'OK'){
-        RefreshUiSwitchState
-        $runActive=[bool]($script:child -or $script:bgState.attachedRequestId -or ($script:bgState.observation -and $script:bgState.observation.occupied))
-        $statusLabel.Text=Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $current -After ([pscustomobject]@{serverPort=[int]$script:settingsSavedPort;thinking=[string]$script:settingsSavedThinking;chatPage=[string]$script:settingsSavedChatPage;idleStopMinutes=[int]$script:settingsSavedIdle;apiKey=[string]$script:settingsSavedApiKey;allowSwitch=[bool]$script:settingsSavedSwitch})
-        if([string]$current.chatPage -ceq 'on' -and [string]$script:settingsSavedChatPage -ceq 'off'){
-            $statusLabel.Text=([string]$statusLabel.Text+' '+(Get-FastLlmUiChatPageOffNote -Port ([int]$script:settingsSavedPort)))
-        }
-        # The 250 ms tick rewrites the status line while a run is active, so the notes are also shown where they stay put.
-        if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$statusLabel.Text)){
-            [void][Windows.Forms.MessageBox]::Show($form,[string]$statusLabel.Text,'FastLLM settings','OK','Information')
-        }
     }
 }
 function StartUiBackground {
@@ -1231,25 +803,6 @@ function FillComponentsPanel {
     $view=$script:componentsView
     # The Fluent window's Models page rebuilds its own list: its view names the function (the classic view has no refresh key).
     if($null -ne $view -and $view['refresh']){& $view['refresh'];return}
-    foreach($old in @($view.panel.Controls)){$old.Dispose()}
-    try{$rows=@(Get-FastLlmInstalledComponentRows -Inventory @(Get-FastLlmComponentInventory -ComponentsPath $view.file -InstallRoot $view.root))}
-    catch{$rows=@();$view.message.Text="The component list could not be read: $($_.Exception.Message)"}
-    if($rows.Count -eq 0){
-        $none=New-Object Windows.Forms.Label
-        $none.Text='No engine components are installed.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
-        $view.panel.Controls.Add($none)
-        return
-    }
-    $top=8
-    foreach($row in $rows){
-        $rowLabel=New-Object Windows.Forms.Label
-        $rowLabel.Text=[string]$row.label;$rowLabel.Location=New-Object Drawing.Point(8,($top+6));$rowLabel.Size=New-Object Drawing.Size(530,26)
-        $removeButton=New-Object Windows.Forms.Button
-        $removeButton.Text='Remove';$removeButton.Tag=[string]$row.id;$removeButton.Location=New-Object Drawing.Point(548,$top);$removeButton.Size=New-Object Drawing.Size(110,32)
-        $removeButton.Add_Click({param($sender,$clickArgs)RemoveComponentFromWindow ([string]$sender.Tag)})
-        $view.panel.Controls.Add($rowLabel);$view.panel.Controls.Add($removeButton)
-        $top+=40
-    }
 }
 function RemoveComponentFromWindow([string]$ComponentId) {
     $view=$script:componentsView
@@ -1268,23 +821,6 @@ function RemoveComponentFromWindow([string]$ComponentId) {
     # Rebuilt after this Click handler returns: FillComponentsPanel disposes the clicked button, which must not happen inside its own Click.
     [void]$view.dialog.BeginInvoke([Action]{FillComponentsPanel})
 }
-function ShowComponentsWindow {
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='FastLLM components';$dialog.Size=New-Object Drawing.Size(720,440)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $panel=New-Object Windows.Forms.Panel
-    $panel.Location=New-Object Drawing.Point(20,20);$panel.Size=New-Object Drawing.Size(660,270);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
-    $message=New-Object Windows.Forms.Label
-    $message.Location=New-Object Drawing.Point(20,300);$message.Size=New-Object Drawing.Size(660,50);$message.Text=''
-    $close=New-Object Windows.Forms.Button
-    $close.Text='Close';$close.Location=New-Object Drawing.Point(570,360);$close.Size=New-Object Drawing.Size(110,32);$close.DialogResult='Cancel'
-    $dialog.Controls.Add($panel);$dialog.Controls.Add($message);$dialog.Controls.Add($close)
-    $dialog.CancelButton=$close
-    $script:componentsView=@{dialog=$dialog;panel=$panel;message=$message;root=[IO.Path]::GetFullPath($pathBox.Text);file=(Join-Path $PSScriptRoot 'config/components.json')}
-    try{FillComponentsPanel;[void]$dialog.ShowDialog($form)}
-    finally{$script:componentsView=$null;$dialog.Dispose()}
-}
-$componentsButton.Add_Click({try{ShowComponentsWindow}catch{ShowFailure $_.Exception.Message}})
 # The downloaded models with their sizes and a Remove button per row, the free disk space, and a button for leftover partial downloads.
 # Removal is Remove-FastLlmInstalledModel under the operation lock (taken without waiting); a refusal is shown as a plain sentence.
 $script:modelsView=$null
@@ -1292,39 +828,6 @@ function FillModelsPanel {
     $view=$script:modelsView
     # The Fluent window's Models page rebuilds its own list: its view names the function (the classic view has no refresh key).
     if($null -ne $view -and $view['refresh']){& $view['refresh'];return}
-    foreach($old in @($view.panel.Controls)){$old.Dispose()}
-    $rows=@()
-    try{$rows=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file)}
-    catch{$view.message.Text="The model list could not be read: $($_.Exception.Message)"}
-    $leftovers=@()
-    try{$leftovers=@(Get-FastLlmModelLeftovers -InstallRoot $view.root)}catch{}
-    $free=Get-FastLlmModelStoreFreeBytes -InstallRoot $view.root
-    $view.free.Text=if($null -ne $free){"Free disk space: $(Format-FastLlmModelStoreGigabytes -Bytes $free) GB"}else{''}
-    $view.leftoverButton.Enabled=($leftovers.Count -gt 0)
-    $leftoverBytes=[int64]0;foreach($leftover in $leftovers){$leftoverBytes+=[int64]$leftover.sizeBytes}
-    $view.leftoverButton.Tag=@($leftovers | Where-Object{-not $_.locked} | ForEach-Object{[string]$_.name})
-    $view.leftoverText=if($leftovers.Count -gt 0){"$($leftovers.Count) leftover file(s), $(Format-FastLlmModelStoreGigabytes -Bytes $leftoverBytes) GB"}else{''}
-    if($rows.Count -eq 0){
-        $none=New-Object Windows.Forms.Label
-        $none.Text='No models are downloaded.';$none.Location=New-Object Drawing.Point(8,12);$none.Size=New-Object Drawing.Size(640,26)
-        $view.panel.Controls.Add($none)
-        return
-    }
-    $top=8
-    foreach($row in $rows){
-        $entry=@($catalog.models | Where-Object{[string]$_.id -ceq [string]$row.id})[0]
-        $name=Get-FastLlmModelDisplayName -Model $entry
-        $text="$name  -  $(Format-FastLlmModelStoreGigabytes -Bytes $row.sizeBytes) GB"
-        if($row.inUse){$text+="  (in use: $($row.inUseReason))"}
-        $rowLabel=New-Object Windows.Forms.Label
-        $rowLabel.Text=$text;$rowLabel.Location=New-Object Drawing.Point(8,($top+6));$rowLabel.Size=New-Object Drawing.Size(530,26)
-        $removeButton=New-Object Windows.Forms.Button
-        $removeButton.Text='Remove';$removeButton.Tag=[string]$row.id;$removeButton.Location=New-Object Drawing.Point(548,$top);$removeButton.Size=New-Object Drawing.Size(110,32)
-        $removeButton.Enabled=-not $row.inUse
-        $removeButton.Add_Click({param($sender,$clickArgs)RemoveModelFromWindow ([string]$sender.Tag)})
-        $view.panel.Controls.Add($rowLabel);$view.panel.Controls.Add($removeButton)
-        $top+=40
-    }
 }
 function RemoveModelFromWindow([string]$ModelId) {
     $view=$script:modelsView
@@ -1364,69 +867,6 @@ function RemoveLeftoversFromWindow {
     finally{if($removeLock){$removeLock.Dispose()}}
     [void]$view.dialog.BeginInvoke([Action]{FillModelsPanel})
 }
-function ShowModelsWindow {
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Downloaded models';$dialog.Size=New-Object Drawing.Size(720,500)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $panel=New-Object Windows.Forms.Panel
-    $panel.Location=New-Object Drawing.Point(20,20);$panel.Size=New-Object Drawing.Size(660,250);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
-    $free=New-Object Windows.Forms.Label
-    $free.Location=New-Object Drawing.Point(20,280);$free.Size=New-Object Drawing.Size(300,26);$free.Text=''
-    $leftoverButton=New-Object Windows.Forms.Button
-    $leftoverButton.Text='Remove leftover partial downloads';$leftoverButton.Location=New-Object Drawing.Point(330,276);$leftoverButton.Size=New-Object Drawing.Size(350,32);$leftoverButton.Enabled=$false
-    $leftoverButton.Add_Click({RemoveLeftoversFromWindow})
-    $message=New-Object Windows.Forms.Label
-    $message.Location=New-Object Drawing.Point(20,320);$message.Size=New-Object Drawing.Size(660,70);$message.Text=''
-    $close=New-Object Windows.Forms.Button
-    $close.Text='Close';$close.Location=New-Object Drawing.Point(570,410);$close.Size=New-Object Drawing.Size(110,32);$close.DialogResult='Cancel'
-    $dialog.Controls.Add($panel);$dialog.Controls.Add($free);$dialog.Controls.Add($leftoverButton);$dialog.Controls.Add($message);$dialog.Controls.Add($close)
-    $dialog.CancelButton=$close
-    $script:modelsView=@{dialog=$dialog;panel=$panel;free=$free;leftoverButton=$leftoverButton;message=$message;leftoverText='';root=[IO.Path]::GetFullPath($pathBox.Text);file=(Join-Path $PSScriptRoot 'config/catalog.json')}
-    try{FillModelsPanel;[void]$dialog.ShowDialog($form)}
-    finally{$script:modelsView=$null;$dialog.Dispose()}
-}
-$modelsButton.Add_Click({try{ShowModelsWindow}catch{ShowFailure $_.Exception.Message}})
-# Switch model: the list of models with the planner's verdict, computed once here when the dialog opens (never on the timer). All of the logic is
-# in the UiFlow functions (rows -> items, button state, the click -> the request and its text); this only builds controls and wires events.
-$script:switchPickerRequested=''
-function ShowUiSwitchPicker {
-    $status=$null
-    try{$status=Get-FastLlmStatus -InstallRoot $script:installPath}catch{}
-    $picker=Get-FastLlmUiSwitchPickerModel -InstallRoot $script:installPath -CatalogPath (Join-Path $PSScriptRoot 'config/catalog.json') -Status $status
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Switch model';$dialog.Size=New-Object Drawing.Size(720,500);$dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $intro=New-Object Windows.Forms.Label
-    $intro.Text='FastLLM finishes the requests in progress, stops the running model and starts the one you pick. If the new model cannot start, the old one is started again. "Fits" is an estimate; FastLLM checks again when it switches.'
-    $intro.Location=New-Object Drawing.Point(20,16);$intro.Size=New-Object Drawing.Size(660,62);$intro.UseMnemonic=$false
-    $list=New-Object Windows.Forms.ListBox
-    $list.Location=New-Object Drawing.Point(20,86);$list.Size=New-Object Drawing.Size(660,260);$list.HorizontalScrollbar=$true
-    foreach($pickerItem in @($picker.items)){[void]$list.Items.Add([string]$pickerItem.text)}
-    $message=New-Object Windows.Forms.Label
-    $message.Location=New-Object Drawing.Point(20,358);$message.Size=New-Object Drawing.Size(660,64);$message.Text=[string]$picker.message;$message.UseMnemonic=$false
-    $switchNow=New-Object Windows.Forms.Button
-    $switchNow.Text='Switch';$switchNow.Location=New-Object Drawing.Point(450,428);$switchNow.Size=New-Object Drawing.Size(110,32);$switchNow.Enabled=$false
-    $closeSwitch=New-Object Windows.Forms.Button
-    $closeSwitch.Text='Close';$closeSwitch.Location=New-Object Drawing.Point(570,428);$closeSwitch.Size=New-Object Drawing.Size(110,32)
-    $dialog.Controls.Add($intro);$dialog.Controls.Add($list);$dialog.Controls.Add($message);$dialog.Controls.Add($switchNow);$dialog.Controls.Add($closeSwitch)
-    $dialog.CancelButton=$closeSwitch
-    $closeSwitch.Add_Click({$dialog.DialogResult='Cancel';$dialog.Close()})
-    $list.Add_SelectedIndexChanged({
-        $selectedId=$null;if($list.SelectedIndex -ge 0){$selectedId=[string]@($picker.items)[$list.SelectedIndex].id}
-        $switchNow.Enabled=[bool](Get-FastLlmUiSwitchPickerButtonState -Items $picker.items -SelectedId $selectedId).enabled
-    })
-    $switchNow.Add_Click({
-        $selectedId=$null;if($list.SelectedIndex -ge 0){$selectedId=[string]@($picker.items)[$list.SelectedIndex].id}
-        $outcome=Invoke-FastLlmUiSwitchPick -InstallRoot $script:installPath -CatalogPath (Join-Path $PSScriptRoot 'config/catalog.json') -Items $picker.items -ModelId $selectedId
-        $message.Text=[string]$outcome.text
-        if($outcome.ok){$script:switchPickerRequested=[string]$outcome.text;$dialog.DialogResult='OK';$dialog.Close()}
-    })
-    $script:switchPickerRequested=''
-    SetTrayMenuAvailable $false
-    $result='Cancel'
-    try{$result=$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
-    if([string]$result -ceq 'OK' -and $script:switchPickerRequested){$statusLabel.Text=$script:switchPickerRequested}
-}
-$switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFailure $_.Exception.Message}})
 # Open logs: the run logs folder (state\logs) in Explorer, created if it is not there yet.
 function OpenLogsFolder {
     ReadSideSelection
@@ -1470,106 +910,6 @@ function ContinueSupportBundle([string]$Text) {
     LaunchSideStep 'bundle save' (@('doctor','-SupportBundle',$chosen)+$script:selection)
 }
 $bundleButton.Add_Click({try{StartSupportBundle}catch{ShowFailure $_.Exception.Message}})
-# Connect an app: the base URLs, model name and context limit with Copy buttons, the agent warning, the endpoint list and one card per client.
-# "Check the API formats" closes the dialog and runs `doctor -ApiCheck` as a side step (beside a serving run); the pass/fail table opens in a dialog.
-function ShowConnectDialog {
-    $connectSettings=Get-FastLlmServingSettings -InstallRoot $script:installPath
-    $info=Get-FastLlmConnectionInfo -Status (GetUiBackgroundRunStatus) -InstallRoot $script:installPath -Settings $connectSettings
-    # The API key row. $info never holds the key: a card carries the token {KEY}, shown as a placeholder; a Copy button reads the key from the
-    # store at that moment and puts it on the clipboard only.
-    $script:apiKeyStore=$null
-    $keyRow=Get-FastLlmUiApiKeyRow -Info $info -Settings $connectSettings -ApiKeyStore (GetUiApiKeyStore)
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Connect an app';$dialog.Size=New-Object Drawing.Size(820,640);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
-    $panel=New-Object Windows.Forms.Panel;$panel.Location=New-Object Drawing.Point(0,0);$panel.Size=New-Object Drawing.Size(800,540);$panel.AutoScroll=$true;$dialog.Controls.Add($panel)
-    $y=12
-    $intro=New-Object Windows.Forms.Label;$intro.Location=New-Object Drawing.Point(16,$y);$intro.Size=New-Object Drawing.Size(740,40);$intro.UseMnemonic=$false
-    $intro.Text=$(if($info.state -ceq 'running'){'FastLLM is running. Use these values in your app. They stay on this computer (127.0.0.1).'}else{'FastLLM is not running. The model name and context limit appear once it is running; the address below is where it will listen.'})
-    $panel.Controls.Add($intro);$y+=46
-    $fields=@(
-        @('Base URL',[string]$info.baseUrl),
-        @('Anthropic base URL',[string]$info.anthropicBaseUrl),
-        @('Model name',$(if($null -ne $info.modelName){[string]$info.modelName}else{'(shown when running)'})),
-        @('Context limit (tokens)',$(if($null -ne $info.contextTokens){[string]$info.contextTokens}else{'(shown when running)'}))
-    )
-    foreach($field in $fields){
-        $name=New-Object Windows.Forms.Label;$name.Text=$field[0];$name.Location=New-Object Drawing.Point(16,($y+4));$name.Size=New-Object Drawing.Size(170,24);$name.UseMnemonic=$false;$panel.Controls.Add($name)
-        $box=New-Object Windows.Forms.TextBox;$box.Text=$field[1];$box.ReadOnly=$true;$box.Location=New-Object Drawing.Point(190,$y);$box.Size=New-Object Drawing.Size(450,26);$panel.Controls.Add($box)
-        $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=$field[1];$panel.Controls.Add($copy)
-        $copy.Add_Click({param($sender,$e)try{[Windows.Forms.Clipboard]::SetText([string]$sender.Tag)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
-        $y+=36
-    }
-    if($keyRow.visible){
-        $keyName=New-Object Windows.Forms.Label;$keyName.Text='API key';$keyName.Location=New-Object Drawing.Point(16,($y+4));$keyName.Size=New-Object Drawing.Size(170,24);$keyName.UseMnemonic=$false;$panel.Controls.Add($keyName)
-        $keyBox=New-Object Windows.Forms.TextBox;$keyBox.Text=[string]$keyRow.mask;$keyBox.ReadOnly=$true;$keyBox.Location=New-Object Drawing.Point(190,$y);$keyBox.Size=New-Object Drawing.Size(360,26);$panel.Controls.Add($keyBox)
-        $keyShow=New-Object Windows.Forms.Button;$keyShow.Text='Show';$keyShow.Location=New-Object Drawing.Point(558,($y-2));$keyShow.Size=New-Object Drawing.Size(84,30);$keyShow.Enabled=[bool]$keyRow.canShow;$panel.Controls.Add($keyShow)
-        $keyCopy=New-Object Windows.Forms.Button;$keyCopy.Text='Copy';$keyCopy.Location=New-Object Drawing.Point(650,($y-2));$keyCopy.Size=New-Object Drawing.Size(90,30);$keyCopy.Enabled=[bool]$keyRow.canShow;$panel.Controls.Add($keyCopy)
-        # Show reads the key from the store and puts it in this box only; Hide masks it again. Nothing else in the window holds it.
-        $keyShow.Add_Click({
-            if([string]$keyShow.Text -ceq 'Show'){
-                $shownKey=ReadUiApiKey
-                if($shownKey){$keyBox.Text=$shownKey;$keyShow.Text='Hide'}else{$keyBox.Text=[string]$keyRow.mask;$statusLabel.Text='The stored API key cannot be read.'}
-                $shownKey=$null
-            }else{$keyBox.Text=[string]$keyRow.mask;$keyShow.Text='Show'}
-        })
-        # Ctrl+C, Ctrl+Insert and the box's own menu would copy the shown key as plain text, with no clipboard-history or cloud-sync exclusion; the
-        # guard turns them off and sends every copy of the box through the same call as the Copy button.
-        Register-FastLlmUiKeyBoxCopyGuard -TextBox $keyBox -Copy {
-            [void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})
-        }
-        # Copy goes through the one copy routine: it reads the key for this one copy and hands it to the clipboard only. This handler never
-        # holds the key, and the status line is given fixed text only.
-        $keyCopy.Add_Click({
-            [void](Invoke-FastLlmUiKeyCopy -KeyOnly -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})
-        })
-        $y+=36
-    }
-    if($keyRow.note){
-        $keyNote=New-Object Windows.Forms.Label;$keyNote.Text=[string]$keyRow.note;$keyNote.Location=New-Object Drawing.Point(16,$y);$keyNote.Size=New-Object Drawing.Size(740,40);$keyNote.UseMnemonic=$false
-        $panel.Controls.Add($keyNote);$y+=44
-    }
-    if($info.agentWarning){
-        $warn=New-Object Windows.Forms.Label;$warn.Text=[string]$info.agentWarning;$warn.Location=New-Object Drawing.Point(16,$y);$warn.Size=New-Object Drawing.Size(740,60);$warn.UseMnemonic=$false;$warn.ForeColor=[Drawing.Color]::DarkRed
-        $panel.Controls.Add($warn);$y+=66
-    }
-    $endpointText='Endpoints on the base URL:'+[Environment]::NewLine+((@($info.endpoints)|ForEach-Object{'  '+$_.path+' - '+$_.label}) -join [Environment]::NewLine)
-    $endpointLabel=New-Object Windows.Forms.Label;$endpointLabel.Text=$endpointText;$endpointLabel.Location=New-Object Drawing.Point(16,$y);$endpointLabel.Size=New-Object Drawing.Size(740,112);$endpointLabel.UseMnemonic=$false
-    $panel.Controls.Add($endpointLabel);$y+=120
-    foreach($client in @($info.clients)){
-        $title=New-Object Windows.Forms.Label;$title.Text=[string]$client.title;$title.Font=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold);$title.Location=New-Object Drawing.Point(16,$y);$title.Size=New-Object Drawing.Size(500,24);$title.UseMnemonic=$false;$panel.Controls.Add($title)
-        # The button keeps the card with its {KEY} token (never the key). On a click the key is read from the store and put into the copied text only.
-        $copy=New-Object Windows.Forms.Button;$copy.Text='Copy';$copy.Location=New-Object Drawing.Point(650,($y-2));$copy.Size=New-Object Drawing.Size(90,30);$copy.Tag=[string]$client.snippet;$panel.Controls.Add($copy)
-        $copy.Add_Click({param($sender,$e)
-            [void](Invoke-FastLlmUiKeyCopy -Snippet ([string]$sender.Tag) -ReadKey {ReadUiApiKey} -SetClipboard {param($Payload) SetUiClipboardPayload $Payload} -SetStatus {param($Text) $statusLabel.Text=[string]$Text})
-        })
-        $y+=30
-        $lineCount=@(([string]$client.snippet) -split "`n").Count
-        $snippetBox=New-Object Windows.Forms.TextBox;$snippetBox.Multiline=$true;$snippetBox.ReadOnly=$true;$snippetBox.ScrollBars='Vertical';$snippetBox.WordWrap=$true
-        $snippetBox.Text=(Get-FastLlmConnectDisplayText -Snippet ([string]$client.snippet)) -replace "`n",[Environment]::NewLine
-        $snippetBox.Location=New-Object Drawing.Point(16,$y);$snippetBox.Size=New-Object Drawing.Size(724,[Math]::Min(190,24+18*$lineCount));$panel.Controls.Add($snippetBox);$y+=$snippetBox.Height+6
-        foreach($docUrl in @($client.docUrls)){
-            $link=New-Object Windows.Forms.LinkLabel;$link.Text='Documentation: '+$docUrl;$link.Location=New-Object Drawing.Point(16,$y);$link.AutoSize=$true;$link.Tag=[string]$docUrl;$panel.Controls.Add($link)
-            $link.Add_LinkClicked({param($sender,$e)try{if(([string]$sender.Tag).StartsWith('https://')){Start-Process ([string]$sender.Tag)}}catch{}})
-            $y+=22
-        }
-        $y+=12
-    }
-    $check=New-Object Windows.Forms.Button;$check.Text='Check the API formats';$check.Location=New-Object Drawing.Point(16,552);$check.Size=New-Object Drawing.Size(200,36);$dialog.Controls.Add($check)
-    $check.Enabled=([string]$info.state -ceq 'running' -and [bool](GetUiActionAvailabilityNow ([bool]($script:child -or $script:vcBroker -or $script:updateRun))).apiCheck)
-    $close=New-Object Windows.Forms.Button;$close.Text='Close';$close.Location=New-Object Drawing.Point(660,552);$close.Size=New-Object Drawing.Size(120,36)
-    $close.DialogResult=[Windows.Forms.DialogResult]::OK;$dialog.Controls.Add($close);$dialog.CancelButton=$close
-    $script:apiCheckRequested=$false
-    $check.Add_Click({$script:apiCheckRequested=$true;$dialog.Close()})
-    SetTrayMenuAvailable $false
-    try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose();SetTrayMenuAvailable $true}
-    if($script:apiCheckRequested){
-        $script:apiCheckRequested=$false
-        ReadSideSelection
-        LaunchSideStep 'api check' (@('doctor','-ApiCheck')+$script:selection)
-    }
-}
-$connectButton.Add_Click({try{ShowConnectDialog}catch{ShowFailure $_.Exception.Message}})
 # "Choose another setup": the recipes the CLI lists for this card (`recipes -Detail -AsJson`, read-only and offline), experimental ones only while the switch is on.
 # Choosing one whose engine chain needs an AMD license opens the consent dialog; Install runs the component install as a child, then the start uses -Recipe.
 # Both dialogs are disposed only after ShowDialog returns, never inside one of their own control handlers (as in the Components window).
@@ -1579,136 +919,10 @@ function StartRecipeList {
     LaunchStep 'recipe list' @('recipes','-Detail','-AsJson','-InstallRoot',$script:installPath)
 }
 function ShowRecipeChooser($Rows) {
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowRecipeChooser'] -Rows $Rows}
-    RevealUiForAction
-    $switchValue=if($experimentalBox.Checked){'on'}else{'off'}
-    $variant=[string]$script:identifiedVariant
-    $shown=@(Get-FastLlmUiChooserRows -Rows @($Rows) -ExperimentalComponents $switchValue -Variant $variant)
-    # What the list lacks is said out loud (an unidentified card, no setup for this card, the switch on without any experimental setup).
-    $script:chooserNotice=[string](Get-FastLlmUiChooserNotice -Shown $shown -ExperimentalComponents $switchValue -Variant $variant)
-    if($script:chooserNotice){$statusLabel.Text=$script:chooserNotice}
-    if($shown.Count -eq 0){return $null}
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Choose another setup';$dialog.Size=New-Object Drawing.Size(960,470)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $intro=New-Object Windows.Forms.Label
-    $intro.Text='Setups for your card. Pick one, then Choose. Experimental setups are shown only while Experimental community components is on. Nothing is downloaded until you confirm.'
-    if($script:chooserNotice){$intro.Text+=" $($script:chooserNotice)"}
-    $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(900,40)
-    $list=New-Object Windows.Forms.ListView
-    $list.Location=New-Object Drawing.Point(20,60);$list.Size=New-Object Drawing.Size(900,290);$list.View='Details'
-    $list.FullRowSelect=$true;$list.MultiSelect=$false;$list.HideSelection=$false;$list.GridLines=$true
-    [void]$list.Columns.Add('Setup',250);[void]$list.Columns.Add('Model',170);[void]$list.Columns.Add('Context',100);[void]$list.Columns.Add('Engine and sources',360)
-    foreach($row in $shown){
-        $item=New-Object Windows.Forms.ListViewItem ([string]$row.label)
-        [void]$item.SubItems.Add([string]$row.model);[void]$item.SubItems.Add([string]$row.contextText);[void]$item.SubItems.Add([string]$row.engineText)
-        $item.Tag=[string]$row.id
-        [void]$list.Items.Add($item)
-    }
-    $choose=New-Object Windows.Forms.Button
-    $choose.Text='Choose';$choose.Location=New-Object Drawing.Point(660,370);$choose.Size=New-Object Drawing.Size(130,36);$choose.Enabled=$false
-    $choose.DialogResult=[Windows.Forms.DialogResult]::OK
-    $cancel=New-Object Windows.Forms.Button
-    $cancel.Text='Cancel';$cancel.Location=New-Object Drawing.Point(800,370);$cancel.Size=New-Object Drawing.Size(120,36)
-    $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
-    $list.Add_SelectedIndexChanged({$choose.Enabled=($list.SelectedItems.Count -eq 1)}.GetNewClosure())
-    $list.Add_DoubleClick({if($list.SelectedItems.Count -eq 1){$dialog.DialogResult=[Windows.Forms.DialogResult]::OK}}.GetNewClosure())
-    $dialog.Controls.Add($intro);$dialog.Controls.Add($list);$dialog.Controls.Add($choose);$dialog.Controls.Add($cancel)
-    # Enter chooses the selected row (the Choose button is disabled until a row is selected); Esc cancels.
-    $dialog.AcceptButton=$choose;$dialog.CancelButton=$cancel
-    $picked=$null
-    SetTrayMenuAvailable $false
-    try{
-        if($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK -and $list.SelectedItems.Count -eq 1){
-            $pickedId=[string]$list.SelectedItems[0].Tag
-            $picked=@($shown|Where-Object{[string]$_.id -ceq $pickedId})[0]
-        }
-    }finally{$dialog.Dispose();SetTrayMenuAvailable $true}
-    return $picked
-}
-# The consent dialog: one row per component the install would download, with its source host, its license links (opened in the browser, no license text
-# here) and an "I accept" box. Install is enabled only while every box is ticked; Cancel downloads nothing.
-$script:consentView=$null
-function UpdateConsentInstallState {
-    $view=$script:consentView
-    if(-not $view){return}
-    $ticked=@($view.boxes|ForEach-Object{[bool]$_.Checked})
-    $view.install.Enabled=[bool](Test-FastLlmUiConsentComplete -RowCount $view.boxes.Count -Ticked $ticked)
+    return & $script:uiDialogView['ShowRecipeChooser'] -Rows $Rows
 }
 function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
-    if($null -ne $script:uiDialogView){return & $script:uiDialogView['ShowComponentConsent'] -Row $Row -ConsentRows $ConsentRows -Chosen $Chosen}
-    RevealUiForAction
-    $dialog=New-Object Windows.Forms.Form
-    $dialog.Text='Install engine components';$dialog.Size=New-Object Drawing.Size(800,620)
-    $dialog.MinimumSize=$dialog.Size;$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
-    $boldFont=New-Object Drawing.Font($form.Font,[Drawing.FontStyle]::Bold)
-    $intro=New-Object Windows.Forms.Label
-    $introModel=@($catalog.models|Where-Object{[string]$_.id -ceq [string]$Row.model})|Select-Object -First 1
-    $introName=[string](Get-FastLlmModelDisplayName -Model $introModel)
-    if(-not $introName){$introName=[string]$Row.model}
-    $intro.Text=Get-FastLlmUiComponentIntro -Model $introName -ContextText ([string]$Row.contextText) -Chosen $Chosen
-    $intro.Location=New-Object Drawing.Point(20,14);$intro.Size=New-Object Drawing.Size(740,58)
-    $panel=New-Object Windows.Forms.Panel
-    $panel.Location=New-Object Drawing.Point(20,80);$panel.Size=New-Object Drawing.Size(740,420);$panel.AutoScroll=$true;$panel.BorderStyle='FixedSingle'
-    $boxes=New-Object 'System.Collections.Generic.List[object]'
-    $top=10
-    foreach($consentRow in $ConsentRows){
-        $nameLabel=New-Object Windows.Forms.Label
-        $nameLabel.Text=("{0} ({1}) - {2}" -f [string]$consentRow.name,[string]$consentRow.version,[string]$consentRow.statusText);$nameLabel.Font=$boldFont
-        $nameLabel.Location=New-Object Drawing.Point(10,$top);$nameLabel.Size=New-Object Drawing.Size(700,24)
-        $sourceText="Source: $([string]$consentRow.sourceText)"
-        if(@($consentRow.redirectHosts).Count -gt 0){$sourceText+="; the download may be redirected via $(@($consentRow.redirectHosts) -join ', ')"}
-        $sourceLabel=New-Object Windows.Forms.Label
-        $sourceLabel.Text=$sourceText;$sourceLabel.Location=New-Object Drawing.Point(10,($top+26));$sourceLabel.Size=New-Object Drawing.Size(700,40)
-        $panel.Controls.Add($nameLabel);$panel.Controls.Add($sourceLabel)
-        $top+=68
-        foreach($licenseLink in @($consentRow.links)){
-            if($licenseLink.url){
-                $link=New-Object Windows.Forms.LinkLabel
-                $link.Text=[string]$licenseLink.linkText;$link.Tag=[string]$licenseLink.url
-                $link.Location=New-Object Drawing.Point(24,$top);$link.AutoSize=$true
-                $link.Add_LinkClicked({param($sender,$clickArgs)
-                    try{
-                        $target=Get-FastLlmUiSafeLicenseUrl -Url ([string]$sender.Tag)
-                        if($target){Start-Process $target}
-                    }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was downloaded.' 'Open license page' 'OK' 'Warning'}
-                })
-                $panel.Controls.Add($link)
-            }else{
-                $plain=New-Object Windows.Forms.Label
-                $plain.Text=("{0} (this link cannot be opened from here, so this component cannot be accepted)" -f [string]$licenseLink.title);$plain.Location=New-Object Drawing.Point(24,$top);$plain.AutoSize=$true
-                $panel.Controls.Add($plain)
-            }
-            $top+=24
-        }
-        # An installed or built-in component is a read-only row; only a missing one has a box, and a blocked one cannot be ticked.
-        if($consentRow.needsAccept){
-            $box=New-Object Windows.Forms.CheckBox
-            $box.Text=[string]$consentRow.acceptText;$box.Tag=[string]$consentRow.id;$box.Enabled=(-not $consentRow.blocked)
-            $box.Location=New-Object Drawing.Point(10,($top+4));$box.Size=New-Object Drawing.Size(700,26)
-            $box.Add_CheckedChanged({UpdateConsentInstallState})
-            $panel.Controls.Add($box);$boxes.Add($box)
-        }
-        $top+=48
-    }
-    $install=New-Object Windows.Forms.Button
-    $install.Text='Install';$install.Location=New-Object Drawing.Point(500,520);$install.Size=New-Object Drawing.Size(130,38);$install.Enabled=$false
-    $install.DialogResult=[Windows.Forms.DialogResult]::OK
-    $cancel=New-Object Windows.Forms.Button
-    $cancel.Text='Cancel';$cancel.Location=New-Object Drawing.Point(640,520);$cancel.Size=New-Object Drawing.Size(120,38)
-    $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
-    $dialog.Controls.Add($intro);$dialog.Controls.Add($panel);$dialog.Controls.Add($install);$dialog.Controls.Add($cancel)
-    # Enter and Escape cancel; Install is reached only by clicking it once enabled.
-    $dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel
-    $script:consentView=@{install=$install;boxes=$boxes}
-    $confirmed=$false
-    $ticked=@()
-    SetTrayMenuAvailable $false
-    try{
-        $confirmed=[bool]($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK)
-        $ticked=@($boxes|ForEach-Object{[bool]$_.Checked})
-    }finally{$script:consentView=$null;$boldFont.Dispose();$dialog.Dispose();SetTrayMenuAvailable $true}
-    return [pscustomobject]@{confirmed=$confirmed;ticked=$ticked}
+    return & $script:uiDialogView['ShowComponentConsent'] -Row $Row -ConsentRows $ConsentRows -Chosen $Chosen
 }
 function BeginChosenRecipe($Row) {
     ReadSelection
@@ -1873,7 +1087,6 @@ $openChatButton.Add_Click({
         if($chatUrl){Start-Process $chatUrl}else{$statusLabel.Text='The chat page is available only while a run started with the local chat page is running.'}
     }catch{$statusLabel.Text='The chat page could not be opened: '+$_.Exception.Message}
 })
-$settingsButton.Add_Click({try{ShowUiSettings}catch{ShowFailure $_.Exception.Message}})
 $stopButton.Add_Click({try{StopUiOperation}catch{ShowFailure $_.Exception.Message}})
 $trayButton.Add_Click({
     try{MinimizeToTray}catch{
@@ -2097,7 +1310,7 @@ $form.Add_FormClosing({param($sender,$event)
     $script:startupRun=$null
 })
 $timer.Start()
-try{if($Window -ceq 'fluent'){Start-FastLlmUiFluentLoop}else{[Windows.Forms.Application]::EnableVisualStyles();[Windows.Forms.Application]::Run($form)}}finally{
+try{Start-FastLlmUiFluentLoop}finally{
     if($script:child){$script:child.Dispose()}
     if($script:sideChild){$script:sideChild.Dispose()}
     Close-FastLlmUiBackgroundPoll $script:bgPoll

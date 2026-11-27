@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # The Fluent window shell: the window, the navigation pane, the message area, the theme, the 250 ms refresh and the message loop.
-# Dot-sourced by fast-llm-ui.ps1 only with -Window fluent, right after the existing dot-sources. The seam calls Test-FastLlmUiFluentHost
+# Dot-sourced by fast-llm-ui.ps1 right after the existing dot-sources. The seam calls Test-FastLlmUiFluentHost
 # (FastLlm.UiFluentSupport.ps1), then Initialize-FastLlmUiFluentShell right after the control-creation block, then Start-FastLlmUiFluentLoop.
 # No WPF or WinForms type is resolved at dot-source time, only inside function bodies. The new fluent-only strings are in
 # FastLlm.UiFluentHome.ps1 ($script:FastLlmUiFluentStrings); today's captions come only from the adapters.
@@ -1090,7 +1090,6 @@ function Initialize-FastLlmUiFluentShell {
     # The stage names the run-log reason: theme-init for the theme, the native types and the hooks, xaml-parse for the markup, elements and bindings.
     $stage = 'theme-init'
     try {
-        $classicForm = $script:form
         $windowTitle = [string] $script:FastLlmUiFluentWindowTitle
 
         # Fail-closed: without the native types or the message hook the sign-out guard would silently be missing.
@@ -1172,7 +1171,6 @@ function Initialize-FastLlmUiFluentShell {
         }
         # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
         $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
-        try { $classicForm.Dispose() } catch { $null = $_ }
 
         $stage = 'theme-init'
         Set-FastLlmUiFluentWindowLook -ThemeState $themeState
