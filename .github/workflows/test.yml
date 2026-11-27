@@ -373,6 +373,7 @@ jobs:
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
           .\tests\ui-fluent-adapter-tests.ps1
+          .\tests\ui-fluent-bindings-initial-tests.ps1
           .\tests\ui-fluent-support-tests.ps1
           .\tests\ui-fluent-members-tests.ps1
           .\tests\ui-fluent-settings-additions-tests.ps1
@@ -407,6 +408,7 @@ jobs:
           .\tests\ui-control-states-tests.ps1
           .\tests\ui-card-state-tests.ps1
           .\tests\ui-fluent-adapter-tests.ps1
+          .\tests\ui-fluent-bindings-initial-tests.ps1
           .\tests\ui-fluent-support-tests.ps1
           .\tests\ui-fluent-members-tests.ps1
           .\tests\ui-fluent-settings-additions-tests.ps1

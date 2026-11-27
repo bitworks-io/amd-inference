@@ -1353,11 +1353,14 @@ function Invoke-P2-ConnectAnApp {
     $hasFocus = ([object]::ReferenceEquals($focused, $els.NavConnect) -or $els.NavConnect.IsKeyboardFocused)
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Connect' -and $els.NavConnect.IsSelected) 'P2 Connect an app hosts the Connect page' "current=$(Get-FastLlmUiFluentCurrentPage)"
     Check $hasFocus 'P2 Connect an app puts the focus on the Connect pane item' "focused=$(if ($null -ne $focused) { $focused.GetType().Name } else { 'nothing' })"
+    Check (Test-FastLlmUiFluentPageRegistered -Id 'Connect') 'P2 the Connect page is registered' ''
+    # 5b-delete-begin
     Check ($script:connectDialogCalls -eq 0 -and (Test-FastLlmUiFluentPageRegistered -Id 'Connect')) 'P2 ShowConnectDialog stays at 0 while the Connect page is registered' "calls=$($script:connectDialogCalls)"
     # Control: the counter can move. The adapter event raised directly reaches the real wiring once; then the counter is put back.
     Invoke-FastLlmUiAdapterEvent -Adapter $script:connectButton -Event 'Click'
     Check ($script:connectDialogCalls -eq 1) 'P2 control: a raised adapter Click reaches the wired ShowConnectDialog stub once (the counter can move)' "calls=$($script:connectDialogCalls)"
     $script:connectDialogCalls = 0
+    # 5b-delete-end
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Check-NoExceptions 'P2'
 }
@@ -2397,10 +2400,19 @@ function Invoke-P20-HomeToModels {
     # The Models page and its rows never open today's dialogs
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Open-ModelsPage
+    # 5b-delete-begin
     Check (($script:dialogCalls['switch'] + $script:dialogCalls['models'] + $script:dialogCalls['components']) -eq 0) 'P20 ShowUiSwitchPicker, ShowModelsWindow and ShowComponentsWindow stay at 0 after Switch, Change and the Models page opening' "switch=$($script:dialogCalls['switch']) models=$($script:dialogCalls['models']) components=$($script:dialogCalls['components'])"
+    # 5b-delete-end
     # Control: each counter can move (the real-shaped wiring of P0 is reached by a raised adapter Click), then it is put back
-    $pairs = @(@('switchButton', 'switch'), @('modelsButton', 'models'), @('componentsButton', 'components'), @('chooseButton', 'recipe'))
-    foreach ($pair in $pairs) {
+    # 5b-delete-begin
+    foreach ($pair in @(@('switchButton', 'switch'), @('modelsButton', 'models'), @('componentsButton', 'components'))) {
+        $before = [int]$script:dialogCalls[[string]$pair[1]]
+        Invoke-FastLlmUiAdapterEvent -Adapter (Get-Variable -Name ([string]$pair[0]) -Scope Script -ValueOnly) -Event 'Click'
+        Check ([int]$script:dialogCalls[[string]$pair[1]] -eq ($before + 1)) "P20 control: a raised $($pair[0]) Click reaches its wired dialog stub once (the counter can move)" "before=$before after=$($script:dialogCalls[[string]$pair[1]])"
+        $script:dialogCalls[[string]$pair[1]] = 0
+    }
+    # 5b-delete-end
+    foreach ($pair in @(@('chooseButton', 'recipe'))) {
         $before = [int]$script:dialogCalls[[string]$pair[1]]
         Invoke-FastLlmUiAdapterEvent -Adapter (Get-Variable -Name ([string]$pair[0]) -Scope Script -ValueOnly) -Event 'Click'
         Check ([int]$script:dialogCalls[[string]$pair[1]] -eq ($before + 1)) "P20 control: a raised $($pair[0]) Click reaches its wired dialog stub once (the counter can move)" "before=$before after=$($script:dialogCalls[[string]$pair[1]])"
@@ -3318,12 +3330,17 @@ function Invoke-P30-Save {
     $hwnd = Get-ModelsWindowHandle
     $s = $script:FastLlmUiFluentStrings
     Check (@($script:p30Missing).Count -eq 0) 'P30 NewUiApiKey and ShowLicenseSettingConfirm were found in fast-llm-ui.ps1' ("missing=" + (@($script:p30Missing) -join ','))
+    Check ($script:settingsWiring.ContainsKey('$updateBox') -and $script:settingsWiring.ContainsKey('$experimentalBox') -and $script:settingsWiring.ContainsKey('$licenseBox')) 'P30 the real wiring statements of the update, experimental and licence boxes were found in fast-llm-ui.ps1' "found=[$((@($script:settingsWiring.Keys) -join ','))]"
+    # 5b-delete-begin
     Check ($script:settingsWiring.Count -eq 4) 'P30 the real wiring statements of the update, experimental and licence boxes and of settingsButton.Add_Click were found in fast-llm-ui.ps1' "found=[$((@($script:settingsWiring.Keys) -join ','))]"
+    # 5b-delete-end
+    # 5b-delete-begin
     # Control: the classic Settings button wiring is real-shaped and a raised Click reaches its counter; the page itself never does.
     $script:settingsDialogCalls = 0
     Invoke-FastLlmUiAdapterEvent -Adapter $script:settingsButton -Event 'Click'
     Check ($script:settingsDialogCalls -eq 1) 'P30 control: a raised settingsButton Click reaches the wired ShowUiSettings stub once (the counter can move)' "calls=$($script:settingsDialogCalls)"
     $script:settingsDialogCalls = 0
+    # 5b-delete-end
 
     # A. Opening fills the page from the saved values; an edit to each field makes it dirty and Discard puts that field back.
     Check (Open-SettingsPage @{}) 'P30 Set-FastLlmUiFluentPage -Id Settings hosts the registered Settings page' "current=$(Get-FastLlmUiFluentCurrentPage)"
@@ -3478,7 +3495,9 @@ function Invoke-P30-Save {
     Check ($r.Count -eq 1 -and $r[0] -and [string]$script:shellFailMsg -ceq 'refresh boom' -and (Test-SettingsRecClean $d) -and -not [bool]$st['Dirty'] -and [int]$st['Saved'].port -eq 9000) 'P30 a throw in the after-OK block goes to ShowFailure, shows no Warning box, and the save stays a completed save (clean, Saved = Held, returns true)' ("failure='$($script:shellFailMsg)' dirty=$($st['Dirty']) saved=$($st['Saved'].port) " + (Get-SettingsRecDetail $d))
 
     Close-SettingsPage
+    # 5b-delete-begin
     Check ($script:settingsDialogCalls -eq 0) 'P30 ShowUiSettings (the classic dialog) was never reached by the page' "calls=$($script:settingsDialogCalls)"
+    # 5b-delete-end
     Check-NoExceptions 'P30'
 }
 
@@ -4335,8 +4354,10 @@ function Invoke-P38-SettingsAdditions {
 function Invoke-P99-StartupFaults {
     if (-not $script:shellOk) { return }
     try { $script:FastLlmUiFluent.Timer.Stop() } catch { $null = $_ }
+    # 5b-delete-begin
     Check ($script:connectDialogCalls -eq 0) 'P99 ShowConnectDialog was never called in fluent mode' "calls=$($script:connectDialogCalls)"
     Check ($script:settingsDialogCalls -eq 0) 'P99 ShowUiSettings (the classic Settings dialog) was never called by the Fluent Settings page' "calls=$($script:settingsDialogCalls)"
+    # 5b-delete-end
     # Text C is the same for a markup fault as for a theme fault, and the real stop function passes its reason on and exits 3
     $textXaml = Get-FastLlmUiUnsupportedText -Reason 'xaml-parse' -Folder 'C:\example'
     $textTheme = Get-FastLlmUiUnsupportedText -Reason 'theme-init' -Folder 'C:\example'
@@ -4368,7 +4389,9 @@ function Invoke-P99-StartupFaults {
     finally { Set-Item -Path Function:\New-FastLlmUiXamlElement -Value $script:realXamlLoader }
     Check ($errSettings -ceq 'startup stopped: xaml-parse') 'P99 an injected Settings markup fault stops the startup with xaml-parse (text C, exit 3)' "error='$errSettings'"
     Check ((${function:New-FastLlmUiXamlElement}).ToString() -ceq $script:realXamlLoader.ToString()) 'P99 the real XAML loader is restored after the Settings fault' ''
+    # 5b-delete-begin
     Check (($script:dialogCalls['switch'] + $script:dialogCalls['models'] + $script:dialogCalls['components']) -eq 0) 'P99 ShowUiSwitchPicker, ShowModelsWindow and ShowComponentsWindow were never called by a Fluent page action' "switch=$($script:dialogCalls['switch']) models=$($script:dialogCalls['models']) components=$($script:dialogCalls['components'])"
+    # 5b-delete-end
     Check-NoExceptions 'P99'
 }
 
@@ -5132,20 +5155,26 @@ function Invoke-P43-DialogFlows {
             @{ Name = 'licence setting'; Title = 'Install engine components automatically'; Text = [string]$licenseLink.linkText; Body = 'Unable to open the license page. Check your default browser. Nothing was changed.'; Open = $openLicense; After = { Close-SettingsPage } },
             @{ Name = 'component consent'; Title = 'Install engine components'; Text = [string]$componentLink.linkText; Body = 'Unable to open the license page. Check your default browser. Nothing was downloaded.'; Open = $openConsent; After = { } }
         )
+        # the warning box is an OK box: Enter, Escape and the close box each answer it (the key plan's OK row); each phase is one run of the dialog
         foreach ($case in $linkCases) {
-            $global:FastLlmTestStartProcess['Calls'] = 0
-            $steps = @(@{ Kind = 'act'; Caption = [string]$case.Title; Do = (New-P43LinkClick ([string]$case.Text)) },
-                @{ Kind = 'box'; Caption = 'Open license page'; Key = 0x0D; Fallback = 1 },
-                @{ Kind = 'box'; Caption = [string]$case.Title; Key = 0x1B; Fallback = 'Cancel' })
-            $r = Invoke-P43Run $steps $case.Open
-            & $case.After
-            $d = $r.D
-            $warn = Get-SettingsRec $d 0
-            $opStatus = 'none'; if ($null -ne $d['p42']['ClickOp']) { $opStatus = [string]$d['p42']['ClickOp'].Status }
-            Check ([bool]$d['p42']['LinkFound'] -and [bool]$d['p42']['ClickRan'] -and $global:FastLlmTestStartProcess['Calls'] -ge 1) "P43 $($case.Name): the link was found and clicked, and Start-Process was reached (so the stub threw)" "linkFound=$($d['p42']['LinkFound']) clickRan=$($d['p42']['ClickRan']) clickDone=$($d['p42']['ClickDone']) op=$opStatus startProcessCalls=$($global:FastLlmTestStartProcess['Calls']) link='$($case.Text)' $(Get-SettingsRecDetail $d)"
-            Check ([bool]$warn['Found'] -and [string]$warn['Caption'] -ceq 'Open license page' -and ([string]$warn['Text']).Contains([string]$case.Body)) "P43 $($case.Name): the warning box shows today's text" "text='$($warn['Text'])' expected to contain '$($case.Body)'"
-            Check ([bool]$warn['Found'] -and [long]$warn['Owner'] -eq [long]$d['p42']['DialogHwnd'] -and [string]$warn['OwnerTitle'] -ceq [string]$case.Title -and -not [bool]$warn['OwnerWindowEnabled']) "P43 $($case.Name): the warning box is owned by the dialog (not the main window), and the dialog is disabled while it is open" "owner=$($warn['Owner']) dialog=$($d['p42']['DialogHwnd']) ownerTitle='$($warn['OwnerTitle'])' expected='$($case.Title)' ownerEnabled=$($warn['OwnerWindowEnabled'])"
-            Check ((Test-SettingsRecClean $d) -and [string]$d['actError'] -ceq '') "P43 $($case.Name): the warning box and the dialog were answered by their keys, with nothing unexpected" "actError='$($d['actError'])' error='$($r.Err)' $(Get-SettingsRecDetail $d)"
+            foreach ($phase in @(@{ Label = ''; Key = 0x0D; Sys = $false }, @{ Label = ' (Escape)'; Key = 0x1B; Sys = $false }, @{ Label = ' (close box)'; Key = 0; Sys = $true })) {
+                $global:FastLlmTestStartProcess['Calls'] = 0
+                $warnStep = @{ Kind = 'box'; Caption = 'Open license page'; Fallback = 1 }
+                if ([bool]$phase.Sys) { $warnStep['Sys'] = $true } else { $warnStep['Key'] = [int]$phase.Key }
+                $steps = @(@{ Kind = 'act'; Caption = [string]$case.Title; Do = (New-P43LinkClick ([string]$case.Text)) },
+                    $warnStep,
+                    @{ Kind = 'box'; Caption = [string]$case.Title; Key = 0x1B; Fallback = 'Cancel' })
+                $r = Invoke-P43Run $steps $case.Open
+                & $case.After
+                $d = $r.D
+                $warn = Get-SettingsRec $d 0
+                $opStatus = 'none'; if ($null -ne $d['p42']['ClickOp']) { $opStatus = [string]$d['p42']['ClickOp'].Status }
+                Check ([bool]$d['p42']['LinkFound'] -and [bool]$d['p42']['ClickRan'] -and $global:FastLlmTestStartProcess['Calls'] -ge 1) "P43 $($case.Name)$($phase.Label): the link was found and clicked, and Start-Process was reached (so the stub threw)" "linkFound=$($d['p42']['LinkFound']) clickRan=$($d['p42']['ClickRan']) clickDone=$($d['p42']['ClickDone']) op=$opStatus startProcessCalls=$($global:FastLlmTestStartProcess['Calls']) link='$($case.Text)' $(Get-SettingsRecDetail $d)"
+                Check ([bool]$warn['Found'] -and [string]$warn['Caption'] -ceq 'Open license page' -and ([string]$warn['Text']).Contains([string]$case.Body)) "P43 $($case.Name)$($phase.Label): the warning box shows today's text" "text='$($warn['Text'])' expected to contain '$($case.Body)'"
+                Check ([bool]$warn['Found'] -and [long]$warn['Owner'] -eq [long]$d['p42']['DialogHwnd'] -and [string]$warn['OwnerTitle'] -ceq [string]$case.Title -and -not [bool]$warn['OwnerWindowEnabled']) "P43 $($case.Name)$($phase.Label): the warning box is owned by the dialog (not the main window), and the dialog is disabled while it is open" "owner=$($warn['Owner']) dialog=$($d['p42']['DialogHwnd']) ownerTitle='$($warn['OwnerTitle'])' expected='$($case.Title)' ownerEnabled=$($warn['OwnerWindowEnabled'])"
+                Check ((Test-SettingsRecClean $d) -and [string]$d['actError'] -ceq '') "P43 $($case.Name)$($phase.Label): the warning box and the dialog were answered by their keys, with nothing unexpected" "actError='$($d['actError'])' error='$($r.Err)' $(Get-SettingsRecDetail $d)"
+                Check ([bool]$warn['Found'] -and -not [bool]$warn['FellBack']) "P43 $($case.Name)$($phase.Label): the warning box was answered by its own key or close box, not by the driver's fallback" "found=$($warn['Found']) fellBack=$($warn['FellBack']) keyPosted=$($warn['KeyPosted']) $(Get-SettingsRecDetail $d)"
+            }
         }
     }
     finally {

@@ -462,6 +462,11 @@
       "reason": "The pure control adapters that stand in for the WinForms controls in the Fluent window: set and get, sink, change events, unknown-member throws, access text; no WPF, GPU or bench."
     },
     {
+      "suite": "ui-fluent-bindings-initial-tests",
+      "class": "ci",
+      "reason": "The initial state of every control the Fluent window's bindings make (Text, Enabled, Visible, Checked, Items, SelectedIndex, Value, UseMnemonic, AutoEllipsis, the picker ids, the saved-settings case) pinned against literals generated from the classic creation block, with the access-key rule and planted mutants of the bindings source; pure, no WPF, WinForms, GPU or bench; wired in test.yml."
+    },
+    {
       "suite": "ui-fluent-members-tests",
       "class": "ci",
       "reason": "Member coverage of the Fluent window: every member the window script uses on a control after the rebinding seam exists on its adapter kind, with a self-check, the UpdateActive kind rule and the bindings scope proof; pure AST, no WPF, GPU or bench."
