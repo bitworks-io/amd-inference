@@ -387,7 +387,7 @@ function Invoke-PagesClassicDialogRowPins($row, [string]$UiPath) {
         elseif ([string]$row.ResultKind -ceq 'picked') { $classicSays = ($classicNoSpace.Contains('-eq[Windows.Forms.DialogResult]::OK-and$list.SelectedItems.Count-eq1') -and $classicNoSpace.Contains('return$picked') -and $wantResult -ceq $(if ([string]$b.DR -ceq 'OK') { 'picked' } else { 'null' })) }
         else {
             if ($wantResult -ceq 'defer') { $classicSays = $classicNoSpace.Contains("return'defer'") -and [string]$b.DR -ceq 'Cancel' }
-            else { $classicSays = $classicNoSpace.Contains("[Windows.Forms.DialogResult]::$($b.DR)") -and $classicNoSpace.Contains("return'$wantResult'") }
+            else { $classicSays = [regex]::IsMatch($classicNoSpace, [regex]::Escape("[Windows.Forms.DialogResult]::$($b.DR)") + '(-and\$offer\.canPrepare)?\)\{return''' + [regex]::Escape($wantResult) + '''\}') }
         }
         Check-BoxPin $classicSays "P42 pin: row $($row.Id) the classic dialog answers '$wantResult' for the button '$($b.Text)' (DialogResult $($b.DR))" "result kind=$($row.ResultKind) DialogResult='$($b.DR)' expected result='$wantResult'"
     }

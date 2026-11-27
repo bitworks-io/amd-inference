@@ -3,7 +3,8 @@
 # is found by its title, closed with WM_CLOSE, and the run must end with exit code 0, an empty error stream and no fault reason code (theme-init, xaml-parse)
 # in the run log or the output. No other suite runs the real top level of the script: the page suites take functions out of it by name and shell S19r replays its
 # first statements, so a break in the top-level order (a StrictMode throw, a statement before the seam) would show first on a user's PC.
-# The run is safe on CI: no release record in a source tree and updateCheck off in the temporary settings (no update request), no benchmark (FASTLLM_TESTS_NO_BENCH=1),
+# The run is safe on CI: no RELEASE.json in a source tree (so no installed release, no update request and no integrity run) and updateCheck off in the temporary settings,
+# the lab-app lifetime lease returns nothing for a source checkout, no benchmark (FASTLLM_TESTS_NO_BENCH=1),
 # nothing is started by the window on its own (a model is started only by a click), and the temporary install root is the only folder it writes to.
 # The script refuses to start as an administrator and CI is elevated, so the child runs a COPY of the script with exactly that one refusal statement cut out (found by
 # syntax tree, exactly one required) and $PSScriptRoot replaced by the source folder; nothing else differs from the real file.
