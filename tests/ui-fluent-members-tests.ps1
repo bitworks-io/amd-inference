@@ -1936,7 +1936,7 @@ Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxNo(\s*)= 'N
 Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxYes(\s*)= 'Yes'","BoxYes`$1= 'Yes '")).Count -ge 1) 'mutation check: a box caption with a trailing space is flagged'
 # ===== end PR 4a: approved strings =====
 
-# ===== PR 4a: dialog body controls follow the theme (4b review: a light native box in dark is the §6 anti-goal) =====
+# ===== PR 4a: dialog body controls follow the theme (4b review: a light native box in dark is the section 6 anti-goal) =====
 function Get-DialogThemeFindings([string]$Text){
     $f=New-Object System.Collections.ArrayList
     $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
