@@ -806,7 +806,7 @@ function Invoke-S0-ShellStart {
     Check ([System.Windows.Forms.Application]::RenderWithVisualStyles) 'S0 WinForms visual styles are on after Initialize (RenderWithVisualStyles)' "RenderWithVisualStyles=$([System.Windows.Forms.Application]::RenderWithVisualStyles)"
     Check (([double]$win.Width -eq 1000) -and ([double]$win.Height -eq 680) -and ([double]$win.MinWidth -eq 640) -and ([double]$win.MinHeight -eq 480)) 'S0 the window is 1000x680 with a 640x480 minimum' "size=$($win.Width)x$($win.Height) min=$($win.MinWidth)x$($win.MinHeight)"
     Check (($null -ne $win.Icon) -and ($win.WindowStartupLocation -eq [System.Windows.WindowStartupLocation]::CenterScreen)) 'S0 the window has an icon and starts centred on the screen' "icon=$($null -ne $win.Icon) location=$($win.WindowStartupLocation)"
-    Check ($win.Title -ceq $script:shellTitle) 'S0 the shell window carries the classic form title' "title=$($win.Title) expected=$($script:shellTitle)"
+    Check (($win.Title -ceq 'Bitworks FastLLM (Preview)') -and ($win.Title -ceq [string]$script:FastLlmUiFluentWindowTitle)) 'S0 the shell window title is the shell title constant, Bitworks FastLLM (Preview)' "title=$($win.Title) constant=$($script:FastLlmUiFluentWindowTitle)"
     Check ($null -ne $f.Hooks -and $f.Hooks['hooked'] -eq $true) 'S0 the window hooks registered' "hooks=$($f.Hooks)"
     Check ($null -ne $script:form.FastLlmFormState) 'S0 the orchestration form is now the form adapter' 'form has no FastLlmFormState'
     $script:scns.Add([pscustomobject]@{ Window = $win; Form = $script:form; Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($win).Handle; Closed = @{ n = 0 }; Title = $win.Title })
@@ -1917,7 +1917,8 @@ $catalog = 1
     $shellStmts = ". (Join-Path `$PSScriptRoot 'src/FastLlm.UiFluentShell.ps1'); `$fluentSupport=Test-FastLlmUiFluentHost; if (-not `$fluentSupport.supported) { Show-FastLlmUiUnsupported -Reason x }"
     $condForm = @(Get-S19rStartupStatements ($syn.Replace('@@SHELL@@', "if (`$Window -ceq 'fluent') { $shellStmts }")))
     $flatForm = @(Get-S19rStartupStatements ($syn.Replace('@@SHELL@@', $shellStmts)))
-    Check ($condForm.Count -eq 5 -and $flatForm.Count -eq 5 -and ($condForm -join "`n") -ceq ($flatForm -join "`n") -and $flatForm[3] -ceq '& (Get-Module FastLlm) { Initialize-FastLlmProcessHost }' -and $flatForm[4] -ceq '$fluentSupport=Test-FastLlmUiFluentHost') 'S19r the startup reader gives the same five statements for the conditional form and the unconditional form of the shell statements' "conditional=$($condForm.Count) flat=$($flatForm.Count)"
+    $condText = ($condForm -join ' || '); $flatText = ($flatForm -join ' || ')
+    Check ($condForm.Count -eq 5 -and $flatForm.Count -eq 5 -and $condText -ceq $flatText -and $flatForm[2] -ceq '& (Get-Module FastLlm) { Initialize-FastLlmProcessHost }' -and $flatForm[4] -ceq '$fluentSupport=Test-FastLlmUiFluentHost') 'S19r the startup reader gives the same five statements for the conditional form and the unconditional form of the shell statements' "conditional=[$condText] flat=[$flatText]"
     $swapped = $syn.Replace("Add-Type -AssemblyName System.Windows.Forms`n. (Join-Path `$PSScriptRoot 'src/FastLlm.UiFlow.ps1')", ". (Join-Path `$PSScriptRoot 'src/FastLlm.UiFlow.ps1')`nAdd-Type -AssemblyName System.Windows.Forms").Replace('@@SHELL@@', $shellStmts)
     $swappedList = @(Get-S19rStartupStatements $swapped)
     Check ($swapped -cne $syn.Replace('@@SHELL@@', $shellStmts) -and $swappedList.Count -eq 5 -and ($swappedList -join "`n") -cne ($flatForm -join "`n")) 'S19r mutation check: a reordered startup changes the replayed statements (the child sees a reorder)' "swapped=$($swappedList.Count)"

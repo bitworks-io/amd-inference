@@ -2471,7 +2471,7 @@ function Invoke-P20-HomeToModels {
         $script:dialogCalls[[string]$pair[1]] = 0
     }
     # 5b-delete-end
-    foreach ($pair in @(@('chooseButton', 'recipe'))) {
+    foreach ($pair in @(,@('chooseButton', 'recipe'))) {
         $before = [int]$script:dialogCalls[[string]$pair[1]]
         Invoke-FastLlmUiAdapterEvent -Adapter (Get-Variable -Name ([string]$pair[0]) -Scope Script -ValueOnly) -Event 'Click'
         Check ([int]$script:dialogCalls[[string]$pair[1]] -eq ($before + 1)) "P20 control: a raised $($pair[0]) Click reaches its wired dialog stub once (the counter can move)" "before=$before after=$($script:dialogCalls[[string]$pair[1]])"
@@ -5309,11 +5309,15 @@ function New-P44WalkStep($Row) {
                 $stops = New-Object System.Collections.ArrayList
                 [void]$stops.Add((& $token $first $peer))
                 $cur = $first
+                $left = $false
                 for ($i = 0; $i -lt 40; $i++) {
                     $null = $cur.MoveFocus((New-Object System.Windows.Input.TraversalRequest([System.Windows.Input.FocusNavigationDirection]::Next)))
                     $cur = [System.Windows.Input.Keyboard]::FocusedElement
                     if ($null -eq $cur) { break }
-                    if ([object]::ReferenceEquals($cur, $first)) { $rec.Cycled = $true; break }
+                    # a list focuses its selected row, not itself: after the walk has left the first stop's own subtree, a return to the first stop or into its subtree is the cycle
+                    $inFirst = ([object]::ReferenceEquals($cur, $first) -or ($first -is [System.Windows.Controls.ListBox] -and $first.IsAncestorOf($cur)))
+                    if (-not $inFirst) { $left = $true }
+                    if ($left -and $inFirst) { $rec.Cycled = $true; break }
                     [void]$stops.Add((& $token $cur $peer))
                 }
                 $rec.Stops = $stops.ToArray()
