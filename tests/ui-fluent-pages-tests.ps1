@@ -4489,6 +4489,7 @@ function Get-PagesBoxSources {
     $ex = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text.Contains('That file already exists') }, $true))
     $src['ExistsStmt'] = $null
     if ($ex.Count -eq 1) { $src['ExistsStmt'] = [scriptblock]::Create([string]$ex[0].Extent.Text) }
+    # 5b-delete-begin
     foreach ($pair in @(@('LicenseSetting', 'ShowLicenseSettingConfirm'), @('LicenseConsent', 'ShowComponentConsent'))) {
         $script:p41Fn = [string]$pair[1]
         $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $script:p41Fn }, $true)
@@ -4497,6 +4498,7 @@ function Get-PagesBoxSources {
         $wire = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_LinkClicked' }, $true))
         if ($wire.Count -eq 1 -and $wire[0].Arguments.Count -eq 1) { $src[[string]$pair[0]] = & ([scriptblock]::Create([string]$wire[0].Arguments[0].Extent.Text)) }
     }
+    # 5b-delete-end
     return $src
 }
 # Attaches the real `<adapter>.Add_LinkClicked(...)` statements (the five link handlers) to the shell's adapters; returns the handler counts to put back.
@@ -4543,8 +4545,10 @@ function Invoke-PagesBoxOpen([string]$Id) {
             Invoke-Pump 50
             Close-SettingsPage
         }
+        # 5b-delete-begin
         'license-setting' { & $src['LicenseSetting'] ([pscustomobject]@{ Tag = 'https://example.org/license-probe' }) $null }
         'license-consent' { & $src['LicenseConsent'] ([pscustomobject]@{ Tag = 'https://example.org/license-probe' }) $null }
+        # 5b-delete-end
         'newkey-ask' { $null = NewUiApiKey $script:form }
         'newkey-done' { $null = NewUiApiKey $script:form }
         'remove-model' {
@@ -4728,7 +4732,10 @@ function Invoke-P41-DialogKeys {
     Check ((Test-SettingsRecClean (& $synth $true)) -and -not (Test-SettingsRecClean (& $synth $false))) 'P41 pin: a Native Win32 record is clean, a non-Native Win32 record is still rejected' ''
     $script:p41Src = Get-PagesBoxSources
     $srcMissing = @($script:p41Src.Keys | Where-Object { $null -eq $script:p41Src[$_] })
-    Check ($srcMissing.Count -eq 0) 'P41 the Close FastLLM statement, the already-exists statement and the two licence link handlers were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
+    Check (@('CloseIf', 'ExistsStmt' | Where-Object { -not ($script:p41Src.ContainsKey($_) -and $null -ne $script:p41Src[$_]) }).Count -eq 0) 'P41 the Close FastLLM statement and the already-exists statement were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
+    # 5b-delete-begin
+    Check ($srcMissing.Count -eq 0 -and $script:p41Src.ContainsKey('LicenseSetting') -and $script:p41Src.ContainsKey('LicenseConsent')) 'P41 the Close FastLLM statement, the already-exists statement and the two licence link handlers were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
+    # 5b-delete-end
     $script:p41Diagnostic = [pscustomobject]@{ windows = $true; driverGuidance = @([pscustomobject]@{ schemaVersion = 1; qualification = $false; automaticDriverInstall = $false; hasOwnTrustedMapping = $false
         asOf = '2026-01-01'; inputGpuName = 'Probe display device'; reportedPnpDriverVersion = '1.0'; knownFocusModel = $false; note = '' }) }
     # Start-Process is shadowed for the whole step (a local function, seen by every callee): a link handler's catch block shows its box and no browser opens.
@@ -4737,7 +4744,7 @@ function Invoke-P41-DialogKeys {
     $script:p41CloseCancel = $false
     $rowWatch = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        foreach ($row in @(Get-PagesBoxTable)) {
+        foreach ($row in @(Get-PagesBoxTable | Where-Object { -not $_.ContainsKey('Link') })) {
             $rowStart = $rowWatch.ElapsedMilliseconds
             foreach ($action in 'enter', 'escape', 'x') {
                 $go = Test-PagesBoxPhase $row $action $hwnd
@@ -4745,6 +4752,17 @@ function Invoke-P41-DialogKeys {
             }
             Write-Host ("INFO: P41 row $($row.Id) took " + ($rowWatch.ElapsedMilliseconds - $rowStart) + " ms")
         }
+        # 5b-delete-begin
+        # the two licence link rows through their classic link handlers (the fluent link boxes are driven in P43, in three phases each)
+        foreach ($row in @(Get-PagesBoxTable | Where-Object { $_.ContainsKey('Link') })) {
+            $rowStart = $rowWatch.ElapsedMilliseconds
+            foreach ($action in 'enter', 'escape', 'x') {
+                $go = Test-PagesBoxPhase $row $action $hwnd
+                if (-not $go) { break }
+            }
+            Write-Host ("INFO: P41 row $($row.Id) took " + ($rowWatch.ElapsedMilliseconds - $rowStart) + " ms")
+        }
+        # 5b-delete-end
         foreach ($kind in 'side', 'guidance') {
             foreach ($action in 'enter', 'escape', 'x') { Test-PagesFormPhase $kind $action $hwnd }
         }
