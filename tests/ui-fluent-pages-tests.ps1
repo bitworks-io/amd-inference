@@ -129,6 +129,8 @@ function Invoke-PagesBoxTablePins([string]$UiPath) {
     $selfText = [System.IO.File]::ReadAllText($PSCommandPath)
     $stepsBlock = [regex]::Match($selfText, '(?s)\$script:steps = @\((.*?)\r?\n\)')
     Check-BoxPin ($stepsBlock.Success -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P40-SignInNotice'") -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P41-DialogKeys'")) 'P41 pin: the step list names Invoke-P40-SignInNotice and Invoke-P41-DialogKeys' "stepsBlockFound=$($stepsBlock.Success)"
+    # CI round 1: the suite loads the prerequisite file, which defines the helper the P41 loaded-check names (the Close FastLLM handler's guard)
+    Check-BoxPin ($selfText.Contains(". (Join-Path `$root 'src/FastLlm.UiPrerequisite.ps1')") -and ([System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiPrerequisite.ps1'))).Contains('function Test-FastLlmUiVcActionAllowed')) 'P41 pin: the suite dot-sources the file that defines Test-FastLlmUiVcActionAllowed'
 }
 Invoke-PagesBoxTablePins (Join-Path $root 'fast-llm-ui.ps1')
 Write-Host ("INFO: P41 pins: $($script:boxPinPass) passed, $($script:boxPinFail) failed")
@@ -167,6 +169,9 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.Components.ps1')
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
 . (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
+# PR 4a CI round 1 (named test change): the Close FastLLM row runs the FormClosing handler's own statement, and P41 checks Test-FastLlmUiVcActionAllowed is loaded.
+# The classic file dot-sources its prerequisite file next to the flow file; the suite loads it the same way.
+. (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
 
 # The real stop function exits the process, so a startup fault would end the suite silently: its text is kept for one check (P99), then a throwing one stands in.
