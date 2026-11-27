@@ -1418,6 +1418,18 @@ $settingsCombos=@([regex]::Matches($settingsSrc,'<ComboBox\b[^>]*>'))
 Check ($settingsCombos.Count -ge 4 -and @($settingsCombos|Where-Object{$_.Value -cnotmatch 'Style="\{DynamicResource FastLlm\.ComboBoxStyle\}"'}).Count -eq 0) 'the Settings drop-downs all use FastLlm.ComboBoxStyle (the one popup)'
 Check ($flyoutSources['FastLlm.UiFluentModels.ps1'] -cmatch 'x:Name="ModelsModelBox"[^>]*Style="\{DynamicResource FastLlm\.ComboBoxStyle\}"') 'ModelsModelBox uses the same FastLlm.ComboBoxStyle'
 Check ((Get-FlyoutPinFailures @{x='<Popup x:Name="P"><Border Background="{DynamicResource FastLlm.CardBrush}"/></Popup>'}).Count -ge 1) 'mutation check: a bare Popup on CardBrush is flagged'
+# The shared Expander style sets its text colour. Without it the header (Home's Activity, Models' Start options) takes WPF's SystemColors.ControlText, which is
+# black and about 1.3:1 on the dark layer (lab canary observation).
+function Test-ExpanderForegroundPin([string]$ShellText){
+    $m=[regex]::Match($ShellText,'(?s)<Style x:Key="FastLlm\.ExpanderStyle" TargetType="Expander">(.*?)<Setter Property="Template">')
+    return [bool]($m.Success -and $m.Groups[1].Value.Contains('<Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>'))
+}
+$expShell=[string]$flyoutSources['FastLlm.UiFluentShell.ps1']
+Check (Test-ExpanderForegroundPin $expShell) 'the shared Expander style sets its text to FastLlm.TextPrimaryBrush'
+$expGone=[regex]::Replace($expShell,'(<Style x:Key="FastLlm\.ExpanderStyle" TargetType="Expander">\s*)<Setter Property="Foreground" Value="\{DynamicResource FastLlm\.TextPrimaryBrush\}"/>\s*','$1')
+Check ($expGone -cne $expShell -and -not (Test-ExpanderForegroundPin $expGone)) 'mutation check: the Expander style without its Foreground setter is flagged'
+$expDim=[regex]::Replace($expShell,'(<Style x:Key="FastLlm\.ExpanderStyle" TargetType="Expander">\s*<Setter Property="Foreground" Value="\{DynamicResource )FastLlm\.TextPrimaryBrush(\}"/>)','$1FastLlm.DisabledTextBrush$2')
+Check ($expDim -cne $expShell -and -not (Test-ExpanderForegroundPin $expDim)) 'mutation check: the Expander style pointed at a dim brush is flagged'
 
 # ===== PR 3c review fix: caption wrapping (a non-wrapping AccessText clips at 2.25 text scale) =====
 # The caption presenter of the CheckBox and the switch, and the selection presenter of the ComboBox, each carry a Resources dictionary whose AccessText and TextBlock styles set TextWrapping Wrap.
