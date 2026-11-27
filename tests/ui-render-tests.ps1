@@ -84,6 +84,69 @@ if($modelsMatch.Success -and $listMatch.Success){
     Check ($notInMarkup.Count -eq 0) "the Initialize list names no element that is not in the Models markup (extra: $($notInMarkup -join ', '))"
     Check (@('Bd','Hd','Arrow','Body','Bar'|Where-Object{$modelsPageNames -contains $_}).Count -eq 0) 'the Models page names hold no template part name'
 }
+# The clipped rule's arithmetic (pure, any OS; the derivation is in the harness above Get-UiTextGapBound). The planted numbers are the PR 3c CI rounds' own.
+function Test-UiNear([double]$A,[double]$B){return ([Math]::Abs($A-$B) -lt 0.0000001)}
+Check (Test-UiNear (Get-UiTextGapBound 1.0 $true 0) 0.500001) 'gap bound: half a device pixel is 0.5 DIP at live scale 1.0'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $true 0) 0.400001) 'gap bound: half a device pixel is 0.4 DIP at live scale 1.25'
+Check (Test-UiNear (Get-UiTextGapBound 1.5 $true 0) (0.5/1.5+0.000001)) 'gap bound: half a device pixel is a third of a DIP at live scale 1.5'
+Check (Test-UiNear (Get-UiTextGapBound 2.0 $true 0) 0.250001) 'gap bound: half a device pixel is 0.25 DIP at live scale 2.0'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $false 0) 0.000001) 'gap bound: without layout rounding only the float noise is left'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $true 12) 0.400001) 'gap bound: a margin of whole pixels (12 DIP = 15 px at 1.25) adds nothing'
+Check (Test-UiNear (Get-UiTextGapBound 1.25 $true 10.2) 0.600001) 'gap bound: a margin off the pixel grid (10.2 DIP = 12.75 px, rounded to 10.4) adds its own rounding'
+# Round 2, NoWrap 'Driver guidance': one ideal width (97.2 to 97.5) is 97.0 on the live block's grid (scale 1.0) and 97.6 on the clone's (the case scale 1.25).
+Check ((Test-UiNear (Get-UiRoundedLayoutValue 97.3 1.0) 97.0) -and (Test-UiNear (Get-UiRoundedLayoutValue 97.3 1.25) 97.6)) 'round 2: an ideal width of 97.3 rounds to 97.0 at scale 1.0 and to 97.6 at scale 1.25'
+Check ((Get-UiRoundedLayoutValue 97.3 1.25) -gt ((Get-UiRoundedLayoutValue 97.3 1.0)+0.5)) 'round 2: the clone rounded at the case scale is more than 0.5 above the live block (the false positive)'
+Check ((Get-UiTextGapState (97.3-(Get-UiRoundedLayoutValue 97.3 1.0)) (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'ok') 'the unrounded clone is inside the bound of the live block for the same width'
+Check ((Test-UiNear (Get-UiRoundedLayoutValue 18.62 1.0) 19.0) -and (Test-UiNear (Get-UiRoundedLayoutValue 18.62 1.25) 18.4) -and (Test-UiNear (Get-UiRoundedLayoutValue 37.24 1.5) (56.0/1.5))) 'round 2: the line heights 18.62 and 37.24 give the logged 19.0, 18.4 and 37.3'
+# The bound holds for every ideal size at every live scale (a rounded live size is never further than the bound from the ideal one), and it is tight:
+# at scale 1.25 a gap of 0.45 DIP is more than half a device pixel.
+$sweepBad=0
+foreach($liveScale in 1.0,1.25,1.5,2.0){
+    $liveBound=Get-UiTextGapBound $liveScale $true 0
+    for($i=0;$i -lt 4000;$i++){
+        $ideal=$i*0.0731
+        if((Get-UiTextGapState ($ideal-(Get-UiRoundedLayoutValue $ideal $liveScale)) $liveBound $false) -cne 'ok'){$sweepBad++}
+    }
+}
+Check ($sweepBad -eq 0) "an ideal size is never further than the bound from its layout-rounded size (4000 sizes at each of 4 scales, outside: $sweepBad)"
+Check ((Get-UiTextGapState 0.45 (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'ok' -and (Get-UiTextGapState 0.45 (Get-UiTextGapBound 1.25 $true 0) $false) -ceq 'over') 'the bound follows the live scale: 0.45 DIP is inside it at 1.0 and above it at 1.25'
+# Real clipping stays above the bound: round 1's NoWrap caption (645.1 wide in a 505.0 slot) and a fixed-width box (also with an explicit size).
+Check ((Get-UiTextGapState (645.1-505.0) (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'over') 'a NoWrap caption wider than its slot is above the bound'
+Check ((Get-UiTextGapState (400.0-60.0) (Get-UiTextGapBound 1.0 $true 0) $true) -ceq 'over') 'text wider than its explicit width is above the bound'
+Check ((Get-UiTextGapState 0.6 (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'over') 'a gap of 0.6 DIP at live scale 1.0 is above the bound'
+Check ((Get-UiTextGapState (-8.0) (Get-UiTextGapBound 1.0 $true 0) $true) -ceq 'sized' -and (Get-UiTextGapState (-8.0) (Get-UiTextGapBound 1.0 $true 0) $false) -ceq 'under') 'a clone smaller than the live block is sized with an explicit size and under without one'
+# Wrapping text is measured at the live desired text width plus the bound: round 1's one-line caption (171.0 for 171.x) fits, and round 2's
+# ConnectAgentWarningText (desired 511.0, arranged 533.0) is no longer measured wider than the live block (534.0).
+$nan=[double]::NaN
+$infinite=[double]::PositiveInfinity
+Check (Test-UiNear (Get-UiWrapMeasureWidth 171.0 0.500001 $nan 0 $infinite 1.0 $true) 171.500001) 'a wrapping clone is measured at the desired text width plus the bound (171.0 gives 171.5)'
+Check ((Get-UiWrapMeasureWidth 511.0 0.500001 $nan 0 $infinite 1.0 $true) -lt 533.0) 'a wrapping clone is never measured wider than the live block was arranged (511.5, not 534.0)'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 60.0 0.500001 60.0 0 $infinite 1.0 $true) 60.0) 'a wrapping clone in a fixed-width box is measured at the box width'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 277.5 0.250001 296.0 0 $infinite 2.0 $true) 296.0) 'a fixed-width box whose slot cut its desired width is still measured at the box width (296.0, not 277.75)'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 900.0 0.500001 $nan 0 900.0 1.0 $true) 900.0) 'a wrapping clone is never measured above MaxWidth'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 40.0 0.500001 $nan 120.0 $infinite 1.0 $true) 120.0) 'a wrapping clone is never measured below MinWidth'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 61.0 0.500001 60.6 0 $infinite 1.0 $true) 61.0) 'an explicit width off the pixel grid is measured at its rounded value (60.6 gives 61.0)'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 61.0 0.000001 60.6 0 $infinite 1.0 $false) 60.6) 'without layout rounding an explicit width is measured as it is'
+Check (Test-UiNear (Get-UiWrapMeasureWidth 300.0 0.500001 500.0 0 200.0 1.0 $true) 200.0) 'MaxWidth below an explicit Width wins, as in WPF'
+Check (Test-UiNear (Get-UiWrapMeasureWidth (-4.0) 0.500001 $nan 0 $infinite 1.0 $true) 0.500001) 'a negative desired text width measures at the bound'
+Check ((Test-UiOnLayoutGrid 593.0 1.0) -and -not (Test-UiOnLayoutGrid 593.0 1.25) -and (Test-UiOnLayoutGrid 97.6 1.25) -and -not (Test-UiOnLayoutGrid 97.6 1.0) -and (Test-UiOnLayoutGrid (415.0/1.5) 1.5)) 'the pixel grid test tells the scale 1.0 grid from the 1.25 and 1.5 grids'
+# The summary folds the per-case records per device scale and text scale, in that order.
+$plantStatA=New-UiTextGapStat;$plantStatA['n']=2;Add-UiTextGapValue $plantStatA 'W' (-0.31);Add-UiTextGapValue $plantStatA 'W' 0.42;Add-UiTextGapValue $plantStatA 'H' (-0.38)
+$plantStatB=New-UiTextGapStat;$plantStatB['n']=3;Add-UiTextGapValue $plantStatB 'W' 0.49;Add-UiTextGapValue $plantStatB 'H' 0.24
+$plantStatC=New-UiTextGapStat;$plantStatC['n']=1;Add-UiTextGapValue $plantStatC 'W' (-0.7);Add-UiTextGapValue $plantStatC 'H' 0.1
+$plantRecords=@(
+    @{label='Plant.B light 1.25 2.0 640x480';scale=[double]1.25;textScale=[double]2.0;bound=[double]0.500001;liveScales=[string[]]@('1.0');nowrap=$plantStatC;wrap=(New-UiTextGapStat);over=0;under=1;offGrid=0;sized=0;accessKey=0;trimmed=0;remeasured=0;notes=[string[]]@('below the bound on W: PlantText')},
+    @{label='Plant.A light 1.0 1.0 640x480';scale=[double]1.0;textScale=[double]1.0;bound=[double]0.500001;liveScales=[string[]]@('1.0');nowrap=$plantStatA;wrap=$plantStatB;over=1;under=0;offGrid=0;sized=2;accessKey=1;trimmed=1;remeasured=1;notes=[string[]]@()},
+    @{label='Plant.A dark 1.0 1.0 640x480';scale=[double]1.0;textScale=[double]1.0;bound=[double]0.400001;liveScales=[string[]]@('1.25');nowrap=$plantStatA;wrap=(New-UiTextGapStat);over=0;under=0;offGrid=2;sized=0;accessKey=0;trimmed=0;remeasured=0;notes=[string[]]@('off the pixel grid: PlantText')})
+$plantRows=@(Get-UiTextGapSummary $plantRecords)
+Check ($plantRows.Count -eq 2 -and [double]$plantRows[0]['scale'] -eq 1.0 -and [double]$plantRows[1]['scale'] -eq 1.25) "the gap summary has one row per scale and text scale, lowest scale first (got $($plantRows.Count))"
+if($plantRows.Count -eq 2){
+    $pr=$plantRows[0]
+    Check ([int]$pr['cases'] -eq 2 -and [int]$pr['nowrap']['n'] -eq 4 -and [int]$pr['wrap']['n'] -eq 3 -and [int]$pr['over'] -eq 1 -and [int]$pr['offGrid'] -eq 2 -and [int]$pr['sized'] -eq 2 -and [int]$pr['accessKey'] -eq 1 -and [int]$pr['trimmed'] -eq 1 -and [int]$pr['remeasured'] -eq 1) 'the gap summary adds the counts of the cases of one row'
+    Check ((Test-UiNear ([double]$pr['bound']) 0.500001) -and (Test-UiNear ([double]$pr['nowrap']['minW']) (-0.31)) -and (Test-UiNear ([double]$pr['nowrap']['maxW']) 0.42) -and (Test-UiNear ([double]$pr['wrap']['maxW']) 0.49) -and [string]$pr['liveScales'] -ceq '1.0, 1.25') "the gap summary keeps the largest bound, the gap range and every live scale (live scales '$($pr['liveScales'])')"
+    Check ([string]$pr['line'] -ceq 'scale 1.0 text 1.0: cases 2; live layout scale 1.0, 1.25; bound 0.500; NoWrap n=4 gap W [-0.310, 0.420] H [-0.380, -0.380]; Wrap n=3 gap W [0.490, 0.490] H [0.240, 0.240]; above the bound (reported clipped) 1; below the bound 0; off the pixel grid 2; below it by an explicit size 2; below it by an access key split 1; trimmed with a tooltip 1; wraps re-measured 1') "the gap summary line reads as pinned (got '$($pr['line'])')"
+    Check ([int]$plantRows[1]['under'] -eq 1 -and @($plantRows[1]['notes']).Count -eq 1 -and [string]@($plantRows[1]['notes'])[0] -ceq 'Plant.B light 1.25 2.0 640x480: below the bound on W: PlantText' -and [string]$plantRows[1]['line'] -like '*Wrap n=0 gap W none H none; above the bound (reported clipped) 0; below the bound 1;*') "the gap summary carries a case's notes with its label and prints an empty range as none (line '$($plantRows[1]['line'])')"
+}
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -302,6 +365,11 @@ foreach($case in $matrix){
     Check ([string]$r.inheritedForeground -ceq $expFg) "inherited body text uses the theme text colour at ${label} (got $($r.inheritedForeground), want $expFg)"
     Check ($r.labeledInputs -ge 1) "the label-mismatch check saw at least 1 labelled input at ${label} (got $($r.labeledInputs))"
     Check ($r.textBlocks -ge 6) "the clipped check examined at least 6 text blocks at ${label} (got $($r.textBlocks))"
+    # The clipped rule's evidence on the harness's own page, where every caption is plain text: wrapping and NoWrap blocks were both measured, each live size is on
+    # its device-pixel grid, and each clone reproduces its live block to within the derived bound in BOTH directions (above the bound is reported as clipped).
+    $tg=$r.textGap
+    Check ([int]$tg['wrap']['n'] -ge 4 -and [int]$tg['nowrap']['n'] -ge 1) "the text gap was measured for wrapping and NoWrap text at ${label} (wrap $($tg['wrap']['n']), NoWrap $($tg['nowrap']['n']))"
+    Check ([int]$tg['over'] -eq 0 -and [int]$tg['under'] -eq 0 -and [int]$tg['offGrid'] -eq 0 -and [double]$tg['bound'] -gt 0) "every sample text clone is within the derived bound of its live block at ${label} (bound $($tg['bound']), above $($tg['over']), below $($tg['under']), off the pixel grid $($tg['offGrid'])): $(@($tg['notes']) -join '; ')"
     Check ($r.namedControls -ge 4) "the unnamed check examined at least 4 controls at ${label} (got $($r.namedControls))"
     Check ($r.tabStops -eq 4) "the tab-order check saw 4 tab stops at ${label} (got $($r.tabStops))"
     Check ($r.unmappedRects -eq 0) "no authored element was left unmapped at ${label} (got $($r.unmappedRects))"
@@ -858,10 +926,14 @@ function Test-SettingsCase([string]$Kind,$case){
     if([double]$case.textScale -ge 2.25 -and [int]$case.width -eq 640){
         Check ([double]$scroll.ExtentHeight -gt [double]$scroll.ViewportHeight) "at text 2.25 the Settings content needs scrolling at ${label} (extent $($scroll.ExtentHeight), viewport $($scroll.ViewportHeight))"
     }
-    if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){
-        $g=Get-UiRelativeRect $e['SettingsServerGroup'] $scroll
-        Check ($null -ne $g -and $g.Top -ge -0.5 -and $g.Bottom -le ([double]$scroll.ViewportHeight+0.5)) "at 1000x680 and 100 percent text the Server group is fully inside the viewport at ${label} (group $g, viewport $($scroll.ViewportHeight))"
-    }
+    # The PR 3c plan, Task 4, Layout: "Row 1 is the **footer**, outside the scroll, so Save and Discard are always in view (today's docked button row)".
+    # That is the requirement, so it is checked in EVERY Settings case: the whole footer is shown, inside the window and outside the scroll viewer. The plan does
+    # not ask for the Server group to fit the viewport (with the Fluent control styles it is 585 DIP tall and starts 98 DIP down a 623 DIP viewport at 1000x680,
+    # so it scrolls), so the earlier check of that, which a test builder added for the three 1000x680 cases only, is replaced by this one.
+    $footer=$e['SettingsFooter']
+    $footerRect=Get-UiRelativeRect $footer $page
+    $footerIn=($null -ne $footerRect -and (Test-UiShown $footer $page) -and $footerRect.Width -gt 0 -and $footerRect.Height -gt 0 -and $footerRect.Left -ge -0.5 -and $footerRect.Top -ge -0.5 -and $footerRect.Right -le ([double]$case.width+0.5) -and $footerRect.Bottom -le ([double]$case.height+0.5))
+    Check ($footerIn -and -not $scroll.IsAncestorOf($footer)) "the Settings footer is fully inside the window and outside the scroll viewer at ${label} (footer $footerRect, window $($case.width)x$($case.height), inScroll=$($scroll.IsAncestorOf($footer)))"
     # the texts: each label is on its element; the three help lines are shown; the key box has its caption and state
     Check ([string]$e['SettingsPortLabel'].Text -ceq [string]$t.Port -and [string]$e['SettingsThinkingLabel'].Text -ceq [string]$t.Thinking -and [string]$e['SettingsIdleLabel'].Text -ceq [string]$t.Idle -and [string]$e['SettingsServerHeading'].Text -ceq [string]$script:FastLlmUiFluentStrings.SettingsServer) "the Settings labels and headings carry their text-table strings at $label"
     $helpBad=@('SettingsChatHelp','SettingsIdleHelp','SettingsKeyHelp','SettingsSwitchHelp'|Where-Object{[string]::IsNullOrEmpty([string]$e[[string]$_].Text) -or $e[[string]$_].Visibility -ne [System.Windows.Visibility]::Visible})
@@ -1025,6 +1097,27 @@ foreach($pageId in 'Home','Tools','Connect','Models','Settings'){
     Write-Host ('INFO: Shell with {0} render of 12 cases took {1:N1} s' -f $pageId,$pageSw.Elapsed.TotalSeconds)
 }
 Write-Host ('INFO: Shell render of 60 cases took {0:N1} s' -f $shellSw.Elapsed.TotalSeconds)
+
+# ---- The clipped rule's evidence, per device scale and text scale, over EVERY render case of this run (the harness records each case; the derivation of the
+# bound is above Get-UiTextGapBound). For each examined text block the gap is: the unrounded clone's size minus the live block's desired size without margin.
+# A gap above the bound is the clipped problem itself, so it fails the clean check of its case (the two planted pages, Test.Clipped and Test.ClippedButton,
+# show one each by design). The checks here fail the run when the bound's own premise does not hold: a layout-rounded live size off its device-pixel grid, or
+# a block that is above the bound and was not reported. A clone below the bound cannot cause a false clipped report; it is printed with its numbers, and it
+# fails the run on the sample page (above), where every caption is plain text.
+$gapRows=@(Get-UiTextGapSummary $script:UiRenderTextGapLog)
+foreach($row in $gapRows){
+    Write-Host ('INFO: text gap '+[string]$row['line'])
+    foreach($note in @($row['notes'])){Write-Host ('INFO: text gap note '+[string]$note)}
+    $at="device scale $($row['scale']) and text scale $($row['textScale'])"
+    $seen=[int]$row['nowrap']['n']+[int]$row['wrap']['n']
+    Check ($seen -gt 0 -and [double]$row['bound'] -gt 0) "the text gap was measured at $at (blocks $seen, bound $($row['bound']))"
+    Check ([int]$row['offGrid'] -eq 0) "every layout-rounded live text size is on its own device-pixel grid at $at (off the grid: $($row['offGrid']))"
+    $highest=[double]0
+    foreach($kind in 'nowrap','wrap'){foreach($axis in 'maxW','maxH'){if($null -ne $row[$kind][$axis] -and [double]$row[$kind][$axis] -gt $highest){$highest=[double]$row[$kind][$axis]}}}
+    Check ($highest -le [double]$row['bound']) "no text block is above the derived bound without being reported clipped at $at (highest gap $highest, bound $($row['bound']))"
+}
+$gapPairs=@($matrix|ForEach-Object{"$([double]$_.scale)|$([double]$_.textScale)"}|Sort-Object -Unique)
+Check ($gapRows.Count -eq $gapPairs.Count -and $gapRows.Count -eq 13) "the text gap summary covers the 13 device scale and text scale pairs of the matrix (rows $($gapRows.Count), pairs $($gapPairs.Count))"
 
 # PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
