@@ -672,7 +672,16 @@ foreach ($file in @(Get-ChildItem -LiteralPath $repo -Recurse -File -Include '*.
     $text = Get-Content -LiteralPath $file.FullName -Raw
     if ($text -match 'Set-FastLlmSignInStart(Enabled)?\b|Invoke-FastLlmSignInSettingsAction') { $callers += $file.Name }
 }
-Assert-True ($callers.Count -eq 4 -and $callers -ccontains 'FastLlm.SignInStart.ps1' -and $callers -ccontains 'fast-llm-ui.ps1' -and $callers -ccontains 'FastLlm.UiFluentSettings.ps1' -and $callers -ccontains 'fast-llm.ps1') 'only the sign-in module, the window, the fluent Settings page and the CLI settings action can register'
+# The set of callers after the window script is gone is the surviving fact; fast-llm-ui.ps1 sits on its own marked line so the flip deletes only that entry.
+$expectedCallers = @(
+    'FastLlm.SignInStart.ps1'
+    'FastLlm.UiFluentSettings.ps1'
+    'fast-llm.ps1'
+    # 5b-delete-begin
+    'fast-llm-ui.ps1'
+    # 5b-delete-end
+)
+Assert-True ($callers.Count -eq $expectedCallers.Count -and @($expectedCallers | Where-Object { $callers -ccontains $_ }).Count -eq $expectedCallers.Count -and @($callers | Where-Object { $expectedCallers -ccontains $_ }).Count -eq $callers.Count) "only the sign-in module, the fluent Settings page and the CLI settings action (and, until the flip, the window script) can register ($($callers -join ', '))"
 # the fluent Settings page is the window checkbox handler's copy: its one call sits only inside Invoke-FastLlmUiFluentSettingsSignIn
 $fluentSettingsText = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.UiFluentSettings.ps1') -Raw
 $fluentSignInAt = $fluentSettingsText.IndexOf('function Invoke-FastLlmUiFluentSettingsSignIn')
@@ -688,8 +697,45 @@ Assert-True ($beforeSettings -notmatch 'Set-FastLlmSignInStart|Invoke-FastLlmSig
 Assert-True ($cliText -match '(?s)\[ValidateSet\(''on'', ''off''\)\]\s*\[string\] \$StartAtSignIn') 'the CLI parameter is on or off'
 $uiText = Get-Content -LiteralPath (Join-Path $repo 'fast-llm-ui.ps1') -Raw
 $clickAt = $uiText.IndexOf('$startBox.Add_Click')
+# 5b-delete-begin
 Assert-True ($clickAt -gt 0 -and $uiText.IndexOf('Set-FastLlmSignInStartEnabled') -gt $clickAt -and $uiText.LastIndexOf('Set-FastLlmSignInStartEnabled') -eq $uiText.IndexOf('Set-FastLlmSignInStartEnabled')) 'the window registers only from the checkbox click handler'
 Assert-True ($uiText -match 'Get-FastLlmSignInSettingsView') 'the window reads the checked state from the Run value view'
+Assert-True ($uiText.Contains('$startBox.Add_Click') -and $uiText.Contains('Get-FastLlmSignInSettingsView')) 'literal == classic: the window handler is $startBox.Add_Click and its checked state comes from Get-FastLlmSignInSettingsView'
+# 5b-delete-end
+# The fluent twins: the Settings page registers only from the toggle's Checked and Unchecked handlers and reads the toggle state through the Run value view.
+# A mutant is a copy of the page source with one plausible regression; each twin must fail it and pass the real file (the control).
+function Test-FluentTwin([string]$Name, [string]$Source, [scriptblock]$Predicate, [System.Collections.IDictionary]$Mutants) {
+    Assert-True ([bool](& $Predicate $Source)) "fluent twin: $Name (control: the unmutated source passes)"
+    foreach ($mutantName in $Mutants.Keys) {
+        $mutated = [string](& $Mutants[$mutantName] $Source)
+        $mutantErrors = $null
+        [void][Management.Automation.Language.Parser]::ParseInput($mutated, [ref]$null, [ref]$mutantErrors)
+        Assert-True ($mutated -cne $Source -and @($mutantErrors).Count -eq 0) "mutation setup: $Name - $mutantName changes the source and it still parses"
+        Assert-True (-not [bool](& $Predicate $mutated)) "mutation check: $Name - $mutantName"
+    }
+}
+$fluentSettingsLf = $fluentSettingsText -replace "`r`n", "`n"
+Test-FluentTwin 'the Settings page registers sign-in only from the toggle handlers, never while loading' $fluentSettingsLf {
+    param($t)
+    $guard = "    if (`$null -eq `$st['Held'] -or [bool] `$st['Loading']) { return }`n    `$startBox = `$f['Els']['SettingsSignInToggle']`n    try{Show-FastLlmUiFluentSettingsSignIn -View (Set-FastLlmSignInStartEnabled "
+    $checked = "`$Els['SettingsSignInToggle'].Add_Checked({ param(`$sender, `$routed) Invoke-FastLlmUiFluentSettingsSignIn })"
+    $unchecked = "`$Els['SettingsSignInToggle'].Add_Unchecked({ param(`$sender, `$routed) Invoke-FastLlmUiFluentSettingsSignIn })"
+    return ($t.Contains($guard) -and $t.Contains($checked) -and $t.Contains($unchecked) -and ([regex]::Matches($t, 'Invoke-FastLlmUiFluentSettingsSignIn(?![A-Za-z])')).Count -eq 3 -and ([regex]::Matches($t, 'Set-FastLlmSignInStart(Enabled)?\b|Invoke-FastLlmSignInSettingsAction')).Count -eq 1)
+} ([ordered]@{
+    'the Unchecked handler registers nothing' = { param($t) $t.Replace("Add_Unchecked({ param(`$sender, `$routed) Invoke-FastLlmUiFluentSettingsSignIn })", "Add_Unchecked({ param(`$sender, `$routed) })") }
+    'the call moves into the page builder (it runs at build)' = { param($t) $t.Replace("`$Els['SettingsSignInToggle'].Add_Checked({ param(`$sender, `$routed) Invoke-FastLlmUiFluentSettingsSignIn })", "Invoke-FastLlmUiFluentSettingsSignIn") }
+    'the loading guard is dropped (a page load would register)' = { param($t) $t.Replace(" -or [bool] `$st['Loading']) { return }`n    `$startBox", ") { return }`n    `$startBox") }
+    'Save registers as well' = { param($t) $t.Replace("    `$keyBox = `$e['SettingsKeyBox']`n    `$stage = 'key'", "    `$null = Set-FastLlmSignInStartEnabled -AppRoot `$script:FastLlmUiFluentSourceRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot) -Enabled `$true`n    `$keyBox = `$e['SettingsKeyBox']`n    `$stage = 'key'") }
+})
+Test-FluentTwin 'the Settings page reads the toggle state from the Run value view and never from settings.json' $fluentSettingsLf {
+    param($t)
+    return ($t.Contains("try { Show-FastLlmUiFluentSettingsSignIn -View (Get-FastLlmSignInSettingsView -AppRoot `$script:FastLlmUiFluentSourceRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot)) }") -and
+        $t.Contains("`$e['SettingsSignInToggle'].IsChecked = [bool] `$View.checked") -and
+        $t -notmatch '(?i)settings\.json[^\r\n]*signin|signin[^\r\n]*settings\.json')
+} ([ordered]@{
+    'the load reads the setting from the settings file' = { param($t) $t.Replace("(Get-FastLlmSignInSettingsView -AppRoot `$script:FastLlmUiFluentSourceRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot)) }`n        catch { `$e['SettingsSignInToggle']", "(Read-FastLlmUiSettings -InstallRoot (Get-FastLlmSignInDefaultInstallRoot)).startAtSignIn }`n        catch { `$e['SettingsSignInToggle']") }
+    'the toggle takes a fixed state' = { param($t) $t.Replace("`$e['SettingsSignInToggle'].IsChecked = [bool] `$View.checked", "`$e['SettingsSignInToggle'].IsChecked = `$true") }
+})
 Assert-True ($uiText -notmatch '(?i)settings\.json[^\r\n]*signin|signin[^\r\n]*settings\.json') 'no settings.json key for start at sign-in'
 $servingModule = Get-Content -LiteralPath (Join-Path $repo 'src/FastLlm.ServingSettings.ps1') -Raw
 Assert-True ($servingModule -notmatch '(?i)signin|StartAtSignIn') 'the serving settings file never stores the switch'

@@ -305,11 +305,18 @@ $downloadMock={ param($Url,$Destination,$Sha256,$SizeBytes,$AllowedRedirectHosts
     Check (@(Get-FastLlmUiPickerModelIds -Catalog ([pscustomobject]@{ models=@([pscustomobject]@{ id='m-only-old'; supersededBy='m-x' }) })).Count -eq 0) 'picker helper: a catalog of only superseded models gives an empty list'
     $classicText=[IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))
     $bindingsText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentBindings.ps1'))
+    # 5b-delete-begin
     Check ($classicText.Contains('foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $catalog)) { $modelBox.Items.Add($pickerId)|Out-Null }')) 'classic window: the model list is built from the shared picker helper'
+    # 5b-delete-end
     Check ($bindingsText.Contains('foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $Catalog)){ [void]$modelBox.Items.Add($pickerId) }')) 'Fluent window: the model list is built from the shared picker helper'
     foreach($sourceText in @($classicText,$bindingsText)){
         Check (-not ($sourceText -cmatch 'modelBox\.Items\.Add\(\[string\]\$model\.id\)')) 'no window adds catalog model ids to its picker outside the shared helper'
     }
+    # The Fluent check above is the one that survives the flip: a mutant that builds the list from the catalog directly fails both it and the absence check; the control is the real file.
+    $pickerLoopText='foreach($pickerId in @(Get-FastLlmUiPickerModelIds -Catalog $Catalog)){ [void]$modelBox.Items.Add($pickerId) }'
+    $bindingsMutant=$bindingsText.Replace($pickerLoopText,'foreach($model in @($Catalog.models)){ [void]$modelBox.Items.Add([string]$model.id) }')
+    Check ($bindingsMutant -cne $bindingsText -and -not $bindingsMutant.Contains($pickerLoopText) -and ($bindingsMutant -cmatch 'modelBox\.Items\.Add\(\[string\]\$model\.id\)')) 'mutation check: a Fluent model list built from the catalog directly fails the shared-helper pin and the no-other-loop pin'
+    Check ($bindingsText.Contains($pickerLoopText) -and -not ($bindingsText -cmatch 'modelBox\.Items\.Add\(\[string\]\$model\.id\)')) 'control: the Fluent model list passes the shared-helper pin and the no-other-loop pin'
 
     Write-Host "superseded-models-tests: $script:count checks passed"
 }

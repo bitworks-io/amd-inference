@@ -31,6 +31,8 @@ $script:FastLlmUiFluent = @{ Window = $null; Els = @{}; Keys = @{}; Timer = $nul
 
 # Window size in epx (spec 6.5). Set BEFORE the form adapter exists: creating it calls EnsureHandle(), after which some properties lock.
 $script:FastLlmUiFluentWindowSize = @{ Width = 1000; Height = 680; MinWidth = 640; MinHeight = 480 }
+# The window title (it was read from the classic form's Text; the classic window goes away with the flip, and the title stays).
+$script:FastLlmUiFluentWindowTitle = 'Bitworks FastLLM (Preview)'
 
 $script:FastLlmUiXaml['FastLlm.Shell'] = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -1086,7 +1088,7 @@ function Initialize-FastLlmUiFluentShell {
     $stage = 'theme-init'
     try {
         $classicForm = $script:form
-        $windowTitle = [string] $classicForm.Text
+        $windowTitle = [string] $script:FastLlmUiFluentWindowTitle
 
         # Fail-closed: without the native types or the message hook the sign-out guard would silently be missing.
         $f['Interop'] = [bool] (Initialize-FastLlmUiWindowInterop -SourceRoot $script:FastLlmUiFluentSourceRoot)

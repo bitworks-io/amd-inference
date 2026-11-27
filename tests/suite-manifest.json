@@ -462,6 +462,11 @@
       "reason": "The pure control adapters that stand in for the WinForms controls in the Fluent window: set and get, sink, change events, unknown-member throws, access text; no WPF, GPU or bench."
     },
     {
+      "suite": "ui-fluent-bindings-initial-tests",
+      "class": "ci",
+      "reason": "The initial state of every control the Fluent window's bindings make (Text, Enabled, Visible, Checked, Items, SelectedIndex, Value, UseMnemonic, AutoEllipsis, the picker ids, the saved-settings case) pinned against literals generated from the classic creation block, with the access-key rule and planted mutants of the bindings source; pure, no WPF, WinForms, GPU or bench; wired in test.yml."
+    },
+    {
       "suite": "ui-fluent-members-tests",
       "class": "ci",
       "reason": "Member coverage of the Fluent window: every member the window script uses on a control after the rebinding seam exists on its adapter kind, with a self-check, the UpdateActive kind rule and the bindings scope proof; pure AST, no WPF, GPU or bench."
@@ -477,6 +482,11 @@
       "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
     },
     {
+      "suite": "ui-fluent-startup-smoke-tests",
+      "class": "ci",
+      "reason": "Startup smoke of the real window script: fast-llm-ui.ps1 runs in a fresh STA process with a temporary install root (a copy with only the administrator refusal cut out, because CI is elevated), the window is found by its title and closed with WM_CLOSE, and the run must exit 0 with an empty error stream and no fault reason code in the run log; the copy builder and the verdict are pinned with mutants on every platform; Windows only for the run, skips elsewhere; no network, GPU or bench; runs in the wpf job of test.yml."
+    },
+    {
       "suite": "ui-fluent-settings-additions-tests",
       "class": "ci",
       "reason": "The Settings additions byte-identical proof: the page's own Save argument logic (taken from its AST) through the real serving-settings writer and reader on a temporary install root, for empty, each non-default, all four, unknown-key and invalid saved values, plus the one-row-toggled cases and planted mutants; pure file work, no WPF, GPU, network or bench; wired in test.yml."
@@ -485,6 +495,11 @@
       "suite": "ui-fluent-settings-probe-tests",
       "class": "ci",
       "reason": "The Settings additions availability probes run for real: the Long probe (and the same probe for the Default profile at 2 requests at once) against a temporary serving-profiles.json with one long row at slots 1 (true at 1 for the matching model, false at 2, false for another model or file revision, false for an unreadable file) and the embeddings probe with no embedding model installed; pure file work through the module's own row source, no WPF, GPU, network or bench; wired in test.yml."
+    },
+    {
+      "suite": "ui-fluent-keeplist-tests",
+      "class": "ci",
+      "reason": "The flip-ready pins on the window script: the keep-list (a SHA-256 for every top-level item the flip leaves untouched, a modify list and a delete list so a new top-level statement fails), the allowed readers of the Window parameter, and the window title constant; pure parsing of fast-llm-ui.ps1 and the shell, with planted one-letter mutants; no WPF, GPU, network or bench; wired in test.yml."
     },
     {
       "suite": "ui-fluent-shell-tests",

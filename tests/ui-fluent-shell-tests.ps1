@@ -307,6 +307,7 @@ function Invoke-A11-ScreenGap {
     $msg = ''
     try { $null = [System.Windows.Forms.Screen]::FromControl($form) } catch { $msg = $_.Exception.Message }
     Check ($msg -ne '') 'A11 Screen.FromControl($form) still throws on the adapter (which is why the call site passes the handle)' 'FromControl returned without throwing'
+    # 5b-delete-begin
     $uiAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'), [ref]$null, [ref]$null)
     $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'GetUiSettingsDialogMaxHeight' }, $true)
     Check ($null -ne $def) 'A11 GetUiSettingsDialogMaxHeight was found in fast-llm-ui.ps1' ''
@@ -320,6 +321,7 @@ function Invoke-A11-ScreenGap {
         catch { $err = $_.Exception.Message }
         Check ($err -eq '' -and $got -gt 0 -and $got -eq $want) 'A11 GetUiSettingsDialogMaxHeight $form.Handle returns the working-area height of the adapter window''s screen (the same as Screen.FromHandle of the real hwnd)' "got=$got want=$want hwnd=$($s.Hwnd) formHandle=$($form.Handle) error=$err"
     }
+    # 5b-delete-end
     Check-NoExceptions 'A11'
 }
 
@@ -804,7 +806,7 @@ function Invoke-S0-ShellStart {
     Check ([System.Windows.Forms.Application]::RenderWithVisualStyles) 'S0 WinForms visual styles are on after Initialize (RenderWithVisualStyles)' "RenderWithVisualStyles=$([System.Windows.Forms.Application]::RenderWithVisualStyles)"
     Check (([double]$win.Width -eq 1000) -and ([double]$win.Height -eq 680) -and ([double]$win.MinWidth -eq 640) -and ([double]$win.MinHeight -eq 480)) 'S0 the window is 1000x680 with a 640x480 minimum' "size=$($win.Width)x$($win.Height) min=$($win.MinWidth)x$($win.MinHeight)"
     Check (($null -ne $win.Icon) -and ($win.WindowStartupLocation -eq [System.Windows.WindowStartupLocation]::CenterScreen)) 'S0 the window has an icon and starts centred on the screen' "icon=$($null -ne $win.Icon) location=$($win.WindowStartupLocation)"
-    Check ($win.Title -ceq $script:shellTitle) 'S0 the shell window carries the classic form title' "title=$($win.Title) expected=$($script:shellTitle)"
+    Check (($win.Title -ceq 'Bitworks FastLLM (Preview)') -and ($win.Title -ceq [string]$script:FastLlmUiFluentWindowTitle)) 'S0 the shell window title is the shell title constant, Bitworks FastLLM (Preview)' "title=$($win.Title) constant=$($script:FastLlmUiFluentWindowTitle)"
     Check ($null -ne $f.Hooks -and $f.Hooks['hooked'] -eq $true) 'S0 the window hooks registered' "hooks=$($f.Hooks)"
     Check ($null -ne $script:form.FastLlmFormState) 'S0 the orchestration form is now the form adapter' 'form has no FastLlmFormState'
     $script:scns.Add([pscustomobject]@{ Window = $win; Form = $script:form; Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($win).Handle; Closed = @{ n = 0 }; Title = $win.Title })
@@ -1782,28 +1784,40 @@ function Invoke-S19-StepsEvidence {
 }
 
 # S19r: the proof in a fresh process, in the startup order of fast-llm-ui.ps1 (its lines 1-34: the assembly loads and dot-sources, then the shell file),
+# built from the real file by its syntax tree (Get-S19rStartupStatements), so a reorder or a new line in the real startup is replayed here,
 # without the administrator refusal (CI is elevated) and without the lab-app lifetime. Each shell runs its own leg with its own executable.
+
+# The statements of fast-llm-ui.ps1's startup (the top-level try body, before the catalog is read) that the S19r child replays, in file order, as source text:
+# the two assembly loads, the module import, every dot-source except the lab-app lifetime, the process host call, and the Fluent shell dot-source with the
+# support check. Today the shell statements sit in `if ($Window -ceq 'fluent') { ... }`; after the flip they stand alone: both forms give the same list.
+# The administrator refusal, the lab-app lifetime, the install root default and the unsupported-window branch are not replayed (CI is elevated, the rest needs the window).
+function Get-S19rStartupStatements([string]$ScriptText) {
+    $tree = [System.Management.Automation.Language.Parser]::ParseInput($ScriptText, [ref]$null, [ref]$null)
+    $tries = @($tree.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
+    if ($tries.Count -lt 1) { return @() }
+    $flat = New-Object System.Collections.ArrayList
+    foreach ($st in @($tries[0].Body.Statements)) {
+        if ($st -is [System.Management.Automation.Language.IfStatementAst] -and $st.Clauses.Count -eq 1 -and $null -eq $st.ElseClause -and ([string]$st.Clauses[0].Item1.Extent.Text) -ceq "`$Window -ceq 'fluent'") {
+            foreach ($inner in @($st.Clauses[0].Item2.Statements)) { [void]$flat.Add($inner) }
+        }
+        else { [void]$flat.Add($st) }
+    }
+    $out = New-Object System.Collections.ArrayList
+    foreach ($st in $flat) {
+        $t = [string]$st.Extent.Text
+        $keep = $t.StartsWith('Add-Type -AssemblyName ') -or $t.StartsWith('Import-Module ') -or $t.StartsWith('& (Get-Module FastLlm)') -or $t.StartsWith('$fluentSupport=Test-FastLlmUiFluentHost') -or
+            ($t.StartsWith('. (Join-Path $PSScriptRoot ') -and -not $t.Contains('FastLlm.LabApp.ps1'))
+        if ($keep) { [void]$out.Add($t.Replace('$PSScriptRoot', '$root')) }
+    }
+    return $out.ToArray()
+}
 $script:s19rChild = @'
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 __PRE__
 $root = '__ROOT__'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
-. (Join-Path $root 'src/FastLlm.UiFlow.ps1')
-. (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1')
-. (Join-Path $root 'src/FastLlm.UiBackground.ps1')
-. (Join-Path $root 'src/FastLlm.UiState.ps1')
-. (Join-Path $root 'src/FastLlm.Update.ps1')
-. (Join-Path $root 'src/FastLlm.Components.ps1')
-. (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
-. (Join-Path $root 'src/FastLlm.SignInStart.ps1')
-. (Join-Path $root 'src/FastLlm.SupportBundle.ps1')
-. (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
-& (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
-. (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
-$support = Test-FastLlmUiFluentHost
+__STARTUP__
+$support = $fluentSupport
 $out = [ordered]@{ supported = [bool]$support.supported; reason = [string]$support.reason; edition = [string]$PSVersionTable.PSEdition; productLegacy = @(); copies = @(); fields = @{}; modern = $false
     itemsControlPeer = $false; listBoxPeer = $false }
 $cmd = Get-Command Get-FastLlmUiFluentAccessibilityState -ErrorAction SilentlyContinue
@@ -1849,7 +1863,7 @@ function Invoke-S19rChild([string]$Variant, [string]$Pre) {
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fastllm-s19r-' + [guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $dir)
     $file = Join-Path $dir 'child.ps1'
-    [System.IO.File]::WriteAllText($file, $script:s19rChild.Replace('__PRE__', $Pre).Replace('__ROOT__', $root.Replace("'", "''")), (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($file, $script:s19rChild.Replace('__PRE__', $Pre).Replace('__STARTUP__', ($script:s19rStartup -join "`n")).Replace('__ROOT__', $root.Replace("'", "''")), (New-Object System.Text.UTF8Encoding($false)))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
     $psi.Arguments = '-STA -NoLogo -NoProfile -File "' + $file + '"'
@@ -1881,6 +1895,33 @@ function Invoke-S19rChild([string]$Variant, [string]$Pre) {
 
 function Invoke-S19r-FreshProcess {
     $edition = if ($PSVersionTable.PSVersion.Major -le 5) { 'Windows PowerShell 5.1' } else { 'PowerShell 7' }
+    # the child's startup, read from the real script: the dot-source order is the frozen literal below (the order of fast-llm-ui.ps1 today), the shell and its support check last
+    $script:s19rStartup = @(Get-S19rStartupStatements ([System.IO.File]::ReadAllText((Join-Path $root 'fast-llm-ui.ps1'))))
+    $wantDot = @('FastLlm.UiFlow', 'FastLlm.UiPrerequisite', 'FastLlm.UiBackground', 'FastLlm.UiState', 'FastLlm.Update', 'FastLlm.Components', 'FastLlm.ServingSettings', 'FastLlm.SignInStart', 'FastLlm.SupportBundle', 'FastLlm.ConnectInfo', 'FastLlm.UiFluentShell')
+    $gotDot = @($script:s19rStartup | Where-Object { $_.StartsWith('. (Join-Path $root ') } | ForEach-Object { if ($_ -match "src/(FastLlm\.\w+)\.ps1") { $Matches[1] } else { '?' } })
+    Check (($gotDot -join ',') -ceq ($wantDot -join ',')) 'S19r the dot-sources replayed from fast-llm-ui.ps1 are the literal list in order, the Fluent shell last' "got=[$($gotDot -join ',')] want=[$($wantDot -join ',')]"
+    $kinds = @($script:s19rStartup | ForEach-Object { if ($_.StartsWith('Add-Type')) { 'A' } elseif ($_.StartsWith('Import-Module')) { 'M' } elseif ($_.StartsWith('& (Get-Module')) { 'H' } elseif ($_.StartsWith('$fluentSupport')) { 'S' } else { 'D' } })
+    Check (($kinds -join '') -ceq 'AAMDDDDDDDDDDHDS') 'S19r the replayed startup is two assembly loads, the module import, ten dot-sources, the process host, the shell dot-source and the support check, in that order' "kinds=$($kinds -join '') statements=$($script:s19rStartup.Count)"
+    # the reader sees both forms of the shell statements, and a reorder
+    $syn = @'
+param([string]$InstallRoot)
+try {
+. (Join-Path $PSScriptRoot 'src/FastLlm.LabApp.ps1')
+Add-Type -AssemblyName System.Windows.Forms
+. (Join-Path $PSScriptRoot 'src/FastLlm.UiFlow.ps1')
+& (Get-Module FastLlm) { Initialize-FastLlmProcessHost }
+@@SHELL@@
+$catalog = 1
+} finally { }
+'@
+    $shellStmts = ". (Join-Path `$PSScriptRoot 'src/FastLlm.UiFluentShell.ps1'); `$fluentSupport=Test-FastLlmUiFluentHost; if (-not `$fluentSupport.supported) { Show-FastLlmUiUnsupported -Reason x }"
+    $condForm = @(Get-S19rStartupStatements ($syn.Replace('@@SHELL@@', "if (`$Window -ceq 'fluent') { $shellStmts }")))
+    $flatForm = @(Get-S19rStartupStatements ($syn.Replace('@@SHELL@@', $shellStmts)))
+    $condText = ($condForm -join ' || '); $flatText = ($flatForm -join ' || ')
+    Check ($condForm.Count -eq 5 -and $flatForm.Count -eq 5 -and $condText -ceq $flatText -and $flatForm[2] -ceq '& (Get-Module FastLlm) { Initialize-FastLlmProcessHost }' -and $flatForm[4] -ceq '$fluentSupport=Test-FastLlmUiFluentHost') 'S19r the startup reader gives the same five statements for the conditional form and the unconditional form of the shell statements' "conditional=[$condText] flat=[$flatText]"
+    $swapped = $syn.Replace("Add-Type -AssemblyName System.Windows.Forms`n. (Join-Path `$PSScriptRoot 'src/FastLlm.UiFlow.ps1')", ". (Join-Path `$PSScriptRoot 'src/FastLlm.UiFlow.ps1')`nAdd-Type -AssemblyName System.Windows.Forms").Replace('@@SHELL@@', $shellStmts)
+    $swappedList = @(Get-S19rStartupStatements $swapped)
+    Check ($swapped -cne $syn.Replace('@@SHELL@@', $shellStmts) -and $swappedList.Count -eq 5 -and ($swappedList -join "`n") -cne ($flatForm -join "`n")) 'S19r mutation check: a reordered startup changes the replayed statements (the child sees a reorder)' "swapped=$($swappedList.Count)"
     $real = Invoke-S19rChild 'real-order' ''
     $r = $real.r
     $name = "S19r $edition fresh process, startup order of fast-llm-ui.ps1: supported, every accessibility switch property reads False in every copy of the class"
