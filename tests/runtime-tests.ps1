@@ -1084,7 +1084,11 @@ try {
     # The bench path never opts in: no bench caller passes IdleStopMinutes, so a direct caller gets 0.
     # The Fluent window's Settings page (PR 3c) is the window's settings writer, as fast-llm-ui.ps1 is (which this src scan never covered): its one use is
     # the saved idle setting written by Set-FastLlmServingSettings, pinned just below, so it is not a bench caller.
-    $benchCallers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1','FastLlm.UiFluentSettings.ps1') -and ([IO.File]::ReadAllText($_.FullName)).Contains('IdleStopMinutes') })
+    $benchSrcFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1')
+    $benchIdleUsers=@($benchSrcFiles | Where-Object { ([IO.File]::ReadAllText($_.FullName)).Contains('IdleStopMinutes') })
+    $benchCallers=@($benchIdleUsers | Where-Object { $_.Name -cnotin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1','FastLlm.UiFluentSettings.ps1') })
+    # CONTROL: the scan finds the four files that do name IdleStopMinutes, so "no other caller" is a real look, not an empty enumeration.
+    Check ($benchSrcFiles.Count -ge 20 -and $benchIdleUsers.Count -eq 4 -and @($benchIdleUsers.Name | Where-Object { $_ -cin @('FastLlm.Runtime.ps1','FastLlm.ServingSettings.ps1','FastLlm.BackgroundHost.ps1','FastLlm.UiFluentSettings.ps1') }).Count -eq 4) 'idle-bench control: the scan sees the four files that name IdleStopMinutes (the runtime, the serving settings, the background host and the Fluent Settings page)'
     Check ($benchCallers.Count -eq 0) ('idle-bench: no lab, benchmark or diagnostic source passes IdleStopMinutes: ['+(($benchCallers | ForEach-Object Name) -join ',')+']')
     # Since this narrows a guarded rule, the value source is fixed too: IdleStopMinutes appears once, only as the Set-FastLlmServingSettings argument, and
     # its value is $savedIdle, assigned once from the held settings' idleStopMinutes ($values = ConvertFrom-FastLlmUiSettingsHeld -Held $held), never a literal.

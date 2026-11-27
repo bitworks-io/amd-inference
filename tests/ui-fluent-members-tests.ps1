@@ -1537,7 +1537,7 @@ Check ((Get-ModelsDriftProblems $modelsTable $classicValues.ToArray() @($classic
 # The list models (pure), with the store functions shadowed. The real functions are taken from the file by AST; the text table is the real one.
 $script:FastLlmUiFluentModelsText=$modelsTable
 foreach($fnName in 'Get-FastLlmUiFluentModelsListModel','Get-FastLlmUiFluentComponentsListModel'){
-    $def=@(Get-AstFunction $modelsAst $fnName)
+    $def=Get-AstFunction $modelsAst $fnName
     Check ($def.Count -eq 1) "$fnName is defined once"
     . ([scriptblock]::Create($def[0].Extent.Text))
 }
@@ -3006,7 +3006,10 @@ $seamPlants=[ordered]@{
     'the side result dispatch missing'=@((Edit-SeamPlant $seamUiText "    if(`$null -ne `$script:uiDialogView){& `$script:uiDialogView['ShowUiSideResult'] -Title `$Title -Text `$Text;return}`n" ''),$seamShellText)
     'the table set in the Local scope'=@($seamUiText,(Edit-SeamPlant $seamShellText '-Name uiDialogView -Scope Script' '-Name uiDialogView -Scope Local'))
 }
-foreach($k in $seamPlants.Keys){ Check ((@(Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1])).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
+# CONTROL: the unmutated texts give exactly 0 findings (a counter that is always 1 or always 0 fails here or below). Each plant must also differ from the real text.
+Check ((Get-SeamFindings $seamUiText $seamShellText).Count -eq 0) 'control: the unmutated classic and shell texts give no classic-seam findings'
+foreach($k in $seamPlants.Keys){ Check (($seamPlants[$k][0] -cne $seamUiText) -or ($seamPlants[$k][1] -cne $seamShellText)) "the seam plant changes the text: $k" }
+foreach($k in $seamPlants.Keys){ Check ((Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1]).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
 # Ruling a (the fluent box returns [System.Windows.Forms.DialogResult], never a string) is pinned with the dialog host above; the view entry is that function (the key pin).
 # ===== end PR 4a Task 4 =====
 

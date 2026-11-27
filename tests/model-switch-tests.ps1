@@ -538,8 +538,15 @@ try {
     Check (@(Get-FluentSwitchFindings 'FastLlm.UiState.ps1' ($usText+"`nfunction X { Start-FastLlmServer -AllowSwitch `$true }")).Count -ge 1) 'bench path self-check: a start passed -AllowSwitch from the held-edit file is flagged'
     Check (@(Get-FluentSwitchFindings 'FastLlm.UiFluentSettings.ps1' $fsText.Replace('-Value ([bool]$values.allowSwitch)','-Value $true')).Count -ge 1) 'bench path self-check: the saved opt-in written from a literal is flagged'
     Check (@(Get-FluentSwitchFindings 'FastLlm.UiFluentSettings.ps1' ($fsText+"`nfunction X { Set-FastLlmUiAllowSwitch -InstallRoot `$r -Value `$true }")).Count -ge 1) 'bench path self-check: a second opt-in write is flagged'
-    $others=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File | Where-Object { $_.Extension -in @('.ps1','.psm1') -and $allowed -cnotcontains $_.Name -and ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
-    $tools=@(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -File -Filter '*.ps1' | Where-Object { ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
+    $srcSwitchFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -File | Where-Object { $_.Extension -in @('.ps1','.psm1') })
+    $srcSwitchUsers=@($srcSwitchFiles | Where-Object { ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
+    $others=@($srcSwitchUsers | Where-Object { $allowed -cnotcontains $_.Name })
+    $toolFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'tools') -File -Filter '*.ps1')
+    $tools=@($toolFiles | Where-Object { ([IO.File]::ReadAllText($_.FullName)) -match 'AllowSwitch|SwitchAllowed' })
+    # CONTROLS: the two scans below find nothing only when they truly looked: the source scan sees the files that do use the opt-in (so an empty enumeration or a wrong filter fails here), and the tools scan sees the tool files.
+    Check ($srcSwitchFiles.Count -ge 20 -and (@('FastLlm.Runtime.ps1','FastLlm.psm1','FastLlm.UiFlow.ps1','FastLlm.UiFluentSettings.ps1') | Where-Object { @($srcSwitchUsers.Name) -ccontains $_ }).Count -eq 4) 'bench path control: the source scan sees the files that use the opt-in (the runtime, the module, the flow and the Fluent Settings page)'
+    Check ($toolFiles.Count -ge 1) 'bench path control: the tools scan sees the tool scripts'
+    Check ('Start-FastLlmServer -AllowSwitch $true' -match 'AllowSwitch|SwitchAllowed' -and 'x SwitchAllowed' -match 'AllowSwitch|SwitchAllowed') 'bench path control: the scan pattern matches both spellings'
     Check ($others.Count -eq 0 -and $tools.Count -eq 0) ('bench path: no lab, benchmark, diagnostic or tool source passes -AllowSwitch: ['+((@($others)+@($tools) | ForEach-Object Name) -join ',')+']')
 
     # ================= scenario: switch ok (self-test on, idle stop on, thinking off, chat page on) =================

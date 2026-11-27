@@ -500,5 +500,47 @@ Check ((Get-Sha256Lf $closeText) -ceq $closeHash) 'the close guards are unchange
 Check ((Get-Sha256Lf $adminText) -cne (Get-Sha256Lf ($adminText.Replace('administrator','administratoR')))) 'self-check: a one-character change moves the admin hash'
 Check ((Get-Sha256Lf $closeText) -cne (Get-Sha256Lf ($closeText+' '))) 'self-check: a one-character change moves the close-guard hash'
 
+# A finder that ends in "return ,$x" hands its caller ONE array object; a caller that counts it as @(Finder ...) wraps that array again, so the count is always 1 and a
+# mutation self-check like @(Get-X $mutant).Count -ge 1 passes whatever the finder does (found 2026-11-27 in the members suite). The caller must assign the finder
+# (the array arrives intact) or write (Finder ...).Count.
+function Get-CommaFinderNames([object[]]$Asts){
+    $names=@{}
+    foreach($ast in $Asts){
+        foreach($fn in @($ast.FindAll({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))){
+            $rets=@($fn.Body.FindAll({param($n)$n -is [System.Management.Automation.Language.ReturnStatementAst] -and $null -ne $n.Pipeline -and $n.Pipeline.Extent.Text.StartsWith(',')},$true))
+            if($rets.Count -gt 0){$names[$fn.Name.ToLowerInvariant()]=$true}
+        }
+    }
+    return $names
+}
+function Get-CommaFinderWrapFindings($Ast,[string]$RelPath,[hashtable]$Names){
+    $bad=New-Object System.Collections.ArrayList
+    foreach($arr in @($Ast.FindAll({param($n)$n -is [System.Management.Automation.Language.ArrayExpressionAst]},$true))){
+        $st=@($arr.SubExpression.Statements)
+        if($st.Count -ne 1 -or $st[0] -isnot [System.Management.Automation.Language.PipelineAst]){continue}
+        $els=@($st[0].PipelineElements)
+        if($els.Count -ne 1 -or $els[0] -isnot [System.Management.Automation.Language.CommandAst]){continue}
+        $cn=[string]$els[0].GetCommandName()
+        if($cn -ne '' -and $Names.ContainsKey($cn.ToLowerInvariant())){[void]$bad.Add($RelPath+':'+$arr.Extent.StartLineNumber+': @('+$cn+' ...) wraps a finder that returns ,array, so its count is always 1')}
+    }
+    return ,@($bad.ToArray())
+}
+$commaAsts=@($files|ForEach-Object{(Get-ParsedFile $_).ast})
+$commaNames=Get-CommaFinderNames $commaAsts
+Check ($commaNames.Count -ge 10) ('the comma-finder scan sees the finders that end in return ,array ('+$commaNames.Count+')')
+$commaBad=New-Object System.Collections.ArrayList
+foreach($f in $files){foreach($b in (Get-CommaFinderWrapFindings (Get-ParsedFile $f).ast (Get-RepoRelativePath $f) $commaNames)){[void]$commaBad.Add($b)}}
+Check ($commaBad.Count -eq 0) ('no caller counts a ,array finder as @(Finder ...) ('+(($commaBad|Select-Object -First 3) -join ' | ')+')')
+$commaPlantDef='function Get-Plant { $f=New-Object System.Collections.ArrayList; return ,$f.ToArray() }'+"`n"
+$commaPlantNames=Get-CommaFinderNames @((Get-Ast $commaPlantDef))
+Check ($commaPlantNames.ContainsKey('get-plant') -and $commaPlantNames.Count -eq 1) 'self-check: a function that returns ,array is a comma finder'
+Check ((Get-CommaFinderWrapFindings (Get-Ast ($commaPlantDef+'$n=@(Get-Plant $x).Count')) 'tests/x.ps1' $commaPlantNames).Count -eq 1) 'self-check: @(Finder ...) around a comma finder is flagged'
+Check ((Get-CommaFinderWrapFindings (Get-Ast ($commaPlantDef+'$n=@(get-plant).Count')) 'tests/x.ps1' $commaPlantNames).Count -eq 1) 'self-check: the finder name is matched case-insensitively'
+Check ((Get-CommaFinderWrapFindings (Get-Ast ($commaPlantDef+'$r=Get-Plant $x; $n=$r.Count')) 'tests/x.ps1' $commaPlantNames).Count -eq 0) 'self-check: assigning the finder is not flagged'
+Check ((Get-CommaFinderWrapFindings (Get-Ast ($commaPlantDef+'$n=(Get-Plant $x).Count')) 'tests/x.ps1' $commaPlantNames).Count -eq 0) 'self-check: (Finder ...).Count is not flagged'
+Check ((Get-CommaFinderWrapFindings (Get-Ast ($commaPlantDef+'$n=@((Get-Plant $x)).Count')) 'tests/x.ps1' $commaPlantNames).Count -eq 0) 'self-check: @((Finder ...)) with the inner parentheses is not flagged'
+$plainDef='function Get-Plain { return $x }'+"`n"
+Check ((Get-CommaFinderWrapFindings (Get-Ast ($plainDef+'$n=@(Get-Plain).Count')) 'tests/x.ps1' (Get-CommaFinderNames @((Get-Ast $plainDef)))).Count -eq 0) 'self-check: @(Finder ...) around a finder without the comma is not flagged'
+
 Write-Host "UI source safety tests passed: $checks"
 exit 0
