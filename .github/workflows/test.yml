@@ -376,6 +376,7 @@ jobs:
           .\tests\ui-fluent-support-tests.ps1
           .\tests\ui-fluent-members-tests.ps1
           .\tests\ui-fluent-settings-additions-tests.ps1
+          .\tests\ui-fluent-settings-probe-tests.ps1
           .\tests\ui-theme-tests.ps1
           .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
@@ -408,6 +409,7 @@ jobs:
           .\tests\ui-fluent-support-tests.ps1
           .\tests\ui-fluent-members-tests.ps1
           .\tests\ui-fluent-settings-additions-tests.ps1
+          .\tests\ui-fluent-settings-probe-tests.ps1
           .\tests\ui-theme-tests.ps1
           .\tests\ui-source-safety-tests.ps1
           .\tests\ui-prerequisite-tests.ps1
