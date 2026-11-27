@@ -638,15 +638,10 @@ function LaunchStep([string]$Step, [object[]]$Arguments) { [void]$script:p42Laun
 function BeginChosenRecipe($Row) { [void]$script:p42Begin.Add([string]$Row.id) }
 function GetVcCandidate { return $script:p42Candidate }
 function GetVcInstallDecision($Inventory, $Candidate) { return [string]$script:p42InstallDecision }
-# Start-Process, for the closures of the dialogs (a link handler is a .GetNewClosure() block bound to its own module, which sees global functions and cmdlets but not a
-# suite or step function): a global function shadows the cmdlet, counts its calls and throws while Block is on. It is on only inside the steps that click a link.
+# Start-Process state for the dialogs' link handlers. A link handler is a .GetNewClosure() block made by a function this suite dot-sources, and it resolves
+# Start-Process through the SUITE's script scope: it reaches the script-scope recorder below (Task 7), never a global function. CI showed this: a global
+# throwing stub was never called. So that one recorder counts every call and throws while Block is on. Block is on only inside the steps that click a link.
 $global:FastLlmTestStartProcess = @{ Block = $false; Calls = 0 }
-function global:Start-Process {
-    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
-    $global:FastLlmTestStartProcess['Calls'] = [int]$global:FastLlmTestStartProcess['Calls'] + 1
-    if ([bool]$global:FastLlmTestStartProcess['Block']) { throw 'Start-Process is blocked in this test' }
-    return (Microsoft.PowerShell.Management\Start-Process @Rest)
-}
 
 # The real wiring statements, by their target and member (attached in P0 to the adapters the shell made).
 $script:settingsWiring = @{}
@@ -1299,7 +1294,14 @@ $script:startedProcs = New-Object System.Collections.ArrayList
 function Get-FastLlmConnectionInfo { param($Status, $InstallRoot, $Settings) $script:connectInfoCalls++; return $script:connectFixture }
 function Get-FastLlmUiApiKeyRow { param($Info, $Settings, $ApiKeyStore) return $script:connectKeyRow }
 function Set-FastLlmUiFluentClipboardText { param([string]$Text) if ($script:fieldClipThrow) { throw 'clipboard boom' }; [void]$script:fieldClips.Add($Text) }
-function Start-Process { param([string]$FilePath) [void]$script:startedProcs.Add($FilePath) }
+# The ONE Start-Process stub of the suite (the dialogs' link closures resolve it too; see the state above): it counts each call, throws while Block is on
+# (the link-failure steps), and otherwise records the target instead of opening it.
+function Start-Process {
+    param([string]$FilePath)
+    $global:FastLlmTestStartProcess['Calls'] = [int]$global:FastLlmTestStartProcess['Calls'] + 1
+    if ([bool]$global:FastLlmTestStartProcess['Block']) { throw 'Start-Process is blocked in this test' }
+    [void]$script:startedProcs.Add($FilePath)
+}
 
 function New-ConnectFixture([hashtable]$O = @{}) {
     $d = @{ state = 'running'; baseUrl = 'http://127.0.0.1:8123/v1'; anthropicBaseUrl = 'http://127.0.0.1:8123'; modelName = 'probe-model'; contextTokens = 8192; apiKey = 'on'
