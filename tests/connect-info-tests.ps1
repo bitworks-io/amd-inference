@@ -210,7 +210,33 @@ try {
     $startAt=$entry.IndexOf("        'start' {")
     Check ($startAt -lt 0 -or $callAt -lt $startAt -or $startAt -lt $doctorAt) 'apicheck-not-in-start: not inside the start branch'
     $ui=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
+    # 5b-delete-begin
     Check ($ui.Contains("LaunchSideStep 'api check' (@('doctor','-ApiCheck')") -and $ui.Contains('$connectButton=ButtonAt ''Connect an app'' $rowSlotX[1] $rowY $rowWidth')) 'window runs doctor -ApiCheck as a side step; button sits in slot 1'
+    # (the slot half is a WinForms layout fact: it has no fluent twin)
+    Check ($ui.Contains("LaunchSideStep 'api check' (@('doctor','-ApiCheck')+`$script:selection)")) 'literal == classic: the window runs the API check as the side step LaunchSideStep ''api check'' (@(''doctor'',''-ApiCheck'')+$script:selection)'
+    # 5b-delete-end
+    # The fluent twin: the Connect page's Check button runs the same side step, with the same arguments, through one function. Literals come from the classic line above.
+    function Test-FluentTwin([string]$Name,[string]$Source,[scriptblock]$Predicate,[System.Collections.IDictionary]$Mutants){
+        Check ([bool](& $Predicate $Source)) "fluent twin: $Name (control: the unmutated source passes)"
+        foreach($mutantName in $Mutants.Keys){
+            $mutated=[string](& $Mutants[$mutantName] $Source)
+            Check ($mutated -cne $Source) "mutation setup: $Name - $mutantName changes the source"
+            Check (-not [bool](& $Predicate $mutated)) "mutation check: $Name - $mutantName"
+        }
+    }
+    $fluentConnectText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentConnect.ps1'))
+    Test-FluentTwin 'the Connect page runs doctor -ApiCheck as a side step from its Check button' $fluentConnectText {
+        param($t)
+        $fnAt=$t.IndexOf('function Invoke-FastLlmUiFluentConnectApiCheck {')
+        $fnEnd=$t.IndexOf("`nfunction ",$fnAt+1); if($fnEnd -lt 0){$fnEnd=$t.Length}
+        $stepText="LaunchSideStep 'api check' (@('doctor','-ApiCheck')+`$script:selection)"
+        return ($fnAt -ge 0 -and $t.IndexOf($stepText) -gt $fnAt -and $t.IndexOf($stepText) -lt $fnEnd -and ([regex]::Matches($t,[regex]::Escape($stepText))).Count -eq 1 -and
+            $t.Contains("`$Els['ConnectCheckButton'].Add_Click({ param(`$sender, `$routed) Invoke-FastLlmUiFluentConnectApiCheck })"))
+    } ([ordered]@{
+        'the step is the bundle save' = { param($t) $t.Replace("LaunchSideStep 'api check'","LaunchSideStep 'bundle save'") }
+        'the -ApiCheck switch is dropped' = { param($t) $t.Replace("@('doctor','-ApiCheck')","@('doctor')") }
+        'the Check button runs nothing' = { param($t) $t.Replace('Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentConnectApiCheck })','Add_Click({ param($sender, $routed) })') }
+    })
     $runtime=Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Runtime.ps1') -Raw
     Check ($runtime -notmatch 'Invoke-FastLlm(Doctor)?ApiCheck' -and (Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.psm1') -Raw) -notmatch 'Invoke-FastLlm(Doctor)?ApiCheck') 'apicheck-not-in-start: neither the module nor the runtime mention it'
 
