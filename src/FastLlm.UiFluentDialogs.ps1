@@ -572,10 +572,16 @@ function Show-FastLlmUiFluentRecipeChooser {
     $list.Name = 'ChooserList'
     $list.SelectionMode = [System.Windows.Controls.SelectionMode]::Single
     [System.Windows.Controls.ScrollViewer]::SetCanContentScroll($list, $false)
+    # No horizontal scrolling: rows are measured at the list's width, so the star columns of every row (and of the header) really share the same width.
+    [System.Windows.Controls.ScrollViewer]::SetHorizontalScrollBarVisibility($list, [System.Windows.Controls.ScrollBarVisibility]::Disabled)
+    $list.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.CardBrush')
+    $list.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
+    $list.SetResourceReference([System.Windows.Controls.Control]::BorderBrushProperty, 'FastLlm.ControlStrongStrokeBrush')
     $list.MinHeight = 150 * $scale
     $list.MaxHeight = 290 * $scale
     [System.Windows.Automation.AutomationProperties]::SetName($list, $introText)
     [System.Windows.Automation.AutomationProperties]::SetLabeledBy($list, $intro)
+    $firstRow = $null
     foreach ($row in $shown) {
         $grid = New-Object System.Windows.Controls.Grid
         $cellIndex = 0
@@ -597,11 +603,21 @@ function Show-FastLlmUiFluentRecipeChooser {
         $item.Content = $grid
         $item.HorizontalContentAlignment = [System.Windows.HorizontalAlignment]::Stretch
         $item.Tag = [string] $row.id
+        if ($null -eq $firstRow) { $firstRow = $grid }
         [System.Windows.Automation.AutomationProperties]::SetName($item, [string] $row.label)
         $null = $list.Items.Add($item)
     }
     $panel = New-Object System.Windows.Controls.StackPanel
     foreach ($child in @($intro, $headerGrid, $list)) { $null = $panel.Children.Add($child) }
+    # The header follows the first row: the rows are inset by the list's border and item padding and narrowed by the vertical scrollbar, so the header
+    # takes the row's left offset and width (both use the same column weights, so the columns line up).
+    $firstRow.Add_SizeChanged({
+        try {
+            $offset = $firstRow.TranslatePoint((New-Object System.Windows.Point(0, 0)), $panel).X
+            $headerGrid.Margin = New-Object System.Windows.Thickness($offset, 0, [Math]::Max(0.0, $panel.ActualWidth - $offset - $firstRow.ActualWidth), 4)
+        }
+        catch { $null = $_ }
+    }.GetNewClosure())
     $buttons = [ordered] @{ Choose = [string] $t.ChooserChoose; Cancel = [string] $t.ChooserCancel }
     # Enter starts as no target: Choose is disabled until a row is selected, and the selection handler below moves the target.
     $dialog = New-FastLlmUiFluentDialog -Title ([string] $t.ChooserTitle) -Body $panel -Buttons $buttons -Enter '' -Escape 'Cancel' -Owner $script:form
@@ -614,13 +630,16 @@ function Show-FastLlmUiFluentRecipeChooser {
         $choose.IsEnabled = $enabled
         if ($enabled) { $state['Enter'] = 'Choose' } else { $state['Enter'] = '' }
     }.GetNewClosure())
-    # A double-click on the list chooses the selected row, as the classic ListView's DoubleClick does.
-    $list.Add_MouseDoubleClick({
-        if ($list.SelectedItems.Count -eq 1) {
-            if ([string] $state['Result'] -ceq '') { $state['Result'] = 'Choose' }
-            $win.Close()
-        }
-    }.GetNewClosure())
+    # A double-click on a row chooses it, as the classic ListView's DoubleClick does. It is on each row (not on the list), so a double-click on the list's
+    # scrollbar or its empty area does not choose.
+    foreach ($listItem in @($list.Items)) {
+        $listItem.Add_MouseDoubleClick({
+            if ($list.SelectedItems.Count -eq 1) {
+                if ([string] $state['Result'] -ceq '') { $state['Result'] = 'Choose' }
+                $win.Close()
+            }
+        }.GetNewClosure())
+    }
     # With Choose disabled the first focus is the list (the Enter target of a ListView dialog is its list), registered after the host's own focus.
     $win.Add_Loaded({ $null = $list.Focus() }.GetNewClosure())
     $work = [System.Windows.SystemParameters]::WorkArea
