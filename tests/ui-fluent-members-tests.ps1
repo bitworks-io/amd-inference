@@ -3413,8 +3413,18 @@ function Get-R4Findings([string]$Text){
             elseif(-not $ch['Ids'].ContainsKey($m.Groups[1].Value)){[void]$f.Add('the chooser Enter target is not a button')}
         }
         if($ct -cnotmatch [regex]::Escape('$choose.IsEnabled = $false')){[void]$f.Add('Choose is enabled before a row is selected')}
-        $dbl=@($chFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_MouseDoubleClick' -and $n.Expression.Extent.Text -ceq '$list'},$true))
-        if($dbl.Count -ne 1 -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape('if ($list.SelectedItems.Count -eq 1)') -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape("`$state['Result'] = 'Choose'") -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape('$win.Close()')){[void]$f.Add('a double-click on a selected row does not choose (classic: Add_DoubleClick, one row selected, OK)')}
+        # PR 4b review fix P2: the double-click is on each row item (a double-click on the list's scrollbar or empty area must not choose), never on the list.
+        $dblAll=@($chFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_MouseDoubleClick'},$true))
+        $dbl=@($dblAll|Where-Object{$_.Expression.Extent.Text -ceq '$listItem'})
+        if($dblAll.Count -ne 1 -or $dbl.Count -ne 1 -or $ct -cnotmatch [regex]::Escape('foreach ($listItem in @($list.Items))') -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape('if ($list.SelectedItems.Count -eq 1)') -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape("`$state['Result'] = 'Choose'") -or $dbl[0].Extent.Text -cnotmatch [regex]::Escape('$win.Close()')){[void]$f.Add('a double-click on a selected row item does not choose (classic: Add_DoubleClick, one row selected, OK; it is attached to each row, not to the list)')}
+        # PR 4b review fix P1: the header lines up with the rows. No sideways scrolling (rows are measured at the list width), and the header follows the first row.
+        if($ct -cnotmatch [regex]::Escape('SetHorizontalScrollBarVisibility($list, [System.Windows.Controls.ScrollBarVisibility]::Disabled)')){[void]$f.Add('the chooser list can scroll sideways (HorizontalScrollBarVisibility is not Disabled), so its star columns do not line up with the header')}
+        $sync=@($chFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_SizeChanged' -and $n.Expression.Extent.Text -ceq '$firstRow'},$true))
+        if($sync.Count -ne 1 -or $sync[0].Extent.Text -cnotmatch [regex]::Escape('$firstRow.TranslatePoint(') -or $sync[0].Extent.Text -cnotmatch [regex]::Escape('$headerGrid.Margin =') -or $sync[0].Extent.Text -cnotmatch [regex]::Escape('$firstRow.ActualWidth') -or $ct -cnotmatch [regex]::Escape('if ($null -eq $firstRow) { $firstRow = $grid }')){[void]$f.Add('the chooser header does not follow the first row (a SizeChanged handler on the first row that sets the header Margin from its offset and width)')}
+        # PR 4b review fix P3: the list takes the theme brushes, as the Models switch list does.
+        foreach($brush in @(@('BackgroundProperty','FastLlm.CardBrush'),@('ForegroundProperty','FastLlm.TextPrimaryBrush'),@('BorderBrushProperty','FastLlm.ControlStrongStrokeBrush'))){
+            if($ct -cnotmatch [regex]::Escape("`$list.SetResourceReference([System.Windows.Controls.Control]::$($brush[0]), '$($brush[1])')")){[void]$f.Add("the chooser list $($brush[0]) is not the theme brush $($brush[1])")}
+        }
         if($ct -cnotmatch [regex]::Escape('SetCanContentScroll($list, $false)')){[void]$f.Add('the chooser list scrolls by item (CanContentScroll is not False)')}
         if($ct -cnotmatch [regex]::Escape('SetName($list, $introText)') -or $ct -cnotmatch [regex]::Escape('SetLabeledBy($list, $intro)')){[void]$f.Add('the chooser list has no Name and LabeledBy')}
         if($ct -cnotmatch [regex]::Escape('$win.Add_Loaded({ $null = $list.Focus() }')){[void]$f.Add('the first focus is not the list while Choose is disabled')}
@@ -3449,9 +3459,17 @@ $r4Plants=[ordered]@{
     'Choose enabled without a selection'=Edit-R4Plant '$enabled = ($list.SelectedItems.Count -eq 1)' '$enabled = ($list.SelectedItems.Count -ge 0)'
     'the Enter target always Choose'=Edit-R4Plant "if (`$enabled) { `$state['Enter'] = 'Choose' } else { `$state['Enter'] = '' }" "`$state['Enter'] = 'Choose'"
     'the Enter target Cancel on selection'=Edit-R4Plant "if (`$enabled) { `$state['Enter'] = 'Choose' }" "if (`$enabled) { `$state['Enter'] = 'Cancel' }"
-    'the double-click without a selection guard'=Edit-R4Plant "        if (`$list.SelectedItems.Count -eq 1) {`n            if ([string] `$state['Result'] -ceq '')" "        if (`$true) {`n            if ([string] `$state['Result'] -ceq '')"
+    'the double-click without a selection guard'=Edit-R4Plant "            if (`$list.SelectedItems.Count -eq 1) {`n                if ([string] `$state['Result'] -ceq '')" "            if (`$true) {`n                if ([string] `$state['Result'] -ceq '')"
     'the double-click answers Cancel'=Edit-R4Plant "`$state['Result'] = 'Choose'" "`$state['Result'] = 'Cancel'"
-    'the double-click removed'=Edit-R4Plant '$list.Add_MouseDoubleClick({' '$list.Add_MouseRightButtonUp({'
+    'the double-click removed'=Edit-R4Plant '$listItem.Add_MouseDoubleClick({' '$listItem.Add_MouseRightButtonUp({'
+    'the double-click back on the list'=Edit-R4Plant '$listItem.Add_MouseDoubleClick({' '$list.Add_MouseDoubleClick({'
+    'the list scrolls sideways (Auto)'=Edit-R4Plant 'SetHorizontalScrollBarVisibility($list, [System.Windows.Controls.ScrollBarVisibility]::Disabled)' 'SetHorizontalScrollBarVisibility($list, [System.Windows.Controls.ScrollBarVisibility]::Auto)'
+    'the header sync handler dropped'=Edit-R4Plant '$firstRow.Add_SizeChanged({' '$firstRow.Add_MouseEnter({'
+    'the header sync no longer writes the Margin'=Edit-R4Plant '$headerGrid.Margin = New-Object System.Windows.Thickness($offset' '$null = New-Object System.Windows.Thickness($offset'
+    'the first row not kept'=Edit-R4Plant 'if ($null -eq $firstRow) { $firstRow = $grid }' '$null = $grid'
+    'the list Background dropped'=Edit-R4Plant "`$list.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.CardBrush')" '$null = $list'
+    'the list Foreground dropped'=Edit-R4Plant "`$list.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')" '$null = $list'
+    'the list BorderBrush dropped'=Edit-R4Plant "`$list.SetResourceReference([System.Windows.Controls.Control]::BorderBrushProperty, 'FastLlm.ControlStrongStrokeBrush')" '$null = $list'
     'the list scrolls by item'=Edit-R4Plant 'SetCanContentScroll($list, $false)' 'SetCanContentScroll($list, $true)'
     'the list LabeledBy dropped'=Edit-R4Plant '[System.Windows.Automation.AutomationProperties]::SetLabeledBy($list, $intro)' '$null = $intro'
     'the first focus not the list'=Edit-R4Plant '$win.Add_Loaded({ $null = $list.Focus() }.GetNewClosure())' '$win.Add_Loaded({ $null = $choose.Focus() }.GetNewClosure())'
@@ -3463,6 +3481,58 @@ $r4Plants=[ordered]@{
     'IsDefault on a chooser button'=Edit-R4Plant '    $choose.IsEnabled = $false' "    `$choose.IsEnabled = `$false; `$choose.IsDefault = `$true"
 }
 foreach($k in $r4Plants.Keys){ Check ($r4Plants[$k] -cne $sdText -and (Get-R4Findings $r4Plants[$k]).Count -ge 1) "mutation check: the setup check and chooser pins flag: $k" }
+# --- PR 4b review fix G2: the setup check text is built by the classic sequence of $lines.Add calls, each under its classic condition, in the classic order ---
+# Every $lines.Add of the function, in source order, as "conditions => text": the conditions are the enclosing if clause conditions and foreach collections (without
+# white space), the text is the classic literal (a $(...) part is {0}), or for the fluent function the table value its $t.Key names; any other argument is its own text.
+function Get-R4LineSequence($Fn,[bool]$Fluent,$Table){
+    $seq=New-Object System.Collections.ArrayList
+    $adds=@($Fn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add' -and $n.Expression.Extent.Text -ceq '$lines'},$true))
+    foreach($add in $adds){
+        $conds=New-Object System.Collections.ArrayList
+        $node=$add.Parent
+        while($null -ne $node -and -not [object]::ReferenceEquals($node,$Fn)){
+            if($node -is [System.Management.Automation.Language.IfStatementAst]){
+                foreach($clause in $node.Clauses){ if($clause.Item2.Extent.StartOffset -le $add.Extent.StartOffset -and $clause.Item2.Extent.EndOffset -ge $add.Extent.EndOffset){ [void]$conds.Insert(0,('if:'+($clause.Item1.Extent.Text -replace '\s',''))) } }
+            }
+            elseif($node -is [System.Management.Automation.Language.ForEachStatementAst]){ [void]$conds.Insert(0,('foreach:'+($node.Condition.Extent.Text -replace '\s',''))) }
+            $node=$node.Parent
+        }
+        $arg=$add.Arguments[0]
+        $text=($arg.Extent.Text -replace '\s','')
+        if($arg -is [System.Management.Automation.Language.StringConstantExpressionAst]){ $text='"'+[string]$arg.Value+'"' }
+        elseif($arg -is [System.Management.Automation.Language.ExpandableStringExpressionAst]){ $text='"'+[regex]::Replace([string]$arg.Value,'\$\(.*\)','{0}')+'"' }
+        elseif($Fluent){
+            $m=[regex]::Match([string]$arg.Extent.Text,'^\[string\]\s*\$t\.(\w+)$')
+            if(-not $m.Success){ $m=[regex]::Match([string]$arg.Extent.Text,'^\[string\]::Format\(\[string\]\s*\$t\.(\w+),') }
+            if($m.Success -and $Table.Contains($m.Groups[1].Value)){ $text='"'+[string]$Table[$m.Groups[1].Value]+'"' }
+        }
+        [void]$seq.Add((($conds.ToArray() -join '&')+' => '+$text))
+    }
+    return ,$seq.ToArray()
+}
+function Get-R4SetupSeqFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $table=Get-R4Table $Text
+    $fn=Get-DlgFn $Text 'Show-FastLlmUiFluentSetupAttention'
+    if($null -eq $table -or $null -eq $fn){[void]$f.Add('the setup check or its text table is not defined once');return ,$f.ToArray()}
+    $classic=Get-R4LineSequence $r4SetupFn $false $null
+    $fluent=Get-R4LineSequence $fn $true $table
+    if($classic.Count -lt 8){[void]$f.Add("the classic setup check sequence could not be read ($($classic.Count) lines)")}
+    if(($classic -join "`n") -cne ($fluent -join "`n")){[void]$f.Add("the setup check line sequence differs from the classic one (classic: $($classic -join ' | '); fluent: $($fluent -join ' | '))")}
+    return ,$f.ToArray()
+}
+$r4Seq=Get-R4SetupSeqFindings $sdText
+foreach($pr in $r4Seq){Write-Host "FINDING: $pr"}
+Check ($r4Seq.Count -eq 0 -and (Get-R4LineSequence $r4SetupFn $false $null).Count -ge 8) "the setup check adds the classic lines, each under its classic condition, in the classic order ($((Get-R4LineSequence $r4SetupFn $false $null).Count) lines read)"
+$r4SeqPlants=[ordered]@{
+    'the 64-bit and loader conditions swapped'=Edit-R4Plant 'if ($Decision.missing64BitHost) { [void]$lines.Add([string] $t.SetupNeed64) }' 'if ($Decision.missingVulkanLoader) { [void]$lines.Add([string] $t.SetupNeed64) }'
+    'the loader line under the 64-bit condition'=Edit-R4Plant 'if ($Decision.missingVulkanLoader) { [void]$lines.Add([string] $t.SetupNoLoader) }' 'if ($Decision.missing64BitHost) { [void]$lines.Add([string] $t.SetupNoLoader) }'
+    'two lines reordered'=Edit-R4Plant "    [void]`$lines.Add('')`n    [void]`$lines.Add([string] `$t.SetupAfter)" "    [void]`$lines.Add([string] `$t.SetupAfter)`n    [void]`$lines.Add('')"
+    'the offer message dropped'=Edit-R4Plant '{ [void]$lines.Add($offer.message) }' '{ $null = $offer.message }'
+    'the advisory warnings dropped'=Edit-R4Plant 'foreach ($warning in @($Decision.advisoryWarnings)) { [void]$lines.Add([string] $warning) }' '$null = $Decision'
+    'the missing files line unguarded'=Edit-R4Plant 'if (@($Decision.missingVcRuntimeFiles).Count -gt 0) {' 'if ($true) {'
+}
+foreach($k in $r4SeqPlants.Keys){ Check ($r4SeqPlants[$k] -cne $sdText -and (Get-R4SetupSeqFindings $r4SeqPlants[$k]).Count -ge 1) "mutation check: the setup check line sequence pin flags: $k" }
 # ===== end PR 4b Task B2 (builder R) =====
 
 # ===== PR 4b Task B2 (builder K): the four consent-family dialogs, src/FastLlm.UiFluentConsent.ps1 =====
@@ -3787,6 +3857,27 @@ $ckInstPlants=[ordered]@{
     'ticked is read after the dialog from the wrong source'=(Edit-CkFnLast $ckText 'Show-FastLlmUiFluentComponentConsent' '[bool] ($_.IsChecked -eq $true)' '$true')
 }
 foreach($k in $ckInstPlants.Keys){ Check ($ckInstPlants[$k] -cne $ckText -and (Get-CkInstallFindings $ckInstPlants[$k]).Count -ge 1) "mutation check: the consent Install enablement pin flags: $k" }
+# --- 5b. PR 4b review fix G1: the licence Accept button is enabled by the disclosure (classic: $accept.Enabled=[bool]$Disclosure.canAccept) ---
+function Get-CkAcceptFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $cl=(Get-AstFunction $classicAst 'ShowLicenseSettingConfirm')[0]
+    $fn=Get-DlgFn $Text 'Show-FastLlmUiFluentLicenseSettingConfirm'
+    if($null -eq $fn){[void]$f.Add('the licence confirm is not defined once');return ,$f.ToArray()}
+    $ca=@($cl.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$accept.Enabled'},$true))
+    $fa=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq "`$dialog['Buttons']['Accept'].IsEnabled"},$true))
+    if($ca.Count -ne 1 -or $ca[0].Right.Extent.Text -cne '[bool]$Disclosure.canAccept'){[void]$f.Add('the classic licence confirm does not enable Accept by [bool]$Disclosure.canAccept')}
+    elseif($fa.Count -ne 1 -or ($fa[0].Right.Extent.Text -replace '\s','') -cne ($ca[0].Right.Extent.Text -replace '\s','')){[void]$f.Add('the licence Accept button is not enabled by the classic rule ([bool] $Disclosure.canAccept)')}
+    return ,$f.ToArray()
+}
+$ckAcc=Get-CkAcceptFindings $ckText
+foreach($x in $ckAcc){Write-Host "FINDING: $x"}
+Check ($ckAcc.Count -eq 0) 'licence confirm: Accept is enabled by the disclosure (canAccept), as the classic dialog'
+$ckAccPlants=[ordered]@{
+    'Accept always enabled'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' '[bool] $Disclosure.canAccept' '$true')
+    'Accept enabled by the opposite'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' '[bool] $Disclosure.canAccept' '(-not $Disclosure.canAccept)')
+    'Accept enablement dropped'=(Edit-CkFn $ckText 'Show-FastLlmUiFluentLicenseSettingConfirm' "`$dialog['Buttons']['Accept'].IsEnabled = [bool] `$Disclosure.canAccept" '$null = $Disclosure')
+}
+foreach($k in $ckAccPlants.Keys){ Check ($ckAccPlants[$k] -cne $ckText -and (Get-CkAcceptFindings $ckAccPlants[$k]).Count -ge 1) "mutation check: the licence Accept enablement pin flags: $k" }
 # --- 6. Reveal and tray: as the classic functions (reveal where classic reveals; the tray menu off before the try and on in its finally) ---
 function Get-CkFlowFindings([string]$Text){
     $f=New-Object System.Collections.ArrayList
@@ -3897,5 +3988,73 @@ $ckLitPlants=[ordered]@{
 foreach($k in $ckLitPlants.Keys){ Check ($ckLitPlants[$k] -cne $ckText -and ((Get-CkTextFindings $ckLitPlants[$k]).Count -ge 1 -or (Get-CkUsageFindings $ckLitPlants[$k] $ckTable).Count -ge 1)) "mutation check: the consent text pins flag: $k" }
 # ===== end PR 4b Task B2 (builder K) =====
 
+
+# ===== PR 4b review fix G3: closure lint =====
+# A scriptblock that has .GetNewClosure() called on it is bound to a dynamic module, which sees only GLOBAL functions: a bare call to a function the test file (or a
+# helper it dot-sources) defines at file scope throws under -File on Windows CI (PR 4b C1 and C2: Get-WpfBoxTagMap and Get-ShellVisuals inside driver closures), and no macOS
+# run reaches it. Inside such a block the function must be called through a variable captured outside it (`$f = ${function:Name}` and `& $f ...`) or a `$script:` scriptblock.
+# Cmdlets, global functions (function global:Name) and functions defined inside the block itself are fine. The allowed exceptions are listed here, one "file|function" each.
+$closureLintAllowed=@()
+function Get-ClosureLintFindings([string]$FileText,[string[]]$HelperTexts,[string]$FileLabel){
+    $f=New-Object System.Collections.ArrayList
+    $tree=ConvertTo-PinAst $FileText
+    $defined=@{}
+    foreach($t in @($FileText)+@($HelperTexts)){
+        foreach($d in @((ConvertTo-PinAst $t).FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))){
+            $nm=[string]$d.Name
+            if($nm -match '^(?i)global:'){continue}
+            $defined[($nm -replace '^(?i)script:','').ToLowerInvariant()]=$true
+        }
+    }
+    $sbOf={param($call)
+        $e=$call.Expression
+        if($e -is [System.Management.Automation.Language.ScriptBlockExpressionAst]){return $e}
+        if($e -is [System.Management.Automation.Language.VariableExpressionAst]){
+            $asg=@($tree.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq $e.Extent.Text -and $n.Right.Extent.Text.TrimStart().StartsWith('{')},$true))
+            if($asg.Count -ge 1){return $asg[0].Right.Find({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true)}
+        }
+        return $null
+    }
+    $closures=@($tree.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'GetNewClosure'},$true))
+    foreach($c in $closures){
+        $sb=& $sbOf $c
+        if($null -eq $sb){continue}
+        $local=@{}
+        foreach($d in @($sb.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))){ $local[([string]$d.Name).ToLowerInvariant()]=$true }
+        foreach($cmd in @($sb.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]},$true))){
+            $name=[string]$cmd.GetCommandName()
+            if($name -eq ''){continue}
+            $key=$name.ToLowerInvariant()
+            if($defined.ContainsKey($key) -and -not $local.ContainsKey($key) -and ($closureLintAllowed -cnotcontains ($FileLabel+'|'+$name))){
+                [void]$f.Add("$FileLabel line $($cmd.Extent.StartLineNumber): a .GetNewClosure() block calls the file-scope function '$name' by name (capture `${function:$name} outside and call it with &)")
+            }
+        }
+    }
+    return ,$f.ToArray()
+}
+$closureLintFiles=@(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -Filter 'ui-fluent-*.ps1'|ForEach-Object{$_.Name})+@('ui-render-tests.ps1')
+$closureLintAll=New-Object System.Collections.ArrayList
+$closureLintTexts=@{}
+foreach($cf in $closureLintFiles){
+    $ct0=[IO.File]::ReadAllText((Join-Path $root "tests/$cf"))
+    $closureLintTexts[$cf]=$ct0
+    $helpers=@()
+    foreach($m in [regex]::Matches($ct0,'helpers[\\/]([\w.-]+\.ps1)')){ $hp=Join-Path $root "tests/helpers/$($m.Groups[1].Value)"; if(Test-Path -LiteralPath $hp){$helpers+=[IO.File]::ReadAllText($hp)} }
+    foreach($x in (Get-ClosureLintFindings $ct0 $helpers $cf)){ [void]$closureLintAll.Add($x) }
+}
+foreach($x in $closureLintAll){Write-Host "FINDING: $x"}
+Check ($closureLintAll.Count -eq 0 -and $closureLintFiles.Count -ge 8) "closure lint: no .GetNewClosure() block in $($closureLintFiles.Count) UI test files calls a file-scope function by bare name"
+# Proven against the two real bugs (the C1 and C2 fixes reverted on scratch copies of the text) and a bare call in an inline closure.
+$clPages=[string]$closureLintTexts['ui-fluent-pages-tests.ps1']
+$clHelpers=@(); foreach($m in [regex]::Matches($clPages,'helpers[\\/]([\w.-]+\.ps1)')){ $clHelpers+=[IO.File]::ReadAllText((Join-Path $root "tests/helpers/$($m.Groups[1].Value)")) }
+$clC1=$clPages.Replace("`$focusMap = & `$tagMap `$pw 'Buttons'","`$focusMap = Get-WpfBoxTagMap `$pw 'Buttons'")
+$clC2=$clPages.Replace('$link = @(& $visuals $w |','$link = @(Get-ShellVisuals $w |')
+Check ($clC1 -cne $clPages -and (Get-ClosureLintFindings $clC1 $clHelpers 'ui-fluent-pages-tests.ps1').Count -ge 1 -and ((Get-ClosureLintFindings $clC1 $clHelpers 'ui-fluent-pages-tests.ps1') -join ' ') -cmatch 'Get-WpfBoxTagMap') 'mutation check: the closure lint flags the C1 bug (Get-WpfBoxTagMap called by name inside the driver closure)'
+Check ($clC2 -cne $clPages -and (Get-ClosureLintFindings $clC2 $clHelpers 'ui-fluent-pages-tests.ps1').Count -ge 1 -and ((Get-ClosureLintFindings $clC2 $clHelpers 'ui-fluent-pages-tests.ps1') -join ' ') -cmatch 'Get-ShellVisuals') 'mutation check: the closure lint flags the C2 bug (Get-ShellVisuals called by name inside New-P43LinkClick)'
+$clSyn1="function Get-Thing { 1 }`n`$a = { Get-Thing }.GetNewClosure()"
+$clSyn2="function Get-Thing { 1 }`n`$f = `${function:Get-Thing}`n`$a = { & `$f }.GetNewClosure()`n`$b = { Get-Thing }"
+$clSyn3="function Get-Thing { 1 }`n`$b = { `$x = 1; Get-Thing }.GetNewClosure()"
+Check ((Get-ClosureLintFindings $clSyn1 @() 'syn').Count -eq 1 -and (Get-ClosureLintFindings $clSyn2 @() 'syn').Count -eq 0 -and (Get-ClosureLintFindings $clSyn3 @() 'syn').Count -eq 1) 'mutation check: the closure lint flags a bare call in a closure, and passes a captured call and a bare call in a block that is not a closure'
+# ===== end PR 4b review fix G3 =====
 
 Write-Host "UI fluent member coverage tests passed: $checks"

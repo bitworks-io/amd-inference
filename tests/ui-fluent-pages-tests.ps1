@@ -314,9 +314,9 @@ function Invoke-PagesDialogTablePins([string]$Root) {
         $ctNoSpace = ($ct -replace '\s', '')
         $classicDouble = @($chooserClassic.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_DoubleClick' }, $true))
         Check-BoxPin ($classicDouble.Count -eq 1 -and ([string]$classicDouble[0].Extent.Text -replace '\s', '').Contains('$list.SelectedItems.Count-eq1') -and ([string]$classicDouble[0].Extent.Text).Contains('[Windows.Forms.DialogResult]::OK')) "P42 pin: the classic chooser double-clicks a selected row to OK (fast-llm-ui.ps1 line $(if ($classicDouble.Count -eq 1) { $classicDouble[0].Extent.StartLineNumber } else { '?' }), `$list.Add_DoubleClick)" "handlers=$($classicDouble.Count)"
-        $fluentDouble = @($chooserFluent.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_MouseDoubleClick' }, $true))
+        $fluentDouble = @($chooserFluent.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_MouseDoubleClick' -and $n.Expression.Extent.Text -ceq '$listItem' }, $true))
         $fluentDoubleText = ''; if ($fluentDouble.Count -eq 1) { $fluentDoubleText = ([string]$fluentDouble[0].Extent.Text -replace '\s', '') }
-        Check-BoxPin ($fluentDouble.Count -eq 1 -and $fluentDoubleText.Contains('$list.SelectedItems.Count-eq1') -and $fluentDoubleText.Contains("'Choose'") -and $fluentDoubleText.Contains('.Close()')) 'P42 pin: the fluent chooser double-click chooses only a selected row (it answers Choose and closes)' "handlers=$($fluentDouble.Count) text=$fluentDoubleText"
+        Check-BoxPin ($fluentDouble.Count -eq 1 -and $fluentDoubleText.Contains('$list.SelectedItems.Count-eq1') -and $fluentDoubleText.Contains("'Choose'") -and $fluentDoubleText.Contains('.Close()')) 'P42 pin: the fluent chooser double-click chooses only a selected row (it answers Choose and closes), on each row item and not on the list' "handlers=$($fluentDouble.Count) text=$fluentDoubleText"
         Check-BoxPin ($ctNoSpace.Contains('$choose.Enabled=$false') -and $ctNoSpace.Contains('$choose.Enabled=($list.SelectedItems.Count-eq1)')) 'P42 pin: the classic Choose button is disabled until exactly one row is selected' ''
         $ftNoSpace = ($ft -replace '\s', '')
         Check-BoxPin ($ftNoSpace.Contains('$choose.IsEnabled=$false') -and $ftNoSpace.Contains('$enabled=($list.SelectedItems.Count-eq1)') -and $ftNoSpace.Contains('$choose.IsEnabled=$enabled') -and $ftNoSpace.Contains("if(`$enabled){`$state['Enter']='Choose'}else{`$state['Enter']=''}")) 'P42 pin: the fluent Choose button is disabled until exactly one row is selected, and the selection moves the Enter target (Choose with a selection, none without)' ''
@@ -2681,7 +2681,7 @@ function New-PagesWpfRec($Wnd, [string]$Caption, [IntPtr]$MainHwnd) {
     # PR 4b (named test change): the record also says which window owns the dialog and whether that owner is disabled while the dialog is open (a link-error box over a dialog).
     $ownerTitle = ''
     $ownerEnabled = $true
-    try { $ownerWindow = $Wnd.Owner; if ($null -ne $ownerWindow) { $ownerTitle = [string]$ownerWindow.Title; $ownerEnabled = [bool]$ownerWindow.IsEnabled } } catch { $null = $_ }
+    try { $ownerWindow = $Wnd.Owner; if ($null -ne $ownerWindow) { $ownerTitle = [string]$ownerWindow.Title; $ownerEnabled = [bool]$script:native::IsWindowEnabled([System.Windows.Interop.WindowInteropHelper]::new($ownerWindow).Handle) } } catch { $null = $_ }
     return @{ Kind = 'box'; Found = $true; Path = 'wpf'; Caption = $Caption; Text = [string](Get-WpfBoxText $Wnd); Owner = $script:native::GetOwner($dh).ToInt64()
         WpfEnabledDuring = [bool]$script:native::IsWindowEnabled($MainHwnd)
         OwnerTitle = $ownerTitle; OwnerWindowEnabled = $ownerEnabled
@@ -2735,6 +2735,7 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
     $wpfKey = ${function:Send-PagesWpfKey}
     $wpfRec = ${function:New-PagesWpfRec}
     $wpfFocus = ${function:Get-PagesWpfFocusInfo}
+    $tagMap = ${function:Get-WpfBoxTagMap}
     $pressBtn = ${function:Invoke-WpfBoxButton}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false; hwnd = [long]0; actAt = [long]-1 }
@@ -2818,7 +2819,7 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
                     if ($age -ge 150) {
                         $loc['acted'] = $true
                         $focusInfo = & $wpfFocus $pw
-                        $focusMap = Get-WpfBoxTagMap $pw 'Buttons'
+                        $focusMap = & $tagMap $pw 'Buttons'
                         if ([string]$focusInfo['Id'] -cne '' -and $focusMap.Contains([string]$focusInfo['Id'])) { $rec['ActiveText'] = [string][System.Windows.Automation.AutomationProperties]::GetName($focusMap[[string]$focusInfo['Id']]) }
                         $rec['Focus'] = [string]$focusInfo['Text']
                         $rec['Active'] = [bool]$pw.IsActive
@@ -4172,8 +4173,10 @@ function Invoke-P42-DialogKeys {
             $l.SelectedIndex = 0
             $e = New-Object System.Windows.Input.MouseButtonEventArgs([System.Windows.Input.Mouse]::PrimaryDevice, [Environment]::TickCount, [System.Windows.Input.MouseButton]::Left)
             $e.RoutedEvent = [System.Windows.Controls.Control]::MouseDoubleClickEvent
-            $e.Source = $l
-            $l.RaiseEvent($e)
+            # raised on the selected row item (the handler is on each row; a double-click on the list's scrollbar or empty area chooses nothing)
+            $row = $l.Items[0]
+            $e.Source = $row
+            $row.RaiseEvent($e)
         }.GetNewClosure()
         foreach ($case in @(@('enter with a selection', 'probe-recipe-2', $true), @('double-click', 'probe-recipe-1', $false))) {
             $steps = @(@{ Kind = 'act'; Caption = 'Choose another setup'; Do = $(if ($case[2]) { $select } else { $double }); Closes = (-not $case[2]); Fallback = 'Cancel' })
@@ -4249,9 +4252,10 @@ function Invoke-P43Run([object[]]$Steps, [scriptblock]$Open) {
 }
 # A link click posted to the dispatcher (never run inside the answerer's tick, which would stop its timer in the nested frame the warning box opens).
 function New-P43LinkClick([string]$LinkText) {
+    $visuals = ${function:Get-ShellVisuals}
     return {
         param($w, $st)
-        $link = @(Get-ShellVisuals $w | Where-Object { $_ -is [System.Windows.Controls.Button] -and [System.Windows.Automation.AutomationProperties]::GetName($_) -ceq $LinkText })[0]
+        $link = @(& $visuals $w | Where-Object { $_ -is [System.Windows.Controls.Button] -and [System.Windows.Automation.AutomationProperties]::GetName($_) -ceq $LinkText })[0]
         $st['p42']['LinkFound'] = ($null -ne $link)
         $st['p42']['DialogHwnd'] = [System.Windows.Interop.WindowInteropHelper]::new($w).Handle.ToInt64()
         if ($null -eq $link) { return }
@@ -4307,6 +4311,19 @@ function Invoke-P43-DialogFlows {
         $r = Invoke-P43Run @(@{ Kind = 'box'; Caption = 'Install engine components automatically'; Id = 'Cancel'; Fallback = 'Cancel' }) $openLicense
         Check ($script:setLicWrites.Count -eq 0 -and $els.SettingsLicenseToggle.IsChecked -eq $false -and (Test-SettingsRecClean $r.D)) 'P43 licence setting Cancel (click): nothing is written and the toggle is reverted' "writes=$($script:setLicWrites.ToArray() -join ',') toggle=$($els.SettingsLicenseToggle.IsChecked) $(Get-SettingsRecDetail $r.D)"
         Close-SettingsPage
+        # ---- licence setting, a disclosure that cannot be accepted (canAccept false): Accept is disabled, and Enter and Escape both answer Cancel (false) ----
+        $offDisclosure = [pscustomobject]@{ canAccept = $false; identities = @(); links = @($fx.Disclosure.links) }
+        $accState = {
+            param($w, $st)
+            $accept = Find-WpfBoxButton $w 'Accept'
+            $st['p42']['AcceptFound'] = ($null -ne $accept)
+            if ($null -ne $accept) { $st['p42']['AcceptEnabled'] = [bool]$accept.IsEnabled }
+        }
+        foreach ($case in @(@('Enter', 0x0D), @('Escape', 0x1B))) {
+            $script:p43Licence = 'unset'
+            $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = 'Install engine components automatically'; Do = $accState }, @{ Kind = 'box'; Caption = 'Install engine components automatically'; Key = [int]$case[1]; Fallback = 'Cancel' }) { $script:p43Licence = Show-FastLlmUiFluentLicenseSettingConfirm -Disclosure $offDisclosure }
+            Check ([bool]$r.D['p42']['AcceptFound'] -and $r.D['p42']['AcceptEnabled'] -eq $false -and $script:p43Licence -is [bool] -and $script:p43Licence -eq $false -and -not [bool]$r.D['actFellBack'] -and (Test-SettingsRecClean $r.D)) "P43 licence setting with canAccept false: Accept is disabled and $($case[0]) answers Cancel (false)" "found=$($r.D['p42']['AcceptFound']) acceptEnabled=$($r.D['p42']['AcceptEnabled']) answer='$($script:p43Licence)' fellBack=$($r.D['actFellBack']) error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
+        }
         # ---- setup check: each answer ----
         $script:flow = [pscustomobject]@{ phase = 'setup-attention' }
         $script:statusLabel.Text = ''

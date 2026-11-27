@@ -1097,7 +1097,11 @@ function New-DialogRenderContent($Spec,$Case){
         'model'{$null=Show-FastLlmUiFluentExactModelConsent -Plan ([pscustomobject]@{model=$d4Model;hardwareFingerprint='probe-card';selectedAdapters=@()})}
         'vc'{$null=Show-FastLlmUiFluentVcInstallReview -Receipt $d4Receipt -Candidate $d4Candidate}
         'setup'{$null=Show-FastLlmUiFluentSetupAttention -Decision $d4Decision -Diagnostic ([pscustomobject]@{prerequisiteInventory=$null})}
-        'chooser'{$null=Show-FastLlmUiFluentRecipeChooser -Rows $d4Chooser}
+        'chooser'{
+            $chooserRows=$d4Chooser
+            if($Spec -is [hashtable] -and $Spec.ContainsKey('Rows')){$chooserRows=@($d4Chooser|Select-Object -First ([int]$Spec['Rows']))}
+            $null=Show-FastLlmUiFluentRecipeChooser -Rows $chooserRows
+        }
         'save'{$null=Show-FastLlmUiFluentSavePrompt -SaveEnabled $false -Reason $d4SaveReason}
         default{throw "unknown dialog kind '$($Spec.Kind)'"}
     }
@@ -1161,7 +1165,7 @@ function Test-Dialog4bCase([string]$Label,$Spec,$Case,[string]$PngName){
     $r=$null;$built=$null
     try{
         $built=New-DialogRenderContent $Spec $Case
-        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -ScrollOwners @('ChooserList')
     }catch{Check $false "$Label renders at ${caseLabel}: $($_.Exception.Message)";return}
     $diagText='';if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
     Check (@($r.problems).Count -eq 0) "$Label clean at ${caseLabel}: $(@($r.problems) -join '; ')$diagText"
@@ -1209,14 +1213,15 @@ Test-DialogReadingOrder 'Component consent' @{Kind='component'} 'FastLlm.DialogR
 Test-DialogReadingOrder 'Model consent' @{Kind='model'} 'FastLlm.DialogReadingModel' 3
 Test-DialogReadingOrder 'VC++ review' @{Kind='vc'} 'FastLlm.DialogReadingVc' 3
 Test-DialogReadingOrder 'Setup check' @{Kind='setup'} 'FastLlm.DialogReadingSetup' 6
-Test-DialogReadingOrder 'Recipe chooser' @{Kind='chooser'} 'FastLlm.DialogReadingChooser' 3
+# a 3-row fixture (every row inside the list's own fold; the 30-row list is the case grid's)
+Test-DialogReadingOrder 'Recipe chooser' @{Kind='chooser';Rows=3} 'FastLlm.DialogReadingChooser' 3
 Test-DialogReadingOrder 'Save prompt' @{Kind='save'} 'FastLlm.DialogReadingSave' 2
 # The chooser's header against its rows: each column header's left edge must be the left edge of that column's cells (2 px), with 30 rows so the scroll bar shows.
 foreach($case in $dlgCases){
     $caseLabel="$($case.theme) $($case.textScale) $($case.width)x$($case.height)"
     try{
         $built=New-DialogRenderContent @{Kind='chooser'} $case
-        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName 'FastLlm.DialogChooserAlign'
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName 'FastLlm.DialogChooserAlign' -ScrollOwners @('ChooserList')
         $texts=@(Get-UiVisualElements $built.Content|Where-Object{$_ -is [System.Windows.Controls.TextBlock]})
         $gaps=@()
         foreach($col in @(@('Setup','label'),@('Model','model'),@('Context','contextText'),@('Engine and sources','engineText'))){
