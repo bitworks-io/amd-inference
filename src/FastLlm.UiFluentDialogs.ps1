@@ -318,6 +318,12 @@ function New-FastLlmUiFluentDialogReadBox {
     $box.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
     $box.HorizontalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Disabled
     $box.SetResourceReference([System.Windows.Controls.Control]::FontFamilyProperty, 'FastLlm.MonoFont')
+    # Theme brushes (the default TextBox template honours them; the shell's single-line TextBox style would centre a multi-line body), so the box follows
+    # light, dark and high contrast instead of staying a light native box.
+    $box.SetResourceReference([System.Windows.Controls.Control]::BackgroundProperty, 'FastLlm.CardBrush')
+    $box.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'FastLlm.TextPrimaryBrush')
+    $box.SetResourceReference([System.Windows.Controls.Control]::BorderBrushProperty, 'FastLlm.ControlStrongStrokeBrush')
+    $box.SetResourceReference([System.Windows.Controls.Primitives.TextBoxBase]::CaretBrushProperty, 'FastLlm.TextPrimaryBrush')
     $box.MinHeight = $MinHeight
     $box.MaxHeight = $MaxHeight
     $box.Text = $Text
@@ -369,6 +375,8 @@ function Show-FastLlmUiFluentDriverGuidance {
     $label.Margin = New-Object System.Windows.Thickness(0, 0, 0, 8)
     $devices = New-Object System.Windows.Controls.ComboBox
     $devices.Name = 'DriverDevice'
+    # The default ComboBox template ignores Background (a light native box in dark): the shell's Fluent ComboBox style, as on the Models page.
+    $devices.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.ComboBoxStyle')
     [System.Windows.Controls.ScrollViewer]::SetCanContentScroll($devices, $false)
     for ($i = 0; $i -lt $entries.Count; $i++) { $null = $devices.Items.Add("$($i+1). $($entries[$i].inputGpuName)") }
     $details = New-FastLlmUiFluentDialogReadBox -Text '' -MinHeight (160 * $scale) -MaxHeight (320 * $scale)

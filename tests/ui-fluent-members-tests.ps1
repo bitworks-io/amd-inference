@@ -1936,6 +1936,28 @@ Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxNo(\s*)= 'N
 Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxYes(\s*)= 'Yes'","BoxYes`$1= 'Yes '")).Count -ge 1) 'mutation check: a box caption with a trailing space is flagged'
 # ===== end PR 4a: approved strings =====
 
+# ===== PR 4a: dialog body controls follow the theme (4b review: a light native box in dark is the §6 anti-goal) =====
+function Get-DialogThemeFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $readBox=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'New-FastLlmUiFluentDialogReadBox'},$true))
+    if($readBox.Count -ne 1){[void]$f.Add('the read box function is missing');return $f.ToArray()}
+    $rb=$readBox[0].Body.Extent.Text
+    foreach($pair in @(@('Control]::BackgroundProperty','FastLlm.CardBrush'),@('Control]::ForegroundProperty','FastLlm.TextPrimaryBrush'),@('Control]::BorderBrushProperty','FastLlm.ControlStrongStrokeBrush'),@('TextBoxBase]::CaretBrushProperty','FastLlm.TextPrimaryBrush'))){
+        if($rb -cnotmatch ([regex]::Escape($pair[0])+", '"+[regex]::Escape($pair[1])+"'")){[void]$f.Add("the read box does not take $($pair[1]) for $($pair[0])")}
+    }
+    $guide=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Show-FastLlmUiFluentDriverGuidance'},$true))
+    if($guide.Count -ne 1 -or $guide[0].Body.Extent.Text -cnotmatch [regex]::Escape("`$devices.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.ComboBoxStyle')")){[void]$f.Add('the driver guidance device list does not take the Fluent ComboBox style')}
+    return $f.ToArray()
+}
+$dlgThemeText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentDialogs.ps1'))
+$dtf=@(Get-DialogThemeFindings $dlgThemeText)
+foreach($x in $dtf){Write-Host "FINDING: $x"}
+Check ($dtf.Count -eq 0) 'the dialog read box takes the theme brushes and the driver guidance device list takes the Fluent ComboBox style'
+Check (@(Get-DialogThemeFindings $dlgThemeText.Replace("BackgroundProperty, 'FastLlm.CardBrush'","BackgroundProperty, 'FastLlm.LayerBrush'")).Count -ge 1) 'mutation check: a read box with another background is flagged'
+Check (@(Get-DialogThemeFindings $dlgThemeText.Replace("`$devices.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.ComboBoxStyle')",'')).Count -ge 1) 'mutation check: a device list without the Fluent style is flagged'
+# ===== end PR 4a: dialog theme =====
+
 
 # ===== PR 3c: Settings pins (Task 2) =====
 # Written RED before the page: the pins that read src/FastLlm.UiFluentSettings.ps1 fail until the page exists (Task 4). Every pin also runs against an
