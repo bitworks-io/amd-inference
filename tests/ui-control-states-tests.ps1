@@ -279,20 +279,29 @@ foreach($f in @(@{contextProfile='long'},@{slots=2},@{embeddings='on'},@{embeddi
 }
 Check (-not (Test-FastLlmUiSettingsDirty -Saved $heldAdd -Held (Copy-Held $heldAdd @{}))) 'equal additions are not dirty'
 
-# The additions view: every combination of its four inputs; the lead's three named states are called out.
+# The additions view: every combination of its seven inputs (128); the lead's three named states are called out.
 $viewCases=0
-foreach($av in $true,$false){foreach($se in 'off','on'){foreach($lm in $true,$false){foreach($sp in 'default','long'){
-    $v=Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $av -SavedEmbeddings $se -LongMeasured $lm -SavedContextProfile $sp
+foreach($av in $true,$false){foreach($se in 'off','on'){foreach($lm in $true,$false){foreach($sp in 'default','long'){foreach($tm in $true,$false){foreach($ss in 1,2){foreach($cx in 0,4096){
+    $v=Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $av -SavedEmbeddings $se -LongMeasured $lm -SavedContextProfile $sp -TwoMeasured $tm -SavedSlots $ss -ContextSize $cx
     $viewCases++
-    $wantShow=($av -or $se -ceq 'on'); $wantLong=($lm -or $sp -ceq 'long')
-    $wantReason=$(if($wantLong){''}else{'long-not-measured'})
-    Check ($v -is [hashtable] -and $v.Count -eq 3 -and $v['showEmbeddings'] -is [bool] -and $v['longEnabled'] -is [bool] -and $v['longReasonCode'] -is [string] -and $v['showEmbeddings'] -eq $wantShow -and $v['longEnabled'] -eq $wantLong -and $v['longReasonCode'] -ceq $wantReason) "additions view available=$av savedEmb=$se longMeasured=$lm savedProfile=$sp"
-}}}}
-Check ($viewCases -eq 16) 'the additions view was checked for all 16 combinations'
-Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $true -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings'] -eq $true) 'embeddings state a: available shows the rows'
-Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'on' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings'] -eq $true) 'embeddings state b: saved on shows the rows although unavailable'
-Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings'] -eq $false) 'embeddings state neither: the rows are hidden'
-Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'ON' -LongMeasured $false -SavedContextProfile 'Long')['showEmbeddings'] -eq $false -and (Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'ON' -LongMeasured $false -SavedContextProfile 'Long')['longEnabled'] -eq $false) 'the saved values are matched case-sensitively'
+    $wantShow=($av -or $se -ceq 'on')
+    $wantLong=(($lm -and $cx -le 0) -or $sp -ceq 'long')
+    $wantTwo=(($tm -and $cx -le 0) -or $ss -eq 2)
+    $wantLongReason=$(if($wantLong){''}elseif($cx -gt 0){'needs-catalog-context'}else{'long-not-measured'})
+    $wantTwoReason=$(if($wantTwo){''}elseif($cx -gt 0){'needs-catalog-context'}else{'long-not-measured'})
+    Check ($v -is [hashtable] -and $v.Count -eq 5 -and $v['showEmbeddings'] -is [bool] -and $v['longEnabled'] -is [bool] -and $v['twoEnabled'] -is [bool] -and $v['longReasonCode'] -is [string] -and $v['twoReasonCode'] -is [string] -and $v['showEmbeddings'] -eq $wantShow -and $v['longEnabled'] -eq $wantLong -and $v['twoEnabled'] -eq $wantTwo -and $v['longReasonCode'] -ceq $wantLongReason -and $v['twoReasonCode'] -ceq $wantTwoReason) "additions view available=$av savedEmb=$se longMeasured=$lm savedProfile=$sp twoMeasured=$tm savedSlots=$ss context=$cx"
+}}}}}}}
+Check ($viewCases -eq 128) 'the additions view was checked for all 128 combinations'
+function Get-AddView([bool]$Av=$false,[string]$Se='off',[bool]$Lm=$false,[string]$Sp='default',[bool]$Tm=$false,[int]$Ss=1,[int]$Cx=0){return (Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $Av -SavedEmbeddings $Se -LongMeasured $Lm -SavedContextProfile $Sp -TwoMeasured $Tm -SavedSlots $Ss -ContextSize $Cx)}
+Check ((Get-AddView -Av $true)['showEmbeddings'] -eq $true) 'embeddings state a: available shows the rows'
+Check ((Get-AddView -Se 'on')['showEmbeddings'] -eq $true) 'embeddings state b: saved on shows the rows although unavailable'
+Check ((Get-AddView)['showEmbeddings'] -eq $false) 'embeddings state neither: the rows are hidden'
+Check ((Get-AddView -Se 'ON' -Sp 'Long')['showEmbeddings'] -eq $false -and (Get-AddView -Se 'ON' -Sp 'Long')['longEnabled'] -eq $false) 'the saved values are matched case-sensitively'
+Check ((Get-AddView -Lm $true -Cx 4096)['longEnabled'] -eq $false -and (Get-AddView -Lm $true -Cx 4096)['longReasonCode'] -ceq 'needs-catalog-context') 'a measured Long with Context above 0 is disabled for the context'
+Check ((Get-AddView -Tm $true -Cx 4096)['twoEnabled'] -eq $false -and (Get-AddView -Tm $true -Cx 4096)['twoReasonCode'] -ceq 'needs-catalog-context') 'a measured 2 with Context above 0 is disabled for the context'
+Check ((Get-AddView -Sp 'long' -Cx 4096)['longEnabled'] -eq $true -and (Get-AddView -Ss 2 -Cx 4096)['twoEnabled'] -eq $true) 'a saved Long or a saved 2 stays enabled with Context above 0'
+Check ((Get-AddView -Lm $false -Tm $false -Cx 0)['longReasonCode'] -ceq 'long-not-measured' -and (Get-AddView -Lm $false -Tm $false -Cx 0)['twoReasonCode'] -ceq 'long-not-measured') 'unmeasured with Context 0 says long-not-measured for both'
+Check ((Get-AddView -Lm $false -Cx 4096)['longReasonCode'] -ceq 'needs-catalog-context') 'with both reasons the context reason wins (it is the actionable one)'
 
 # The saved notes of the additions (while a run is going), in order, only when the value changed; the old keys alone give today's notes.
 function New-NoteSide([hashtable]$Over=@{}){
@@ -354,8 +363,13 @@ Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { 
 Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and `$false" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))})) 'mutation: dirty ignoring keyTouched fails the touched-indeterminate check'
 
 Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "if (`$savedSlots -ne `$heldSlots) { return `$true }" "if (`$false) { return `$true }" {[bool](Get-SettingsMutant -Saved $heldAdd -Held (Copy-Held $heldAdd @{slots=2}))})) 'mutation: dirty ignoring slots fails the dirty-slots check'
-Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '[bool]($EmbeddingsAvailable -or ($SavedEmbeddings -ceq ''on''))' '$true' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings']})) 'mutation: showEmbeddings unconditional fails the neither-state check'
-Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '[bool]($LongMeasured -or ($SavedContextProfile -ceq ''long''))' '[bool]$LongMeasured' {(Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'long')['longEnabled']})) 'mutation: longEnabled ignoring the saved value fails the saved-long check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '[bool]($EmbeddingsAvailable -or ($SavedEmbeddings -ceq ''on''))' '$true' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default' -TwoMeasured $false -SavedSlots 1 -ContextSize 0)['showEmbeddings']})) 'mutation: showEmbeddings unconditional fails the neither-state check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '-or ($SavedContextProfile -ceq ''long''))' ')' {(Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'long' -TwoMeasured $false -SavedSlots 1 -ContextSize 0)['longEnabled']})) 'mutation: longEnabled ignoring the saved value fails the saved-long check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '-or ($SavedSlots -eq 2))' ')' {(Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default' -TwoMeasured $false -SavedSlots 2 -ContextSize 0)['twoEnabled']})) 'mutation: twoEnabled ignoring the saved 2 fails the saved-2 check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '$twoEnabled = [bool](($TwoMeasured -and $catalogContext)' '$twoEnabled = [bool](($true -and $catalogContext)' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default' -TwoMeasured $false -SavedSlots 1 -ContextSize 0)['twoEnabled']})) 'mutation: item 2 always enabled fails the unmeasured-2 check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '$longEnabled = [bool](($LongMeasured -and $catalogContext)' '$longEnabled = [bool](($LongMeasured)' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $true -SavedContextProfile 'default' -TwoMeasured $true -SavedSlots 1 -ContextSize 4096)['longEnabled']})) 'mutation: the Long context condition dropped fails the context check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '$twoEnabled = [bool](($TwoMeasured -and $catalogContext)' '$twoEnabled = [bool](($TwoMeasured)' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $true -SavedContextProfile 'default' -TwoMeasured $true -SavedSlots 1 -ContextSize 4096)['twoEnabled']})) 'mutation: the 2 context condition dropped fails the context check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' "if (-not `$catalogContext) { `$longReason = 'needs-catalog-context' }" "if (`$false) { `$longReason = 'needs-catalog-context' }" {(Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default' -TwoMeasured $false -SavedSlots 1 -ContextSize 4096)['longReasonCode'] -ceq 'needs-catalog-context'})) 'mutation: wrong reason precedence (not-measured wins) fails the precedence check'
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsSavedNote' "return 'The new embeddings setting applies at the next start.'" "return ''" {(Get-SettingsMutant -RunActive $true -Before $noteBase -After (New-NoteSide @{embeddings='on'})) -ceq 'The new embeddings setting applies at the next start.'})) 'mutation: the embeddings note missing fails the note check'
 
 # ===== PR 4a: the dialog key plan (Enter, Escape and the close box of a message box), against the box-kind table =====

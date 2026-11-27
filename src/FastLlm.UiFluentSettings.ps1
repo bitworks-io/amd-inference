@@ -213,13 +213,17 @@ function Initialize-FastLlmUiFluentSettings {
     $Els['SettingsDiscardButton'].Content = ConvertTo-FastLlmUiAccessText -Text ([string] $s.Discard) -UseMnemonic $false
     foreach ($item in @($t.ThinkingAuto, $t.ThinkingOff)) { $null = $Els['SettingsThinkingBox'].Items.Add([string] $item) }
     foreach ($item in @($t.IdleNever, $t.IdleAfter15, $t.IdleAfter30, $t.IdleAfter60)) { $null = $Els['SettingsIdleBox'].Items.Add([string] $item) }
-    # The context profile's items are ComboBoxItems so that Long can be disabled on its own (index 0 Default, index 1 Long); requests at once is 1 then 2.
+    # The context profile's and the requests box's items are ComboBoxItems so that Long and 2 can be disabled on their own (index 0 Default or 1, index 1 Long or 2).
     foreach ($item in @($s.ContextProfileDefault, $s.ContextProfileLong)) {
         $profileItem = [System.Windows.Controls.ComboBoxItem]::new()
         $profileItem.Content = [string] $item
         $null = $Els['SettingsContextProfileBox'].Items.Add($profileItem.psobject.BaseObject)
     }
-    foreach ($item in @($s.RequestsAtOnceOne, $s.RequestsAtOnceTwo)) { $null = $Els['SettingsRequestsBox'].Items.Add([string] $item) }
+    foreach ($item in @($s.RequestsAtOnceOne, $s.RequestsAtOnceTwo)) {
+        $requestsItem = [System.Windows.Controls.ComboBoxItem]::new()
+        $requestsItem.Content = [string] $item
+        $null = $Els['SettingsRequestsBox'].Items.Add($requestsItem.psobject.BaseObject)
+    }
     # The spin buttons: icon glyphs (drawn, not read), named, never tab stops (their style).
     $Els['SettingsPortUp'].Content = New-FastLlmUiFluentGlyphText 0xE70E
     $Els['SettingsPortDown'].Content = New-FastLlmUiFluentGlyphText 0xE70D
@@ -276,7 +280,7 @@ function Initialize-FastLlmUiFluentSettings {
         [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els[$name], $true)
     }
     $f = $script:FastLlmUiFluent
-    $f['Settings'] = @{ Saved = $null; Held = $null; Current = $null; Dirty = $false; Loading = $false; KeyMarked = $false; PromptOpen = $false; EmbeddingsAvailable = $false; LongMeasured = $false; LongSlots = 1 }
+    $f['Settings'] = @{ Saved = $null; Held = $null; Current = $null; Dirty = $false; Loading = $false; KeyMarked = $false; PromptOpen = $false; EmbeddingsAvailable = $false; LongMeasured = $false; LongSlots = 1; Settling = $false; TwoMeasured = $false; TwoProfile = ''; ContextSize = 0; WhyText = ''; SameText = '' }
     return $Els
 }
 
@@ -334,24 +338,33 @@ function Set-FastLlmUiFluentSettingsView {
     $st['Dirty'] = [bool] (Test-FastLlmUiSettingsDirty -Saved $st['Saved'] -Held $held)
 }
 
-# What the Settings additions rows show: the pure view (Get-FastLlmUiSettingsAdditionsView) from the two availability answers read on Enter and the saved values.
-# Both Embeddings rows are shown only from the view; Long is disabled, with its reason line, when the view says so. Nothing is probed here.
+# What the Settings additions rows show: the pure view (Get-FastLlmUiSettingsAdditionsView) from the availability answers read on Enter (and re-read on a profile
+# or slots change), the Models page's Context value and the saved values. Both Embeddings rows are shown only from the view; Long and 2 are disabled, with
+# the one reason line, when the view says so. The reason line says NeedsCatalogContext when a Context above 0 is the cause (the actionable one), else
+# LongNotMeasured. A change of the line's text is announced (once per change: the view runs several times per edit). Nothing is probed here.
 function Set-FastLlmUiFluentSettingsAdditionsView {
     [CmdletBinding()] param()
     $f = $script:FastLlmUiFluent
     $e = $f['Els']
     $st = $f['Settings']
     $s = $script:FastLlmUiFluentStrings
-    $view = Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable ([bool] $st['EmbeddingsAvailable']) -SavedEmbeddings ([string] $st['Saved'].embeddings) -LongMeasured ([bool] $st['LongMeasured']) -SavedContextProfile ([string] $st['Saved'].contextProfile)
+    $view = Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable ([bool] $st['EmbeddingsAvailable']) -SavedEmbeddings ([string] $st['Saved'].embeddings) -LongMeasured ([bool] $st['LongMeasured']) -SavedContextProfile ([string] $st['Saved'].contextProfile) -TwoMeasured ([bool] $st['TwoMeasured']) -SavedSlots ([int] $st['Saved'].slots) -ContextSize ([int] $st['ContextSize'])
     if ([bool] $view['showEmbeddings']) { $e['SettingsEmbeddingsGroup'].Visibility = [System.Windows.Visibility]::Visible }
     else { $e['SettingsEmbeddingsGroup'].Visibility = [System.Windows.Visibility]::Collapsed }
     $e['SettingsContextProfileBox'].Items[1].IsEnabled = [bool] $view['longEnabled']
+    $e['SettingsRequestsBox'].Items[1].IsEnabled = [bool] $view['twoEnabled']
     $why = ''
-    if ([string] $view['longReasonCode'] -ceq 'long-not-measured') { $why = [string] $s.LongNotMeasured }
-    if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) { $why = [string] $s.LongNotMeasured }
+    if ([string] $view['longReasonCode'] -ceq 'long-not-measured' -or [string] $view['twoReasonCode'] -ceq 'long-not-measured') { $why = [string] $s.LongNotMeasured }
+    if ((Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) -or (Test-FastLlmUiFluentSettingsTwoUnmeasuredHeld)) { $why = [string] $s.LongNotMeasured }
+    if ([string] $view['longReasonCode'] -ceq 'needs-catalog-context' -or [string] $view['twoReasonCode'] -ceq 'needs-catalog-context' -or [string] (Get-FastLlmUiFluentSettingsCatalogContextHeld) -cne '') { $why = [string] $s.NeedsCatalogContext }
     $e['SettingsContextProfileWhy'].Text = $why
     if ($why -ne '') { $e['SettingsContextProfileWhy'].Visibility = [System.Windows.Visibility]::Visible } else { $e['SettingsContextProfileWhy'].Visibility = [System.Windows.Visibility]::Collapsed }
     [System.Windows.Automation.AutomationProperties]::SetHelpText($e['SettingsContextProfileBox'], $why)
+    [System.Windows.Automation.AutomationProperties]::SetHelpText($e['SettingsRequestsBox'], $why)
+    if (-not [bool] $st['Settling'] -and [string] $st['WhyText'] -cne $why) {
+        $st['WhyText'] = $why
+        if ($why -cne '') { Send-FastLlmUiFluentLiveRegion -Element $e['SettingsContextProfileWhy'] }
+    }
     Update-FastLlmUiFluentSettingsEmbeddingPortView
 }
 
@@ -367,13 +380,21 @@ function Update-FastLlmUiFluentSettingsEmbeddingPortView {
     if ($on) { $e['SettingsEmbeddingPortGroup'].Visibility = [System.Windows.Visibility]::Visible } else { $e['SettingsEmbeddingPortGroup'].Visibility = [System.Windows.Visibility]::Collapsed }
     $same = [bool] ($on -and [int] $held.embeddingPort -eq [int] $held.port)
     $line = $e['SettingsEmbeddingPortSame']
+    $sameText = ''
     if ($same) {
         $line.Text = [string] $script:FastLlmUiFluentStrings.EmbeddingPortSame
         $line.Visibility = [System.Windows.Visibility]::Visible
+        $sameText = [string] $line.Text
     }
     else {
         $line.Text = ''
         $line.Visibility = [System.Windows.Visibility]::Collapsed
+    }
+    # Focus on the port box reads the reason (HelpText), and a change of the line is announced once (the view runs several times per edit).
+    [System.Windows.Automation.AutomationProperties]::SetHelpText($e['SettingsEmbeddingPortBox'], $sameText)
+    if ([string] $f['Settings']['SameText'] -cne $sameText) {
+        $f['Settings']['SameText'] = $sameText
+        if ($sameText -cne '') { Send-FastLlmUiFluentLiveRegion -Element $line }
     }
 }
 
@@ -389,21 +410,22 @@ function Test-FastLlmUiFluentEmbeddingsAvailable {
     catch { return $false }
 }
 
-# Does this install have a measured long-context row for the model a start would use, at the requests-at-once value the user holds? The planner's own
-# source (config/serving-profiles.json through Read-FastLlmServingProfiles and Find-FastLlmServingProfileRow, for the built-in engine id and profile id
-# 'long', asked with -Slots as the planner asks it). The model is the Home model box as ReadSelection reads it (a chosen model, or any model the planner may
+# Does this install have a measured row of the given profile ('long' by default; 'default' is the row Default needs at 2 requests at once) for the model a start
+# would use, at the requests-at-once value asked? The planner's own
+# source (config/serving-profiles.json through Read-FastLlmServingProfiles and Find-FastLlmServingProfileRow, for the built-in engine id and the profile id,
+# asked with -Slots as the planner asks it). The model is the Home model box as ReadSelection reads it (a chosen model, or any model the planner may
 # pick when it is on Automatic). The planner matches the backend of the probed hardware, which only a hardware probe can give, and the window holds none:
 # so the backends asked are only those a start could run on, the ones whose engine is installed under this install (Get-FastLlmEngineExecutable, a path
 # check only), or, with no engine installed yet, those the catalog enables (what an install would fetch). Read-only. Any failure to read is $false.
-# Exactly one [bool]. Read on Enter, and again only when the requests box changes.
+# Exactly one [bool]. Read on Enter, and again only when the held profile or requests value changes.
 function Test-FastLlmUiFluentLongMeasured {
-    [CmdletBinding()] param([int] $Slots = 1)
+    [CmdletBinding()] param([int] $Slots = 1, [ValidateSet('default', 'long')][string] $ProfileId = 'long')
     try {
         $modelId = ''
         if ([int] $script:modelBox.SelectedIndex -gt 0) { $modelId = [string] $script:modelBox.SelectedItem }
         $configRoot = Join-Path $script:FastLlmUiFluentSourceRoot 'config'
         $measured = & (Get-Module FastLlm) {
-            param($ConfigRoot, $ModelId, $InstallRoot, $HeldSlots)
+            param($ConfigRoot, $ModelId, $InstallRoot, $HeldSlots, $HeldProfile)
             $catalog = Get-FastLlmCatalog -CatalogPath (Join-Path $ConfigRoot 'catalog.json')
             $engineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
             $rows = @(Read-FastLlmServingProfiles -Path (Join-Path $ConfigRoot 'serving-profiles.json'))
@@ -425,11 +447,11 @@ function Test-FastLlmUiFluentLongMeasured {
                 $autoEligible = $model.PSObject.Properties['autoEligible']
                 if (-not $ModelId -and $autoEligible -and -not [bool] $autoEligible.Value) { continue }
                 foreach ($backend in $backends) {
-                    if ($null -ne (Find-FastLlmServingProfileRow -Rows $rows -Model $model -EngineId $engineId -Backend ([string] $backend) -ProfileId 'long' -Slots $HeldSlots)) { return $true }
+                    if ($null -ne (Find-FastLlmServingProfileRow -Rows $rows -Model $model -EngineId $engineId -Backend ([string] $backend) -ProfileId $HeldProfile -Slots $HeldSlots)) { return $true }
                 }
             }
             return $false
-        } $configRoot $modelId $script:installPath $Slots
+        } $configRoot $modelId $script:installPath $Slots $ProfileId
         return [bool] (@($measured) | Select-Object -Last 1)
     }
     catch { return $false }
@@ -449,17 +471,62 @@ function Test-FastLlmUiFluentSettingsLongUnmeasuredHeld {
     return $true
 }
 
-# Reads the long probe for the held requests-at-once value and shows its answer. Run on Enter (always) and again when the requests box changed since the last
-# read (an edit or a discard), never on a tick or a reload, so a Long that only fails at 2 at once is never offered at 2.
+# Is "2 requests at once" held where the held profile has no measured row at 2, and not exactly the saved pair (saved 2 with the same profile)? Such a pair can
+# only fail at the next start (serving-profile-not-measured), so the reason line shows and Save refuses it. Like the Long guard, only the saved PAIR is exempt:
+# a saved Long at 2 does not make Default at 2 safe. (The 2 item itself stays enabled for a saved 2, as the Long item does for a saved Long.) Read from the page state only; nothing is probed here. Exactly one [bool].
+function Test-FastLlmUiFluentSettingsTwoUnmeasuredHeld {
+    [CmdletBinding()] param()
+    $st = $script:FastLlmUiFluent['Settings']
+    $held = $st['Held']
+    if ($null -eq $held) { return $false }
+    if ([int] $held.slots -ne 2) { return $false }
+    if ([bool] $st['TwoMeasured']) { return $false }
+    if ([int] $st['Saved'].slots -eq 2 -and [string] $st['Saved'].contextProfile -ceq [string] $held.contextProfile) { return $false }
+    return $true
+}
+
+# Is a held change into Long or 2 requests at once made while the Models page's Context is above 0 (the planner refuses either then)? A value that is already
+# the saved one is not a change. Returns one string: 'profile' (Long held), 'requests' (2 held) or '' (neither). Read from the page state only.
+function Get-FastLlmUiFluentSettingsCatalogContextHeld {
+    [CmdletBinding()] param()
+    $st = $script:FastLlmUiFluent['Settings']
+    $held = $st['Held']
+    if ($null -eq $held) { return '' }
+    if ([int] $st['ContextSize'] -le 0) { return '' }
+    if ([string] $held.contextProfile -ceq 'long' -and [string] $st['Saved'].contextProfile -cne 'long') { return 'profile' }
+    if ([int] $held.slots -eq 2 -and [int] $st['Saved'].slots -ne 2) { return 'requests' }
+    return ''
+}
+
+# The Context value ReadSelection reads (the Models page's context adapter); 0 when it cannot be read. Exactly one [int].
+function Read-FastLlmUiFluentSettingsContextSize {
+    [CmdletBinding()] param()
+    try { return [int] $script:contextBox.Value }
+    catch { return 0 }
+}
+
+# Reads the context size, and the probes for the held values, and shows the answers. Run on Enter (always) and again when the held profile or requests value
+# changed since the last read (an edit or a discard), never on a tick or a reload. Long is asked at the held slots; 2 is asked for the held profile. So a Long
+# that only fails at 2 at once, or a 2 that only fails for Long, is never offered.
 function Update-FastLlmUiFluentSettingsLongState {
     [CmdletBinding()] param([switch] $Force)
     $st = $script:FastLlmUiFluent['Settings']
     $slots = 1
-    if ($null -ne $st['Held']) { $slots = [int] $st['Held'].slots }
-    if (-not $Force -and [int] $st['LongSlots'] -eq $slots) { return }
-    $st['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured -Slots $slots)
-    $st['LongSlots'] = $slots
-    Set-FastLlmUiFluentSettingsAdditionsView
+    $profileId = 'default'
+    if ($null -ne $st['Held']) { $slots = [int] $st['Held'].slots; $profileId = [string] $st['Held'].contextProfile }
+    $st['ContextSize'] = [int] (Read-FastLlmUiFluentSettingsContextSize)
+    $changed = $false
+    if ($Force -or [int] $st['LongSlots'] -ne $slots) {
+        $st['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots $slots)
+        $st['LongSlots'] = $slots
+        $changed = $true
+    }
+    if ($Force -or [string] $st['TwoProfile'] -cne $profileId) {
+        $st['TwoMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured -ProfileId $profileId -Slots 2)
+        $st['TwoProfile'] = $profileId
+        $changed = $true
+    }
+    if ($changed) { Set-FastLlmUiFluentSettingsAdditionsView }
 }
 
 # Reads the settings again: a fresh Current, Saved = Held (two objects with the same values), the controls filled. Enter and a saved Save both run it, so the
@@ -518,9 +585,16 @@ function Enter-FastLlmUiFluentSettings {
         $e = $script:FastLlmUiFluent['Els']
         $t = $script:FastLlmUiFluentSettingsText
         Set-FastLlmUiFluentSettingsKeyMark -On $false
+        # A new visit announces what it shows: the last announced texts start empty. The first fill runs before the probes are read, so the reason line is not
+        # announced from it (Settling); the forced long state below shows and announces the real answer.
+        $enterState = $script:FastLlmUiFluent['Settings']
+        $enterState['WhyText'] = ''
+        $enterState['SameText'] = ''
         # What the additions rows may show is read here, once per visit (never on a tick, never on a Save's reload).
-        $script:FastLlmUiFluent['Settings']['EmbeddingsAvailable'] = [bool] (Test-FastLlmUiFluentEmbeddingsAvailable)
-        Update-FastLlmUiFluentSettingsLoad
+        $enterState['EmbeddingsAvailable'] = [bool] (Test-FastLlmUiFluentEmbeddingsAvailable)
+        $enterState['Settling'] = $true
+        try { Update-FastLlmUiFluentSettingsLoad }
+        finally { $enterState['Settling'] = $false }
         Update-FastLlmUiFluentSettingsLongState -Force
         # The three immediate toggles name themselves with the caption their adapter shows.
         foreach ($pair in @(@('SettingsUpdateToggle', 'updateBox'), @('SettingsExperimentalToggle', 'experimentalBox'), @('SettingsLicenseToggle', 'licenseBox'))) {
@@ -740,6 +814,21 @@ function Invoke-FastLlmUiFluentSettingsSave {
     if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) {
         Set-FastLlmUiFluentSettingsAdditionsView
         $null = $e['SettingsContextProfileBox'].Focus()
+        return $false
+    }
+    # A fluent-only guard: 2 requests at once held where the held profile has no measured row at 2 (and 2 is not the saved value) can only fail at the next
+    # start, so nothing is written and the edits stay. The reason line (already showing) says why, and the focus goes to the requests box.
+    if (Test-FastLlmUiFluentSettingsTwoUnmeasuredHeld) {
+        Set-FastLlmUiFluentSettingsAdditionsView
+        $null = $e['SettingsRequestsBox'].Focus()
+        return $false
+    }
+    # A fluent-only guard: a held change into Long or 2 while the Models page's Context is above 0 is refused by the planner, so nothing is written and the edits
+    # stay. The reason line (NeedsCatalogContext) says what to do, and the focus goes to the box that was changed.
+    $catalogContextBox = [string] (Get-FastLlmUiFluentSettingsCatalogContextHeld)
+    if ($catalogContextBox -cne '') {
+        Set-FastLlmUiFluentSettingsAdditionsView
+        if ($catalogContextBox -ceq 'profile') { $null = $e['SettingsContextProfileBox'].Focus() } else { $null = $e['SettingsRequestsBox'].Focus() }
         return $false
     }
     $keyBox = $e['SettingsKeyBox']

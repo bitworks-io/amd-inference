@@ -362,20 +362,29 @@ function Test-FastLlmUiSettingsDirty {
 }
 
 # What the Settings additions rows show. Both Embeddings rows show when an approved, measured embedding model is available or the saved setting is
-# already on (so it can be turned off); otherwise they are hidden. Long is enabled when this install has a measured long setup or Long is already
-# the saved value; otherwise it is disabled and the reason code says why ('long-not-measured', matching the start's refusal).
+# already on (so it can be turned off); otherwise they are hidden. Long and "2 requests at once" are each enabled when the install has a measured row for
+# them (LongMeasured: Long at the held slots; TwoMeasured: the held profile at 2) AND the Models page's Context is 0 (a Context above 0 is refused by the
+# planner for either), or when that value is already the saved one. A disabled one gets a reason code: 'needs-catalog-context' (the actionable one, so it
+# wins when both apply) or 'long-not-measured' (matching the start's refusal).
 function Get-FastLlmUiSettingsAdditionsView {
     param(
         [Parameter(Mandatory=$true)][bool]$EmbeddingsAvailable,
         [Parameter(Mandatory=$true)][string]$SavedEmbeddings,
         [Parameter(Mandatory=$true)][bool]$LongMeasured,
-        [Parameter(Mandatory=$true)][string]$SavedContextProfile
+        [Parameter(Mandatory=$true)][string]$SavedContextProfile,
+        [Parameter(Mandatory=$true)][bool]$TwoMeasured,
+        [Parameter(Mandatory=$true)][int]$SavedSlots,
+        [Parameter(Mandatory=$true)][int]$ContextSize
     )
     $showEmbeddings = [bool]($EmbeddingsAvailable -or ($SavedEmbeddings -ceq 'on'))
-    $longEnabled = [bool]($LongMeasured -or ($SavedContextProfile -ceq 'long'))
-    $reason = ''
-    if (-not $longEnabled) { $reason = 'long-not-measured' }
-    return @{ showEmbeddings = $showEmbeddings; longEnabled = $longEnabled; longReasonCode = $reason }
+    $catalogContext = [bool]($ContextSize -le 0)
+    $longEnabled = [bool](($LongMeasured -and $catalogContext) -or ($SavedContextProfile -ceq 'long'))
+    $twoEnabled = [bool](($TwoMeasured -and $catalogContext) -or ($SavedSlots -eq 2))
+    $longReason = ''
+    if (-not $longEnabled) { $longReason = 'long-not-measured'; if (-not $catalogContext) { $longReason = 'needs-catalog-context' } }
+    $twoReason = ''
+    if (-not $twoEnabled) { $twoReason = 'long-not-measured'; if (-not $catalogContext) { $twoReason = 'needs-catalog-context' } }
+    return @{ showEmbeddings = $showEmbeddings; longEnabled = $longEnabled; longReasonCode = $longReason; twoEnabled = $twoEnabled; twoReasonCode = $twoReason }
 }
 
 # What leaving the Settings page does: go, stay, save (run Save first) or discard-go (drop the edits and go).

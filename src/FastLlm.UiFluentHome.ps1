@@ -66,6 +66,7 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     ContextProfileLong   = 'Long: the measured long-context setup'
     ContextProfileHelp   = 'Long uses the measured long-context setup of the model and engine; a start is refused when none is measured. Applies at the next start.'
     LongNotMeasured      = 'Not measured for this model and engine, so a start with it would be refused.'
+    NeedsCatalogContext  = 'Needs Context set to 0 (catalog default) on the Models page.'
     RequestsAtOnce       = 'Requests at once'
     RequestsAtOnceOne    = '1 (default)'
     RequestsAtOnceTwo    = '2'
