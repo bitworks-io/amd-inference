@@ -52,6 +52,7 @@ function Get-FastLlmUiThemeTokens {
         Layer = '#FFF3F3F3'; Card = '#B3FFFFFF'; CardStroke = '#0F000000'; Flyout = '#FFF9F9F9'
         TextPrimary = '#E4000000'; TextSecondary = '#9E000000'
         ControlStroke = '#0F000000'; ControlStrongStroke = '#72000000'
+        DisabledText = '#5C000000'; DisabledFill = '#4DF9F9F9'; DisabledStroke = '#37000000'
         TextOnAccent = '#FFFFFFFF'
         SuccessText = '#FF0F7B0F'; CautionText = '#FF9D5D00'; CriticalText = '#FFC42B1C'
         SuccessBackground = '#FFDFF6DD'; CautionBackground = '#FFFFF4CE'; CriticalBackground = '#FFFDE7E9'
@@ -60,6 +61,7 @@ function Get-FastLlmUiThemeTokens {
         Layer = '#FF202020'; Card = '#0DFFFFFF'; CardStroke = '#19000000'; Flyout = '#FF2C2C2C'
         TextPrimary = '#FFFFFFFF'; TextSecondary = '#C5FFFFFF'
         ControlStroke = '#12FFFFFF'; ControlStrongStroke = '#8BFFFFFF'
+        DisabledText = '#5DFFFFFF'; DisabledFill = '#0BFFFFFF'; DisabledStroke = '#28FFFFFF'
         TextOnAccent = '#FF000000'
         SuccessText = '#FF6CCB5F'; CautionText = '#FFFCE100'; CriticalText = '#FFFF99A4'
         SuccessBackground = '#FF393D1B'; CautionBackground = '#FF433519'; CriticalBackground = '#FF442726'
@@ -70,7 +72,7 @@ function Get-FastLlmUiThemeTokens {
     if (-not $AccentFill) { $AccentFill = $defaultAccent }
     [void](ConvertFrom-FastLlmUiColor $AccentFill)
     $t = [ordered]@{}
-    foreach ($k in 'Layer', 'Card', 'CardStroke', 'Flyout', 'TextPrimary', 'TextSecondary', 'ControlStroke', 'ControlStrongStroke') { $t[$k] = $src[$k] }
+    foreach ($k in 'Layer', 'Card', 'CardStroke', 'Flyout', 'TextPrimary', 'TextSecondary', 'ControlStroke', 'ControlStrongStroke', 'DisabledText', 'DisabledFill', 'DisabledStroke') { $t[$k] = $src[$k] }
     $t['AccentFill'] = $AccentFill
     foreach ($k in 'TextOnAccent', 'SuccessText', 'CautionText', 'CriticalText', 'SuccessBackground', 'CautionBackground', 'CriticalBackground') { $t[$k] = $src[$k] }
     return $t

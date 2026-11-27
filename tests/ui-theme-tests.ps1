@@ -25,10 +25,10 @@ Check $threw 'a translucent background is refused'
 
 # Tokens, exact strings.
 $expect=@{
- light=[ordered]@{Layer='#FFF3F3F3';Card='#B3FFFFFF';CardStroke='#0F000000';Flyout='#FFF9F9F9';TextPrimary='#E4000000';TextSecondary='#9E000000';ControlStroke='#0F000000';ControlStrongStroke='#72000000';TextOnAccent='#FFFFFFFF';SuccessText='#FF0F7B0F';CautionText='#FF9D5D00';CriticalText='#FFC42B1C';SuccessBackground='#FFDFF6DD';CautionBackground='#FFFFF4CE';CriticalBackground='#FFFDE7E9'}
- dark=[ordered]@{Layer='#FF202020';Card='#0DFFFFFF';CardStroke='#19000000';Flyout='#FF2C2C2C';TextPrimary='#FFFFFFFF';TextSecondary='#C5FFFFFF';ControlStroke='#12FFFFFF';ControlStrongStroke='#8BFFFFFF';TextOnAccent='#FF000000';SuccessText='#FF6CCB5F';CautionText='#FFFCE100';CriticalText='#FFFF99A4';SuccessBackground='#FF393D1B';CautionBackground='#FF433519';CriticalBackground='#FF442726'}
+ light=[ordered]@{Layer='#FFF3F3F3';Card='#B3FFFFFF';CardStroke='#0F000000';Flyout='#FFF9F9F9';TextPrimary='#E4000000';TextSecondary='#9E000000';ControlStroke='#0F000000';ControlStrongStroke='#72000000';DisabledText='#5C000000';DisabledFill='#4DF9F9F9';DisabledStroke='#37000000';TextOnAccent='#FFFFFFFF';SuccessText='#FF0F7B0F';CautionText='#FF9D5D00';CriticalText='#FFC42B1C';SuccessBackground='#FFDFF6DD';CautionBackground='#FFFFF4CE';CriticalBackground='#FFFDE7E9'}
+ dark=[ordered]@{Layer='#FF202020';Card='#0DFFFFFF';CardStroke='#19000000';Flyout='#FF2C2C2C';TextPrimary='#FFFFFFFF';TextSecondary='#C5FFFFFF';ControlStroke='#12FFFFFF';ControlStrongStroke='#8BFFFFFF';DisabledText='#5DFFFFFF';DisabledFill='#0BFFFFFF';DisabledStroke='#28FFFFFF';TextOnAccent='#FF000000';SuccessText='#FF6CCB5F';CautionText='#FFFCE100';CriticalText='#FFFF99A4';SuccessBackground='#FF393D1B';CautionBackground='#FF433519';CriticalBackground='#FF442726'}
 }
-$keys='Layer,Card,CardStroke,Flyout,TextPrimary,TextSecondary,ControlStroke,ControlStrongStroke,AccentFill,TextOnAccent,SuccessText,CautionText,CriticalText,SuccessBackground,CautionBackground,CriticalBackground'
+$keys='Layer,Card,CardStroke,Flyout,TextPrimary,TextSecondary,ControlStroke,ControlStrongStroke,DisabledText,DisabledFill,DisabledStroke,AccentFill,TextOnAccent,SuccessText,CautionText,CriticalText,SuccessBackground,CautionBackground,CriticalBackground'
 $tok=@{}
 foreach($theme in 'light','dark'){
     $accent=if($theme -eq 'light'){'#FF005FB8'}else{'#FF60CDFF'}
@@ -68,6 +68,28 @@ foreach($theme in 'light','dark'){
     Check (-not (Test-FlyoutOpaque $tok[$theme].Card)) ($theme+' Card stays translucent (not a popup surface)')
     Check (-not (Test-FlyoutOpaque ('#B3'+$tok[$theme].Flyout.Substring(3)))) ($theme+' mutant: a translucent Flyout fails the opaque check')
 }
+
+# Disabled controls must look disabled: on a card over the layer, enabled text (TextPrimary) is at least 3x the contrast of disabled text, in each theme,
+# and the disabled text is not the secondary text colour (the defect: DisabledText was TextSecondary, only x1.56 apart in dark).
+function Get-DisabledQuotient($T){
+    $en=Get-FastLlmUiContrastRatio $T.TextPrimary $T.Card $T.Layer
+    $dis=Get-FastLlmUiContrastRatio $T.DisabledText $T.Card $T.Layer
+    return [double]($en/$dis)
+}
+function Test-DisabledKeyOrder($T){ return ((($T.Keys -join ',') -ceq $keys)) }
+foreach($theme in 'light','dark'){
+    $t=$tok[$theme]
+    $q=Get-DisabledQuotient $t
+    [void]$rows.Add(('{0}|disabled quotient (TextPrimary / DisabledText on Card)|{1}' -f $theme,$q.ToString('0.00',$inv)))
+    Check ($q -ge 3) ($theme+' enabled/disabled text contrast quotient >= 3 (got '+$q.ToString('0.00',$inv)+')')
+    Check ($t.DisabledText -cne $t.TextSecondary) ($theme+' DisabledText differs from TextSecondary')
+    Check ($t.DisabledFill -cne $t.Card -and $t.DisabledStroke -cne $t.ControlStroke) ($theme+' DisabledFill and DisabledStroke differ from Card and ControlStroke')
+    $mut=[ordered]@{}; foreach($k in $t.Keys){$mut[$k]=$t[$k]}; $mut['DisabledText']=$t.TextSecondary
+    Check ((Get-DisabledQuotient $mut) -lt 3) ($theme+' mutant: DisabledText set to TextSecondary fails the quotient check')
+    $mut2=[ordered]@{}; foreach($k in $t.Keys){if($k -cne 'DisabledText'){$mut2[$k]=$t[$k]}}; $mut2['DisabledText']=$t.DisabledText
+    Check ((Test-DisabledKeyOrder $t) -and -not (Test-DisabledKeyOrder $mut2)) ($theme+' mutant: DisabledText moved out of its place fails the key-order check')
+}
+Check ((Get-DisabledQuotient ([ordered]@{TextPrimary=$tok.dark.TextPrimary;DisabledText=$tok.dark.TextSecondary;Card=$tok.dark.Card;Layer=$tok.dark.Layer})) -lt 3) 'mutant (dark): DisabledText = TextSecondary gives a quotient under 3'
 
 # Metrics.
 $m=Get-FastLlmUiMetrics
