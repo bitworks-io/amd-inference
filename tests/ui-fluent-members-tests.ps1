@@ -1918,6 +1918,24 @@ Check (@(Get-Approved3cStringFindings $homeStringsText.Replace('"Don''t save"','
 Check (@(Get-Approved3cStringFindings $homeStringsText.Replace("'Components and updates'","'Components & updates'")).Count -ge 1) 'mutation check: a heading reworded is flagged'
 # ===== end PR 3c: approved strings =====
 
+# ===== PR 4a: the box captions, exact text (lead ruling D3; the 3b lead-gate rule applied to 4a) =====
+$approvedStrings4a=[ordered]@{ BoxOK = 'OK'; BoxCancel = 'Cancel'; BoxYes = 'Yes'; BoxNo = 'No' }
+function Get-Approved4aStringFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $actual=Get-FluentStringTableValues $Text
+    foreach($k in $approvedStrings4a.Keys){
+        if(-not $actual.ContainsKey($k)){[void]$f.Add("$k is missing from the string table");continue}
+        if([string]$actual[$k] -cne [string]$approvedStrings4a[$k]){[void]$f.Add("$k is '$($actual[$k])', approved '$($approvedStrings4a[$k])'")}
+    }
+    return $f.ToArray()
+}
+$as4a=@(Get-Approved4aStringFindings $homeStringsText)
+foreach($x in $as4a){Write-Host "FINDING: $x"}
+Check ($as4a.Count -eq 0) 'the four box captions (OK, Cancel, Yes, No) are exactly their approved text'
+Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxNo(\s*)= 'No'","BoxNo`$1= 'no'")).Count -ge 1) 'mutation check: a box caption with a changed case is flagged'
+Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxYes(\s*)= 'Yes'","BoxYes`$1= 'Yes '")).Count -ge 1) 'mutation check: a box caption with a trailing space is flagged'
+# ===== end PR 4a: approved strings =====
+
 
 # ===== PR 3c: Settings pins (Task 2) =====
 # Written RED before the page: the pins that read src/FastLlm.UiFluentSettings.ps1 fail until the page exists (Task 4). Every pin also runs against an
