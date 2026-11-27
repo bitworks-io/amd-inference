@@ -291,11 +291,41 @@ function Get-UiTextGapSummary($Records) {
     return $rows.ToArray()
 }
 
+# The text of an inline collection (Run, Span, Hyperlink, Bold, LineBreak), depth first. Pure over the object shape: a member with Inlines is walked, a member
+# with Text is read, a LineBreak is a newline. Any other inline (an InlineUIContainer) has neither and adds nothing.
+function Get-UiInlineText($Inlines) {
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($inline in @($Inlines)) {
+        if ($null -eq $inline) { continue }
+        if ($inline.GetType().Name -ceq 'LineBreak') { [void]$sb.Append("`n"); continue }
+        $props = $inline.PSObject.Properties
+        if ($null -ne $props['Inlines']) { [void]$sb.Append((Get-UiInlineText $inline.Inlines)) }
+        elseif ($null -ne $props['Text']) { [void]$sb.Append([string]$inline.Text) }
+    }
+    return $sb.ToString()
+}
+
+# The whole text of a block, the way the clone must measure it. A block whose content is inlines only (a Hyperlink, runs) has an EMPTY Text on Windows (CI round 1 of
+# PR 4a: the NoWrap Hyperlink block in a 60-wide box was measured as empty, a zero-width clone, so its clipping was never reported), so the inlines are read instead.
+function Get-UiBlockText($Block) {
+    $t = [string]$Block.Text
+    if (-not [string]::IsNullOrEmpty($t)) { return $t }
+    if ($null -ne $Block.PSObject.Properties['Inlines']) { return (Get-UiInlineText $Block.Inlines) }
+    return ''
+}
+
+# Dialog and page reading order: the stops sorted by tab region first, then row, then left edge, then tree order (Sort-Object is not stable, so the tree order is a key).
+# A stop below the fold of a scrolling region still belongs to that region, so it comes before the footer's stops whatever its unclipped Top. Pure: rows are
+# objects with Region, Row, Left and Order. Callers collect with @( ).
+function Sort-UiReadingRows($Rows) {
+    return (@($Rows) | Sort-Object -Property @{ Expression = { [int]$_.Region } }, @{ Expression = { [double]$_.Row } }, @{ Expression = { [double]$_.Left } }, @{ Expression = { [int]$_.Order } })
+}
+
 # A fresh, unparented copy of a text block's text and of everything that sizes it (never the live element). It is NOT layout rounded, so its DesiredSize is the
 # text's ideal size, and it is given the live block's own DPI (not the case's scale: see the root cause above), which matters only for display-mode text metrics.
 function New-UiTextClone($Text, $Dpi) {
     $clone = New-Object System.Windows.Controls.TextBlock
-    $clone.Text = $Text.Text
+    $clone.Text = Get-UiBlockText $Text
     $clone.FontFamily = $Text.FontFamily
     $clone.FontSize = $Text.FontSize
     $clone.FontWeight = $Text.FontWeight

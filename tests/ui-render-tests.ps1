@@ -168,6 +168,25 @@ foreach($ln in $linkExpect.Keys){
 }
 Check ($selfText.Contains("'Nested','LinkClipped','LinkOutside'){")) 'the negative case list runs both Hyperlink pages'
 Check ($selfText.Contains('-eq 54) ("the render folder holds 54 Test.* PNGs')) 'the Test.* PNG count includes the two Hyperlink pages'
+# PR 4a CI round 1, the LinkClipped miss: a block whose only content is a Hyperlink has an empty Text on Windows, so its clone measured as nothing and the 60-wide NoWrap
+# link was never reported clipped. The clone now takes the text of the inlines when Text is empty. Pure checks over the object shape (a Run has Text, a Hyperlink or Span has Inlines).
+$planRun=[pscustomobject]@{Text='This link text is much too long'}
+$planLink=[pscustomobject]@{Inlines=@($planRun)}
+$planNested=[pscustomobject]@{Inlines=@([pscustomobject]@{Text='Read '},[pscustomobject]@{Inlines=@([pscustomobject]@{Text='the '},[pscustomobject]@{Text='notes'})})}
+Check ((Get-UiInlineText @($planLink)) -ceq 'This link text is much too long') 'a Hyperlink inline gives the text of its run'
+Check ((Get-UiInlineText @($planNested)) -ceq 'Read the notes') 'nested inlines give their text in order'
+Check ((Get-UiInlineText @()) -ceq '') 'no inlines give an empty text'
+Check ((Get-UiBlockText ([pscustomobject]@{Text='';Inlines=@($planLink)})) -ceq 'This link text is much too long') 'a block with an empty Text and a Hyperlink inline is measured with the link text (the LinkClipped miss)'
+Check ((Get-UiBlockText ([pscustomobject]@{Text='Plain';Inlines=@($planLink)})) -ceq 'Plain') 'a block with a Text keeps its Text'
+Check ((Get-UiBlockText ([pscustomobject]@{Text=''})) -ceq '') 'a block with neither Text nor inlines is empty'
+Check ($selfText.Contains('$planLink') -and ([IO.File]::ReadAllText((Join-Path $root 'tests/helpers/UiRenderHarness.ps1'))).Contains('$clone.Text = Get-UiBlockText $Text')) 'the clone takes its text through Get-UiBlockText'
+# Dialog reading order: the region comes first, so a stop below the body's fold (large Top) is still read before the footer.
+$planRows=@([pscustomobject]@{Name='Footer';Region=1;Row=40.0;Left=300.0;Order=3},[pscustomobject]@{Name='BelowFold';Region=0;Row=90.0;Left=0.0;Order=2},[pscustomobject]@{Name='Device';Region=0;Row=5.0;Left=0.0;Order=0},[pscustomobject]@{Name='Close';Region=1;Row=40.0;Left=400.0;Order=4})
+Check ((@(Sort-UiReadingRows $planRows|ForEach-Object{$_.Name}) -join ',') -ceq 'Device,BelowFold,Footer,Close') 'a stop below the body fold sorts before the footer: region, then row, then left'
+Check ((@(Sort-UiReadingRows @($planRows[0]))|Measure-Object).Count -eq 1 -and @(Sort-UiReadingRows @()).Count -eq 0) 'the reading sort keeps one stop and none'
+$dlgOrderText=[regex]::Match($selfText,'(?sm)^function Test-DialogReadingOrder.*?\r?\n}\r?\n').Value
+Check ($dlgOrderText.Contains("Get-UiTabRegion `$el `$built.Content @('DlgBodyScroll')") -and $dlgOrderText.Contains('Sort-UiReadingRows')) 'the dialog reading order sorts by the body scroll region first'
+Check ([regex]::Matches($selfText,"-TabRegions @\('DlgBodyScroll'\)").Count -eq 2) 'both dialog render calls name the body scroll as a tab region'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -1027,6 +1046,8 @@ if($null -eq (Get-Command -Name Get-FastLlmUiDialogKeyPlan -ErrorAction Silently
 $script:FastLlmUiFluent=$null
 function RevealUiForAction{}
 function SetTrayMenuAvailable([bool]$Available){}
+# The message box answers as [System.Windows.Forms.DialogResult] (the window loads WinForms; this process does not until asked).
+try{Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop}catch{Write-Host ('INFO: WinForms load error: '+$_.Exception.ToString())}
 $script:dlgCaptured=$null
 $script:dlgStyleHost=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
 $script:dlgRealShow=${function:Show-FastLlmUiFluentDialog}
@@ -1055,6 +1076,9 @@ function New-DialogRenderContent($Spec,$Case){
     $grid=$win.Content
     $win.Content=$null
     $grid.Width=[Math]::Min([double]$win.Width,[double]$Case.width)
+    # The real dialog Window is capped at 95% of the work area and its star row shrinks the body, which scrolls. The case stands for that work area: the Grid is capped at the
+    # case height, so the body scrolls inside the Grid and the harness page never needs a scroll bar of its own (which narrows the viewport below the Grid's fixed width).
+    $grid.MaxHeight=[double]$Case.height
     return @{Content=$grid;Dialog=$script:dlgCaptured;Width=[double]$win.Width}
 }
 $dlgPrepare={
@@ -1068,12 +1092,14 @@ function Test-DialogCase([string]$Label,$Spec,$Case,[string]$PngName,[int]$WantB
     $r=$null;$built=$null
     try{
         $built=New-DialogRenderContent $Spec $Case
-        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -TabRegions @('DlgBodyScroll')
     }catch{Check $false "$Label renders at ${caseLabel}: $($_.Exception.Message)";return}
     $diagText=''
     if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
     Check (@($r.problems).Count -eq 0) "$Label clean at ${caseLabel}: $(@($r.problems) -join '; ')$diagText"
-    $buttons=@(Get-UiVisualElements $built.Content|Where-Object{$_ -is [System.Windows.Controls.Button] -and (Test-UiAuthored $_) -and (Test-UiShown $_ $built.Content)})
+    # the visual list is one array object on the pipeline (the function returns it with a leading comma), so it is taken into a variable and piped from there
+    $dlgVisuals=Get-UiVisualElements $built.Content
+    $buttons=@($dlgVisuals|Where-Object{$_ -is [System.Windows.Controls.Button] -and (Test-UiAuthored $_) -and (Test-UiShown $_ $built.Content)})
     Check ($buttons.Count -eq $WantButtons) "$Label shows $WantButtons footer button(s) at ${caseLabel} (got $($buttons.Count))"
     Check ($r.unmappedRects -eq 0) "$Label left no authored element unmapped at ${caseLabel} (got $($r.unmappedRects))"
 }
@@ -1107,7 +1133,7 @@ function Test-DialogReadingOrder([string]$Label,$Spec,[string]$PngName,[int]$Min
         $r=$null;$built=$null
         try{
             $built=New-DialogRenderContent $Spec $case
-            $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName
+            $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -TabRegions @('DlgBodyScroll')
         }catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
         $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
         Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
@@ -1115,11 +1141,12 @@ function Test-DialogReadingOrder([string]$Label,$Spec,[string]$PngName,[int]$Min
         foreach($el in (Get-UiVisualElements $built.Content)){
             if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $built.Content)){
                 $rect=Get-UiRelativeRect $el $built.Content
-                if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+                # the body scroll first, the footer after it: a stop below the body's fold sorts by its unclipped Top, so the region comes first (as Test-PageReadingOrder does)
+                if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Region=(Get-UiTabRegion $el $built.Content @('DlgBodyScroll'));Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
             }
             $order++
         }
-        $byRead=@($rows|Sort-Object -Property @{Expression='Row'},@{Expression='Left'},@{Expression='Order'})
+        $byRead=@(Sort-UiReadingRows $rows)
         $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
         $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
         Write-Host "INFO: $Label tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
