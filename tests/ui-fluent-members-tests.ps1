@@ -1731,6 +1731,32 @@ Check (@(Get-ApprovedStringFindings $homeStringsText.Replace("'Engine components
 Check (@(Get-ApprovedStringFindings $homeStringsText.Replace("    SpinDown             = 'Decrease'`n",'')).Count -ge 1 -or @(Get-ApprovedStringFindings $homeStringsText.Replace("    SpinDown             = 'Decrease'`r`n",'')).Count -ge 1) 'mutation check: a missing approved key is flagged'
 # ===== end PR 3b: approved strings =====
 
+# ===== PR 3c: every new user-visible fluent string, exact text (the 3b lead-gate rule, applied to 3c) =====
+$approvedStrings3c=[ordered]@{
+    SettingsServer     = 'Server'
+    SettingsStarting   = 'Starting'
+    SettingsComponents = 'Components and updates'
+    Discard            = 'Discard'
+    SavePrompt         = 'Save your changes?'
+    DontSave           = "Don't save"
+}
+function Get-Approved3cStringFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $actual=Get-FluentStringTableValues $Text
+    foreach($k in $approvedStrings3c.Keys){
+        if(-not $actual.ContainsKey($k)){[void]$f.Add("$k is missing from the string table");continue}
+        if([string]$actual[$k] -cne [string]$approvedStrings3c[$k]){[void]$f.Add("$k is '$($actual[$k])', approved '$($approvedStrings3c[$k])'")}
+    }
+    return $f.ToArray()
+}
+$as3c=@(Get-Approved3cStringFindings $homeStringsText)
+foreach($x in $as3c){Write-Host "FINDING: $x"}
+Check ($as3c.Count -eq 0) 'every new 3c user-visible fluent string (Server, Starting, Components and updates, Discard, Save your changes?, Don''t save) is exactly its approved text'
+Check (@(Get-Approved3cStringFindings $homeStringsText.Replace("'Save your changes?'","'Save your changes'")).Count -ge 1) 'mutation check: the save prompt text changed by one character is flagged'
+Check (@(Get-Approved3cStringFindings $homeStringsText.Replace('"Don''t save"','"Do not save"')).Count -ge 1) 'mutation check: the Don''t save caption reworded is flagged'
+Check (@(Get-Approved3cStringFindings $homeStringsText.Replace("'Components and updates'","'Components & updates'")).Count -ge 1) 'mutation check: a heading reworded is flagged'
+# ===== end PR 3c: approved strings =====
+
 
 # ===== PR 3c: Settings pins (Task 2) =====
 # Written RED before the page: the pins that read src/FastLlm.UiFluentSettings.ps1 fail until the page exists (Task 4). Every pin also runs against an
