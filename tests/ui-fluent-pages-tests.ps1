@@ -7,6 +7,136 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 $root = Split-Path $PSScriptRoot -Parent
 
+# ======================================================================================================================
+# PR 4a Task 7 (T5): the dialog call-site table, pinned on every platform (this part runs before the Windows-only skip below).
+# The table is the hand-copied box key table of the plan's Global Constraints (never derived from the product's key plan), one row per classic ShowUiMessageBox
+# call site. It is checked against the classic AST (the arguments of every call), against Get-FastLlmUiDialogKeyPlan, and against the two forms' key targets.
+# ======================================================================================================================
+$script:boxPinPass = 0
+$script:boxPinFail = 0
+function Check-BoxPin([bool]$Condition, [string]$Name, [string]$Detail = '') {
+    if ($Condition) { $script:boxPinPass++; Write-Host "PASS: $Name" }
+    else { $script:boxPinFail++; Write-Host "FAIL: $Name -- $Detail" }
+}
+
+# One row per routed call site: Id (the step's name for it), Site (the enclosing function, then the event handler it is wired in, as 'function|handler'),
+# the box arguments as the classic call passes them (no default argument means MessageBox's own Button1; no icon means None; no buttons means OK).
+function Get-PagesBoxTable {
+    return @(
+        @{ Id = 'link-vc';        Site = '|$vc.Add_LinkClicked';                        Caption = 'Open prerequisite page';              Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'link-amd';       Site = '|$amd.Add_LinkClicked';                       Caption = 'Open AMD page';                       Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'link-results';   Site = '|$resultsLink.Add_LinkClicked';               Caption = 'Open results page';                   Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'link-bar';       Site = '|$barLink.Add_LinkClicked';                   Caption = 'Open Resizable BAR page';             Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'link-release';   Site = '|$bannerNotes.Add_LinkClicked';               Caption = 'Open release page';                   Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'experimental';   Site = '|$experimentalBox.Add_CheckedChanged';        Caption = 'Experimental community components';  Buttons = 'YesNo';     Icon = 'Warning';     Default = 'Button2' },
+        @{ Id = 'license-setting'; Site = 'ShowLicenseSettingConfirm|$link.Add_LinkClicked'; Caption = 'Open license page';            Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'newkey-ask';     Site = 'NewUiApiKey|';                                Caption = 'Create a new key';                    Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button1'; D2 = $true },
+        @{ Id = 'newkey-done';    Site = 'NewUiApiKey|';                                Caption = 'Create a new key';                    Buttons = 'OK';       Icon = 'Information'; Default = 'Button1' },
+        @{ Id = 'remove-component'; Site = 'RemoveComponentFromWindow|';                Caption = 'Remove component';                    Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button2' },
+        @{ Id = 'remove-model';   Site = 'RemoveModelFromWindow|';                      Caption = 'Remove model';                        Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button2' },
+        @{ Id = 'remove-leftovers'; Site = 'RemoveLeftoversFromWindow|';                Caption = 'Remove leftover partial downloads';   Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button2' },
+        @{ Id = 'bundle-list';    Site = 'ContinueSupportBundle|';                      Caption = 'Save support bundle';                 Buttons = 'OKCancel'; Icon = 'Information'; Default = 'Button1' },
+        @{ Id = 'bundle-exists';  Site = 'ContinueSupportBundle|';                      Caption = 'Save support bundle';                 Buttons = 'OK';       Icon = 'None';        Default = 'Button1' },
+        @{ Id = 'license-consent'; Site = 'ShowComponentConsent|$link.Add_LinkClicked'; Caption = 'Open license page';                   Buttons = 'OK';       Icon = 'Warning';     Default = 'Button1' },
+        @{ Id = 'update';         Site = 'InvokeUiUpdate|';                             Caption = 'Update FastLLM';                      Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button2' },
+        @{ Id = 'reinstall';      Site = 'InvokeUiReinstall|';                          Caption = 'Reinstall previous version';          Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button2' },
+        @{ Id = 'close';          Site = '|$form.Add_FormClosing';                      Caption = 'Close FastLLM';                       Buttons = 'YesNo';     Icon = 'Question';    Default = 'Button1'; D2 = $true }
+    )
+}
+
+# What Enter, Escape and the close box do for a box kind and default (the plan's box key table, copied by hand). Escape '' means the box stays open; XEnabled false means
+# the close box is refused. Focus is the id of the button that holds the first focus (the Enter target).
+function Get-PagesBoxExpect([string]$Buttons, [string]$Default) {
+    if ($Buttons -ceq 'OK') { return @{ Enter = 'OK'; Escape = 'OK'; XEnabled = $true; X = 'OK'; Focus = 'OK' } }
+    if ($Buttons -ceq 'OKCancel') {
+        $enter = 'OK'; if ($Default -ceq 'Button2') { $enter = 'Cancel' }
+        return @{ Enter = $enter; Escape = 'Cancel'; XEnabled = $true; X = 'Cancel'; Focus = $enter }
+    }
+    $yn = 'Yes'; if ($Default -ceq 'Button2') { $yn = 'No' }
+    return @{ Enter = $yn; Escape = ''; XEnabled = $false; X = ''; Focus = $yn }
+}
+
+# Every classic ShowUiMessageBox call of a file: the site, the caption, the buttons, the icon and the default button, as the call writes them.
+function Get-PagesClassicBoxCalls([string]$Path) {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+    $calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'ShowUiMessageBox' }, $true))
+    $out = New-Object System.Collections.ArrayList
+    foreach ($c in $calls) {
+        $fn = ''; $handler = ''
+        $up = $c.Parent
+        while ($null -ne $up) {
+            if ($fn -eq '' -and $up -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $fn = [string]$up.Name }
+            if ($handler -eq '' -and $up -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$up.Member.Extent.Text) -like 'Add_*') { $handler = [string]$up.Expression.Extent.Text + '.' + [string]$up.Member.Extent.Text }
+            $up = $up.Parent
+        }
+        $args2 = @($c.CommandElements | Select-Object -Skip 1)
+        $vals = New-Object System.Collections.ArrayList
+        foreach ($a in $args2) {
+            if ($a -is [System.Management.Automation.Language.StringConstantExpressionAst]) { [void]$vals.Add([string]$a.Value) }
+            elseif ([string]$a.Extent.Text -match '::(\w+)\)*$') { [void]$vals.Add([string]$Matches[1]) }
+            else { [void]$vals.Add('<expression>') }
+        }
+        $get = { param($i, $default) if ($vals.Count -gt $i) { return [string]$vals[$i] } else { return $default } }
+        [void]$out.Add(@{ Site = ($fn + '|' + $handler); Caption = (& $get 2 ''); Buttons = (& $get 3 'OK'); Icon = (& $get 4 'None'); Default = (& $get 5 'Button1'); Line = $c.Extent.StartLineNumber; Count = $args2.Count })
+    }
+    return $out.ToArray()
+}
+
+function Invoke-PagesBoxTablePins([string]$UiPath) {
+    $table = @(Get-PagesBoxTable)
+    $calls = @(Get-PagesClassicBoxCalls $UiPath)
+    Check-BoxPin ($calls.Count -eq 18) 'P41 pin: the classic file has exactly 18 ShowUiMessageBox call sites' "found=$($calls.Count) expected=18"
+    Check-BoxPin ($table.Count -eq 18) 'P41 pin: the T5 table has one row per call site (18)' "rows=$($table.Count) expected=18"
+    foreach ($row in $table) {
+        $match = @($calls | Where-Object { [string]$_['Site'] -ceq [string]$row.Site -and [string]$_['Caption'] -ceq [string]$row.Caption -and [string]$_['Buttons'] -ceq [string]$row.Buttons })
+        Check-BoxPin ($match.Count -eq 1) "P41 pin: row $($row.Id) matches exactly one classic call (site, caption, buttons)" "site='$($row.Site)' caption='$($row.Caption)' buttons=$($row.Buttons) matches=$($match.Count)"
+        if ($match.Count -ne 1) { continue }
+        Check-BoxPin ([string]$match[0]['Icon'] -ceq [string]$row.Icon -and [string]$match[0]['Default'] -ceq [string]$row.Default) "P41 pin: row $($row.Id) icon and default button are the classic call's" "classic icon=$($match[0]['Icon']) default=$($match[0]['Default']) table icon=$($row.Icon) default=$($row.Default) (line $($match[0]['Line']))"
+    }
+    # every classic call is in the table (a new call site fails here)
+    foreach ($c in $calls) {
+        $hit = @($table | Where-Object { [string]$_.Site -ceq [string]$c['Site'] -and [string]$_.Caption -ceq [string]$c['Caption'] -and [string]$_.Buttons -ceq [string]$c['Buttons'] })
+        Check-BoxPin ($hit.Count -eq 1) "P41 pin: the classic call at line $($c['Line']) ('$($c['Caption'])') is in the T5 table" "site='$($c['Site'])' buttons=$($c['Buttons']) rows=$($hit.Count)"
+    }
+    # the hand table against the product's key plan (read from the state file by the parser, nothing else is run)
+    $statePath = Join-Path $root 'src/FastLlm.UiState.ps1'
+    $stateAst = [System.Management.Automation.Language.Parser]::ParseFile($statePath, [ref]$null, [ref]$null)
+    $planDef = $stateAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-FastLlmUiDialogKeyPlan' }, $true)
+    Check-BoxPin ($null -ne $planDef) 'P41 pin: Get-FastLlmUiDialogKeyPlan was found in UiState' ''
+    if ($null -ne $planDef) {
+        . ([scriptblock]::Create([string]$planDef.Extent.Text))
+        foreach ($row in $table) {
+            $exp = Get-PagesBoxExpect $row.Buttons $row.Default
+            $plan = Get-FastLlmUiDialogKeyPlan -Buttons $row.Buttons -DefaultButton $row.Default
+            $ok = ([string]$plan['enter'] -ceq [string]$exp.Enter -and [string]$plan['escape'] -ceq [string]$exp.Escape -and [bool]$plan['closeEnabled'] -eq [bool]$exp.XEnabled -and [string]$plan['close'] -ceq [string]$exp.X)
+            Check-BoxPin $ok "P41 pin: row $($row.Id) the key plan gives the table's Enter, Escape and close box" "plan enter='$($plan['enter'])' escape='$($plan['escape'])' close='$($plan['close'])' closeEnabled=$($plan['closeEnabled']) / table enter='$($exp.Enter)' escape='$($exp.Escape)' close='$($exp.X)' closeEnabled=$($exp.XEnabled)"
+        }
+    }
+    # D2 parity (the lead's ruling): Enter answers Yes for Create a new key and Close FastLLM until the wording PR changes it in both windows
+    foreach ($id in 'newkey-ask', 'close') {
+        $row = @($table | Where-Object { $_.Id -ceq $id })[0]
+        $exp = Get-PagesBoxExpect $row.Buttons $row.Default
+        Check-BoxPin ([string]$exp.Enter -ceq 'Yes' -and [string]$row.Default -ceq 'Button1') "P41 pin: D2 parity, Enter is Yes for $id (the classic call has no default argument)" "enter='$($exp.Enter)' default=$($row.Default)"
+    }
+    # the two forms' key targets, from the fluent dialog file: side result Enter and Escape are Close; driver guidance has no Enter target and Escape is Close
+    $dlgPath = Join-Path $root 'src/FastLlm.UiFluentDialogs.ps1'
+    $dlgAst = [System.Management.Automation.Language.Parser]::ParseFile($dlgPath, [ref]$null, [ref]$null)
+    $sideDef = $dlgAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Show-FastLlmUiFluentSideResult' }, $true)
+    $guideDef = $dlgAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Show-FastLlmUiFluentDriverGuidance' }, $true)
+    Check-BoxPin ($null -ne $sideDef -and $sideDef.Extent.Text.Contains("-Enter 'Close' -Escape 'Close'") -and -not $sideDef.Extent.Text.Contains('-CloseEnabled $false')) 'P41 pin: the side result answers Enter and Escape with Close and keeps its close box' ''
+    Check-BoxPin ($null -ne $guideDef -and $guideDef.Extent.Text.Contains("-Enter '' -Escape 'Close'") -and -not $guideDef.Extent.Text.Contains('-CloseEnabled $false')) 'P41 pin: the driver guidance has no Enter target, answers Escape with Close and keeps its close box' ''
+    # the step list of this file runs P40 and P41
+    $selfText = [System.IO.File]::ReadAllText($PSCommandPath)
+    $stepsBlock = [regex]::Match($selfText, '(?s)\$script:steps = @\((.*?)\r?\n\)')
+    Check-BoxPin ($stepsBlock.Success -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P40-SignInNotice'") -and $stepsBlock.Groups[1].Value.Contains("'Invoke-P41-DialogKeys'")) 'P41 pin: the step list names Invoke-P40-SignInNotice and Invoke-P41-DialogKeys' "stepsBlockFound=$($stepsBlock.Success)"
+    # CI round 1: the suite loads the prerequisite file, which defines the helper the P41 loaded-check names (the Close FastLLM handler's guard)
+    Check-BoxPin ($selfText.Contains(". (Join-Path `$root 'src/FastLlm.UiPrerequisite.ps1')") -and ([System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiPrerequisite.ps1'))).Contains('function Test-FastLlmUiVcActionAllowed')) 'P41 pin: the suite dot-sources the file that defines Test-FastLlmUiVcActionAllowed'
+}
+Invoke-PagesBoxTablePins (Join-Path $root 'fast-llm-ui.ps1')
+Write-Host ("INFO: P41 pins: $($script:boxPinPass) passed, $($script:boxPinFail) failed")
+if ($script:boxPinFail -gt 0) { Write-Host "$($script:boxPinFail) checks FAILED"; exit 1 }
+
+
 $onWindows = ($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if (-not $onWindows) { Write-Host 'SKIP: ui-fluent-pages-tests (Windows only)'; exit 0 }
 
@@ -39,6 +169,9 @@ Import-Module (Join-Path $root 'src/FastLlm.psm1') -Force
 . (Join-Path $root 'src/FastLlm.Components.ps1')
 . (Join-Path $root 'src/FastLlm.ServingSettings.ps1')
 . (Join-Path $root 'src/FastLlm.ConnectInfo.ps1')
+# PR 4a CI round 1 (named test change): the Close FastLLM row runs the FormClosing handler's own statement, and P41 checks Test-FastLlmUiVcActionAllowed is loaded.
+# The classic file dot-sources its prerequisite file next to the flow file; the suite loads it the same way.
+. (Join-Path $root 'src/FastLlm.UiPrerequisite.ps1')
 . (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
 
 # The real stop function exits the process, so a startup fault would end the suite silently: its text is kept for one check (P99), then a throwing one stands in.
@@ -132,11 +265,25 @@ $script:barValues = @('auto', 'on', 'off')
 $script:realConfirmText = ${function:Get-FastLlmModelRemovalConfirmationText}
 $script:realRefusalText = ${function:Get-FastLlmModelRemovalRefusalText}
 $script:p22Missing = @()
-foreach ($fnName in 'RemoveModelFromWindow', 'RemoveLeftoversFromWindow', 'RemoveComponentFromWindow', 'FillModelsPanel', 'FillComponentsPanel', 'ReadSelection', 'GetBarValue') {
+# PR 4a (named test change): the classic functions below call ShowUiMessageBox (the confirmation seam), so the real seam function is taken from fast-llm-ui.ps1 too.
+# $script:uiDialogView is $null as in the classic file until the shell registers the fluent view table (Initialize-FastLlmUiFluentShell sets it).
+$script:uiDialogView = $null
+foreach ($fnName in 'ShowUiMessageBox', 'InvokeUiUpdate', 'InvokeUiReinstall', 'ContinueSupportBundle', 'RemoveModelFromWindow', 'RemoveLeftoversFromWindow', 'RemoveComponentFromWindow', 'FillModelsPanel', 'FillComponentsPanel', 'ReadSelection', 'GetBarValue') {
     $script:p13Want = $fnName
     $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $script:p13Want }, $true)
     if ($null -eq $def) { $script:p22Missing += $fnName; continue }
     . ([scriptblock]::Create([string]$def.Extent.Text))
+}
+# PR 4a (T5): a recording wrapper over the real seam function. Every call goes to the real ShowUiMessageBox (so the fluent view table and the fluent box run exactly as
+# in the window) and its arguments and answer are kept in $script:boxCalls, so a step can say what the classic caller received.
+$script:boxCalls = New-Object System.Collections.ArrayList
+$script:realShowBox = ${function:ShowUiMessageBox}
+if ($null -ne $script:realShowBox) {
+    function ShowUiMessageBox($Owner, [string]$Text, [string]$Caption, [string]$Buttons = 'OK', [string]$Icon = 'None', [string]$DefaultButton = 'Button1') {
+        $answer = & $script:realShowBox $Owner $Text $Caption $Buttons $Icon $DefaultButton
+        [void]$script:boxCalls.Add([pscustomobject]@{ Caption = $Caption; Buttons = $Buttons; Icon = $Icon; Default = $DefaultButton; Result = [string]$answer; Text = $Text })
+        return $answer
+    }
 }
 # The real classic wiring of the BAR box (its Add_SelectedIndexChanged statement), attached in P0 to the adapter.
 $script:barWiringText = ''
@@ -1461,15 +1608,18 @@ function Invoke-P12-ControlView {
 }
 
 # A dialog or box shown over the real window: its owner (GW_OWNER) must be the WPF window handle, the window is disabled while it is up, and the box ladder closes it.
-function Invoke-PagesOwnerProbe([string]$Tag, [string]$Caption, [scriptblock]$Show) {
+# PR 4a (named test change): the probe takes the id to press and the path the box must have. The side result and the driver guidance are WPF dialogs now and have
+# one button, Close (id 'Close': Cancel does not exist there and would only close at the last rung); the SaveFileDialog is still a Win32 box (id 2, 'win32').
+function Invoke-PagesOwnerProbe([string]$Tag, [string]$Caption, [scriptblock]$Show, $ButtonId = 2, [string]$ExpectPath = 'win32') {
     $hwnd = [System.Windows.Interop.WindowInteropHelper]::new($script:FastLlmUiFluent.Window).Handle
     $box = @{}
-    $t = Start-BoxAnswer $Caption 2 $hwnd $box
+    $t = Start-BoxAnswer $Caption $ButtonId $hwnd $box
     $err = ''
     try { $null = & $Show } catch { $err = $_.Exception.Message } finally { $t.Stop() }
     Invoke-Pump 100
     Write-Host ("INFO: P13 $Tag closed by rung: " + [string]$box.rung)
     Check ($err -eq '' -and $box.found -and -not $box.timedOut -and -not $box.hardStop) "P13 $Tag appeared and the box ladder closed it within 6 s" "error=$err found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) lastRung=$($box.rung)"
+    Check ([string]$box.path -ceq $ExpectPath) "P13 $Tag is a $ExpectPath dialog" "path='$($box.path)' expected='$ExpectPath'"
     Check ($box.owner -eq $hwnd.ToInt64()) "P13 $Tag is owned by the WPF window handle" "GW_OWNER=$($box.owner) expected=$($hwnd.ToInt64())"
     Check ($box.during -eq $false) "P13 the WPF window is disabled while $Tag is up" "IsWindowEnabled during=$($box.during)"
 }
@@ -1497,11 +1647,11 @@ function Invoke-P13-DialogOwners {
     # The driver-guidance form: the real ShowDriverGuidance
     $script:trayAvailability.Clear()
     $script:p13Diagnostic = [pscustomobject]@{ windows = $true; driverGuidance = @([pscustomobject]@{ inputGpuName = 'Probe display device'; knownFocusModel = $false }) }
-    Invoke-PagesOwnerProbe 'the driver-guidance form' 'AMD driver guidance - read-only' { ShowDriverGuidance $script:p13Diagnostic }
+    Invoke-PagesOwnerProbe 'the driver-guidance form' 'AMD driver guidance - read-only' { ShowDriverGuidance $script:p13Diagnostic } 'Close' 'wpf'
     Check (($script:trayAvailability.ToArray() -join ',') -ceq 'False,True') 'P13 the driver-guidance form turned the tray menu off while open and on again after' "calls=$($script:trayAvailability.ToArray() -join ',')"
     # ShowUiSideResult
     $script:p13Caption = 'FastLLM pages result ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    Invoke-PagesOwnerProbe 'ShowUiSideResult' $script:p13Caption { ShowUiSideResult $script:p13Caption 'Probe result text' }
+    Invoke-PagesOwnerProbe 'ShowUiSideResult' $script:p13Caption { ShowUiSideResult $script:p13Caption 'Probe result text' } 'Close' 'wpf'
     Check ($win.IsVisible -and $script:native::IsWindowEnabled([System.Windows.Interop.WindowInteropHelper]::new($win).Handle)) 'P13 the window is open and enabled again after the three dialogs' "visible=$($win.IsVisible)"
     Check-NoExceptions 'P13'
 }
@@ -1634,49 +1784,66 @@ function Get-ModelsRowTexts($Panel) {
 function Get-ModelsLogText { return (@($script:modelsLog.ToArray()) -join ',') }
 function Get-ModelsUiMessage([string]$Which) { return [string]$script:FastLlmUiFluent['Models'][$Which].Text }
 
-# A WinForms timer that finds a message box by its caption, records its text (GetText), then answers it. Mode 'click' presses button $ButtonId (6 = Yes), the
-# ladder of Start-BoxAnswer with IDNO as its fallback rung. Mode 'enter' posts VK_RETURN (PostKey, never SendMessage) and, only if the box is still open 1.5 s
-# later, clicks IDNO so the suite cannot hang: St['fellBack'] then says Enter did not close it. After 6 s a still-open box gets WM_CLOSE (St['hardStop']).
+# Finds a message box by its caption, records its text, then answers it. PR 4a (named test change): the box is now a WPF dialog in fluent mode, so Mode 'click'
+# is the harness answerer Start-BoxAnswer (WPF and Win32 ladder, path recorded; ButtonId 6 = Yes, fallback IDNO) and Mode 'enter' presses Enter on either kind:
+# a posted VK_RETURN (PostKey on a Win32 box; the activated WPF dialog's PreviewKeyDown for a WPF one), and only if the box is still open 1.5 s later it presses No
+# so the suite cannot hang: St['fellBack'] then says Enter did not close it. After 6 s a still-open box is stopped (St['hardStop']). St['path'] is 'wpf' or 'win32'.
 function Start-ModelsBox([string]$Caption, [string]$Mode, [int]$ButtonId, [IntPtr]$Hwnd, [hashtable]$St) {
-    $St['found'] = $false; $St['text'] = ''; $St['timedOut'] = $false; $St['hardStop'] = $false; $St['fellBack'] = $false; $St['rung'] = ''
+    $St['found'] = $false; $St['text'] = ''; $St['timedOut'] = $false; $St['hardStop'] = $false; $St['fellBack'] = $false; $St['rung'] = ''; $St['path'] = ''; $St['active'] = $false; $St['focus'] = ''
+    if ($Mode -cne 'enter') {
+        $answer = Start-BoxAnswer $Caption $ButtonId $Hwnd $St -FallbackId 7
+        $St['fellBack'] = $false
+        return $answer
+    }
     $st = $St
     $nat = $script:native
+    $findWpf = ${function:Find-PagesWpfBoxAny}
+    $wpfRec = ${function:New-PagesWpfRec}
+    $wpfKey = ${function:Send-PagesWpfKey}
+    $wpfStop = ${function:Stop-PagesWpfBox}
+    $wpfButton = ${function:Get-PagesWpfButton}
+    $pressBtn = ${function:Invoke-WpfBoxButton}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $loc = @{ rung = -1; foundAt = [long]0; sentEnter = $false }
-    $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND IDNO', 'WM_CLOSE')
-    $t = New-Object System.Windows.Forms.Timer
-    $t.Interval = 50
-    $t.Add_Tick(({
-        $h = $nat::FindWindowByTitle($Caption)
+    $loc = @{ foundAt = [long]0; sentEnter = $false }
+    $body = {
+        $h = [IntPtr]::Zero
+        $wnd = & $findWpf $Hwnd $Caption
+        if ($null -eq $wnd) { $h = $nat::FindWindowByTitle($Caption) }
         $ms = $sw.ElapsedMilliseconds
-        if ($h.ToInt64() -ne 0) {
-            if (-not $st['found']) { $st['found'] = $true; $loc['foundAt'] = $ms; $st['text'] = [string]$nat::GetText($h) }
-            $age = $ms - $loc['foundAt']
+        if ($null -ne $wnd -or $h.ToInt64() -ne 0) {
+            if (-not $st['found']) {
+                $st['found'] = $true; $loc['foundAt'] = $ms
+                if ($null -ne $wnd) { $rec = & $wpfRec $wnd $Caption $Hwnd; $st['text'] = [string]$rec['Text']; $st['path'] = 'wpf'; $st['focus'] = [string]$rec['Focus'] }
+                else { $st['text'] = [string]$nat::GetText($h); $st['path'] = 'win32' }
+            }
+            $age = $ms - [long]$loc['foundAt']
             if ($age -ge 6000) {
-                if (-not $st['hardStop']) { $st['hardStop'] = $true; $null = $nat::PostClose($h) }
+                if (-not $st['hardStop']) { $st['hardStop'] = $true; if ($null -ne $wnd) { & $wpfStop $wnd } else { $null = $nat::PostClose($h) } }
             }
-            elseif ($Mode -ceq 'enter') {
-                if (-not $loc['sentEnter']) { $loc['sentEnter'] = $true; $st['rung'] = 'PostKey VK_RETURN'; $null = $nat::PostKey($h, 0x0D) }
-                elseif ($age -ge 1500 -and -not $st['fellBack']) { $st['fellBack'] = $true; $st['rung'] = 'Enter did not close the box; BM_CLICK id 7'; $null = $nat::PostButtonClick($h, 7) }
+            elseif (-not $loc['sentEnter']) {
+                $loc['sentEnter'] = $true
+                $st['rung'] = 'PostKey VK_RETURN'
+                if ($null -ne $wnd) { $null = & $wpfKey $wnd 'Return'; $st['active'] = [bool]$wnd.IsActive } else { $null = $nat::PostKey($h, 0x0D) }
             }
-            else {
-                $rung = [int][Math]::Floor($age / 1000)
-                if ($rung -gt $loc['rung']) {
-                    $loc['rung'] = $rung
-                    $idx = [Math]::Min($rung, 3)
-                    $st['rung'] = $names[$idx]
-                    if ($idx -eq 0) { $null = $nat::PostButtonClick($h, $ButtonId) }
-                    elseif ($idx -eq 1) { $null = $nat::PostCommand($h, $ButtonId) }
-                    elseif ($idx -eq 2) { $null = $nat::PostCommand($h, 7) }
-                    else { $null = $nat::PostClose($h) }
-                }
+            elseif ($age -ge 1500 -and -not $st['fellBack']) {
+                $st['fellBack'] = $true
+                $st['rung'] = 'Enter did not close the box; press No'
+                if ($null -ne $wnd) { $null = & $pressBtn (& $wpfButton $wnd 7) 0 } else { $null = $nat::PostButtonClick($h, 7) }
             }
         }
-        elseif (-not $st['found'] -and $ms -gt 8000) { $st['timedOut'] = $true; $t.Stop() }
-    }).GetNewClosure())
-    $script:objs.Add($t)
-    $t.Start()
-    return $t
+        elseif (-not $st['found'] -and $ms -gt 8000) { $st['timedOut'] = $true }
+    }.GetNewClosure()
+    $wf = New-Object System.Windows.Forms.Timer
+    $wf.Interval = 50
+    $wf.Add_Tick(({ & $body }).GetNewClosure())
+    $dt = New-Object System.Windows.Threading.DispatcherTimer
+    $dt.Interval = [TimeSpan]::FromMilliseconds(50)
+    $dt.Add_Tick(({ & $body }).GetNewClosure())
+    $ctl = New-PagesTimerPair $wf $dt
+    $script:objs.Add($ctl)
+    $wf.Start()
+    $dt.Start()
+    return $ctl
 }
 function Get-ModelsWindowHandle { return [System.Windows.Interop.WindowInteropHelper]::new($script:FastLlmUiFluent.Window).Handle }
 # Clicks a code-built or named button the way a mouse click does (the routed Click event) while a box timer answers the confirmation, then pumps so the queued rebuild runs.
@@ -1685,9 +1852,11 @@ function Invoke-ModelsBoxClick($Button, [string]$Caption, [string]$Mode, [hashta
     try { $Button.RaiseEvent((New-ShellClick $Button ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) }
     finally { $timer.Stop() }
     Invoke-Pump 300
+    # PR 4a (named test change): every Remove confirmation of this helper is a WPF dialog in fluent mode, never a Win32 message box
+    Check ([string]$St['path'] -ceq 'wpf') "P22 the '$Caption' box ($Mode) is a WPF dialog, not a Win32 box" ("path='$($St['path'])' expected='wpf' " + (Get-ModelsBoxDetail $St))
 }
 function Get-ModelsBoxDetail([hashtable]$St) {
-    return "found=$($St['found']) timedOut=$($St['timedOut']) hardStop=$($St['hardStop']) fellBack=$($St['fellBack']) rung='$($St['rung'])' text='$($St['text'])'"
+    return "found=$($St['found']) path=$($St['path']) timedOut=$($St['timedOut']) hardStop=$($St['hardStop']) fellBack=$($St['fellBack']) rung='$($St['rung'])' text='$($St['text'])'"
 }
 function ConvertTo-ModelsPlainBoxText([string]$Text) { return $Text.Replace("`r`n", "`n").Trim() }
 
@@ -1922,6 +2091,7 @@ function Invoke-P22-RemoveFlows {
     $wantTextA = ConvertTo-ModelsPlainBoxText ([string](& $script:realConfirmText -DisplayName ([string]$a.name) -SizeBytes $script:modelSizeA))
     $wantTextB = ConvertTo-ModelsPlainBoxText ([string](& $script:realConfirmText -DisplayName ([string]$b.name) -SizeBytes $script:modelSizeB))
     Check ((ConvertTo-ModelsPlainBoxText ([string]$boxA['text'])) -ceq $wantTextA -and (ConvertTo-ModelsPlainBoxText ([string]$boxB['text'])) -ceq $wantTextB) 'P22 each box text is Get-FastLlmModelRemovalConfirmationText for its model' "A=$(Get-ModelsBoxDetail $boxA) B=$(Get-ModelsBoxDetail $boxB) wantA='$wantTextA' wantB='$wantTextB'"
+    Check ([string]$boxA['path'] -ceq 'wpf' -and [string]$boxB['path'] -ceq 'wpf') 'P22 both Remove model confirmations are WPF dialogs, not Win32 boxes (PR 4a)' "A path='$($boxA['path'])' B path='$($boxB['path'])' expected='wpf'"
     Check ($boxA['found'] -and -not $boxA['hardStop'] -and $boxB['found'] -and -not $boxB['hardStop']) 'P22 both confirmation boxes appeared and were answered within 6 s' "A=$(Get-ModelsBoxDetail $boxA) B=$(Get-ModelsBoxDetail $boxB)"
     # A stale click on A's old button: not-installed text, one rebuild, no confirmation, no lock, no remove
     Reset-ModelsCounters
@@ -2195,6 +2365,90 @@ function Open-SettingsPage([hashtable]$Fixture = @{}) {
 # box or form by its caption: press button Id, then the ladder BM_CLICK id, WM_COMMAND id, WM_COMMAND Fallback, WM_CLOSE; with Key, post that key first and press
 # Fallback at 1.5 s), and the last step @{ Kind = 'watch' } which answers anything the case did NOT expect (Cancel on a prompt, OK on a box) and counts it, so an
 # unexpected modal can never hang the suite. Each found dialog leaves a record in $St['recs'].
+# ---- PR 4a (named test change): the box answerers meet WPF dialogs ----
+# In fluent mode every routed message box is a WPF Window (Show-FastLlmUiFluentMessageBox), so the Win32-only ladders below (FindWindowByTitle, GetDlgItem, BM_CLICK,
+# WM_COMMAND, WM_CLOSE) would never close it, and a YesNo dialog refuses WM_CLOSE. These file-level helpers give each answerer a WPF branch; the Win32 branch stays for
+# the native forms (the licence confirmation, the WinForms prompt, the SaveFileDialog). A WPF dialog is found below the main window, else by its title through HwndSource.
+# A pair of timers (WinForms and Dispatcher) that stop and dispose together, as the harness answerer returns.
+function New-PagesTimerPair($Forms, $Disp) {
+    $ctl = [pscustomobject]@{ Forms = $Forms; Disp = $Disp }
+    Add-Member -InputObject $ctl -MemberType ScriptMethod -Name Stop -Value { try { $this.Forms.Stop() } catch { $null = $_ }; try { $this.Disp.Stop() } catch { $null = $_ } }
+    Add-Member -InputObject $ctl -MemberType ScriptMethod -Name Dispose -Value { try { $this.Disp.Stop() } catch { $null = $_ }; try { $this.Forms.Dispose() } catch { $null = $_ } }
+    return $ctl
+}
+function Find-PagesWpfBoxAny([IntPtr]$MainHwnd, [string]$Caption) {
+    $w = Find-WpfBox $MainHwnd $Caption
+    if ($null -ne $w) { return $w }
+    try {
+        $h = $script:native::FindWindowByTitle($Caption)
+        if ($h.ToInt64() -ne 0) {
+            $src = [System.Windows.Interop.HwndSource]::FromHwnd($h)
+            if ($null -ne $src -and $src.RootVisual -is [System.Windows.Window] -and $src.RootVisual.IsVisible) { return $src.RootVisual }
+        }
+    }
+    catch { $null = $_ }
+    return $null
+}
+# The button of a WPF box for a Win32-style id: 1 OK, 2 Cancel, 6 Yes, 7 No, or a custom id. Ids 1 and 2 both close an OK box in Win32, so a missing one falls to the other.
+function Get-PagesWpfButton($Wnd, $Id) {
+    $b = Find-WpfBoxButton $Wnd (ConvertTo-WpfBoxKey $Id)
+    if ($null -ne $b) { return $b }
+    if ([string]$Id -eq '1' -or [string]$Id -eq '2') {
+        foreach ($alt in @('OK', 'Cancel')) { $b = Find-WpfBoxButton $Wnd $alt; if ($null -ne $b) { return $b } }
+    }
+    return $null
+}
+# The last rung for a WPF box that would not answer: press No, Cancel or OK (never Yes). A bare Window.Close is refused by a YesNo box, so when no button is found
+# the dialog's own result is set first and then it is closed.
+function Stop-PagesWpfBox($Wnd) {
+    foreach ($k in @('No', 'Cancel', 'OK', 'Close')) {
+        $b = Find-WpfBoxButton $Wnd $k
+        if ($null -ne $b -and (Invoke-WpfBoxButton $b 1)) { return }
+    }
+    try {
+        $tag = $Wnd.Tag
+        if ($tag -is [System.Collections.IDictionary] -and $tag.Contains('State') -and [string]$tag['State']['Result'] -ceq '') { $tag['State']['Result'] = 'No' }
+        $Wnd.Close()
+    }
+    catch { $null = $_ }
+}
+# Posts Enter or Escape to a WPF dialog after activating it (a posted key reaches WPF only when the dialog is the active input source).
+function Send-PagesWpfKey($Wnd, [string]$Key) {
+    try { $null = $Wnd.Activate() } catch { $null = $_ }
+    return [bool](Send-DialogKey $Key -Dialog $Wnd)
+}
+# Where the keyboard focus is in a WPF dialog (the logical focus, which is set whether or not the window is active): the element's type and name, the id of the
+# footer button it is, and whether it is the driver-guidance device list or inside it.
+function Get-PagesWpfFocusInfo($Wnd) {
+    $out = @{ Text = ''; Id = ''; InDevices = $false }
+    try {
+        $fe = [System.Windows.Input.FocusManager]::GetFocusedElement($Wnd)
+        if ($null -eq $fe) { return $out }
+        $out['Text'] = $fe.GetType().Name + ':' + [string]$fe.Name
+        $map = Get-WpfBoxTagMap $Wnd 'Buttons'
+        if ($map -is [System.Collections.IDictionary]) {
+            foreach ($k in @($map.Keys)) { if ([object]::ReferenceEquals($map[$k], $fe)) { $out['Id'] = [string]$k } }
+        }
+        $node = $fe
+        while ($null -ne $node -and $node -is [System.Windows.Media.Visual]) {
+            if ($node -is [System.Windows.FrameworkElement] -and [string]$node.Name -ceq 'DriverDevice') { $out['InDevices'] = $true; break }
+            $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node)
+        }
+    }
+    catch { $null = $_ }
+    return $out
+}
+# The answer record of a WPF box when it first appears (the same fields the Win32 record has, plus Path and the focus facts).
+function New-PagesWpfRec($Wnd, [string]$Caption, [IntPtr]$MainHwnd) {
+    $dh = [System.Windows.Interop.WindowInteropHelper]::new($Wnd).Handle
+    $focus = ''
+    try { $fe = [System.Windows.Input.FocusManager]::GetFocusedElement($Wnd); if ($null -ne $fe) { $focus = $fe.GetType().Name + ':' + [string]$fe.Name } } catch { $null = $_ }
+    return @{ Kind = 'box'; Found = $true; Path = 'wpf'; Caption = $Caption; Text = [string](Get-WpfBoxText $Wnd); Owner = $script:native::GetOwner($dh).ToInt64()
+        WpfEnabledDuring = [bool]$script:native::IsWindowEnabled($MainHwnd)
+        HasYes = ($null -ne (Find-WpfBoxButton $Wnd 'Yes')); HasOk = ($null -ne (Find-WpfBoxButton $Wnd 'OK')); HasCancel = ($null -ne (Find-WpfBoxButton $Wnd 'Cancel'))
+        Focus = $focus; Rung = ''; FellBack = $false; Closed = $false; Id = [long][System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($Wnd) }
+}
+
 function Find-SettingsPrompt {
     foreach ($candidate in @([System.Windows.Forms.Application]::OpenForms)) {
         if ($candidate -is [System.Windows.Forms.Form] -and [string]$candidate.Text -ceq 'FastLLM settings' -and [bool]$candidate.Visible) { return $candidate }
@@ -2239,12 +2493,17 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
     $find = ${function:Find-SettingsPrompt}
     $button = ${function:Get-SettingsPromptButton}
     $info = ${function:Get-SettingsPromptInfo}
+    $findWpf = ${function:Find-PagesWpfBoxAny}
+    $wpfButton = ${function:Get-PagesWpfButton}
+    $wpfStop = ${function:Stop-PagesWpfBox}
+    $wpfKey = ${function:Send-PagesWpfKey}
+    $wpfRec = ${function:New-PagesWpfRec}
+    $wpfFocus = ${function:Get-PagesWpfFocusInfo}
+    $pressBtn = ${function:Invoke-WpfBoxButton}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $loc = @{ stepStart = [long]0; foundAt = [long]0; rec = $null; acted = $false; fell = $false; hwnd = [long]0 }
     $names = @('BM_CLICK id', 'WM_COMMAND id', 'WM_COMMAND fallback', 'WM_CLOSE')
-    $t = New-Object System.Windows.Forms.Timer
-    $t.Interval = 50
-    $t.Add_Tick(({
+    $body = {
         $ms = $sw.ElapsedMilliseconds
         $idx = [int]$st['i']
         if ($idx -ge $list.Count) { return }
@@ -2259,6 +2518,13 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
                 return
             }
             foreach ($caption in @($step['Captions'])) {
+                $wb = & $findWpf $wpf ([string]$caption)
+                if ($null -ne $wb) {
+                    # an unexpected WPF box is answered No, Cancel or OK (never Yes) and counted
+                    $st['unexpected'] = [int]$st['unexpected'] + 1
+                    & $wpfStop $wb
+                    continue
+                }
                 $h = $nat::FindWindowByTitle([string]$caption)
                 if ($h.ToInt64() -ne 0) {
                     $st['unexpected'] = [int]$st['unexpected'] + 1
@@ -2323,6 +2589,73 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
             }
             return
         }
+        # a WPF message box by its caption (a fluent box), else a native box or form
+        $wb = & $findWpf $wpf ([string]$step['Caption'])
+        if ($null -ne $wb) {
+            $wid = [long][System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($wb)
+            # Two boxes with one caption in a row (Create a new key): a different window while the record is open means the first closed.
+            if ($null -ne $loc['rec'] -and $wid -ne [long]$loc['hwnd']) {
+                $loc['rec']['Closed'] = $true
+                $st['i'] = $idx + 1; $loc['rec'] = $null; $loc['acted'] = $false; $loc['fell'] = $false; $loc['stepStart'] = $ms
+                if ($loc.ContainsKey('rungDone')) { $loc.Remove('rungDone') }
+                return
+            }
+            if ($null -eq $loc['rec']) {
+                $loc['hwnd'] = $wid
+                $rec = & $wpfRec $wb ([string]$step['Caption']) $wpf
+                $loc['rec'] = $rec
+                $loc['foundAt'] = $ms
+                [void]$st['recs'].Add($rec)
+            }
+            $rec = $loc['rec']
+            $age = $ms - [long]$loc['foundAt']
+            if ($age -ge 6000) {
+                if (-not [bool]$st['hardStop']) { $st['hardStop'] = $true; & $wpfStop $wb }
+            }
+            elseif ($null -ne $step['Key'] -or $step['Sys'] -eq $true) {
+                if (-not [bool]$loc['acted']) {
+                    # act once the dialog has had time to load and take its first focus (the focus facts are read just before the key or the close box)
+                    if ($age -ge 150) {
+                        $loc['acted'] = $true
+                        $focusInfo = & $wpfFocus $wb
+                        $rec['FocusInfo'] = $focusInfo
+                        $rec['Focus'] = [string]$focusInfo['Text']
+                        $rec['Active'] = [bool]$wb.IsActive
+                        if ($step['Sys'] -eq $true) {
+                            # the close box and Alt+F4 both arrive as WM_SYSCOMMAND SC_CLOSE
+                            $rec['Rung'] = 'SC_CLOSE'
+                            $dh = [System.Windows.Interop.WindowInteropHelper]::new($wb).Handle
+                            $rec['KeyPosted'] = [bool]$nat::PostMessage($dh, [uint32]0x0112, [IntPtr]61536, [IntPtr]::Zero)
+                        }
+                        else {
+                            $rec['Rung'] = 'PostKey'
+                            $keyName = 'Return'
+                            if ([int]$step['Key'] -eq 0x1B) { $keyName = 'Escape' }
+                            $rec['KeyPosted'] = [bool](& $wpfKey $wb $keyName)
+                        }
+                    }
+                }
+                elseif ($age -ge 1500 -and -not [bool]$loc['fell']) {
+                    $loc['fell'] = $true
+                    $rec['FellBack'] = $true
+                    if ([int]$step['Fallback'] -gt 0) { $rec['Rung'] = 'key did not close it; button fallback'; $null = & $pressBtn (& $wpfButton $wb ([int]$step['Fallback'])) 0 }
+                    else { $rec['Rung'] = 'key did not close it; stop'; & $wpfStop $wb }
+                }
+            }
+            else {
+                $rung = [int][Math]::Floor($age / 1000)
+                if ($rung -gt [int]$loc['rungDone'] -or -not $loc.ContainsKey('rungDone')) {
+                    $loc['rungDone'] = $rung
+                    $which = [Math]::Min($rung, 3)
+                    $rec['Rung'] = [string]@('Invoke id', 'Click id', 'Invoke fallback', 'stop')[$which]
+                    if ($which -eq 0) { $null = & $pressBtn (& $wpfButton $wb ([int]$step['Id'])) 0 }
+                    elseif ($which -eq 1) { $null = & $pressBtn (& $wpfButton $wb ([int]$step['Id'])) 1 }
+                    elseif ($which -eq 2) { $null = & $pressBtn (& $wpfButton $wb ([int]$step['Fallback'])) 0 }
+                    else { & $wpfStop $wb }
+                }
+            }
+            return
+        }
         # a native box or form by its caption
         $h = $nat::FindWindowByTitle([string]$step['Caption'])
         if ($h.ToInt64() -ne 0) {
@@ -2336,9 +2669,9 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
             }
             if ($null -eq $loc['rec']) {
                 $loc['hwnd'] = $h.ToInt64()
-                $rec = @{ Kind = 'box'; Found = $true; Caption = [string]$step['Caption']; Text = [string]$nat::GetText($h); Owner = $nat::GetOwner($h).ToInt64()
+                $rec = @{ Kind = 'box'; Found = $true; Path = 'win32'; Caption = [string]$step['Caption']; Text = [string]$nat::GetText($h); Owner = $nat::GetOwner($h).ToInt64()
                     WpfEnabledDuring = [bool]$nat::IsWindowEnabled($wpf); HasYes = ($nat::GetDlgItem($h, 6).ToInt64() -ne 0); HasOk = ($nat::GetDlgItem($h, 1).ToInt64() -ne 0)
-                    HasCancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0); Rung = ''; FellBack = $false; Closed = $false }
+                    HasCancel = ($nat::GetDlgItem($h, 2).ToInt64() -ne 0); Rung = ''; FellBack = $false; Closed = $false; Native = ($step['Native'] -eq $true) }
                 $loc['rec'] = $rec
                 $loc['foundAt'] = $ms
                 [void]$st['recs'].Add($rec)
@@ -2380,17 +2713,26 @@ function Start-SettingsDialogs([object[]]$Steps, [hashtable]$St) {
             [void]$st['recs'].Add(@{ Kind = 'box'; Found = $false; Caption = [string]$step['Caption'] })
             $st['i'] = $idx + 1; $loc['stepStart'] = $ms
         }
-    }).GetNewClosure())
-    $script:objs.Add($t)
-    $t.Start()
-    return $t
+    }.GetNewClosure()
+    # Two timers drive one tick body: a WinForms timer (the proven path for a Win32 box) and a DispatcherTimer (a WPF ShowDialog is a nested dispatcher frame).
+    $wf = New-Object System.Windows.Forms.Timer
+    $wf.Interval = 50
+    $wf.Add_Tick(({ & $body }).GetNewClosure())
+    $dt = New-Object System.Windows.Threading.DispatcherTimer
+    $dt.Interval = [TimeSpan]::FromMilliseconds(50)
+    $dt.Add_Tick(({ & $body }).GetNewClosure())
+    $ctl = New-PagesTimerPair $wf $dt
+    $script:objs.Add($ctl)
+    $wf.Start()
+    $dt.Start()
+    return $ctl
 }
 function Get-SettingsRecDetail([hashtable]$D) {
     $parts = New-Object System.Collections.ArrayList
     foreach ($r in @($D['recs'].ToArray())) {
         if (-not [bool]$r['Found']) { [void]$parts.Add($r['Kind'] + ' NOT FOUND'); continue }
         if ($r['Kind'] -ceq 'prompt') { [void]$parts.Add("prompt[action=$($r['Action']) buttons=$($r['Buttons']) saveEnabled=$($r['SaveEnabled']) accept='$($r['AcceptText'])' cancel='$($r['CancelText'])' active='$($r['ActiveText'])' fellBack=$($r['FellBack']) rung='$($r['Rung'])' body='$($r['Body'])']") }
-        else { [void]$parts.Add("box[$($r['Caption']) rung='$($r['Rung'])' fellBack=$($r['FellBack']) yes=$($r['HasYes']) text='$($r['Text'])']") }
+        else { $focusText = ''; if ($r.ContainsKey('Focus')) { $focusText = " focus='$($r['Focus'])' active=$($r['Active']) keyPosted=$($r['KeyPosted'])" }; [void]$parts.Add("box[$($r['Caption']) path=$($r['Path']) rung='$($r['Rung'])' fellBack=$($r['FellBack']) yes=$($r['HasYes'])$focusText text='$($r['Text'])']") }
     }
     return ("dialogs=" + $D['recs'].Count + " " + ($parts.ToArray() -join ' ; ') + " unexpected=$($D['unexpected']) timedOut=$($D['timedOut']) hardStop=$($D['hardStop'])")
 }
@@ -2398,7 +2740,12 @@ function Get-SettingsRec([hashtable]$D, [int]$Index) {
     if ($Index -lt $D['recs'].Count) { return $D['recs'][$Index] }
     return @{ Found = $false; Kind = 'missing' }
 }
+# PR 4a (named test change): a clean run is also one where every message box was a WPF dialog. In fluent mode no Win32 message box may appear; the only native
+# window left in these steps is the licence confirmation form (a WinForms form, 4b), which is a different caption and is not a message box.
 function Test-SettingsRecClean([hashtable]$D) {
+    foreach ($r in @($D['recs'].ToArray())) {
+        if ([string]$r['Kind'] -ceq 'box' -and [bool]$r['Found'] -and [string]$r['Caption'] -cne 'Install engine components automatically' -and [string]$r['Path'] -cne 'wpf' -and -not ($r.ContainsKey('Native') -and [bool]$r['Native'])) { return $false }
+    }
     return (-not [bool]$D['timedOut'] -and -not [bool]$D['hardStop'] -and [int]$D['unexpected'] -eq 0)
 }
 
@@ -2990,6 +3337,386 @@ function Invoke-P99-StartupFaults {
     Check-NoExceptions 'P99'
 }
 
+# ---- P40: the SignInNotice row of the shell message area (PR 4a Task 6, the #84 lines) ----
+function Invoke-P40-SignInNotice {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f['Els']
+    $keys = $f['Keys']
+    $saved = @{ Output = [string]$script:output.Text; Status = [string]$script:statusLabel.Text; Background = [string]$script:backgroundLabel.Text
+        Snap = $script:shellSnap; Line = $keys['SignInLine']; Notice = $keys['Notice']; Held = [bool](Get-Variable -Name failureHeld -Scope Script -ValueOnly -ErrorAction SilentlyContinue); ViewText = [string](Get-Variable -Name failureViewText -Scope Script -ValueOnly -ErrorAction SilentlyContinue) }
+    try {
+        $notice = $els['SignInNotice']
+        $bar = $els['SignInNoticeBar']
+        Check ($null -ne $notice -and $null -ne $bar) 'P40 the shell has the SignInNotice row (SignInNotice and SignInNoticeBar)' "notice=$($null -ne $notice) bar=$($null -ne $bar)"
+        if ($null -eq $notice -or $null -eq $bar) { return }
+        $script:shellSnap = New-ShellSnap
+        $script:failureHeld = $false
+        $script:failureViewText = ''
+        $script:backgroundLabel.Text = ''
+        $keys['SignInLine'] = $null
+        Invoke-FastLlmUiFluentTick
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Collapsed -and [string]$notice.Text -ceq '') 'P40 with no sign-in line and no not-measured line the row is hidden and empty' "bar=$($bar.Visibility) text='$($notice.Text)'"
+        # 1. The sign-in refusal line the window read at startup: the same non-blank text in the output box and the status line, captured once before the first tick
+        $line = 'Sign-in start was refused (P40 probe line).'
+        $script:output.Text = $line
+        $script:statusLabel.Text = $line
+        Save-FastLlmUiFluentSignInNotice
+        Check ([string]$keys['SignInLine'] -ceq $line) 'P40 the capture keeps the startup line when the output box and the status line hold the same text' "kept='$($keys['SignInLine'])' expected='$line'"
+        $liveBefore = Get-LiveCount $notice
+        Invoke-FastLlmUiFluentTick
+        Invoke-Pump 50
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Visible -and [string]$notice.Text -ceq $line) 'P40 the row shows the sign-in line' "bar=$($bar.Visibility) text='$($notice.Text)' expected='$line'"
+        Check ((Get-ShellPeerName $notice) -ceq $line) 'P40 the row is named by its text (peer name)' "peer='$(Get-ShellPeerName $notice)' expected='$line'"
+        Check ([System.Windows.Automation.AutomationProperties]::GetLiveSetting($notice) -eq [System.Windows.Automation.AutomationLiveSetting]::Polite) 'P40 the row is a polite live region' "setting=$([System.Windows.Automation.AutomationProperties]::GetLiveSetting($notice))"
+        Check ((Get-LiveCount $notice) -eq ($liveBefore + 1)) 'P40 showing the line raised the live region once' "before=$liveBefore after=$(Get-LiveCount $notice)"
+        Invoke-FastLlmUiFluentTick
+        Check ((Get-LiveCount $notice) -eq ($liveBefore + 1) -and [string]$keys['Notice'] -ceq $line) 'P40 a second tick with the same line does not announce it again' "count=$(Get-LiveCount $notice) notice='$($keys['Notice'])'"
+        # 2. It hides after a successful start (a running card) and stays hidden when the card is not running again
+        $script:shellSnap = New-ShellSnap @{ ChildActive = $true; Step = 'serving'; RunReady = $true }
+        $cardState = [string](Get-FastLlmUiCardState -Snapshot $script:shellSnap).state
+        Invoke-FastLlmUiFluentTick
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Collapsed -and [string]$notice.Text -ceq '' -and $null -eq $keys['SignInLine']) 'P40 after a successful start (running card) the row is hidden and the line is dropped' "card='$cardState' bar=$($bar.Visibility) text='$($notice.Text)' kept='$($keys['SignInLine'])'"
+        $script:shellSnap = New-ShellSnap
+        Invoke-FastLlmUiFluentTick
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Collapsed -and [string]$notice.Text -ceq '') 'P40 the row stays hidden when the card is no longer running' "bar=$($bar.Visibility) text='$($notice.Text)'"
+        # 3. The no-measured-setup line (the existing text, on the background line) shows while it holds, and a different text hides it again
+        $notMeasured = [string](Get-FastLlmSavedServingFailureText -Code 'serving-profile-not-measured')
+        Check ($notMeasured -cne '') 'P40 the existing not-measured text is available' ''
+        $script:backgroundLabel.Text = $notMeasured
+        Invoke-FastLlmUiFluentTick
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Visible -and [string]$notice.Text -ceq $notMeasured) 'P40 the row shows the existing not-measured text while the background line holds it' "bar=$($bar.Visibility) text='$($notice.Text)' expected='$notMeasured'"
+        $script:backgroundLabel.Text = 'Some other background line.'
+        Invoke-FastLlmUiFluentTick
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Collapsed -and [string]$notice.Text -ceq '') 'P40 any other text hides the not-measured line again (no sign-in line is held)' "bar=$($bar.Visibility) text='$($notice.Text)'"
+        $script:backgroundLabel.Text = ''
+        $script:failureHeld = $true
+        $script:failureViewText = $notMeasured
+        Invoke-FastLlmUiFluentTick
+        Check ($bar.Visibility -eq [System.Windows.Visibility]::Visible -and [string]$notice.Text -ceq $notMeasured) 'P40 the held start failure with the same text shows the row too' "bar=$($bar.Visibility) text='$($notice.Text)'"
+    }
+    finally {
+        $script:output.Text = [string]$saved.Output
+        $script:statusLabel.Text = [string]$saved.Status
+        $script:backgroundLabel.Text = [string]$saved.Background
+        $script:shellSnap = $saved.Snap
+        $script:failureHeld = $saved.Held
+        $script:failureViewText = $saved.ViewText
+        $keys['SignInLine'] = $null
+        Invoke-FastLlmUiFluentTick
+    }
+    Check-NoExceptions 'P40'
+}
+
+# ---- P41: the T5 default-button test. Every routed call site (and the side result and the driver guidance), opened through its real classic caller ----
+# One data table (Get-PagesBoxTable, pinned to the classic AST on every platform) drives it. For each row the dialog is opened through the classic caller and
+#   Enter is posted (the key plan's Enter target answers), then Escape (the Escape target answers, or a YesNo box stays open), then the close box is clicked
+#   (SC_CLOSE: it answers the Escape target, or a YesNo box refuses it). The first focus is read just before the key. A box that stays open is then answered No by the
+#   driver's fallback (never Yes), so FellBack is the evidence that the key or the close box did nothing. What the classic caller received is read from the recording
+#   wrapper over the real seam ($script:boxCalls). Every box must be a WPF dialog ($rec Path 'wpf'): fluent mode shows no Win32 box.
+# The callers: the five link handlers, the experimental toggle, NewUiApiKey, the three Remove flows, ContinueSupportBundle, InvokeUiUpdate and InvokeUiReinstall are the real
+# functions and wiring statements of fast-llm-ui.ps1 (taken by the parser). Start-Process is shadowed by a throwing function for the whole step so no browser opens.
+# Close FastLLM runs the handler's own `if(...)` statement from the parser (the whole handler would close the window); the "file already exists" box and the two licence
+# link handlers run their own statement or script block from the parser (their callers need a native Save dialog or a WinForms form).
+function Get-PagesAstNode([string]$Kind, [scriptblock]$Where) {
+    $found = @($script:uiAst.FindAll($Where, $true))
+    return $found
+}
+function Get-PagesBoxSources {
+    $src = @{}
+    $ast = $script:uiAst
+    $ifs = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text.Contains('ShowUiMessageBox') -and $n.Clauses[0].Item1.Extent.Text.Contains("'Close FastLLM'") }, $true))
+    $src['CloseIf'] = $null
+    if ($ifs.Count -eq 1) { $src['CloseIf'] = [scriptblock]::Create('param($sender, $event) ' + [string]$ifs[0].Extent.Text) }
+    $ex = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text.Contains('That file already exists') }, $true))
+    $src['ExistsStmt'] = $null
+    if ($ex.Count -eq 1) { $src['ExistsStmt'] = [scriptblock]::Create([string]$ex[0].Extent.Text) }
+    foreach ($pair in @(@('LicenseSetting', 'ShowLicenseSettingConfirm'), @('LicenseConsent', 'ShowComponentConsent'))) {
+        $script:p41Fn = [string]$pair[1]
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $script:p41Fn }, $true)
+        $src[[string]$pair[0]] = $null
+        if ($null -eq $fn) { continue }
+        $wire = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_LinkClicked' }, $true))
+        if ($wire.Count -eq 1 -and $wire[0].Arguments.Count -eq 1) { $src[[string]$pair[0]] = & ([scriptblock]::Create([string]$wire[0].Arguments[0].Extent.Text)) }
+    }
+    return $src
+}
+# Attaches the real `<adapter>.Add_LinkClicked(...)` statements (the five link handlers) to the shell's adapters; returns the handler counts to put back.
+function Add-PagesLinkWiring {
+    $undo = @{}
+    foreach ($target in '$vc', '$amd', '$resultsLink', '$barLink', '$bannerNotes') {
+        $script:p41Target = [string]$target
+        $wire = $script:uiAst.Find({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_LinkClicked' -and [string]$n.Expression.Extent.Text -ceq $script:p41Target }, $true)
+        if ($null -eq $wire) { continue }
+        $adapter = Get-Variable -Name ([string]$target).TrimStart('$') -Scope Script -ValueOnly
+        $undo[[string]$target] = @{ Adapter = $adapter; Count = [int]$adapter.__handlers['LinkClicked'].Count }
+        $wireFile = Join-Path $script:InstallRoot ('wire-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        [System.IO.File]::WriteAllText($wireFile, [string]$wire.Extent.Text, (New-Object System.Text.UTF8Encoding($false)))
+        . $wireFile
+    }
+    return $undo
+}
+function Remove-PagesLinkWiring($Undo) {
+    foreach ($k in @($Undo.Keys)) {
+        $list = $Undo[$k]['Adapter'].__handlers['LinkClicked']
+        $n0 = [int]$Undo[$k]['Count']
+        if ($list.Count -gt $n0) { $list.RemoveRange($n0, $list.Count - $n0) }
+    }
+}
+
+# Opens the box of one row through its real classic caller. Blocks until the box is answered (the driver timers answer it).
+function Invoke-PagesBoxOpen([string]$Id) {
+    $els = $script:FastLlmUiFluent['Els']
+    $src = $script:p41Src
+    $click = [System.Windows.Controls.Primitives.ButtonBase]::ClickEvent
+    switch ($Id) {
+        'link-vc' { Invoke-FastLlmUiAdapterEvent -Adapter $script:vc -Event 'LinkClicked' }
+        'link-amd' { Invoke-FastLlmUiAdapterEvent -Adapter $script:amd -Event 'LinkClicked' }
+        'link-results' { $script:evidenceUrl = 'https://bitworks.io/probe-evidence'; Invoke-FastLlmUiAdapterEvent -Adapter $script:resultsLink -Event 'LinkClicked' }
+        'link-bar' { Invoke-FastLlmUiAdapterEvent -Adapter $script:barLink -Event 'LinkClicked' }
+        'link-release' { $script:bannerUrl = 'https://github.com/bitworks-io/amd-inference/releases/tag/probe'; Invoke-FastLlmUiAdapterEvent -Adapter $script:bannerNotes -Event 'LinkClicked' }
+        'experimental' {
+            $null = Open-SettingsPage @{}
+            $els.SettingsExperimentalToggle.IsChecked = $false
+            Invoke-Pump 50
+            $els.SettingsExperimentalToggle.IsChecked = $true
+            Invoke-Pump 100
+            $els.SettingsExperimentalToggle.IsChecked = $false
+            Invoke-Pump 50
+            Close-SettingsPage
+        }
+        'license-setting' { & $src['LicenseSetting'] ([pscustomobject]@{ Tag = 'https://example.org/license-probe' }) $null }
+        'license-consent' { & $src['LicenseConsent'] ([pscustomobject]@{ Tag = 'https://example.org/license-probe' }) $null }
+        'newkey-ask' { $null = NewUiApiKey $script:form }
+        'newkey-done' { $null = NewUiApiKey $script:form }
+        'remove-model' {
+            $null = Reset-ModelsFixture; Open-ModelsPage
+            $b = @(Get-ModelsRowButtons $els.ModelsModelRows)[0]
+            $b.RaiseEvent((New-ShellClick $b $click)); Invoke-Pump 100
+        }
+        'remove-leftovers' {
+            $null = Reset-ModelsFixture
+            [void]$script:leftoverStore.Add([pscustomobject]@{ name = 'probe-leftover.part'; sizeBytes = [int64]1073741824; locked = $false })
+            Open-ModelsPage
+            $els.ModelsLeftoverButton.RaiseEvent((New-ShellClick $els.ModelsLeftoverButton $click)); Invoke-Pump 100
+        }
+        'remove-component' {
+            $null = Reset-ModelsFixture; Open-ModelsPage
+            $b = @(Get-ModelsRowButtons $els.ModelsComponentRows)[0]
+            $b.RaiseEvent((New-ShellClick $b $click)); Invoke-Pump 100
+        }
+        'bundle-list' { ContinueSupportBundle '{"entries":[{"name":"probe.txt","sizeBytes":2048}],"redactions":1}' }
+        'bundle-exists' { & $src['ExistsStmt'] }
+        'update' {
+            $script:updateOffer = [pscustomobject]@{ version = '2099.01.01.1' }
+            $script:sideChild = $null
+            try { InvokeUiUpdate } finally { Remove-Variable -Name updateOffer -Scope Script -ErrorAction SilentlyContinue; Remove-Variable -Name sideChild -Scope Script -ErrorAction SilentlyContinue }
+        }
+        'reinstall' {
+            $script:reinstallOffer = [pscustomobject]@{ from = '2099.01.01.1'; to = '2099.01.01.2' }
+            $script:sideChild = $null
+            try { InvokeUiReinstall } finally { Remove-Variable -Name reinstallOffer -Scope Script -ErrorAction SilentlyContinue; Remove-Variable -Name sideChild -Scope Script -ErrorAction SilentlyContinue }
+        }
+        'close' {
+            $ev = [pscustomobject]@{ Cancel = $false }
+            & $src['CloseIf'] $null $ev
+            $script:p41CloseCancel = [bool]$ev.Cancel
+        }
+        'side' { ShowUiSideResult 'FastLLM P41 side result' ((1..60 | ForEach-Object { 'Probe line ' + $_ + ' of a long side result.' }) -join "`n") }
+        'guidance' { ShowDriverGuidance $script:p41Diagnostic }
+        default { throw "P41 has no opener for '$Id'" }
+    }
+}
+
+# The steps a row needs besides the box under test: Pre answers an earlier box of the same caption (Create a new key asks, then confirms), PostEnter answers what
+# Enter leads to (the confirmation box, the native Save dialog).
+function Get-PagesBoxExtras([string]$Id) {
+    $pre = @(); $post = @()
+    if ($Id -ceq 'newkey-done') { $pre = @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 6; Fallback = 7 }) }
+    if ($Id -ceq 'newkey-ask') { $post = @(@{ Kind = 'box'; Caption = 'Create a new key'; Id = 1; Fallback = 2 }) }
+    # the native SaveFileDialog that OK leads to has the box's own title: its step is marked Native, so the clean check allows its Win32 record
+    if ($Id -ceq 'bundle-list') { $post = @(@{ Kind = 'box'; Caption = 'Save support bundle'; Id = 2; Fallback = 2; Native = $true }) }
+    return @{ Pre = $pre; Post = $post }
+}
+
+# One phase of one row: arms the driver (Enter, Escape or the close box on the box under test, then the extras and the watch), opens the caller, returns the records.
+function Invoke-PagesBoxPhase([string]$Id, [string]$Caption, [string]$Buttons, [string]$Action) {
+    $extras = Get-PagesBoxExtras $Id
+    $fallback = 0
+    if ($Buttons -ceq 'YesNo') { $fallback = 7 } elseif ($Buttons -ceq 'OKCancel') { $fallback = 2 } elseif ($Buttons -ceq 'OK') { $fallback = 1 }
+    $main = @{ Kind = 'box'; Caption = $Caption; Fallback = $fallback }
+    if ($Action -ceq 'enter') { $main['Key'] = 0x0D } elseif ($Action -ceq 'escape') { $main['Key'] = 0x1B } else { $main['Sys'] = $true }
+    $steps = New-Object System.Collections.ArrayList
+    foreach ($x in @($extras.Pre)) { [void]$steps.Add($x) }
+    [void]$steps.Add($main)
+    if ($Action -ceq 'enter') { foreach ($x in @($extras.Post)) { [void]$steps.Add($x) } }
+    [void]$steps.Add((New-SettingsWatch))
+    $script:boxCalls.Clear()
+    $d = @{}
+    $err = ''
+    $timer = Start-SettingsDialogs $steps.ToArray() $d
+    try { Invoke-PagesBoxOpen $Id } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+    Invoke-Pump 100
+    return @{ D = $d; Err = $err; Calls = @($script:boxCalls.ToArray()); PreCount = @($extras.Pre).Count }
+}
+
+# A MessageBox argument as the enum value (a 'bad:' string when the name is not one of the type), so two names of one value compare equal.
+function ConvertTo-PagesBoxEnum([string]$TypeName, $Value) {
+    $type = [type]('System.Windows.Forms.' + $TypeName)
+    try { return ('v' + [string][int][System.Enum]::Parse($type, [string]$Value, $true)) } catch { return ('bad:' + [string]$Value) }
+}
+
+# The checks of one phase of one routed call site. Returns $false when the box never appeared (the row's other phases are then skipped, so a broken opener costs one wait).
+function Test-PagesBoxPhase($Row, [string]$Action, [IntPtr]$MainHwnd) {
+    $id = [string]$Row.Id
+    $r = Invoke-PagesBoxPhase $id ([string]$Row.Caption) ([string]$Row.Buttons) $Action
+    $d = $r.D
+    $rec = Get-SettingsRec $d ([int]$r.PreCount)
+    $calls = @($r.Calls | Where-Object { [string]$_.Caption -ceq [string]$Row.Caption -and [string]$_.Buttons -ceq [string]$Row.Buttons })
+    $result = ''
+    if ($calls.Count -gt 0) { $result = [string]$calls[0].Result }
+    $exp = Get-PagesBoxExpect ([string]$Row.Buttons) ([string]$Row.Default)
+    $detail = (Get-SettingsRecDetail $d) + " calls=$($r.Calls.Count) result='$result' error='$($r.Err)'"
+    $n = "P41 $id $Action"
+    $found = [bool]$rec['Found']
+    Check ($found -and (Test-SettingsRecClean $d)) "$n : the box appeared as a WPF dialog and was answered within 6 s, with nothing unexpected" $detail
+    if (-not $found) { return $false }
+    Check ($calls.Count -eq 1) "$n : the classic caller reached ShowUiMessageBox once for this box" "calls=$($calls.Count) $detail"
+    if ($Action -ceq 'enter') {
+        # the classic caller passed the arguments the AST table says, the owner is the main window and it is disabled while the box is up
+        # compared as enums: the call sites pass [MessageBoxIcon] values, and Information and Asterisk (also Warning and Exclamation, Error and Hand) share a value,
+        # so the string the seam received can be the other name of the same value
+        $got = ''
+        $same = $false
+        if ($calls.Count -gt 0) {
+            $got = "$($calls[0].Buttons)/$($calls[0].Icon)/$($calls[0].Default)"
+            $same = ((ConvertTo-PagesBoxEnum 'MessageBoxButtons' $calls[0].Buttons) -eq (ConvertTo-PagesBoxEnum 'MessageBoxButtons' $Row.Buttons)) -and
+                ((ConvertTo-PagesBoxEnum 'MessageBoxIcon' $calls[0].Icon) -eq (ConvertTo-PagesBoxEnum 'MessageBoxIcon' $Row.Icon)) -and
+                ((ConvertTo-PagesBoxEnum 'MessageBoxDefaultButton' $calls[0].Default) -eq (ConvertTo-PagesBoxEnum 'MessageBoxDefaultButton' $Row.Default))
+        }
+        Check $same "$n : the caller passed the table's buttons, icon and default button" "actual='$got' expected='$($Row.Buttons)/$($Row.Icon)/$($Row.Default)'"
+        Check ([long]$rec['Owner'] -eq $MainHwnd.ToInt64() -and -not [bool]$rec['WpfEnabledDuring']) "$n : the box is owned by the main window and the main window is disabled while it is up" "owner=$($rec['Owner']) expected=$($MainHwnd.ToInt64()) mainEnabledDuring=$($rec['WpfEnabledDuring'])"
+        $fi = $rec['FocusInfo']
+        $focusId = ''
+        if ($fi -is [System.Collections.IDictionary]) { $focusId = [string]$fi['Id'] }
+        Check ($focusId -ceq [string]$exp.Focus) "$n : the first focus is the Enter target button" "actual focus id='$focusId' expected='$($exp.Focus)' focus='$($rec['Focus'])' active=$($rec['Active'])"
+        Check ([bool]$rec['KeyPosted'] -and -not [bool]$rec['FellBack'] -and $result -ceq [string]$exp.Enter) "$n : Enter answers $($exp.Enter)" "actual result='$result' expected='$($exp.Enter)' fellBack=$($rec['FellBack']) keyPosted=$($rec['KeyPosted']) active=$($rec['Active']) focus='$($rec['Focus'])' rung='$($rec['Rung'])'"
+        if ($id -ceq 'close') { Check ([bool]$script:p41CloseCancel -eq ($result -cne 'Yes')) "$n : the Close FastLLM handler cancels the close exactly when the answer is not Yes" "cancel=$($script:p41CloseCancel) result='$result'" }
+    }
+    elseif ($Action -ceq 'escape') {
+        if ([string]$exp.Escape -cne '') {
+            Check (-not [bool]$rec['FellBack'] -and $result -ceq [string]$exp.Escape) "$n : Escape answers $($exp.Escape)" "actual result='$result' expected='$($exp.Escape)' fellBack=$($rec['FellBack']) keyPosted=$($rec['KeyPosted']) active=$($rec['Active']) rung='$($rec['Rung'])'"
+        }
+        else {
+            Check ([bool]$rec['FellBack'] -and $result -ceq 'No') "$n : Escape does nothing (the box stays open until the driver presses No)" "actual result='$result' expected='No' fellBack=$($rec['FellBack']) (true means it stayed open) keyPosted=$($rec['KeyPosted']) rung='$($rec['Rung'])'"
+        }
+    }
+    else {
+        if ([bool]$exp.XEnabled) {
+            Check (-not [bool]$rec['FellBack'] -and $result -ceq [string]$exp.X) "$n : the close box answers $($exp.X)" "actual result='$result' expected='$($exp.X)' fellBack=$($rec['FellBack']) keyPosted=$($rec['KeyPosted']) rung='$($rec['Rung'])'"
+        }
+        else {
+            Check ([bool]$rec['FellBack'] -and $result -ceq 'No') "$n : the close box is refused (the box stays open until the driver presses No)" "actual result='$result' expected='No' fellBack=$($rec['FellBack']) (true means it stayed open) keyPosted=$($rec['KeyPosted']) rung='$($rec['Rung'])'"
+        }
+    }
+    return $true
+}
+
+# The two forms (no ShowUiMessageBox call): Close answers Enter, Escape and the close box for the side result; the driver guidance has no Enter target.
+function Test-PagesFormPhase([string]$Kind, [string]$Action, [IntPtr]$MainHwnd) {
+    $caption = 'FastLLM P41 side result'
+    if ($Kind -ceq 'guidance') { $caption = 'AMD driver guidance - read-only' }
+    $main = @{ Kind = 'box'; Caption = $caption }
+    if ($Action -ceq 'enter') { $main['Key'] = 0x0D } elseif ($Action -ceq 'escape') { $main['Key'] = 0x1B } else { $main['Sys'] = $true }
+    $d = @{}
+    $err = ''
+    $script:trayAvailability.Clear()
+    $timer = Start-SettingsDialogs @($main, (New-SettingsWatch)) $d
+    try { Invoke-PagesBoxOpen $Kind } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+    Invoke-Pump 100
+    $rec = Get-SettingsRec $d 0
+    $n = "P41 $Kind $Action"
+    $detail = (Get-SettingsRecDetail $d) + " error='$err'"
+    $found = [bool]$rec['Found']
+    Check ($found -and (Test-SettingsRecClean $d)) "$n : the form appeared as a WPF dialog and was closed within 6 s, with nothing unexpected" $detail
+    if (-not $found) { return }
+    # Enter on the side result closes it (Close is the Enter target); on the driver guidance there is no Enter target, so the dialog stays until the driver closes it
+    $stays = ($Kind -ceq 'guidance' -and $Action -ceq 'enter')
+    Check ([bool]$rec['FellBack'] -eq $stays) "$n : the form $(if ($stays) { 'stays open (no Enter target)' } else { 'closes' })" "fellBack=$($rec['FellBack']) expected=$stays keyPosted=$($rec['KeyPosted']) active=$($rec['Active']) rung='$($rec['Rung'])'"
+    if ($Action -ceq 'enter') {
+        $fi = $rec['FocusInfo']
+        $okFocus = $false
+        if ($fi -is [System.Collections.IDictionary]) { if ($Kind -ceq 'guidance') { $okFocus = [bool]$fi['InDevices'] } else { $okFocus = ([string]$fi['Id'] -ceq 'Close') } }
+        Check $okFocus "$n : the first focus is $(if ($Kind -ceq 'guidance') { 'the device list' } else { 'the Close button' })" "focus='$($rec['Focus'])' info=$(if ($fi -is [System.Collections.IDictionary]) { "id='$($fi['Id'])' inDevices=$($fi['InDevices'])" } else { 'none' })"
+        Check ([long]$rec['Owner'] -eq $MainHwnd.ToInt64() -and -not [bool]$rec['WpfEnabledDuring']) "$n : the form is owned by the main window, which is disabled while it is up" "owner=$($rec['Owner']) expected=$($MainHwnd.ToInt64()) mainEnabledDuring=$($rec['WpfEnabledDuring'])"
+    }
+    if ($Kind -ceq 'guidance') { Check (($script:trayAvailability.ToArray() -join ',') -ceq 'False,True') "$n : the tray menu was turned off while the form was open and on again after" "calls=$($script:trayAvailability.ToArray() -join ',')" }
+}
+
+function Invoke-P41-DialogKeys {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $win = $f.Window
+    $hwnd = Get-ModelsWindowHandle
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    $null = $win.Activate()
+    Invoke-Pump 100
+    $missing = @('Get-FastLlmUiEvidenceUrl', 'Get-FastLlmUiSafeLicenseUrl', 'Get-FastLlmUiNewKeyConfirmText', 'Format-FastLlmUiSupportBundleList', 'Format-FastLlmUiUpdateConfirm', 'Format-FastLlmUiReinstallConfirm', 'Test-FastLlmUiVcActionAllowed', 'Format-FastLlmDriverGuidance') |
+        Where-Object { $null -eq (Get-Command -Name $_ -ErrorAction SilentlyContinue) }
+    Check (@($missing).Count -eq 0 -and @($script:p22Missing).Count -eq 0 -and $null -ne $script:realShowBox) 'P41 the callers and helpers the table needs are loaded (the classic functions, the seam and the recording wrapper)' ("missing=" + (@($missing) -join ',') + " classic=" + (@($script:p22Missing) -join ',') + " wrapper=$($null -ne $script:realShowBox)")
+    Check ($null -ne $script:uiDialogView -and $null -ne $script:uiDialogView['MessageBox']) 'P41 the shell registered the fluent view table, so the seam shows the fluent box' "view=$($null -ne $script:uiDialogView)"
+    # the clean check lets a Native step's Win32 record through (the SaveFileDialog after the support bundle box) and still rejects any other Win32 box
+    $synth = { param([bool]$Native) $recs = New-Object System.Collections.ArrayList; [void]$recs.Add(@{ Kind = 'box'; Found = $true; Path = 'win32'; Caption = 'Save support bundle'; Native = $Native }); return @{ recs = $recs; timedOut = $false; hardStop = $false; unexpected = 0 } }
+    Check ((Test-SettingsRecClean (& $synth $true)) -and -not (Test-SettingsRecClean (& $synth $false))) 'P41 pin: a Native Win32 record is clean, a non-Native Win32 record is still rejected' ''
+    $script:p41Src = Get-PagesBoxSources
+    $srcMissing = @($script:p41Src.Keys | Where-Object { $null -eq $script:p41Src[$_] })
+    Check ($srcMissing.Count -eq 0) 'P41 the Close FastLLM statement, the already-exists statement and the two licence link handlers were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
+    $script:p41Diagnostic = [pscustomobject]@{ windows = $true; driverGuidance = @([pscustomobject]@{ schemaVersion = 1; qualification = $false; automaticDriverInstall = $false; hasOwnTrustedMapping = $false
+        asOf = '2026-01-01'; inputGpuName = 'Probe display device'; reportedPnpDriverVersion = '1.0'; knownFocusModel = $false; note = '' }) }
+    # Start-Process is shadowed for the whole step (a local function, seen by every callee): a link handler's catch block shows its box and no browser opens.
+    function Start-Process { throw 'P41: Start-Process is blocked in this test' }
+    $undo = Add-PagesLinkWiring
+    $script:p41CloseCancel = $false
+    $rowWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        foreach ($row in @(Get-PagesBoxTable)) {
+            $rowStart = $rowWatch.ElapsedMilliseconds
+            foreach ($action in 'enter', 'escape', 'x') {
+                $go = Test-PagesBoxPhase $row $action $hwnd
+                if (-not $go) { break }
+            }
+            Write-Host ("INFO: P41 row $($row.Id) took " + ($rowWatch.ElapsedMilliseconds - $rowStart) + " ms")
+        }
+        foreach ($kind in 'side', 'guidance') {
+            foreach ($action in 'enter', 'escape', 'x') { Test-PagesFormPhase $kind $action $hwnd }
+        }
+        # Owner checks. 1. A box opened while the window is in the tray (the owner hidden) still shows, unowned and centred, and is answerable; the window then restores.
+        $script:form.Hide()
+        Invoke-Pump 100
+        $d = @{}
+        $script:boxCalls.Clear()
+        $timer = Start-SettingsDialogs @(@{ Kind = 'box'; Caption = 'Open AMD page'; Key = 0x0D; Fallback = 1 }, (New-SettingsWatch)) $d
+        $err = ''
+        try { Invoke-PagesBoxOpen 'link-amd' } catch { $err = $_.Exception.Message } finally { $timer.Stop() }
+        Invoke-Pump 100
+        $script:form.Show()
+        $script:form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        $script:form.Activate()
+        Invoke-Pump 150
+        $rec = Get-SettingsRec $d 0
+        $trayCalls = @($script:boxCalls.ToArray())
+        Check ([bool]$rec['Found'] -and (Test-SettingsRecClean $d) -and [long]$rec['Owner'] -eq 0 -and -not [bool]$rec['WpfEnabledDuring'] -and -not [bool]$rec['FellBack'] -and $trayCalls.Count -eq 1 -and [string]$trayCalls[0].Result -ceq 'OK') 'P41 a box opened while the window is in the tray shows (unowned), the hidden main window is disabled while it is open, and Enter answers it OK' ((Get-SettingsRecDetail $d) + " owner=$($rec['Owner']) expected=0 calls=$($trayCalls.Count) result='$(if ($trayCalls.Count -gt 0) { $trayCalls[0].Result })' error='$err'")
+        Check ($win.IsVisible -and [bool]$script:native::IsWindowEnabled($hwnd)) 'P41 after the tray box the window is back, visible and enabled' "visible=$($win.IsVisible) enabled=$($script:native::IsWindowEnabled($hwnd))"
+    }
+    finally {
+        Remove-PagesLinkWiring $undo
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+    }
+    # 2. The licence link error box (the two handlers) is owned by the main window in 4a: checked per row above (license-setting, license-consent); the list below names it.
+    Write-Host 'INFO: P41 licence-link rows license-setting and license-consent check Owner = the main window handle in the enter phase'
+    Check-NoExceptions 'P41'
+}
+
 $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
@@ -2998,6 +3725,7 @@ $script:steps = @(
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane',
+    'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'

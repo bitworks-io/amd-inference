@@ -168,6 +168,8 @@ function Get-OwnerKind($Node){
            [string]$p.Expression.TypeName.Name -cmatch '^(System\.)?Windows\.Forms\.MessageBox$' -and [object]::ReferenceEquals(@($p.Arguments)[0],$Node)){return 'MessageBox.Show'}
     }
     if($p -is [System.Management.Automation.Language.CommandAst] -and [string]$p.GetCommandName() -ceq 'NewUiApiKey'){return 'NewUiApiKey'}
+    # The seam's box call (ShowUiMessageBox <owner> ...): the owner is the first argument and is only handed on to MessageBox.Show or the fluent box host.
+    if($p -is [System.Management.Automation.Language.CommandAst] -and [string]$p.GetCommandName() -ceq 'ShowUiMessageBox' -and $p.CommandElements.Count -ge 2 -and [object]::ReferenceEquals($p.CommandElements[1],$Node)){return 'ShowUiMessageBox'}
     return $null
 }
 function Get-FormBareUses([System.Management.Automation.Language.Ast]$Tree,[int]$AfterLine){
@@ -205,7 +207,7 @@ Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Co
 $keyFn=$tree.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'NewUiApiKey'},$true)
 Check ($null -ne $keyFn) 'NewUiApiKey is defined'
 $ownerVars=@($keyFn.Body.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ([string]$n.VariablePath.UserPath) -ieq 'Owner'},$true))
-Check ($ownerVars.Count -ge 2 -and @($ownerVars|Where-Object{(Get-OwnerKind $_) -ceq 'MessageBox.Show'}).Count -eq $ownerVars.Count) 'NewUiApiKey uses its Owner only as a MessageBox owner'
+Check ($ownerVars.Count -ge 2 -and @($ownerVars|Where-Object{(Get-OwnerKind $_) -cin 'MessageBox.Show','ShowUiMessageBox'}).Count -eq $ownerVars.Count) 'NewUiApiKey uses its Owner only as a MessageBox owner'
 # Self-check.
 $bareSyn=@'
 Foo $form
@@ -365,6 +367,165 @@ function GetUiSettingsDialogMaxHeight($OwnerHandle){
 function GetUiSettingsDialogMaxHeight($Owner){
     return [int][Windows.Forms.Screen]::FromControl($Owner).WorkingArea.Height
 '@}
+    @{Name='dialog view init'
+      Cur=@'
+$script:uiDialogView=$null
+
+'@
+      Orig=''}
+    @{Name='ShowUiMessageBox'
+      Cur=@'
+function ShowUiMessageBox($Owner,[string]$Text,[string]$Caption,[string]$Buttons='OK',[string]$Icon='None',[string]$DefaultButton='Button1'){
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['MessageBox'] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}
+    return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)
+}
+function SetUiBanner([string]$Text,
+'@
+      Orig=@'
+function SetUiBanner([string]$Text,
+'@}
+    @{Name='box vc link'
+      Cur=@'
+$vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{$null=ShowUiMessageBox $form 'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.' 'Open prerequisite page' 'OK' 'Warning'}})
+'@
+      Orig=@'
+$vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
+'@}
+    @{Name='box amd link'
+      Cur=@'
+$amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{$null=ShowUiMessageBox $form 'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.' 'Open AMD page' 'OK' 'Warning'}})
+'@
+      Orig=@'
+$amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
+'@}
+    @{Name='box results link'
+      Cur=@'
+    }catch{$null=ShowUiMessageBox $form 'Unable to open the results page. Check your default browser.' 'Open results page' 'OK' 'Warning'}
+'@
+      Orig=@'
+    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the results page. Check your default browser.','Open results page','OK','Warning')}
+'@}
+    @{Name='box bar link'
+      Cur=@'
+$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{$null=ShowUiMessageBox $form 'Unable to open the Resizable BAR page. Check your default browser.' 'Open Resizable BAR page' 'OK' 'Warning'}})
+'@
+      Orig=@'
+$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the Resizable BAR page. Check your default browser.','Open Resizable BAR page','OK','Warning')}})
+'@}
+    @{Name='box release link'
+      Cur=@'
+    }catch{$null=ShowUiMessageBox $form 'Unable to open the release page. Check your default browser.' 'Open release page' 'OK' 'Warning'}
+'@
+      Orig=@'
+    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the release page. Check your default browser.','Open release page','OK','Warning')}
+'@}
+    @{Name='box experimental'
+      Cur=@'
+            $answer=ShowUiMessageBox $form $script:FastLlmExperimentalParagraph 'Experimental community components' 'YesNo' 'Warning' 'Button2'
+'@
+      Orig=@'
+            $answer=[Windows.Forms.MessageBox]::Show($form,$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2')
+'@}
+    @{Name='box license link 1'
+      Cur=@'
+                }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was changed.' 'Open license page' 'OK' 'Warning'}
+'@
+      Orig=@'
+                }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was changed.','Open license page','OK','Warning')}
+'@}
+    @{Name='box new key ask'
+      Cur=@'
+    if((ShowUiMessageBox $Owner $question 'Create a new key' 'YesNo' 'Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
+'@
+      Orig=@'
+    if([Windows.Forms.MessageBox]::Show($Owner,$question,'Create a new key','YesNo','Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
+'@}
+    @{Name='box new key shown'
+      Cur=@'
+    $null=ShowUiMessageBox $Owner ((@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.')) 'Create a new key' 'OK' 'Information'
+'@
+      Orig=@'
+    [void][Windows.Forms.MessageBox]::Show($Owner,(@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.'),'Create a new key','OK','Information')
+'@}
+    @{Name='box remove component'
+      Cur=@'
+    $answer=ShowUiMessageBox $view.dialog "Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later." 'Remove component' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later.",'Remove component','YesNo','Question','Button2')
+'@}
+    @{Name='box remove model'
+      Cur=@'
+    $answer=ShowUiMessageBox $view.dialog $text 'Remove model' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,$text,'Remove model','YesNo','Question','Button2')
+'@}
+    @{Name='box remove leftovers'
+      Cur=@'
+    $answer=ShowUiMessageBox $view.dialog "Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?" 'Remove leftover partial downloads' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?",'Remove leftover partial downloads','YesNo','Question','Button2')
+'@}
+    @{Name='box support bundle list'
+      Cur=@'
+    $answer=ShowUiMessageBox $form (Format-FastLlmUiSupportBundleList -Listing $listing) 'Save support bundle' ([Windows.Forms.MessageBoxButtons]::OKCancel) ([Windows.Forms.MessageBoxIcon]::Information)
+'@
+      Orig=@'
+    $answer=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiSupportBundleList -Listing $listing),'Save support bundle',[Windows.Forms.MessageBoxButtons]::OKCancel,[Windows.Forms.MessageBoxIcon]::Information)
+'@}
+    @{Name='box support bundle exists'
+      Cur=@'
+            if(Test-Path -LiteralPath $dialog.FileName){$null=ShowUiMessageBox $form 'That file already exists. A support bundle is never written over a file; choose a new name.' 'Save support bundle'}
+'@
+      Orig=@'
+            if(Test-Path -LiteralPath $dialog.FileName){[void][Windows.Forms.MessageBox]::Show($form,'That file already exists. A support bundle is never written over a file; choose a new name.','Save support bundle')}
+'@}
+    @{Name='box license link 2'
+      Cur=@'
+                    }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was downloaded.' 'Open license page' 'OK' 'Warning'}
+'@
+      Orig=@'
+                    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was downloaded.','Open license page','OK','Warning')}
+'@}
+    @{Name='box update'
+      Cur=@'
+    $choice=ShowUiMessageBox $form (Format-FastLlmUiUpdateConfirm -Version $version) 'Update FastLLM' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiUpdateConfirm -Version $version),'Update FastLLM','YesNo','Question','Button2')
+'@}
+    @{Name='box reinstall'
+      Cur=@'
+    $choice=ShowUiMessageBox $form (Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)) 'Reinstall previous version' 'YesNo' 'Question' 'Button2'
+'@
+      Orig=@'
+    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)),'Reinstall previous version','YesNo','Question','Button2')
+'@}
+    @{Name='box close'
+      Cur=@'
+        if((ShowUiMessageBox $form 'Closing stops this window''s active download or inference process. Continue?' 'Close FastLLM' 'YesNo' 'Question') -ne 'Yes'){
+'@
+      Orig=@'
+        if([Windows.Forms.MessageBox]::Show($form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){
+'@}
+    @{Name='side result dispatch'
+      Cur=@'
+function ShowUiSideResult([string]$Title,[string]$Text) {
+    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowUiSideResult'] -Title $Title -Text $Text;return}
+'@
+      Orig=@'
+function ShowUiSideResult([string]$Title,[string]$Text) {
+'@}
+    @{Name='driver guidance dispatch'
+      Cur=@'
+function ShowDriverGuidance($Diagnostic) {
+    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowDriverGuidance'] -Diagnostic $Diagnostic;return}
+'@
+      Orig=@'
+function ShowDriverGuidance($Diagnostic) {
+'@}
 )
 function Get-NormalizedText([string]$Path){
     $bytes=[IO.File]::ReadAllBytes($Path)
@@ -386,7 +547,7 @@ function Undo-NamedChanges([string]$Text){
     }
     return [pscustomobject]@{Text=$Text;Problems=$problems}
 }
-Check ($namedChanges.Count -eq 18) 'eighteen named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh, settings height call site, settings height body)'
+Check ($namedChanges.Count -eq 40) 'forty named changes are listed (param, support check, failureHeld start, ClearFailureCapture clear, seam, snapshot arguments, ShowFailure set, ShowFailure view text, GetUiTrayIcon, tray assignment, startup branch, key box copy guard, self-test measurement note, model picker ids, models list refresh, components list refresh, settings height call site, settings height body, dialog view init, ShowUiMessageBox, 18 box call sites, side result dispatch, driver guidance dispatch)'
 $currentText=Get-NormalizedText $path
 $undone=Undo-NamedChanges $currentText
 foreach($pr in $undone.Problems){Write-Host "FINDING: $pr"}
@@ -752,7 +913,7 @@ function Get-PagePinFindings([string[]]$Texts){
             foreach($kv in $h.KeyValuePairs){ if([string]$kv.Item1.Extent.Text -ceq 'Id' -and $kv.Item2.Extent.Text -match "^'(Nav[A-Za-z]+)'$"){[void]$navIds.Add($Matches[1])} }
         }
     }
-    $pageNames=@($xaml.Keys|Where-Object{$_ -cmatch '^FastLlm\.' -and $_ -cne 'FastLlm.Shell'}|ForEach-Object{$_.Substring(8)}|Sort-Object)
+    $pageNames=@($xaml.Keys|Where-Object{$_ -cmatch '^FastLlm\.' -and $_ -cne 'FastLlm.Shell' -and $_ -cne 'FastLlm.Dialog'}|ForEach-Object{$_.Substring(8)}|Sort-Object)
     $ids=@($regs|ForEach-Object{[string]$_.Id}|Sort-Object)
     if(($pageNames -join ',') -cne ($ids -join ',')){[void]$found.Add("the registered page markup ($($pageNames -join ',')) differs from the registered page ids ($($ids -join ','))")}
     foreach($r in $regs){
@@ -1757,6 +1918,46 @@ Check (@(Get-Approved3cStringFindings $homeStringsText.Replace('"Don''t save"','
 Check (@(Get-Approved3cStringFindings $homeStringsText.Replace("'Components and updates'","'Components & updates'")).Count -ge 1) 'mutation check: a heading reworded is flagged'
 # ===== end PR 3c: approved strings =====
 
+# ===== PR 4a: the box captions, exact text (lead ruling D3; the 3b lead-gate rule applied to 4a) =====
+$approvedStrings4a=[ordered]@{ BoxOK = 'OK'; BoxCancel = 'Cancel'; BoxYes = 'Yes'; BoxNo = 'No' }
+function Get-Approved4aStringFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $actual=Get-FluentStringTableValues $Text
+    foreach($k in $approvedStrings4a.Keys){
+        if(-not $actual.ContainsKey($k)){[void]$f.Add("$k is missing from the string table");continue}
+        if([string]$actual[$k] -cne [string]$approvedStrings4a[$k]){[void]$f.Add("$k is '$($actual[$k])', approved '$($approvedStrings4a[$k])'")}
+    }
+    return $f.ToArray()
+}
+$as4a=@(Get-Approved4aStringFindings $homeStringsText)
+foreach($x in $as4a){Write-Host "FINDING: $x"}
+Check ($as4a.Count -eq 0) 'the four box captions (OK, Cancel, Yes, No) are exactly their approved text'
+Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxNo(\s*)= 'No'","BoxNo`$1= 'no'")).Count -ge 1) 'mutation check: a box caption with a changed case is flagged'
+Check (@(Get-Approved4aStringFindings ($homeStringsText -replace "BoxYes(\s*)= 'Yes'","BoxYes`$1= 'Yes '")).Count -ge 1) 'mutation check: a box caption with a trailing space is flagged'
+# ===== end PR 4a: approved strings =====
+
+# ===== PR 4a: dialog body controls follow the theme (4b review: a light native box in dark is the section 6 anti-goal) =====
+function Get-DialogThemeFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$null,[ref]$null)
+    $readBox=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'New-FastLlmUiFluentDialogReadBox'},$true))
+    if($readBox.Count -ne 1){[void]$f.Add('the read box function is missing');return $f.ToArray()}
+    $rb=$readBox[0].Body.Extent.Text
+    foreach($pair in @(@('Control]::BackgroundProperty','FastLlm.CardBrush'),@('Control]::ForegroundProperty','FastLlm.TextPrimaryBrush'),@('Control]::BorderBrushProperty','FastLlm.ControlStrongStrokeBrush'),@('TextBoxBase]::CaretBrushProperty','FastLlm.TextPrimaryBrush'))){
+        if($rb -cnotmatch ([regex]::Escape($pair[0])+", '"+[regex]::Escape($pair[1])+"'")){[void]$f.Add("the read box does not take $($pair[1]) for $($pair[0])")}
+    }
+    $guide=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Show-FastLlmUiFluentDriverGuidance'},$true))
+    if($guide.Count -ne 1 -or $guide[0].Body.Extent.Text -cnotmatch [regex]::Escape("`$devices.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.ComboBoxStyle')")){[void]$f.Add('the driver guidance device list does not take the Fluent ComboBox style')}
+    return $f.ToArray()
+}
+$dlgThemeText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentDialogs.ps1'))
+$dtf=@(Get-DialogThemeFindings $dlgThemeText)
+foreach($x in $dtf){Write-Host "FINDING: $x"}
+Check ($dtf.Count -eq 0) 'the dialog read box takes the theme brushes and the driver guidance device list takes the Fluent ComboBox style'
+Check (@(Get-DialogThemeFindings $dlgThemeText.Replace("BackgroundProperty, 'FastLlm.CardBrush'","BackgroundProperty, 'FastLlm.LayerBrush'")).Count -ge 1) 'mutation check: a read box with another background is flagged'
+Check (@(Get-DialogThemeFindings $dlgThemeText.Replace("`$devices.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.ComboBoxStyle')",'')).Count -ge 1) 'mutation check: a device list without the Fluent style is flagged'
+# ===== end PR 4a: dialog theme =====
+
 
 # ===== PR 3c: Settings pins (Task 2) =====
 # Written RED before the page: the pins that read src/FastLlm.UiFluentSettings.ps1 fail until the page exists (Task 4). Every pin also runs against an
@@ -1773,9 +1974,12 @@ $homeText=Get-OptionalText 'src/FastLlm.UiFluentHome.ps1'
 # text went through ConvertTo-FastLlmKeyFreeText (keyfree or raw; the key-free call itself is that flag, so computing it a second time for the key row is fluent-only), and the assignments to $script:apiKeyStore and $script:uiSettings.allowSwitch, in execution order (a call is
 # after the calls inside its own arguments). Fluent-only statements (the availability guard, the key-row mark, the reload) are not projected.
 $fxCommands=@('Get-FastLlmUiApiKeySaveAction','Get-FastLlmUiApiKeyChoiceText','Invoke-FastLlmApiKeySetting','NewUiApiKey','Set-FastLlmServingSettings','Set-FastLlmUiAllowSwitch','RefreshUiSwitchState','Get-FastLlmUiSettingsSavedNote','Get-FastLlmUiChatPageOffNote','ShowFailure')
-function Test-FxKeyFree($Show){
-    $callArgs=@($Show.Arguments); if($callArgs.Count -lt 2){return $false}
-    $msg=$callArgs[1]
+function Test-FxKeyFree($Show,$Message=$null){
+    $msg=$Message
+    if($null -eq $msg){
+        $callArgs=@($Show.Arguments); if($callArgs.Count -lt 2){return $false}
+        $msg=$callArgs[1]
+    }
     $isCtf={param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'ConvertTo-FastLlmKeyFreeText'}
     if(@($msg.FindAll($isCtf,$true)).Count -gt 0){return $true}
     $vars=@($msg.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst]},$true))
@@ -1806,6 +2010,21 @@ function Get-EffectSequence($Scope){
                     }
                     $tok="$name -Action $act"
                 }
+            }
+            elseif($name -ceq 'Show-FastLlmUiFluentMessageBox'){
+                # The fluent box projects as the system box it replaces: the same caption, icon and key-free state, read from its named arguments (Text, Caption, Icon).
+                $named=@{}; $els=@($n.CommandElements)
+                for($i=1;$i -lt $els.Count;$i++){
+                    if($els[$i] -is [System.Management.Automation.Language.CommandParameterAst]){
+                        $pn=([string]$els[$i].ParameterName).ToLowerInvariant()
+                        if($null -ne $els[$i].Argument){$named[$pn]=$els[$i].Argument}elseif($i+1 -lt $els.Count){$named[$pn]=$els[$i+1]}
+                    }
+                }
+                $title='?'; $icon='?'; $keyFree=$false
+                if($named.ContainsKey('caption')){$title=$named['caption'].Extent.Text}
+                if($named.ContainsKey('icon')){$icon=$named['icon'].Extent.Text}
+                if($named.ContainsKey('text')){$keyFree=[bool](Test-FxKeyFree $n $named['text'])}
+                $tok='MessageBox '+$title+' '+$icon+$(if($keyFree){' keyfree'}else{' raw'})
             }
         }
         elseif($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]){
@@ -1935,6 +2154,23 @@ $fxPlants=[ordered]@{
 }
 foreach($k in $fxPlants.Keys){
     Check ($fxPlants[$k] -cne $fxGood -and (Get-EffectFindings $fxPlants[$k] $classicParts).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
+}
+# The fluent box is the same effect as the system box: the well formed copy with both boxes as Show-FastLlmUiFluentMessageBox has no finding, and its mutants are flagged.
+$fxFluent=$fxGood.Replace("[void] [Windows.Forms.MessageBox]::Show(`$script:form, (ConvertTo-FastLlmKeyFreeText -Text ([ref] `$saveFailureText)), 'FastLLM settings', 'OK', 'Warning')","[void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] `$saveFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning')").Replace("[void] [Windows.Forms.MessageBox]::Show(`$script:form, [string] `$script:statusLabel.Text, 'FastLLM settings', 'OK', 'Information')","[void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text ([string] `$script:statusLabel.Text) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Information')")
+Check ($fxFluent -cne $fxGood -and $fxFluent.Contains('Show-FastLlmUiFluentMessageBox') -and -not $fxFluent.Contains('MessageBox]::Show')) 'self-check: the fluent variant of the well formed Save copy uses only the fluent box'
+$fxFluentFindings=Get-EffectFindings $fxFluent $classicParts
+foreach($f in $fxFluentFindings){Write-Host "FINDING: $f"}
+Check ($fxFluentFindings.Count -eq 0) 'self-check: the fluent box projects as the classic box (same caption, icon and key-free state, no finding)'
+$fxFluentPlants=[ordered]@{
+    'fluent refusal box without the key-free text'=$fxFluent.Replace('-Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] $saveFailureText))','-Text $saveFailureText')
+    'fluent refusal box icon changed'=$fxFluent.Replace("-Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning'","-Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Error'")
+    'fluent refusal box caption changed'=$fxFluent.Replace("-Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning'","-Caption 'Settings' -Buttons 'OK' -Icon 'Warning'")
+    'fluent after-OK box icon changed'=$fxFluent.Replace("-Icon 'Information'","-Icon 'Warning'")
+    'fluent after-OK box dropped'=$fxFluent.Replace("if (`$runActive) { [void] (Show-FastLlmUiFluentMessageBox -Owner `$script:form -Text ([string] `$script:statusLabel.Text) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Information') }",'')
+    'fluent refusal box without its text'=$fxFluent.Replace('-Text (ConvertTo-FastLlmKeyFreeText -Text ([ref] $saveFailureText)) ','')
+}
+foreach($k in $fxFluentPlants.Keys){
+    Check ($fxFluentPlants[$k] -cne $fxFluent -and (Get-EffectFindings $fxFluentPlants[$k] $classicParts).Count -ge 1) "mutation check: the effect-sequence pin flags: $k"
 }
 $fxReal=Get-EffectFindings $settingsText $classicParts
 foreach($f in $fxReal){Write-Host "FINDING: $f"}
@@ -2439,6 +2675,476 @@ $flowPlants=[ordered]@{
 }
 foreach($k in $flowPlants.Keys){ Check ($flowPlants[$k] -cne $settingsText -and (Get-SettingsFlowFindings $flowPlants[$k]).Count -ge 1) "mutation check: the Settings flow pin flags: $k" }
 # ===== end PR 3c: Settings pins (Task 2) =====
+
+
+
+# ===== PR 4a: the dialog host and the fluent message box (Tasks 2 and 3) =====
+# Every pin reads src/FastLlm.UiFluentDialogs.ps1 (AST and the registered markup) and runs again on planted mutants, so each is proven on every platform.
+$dlgText=Get-OptionalText 'src/FastLlm.UiFluentDialogs.ps1'
+$dlgHome=Get-OptionalText 'src/FastLlm.UiFluentHome.ps1'
+Check ($dlgText -ne '') 'src/FastLlm.UiFluentDialogs.ps1 exists'
+$dlgShell=Get-OptionalText 'src/FastLlm.UiFluentShell.ps1'
+Check ($dlgShell.Contains(". (Join-Path `$PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')")) 'the shell dot-sources the dialog host like the page files'
+function Get-DlgXaml([string]$Text){
+    $m=[regex]::Match($Text,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Dialog'\] = @'\r?\n(.*?)\r?\n'@")
+    if($m.Success){return $m.Groups[1].Value}
+    return ''
+}
+function Get-DlgFn([string]$Text,[string]$Name){
+    $a=ConvertTo-PinAst $Text
+    $f=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name},$true))
+    if($f.Count -ne 1){return $null}
+    return $f[0]
+}
+function Test-DlgCall($n,[string]$Name){ return ($n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $Name) }
+function Get-DlgParamText($Call,[string]$Param){
+    $els=@($Call.CommandElements)
+    for($i=1;$i -lt $els.Count-1;$i++){ if($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and [string]$els[$i].ParameterName -ceq $Param){return [string]$els[$i+1].Extent.Text} }
+    return $null
+}
+function Get-DlgFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $ast=ConvertTo-PinAst $Text
+    # --- the markup: constant, parses, no event attribute, no IsDefault or IsCancel at all, the footer presenter wraps ---
+    $xaml=Get-DlgXaml $Text
+    if($xaml -eq ''){[void]$f.Add('the FastLlm.Dialog markup is not a constant here-string in the table');return ,$f.ToArray()}
+    $x=$null; try{$x=[xml]$xaml}catch{[void]$f.Add('the dialog markup does not parse')}
+    if($null -ne $x){
+        foreach($n in $x.SelectNodes('//*')){
+            foreach($a in $n.Attributes){
+                if($a.LocalName -cin @('IsDefault','IsCancel')){[void]$f.Add("the dialog markup sets $($a.LocalName) (Enter and Escape go through the key plan)")}
+                if($a.LocalName -cin @('Click','Loaded','Closing','Closed','KeyDown','PreviewKeyDown','KeyUp','MouseDown','Checked','TextChanged','SelectionChanged')){[void]$f.Add("the dialog markup has the event attribute $($a.LocalName)")}
+            }
+        }
+        $xn='http://schemas.microsoft.com/winfx/2006/xaml'
+        $footer=@($x.SelectNodes('//*[local-name()="UniformGrid"]')|Where-Object{$_.GetAttribute('Name',$xn) -ceq 'DlgFooter'})
+        if($footer.Count -ne 1){[void]$f.Add('the dialog markup has no DlgFooter panel')}
+        else{
+            foreach($target in 'AccessText','TextBlock'){
+                $hit=@($footer[0].SelectNodes("*[local-name()='UniformGrid.Resources']/*[local-name()='Style']")|Where-Object{$_.GetAttribute('TargetType') -ceq $target -and @($_.SelectNodes("*[local-name()='Setter'][@Property='TextWrapping'][@Value='Wrap']")).Count -eq 1})
+                if($hit.Count -ne 1){[void]$f.Add("the footer presenter has no $target style with TextWrapping Wrap")}
+            }
+        }
+        foreach($need in 'DlgIconHost','DlgBodyScroll','DlgFooter'){ if(@($x.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name',$xn) -ceq $need}).Count -ne 1){[void]$f.Add("the dialog markup has no $need")} }
+    }
+    # --- no IsDefault or IsCancel member anywhere in the code ---
+    foreach($n in @($ast.FindAll({param($a) $a -is [System.Management.Automation.Language.MemberExpressionAst] -and $a.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and @('IsDefault','IsCancel') -ccontains [string]$a.Member.Value},$true))){[void]$f.Add("code uses $($n.Member.Value): $($n.Extent.Text)")}
+    # --- the dialog builder ---
+    $new=Get-DlgFn $Text 'New-FastLlmUiFluentDialog'
+    if($null -eq $new){[void]$f.Add('New-FastLlmUiFluentDialog is not defined exactly once')}
+    else{
+        $inv=@($new.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true))
+        $keyHook=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_PreviewKeyDown' -and $_.Expression.Extent.Text -ceq '$win'})
+        if($keyHook.Count -ne 1){[void]$f.Add('the dialog Window has no single PreviewKeyDown handler')}
+        else{
+            $h=$keyHook[0].Extent.Text
+            if($h -cnotmatch 'Key\]::Return' -or $h -cnotmatch 'Key\]::Escape'){[void]$f.Add('the key handler does not read Return and Escape')}
+            if($h -cnotmatch "\`$state\['Enter'\]" -or $h -cnotmatch "\`$state\['Escape'\]"){[void]$f.Add('the key handler does not answer the Enter and Escape targets')}
+            if($h -cnotmatch [regex]::Escape("`$state['Enter'] -cne '') { `$e.Handled = `$true; & `$close ([string] `$state['Enter'])") -or $h -cnotmatch [regex]::Escape("`$state['Escape'] -cne '') { & `$close ([string] `$state['Escape'])")){[void]$f.Add('the key handler does not close with the matching target')}
+            if($h -cnotmatch 'FocusedElement' -or $h -cnotmatch '-is \[System.Windows.Controls.Button\]'){[void]$f.Add('the key handler lets Enter override a focused button')}
+            # Enter on a focused button presses that button through the dialog (a footer button answers its own id; any other gets its Click), never left to the
+            # Button's own AcceptsReturn handling (CI-proof: initial focus is on a footer button).
+            # An open drop-down list takes Escape itself: the Escape branch returns, before it handles the key, for a ComboBoxItem and for an open ComboBox (R6).
+            $escAt=$h.IndexOf('Key]::Escape',[StringComparison]::Ordinal)
+            $escHandled=$h.IndexOf('$e.Handled = $true',[Math]::Max($escAt,0),[StringComparison]::Ordinal)
+            $itemAt=$h.IndexOf('if ($focused -is [System.Windows.Controls.ComboBoxItem]) { return }',[StringComparison]::Ordinal)
+            $openAt=$h.IndexOf('if ($focused -is [System.Windows.Controls.ComboBox] -and [bool] $focused.IsDropDownOpen) { return }',[StringComparison]::Ordinal)
+            if($escAt -lt 0 -or $itemAt -lt $escAt -or $itemAt -gt $escHandled){[void]$f.Add('Escape on an open drop-down item answers the dialog (it must close the list only)')}
+            if($escAt -lt 0 -or $openAt -lt $escAt -or $openAt -gt $escHandled){[void]$f.Add('Escape on an open ComboBox answers the dialog (it must close the list only)')}
+            if($h -cnotmatch [regex]::Escape('& $close $focusedId') -or $h -cnotmatch [regex]::Escape('RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))')){[void]$f.Add('a focused button is not pressed by the dialog on Enter')}
+        }
+        $closing=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_Closing'})
+        if($closing.Count -ne 1){[void]$f.Add('the dialog Window has no single Closing handler')}
+        else{
+            $c=$closing[0].Extent.Text
+            # Once an answer is set (a button, or the key plan) the close goes through: the early return is the first thing the handler does (R8).
+            $earlyAt=$c.IndexOf("if ([string] `$state['Result'] -cne '') { return }",[StringComparison]::Ordinal)
+            $cancelAt=$c.IndexOf('$e.Cancel = $true',[StringComparison]::Ordinal)
+            if($earlyAt -lt 0 -or ($cancelAt -ge 0 -and $earlyAt -gt $cancelAt)){[void]$f.Add('the Closing handler does not let a close through once the dialog has an answer')}
+            if($c -cnotmatch '\$e\.Cancel = \$true'){[void]$f.Add('the Closing handler never refuses a close')}
+            if($c -cnotmatch "CloseEnabled'\]"){[void]$f.Add('the Closing handler does not read CloseEnabled')}
+            if($c -cnotmatch "\`$state\['Result'\] = \[string\] \`$state\['Escape'\]"){[void]$f.Add('the close box does not answer the Escape target')}
+        }
+        $names=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'SetName' -and $_.Extent.Text -ceq '[System.Windows.Automation.AutomationProperties]::SetName($button, $caption)'})
+        if($names.Count -ne 1){[void]$f.Add('every code-built button is not named by its caption')}
+        $loaded=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_Loaded' -and $_.Extent.Text -cmatch '\$target\.Focus\(\)'})
+        if($loaded.Count -ne 1){[void]$f.Add('the first focus is not set on the target in Loaded')}
+        if($new.Extent.Text.IndexOf('@($Enter, $Escape)',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the first focus target is not chosen from Enter, then Escape')}
+        if($new.Extent.Text.IndexOf('$win.Tag = $result',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the dialog Window.Tag is not the returned table (the test answerer reads it)')}
+        # The owner's resources (the styles and the live theme dictionary) are merged into the dialog, so it follows the theme (R9).
+        $merge=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add' -and $_.Expression.Extent.Text -ceq '$win.Resources.MergedDictionaries' -and @($_.Arguments).Count -eq 1 -and $_.Arguments[0].Extent.Text -ceq '$ownerWindow.Resources'})
+        if($merge.Count -ne 1){[void]$f.Add('the owner resources are not merged into the dialog')}
+        # A hidden owner is recorded for Show (its handle), only when the owner exists and is not visible (R5).
+        if($new.Extent.Text.IndexOf('if ($null -ne $ownerWindow -and -not [bool] $ownerWindow.IsVisible) {',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the hidden owner is not recorded only for a hidden owner')}
+        if($new.Extent.Text.IndexOf('HiddenOwner = $hiddenOwner }',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the dialog table does not carry the hidden owner handle')}
+        # Ownership: the Owner is set only inside an if whose condition reads IsVisible (a hidden owner is never set).
+        $own=@($new.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$win.Owner'},$true))
+        if($own.Count -ne 1){[void]$f.Add('the Owner is not assigned exactly once')}
+        else{
+            $p=$own[0].Parent; while($null -ne $p -and $p -isnot [System.Management.Automation.Language.IfStatementAst]){$p=$p.Parent}
+            if($null -eq $p -or $p.Clauses[0].Item1.Extent.Text -cnotmatch 'IsVisible'){[void]$f.Add('the Owner is set without the owner-visible guard')}
+        }
+        if(@($new.FindAll({param($n) Test-DlgCall $n 'ConvertTo-FastLlmUiAccessText'},$true)).Count -ne 1){[void]$f.Add('the button captions do not go through ConvertTo-FastLlmUiAccessText')}
+    }
+    # --- the dialog is shown modally and answers its id ---
+    $show=Get-DlgFn $Text 'Show-FastLlmUiFluentDialog'
+    if($null -eq $show -or @($show.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -ceq 'ShowDialog'},$true)).Count -ne 1){[void]$f.Add('Show-FastLlmUiFluentDialog does not call ShowDialog once')}
+    # A hidden owner is disabled by handle before ShowDialog and enabled again in a finally (R5): a system box disables its owner even when it is in the tray.
+    if($null -ne $show){
+        $tries=@($show.FindAll({param($n) $n -is [System.Management.Automation.Language.TryStatementAst]},$true))
+        if($tries.Count -ne 1 -or $null -eq $tries[0].Finally -or $tries[0].Finally.Extent.Text -cnotmatch [regex]::Escape('SetWindowEnabled($hiddenOwner, $true)')){[void]$f.Add('the hidden owner is not enabled again in a finally')}
+        elseif($tries[0].Body.Extent.Text -cnotmatch 'ShowDialog\(\)'){[void]$f.Add('ShowDialog is not inside the try that restores the hidden owner')}
+        $offAt=$show.Extent.Text.IndexOf('SetWindowEnabled($hiddenOwner, $false)',[StringComparison]::Ordinal)
+        $tryAt=$show.Extent.Text.IndexOf('try {',[StringComparison]::Ordinal)
+        if($offAt -lt 0 -or $tryAt -lt 0 -or $offAt -gt $tryAt){[void]$f.Add('the hidden owner is not disabled before ShowDialog')}
+    }
+    # --- the icon table has a row for every name of every MessageBoxIcon value, with the glyph and help of that value's canonical row (R4, R10) ---
+    $im=[regex]::Match($Text,"(?s)\`$script:FastLlmUiFluentDialogIcons = @\{(.*?)\r?\n\}")
+    if(-not $im.Success){[void]$f.Add('the icon table is missing')}
+    else{
+        $rows=@{}
+        foreach($r in [regex]::Matches($im.Groups[1].Value,"(?m)^\s*(\w+)\s*=\s*@\{\s*Glyph\s*=\s*(0x[0-9A-Fa-f]+|\d+);\s*Help\s*=\s*'([^']*)'\s*\}")){ $rows[$r.Groups[1].Value]=$r.Groups[2].Value+'|'+$r.Groups[3].Value }
+        # the nine names of System.Windows.Forms.MessageBoxIcon with their values (None 0, Hand/Stop/Error 16, Question 32, Exclamation/Warning 48, Asterisk/Information 64)
+        $canon=[ordered]@{None='None';Error='Error';Hand='Error';Stop='Error';Question='Question';Warning='Warning';Exclamation='Warning';Information='Information';Asterisk='Information'}
+        foreach($name in $canon.Keys){
+            if(-not $rows.ContainsKey($name)){[void]$f.Add("the icon table has no row for MessageBoxIcon.$name");continue}
+            if($rows[$name] -cne $rows[[string]$canon[$name]]){[void]$f.Add("the icon row $name is not the row of $($canon[$name])")}
+        }
+    }
+    # --- the icon is a decorative text block ---
+    $icon=Get-DlgFn $Text 'Set-FastLlmUiFluentDialogIcon'
+    if($null -eq $icon -or $icon.Extent.Text -cnotmatch 'New-Object Bitworks\.FastLlm\.DecorativeTextBlock'){[void]$f.Add('the icon is not a DecorativeTextBlock')}
+    # --- the DialogResult conversion (D1 a: an enum value, never a string) ---
+    $conv=Get-DlgFn $Text 'ConvertTo-FastLlmUiFluentDialogResult'
+    if($null -eq $conv){[void]$f.Add('ConvertTo-FastLlmUiFluentDialogResult is not defined exactly once')}
+    else{
+        $rets=@($conv.FindAll({param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst]},$true))
+        if($rets.Count -ne 1 -or $rets[0].Pipeline.Extent.Text -cne '[System.Enum]::Parse([System.Windows.Forms.DialogResult], [string] $name)'){[void]$f.Add('the answer is not returned as a [System.Windows.Forms.DialogResult] value')}
+        if($conv.Extent.Text -cnotmatch "FastLlmUiFluentDialogResultNames\[\`$Id\]"){[void]$f.Add('the answer is not mapped through the result table')}
+    }
+    # --- the message box ---
+    $box=Get-DlgFn $Text 'Show-FastLlmUiFluentMessageBox'
+    if($null -eq $box){[void]$f.Add('Show-FastLlmUiFluentMessageBox is not defined exactly once')}
+    else{
+        $plan=@($box.FindAll({param($n) Test-DlgCall $n 'Get-FastLlmUiDialogKeyPlan'},$true))
+        if($plan.Count -ne 1 -or (Get-DlgParamText $plan[0] 'Buttons') -cne '$Buttons' -or (Get-DlgParamText $plan[0] 'DefaultButton') -cne '$DefaultButton'){[void]$f.Add('the box does not call the key plan once with its Buttons and DefaultButton')}
+        $dlg=@($box.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true))
+        if($dlg.Count -ne 1){[void]$f.Add('the box does not build one dialog')}
+        else{
+            $want=@{Enter="([string] `$plan['enter'])";Escape="([string] `$plan['escape'])";CloseEnabled="([bool] `$plan['closeEnabled'])";Owner='$Owner';Title='$Caption'}
+            foreach($k in $want.Keys){ if((Get-DlgParamText $dlg[0] $k) -cne $want[$k]){[void]$f.Add("the box dialog's -$k is not $($want[$k])")} }
+        }
+        $last=@($box.Body.EndBlock.Statements)[-1]
+        if($last -isnot [System.Management.Automation.Language.ReturnStatementAst] -or $last.Pipeline.Extent.Text -cne '(ConvertTo-FastLlmUiFluentDialogResult -Id $answer)'){[void]$f.Add('the box does not return the converted DialogResult')}
+        foreach($k in 'BoxOK','BoxCancel','BoxYes','BoxNo'){ if($box.Extent.Text -cnotmatch "\`$s\.$k\b"){[void]$f.Add("the box does not read the string $k")} }
+        if($box.Extent.Text -cmatch 'MessageBox\]::Show'){[void]$f.Add('the fluent box calls the WinForms MessageBox')}
+    }
+    # --- the answer table ---
+    $m=[regex]::Match($Text,"(?s)\`$script:FastLlmUiFluentDialogResultNames = @\{(.*?)\}")
+    if(-not $m.Success){[void]$f.Add('the result table is missing')}
+    else{
+        $pairs=@([regex]::Matches($m.Groups[1].Value,"(\w+)\s*=\s*'(\w+)'")|ForEach-Object{$_.Groups[1].Value+'='+$_.Groups[2].Value})
+        if((($pairs|Sort-Object) -join ',') -cne 'Cancel=Cancel,No=No,OK=OK,Yes=Yes'){[void]$f.Add("the result table is not the four identity pairs: $($pairs -join ',')")}
+    }
+    return ,$f.ToArray()
+}
+$dlgFindings=Get-DlgFindings $dlgText
+foreach($fn in $dlgFindings){Write-Host "FINDING: $fn"}
+Check ($dlgText -ne '' -and $dlgFindings.Count -eq 0) 'the dialog host: constant markup without IsDefault or IsCancel, a wrapping footer, key plan Enter and Escape, a refusing close box, named buttons, DecorativeTextBlock icon, and a message box that returns DialogResult values'
+function Edit-DlgPlant([string]$From,[string]$To){ if($dlgText.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: plant anchor missing: $From"}; return $dlgText.Replace($From,$To) }
+$dlgPlants=[ordered]@{
+    'a button with IsDefault (code)'=Edit-DlgPlant '        $button.MinWidth = 88' "        `$button.MinWidth = 88`n        `$button.IsDefault = `$true"
+    'a button with IsCancel (code)'=Edit-DlgPlant '        $button.MinWidth = 88' "        `$button.MinWidth = 88`n        `$button.IsCancel = `$true"
+    'IsDefault in the markup'=Edit-DlgPlant '<UniformGrid x:Name="DlgFooter"' '<UniformGrid IsDefault="True" x:Name="DlgFooter"'
+    'an event attribute in the markup'=Edit-DlgPlant '<Border x:Name="DlgIconHost"' '<Border Loaded="x" x:Name="DlgIconHost"'
+    'a footer AccessText that does not wrap'=Edit-DlgPlant '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>' '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="NoWrap"/></Style>'
+    'a footer TextBlock that does not wrap'=Edit-DlgPlant '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/>' '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="NoWrap"/>'
+    'the key hook moved off PreviewKeyDown'=Edit-DlgPlant '$win.Add_PreviewKeyDown({' '$win.Add_KeyDown({'
+    'Enter overriding a focused button'=Edit-DlgPlant 'if ($focused -is [System.Windows.Controls.Button]) {' 'if ($false) {'
+    'a focused footer button answering the Enter target'=Edit-DlgPlant '& $close $focusedId' "& `$close ([string] `$state['Enter'])"
+    'a focused button left to its own Enter handling'=Edit-DlgPlant 'else { $focused.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) }' 'else { }'
+    'Escape answering the Enter target'=Edit-DlgPlant "if ([string] `$state['Escape'] -cne '') { & `$close ([string] `$state['Escape']) }" "if ([string] `$state['Escape'] -cne '') { & `$close ([string] `$state['Enter']) }"
+    'a close box that never refuses'=Edit-DlgPlant '$e.Cancel = $true' '$e.Cancel = $false'
+    'a close box that ignores CloseEnabled'=Edit-DlgPlant "if ([bool] `$state['CloseEnabled']) { `$state['Result']" "if (`$true) { `$state['Result']"
+    'a button without its automation name'=Edit-DlgPlant '[System.Windows.Automation.AutomationProperties]::SetName($button, $caption)' '$null = $caption'
+    'the first focus dropped'=Edit-DlgPlant '$null = $target.Focus(); ' ''
+    'the first focus on the first button'=Edit-DlgPlant 'foreach ($candidate in @($Enter, $Escape)) {' 'foreach ($candidate in @()) {'
+    'the Window.Tag dropped'=Edit-DlgPlant '$win.Tag = $result' '$null = $result'
+    'a hidden owner set as owner'=Edit-DlgPlant 'if ($null -ne $ownerWindow -and [bool] $ownerWindow.IsVisible)' 'if ($null -ne $ownerWindow)'
+    'an icon that is a plain TextBlock'=Edit-DlgPlant 'New-Object Bitworks.FastLlm.DecorativeTextBlock' 'New-Object System.Windows.Controls.TextBlock'
+    'the box answering the string (D1 a)'=Edit-DlgPlant '[System.Enum]::Parse([System.Windows.Forms.DialogResult], [string] $name)' '[string] $name'
+    'the box returning the raw id'=Edit-DlgPlant 'return (ConvertTo-FastLlmUiFluentDialogResult -Id $answer)' 'return $answer'
+    'the key plan called without the default button'=Edit-DlgPlant '-Buttons $Buttons -DefaultButton $DefaultButton' '-Buttons $Buttons'
+    'Enter taken from the Escape answer'=Edit-DlgPlant "-Enter ([string] `$plan['enter'])" "-Enter ([string] `$plan['escape'])"
+    'the close box always enabled'=Edit-DlgPlant "-CloseEnabled ([bool] `$plan['closeEnabled'])" '-CloseEnabled $true'
+    'the box owner dropped'=Edit-DlgPlant "-CloseEnabled ([bool] `$plan['closeEnabled']) -Owner `$Owner" "-CloseEnabled ([bool] `$plan['closeEnabled'])"
+    'a caption string not read (BoxNo)'=Edit-DlgPlant '[string] $s.BoxNo' "'No'"
+    'a result table that maps Yes to No'=Edit-DlgPlant "Yes = 'Yes'" "Yes = 'No'"
+    'the Closing early return deleted (R8)'=Edit-DlgPlant "        if ([string] `$state['Result'] -cne '') { return }`n        if ([bool] `$state['CloseEnabled'])" "        if ([bool] `$state['CloseEnabled'])"
+    'the owner resources merge deleted (R9)'=Edit-DlgPlant '        $win.Resources.MergedDictionaries.Add($ownerWindow.Resources)' '        $null = $ownerWindow'
+    'the Asterisk icon row dropped (R4, R10)'=Edit-DlgPlant "    Asterisk    = @{ Glyph = 0xE946; Help = 'Information' }`n" ''
+    'the Exclamation icon row dropped (R4, R10)'=Edit-DlgPlant "    Exclamation = @{ Glyph = 0xE7BA; Help = 'Warning' }`n" ''
+    'the Hand icon row dropped (R4, R10)'=Edit-DlgPlant "    Hand        = @{ Glyph = 0xEA39; Help = '' }`n" ''
+    'the Stop icon row dropped (R4, R10)'=Edit-DlgPlant "    Stop        = @{ Glyph = 0xEA39; Help = '' }`n" ''
+    'the Asterisk icon row with another glyph (R4, R10)'=Edit-DlgPlant "    Asterisk    = @{ Glyph = 0xE946;" "    Asterisk    = @{ Glyph = 0xE947;"
+    'the hidden owner never disabled (R5)'=Edit-DlgPlant '        $null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled($hiddenOwner, $false)' '        $null = $hiddenOwner'
+    'the hidden owner never enabled again (R5)'=Edit-DlgPlant '    finally { if ($disabled) { $null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled($hiddenOwner, $true) } }' '    finally { }'
+    'the hidden owner enabled after the try, not in a finally (R5)'=Edit-DlgPlant "    try { `$null = `$Dialog['Window'].ShowDialog() }`n    finally { if (`$disabled) { `$null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled(`$hiddenOwner, `$true) } }" "    try { `$null = `$Dialog['Window'].ShowDialog() }`n    finally { }`n    if (`$disabled) { `$null = [Bitworks.FastLlm.FluentWindowNative]::SetWindowEnabled(`$hiddenOwner, `$true) }"
+    'the hidden owner handle taken for a shown owner too (R5)'=Edit-DlgPlant 'if ($null -ne $ownerWindow -and -not [bool] $ownerWindow.IsVisible) {' 'if ($null -ne $ownerWindow) {'
+    'the hidden owner handle not carried (R5)'=Edit-DlgPlant '; HiddenOwner = $hiddenOwner }' ' }'
+    'Escape answering with an open drop-down item (R6)'=Edit-DlgPlant '            if ($focused -is [System.Windows.Controls.ComboBoxItem]) { return }' '            $null = $focused'
+    'Escape answering with an open ComboBox (R6)'=Edit-DlgPlant '            if ($focused -is [System.Windows.Controls.ComboBox] -and [bool] $focused.IsDropDownOpen) { return }' '            $null = $focused'
+}
+foreach($k in $dlgPlants.Keys){ Check ($dlgPlants[$k] -cne $dlgText -and (Get-DlgFindings $dlgPlants[$k]).Count -ge 1) "mutation check: the dialog host pin flags: $k" }
+
+# The four box captions are in the string table (D3), equal to what Windows shows in English; the box reads them from the table.
+foreach($pair in @(@('BoxOK','OK'),@('BoxCancel','Cancel'),@('BoxYes','Yes'),@('BoxNo','No'))){
+    Check ([regex]::IsMatch($dlgHome,"(?m)^\s+$($pair[0])\s*=\s*'$($pair[1])'\s*$")) "the string table has $($pair[0]) = '$($pair[1])'"
+}
+
+# The DialogResult mapping table, run for real: every id of every box kind maps to a System.Windows.Forms.DialogResult member name of the same spelling.
+. (Join-Path $root 'src/FastLlm.UiState.ps1')
+. (Join-Path $root 'src/FastLlm.UiXaml.ps1')
+. (Join-Path $root 'src/FastLlm.UiFluentDialogs.ps1')
+$dlgEnum=@('None','OK','Cancel','Abort','Retry','Ignore','Yes','No')
+$dlgIds=@(); foreach($k in 'OK','OKCancel','YesNo'){ foreach($d in 'Button1','Button2'){ $dlgIds+=@((Get-FastLlmUiDialogKeyPlan -Buttons $k -DefaultButton $d)['order']) } }
+Check (@($dlgIds|Select-Object -Unique).Count -eq 4) 'the three box kinds use exactly the four ids OK, Cancel, Yes and No'
+foreach($id in ($dlgIds|Select-Object -Unique)){
+    $name=$script:FastLlmUiFluentDialogResultNames[$id]
+    Check ($name -is [string] -and $name -ceq $id -and $dlgEnum -ccontains $name) "answer id $id maps to the DialogResult member of the same name"
+}
+Check ($script:FastLlmUiFluentDialogResultNames.Count -eq 4) 'the result table has exactly four rows'
+Check ($script:FastLlmUiXaml.ContainsKey('FastLlm.Dialog') -and [string]$script:FastLlmUiXaml['FastLlm.Dialog'] -ceq (Get-DlgXaml $dlgText)) 'the registered dialog markup is the constant here-string of the file'
+# ===== end PR 4a: the dialog host and the fluent message box (Tasks 2 and 3) =====
+
+
+# ===== PR 4a Task 4: the classic seam (D1 = A: explicit named entries) =====
+# Every message box the reachable classic orchestration opens goes through ShowUiMessageBox, which hands it to $script:uiDialogView['MessageBox'] when the Fluent
+# shell has set that table (and is exactly MessageBox.Show's six-argument owner overload otherwise); the two custom dialogs dispatch on their own first line.
+$seamUiText=Get-NormalizedText $path
+$seamShellText=Get-NormalizedText (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+$seamDispatchLine='if($null -ne $script:uiDialogView){return & $script:uiDialogView[''MessageBox''] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}'
+$seamPassLine='return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)'
+$seamParams='$Owner,[string]$Text,[string]$Caption,[string]$Buttons=''OK'',[string]$Icon=''None'',[string]$DefaultButton=''Button1'''
+# Ruling c: every direct MessageBox.Show left in the window script, by enclosing function and count. A new direct call anywhere fails the suite.
+#  ShowUiMessageBox: the passthrough itself. ShowFailure and EnsureTrayIcon: the window cannot be restored (native by design, 6.6).
+#  BuildUiSettingsDialog and ShowUiSettings: the classic Settings dialog, unreachable in the Fluent window (its page replaces it); deleted at the flip.
+$seamNativeShows=@{ShowUiMessageBox=1;ShowFailure=1;EnsureTrayIcon=2;BuildUiSettingsDialog=3;ShowUiSettings=1}
+$seamViewKeys=@{MessageBox='Show-FastLlmUiFluentMessageBox';ShowUiSideResult='Show-FastLlmUiFluentSideResult';ShowDriverGuidance='Show-FastLlmUiFluentDriverGuidance'}
+function Get-SeamFindings([string]$UiText,[string]$ShellText){
+    $f=New-Object System.Collections.ArrayList
+    $e=$null
+    $ui=[System.Management.Automation.Language.Parser]::ParseInput($UiText,[ref]$null,[ref]$e)
+    $sh=[System.Management.Automation.Language.Parser]::ParseInput($ShellText,[ref]$null,[ref]$e)
+    $isFn={param($n,$name) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}
+    # 1. The classic body: the dispatch line, then the six-argument owner overload, nothing else.
+    $box=@($ui.FindAll({param($n) & $isFn $n 'ShowUiMessageBox'},$true))
+    if($box.Count -ne 1){[void]$f.Add('ShowUiMessageBox is not defined exactly once')}
+    else{
+        $ps=@($box[0].Parameters|ForEach-Object{[string]$_.Extent.Text}) -join ','
+        if($ps -cne $seamParams){[void]$f.Add("ShowUiMessageBox parameters changed: $ps")}
+        $st=@($box[0].Body.EndBlock.Statements)
+        if($st.Count -ne 2 -or $st[0].Extent.Text -cne $seamDispatchLine -or $st[1].Extent.Text -cne $seamPassLine){[void]$f.Add('ShowUiMessageBox is not exactly the dispatch line plus the six-argument MessageBox.Show passthrough')}
+    }
+    # 2. The direct MessageBox.Show census (ruling c).
+    $counts=@{}
+    foreach($n in @($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and $n.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and [string]$n.Member.Value -ceq 'Show' -and $n.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and [string]$n.Expression.TypeName.Name -cmatch '^(System\.)?Windows\.Forms\.MessageBox$'},$true))){
+        $p=$n.Parent; while($null -ne $p -and $p -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$p=$p.Parent}
+        $name=if($null -ne $p){[string]$p.Name}else{'(script level)'}
+        if(-not $counts.ContainsKey($name)){$counts[$name]=0}; $counts[$name]++
+    }
+    foreach($k in @($counts.Keys)){ if(-not $seamNativeShows.ContainsKey($k)){[void]$f.Add("a direct MessageBox.Show in $k is not on the native list (use ShowUiMessageBox)")} elseif($counts[$k] -ne $seamNativeShows[$k]){[void]$f.Add("MessageBox.Show count in ${k}: $($counts[$k]), expected $($seamNativeShows[$k])")} }
+    foreach($k in @($seamNativeShows.Keys)){ if(-not $counts.ContainsKey($k)){[void]$f.Add("the native MessageBox.Show list names $k, which has none left")} }
+    # 3. Every view key the classic script reads exists in the shell's table, bound to the named Fluent function.
+    $used=@{}
+    foreach($n in @($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Target -is [System.Management.Automation.Language.VariableExpressionAst] -and [string]$n.Target.VariablePath.UserPath -ceq 'script:uiDialogView'},$true))){
+        $k=if($n.Index -is [System.Management.Automation.Language.StringConstantExpressionAst]){[string]$n.Index.Value}else{'(not a literal)'}
+        $used[$k]=$true
+    }
+    if($used.Count -ne 3){[void]$f.Add("the classic script reads $($used.Count) distinct view keys, expected 3")}
+    $init=@($ui.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:uiDialogView' -and $n.Right.Extent.Text -ceq '$null'},$true))
+    if($init.Count -ne 1){[void]$f.Add('the classic script does not set $script:uiDialogView=$null exactly once')}
+    foreach($k in @($used.Keys)){ if(-not $seamViewKeys.ContainsKey($k)){[void]$f.Add("the classic script reads view key '$k', which is not a known entry")} }
+    $setv=@($sh.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Set-Variable' -and $n.Extent.Text -cmatch '-Name uiDialogView\b'},$true))
+    if($setv.Count -ne 1){[void]$f.Add('Initialize-FastLlmUiFluentShell does not set uiDialogView exactly once')}
+    else{
+        $inFn=$setv[0].Parent; while($null -ne $inFn -and $inFn -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$inFn=$inFn.Parent}
+        if($null -eq $inFn -or $inFn.Name -cne 'Initialize-FastLlmUiFluentShell'){[void]$f.Add('uiDialogView is not set inside Initialize-FastLlmUiFluentShell')}
+        if($setv[0].Extent.Text -cnotmatch '-Scope Script\b'){[void]$f.Add('uiDialogView is not set in the Script scope')}
+        $hash=$setv[0].Find({param($n) $n -is [System.Management.Automation.Language.HashtableAst]},$true)
+        if($null -eq $hash){[void]$f.Add('the uiDialogView value is not a hashtable literal')}
+        else{
+            $tbl=@{}; foreach($kv in $hash.KeyValuePairs){$tbl[[string]$kv.Item1.Extent.Text]=[string]$kv.Item2.Extent.Text}
+            foreach($k in @($used.Keys)){ if(-not $tbl.ContainsKey($k)){[void]$f.Add("view key '$k' is read by the classic script but is not in the shell's table")} }
+            foreach($k in @($seamViewKeys.Keys)){ if(-not $tbl.ContainsKey($k) -or $tbl[$k] -cne ('${function:'+$seamViewKeys[$k]+'}')){[void]$f.Add("the shell's table entry $k is not `${function:$($seamViewKeys[$k])}")} }
+            if($tbl.Count -ne $seamViewKeys.Count){[void]$f.Add("the shell's table has $($tbl.Count) entries, expected $($seamViewKeys.Count)")}
+        }
+    }
+    # 4. The two custom dialogs dispatch on their first statement, passing their parameters by name.
+    foreach($d in @(@('ShowUiSideResult','if($null -ne $script:uiDialogView){& $script:uiDialogView[''ShowUiSideResult''] -Title $Title -Text $Text;return}'),@('ShowDriverGuidance','if($null -ne $script:uiDialogView){& $script:uiDialogView[''ShowDriverGuidance''] -Diagnostic $Diagnostic;return}'))){
+        $dn=$d[0]; $fn=@($ui.FindAll({param($n) & $isFn $n $dn},$true))
+        if($fn.Count -ne 1 -or @($fn[0].Body.EndBlock.Statements).Count -lt 2 -or @($fn[0].Body.EndBlock.Statements)[0].Extent.Text -cne $d[1]){[void]$f.Add("$dn does not start with its dispatch line")}
+    }
+    return ,$f.ToArray()
+}
+$seamFindings=Get-SeamFindings $seamUiText $seamShellText
+foreach($x in $seamFindings){Write-Host "FINDING: $x"}
+Check ($seamFindings.Count -eq 0) 'the classic seam: ShowUiMessageBox body, the native MessageBox.Show list by function and count, and every view key present in the shell table'
+function Edit-SeamPlant([string]$Text,[string]$From,[string]$To){ if($Text.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: seam plant anchor missing: $From"}; return $Text.Replace($From,$To) }
+$seamPlants=[ordered]@{
+    'the passthrough drops DefaultButton (5-argument overload)'=@((Edit-SeamPlant $seamUiText ',$Icon,$DefaultButton)' ',$Icon)'),$seamShellText)
+    'the passthrough drops Icon and DefaultButton (4 arguments)'=@((Edit-SeamPlant $seamUiText ',$Buttons,$Icon,$DefaultButton)' ',$Buttons)'),$seamShellText)
+    'the passthrough loses the owner (owner-less overload)'=@((Edit-SeamPlant $seamUiText 'Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)' 'Show($Text,$Caption,$Buttons,$Icon,$DefaultButton)'),$seamShellText)
+    'the dispatch line forgets to pass DefaultButton'=@((Edit-SeamPlant $seamUiText ' -Icon $Icon -DefaultButton $DefaultButton}' ' -Icon $Icon}'),$seamShellText)
+    'a DefaultButton default changed'=@((Edit-SeamPlant $seamUiText "[string]`$DefaultButton='Button1'){" "[string]`$DefaultButton='Button2'){"),$seamShellText)
+    'a new direct MessageBox.Show in InvokeUiUpdate'=@((Edit-SeamPlant $seamUiText 'function InvokeUiUpdate {' "function InvokeUiUpdate {`n    [void][Windows.Forms.MessageBox]::Show(`$form,'x','y')"),$seamShellText)
+    'a new direct MessageBox.Show at script level'=@(($seamUiText+"`n[void][System.Windows.Forms.MessageBox]::Show('x')`n"),$seamShellText)
+    'a native ShowFailure Show removed'=@((Edit-SeamPlant $seamUiText "[void][Windows.Forms.MessageBox]::Show('FastLLM needs attention," "[void][Console]::WriteLine('FastLLM needs attention,"),$seamShellText)
+    'a view key misspelled in the classic script'=@((Edit-SeamPlant $seamUiText "uiDialogView['MessageBox']" "uiDialogView['MessageBoks']"),$seamShellText)
+    'a view key misspelled in the shell table'=@($seamUiText,(Edit-SeamPlant $seamShellText 'ShowDriverGuidance = ${function:' 'ShowDriverGuidence = ${function:'))
+    'a shell entry bound to the wrong function'=@($seamUiText,(Edit-SeamPlant $seamShellText 'MessageBox = ${function:Show-FastLlmUiFluentMessageBox}' 'MessageBox = ${function:Show-FastLlmUiFluentSideResult}'))
+    'the side result dispatch missing'=@((Edit-SeamPlant $seamUiText "    if(`$null -ne `$script:uiDialogView){& `$script:uiDialogView['ShowUiSideResult'] -Title `$Title -Text `$Text;return}`n" ''),$seamShellText)
+    'the table set in the Local scope'=@($seamUiText,(Edit-SeamPlant $seamShellText '-Name uiDialogView -Scope Script' '-Name uiDialogView -Scope Local'))
+}
+foreach($k in $seamPlants.Keys){ Check ((@(Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1])).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
+# Ruling a (the fluent box returns [System.Windows.Forms.DialogResult], never a string) is pinned with the dialog host above; the view entry is that function (the key pin).
+# ===== end PR 4a Task 4 =====
+
+# ===== PR 4a Task 5: side result and driver guidance (builder D) =====
+# The text table is copied from the two classic functions (drift pin), the key targets are the classic ones (side result: Close answers Enter and Escape;
+# driver guidance: Escape only, no Enter target), and each runs again on a planted mutant.
+$sdText=Get-OptionalText 'src/FastLlm.UiFluentDialogs.ps1'
+$sdTextAssign=@((ConvertTo-PinAst $sdText).FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$script:FastLlmUiFluentDialogText'},$true))
+Check ($sdTextAssign.Count -eq 1) 'the dialog text table is assigned exactly once'
+$sdTable=& ([scriptblock]::Create($sdTextAssign[0].Right.Extent.Text))
+Check ((@($sdTable.Keys) -join ',') -ceq 'SideClose,GuidanceTitle,GuidanceLabel,OpenPage,GuidanceClose,NoReport,NoEntries,NoEntriesStatus,TooMany,Invalid,OpenFailed,Viewed,Url') 'the dialog text table has the 13 planned keys, in order'
+function Get-SideDriftLiterals($Ast){
+    $vals=New-Object System.Collections.ArrayList
+    foreach($fnName in 'ShowUiSideResult','ShowDriverGuidance'){
+        foreach($fnAst in (Get-AstFunction $Ast $fnName)){
+            foreach($k in @($fnAst.FindAll({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))){ [void]$vals.Add([string]$k.Value) }
+        }
+    }
+    return ,$vals.ToArray()
+}
+function Get-SideDriftProblems($Table,[string[]]$Values){
+    $problems=New-Object System.Collections.ArrayList
+    foreach($key in @($Table.Keys)){if($Values -cnotcontains [string]$Table[$key]){[void]$problems.Add("table value $key is not a string constant of ShowUiSideResult or ShowDriverGuidance")}}
+    return ,$problems.ToArray()
+}
+$sdClassic=Get-SideDriftLiterals $classicAst
+$sdDrift=Get-SideDriftProblems $sdTable $sdClassic
+foreach($pr in $sdDrift){Write-Host "FINDING: $pr"}
+Check ($sdDrift.Count -eq 0 -and $sdClassic.Count -gt 20) "every dialog text value is a classic literal of ShowUiSideResult or ShowDriverGuidance ($($sdClassic.Count) literals read)"
+foreach($sdKey in @($sdTable.Keys)){
+    $mut=[ordered]@{}; foreach($key in @($sdTable.Keys)){$mut[$key]=[string]$sdTable[$key]}
+    $mut[$sdKey]=[string]$sdTable[$sdKey]+'.'
+    Check ((Get-SideDriftProblems $mut $sdClassic).Count -ge 1) "mutation check: a changed $sdKey literal fails the dialog text drift pin"
+}
+# The classic key targets, read from the classic AST: the side result has AcceptButton and CancelButton = Close; driver guidance has CancelButton only.
+$sdSideClassic=(Get-AstFunction $classicAst 'ShowUiSideResult')[0].Extent.Text
+$sdDriverClassic=(Get-AstFunction $classicAst 'ShowDriverGuidance')[0].Extent.Text
+Check ($sdSideClassic.Contains('$dialog.AcceptButton=$close') -and $sdSideClassic.Contains('$dialog.CancelButton=$close')) 'classic ShowUiSideResult: Close is both AcceptButton and CancelButton'
+Check ($sdDriverClassic.Contains('$dialog.CancelButton=$close') -and -not $sdDriverClassic.Contains('AcceptButton')) 'classic ShowDriverGuidance: Close is the CancelButton and there is no AcceptButton'
+function Get-SideKeyTargets([string]$Text,[string]$FnName){
+    $fn=Get-DlgFn $Text $FnName
+    if($null -eq $fn){return $null}
+    $calls=@($fn.FindAll({param($n) Test-DlgCall $n 'New-FastLlmUiFluentDialog'},$true))
+    if($calls.Count -ne 1){return $null}
+    $e=Get-DlgParamText $calls[0] 'Enter'; $x=Get-DlgParamText $calls[0] 'Escape'
+    return [pscustomobject]@{Enter=$(if($null -eq $e){'<none>'}else{$e});Escape=$(if($null -eq $x){'<none>'}else{$x})}
+}
+function Get-SideFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $side=Get-SideKeyTargets $Text 'Show-FastLlmUiFluentSideResult'
+    $drv=Get-SideKeyTargets $Text 'Show-FastLlmUiFluentDriverGuidance'
+    if($null -eq $side -or $side.Enter -cne "'Close'" -or $side.Escape -cne "'Close'"){[void]$f.Add('the side result does not answer Enter and Escape with Close')}
+    if($null -eq $drv -or $drv.Enter -cnotin @("''",'<none>')){[void]$f.Add('driver guidance has an Enter target (the classic form has no AcceptButton)')}
+    if($null -eq $drv -or $drv.Escape -cne "'Close'"){[void]$f.Add('driver guidance does not answer Escape with Close')}
+    foreach($name in 'Show-FastLlmUiFluentSideResult','Show-FastLlmUiFluentDriverGuidance'){
+        $fn=Get-DlgFn $Text $name
+        if($null -eq $fn){[void]$f.Add("$name is not defined once");continue}
+        if($fn.Extent.Text -cmatch 'IsDefault|IsCancel'){[void]$f.Add("$name sets IsDefault or IsCancel")}
+    }
+    $box=Get-DlgFn $Text 'New-FastLlmUiFluentDialogReadBox'
+    if($null -eq $box -or -not $box.Extent.Text.Contains('$box.IsReadOnly = $true') -or -not $box.Extent.Text.Contains('$box.IsUndoEnabled = $false') -or -not $box.Extent.Text.Contains('TextWrapping]::Wrap') -or -not $box.Extent.Text.Contains('$box.AcceptsReturn = $false')){[void]$f.Add('the read box is not read-only, undo-free, wrapping and Enter-transparent')}
+    $drvFn=Get-DlgFn $Text 'Show-FastLlmUiFluentDriverGuidance'
+    if($null -ne $drvFn -and -not $drvFn.Extent.Text.Contains('SetCanContentScroll($devices, $false)')){[void]$f.Add('the device list scrolls by item (CanContentScroll is not False)')}
+    if($null -ne $drvFn){
+        $names=@($drvFn.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static -and [string]$n.Member.Value -in @('SetName','SetLabeledBy')},$true)).Count
+        if($names -lt 3){[void]$f.Add('the driver guidance inputs do not each carry Name and LabeledBy')}
+    }
+    return ,$f.ToArray()
+}
+$sdReal=Get-SideFindings $sdText
+foreach($pr in $sdReal){Write-Host "FINDING: $pr"}
+Check ($sdReal.Count -eq 0) 'side result: Enter = Escape = Close; driver guidance: Escape = Close and no Enter target; read-only undo-free wrapping box; the list scrolls by pixel; every input has Name and LabeledBy'
+$sdPlants=[ordered]@{
+    'driver guidance Enter = Close'=$sdText.Replace("-Enter '' -Escape 'Close' -Owner `$script:form`n    `$work","-Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work")
+    'side result Enter removed'=$sdText.Replace("-Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0","-Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0")
+    'side result Escape removed'=$sdText.Replace("-Buttons `$buttons -Enter 'Close' -Escape 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0","-Buttons `$buttons -Enter 'Close' -Owner `$script:form`n    `$work = [System.Windows.SystemParameters]::WorkArea`n    `$dialog['Window'].Width = [Math]::Min(`$work.Width * 0.9, 760.0")
+    'driver guidance Escape removed'=$sdText.Replace("-Enter '' -Escape 'Close'","-Enter ''")
+    'undo left on'=$sdText.Replace('$box.IsUndoEnabled = $false','$box.IsUndoEnabled = $true')
+    'the read box swallowing Enter'=$sdText.Replace('$box.AcceptsReturn = $false','$box.AcceptsReturn = $true')
+    'list scrolls by item'=$sdText.Replace('SetCanContentScroll($devices, $false)','SetCanContentScroll($devices, $true)')
+    'a LabeledBy dropped'=$sdText.Replace('        [System.Windows.Automation.AutomationProperties]::SetLabeledBy($field, $label)','')
+    'IsDefault on the driver close'=$sdText.Replace("-Enter '' -Escape 'Close'","-Enter '' -Escape 'Close'; `$IsDefault = 1")
+}
+foreach($k in $sdPlants.Keys){ Check ($sdPlants[$k] -cne $sdText -and (Get-SideFindings $sdPlants[$k]).Count -ge 1) "mutation check: the side result and driver guidance pins flag: $k" }
+# ===== end PR 4a Task 5 =====
+
+
+# ===== PR 4a Task 6: the #84 lines in the shell message area (SignInNotice) =====
+# The element is constant XAML (polite, named by its text, theme brushes, wrapping); its text is the startup's own sign-in line (captured from the
+# output/status writes at the loop start, no literal and no second read) or the existing not-measured line; it hides once a start has succeeded.
+$snText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentShell.ps1'))
+function Get-SignInNoticeFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $m=[regex]::Match($Text,"(?s)\`$script:FastLlmUiXaml\['FastLlm.Shell'\] = @'\r?\n(.*?)\r?\n'@")
+    $x=if($m.Success){$m.Groups[1].Value}else{''}
+    $el=[regex]::Match($x,'(?s)<TextBlock x:Name="SignInNotice"[^>]*>')
+    if(-not $el.Success){[void]$f.Add('there is no SignInNotice TextBlock in the shell XAML')}
+    else{
+        if($el.Value -cnotmatch 'AutomationProperties\.LiveSetting="Polite"'){[void]$f.Add('SignInNotice is not a polite live region')}
+        if($el.Value -cmatch 'AutomationProperties\.Name|\bText='){[void]$f.Add('SignInNotice carries a literal name or text (its name is its text)')}
+        if($el.Value -cnotmatch 'TextWrapping="Wrap"'){[void]$f.Add('SignInNotice does not wrap')}
+        if($el.Value -cnotmatch 'Foreground="\{DynamicResource FastLlm\.'){[void]$f.Add('SignInNotice has no theme foreground')}
+    }
+    if($x -cnotmatch '<Border x:Name="SignInNoticeBar" Visibility="Collapsed"'){[void]$f.Add('the notice bar is not a collapsed Border')}
+    $upd=Get-DlgFn $Text 'Update-FastLlmUiFluentMessages'
+    $sav=Get-DlgFn $Text 'Save-FastLlmUiFluentSignInNotice'
+    $loop=Get-DlgFn $Text 'Start-FastLlmUiFluentLoop'
+    if($null -eq $upd -or $null -eq $sav -or $null -eq $loop){[void]$f.Add('the message refresh, the capture or the loop is not defined once');return ,$f.ToArray()}
+    $ut=$upd.Extent.Text
+    if(-not $sav.Extent.Text.Contains('$script:statusLabel.Text') -or -not $sav.Extent.Text.Contains('$script:output.Text')){[void]$f.Add('the capture does not read the startup status and output text')}
+    if($sav.Extent.Text -cmatch 'Get-FastLlmSignInAttentionText|Read-FastLlmSignInResult|Get-FastLlmSignInResultText'){[void]$f.Add('the capture reads the sign-in result again')}
+    if($sav.Extent.Text -cmatch "\`$keys\['SignInLine'\] = '"){[void]$f.Add('the capture stores a literal line')}
+    $capture=@($loop.FindAll({param($n) Test-DlgCall $n 'Save-FastLlmUiFluentSignInNotice'},$true))
+    $tick=@($loop.FindAll({param($n) Test-DlgCall $n 'Invoke-FastLlmUiFluentTick'},$true))
+    if($capture.Count -ne 1 -or $tick.Count -ne 1 -or $capture[0].Extent.StartOffset -ge $tick[0].Extent.StartOffset){[void]$f.Add('the capture is not called once before the first tick')}
+    if(-not $ut.Contains("`$e['SignInNotice'].Text = `$noticeText") -or -not $ut.Contains("[string] `$keys['SignInLine']")){[void]$f.Add('the notice text is not the captured line')}
+    if(-not $ut.Contains("Get-FastLlmSavedServingFailureText -Code 'serving-profile-not-measured'") -or -not $ut.Contains('$script:backgroundLabel.Text') -or -not $ut.Contains('{ $noticeText = [string] $notMeasured }')){[void]$f.Add('the not-measured line is not the existing text compared with the background line')}
+    if($ut -cnotmatch "(?s)Get-FastLlmUiCardState.*?'running' -or .*?'running-background'.*?\`$keys\['SignInLine'\] = \`$null"){[void]$f.Add('the sign-in line is not cleared once a start has succeeded')}
+    if($ut -cnotmatch "SignInNoticeBar'\]\.Visibility = if \(\`$noticeText -cne ''\)"){[void]$f.Add('the bar does not show only while there is a notice')}
+    if($ut -cnotmatch "SignInNotice'\]\.Text = .*?\r?\n\s*if \(\`$noticeText -cne ''\) \{ Send-FastLlmUiFluentLiveRegion"){[void]$f.Add('a notice change does not raise the live region')}
+    return ,$f.ToArray()
+}
+$snReal=Get-SignInNoticeFindings $snText
+foreach($pr in $snReal){Write-Host "FINDING: $pr"}
+Check ($snReal.Count -eq 0) 'SignInNotice: polite, wrapping, themed, named by its text; the text is the startup line or the existing not-measured line (no literal); it hides after a successful start'
+$snPlants=[ordered]@{
+    'not polite'=$snText.Replace('AutomationProperties.LiveSetting="Polite"','AutomationProperties.LiveSetting="Assertive"')
+    'literal name'=$snText.Replace('<TextBlock x:Name="SignInNotice" ','<TextBlock x:Name="SignInNotice" AutomationProperties.Name="Sign-in notice" ')
+    'no wrap'=$snText.Replace('<TextBlock x:Name="SignInNotice" TextWrapping="Wrap" ','<TextBlock x:Name="SignInNotice" ')
+    'literal text'=$snText.Replace('$e[''SignInNotice''].Text = $noticeText','$e[''SignInNotice''].Text = ''Sign-in start was refused.''')
+    'second read'=$snText.Replace('$line = [string] $script:statusLabel.Text','$line = [string] (Get-FastLlmSignInAttentionText -InstallRoot $InstallRoot)')
+    'never hides'=$snText.Replace('$keys[''SignInLine''] = $null }','$null = 1 }')
+    'capture after the tick'=$snText.Replace("    Save-FastLlmUiFluentSignInNotice`n    Invoke-FastLlmUiFluentTick","    Invoke-FastLlmUiFluentTick`n    Save-FastLlmUiFluentSignInNotice")
+    'not-measured text dropped'=$snText.Replace('{ $noticeText = [string] $notMeasured }','{ }')
+    'bar always visible'=$snText.Replace('$e[''SignInNoticeBar''].Visibility = if ($noticeText -cne '''')','$e[''SignInNoticeBar''].Visibility = if ($true)')
+}
+foreach($k in $snPlants.Keys){ Check ($snPlants[$k] -cne $snText -and (Get-SignInNoticeFindings $snPlants[$k]).Count -ge 1) "mutation check: the SignInNotice pins flag: $k" }
+# ===== end PR 4a Task 6 (#84 lines) =====
 
 
 Write-Host "UI fluent member coverage tests passed: $checks"

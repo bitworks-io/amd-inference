@@ -358,3 +358,26 @@ function Get-FastLlmUiSettingsExitDecision {
         default { return 'stay' }
     }
 }
+
+# The Enter, Escape and close-box answers of a message box, as a pure function of its button set and default button (what Windows does for a MessageBox).
+# DefaultButton is MessageBox's own default, Button1, for a call site that passes none. An id is OK, Cancel, Yes or No; '' means "nothing happens".
+# OK: Enter, Escape and the close box answer OK. OKCancel: Enter answers the default button, Escape and the close box answer Cancel.
+# YesNo: Enter answers the default button; Escape does nothing and the close box is disabled (closeEnabled is false, close is '').
+function Get-FastLlmUiDialogKeyPlan {
+    param(
+        [Parameter(Mandatory=$true)][ValidateSet('OK','OKCancel','YesNo')][string]$Buttons,
+        [ValidateSet('Button1','Button2')][string]$DefaultButton='Button1'
+    )
+    $second=($DefaultButton -ceq 'Button2')
+    switch -CaseSensitive ($Buttons) {
+        'OK' { return @{ order=[string[]]@('OK'); enter='OK'; escape='OK'; close='OK'; closeEnabled=$true } }
+        'OKCancel' {
+            $enter='OK'; if($second){$enter='Cancel'}
+            return @{ order=[string[]]@('OK','Cancel'); enter=$enter; escape='Cancel'; close='Cancel'; closeEnabled=$true }
+        }
+        default {
+            $enter='Yes'; if($second){$enter='No'}
+            return @{ order=[string[]]@('Yes','No'); enter=$enter; escape=''; close=''; closeEnabled=$false }
+        }
+    }
+}

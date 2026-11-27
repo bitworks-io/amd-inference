@@ -184,7 +184,12 @@ $bannerButton.Text='Update';$bannerButton.Location=New-Object Drawing.Point(480,
 # Offered only while the reinstall decision allows it (Get-FastLlmUiReinstallOffer); a click asks for confirmation and re-decides before anything is changed.
 $reinstallButton=New-Object Windows.Forms.Button
 $reinstallButton.Text='Reinstall previous version';$reinstallButton.Location=New-Object Drawing.Point(640,4);$reinstallButton.Size=New-Object Drawing.Size(180,28);$reinstallButton.Visible=$false;$form.Controls.Add($reinstallButton)
+$script:uiDialogView=$null
 if ($Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }
+function ShowUiMessageBox($Owner,[string]$Text,[string]$Caption,[string]$Buttons='OK',[string]$Icon='None',[string]$DefaultButton='Button1'){
+    if($null -ne $script:uiDialogView){return & $script:uiDialogView['MessageBox'] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}
+    return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)
+}
 function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate) {
     $script:bannerUrl=$Url
     if([string]::IsNullOrEmpty($Text)){$bannerLabel.Visible=$false;$bannerNotes.Visible=$false;$bannerButton.Visible=$false;return}
@@ -200,16 +205,16 @@ function SetUiBanner([string]$Text,[string]$Url,[bool]$IsError,[bool]$CanUpdate)
     $bannerButton.Left=$next
     $bannerButton.Visible=$CanUpdate
 }
-$vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.','Open prerequisite page','OK','Warning')}})
-$amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.','Open AMD page','OK','Warning')}})
+$vc.Add_LinkClicked({try{Start-Process 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'}catch{$null=ShowUiMessageBox $form 'Unable to open Microsoft''s prerequisite page. Check your default browser. No software was installed.' 'Open prerequisite page' 'OK' 'Warning'}})
+$amd.Add_LinkClicked({try{Start-Process 'https://www.amd.com/en/support/download/drivers.html'}catch{$null=ShowUiMessageBox $form 'Unable to open AMD''s driver page. Check your default browser. No driver changes were made.' 'Open AMD page' 'OK' 'Warning'}})
 $failureCopyLink.Add_LinkClicked({try{[Windows.Forms.Clipboard]::SetText([string]$script:failureCapture)}catch{$statusLabel.Text='Could not copy: '+$_.Exception.Message}})
 $resultsLink.Add_LinkClicked({
     try{
         $checked=Get-FastLlmUiEvidenceUrl -Plan ([pscustomobject]@{recipe=[pscustomobject]@{evidenceUrl=$script:evidenceUrl}})
         if($checked){Start-Process ([string]$checked)}
-    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the results page. Check your default browser.','Open results page','OK','Warning')}
+    }catch{$null=ShowUiMessageBox $form 'Unable to open the results page. Check your default browser.' 'Open results page' 'OK' 'Warning'}
 })
-$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the Resizable BAR page. Check your default browser.','Open Resizable BAR page','OK','Warning')}})
+$barLink.Add_LinkClicked({try{Start-Process 'https://github.com/bitworks-io/amd-inference/blob/main/docs/RESIZABLE-BAR.md'}catch{$null=ShowUiMessageBox $form 'Unable to open the Resizable BAR page. Check your default browser.' 'Open Resizable BAR page' 'OK' 'Warning'}})
 $barBox.Add_SelectedIndexChanged({
     try{Write-FastLlmUiSettings -InstallRoot $script:settingsRoot -Settings ([pscustomobject]@{vulkanBarMitigation=(GetBarValue)})}
     catch{$statusLabel.Text='The Resizable BAR setting could not be saved.'}
@@ -218,7 +223,7 @@ $bannerNotes.Add_LinkClicked({
     try{
         $target=[string]$script:bannerUrl
         if($target.StartsWith('https://github.com/bitworks-io/amd-inference/releases',[StringComparison]::Ordinal)){Start-Process $target}
-    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the release page. Check your default browser.','Open release page','OK','Warning')}
+    }catch{$null=ShowUiMessageBox $form 'Unable to open the release page. Check your default browser.' 'Open release page' 'OK' 'Warning'}
 })
 $updateBox.Add_CheckedChanged({
     try{Set-FastLlmUpdateSettings -InstallRoot $script:settingsRoot -UpdateCheck $(if($updateBox.Checked){'on'}else{'off'})}
@@ -232,7 +237,7 @@ $experimentalBox.Add_CheckedChanged({
     $previousValue=if($wanted -ceq 'on'){'off'}else{'on'}
     try{
         if($wanted -ceq 'on'){
-            $answer=[Windows.Forms.MessageBox]::Show($form,$script:FastLlmExperimentalParagraph,'Experimental community components','YesNo','Warning','Button2')
+            $answer=ShowUiMessageBox $form $script:FastLlmExperimentalParagraph 'Experimental community components' 'YesNo' 'Warning' 'Button2'
             if($answer -ne [Windows.Forms.DialogResult]::Yes){
                 $script:experimentalRevert=$true;$experimentalBox.Checked=$false;$script:experimentalRevert=$false
                 return
@@ -263,7 +268,7 @@ function ShowLicenseSettingConfirm($Disclosure) {
                 try{
                     $target=Get-FastLlmUiSafeLicenseUrl -Url ([string]$sender.Tag)
                     if($target){Start-Process $target}
-                }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was changed.','Open license page','OK','Warning')}
+                }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was changed.' 'Open license page' 'OK' 'Warning'}
             })
             $dialog.Controls.Add($link)
         }else{
@@ -536,6 +541,7 @@ function LaunchSideStep([string]$Step,[object[]]$Arguments) {
     $statusLabel.Text=$(if($Step -ceq 'api check'){'Checking the API formats...'}else{'Preparing the support bundle...'})
 }
 function ShowUiSideResult([string]$Title,[string]$Text) {
+    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowUiSideResult'] -Title $Title -Text $Text;return}
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text=$Title;$dialog.Size=New-Object Drawing.Size(760,480);$dialog.StartPosition='CenterParent';$dialog.Font=$form.Font
     $box=New-Object Windows.Forms.TextBox;$box.Multiline=$true;$box.ReadOnly=$true;$box.ScrollBars='Vertical';$box.Location=New-Object Drawing.Point(16,16);$box.Size=New-Object Drawing.Size(710,360)
@@ -912,6 +918,7 @@ function ContinueUiAfterPreview($Plan) {
     LaunchUiPhase
 }
 function ShowDriverGuidance($Diagnostic) {
+    if($null -ne $script:uiDialogView){& $script:uiDialogView['ShowDriverGuidance'] -Diagnostic $Diagnostic;return}
     RevealUiForAction
     if (-not $Diagnostic.PSObject.Properties['driverGuidance'] -or -not $Diagnostic.windows) {
         throw 'No Windows driver guidance report was returned.'
@@ -982,10 +989,10 @@ function SetUiClipboardPayload($Payload) {
 function NewUiApiKey($Owner) {
     $store=GetUiApiKeyStore
     $question=Get-FastLlmUiNewKeyConfirmText -HasReadableKey ([bool]($store -and $store.available))
-    if([Windows.Forms.MessageBox]::Show($Owner,$question,'Create a new key','YesNo','Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
+    if((ShowUiMessageBox $Owner $question 'Create a new key' 'YesNo' 'Question') -ne [Windows.Forms.DialogResult]::Yes){return $false}
     $change=Invoke-FastLlmApiKeySetting -InstallRoot $script:installPath -Action rotate
     $script:apiKeyStore=$null
-    [void][Windows.Forms.MessageBox]::Show($Owner,(@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.'),'Create a new key','OK','Information')
+    $null=ShowUiMessageBox $Owner ((@($change.lines) -join [Environment]::NewLine).Replace('Show it with: fast-llm.ps1 settings -ApiKey show','Show or copy it in Connect an app.')) 'Create a new key' 'OK' 'Information'
     return $true
 }
 # A start that failed on the API key: its own plain message, no retry, and the offer to create a new key when that is what helps.
@@ -1242,7 +1249,7 @@ function FillComponentsPanel {
 }
 function RemoveComponentFromWindow([string]$ComponentId) {
     $view=$script:componentsView
-    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later.",'Remove component','YesNo','Question','Button2')
+    $answer=ShowUiMessageBox $view.dialog "Remove the component '$ComponentId'? Its files are deleted from this PC. You can install it again later." 'Remove component' 'YesNo' 'Question' 'Button2'
     if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
     # The operation lock is taken (without waiting) so a chain install or a start in preparation cannot be undone under it; a busy answer changes nothing.
     $removeLock=$null
@@ -1321,7 +1328,7 @@ function RemoveModelFromWindow([string]$ModelId) {
     $row=@(Get-FastLlmInstalledModels -InstallRoot $view.root -CatalogPath $view.file | Where-Object{$_.id -ceq $ModelId})[0]
     if($null -eq $entry -or $null -eq $row){$view.message.Text=Get-FastLlmModelRemovalRefusalText -Reason 'not-installed';[void]$view.dialog.BeginInvoke([Action]{FillModelsPanel});return}
     $text=Get-FastLlmModelRemovalConfirmationText -DisplayName (Get-FastLlmModelDisplayName -Model $entry) -SizeBytes ([int64]$row.sizeBytes)
-    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,$text,'Remove model','YesNo','Question','Button2')
+    $answer=ShowUiMessageBox $view.dialog $text 'Remove model' 'YesNo' 'Question' 'Button2'
     if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
     $removeLock=$null
     try{
@@ -1339,7 +1346,7 @@ function RemoveLeftoversFromWindow {
     $view=$script:modelsView
     $names=@($view.leftoverButton.Tag)
     if($names.Count -eq 0){return}
-    $answer=[Windows.Forms.MessageBox]::Show($view.dialog,"Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?",'Remove leftover partial downloads','YesNo','Question','Button2')
+    $answer=ShowUiMessageBox $view.dialog "Deletes the leftover partial downloads ($($view.leftoverText)) from this PC. Downloaded models are not touched. Continue?" 'Remove leftover partial downloads' 'YesNo' 'Question' 'Button2'
     if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
     $removeLock=$null
     try{
@@ -1438,7 +1445,7 @@ function StartSupportBundle {
 }
 function ContinueSupportBundle([string]$Text) {
     $listing=ConvertFrom-Json $Text
-    $answer=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiSupportBundleList -Listing $listing),'Save support bundle',[Windows.Forms.MessageBoxButtons]::OKCancel,[Windows.Forms.MessageBoxIcon]::Information)
+    $answer=ShowUiMessageBox $form (Format-FastLlmUiSupportBundleList -Listing $listing) 'Save support bundle' ([Windows.Forms.MessageBoxButtons]::OKCancel) ([Windows.Forms.MessageBoxIcon]::Information)
     if($answer -ne [Windows.Forms.DialogResult]::OK){$statusLabel.Text='Support bundle cancelled. Nothing was saved.';return}
     $dialog=New-Object Windows.Forms.SaveFileDialog
     try{
@@ -1451,7 +1458,7 @@ function ContinueSupportBundle([string]$Text) {
         $chosen=$null
         while($null -eq $chosen){
             if($dialog.ShowDialog($form) -ne [Windows.Forms.DialogResult]::OK){$statusLabel.Text='Support bundle cancelled. Nothing was saved.';return}
-            if(Test-Path -LiteralPath $dialog.FileName){[void][Windows.Forms.MessageBox]::Show($form,'That file already exists. A support bundle is never written over a file; choose a new name.','Save support bundle')}
+            if(Test-Path -LiteralPath $dialog.FileName){$null=ShowUiMessageBox $form 'That file already exists. A support bundle is never written over a file; choose a new name.' 'Save support bundle'}
             else{$chosen=$dialog.FileName}
         }
     }finally{$dialog.Dispose()}
@@ -1658,7 +1665,7 @@ function ShowComponentConsent($Row,[object[]]$ConsentRows,[bool]$Chosen=$true) {
                     try{
                         $target=Get-FastLlmUiSafeLicenseUrl -Url ([string]$sender.Tag)
                         if($target){Start-Process $target}
-                    }catch{[void][Windows.Forms.MessageBox]::Show($form,'Unable to open the license page. Check your default browser. Nothing was downloaded.','Open license page','OK','Warning')}
+                    }catch{$null=ShowUiMessageBox $form 'Unable to open the license page. Check your default browser. Nothing was downloaded.' 'Open license page' 'OK' 'Warning'}
                 })
                 $panel.Controls.Add($link)
             }else{
@@ -1778,7 +1785,7 @@ function InvokeUiUpdate {
     if(-not $script:updateOffer -or $script:updateRun){return}
     if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before updating.';return}
     $version=[string]$script:updateOffer.version
-    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiUpdateConfirm -Version $version),'Update FastLLM','YesNo','Question','Button2')
+    $choice=ShowUiMessageBox $form (Format-FastLlmUiUpdateConfirm -Version $version) 'Update FastLLM' 'YesNo' 'Question' 'Button2'
     if($choice -ne 'Yes'){return}
     $source=@'
 param($Project,$Install,$App,$Latest)
@@ -1828,7 +1835,7 @@ function InvokeUiReinstall {
     if(-not $script:reinstallOffer -or $script:updateRun){return}
     if($script:child -or $script:sideChild -or $script:vcBroker){$statusLabel.Text='Finish or stop the current action before reinstalling.';return}
     $offer=$script:reinstallOffer
-    $choice=[Windows.Forms.MessageBox]::Show($form,(Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)),'Reinstall previous version','YesNo','Question','Button2')
+    $choice=ShowUiMessageBox $form (Format-FastLlmUiReinstallConfirm -From ([string]$offer.from) -To ([string]$offer.to)) 'Reinstall previous version' 'YesNo' 'Question' 'Button2'
     if($choice -ne 'Yes'){return}
     # The run decides again from scratch and refuses when the previous version is no longer the one confirmed here.
     $source=@'
@@ -2067,7 +2074,7 @@ $form.Add_FormClosing({param($sender,$event)
         return
     }
     if($script:child){
-        if([Windows.Forms.MessageBox]::Show($form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){
+        if((ShowUiMessageBox $form 'Closing stops this window''s active download or inference process. Continue?' 'Close FastLLM' 'YesNo' 'Question') -ne 'Yes'){
             $event.Cancel=$true;SetTrayMenuAvailable $true;return
         }
         $script:child.Dispose();$script:child=$null

@@ -21,6 +21,7 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentConnect.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentModels.ps1')
 . (Join-Path $PSScriptRoot 'FastLlm.UiFluentSettings.ps1')
+. (Join-Path $PSScriptRoot 'FastLlm.UiFluentDialogs.ps1')
 
 $script:FastLlmUiFluentSourceRoot = Split-Path -Parent $PSScriptRoot
 # State shared by the handlers: they are not closures, so nothing lives in a function's locals. Els: every named element; Keys: last-applied values.
@@ -459,6 +460,12 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
             <Button x:Name="UpdateButton" Margin="0,0,8,0" Style="{DynamicResource FastLlm.ButtonStyle}"/>
             <Button x:Name="ReinstallButton" Style="{DynamicResource FastLlm.ButtonStyle}"/>
           </WrapPanel>
+        </Border>
+        <Border x:Name="SignInNoticeBar" Visibility="Collapsed" Margin="24,16,24,0" Padding="12,8,12,8" BorderThickness="1"
+                Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.CardStrokeBrush}"
+                CornerRadius="{DynamicResource FastLlm.ControlCornerRadius}">
+          <TextBlock x:Name="SignInNotice" TextWrapping="Wrap" VerticalAlignment="Center" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"
+                     AutomationProperties.LiveSetting="Polite"/>
         </Border>
         <Border x:Name="FailureBar" Visibility="Collapsed" Margin="24,16,24,0" Padding="12,8,12,8" BorderThickness="1"
                 Background="{DynamicResource FastLlm.CriticalBackgroundBrush}" BorderBrush="{DynamicResource FastLlm.CriticalTextBrush}"
@@ -997,6 +1004,43 @@ function Update-FastLlmUiFluentMessages {
         $keys['Failure'] = $null
     }
     $keys['Held'] = $held
+
+    # The #84 lines (PR 4a): the sign-in refusal line the window read at startup, and the "no measured setup" line while that refusal holds.
+    # No new text: the first is the startup's own line (kept by Save-FastLlmUiFluentSignInNotice), the second is Get-FastLlmSavedServingFailureText
+    # compared with the background line and the held failure. The sign-in line ends when a start succeeds (a running card), for the window's life.
+    if ($null -ne $keys['SignInLine']) {
+        $cardState = [string] (Get-FastLlmUiCardState -Snapshot (GetUiStateSnapshot $false)).state
+        if ($cardState -ceq 'running' -or $cardState -ceq 'running-background') { $keys['SignInLine'] = $null }
+    }
+    $noticeText = [string] $keys['SignInLine']
+    $notMeasured = $null
+    if ($null -ne (Get-Command -Name Get-FastLlmSavedServingFailureText -ErrorAction SilentlyContinue)) {
+        $notMeasured = Get-FastLlmSavedServingFailureText -Code 'serving-profile-not-measured'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string] $notMeasured)) {
+        $backgroundLine = ([string] $script:backgroundLabel.Text).Trim()
+        $heldLine = if ($held) { ([string] $script:failureViewText).Trim() } else { '' }
+        if ($backgroundLine -ceq [string] $notMeasured -or $heldLine -ceq [string] $notMeasured) { $noticeText = [string] $notMeasured }
+    }
+    if ($keys['Notice'] -cne $noticeText) {
+        $keys['Notice'] = $noticeText
+        $e['SignInNotice'].Text = $noticeText
+        if ($noticeText -cne '') { Send-FastLlmUiFluentLiveRegion -Element $e['SignInNotice'] }
+    }
+    $e['SignInNoticeBar'].Visibility = if ($noticeText -cne '') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+}
+
+# The sign-in refusal line (#84): fast-llm-ui.ps1 writes it to the output box and the status line (the same text, once, at startup, after the seam).
+# The loop calls this before the first tick, when nothing else has written either yet; nothing is read a second time. A normal status line is
+# never equal to the output box at that point (the output box starts empty).
+function Save-FastLlmUiFluentSignInNotice {
+    [CmdletBinding()] param()
+    $keys = $script:FastLlmUiFluent['Keys']
+    try {
+        $line = [string] $script:statusLabel.Text
+        if (-not [string]::IsNullOrWhiteSpace($line) -and $line -ceq [string] $script:output.Text) { $keys['SignInLine'] = $line }
+    }
+    catch { $null = $_ }
 }
 
 # One 250 ms refresh. A fault in one part never stops the others and never reaches the message loop; the last one is kept for the lead's logs.
@@ -1077,7 +1121,7 @@ function Initialize-FastLlmUiFluentShell {
         # A second startup in the same process (the shell suite) starts from an empty element map, so no page name is a duplicate.
         $f['Els'] = @{}
         foreach ($name in 'PaneColumn', 'NavList', 'NavSettingsList', 'MessageScroll', 'UpdateBar', 'UpdateText', 'UpdateNotesButton', 'UpdateButton', 'ReinstallButton',
-            'FailureBar', 'FailureText', 'FailureCopyButton', 'PageHost') {
+            'SignInNoticeBar', 'SignInNotice', 'FailureBar', 'FailureText', 'FailureCopyButton', 'PageHost') {
             $f['Els'][$name] = Get-FastLlmUiFluentElement -Root $win -Name $name
         }
         $f['Pages'] = @{}
@@ -1108,6 +1152,12 @@ function Initialize-FastLlmUiFluentShell {
         # The form adapter takes over the window's handle; from here the orchestration's $form is the adapter (owner of every dialog and message box).
         $formAdapter = New-FastLlmUiFormAdapter -Window $win
         Set-Variable -Name form -Scope Script -Value $formAdapter
+        # The seam table the classic orchestration reads for every dialog it hands to the Fluent window (D1: explicit named entries). Captured with ${function:} so the entries are the functions themselves.
+        Set-Variable -Name uiDialogView -Scope Script -Value @{
+            MessageBox = ${function:Show-FastLlmUiFluentMessageBox}
+            ShowUiSideResult = ${function:Show-FastLlmUiFluentSideResult}
+            ShowDriverGuidance = ${function:Show-FastLlmUiFluentDriverGuidance}
+        }
         # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
         $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
         try { $classicForm.Dispose() } catch { $null = $_ }
@@ -1157,6 +1207,7 @@ function Start-FastLlmUiFluentLoop {
             [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown()
         })
     # The first paint of the card (GetUiStateSnapshot exists only after the seam), so the window never opens showing the empty markup.
+    Save-FastLlmUiFluentSignInNotice
     Invoke-FastLlmUiFluentTick
     $f['Timer'].Start()
     $win.Show()

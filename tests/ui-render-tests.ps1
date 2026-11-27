@@ -147,6 +147,46 @@ if($plantRows.Count -eq 2){
     Check ([string]$pr['line'] -ceq 'scale 1.0 text 1.0: cases 2; live layout scale 1.0, 1.25; bound 0.500; NoWrap n=4 gap W [-0.310, 0.420] H [-0.380, -0.380]; Wrap n=3 gap W [0.490, 0.490] H [0.240, 0.240]; above the bound (reported clipped) 1; below the bound 0; off the pixel grid 2; below it by an explicit size 2; below it by an access key split 1; trimmed with a tooltip 1; wraps re-measured 1') "the gap summary line reads as pinned (got '$($pr['line'])')"
     Check ([int]$plantRows[1]['under'] -eq 1 -and @($plantRows[1]['notes']).Count -eq 1 -and [string]@($plantRows[1]['notes'])[0] -ceq 'Plant.B light 1.25 2.0 640x480: below the bound on W: PlantText' -and [string]$plantRows[1]['line'] -like '*Wrap n=0 gap W none H none; above the bound (reported clipped) 0; below the bound 1;*') "the gap summary carries a case's notes with its label and prints an empty range as none (line '$($plantRows[1]['line'])')"
 }
+# The Hyperlink negative pages (pure, any OS, from this file's own text): each is a TextBlock whose only content is a Hyperlink, the negative table and the case list
+# name each page and its one expected problem, and the PNG count covers both, so the Windows run cannot drop them unnoticed.
+$selfText=[IO.File]::ReadAllText((Join-Path $root 'tests/ui-render-tests.ps1'))
+$linkExpect=[ordered]@{LinkClipped=@{Name='LinkClippedText';Problem='clipped:LinkClippedText'};LinkOutside=@{Name='LinkOutsideText';Problem='outside:LinkOutsideText'}}
+foreach($ln in $linkExpect.Keys){
+    $m=[regex]::Match($selfText,"(?s)\`$script:FastLlmUiXaml\['Test\.$ln'\]\s*=\s*@'\r?\n(.*?)\r?\n'@")
+    Check $m.Success "the $ln markup was found in this file"
+    if(-not $m.Success){continue}
+    $linkDoc=New-Object System.Xml.XmlDocument
+    $linkDoc.LoadXml($m.Groups[1].Value)
+    $xamlNs='http://schemas.microsoft.com/winfx/2006/xaml'
+    $tbs=@($linkDoc.GetElementsByTagName('TextBlock')|Where-Object{$_.GetAttribute('Name',$xamlNs) -ceq $linkExpect[$ln].Name})
+    Check ($tbs.Count -eq 1) "the $ln page has one TextBlock named $($linkExpect[$ln].Name)"
+    if($tbs.Count -ne 1){continue}
+    $kids=@($tbs[0].ChildNodes|Where-Object{$_.NodeType -eq [System.Xml.XmlNodeType]::Element})
+    Check ($kids.Count -eq 1 -and $kids[0].LocalName -ceq 'Hyperlink' -and $kids[0].InnerText.Length -ge 40 -and -not [string]::IsNullOrEmpty($kids[0].GetAttribute('Name',$xamlNs))) "the $ln TextBlock holds one named Hyperlink with a long text and nothing else"
+    Check ($tbs[0].InnerText -ceq $kids[0].InnerText -and [string]::IsNullOrEmpty($tbs[0].GetAttribute('Text'))) "the $ln TextBlock text is the link's run alone"
+    Check ($selfText.Contains("$ln='$($linkExpect[$ln].Problem)'")) "the negative table expects exactly '$($linkExpect[$ln].Problem)' from $ln"
+}
+Check ($selfText.Contains("'Nested','LinkClipped','LinkOutside'){")) 'the negative case list runs both Hyperlink pages'
+Check ($selfText.Contains('-eq 54) ("the render folder holds 54 Test.* PNGs')) 'the Test.* PNG count includes the two Hyperlink pages'
+# PR 4a CI round 1, the LinkClipped miss: a block whose only content is a Hyperlink has an empty Text on Windows, so its clone measured as nothing and the 60-wide NoWrap
+# link was never reported clipped. The clone now takes the text of the inlines when Text is empty. Pure checks over the object shape (a Run has Text, a Hyperlink or Span has Inlines).
+$planRun=[pscustomobject]@{Text='This link text is much too long'}
+$planLink=[pscustomobject]@{Inlines=@($planRun)}
+$planNested=[pscustomobject]@{Inlines=@([pscustomobject]@{Text='Read '},[pscustomobject]@{Inlines=@([pscustomobject]@{Text='the '},[pscustomobject]@{Text='notes'})})}
+Check ((Get-UiInlineText @($planLink)) -ceq 'This link text is much too long') 'a Hyperlink inline gives the text of its run'
+Check ((Get-UiInlineText @($planNested)) -ceq 'Read the notes') 'nested inlines give their text in order'
+Check ((Get-UiInlineText @()) -ceq '') 'no inlines give an empty text'
+Check ((Get-UiBlockText ([pscustomobject]@{Text='';Inlines=@($planLink)})) -ceq 'This link text is much too long') 'a block with an empty Text and a Hyperlink inline is measured with the link text (the LinkClipped miss)'
+Check ((Get-UiBlockText ([pscustomobject]@{Text='Plain';Inlines=@($planLink)})) -ceq 'Plain') 'a block with a Text keeps its Text'
+Check ((Get-UiBlockText ([pscustomobject]@{Text=''})) -ceq '') 'a block with neither Text nor inlines is empty'
+Check ($selfText.Contains('$planLink') -and ([IO.File]::ReadAllText((Join-Path $root 'tests/helpers/UiRenderHarness.ps1'))).Contains('$clone.Text = Get-UiBlockText $Text')) 'the clone takes its text through Get-UiBlockText'
+# Dialog reading order: the region comes first, so a stop below the body's fold (large Top) is still read before the footer.
+$planRows=@([pscustomobject]@{Name='Footer';Region=1;Row=40.0;Left=300.0;Order=3},[pscustomobject]@{Name='BelowFold';Region=0;Row=90.0;Left=0.0;Order=2},[pscustomobject]@{Name='Device';Region=0;Row=5.0;Left=0.0;Order=0},[pscustomobject]@{Name='Close';Region=1;Row=40.0;Left=400.0;Order=4})
+Check ((@(Sort-UiReadingRows $planRows|ForEach-Object{$_.Name}) -join ',') -ceq 'Device,BelowFold,Footer,Close') 'a stop below the body fold sorts before the footer: region, then row, then left'
+Check ((@(Sort-UiReadingRows @($planRows[0]))|Measure-Object).Count -eq 1 -and @(Sort-UiReadingRows @()).Count -eq 0) 'the reading sort keeps one stop and none'
+$dlgOrderText=[regex]::Match($selfText,'(?sm)^function Test-DialogReadingOrder.*?\r?\n}\r?\n').Value
+Check ($dlgOrderText.Contains("Get-UiTabRegion `$el `$built.Content @('DlgBodyScroll')") -and $dlgOrderText.Contains('Sort-UiReadingRows')) 'the dialog reading order sorts by the body scroll region first'
+Check ([regex]::Matches($selfText,"-TabRegions @\('DlgBodyScroll'\)").Count -eq 2) 'both dialog render calls name the body scroll as a tab region'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -242,6 +282,20 @@ $script:FastLlmUiXaml['Test.Outside']=@'
 </Canvas>
 '@
 
+# A Hyperlink inside a TextBlock: the clipped and outside rules judge the TextBlock, whose Text includes the link's run, so a link that overflows is reported.
+# The link has no NavigateUri (an external reference is refused) and no Run of its own, so the overflow is the link's text alone.
+$script:FastLlmUiXaml['Test.LinkClipped']=@'
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
+  <TextBlock x:Name="LinkClippedText" Width="60" HorizontalAlignment="Left" VerticalAlignment="Top" TextWrapping="NoWrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"><Hyperlink x:Name="ClippedLink">This link text is much too long to fit in sixty device independent pixels.</Hyperlink></TextBlock>
+</Grid>
+'@
+
+$script:FastLlmUiXaml['Test.LinkOutside']=@'
+<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Height="60">
+  <TextBlock x:Name="LinkOutsideText" Canvas.Left="560" Canvas.Top="10" TextWrapping="NoWrap" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"><Hyperlink x:Name="OutsideLink">This link text runs past the right edge of the page.</Hyperlink></TextBlock>
+</Canvas>
+'@
+
 $script:FastLlmUiXaml['Test.UnnamedTextBox']=@'
 <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="16">
   <TextBox x:Name="BareBox" FontSize="{DynamicResource FastLlm.BodySize}" Foreground="{DynamicResource FastLlm.TextPrimaryBrush}"/>
@@ -307,9 +361,9 @@ if([string]::IsNullOrEmpty($out)){
 $matrix=@(Get-UiRenderMatrix)
 
 # Each negative page shows exactly its own problem.
-$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox';Nested='outside:InnerFar'}
+$neg=@{Overlap='overlap:BtnA:BtnB';Clipped='clipped:ClippedText';ClippedButton='clipped:TextBlock';Unnamed='unnamed:Button';TabOrder='tab-order';Outside='outside:FarBox';UnnamedTextBox='unnamed:TextBox';LabeledByOnly='unnamed:TextBox';LabelMismatch='label-mismatch:MisBox';Nested='outside:InnerFar';LinkClipped='clipped:LinkClippedText';LinkOutside='outside:LinkOutsideText'}
 $base=@{theme='light';scale=[double]1.0;textScale=[double]1.0;width=640;height=480}
-foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch','Nested'){
+foreach($n in 'Overlap','Clipped','ClippedButton','Unnamed','TabOrder','Outside','UnnamedTextBox','LabeledByOnly','LabelMismatch','Nested','LinkClipped','LinkOutside'){
     $found=@()
     $diag=@()
     try{$res=Invoke-UiRenderCase -Name ('Test.'+$n) -Case $base -OutFolder $out;$found=@($res.problems);$diag=@($res.diagnostics)}catch{$found=@('threw: '+$_.Exception.Message)}
@@ -984,6 +1038,126 @@ $script:settingsCaseHeight=[double]480
 Test-PageReadingOrder 'Settings' 'FastLlm.Settings' 'FastLlm.SettingsReading' $settingsPrepare 13 @() @('SettingsScroll')
 $script:settingsOverride=$null
 
+# ---- PR 4a: the dialogs (message box kinds and icons, the side result, the driver guidance). Each dialog is built by the product's own functions with
+# Show-FastLlmUiFluentDialog shadowed to capture it (nothing is shown); its body and footer Grid is taken off the dialog Window and rendered like a page, at the dialog's
+# own width capped at the case width. The shell Window's style resources are merged in the prepare step (as for the shell render), so these cases do not depend on the
+# harness carrying them. This block runs before the shell block, which leaves a stand-in window in $script:FastLlmUiFluent.
+if($null -eq (Get-Command -Name Get-FastLlmUiDialogKeyPlan -ErrorAction SilentlyContinue)){. (Join-Path $root 'src/FastLlm.UiState.ps1')}
+$script:FastLlmUiFluent=$null
+function RevealUiForAction{}
+function SetTrayMenuAvailable([bool]$Available){}
+# The message box answers as [System.Windows.Forms.DialogResult] (the window loads WinForms; this process does not until asked).
+try{Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop}catch{Write-Host ('INFO: WinForms load error: '+$_.Exception.ToString())}
+$script:dlgCaptured=$null
+$script:dlgStyleHost=New-FastLlmUiXamlElement -Name 'FastLlm.Shell'
+$script:dlgRealShow=${function:Show-FastLlmUiFluentDialog}
+function Show-FastLlmUiFluentDialog{param([Parameter(Mandatory=$true)]$Dialog) $script:dlgCaptured=$Dialog; return ''}
+$dlgCases=@()
+foreach($theme in 'light','dark','high-contrast'){foreach($size in @(@(640,480),@(1000,680))){foreach($text in 1.0,2.25){$dlgCases+=,@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=[int]$size[0];height=[int]$size[1]}}}}
+Check ($dlgCases.Count -eq 12) 'the dialog grid is 3 themes x 2 window sizes x 2 text sizes (12 cases)'
+$dlgShort='Remove the model? It is deleted from this PC.'
+$dlgLong=((1..40|ForEach-Object{"Line $_ of a long box body that is long enough to wrap at large text sizes and to scroll inside the dialog."}) -join "`n")
+# Builds the dialog for a spec and returns its content Grid (detached from the dialog Window) and the dialog's own width.
+function New-DialogRenderContent($Spec,$Case){
+    $themeArgs=@{Theme=[string]$Case.theme;AccentPair=(Get-FastLlmUiAccentPair -Palette $null);TextScale=[double]$Case.textScale}
+    if($Case.theme -ceq 'high-contrast'){$themeArgs['HighContrastPalette']=Get-UiRenderHighContrastPalette}
+    $owner=New-Object System.Windows.Window
+    $owner.Resources=New-FastLlmUiThemeDictionary @themeArgs
+    $script:form=$owner
+    $script:dlgCaptured=$null
+    switch([string]$Spec.Kind){
+        'box'{$null=Show-FastLlmUiFluentMessageBox -Owner $owner -Text ([string]$Spec.Text) -Caption 'FastLLM dialog render' -Buttons ([string]$Spec.Buttons) -Icon ([string]$Spec.Icon) -DefaultButton ([string]$Spec.Default)}
+        'side'{Show-FastLlmUiFluentSideResult -Title 'FastLLM dialog render result' -Text ([string]$Spec.Text)}
+        'guidance'{Show-FastLlmUiFluentDriverGuidance -Diagnostic $Spec.Diagnostic}
+        default{throw "unknown dialog kind '$($Spec.Kind)'"}
+    }
+    if($null -eq $script:dlgCaptured){throw 'the dialog function did not build a dialog'}
+    $win=$script:dlgCaptured['Window']
+    $grid=$win.Content
+    $win.Content=$null
+    $grid.Width=[Math]::Min([double]$win.Width,[double]$Case.width)
+    # The real dialog Window is capped at 95% of the work area and its star row shrinks the body, which scrolls. The case stands for that work area: the Grid is capped at the
+    # case height, so the body scrolls inside the Grid and the harness page never needs a scroll bar of its own (which narrows the viewport below the Grid's fixed width).
+    $grid.MaxHeight=[double]$Case.height
+    return @{Content=$grid;Dialog=$script:dlgCaptured;Width=[double]$win.Width}
+}
+$dlgPrepare={
+    param($page)
+    foreach($k in @($script:dlgStyleHost.Resources.Keys)){if(-not $page.Resources.Contains($k)){$page.Resources[$k]=([object]$script:dlgStyleHost.Resources[$k]).psobject.BaseObject}}
+}
+$dlgGuidance=[pscustomobject]@{windows=$true;driverGuidance=@([pscustomobject]@{schemaVersion=1;qualification=$false;automaticDriverInstall=$false;hasOwnTrustedMapping=$false
+    asOf='2026-01-01';inputGpuName='Probe display device';reportedPnpDriverVersion='1.0';knownFocusModel=$false;note=((1..12|ForEach-Object{"Guidance note line $_ that is long enough to wrap."}) -join ' ')})}
+function Test-DialogCase([string]$Label,$Spec,$Case,[string]$PngName,[int]$WantButtons){
+    $caseLabel="$($Case.theme) $($Case.scale) $($Case.textScale) $($Case.width)x$($Case.height)"
+    $r=$null;$built=$null
+    try{
+        $built=New-DialogRenderContent $Spec $Case
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -TabRegions @('DlgBodyScroll')
+    }catch{Check $false "$Label renders at ${caseLabel}: $($_.Exception.Message)";return}
+    $diagText=''
+    if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
+    Check (@($r.problems).Count -eq 0) "$Label clean at ${caseLabel}: $(@($r.problems) -join '; ')$diagText"
+    # the visual list is one array object on the pipeline (the function returns it with a leading comma), so it is taken into a variable and piped from there
+    $dlgVisuals=Get-UiVisualElements $built.Content
+    $buttons=@($dlgVisuals|Where-Object{$_ -is [System.Windows.Controls.Button] -and (Test-UiAuthored $_) -and (Test-UiShown $_ $built.Content)})
+    Check ($buttons.Count -eq $WantButtons) "$Label shows $WantButtons footer button(s) at ${caseLabel} (got $($buttons.Count))"
+    Check ($r.unmappedRects -eq 0) "$Label left no authored element unmapped at ${caseLabel} (got $($r.unmappedRects))"
+}
+$dlgSw=[Diagnostics.Stopwatch]::StartNew()
+# every box kind with a short and a long body, over the 12-case grid
+foreach($kind in @(@('OK','Button1',1),@('OKCancel','Button1',2),@('YesNo','Button2',2))){
+    foreach($body in 'short','long'){
+        $text=$dlgShort;if($body -ceq 'long'){$text=$dlgLong}
+        foreach($case in $dlgCases){
+            Test-DialogCase "Box $($kind[0]) $body" @{Kind='box';Buttons=$kind[0];Default=$kind[1];Icon='Question';Text=$text} $case ('FastLlm.Dialog'+$kind[0]+$body) ([int]$kind[2])
+        }
+    }
+}
+# every icon over the 3 themes at text 1.0 and 2.25 (640x480)
+foreach($icon in 'None','Information','Warning','Question','Error'){
+    foreach($theme in 'light','dark','high-contrast'){
+        foreach($text in 1.0,2.25){
+            $case=@{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+            Test-DialogCase "Box icon $icon" @{Kind='box';Buttons='OK';Default='Button1';Icon=$icon;Text=$dlgShort} $case ('FastLlm.DialogIcon'+$icon) 1
+        }
+    }
+}
+# the side result (long text) and the driver guidance over the 12-case grid
+foreach($case in $dlgCases){Test-DialogCase 'Side result' @{Kind='side';Text=((1..60|ForEach-Object{"Probe line $_ of a long side result that wraps at large text."}) -join "`n")} $case 'FastLlm.DialogSide' 1}
+foreach($case in $dlgCases){Test-DialogCase 'Driver guidance' @{Kind='guidance';Diagnostic=$dlgGuidance} $case 'FastLlm.DialogGuidance' 2}
+Write-Host ('INFO: dialog render of {0} cases took {1:N1} s' -f (12*6+30+24),$dlgSw.Elapsed.TotalSeconds)
+# reading order: no overlap, and the tab sequence is the reading order, at text 1.0, 2.0 and 2.25 (a YesNo box and the driver guidance, the one with a list, a text box and two buttons)
+function Test-DialogReadingOrder([string]$Label,$Spec,[string]$PngName,[int]$MinStops){
+    foreach($text in 1.0,2.0,2.25){
+        $case=@{theme='light';scale=[double]1.0;textScale=[double]$text;width=640;height=480}
+        $r=$null;$built=$null
+        try{
+            $built=New-DialogRenderContent $Spec $case
+            $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -TabRegions @('DlgBodyScroll')
+        }catch{Check $false "$Label reading order renders at text ${text}: $($_.Exception.Message)";continue}
+        $overlaps=@(@($r.problems)|Where-Object{$_ -like 'overlap:*'})
+        Check ($overlaps.Count -eq 0) "$Label has no overlap at text ${text}: $($overlaps -join '; ')"
+        $rows=@();$order=0
+        foreach($el in (Get-UiVisualElements $built.Content)){
+            if($el -is [System.Windows.Controls.Control] -and (Test-UiAuthored $el) -and $el.Focusable -and $el.IsTabStop -and $el.IsEnabled -and (Test-UiShown $el $built.Content)){
+                $rect=Get-UiRelativeRect $el $built.Content
+                # the body scroll first, the footer after it: a stop below the body's fold sorts by its unclipped Top, so the region comes first (as Test-PageReadingOrder does)
+                if($null -ne $rect){$rows+=[pscustomobject]@{Name=(Get-UiElementLabel $el);Region=(Get-UiTabRegion $el $built.Content @('DlgBodyScroll'));Row=[double][Math]::Round($rect.Top/8.0);Left=[double]$rect.Left;Order=$order}}
+            }
+            $order++
+        }
+        $byRead=@(Sort-UiReadingRows $rows)
+        $treeNames=(@($rows|ForEach-Object{$_.Name}) -join ', ')
+        $readNames=(@($byRead|ForEach-Object{$_.Name}) -join ', ')
+        Write-Host "INFO: $Label tab sequence at text ${text}: tree [$treeNames] reading [$readNames]"
+        Check ($treeNames -ceq $readNames -and @($rows).Count -ge $MinStops) "the $Label tab sequence is the reading order at text ${text} ($(@($rows).Count) stops, at least $MinStops)"
+    }
+}
+Test-DialogReadingOrder 'YesNo box' @{Kind='box';Buttons='YesNo';Default='Button2';Icon='Question';Text=$dlgShort} 'FastLlm.DialogReadingYesNo' 2
+Test-DialogReadingOrder 'Driver guidance' @{Kind='guidance';Diagnostic=$dlgGuidance} 'FastLlm.DialogReadingGuidance' 4
+Set-Item -Path Function:\Show-FastLlmUiFluentDialog -Value $script:dlgRealShow
+$script:form=$null
+
 # ---- The shell and Home together: the window content (navigation pane, message area, page host with Home) is rendered like a page.
 # The Window element cannot be measured inside the harness, so its content is taken off it and its styles are merged into the theme dictionary.
 # The update bar is visible and the failure bar holds 400 characters in every case.
@@ -1119,14 +1293,16 @@ foreach($row in $gapRows){
 $gapPairs=@($matrix|ForEach-Object{"$([double]$_.scale)|$([double]$_.textScale)"}|Sort-Object -Unique)
 Check ($gapRows.Count -eq $gapPairs.Count -and $gapRows.Count -eq 13) "the text gap summary covers the 13 device scale and text scale pairs of the matrix (rows $($gapRows.Count), pairs $($gapPairs.Count))"
 
-# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 10 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
+# PNGs per run, counted by prefix: Test.* is 40 sample cases plus 12 negative pages plus 2 region pages. Only files written during this run count, so leftovers cannot inflate a number.
 function Get-RenderPngCount([string]$Prefix){
     return @(Get-ChildItem -LiteralPath $out -Filter ($Prefix+'-*.png') -File | Where-Object { $_.LastWriteTimeUtc -ge $runStart }).Count
 }
-Check ((Get-RenderPngCount 'Test.*') -eq 52) ("the render folder holds 52 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
+Check ((Get-RenderPngCount 'Test.*') -eq 54) ("the render folder holds 54 Test.* PNGs written by this run (got $(Get-RenderPngCount 'Test.*'))")
 $pngExpect=[ordered]@{'FastLlm.Tools'=40;'FastLlm.ToolsBusy'=6;'FastLlm.ToolsReading'=3;'FastLlm.Connect'=40;'FastLlm.ConnectNotRunning'=6;'FastLlm.ConnectKeyUnreadable'=6;'FastLlm.ConnectReading'=3
     'FastLlm.Models'=40;'FastLlm.ModelsEmpty'=6;'FastLlm.ModelsReading'=3
     'FastLlm.Settings'=40;'FastLlm.SettingsKeyOn'=6;'FastLlm.SettingsKeyOff'=6;'FastLlm.SettingsRunning'=6;'FastLlm.SettingsUnavailable'=6;'FastLlm.SettingsReading'=3
+    'FastLlm.DialogOKshort'=12;'FastLlm.DialogOKlong'=12;'FastLlm.DialogOKCancelshort'=12;'FastLlm.DialogOKCancellong'=12;'FastLlm.DialogYesNoshort'=12;'FastLlm.DialogYesNolong'=12
+    'FastLlm.DialogIconNone'=6;'FastLlm.DialogIconInformation'=6;'FastLlm.DialogIconWarning'=6;'FastLlm.DialogIconQuestion'=6;'FastLlm.DialogIconError'=6;'FastLlm.DialogSide'=12;'FastLlm.DialogGuidance'=12;'FastLlm.DialogReadingYesNo'=3;'FastLlm.DialogReadingGuidance'=3
     'FastLlm.Shell'=12;'FastLlm.ShellTools'=12;'FastLlm.ShellConnect'=12;'FastLlm.ShellModels'=12;'FastLlm.ShellSettings'=12}
 foreach($prefix in $pngExpect.Keys){
     $got=Get-RenderPngCount $prefix

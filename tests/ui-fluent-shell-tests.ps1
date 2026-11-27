@@ -2056,6 +2056,90 @@ function Invoke-H9-DisplayTextOracle {
     }
 }
 
+# ======================================================================================================================
+# Dialog answerer self-tests (PR 4a Task 1): the harness answers a WPF dialog by caption and id, reads its text back, and still answers a Win32 box.
+# ======================================================================================================================
+
+# True when the dialog host is loaded (the steps are no-ops without it, so this suite also runs on a tree that has no host yet).
+function Test-DlgHostLoaded { return [bool](Get-Command New-FastLlmUiFluentDialog -ErrorAction SilentlyContinue) }
+
+# One shown scenario with a WPF test dialog (buttons in order) owned by its window.
+function New-DlgCase([string]$Caption, [string]$BodyText, $Buttons, [string]$Enter, [bool]$CloseEnabled) {
+    $s = New-Scn 'dlg'
+    Show-Scn $s
+    $body = New-Object System.Windows.Controls.TextBlock
+    $body.Text = $BodyText
+    $d = New-FastLlmUiFluentDialog -Title $Caption -Body $body -Buttons $Buttons -Enter $Enter -Escape '' -CloseEnabled $CloseEnabled -Owner $s.Window
+    return @{ S = $s; D = $d }
+}
+
+function Invoke-SDLG1-WpfAnswer {
+    if (-not (Test-DlgHostLoaded)) { Write-Host 'SKIP: S-DLG1 (the dialog host is not loaded)'; return }
+    # the MessageBox ids (7 No, 6 Yes) and a custom id, each answered by caption
+    foreach ($c in @(@{ id = 7; expect = 'No'; fb = 7 }, @{ id = 6; expect = 'Yes'; fb = 7 }, @{ id = 'Later'; expect = 'Later'; fb = 7 })) {
+        $cap = 'FastLLM dialog check ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $text = 'Dialog body ' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+        $btns = [ordered]@{ Yes = 'Yes'; No = 'No'; Later = 'Later' }
+        $k = New-DlgCase $cap $text $btns 'Yes' $false
+        $s = $k.S; $box = @{}
+        $t = Start-BoxAnswer $cap $c.id $s.Hwnd $box -FallbackId $c.fb
+        $got = ''
+        try { $got = [string](Show-FastLlmUiFluentDialog -Dialog $k.D) } finally { $t.Stop() }
+        Invoke-Pump 100
+        $n = 'S-DLG1 id ' + $c.id
+        Check ($box.found -and -not $box.timedOut -and -not $box.hardStop) "$n the WPF dialog was found and answered within 6 s" "found=$($box.found) timedOut=$($box.timedOut) hardStop=$($box.hardStop) rung=$($box.rung)"
+        Check ($box.path -eq 'wpf') "$n the answer path is wpf" "path=$($box.path)"
+        Check ($got -eq $c.expect) "$n the dialog returned the id that was pressed" "returned=$got expected=$($c.expect)"
+        Check ($box.rung -eq 'Invoke id') "$n the first rung (automation Invoke of the button id) closed it" "rung=$($box.rung) closedBy=$($box.closedBy)"
+        Check ([string]$box.text -match [regex]::Escape($text)) "$n the body text was read back from the dialog" "text=$($box.text)"
+        Check ($box.owner -eq $s.Hwnd.ToInt64() -and $box.during -eq $false) "$n the dialog is owned by the main window and the owner is disabled while it is up" "owner=$($box.owner) expected=$($s.Hwnd.ToInt64()) during=$($box.during)"
+    }
+    # Get-BoxText reads a live WPF dialog (a pump runs while it is open)
+    $cap = 'FastLLM dialog text ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $k = New-DlgCase $cap 'Read this body' ([ordered]@{ OK = 'OK' }) 'OK' $true
+    $seen = @{ text = $null }
+    $getText = ${function:Get-BoxText}
+    $hw = $k.S.Hwnd; $dl = $k.D
+    $probe = New-Object System.Windows.Threading.DispatcherTimer
+    $probe.Interval = [TimeSpan]::FromMilliseconds(100)
+    $probe.Add_Tick(({ if ($null -eq $seen.text) { $seen.text = [string](& $getText $cap $hw); try { $dl.Window.Close() } catch { $null = $_ } } }).GetNewClosure())
+    $probe.Start()
+    try { $null = Show-FastLlmUiFluentDialog -Dialog $k.D } finally { $probe.Stop() }
+    Invoke-Pump 100
+    Check ([string]$seen.text -eq 'Read this body') 'S-DLG1 Get-BoxText reads the Els body text of a WPF dialog' "text=$($seen.text)"
+    # a real MessageBox is still answered through the Win32 path
+    $s = New-Scn 'dlgw'; Show-Scn $s
+    $cap2 = 'FastLLM dialog win32 ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $box = @{}
+    $t = Start-BoxAnswer $cap2 7 $s.Hwnd $box -FallbackId 7
+    $r = ''
+    try { $r = [string][System.Windows.Forms.MessageBox]::Show($s.Form, 'Win32 body text', $cap2, 'YesNo', 'Question') } finally { $t.Stop() }
+    Invoke-Pump 100
+    Check ($box.found -and -not $box.hardStop -and $box.path -eq 'win32') 'S-DLG1 a real MessageBox is still answered through the Win32 path' "found=$($box.found) path=$($box.path) hardStop=$($box.hardStop)"
+    Check ($r -eq 'No' -and [string]$box.text -match 'Win32 body text') 'S-DLG1 the Win32 box returned No and its text was read back' "result=$r text=$($box.text)"
+    Check-NoExceptions 'S-DLG1'
+}
+
+function Invoke-SDLG2-LadderFallback {
+    if (-not (Test-DlgHostLoaded)) { Write-Host 'SKIP: S-DLG2 (the dialog host is not loaded)'; return }
+    # a ladder that matches no button still falls back, rung by rung, to closing the window and never hangs
+    $cap = 'FastLLM dialog fallback ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $k = New-DlgCase $cap 'No such button' ([ordered]@{ OK = 'OK' }) 'OK' $true
+    $box = @{}
+    $t = Start-BoxAnswer $cap 7 $k.S.Hwnd $box -FallbackId 2
+    try { $null = Show-FastLlmUiFluentDialog -Dialog $k.D } finally { $t.Stop() }
+    Invoke-Pump 100
+    Check ($box.found -and $box.path -eq 'wpf' -and -not $box.hardStop) 'S-DLG2 a ladder with no matching button closes the dialog before the 6 s hard stop' "found=$($box.found) path=$($box.path) hardStop=$($box.hardStop) rung=$($box.rung)"
+    Check ($box.rung -eq 'Window.Close') 'S-DLG2 the fallback ladder ends on Window.Close' "rung=$($box.rung)"
+    # a caption that matches nothing: the answerer gives up (timedOut) and never closes anything
+    $box = @{}
+    $t = Start-BoxAnswer ('FastLLM no such box ' + [guid]::NewGuid().ToString('N')) 2 $k.S.Hwnd $box
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { Invoke-Pump 10000 ({ $box.timedOut }).GetNewClosure() } finally { $t.Stop() }
+    Check ($box.timedOut -and -not $box.found -and -not $box.hardStop -and $sw.ElapsedMilliseconds -lt 9500) 'S-DLG2 a ladder that matches nothing times out (as before) and never hangs' "timedOut=$($box.timedOut) found=$($box.found) ms=$($sw.ElapsedMilliseconds)"
+    Check-NoExceptions 'S-DLG2'
+}
+
 $script:steps = @(
     'Invoke-A1-CloseCancelled', 'Invoke-A1c-CloseCancelledClosure', 'Invoke-A2-CloseAllowed', 'Invoke-A3-BoxNo', 'Invoke-A4-BoxYes', 'Invoke-A5-CloseInsideHandler',
     'Invoke-A6-ThrowingHandler', 'Invoke-A7-Visible', 'Invoke-A8-RestoreFromTray', 'Invoke-A9-Shown', 'Invoke-A10-Owner',
@@ -2069,7 +2153,7 @@ $script:steps = @(
     'Invoke-S7-ShellTheme', 'Invoke-S8-DispatcherHandler', 'Invoke-S9-GlyphControlView',
     'Invoke-S10-LiveRegions', 'Invoke-S10b-FailureAnnouncement', 'Invoke-S11-Expander', 'Invoke-S12-StepsPeer', 'Invoke-S13-TabOrder', 'Invoke-S14-HighContrast',
     'Invoke-S15-SplitKeyboard', 'Invoke-S16-PaneCollapse', 'Invoke-S18-WinFormsTimer',
-    'Invoke-S19-StepsEvidence', 'Invoke-S19r-FreshProcess', 'Invoke-S20-MessageArea', 'Invoke-S21-ExpanderTemplate', 'Invoke-S17-TrayKeyboard', 'Invoke-S99-StartupFaults'
+    'Invoke-S19-StepsEvidence', 'Invoke-S19r-FreshProcess', 'Invoke-S20-MessageArea', 'Invoke-S21-ExpanderTemplate', 'Invoke-S17-TrayKeyboard', 'Invoke-SDLG1-WpfAnswer', 'Invoke-SDLG2-LadderFallback', 'Invoke-S99-StartupFaults'
 )
 
 $tick = New-Object System.Windows.Threading.DispatcherTimer

@@ -462,7 +462,7 @@ function Invoke-FastLlmUiFluentSettingsDiscard {
 function Invoke-FastLlmUiFluentSettingsNewKey {
     [CmdletBinding()] param()
     try{[void](NewUiApiKey $script:form)}
-    catch{$newKeyFailureText=[string]$_.Exception.Message;[void][Windows.Forms.MessageBox]::Show($script:form,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)),'FastLLM settings','OK','Warning')}
+    catch{$newKeyFailureText=[string]$_.Exception.Message;[void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref]$newKeyFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning')}
 }
 
 # Start FastLLM when I sign in: today's startBox handler with the owner changed and the source root as AppRoot. It is immediate: the Run entry is the truth.
@@ -475,7 +475,7 @@ function Invoke-FastLlmUiFluentSettingsSignIn {
     try{Show-FastLlmUiFluentSettingsSignIn -View (Set-FastLlmSignInStartEnabled -AppRoot $script:FastLlmUiFluentSourceRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot) -Enabled ([bool]($startBox.IsChecked -eq $true)))}
     catch{
         $signInFailureText=[string]$_.Exception.Message
-        [void][Windows.Forms.MessageBox]::Show($script:form,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$signInFailureText)),'FastLLM settings','OK','Warning')
+        [void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref]$signInFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning')
         try{Show-FastLlmUiFluentSettingsSignIn -View (Get-FastLlmSignInSettingsView -AppRoot $script:FastLlmUiFluentSourceRoot -InstallRoot (Get-FastLlmSignInDefaultInstallRoot))}catch{$null=$_}
     }
 }
@@ -529,7 +529,7 @@ function Invoke-FastLlmUiFluentSettingsSave {
         $saved = $true
     }catch{
         $saveFailureText=[string]$_.Exception.Message
-        [void][Windows.Forms.MessageBox]::Show($script:form,(ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)),'FastLLM settings','OK','Warning')
+        [void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text (ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Warning')
         # A refusal before the serving write is about the key: the key row is marked, with the key-free text.
         if($stage -ceq 'key'){
             $markText = ConvertTo-FastLlmKeyFreeText -Text ([ref]$saveFailureText)
@@ -552,7 +552,7 @@ function Invoke-FastLlmUiFluentSettingsSave {
         }
         # The 250 ms tick rewrites the status line while a run is active, so the notes are also shown where they stay put.
         if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$script:statusLabel.Text)){
-            [void][Windows.Forms.MessageBox]::Show($script:form,[string]$script:statusLabel.Text,'FastLLM settings','OK','Information')
+            [void](Show-FastLlmUiFluentMessageBox -Owner $script:form -Text ([string]$script:statusLabel.Text) -Caption 'FastLLM settings' -Buttons 'OK' -Icon 'Information')
         }
     }catch{ShowFailure $_.Exception.Message}
     return $true

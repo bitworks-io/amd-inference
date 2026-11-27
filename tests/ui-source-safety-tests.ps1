@@ -33,19 +33,69 @@ function Get-Ast([string]$Text){
     return $ast
 }
 # Each scanned file is read and parsed ONCE; every rule takes the cached AST (path -> @{ast;tokens;errors;text}).
+function ConvertTo-ParsedText([string]$Text){
+    $errs=$null;$tokens=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput($Text,[ref]$tokens,[ref]$errs)
+    return @{ast=$ast;tokens=$tokens;errors=$errs;text=$Text}
+}
 $script:ParseCache=@{}
+$script:ParseCalls=0
 function Get-ParsedFile([string]$Path){
     if(-not $script:ParseCache.ContainsKey($Path)){
-        $text=Read-Utf8 $Path
-        $errs=$null;$tokens=$null
-        $ast=[System.Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errs)
-        $script:ParseCache[$Path]=@{ast=$ast;tokens=$tokens;errors=$errs;text=$text}
+        $script:ParseCalls++
+        $script:ParseCache[$Path]=ConvertTo-ParsedText (Read-Utf8 $Path)
     }
     return $script:ParseCache[$Path]
+}
+# A scanned file that does not parse is a finding naming the file and its first error: the AST of a broken file is partial, so every other rule would silently skip what it cannot see.
+function Get-ParseErrorFindings($Parsed,[string]$RelPath){
+    $bad=New-Object System.Collections.ArrayList
+    if($null -ne $Parsed['errors'] -and $Parsed['errors'].Count -gt 0){
+        $first=$Parsed['errors'][0]
+        [void]$bad.Add($RelPath+': does not parse (line '+$first.Extent.StartLineNumber+'): '+$first.Message)
+    }
+    return ,@($bad.ToArray())
 }
 function Test-TableVariable($Node){
     return ($Node -is [System.Management.Automation.Language.VariableExpressionAst]) -and ($Node.VariablePath.UserPath -ieq $tableVar)
 }
+# Exact table-name matching. Test-TableVariable stays case-insensitive on purpose (PowerShell variables are, so a re-cased write is still a write to the table and
+# the write rules must see it). This rule is the strict one: every variable whose name is the table's, or within two edits of it, must be spelled exactly
+# '$tableVar' (scope, name and case). A near-miss, a re-cased name or another scope is a finding, never a skip.
+$script:NameDistanceMemo=@{}
+function Get-NameDistance([string]$A,[string]$B){
+    $key=$A+'|'+$B
+    if($script:NameDistanceMemo.ContainsKey($key)){return $script:NameDistanceMemo[$key]}
+    $prev=New-Object 'int[]' ($B.Length+1)
+    for($j=0;$j -le $B.Length;$j++){$prev[$j]=$j}
+    for($i=1;$i -le $A.Length;$i++){
+        $cur=New-Object 'int[]' ($B.Length+1)
+        $cur[0]=$i
+        for($j=1;$j -le $B.Length;$j++){
+            $cost=1
+            if($A[$i-1] -eq $B[$j-1]){$cost=0}
+            $cur[$j]=[Math]::Min([Math]::Min($cur[$j-1]+1,$prev[$j]+1),$prev[$j-1]+$cost)
+        }
+        $prev=$cur
+    }
+    $script:NameDistanceMemo[$key]=$prev[$B.Length]
+    return $prev[$B.Length]
+}
+function Get-TableNameFindings([string]$Text,[string]$RelPath,$Ast=$null){
+    $bad=New-Object System.Collections.ArrayList
+    $ast=$Ast
+    if($null -eq $ast){$ast=Get-Ast $Text}
+    $tableName=$tableVar.Substring($tableVar.LastIndexOf(':')+1).ToLowerInvariant()
+    foreach($v in @($ast.FindAll({param($n)$n -is [System.Management.Automation.Language.VariableExpressionAst]},$true))){
+        $path=[string]$v.VariablePath.UserPath
+        if($path -ceq $tableVar){continue}
+        $name=$path.Substring($path.LastIndexOf(':')+1).ToLowerInvariant()
+        if([Math]::Abs($name.Length-$tableName.Length) -gt 2){continue}
+        if((Get-NameDistance $name $tableName) -le 2){[void]$bad.Add($RelPath+': a variable that is not exactly the XAML table name ('+$tableVar+'): $'+$path)}
+    }
+    return ,@($bad.ToArray())
+}
+
 function Get-LoaderFunctionExtent($Ast){
     $fn=@($Ast.FindAll({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $loaderFunction},$true))
     if($fn.Count -ne 1){return $null}
@@ -92,6 +142,10 @@ function Get-TableWriteFindings([string]$Text,[string]$RelPath,$Ast=$null){
                 ($r.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]) -and
                 ($r.Expression.StringConstantType -eq [System.Management.Automation.Language.StringConstantType]::SingleQuotedHereString)
             if(-not $ok){[void]$bad.Add($RelPath+': table entry is not a constant single-quoted here-string: '+$a.Extent.Text.Split("`n")[0])}
+            $key=$left.Index
+            $keyOk=($key -is [System.Management.Automation.Language.StringConstantExpressionAst]) -and
+                (@([System.Management.Automation.Language.StringConstantType]::SingleQuoted,[System.Management.Automation.Language.StringConstantType]::DoubleQuoted) -contains $key.StringConstantType)
+            if(-not $keyOk){[void]$bad.Add($RelPath+': table entry key is not a quoted constant string: '+$a.Extent.Text.Split("`n")[0])}
             continue
         }
         $hasVar=@($left.FindAll({param($n)Test-TableVariable $n},$true)).Count -gt 0
@@ -111,6 +165,13 @@ function Get-TableWriteFindings([string]$Text,[string]$RelPath,$Ast=$null){
 
 $files=Get-ScannedFiles
 Check ($files.Count -ge 20) 'the scanned file set is found'
+
+# 0. every scanned file parses (a broken file would skip every rule below), each parsed once
+$parseBad=New-Object System.Collections.ArrayList
+foreach($f in $files){
+    foreach($b in (Get-ParseErrorFindings (Get-ParsedFile $f) (Get-RepoRelativePath $f))){[void]$parseBad.Add($b)}
+}
+Check ($parseBad.Count -eq 0) ('every scanned file parses ('+(($parseBad|Select-Object -First 3) -join ' | ')+')')
 
 # 1. no .xaml files
 $gitOk=$false
@@ -135,15 +196,18 @@ Check ($loaderText -match 'Windows\.Markup\.XamlReader\]::Parse') 'the loader fu
 
 # 3 and 4. table writes
 $writeBad=New-Object System.Collections.ArrayList
+$nameBad=New-Object System.Collections.ArrayList
 $tableEntries=0
 foreach($f in $files){
     $rel=Get-RepoRelativePath $f
     $pf=Get-ParsedFile $f
     foreach($b in (Get-TableWriteFindings $pf.text $rel $pf.ast)){[void]$writeBad.Add($b)}
+    foreach($b in (Get-TableNameFindings $pf.text $rel $pf.ast)){[void]$nameBad.Add($b)}
     $tableEntries+=@($pf.ast.FindAll({param($n)$n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and (Test-TableVariable $n.Left.Target)},$true)).Count
 }
 Check ($writeBad.Count -eq 0) ('XAML is constant markup only, written only by constant assignments ('+(($writeBad|Select-Object -First 3) -join ' | ')+')')
 Check ($tableEntries -ge 1) 'at least one registered page is scanned'
+Check ($nameBad.Count -eq 0) ('the XAML table is always named exactly '+$tableVar+' ('+(($nameBad|Select-Object -First 3) -join ' | ')+')')
 
 # Non-vacuity: the rules flag what they should (synthetic text, never a committed file).
 $dq='$script:FastLlmUiXaml[''X'']=@"'+"`n"+'<Grid/>'+"`n"+'"@'
@@ -163,6 +227,39 @@ Check ((Get-ParserUseOutside $parserText 'tests/x.ps1').Count -ge 1) 'self-check
 Check ((Get-ParserUseOutside $parserText $loaderName).Count -ge 1) 'self-check: a parser use in another function of the loader file is flagged'
 Check ((Get-ParserUseOutside ('function '+$loaderFunction+'{[Windows.Markup.XamlReader]::Parse($x)}') $loaderName).Count -eq 0) 'self-check: the loader function may parse'
 Check ((Get-ParserUseOutside '$t=''Windows.Markup.XamlReader''' 'tests/x.ps1').Count -ge 1) 'self-check: a parser name in a string is flagged'
+
+# Item: exact table-name matching and constant keys.
+$tableHere="`n"+'<Grid/>'+"`n"
+Check ((Get-TableNameFindings '$script:FastLlmUiXaml[''X'']=1' 'tests/x.ps1').Count -eq 0) 'self-check: the exact table name is not a name finding'
+Check ((Get-TableNameFindings '$script:FastLlmUiXaml2[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: a near-miss name (extra character) is flagged'
+Check ((Get-TableNameFindings '$script:FastLlmUiXam[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: a near-miss name (missing character) is flagged'
+Check ((Get-TableNameFindings '$script:FastLlmUiXamI[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: a near-miss name (look-alike letter) is flagged'
+Check ((Get-TableNameFindings '$script:fastllmuixaml[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: a re-cased table name is flagged'
+Check ((Get-TableNameFindings '$Script:FastLlmUiXaml[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: a re-cased scope is flagged'
+Check ((Get-TableNameFindings '$global:FastLlmUiXaml[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: the table name in another scope is flagged'
+Check ((Get-TableNameFindings '$FastLlmUiXaml[''X'']=1' 'tests/x.ps1').Count -eq 1) 'self-check: the table name with no scope is flagged'
+Check ((Get-TableNameFindings '$script:FastLlmUiFluent=1; $script:uiDialogView=2; $tableVar=3' 'tests/x.ps1').Count -eq 0) 'self-check: unrelated variables are not flagged'
+Check ((Get-TableWriteFindings '$script:fastllmuixaml[''X'']=$markup' 'tests/x.ps1').Count -eq 1) 'self-check: a re-cased table write is still seen by the write rules'
+Check ((Get-TableWriteFindings ('$script:FastLlmUiXaml[$name]=@'''+$tableHere+'''@') 'tests/x.ps1').Count -eq 1) 'self-check: a key built from a variable is flagged'
+Check ((Get-TableWriteFindings ('$script:FastLlmUiXaml["a$b"]=@'''+$tableHere+'''@') 'tests/x.ps1').Count -eq 1) 'self-check: a key built by string expansion is flagged'
+Check ((Get-TableWriteFindings ('$script:FastLlmUiXaml[(''a''+''b'')]=@'''+$tableHere+'''@') 'tests/x.ps1').Count -eq 1) 'self-check: a key built by an expression is flagged'
+Check ((Get-TableWriteFindings ('$script:FastLlmUiXaml[1]=@'''+$tableHere+'''@') 'tests/x.ps1').Count -eq 1) 'self-check: a numeric key is flagged'
+Check ((Get-TableWriteFindings ('$script:FastLlmUiXaml["Test.X"]=@'''+$tableHere+'''@') 'tests/x.ps1').Count -eq 0) 'self-check: a double-quoted constant key is allowed'
+
+# Item: parse errors are findings, and each file is parsed once.
+$plantedBroken=ConvertTo-ParsedText 'function Broken { if ($x { }'
+$brokenFindings=Get-ParseErrorFindings $plantedBroken 'tests/planted.ps1'
+$brokenPrefix='tests/planted.ps1: does not parse (line 1): '
+Check ($brokenFindings.Count -eq 1 -and $brokenFindings[0].StartsWith($brokenPrefix)) 'self-check: a planted file that does not parse is flagged with its file and first error'
+Check ($brokenFindings.Count -eq 1 -and $brokenFindings[0].Length -gt $brokenPrefix.Length) 'self-check: the parse finding carries the error message'
+Check ((Get-ParseErrorFindings (ConvertTo-ParsedText 'function Fine { 1 }') 'tests/fine.ps1').Count -eq 0) 'self-check: a file that parses is not flagged'
+$callsBefore=$script:ParseCalls
+$null=Get-ParsedFile $files[0]
+$null=Get-ParsedFile $files[0]
+$null=Get-ParsedFile $files[1]
+Check ($script:ParseCalls -eq $callsBefore) 'self-check: a file already scanned is not parsed again'
+Check ($script:ParseCalls -eq $script:ParseCache.Count -and $script:ParseCache.Count -ge $files.Count) 'every parse call cached a distinct file (no file parsed twice)'
+Check ([object]::ReferenceEquals((Get-ParsedFile $files[0]).ast,(Get-ParsedFile $files[0]).ast)) 'self-check: the cached AST is the same object on every use'
 
 # The safety assertion.
 foreach($t in 'x:Class','x:Code','ObjectDataProvider','XmlDataProvider','clr-namespace:'){
@@ -339,7 +436,7 @@ Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><PasswordBox PasswordChan
 Check ((Get-XamlEventAttributeFindings ('<Grid '+$ns+'><Button x:Name="B" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Content="Click" AutomationProperties.Name="Click"/></Grid>')).Count -eq 0) 'self-check: a property or content that only says Click is not flagged'
 
 # ASCII
-$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/FastLlm.UiFluentTools.ps1','src/FastLlm.UiFluentConnect.ps1','src/FastLlm.UiFluentModels.ps1','src/FastLlm.UiFluentSettings.ps1','tests/helpers/UiFluentShellHarness.ps1','src/WindowsFluentWindow.cs','src/WindowsFluentAutomation.cs',
+$asciiFiles='src/FastLlm.UiState.ps1','src/FastLlm.UiTheme.ps1','src/FastLlm.UiWindow.ps1','src/FastLlm.UiXaml.ps1','src/FastLlm.UiFluentAdapter.ps1','src/FastLlm.UiFluentSupport.ps1','src/FastLlm.UiFluentForm.ps1','src/FastLlm.UiFluentIcon.ps1','src/FastLlm.UiFluentHooks.ps1','src/FastLlm.UiFluentShell.ps1','src/FastLlm.UiFluentHome.ps1','src/FastLlm.UiFluentBindings.ps1','src/FastLlm.UiFluentTools.ps1','src/FastLlm.UiFluentConnect.ps1','src/FastLlm.UiFluentModels.ps1','src/FastLlm.UiFluentSettings.ps1','src/FastLlm.UiFluentDialogs.ps1','tests/helpers/UiFluentShellHarness.ps1','src/WindowsFluentWindow.cs','src/WindowsFluentAutomation.cs',
     'tests/ui-fluent-members-tests.ps1','tests/ui-fluent-parity-tests.ps1',
     'tests/ui-fluent-shell-tests.ps1','tests/ui-fluent-pages-tests.ps1','tests/helpers/FluentHostNative.cs',
     'tests/helpers/UiControlStatesMatrix.ps1','tests/helpers/New-UiControlStatesGolden.ps1','tests/ui-control-states-tests.ps1',
@@ -388,6 +485,14 @@ $closeHash='7a4a7c9923207fe9f2e83ee74e4e70aa2201ec7f77d2b9b6559a8a68f1b16ac4'
 $windowParsed=Get-ParsedFile (Join-Path $root 'fast-llm-ui.ps1')
 $adminText=Get-AdminRefusalText $windowParsed.ast
 $closeText=Get-CloseGuardsText $windowParsed.ast
+# PR 4a routes the handler's one confirmation through the ShowUiMessageBox view function (a named pair in the members suite, 'box close'). The guards
+# are judged as text from before that seam: the pair is undone first, so the hash below is still today's, and any other edit still moves it.
+$closeSeamCur="if((ShowUiMessageBox `$form 'Closing stops this window''s active download or inference process. Continue?' 'Close FastLLM' 'YesNo' 'Question') -ne 'Yes'){"
+$closeSeamOrig="if([Windows.Forms.MessageBox]::Show(`$form,'Closing stops this window''s active download or inference process. Continue?','Close FastLLM','YesNo','Question') -ne 'Yes'){"
+if($null -ne $closeText){
+    Check (([regex]::Matches($closeText,[regex]::Escape($closeSeamCur))).Count -eq 1) 'the close handler holds the PR 4a confirmation seam exactly once'
+    $closeText=$closeText.Replace($closeSeamCur,$closeSeamOrig)
+}
 Check ($null -ne $adminText) 'the admin refusal statement is found once'
 Check ($null -ne $closeText) 'the FormClosing handler is found once'
 Check ((Get-Sha256Lf $adminText) -ceq $adminHash) 'the admin refusal is unchanged'

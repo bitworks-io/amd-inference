@@ -53,6 +53,11 @@ $script:FastLlmUiFluentStrings = [ordered]@{
     Discard              = 'Discard'
     SavePrompt           = 'Save your changes?'
     DontSave             = "Don't save"
+    # PR 4a: the four message box captions (Windows draws them in the system language on today's window; the fluent box shows these, so a localisation picks them up).
+    BoxOK                = 'OK'
+    BoxCancel            = 'Cancel'
+    BoxYes               = 'Yes'
+    BoxNo                = 'No'
 }
 
 # Icon glyphs (Segoe Fluent Icons, falling back to Segoe MDL2 Assets: the same code points exist in both). They are drawn, never read.

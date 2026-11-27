@@ -287,5 +287,53 @@ function Test-SettingsMutant([string]$Fn,[string]$From,[string]$To,[scriptblock]
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { return 'stay' }" "default { return 'go' }" {(Get-SettingsMutant -Dirty $true -Answer 'cancel' -SaveOk $true -Reason 'leave') -ceq 'stay'})) 'mutation: cancel to go fails the table'
 Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and `$false" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))})) 'mutation: dirty ignoring keyTouched fails the touched-indeterminate check'
 
+# ===== PR 4a: the dialog key plan (Enter, Escape and the close box of a message box), against the box-kind table =====
+# The table of the plan's Global Constraints, written out: kind/default -> order, Enter, Escape, close box answer, close box enabled.
+$planTable=@(
+    @{b='OK';d='Button1';order='OK';enter='OK';escape='OK';close='OK';closeEnabled=$true}
+    @{b='OK';d='Button2';order='OK';enter='OK';escape='OK';close='OK';closeEnabled=$true}
+    @{b='OKCancel';d='Button1';order='OK,Cancel';enter='OK';escape='Cancel';close='Cancel';closeEnabled=$true}
+    @{b='OKCancel';d='Button2';order='OK,Cancel';enter='Cancel';escape='Cancel';close='Cancel';closeEnabled=$true}
+    @{b='YesNo';d='Button1';order='Yes,No';enter='Yes';escape='';close='';closeEnabled=$false}
+    @{b='YesNo';d='Button2';order='Yes,No';enter='No';escape='';close='';closeEnabled=$false}
+)
+function Get-KeyPlanProblems([scriptblock]$Plan){
+    $bad=New-Object System.Collections.ArrayList
+    foreach($row in $planTable){
+        $p=& $Plan -Buttons $row.b -DefaultButton $row.d
+        $got=((@($p['order']) -join ',')+'|'+$p['enter']+'|'+$p['escape']+'|'+$p['close']+'|'+$p['closeEnabled'])
+        $want=($row.order+'|'+$row.enter+'|'+$row.escape+'|'+$row.close+'|'+$row.closeEnabled)
+        if($got -cne $want){[void]$bad.Add("$($row.b)/$($row.d) got $got want $want")}
+    }
+    $noDefault=& $Plan -Buttons 'YesNo'
+    if($noDefault['enter'] -cne 'Yes'){[void]$bad.Add('a call with no default argument is not Button1 (YesNo Enter is not Yes)')}
+    return ,@($bad.ToArray())
+}
+$planProblems=Get-KeyPlanProblems ${function:Get-FastLlmUiDialogKeyPlan}
+Check ($planProblems.Count -eq 0) ('the key plan equals the box-kind table for every kind and default button: '+($planProblems -join ' | '))
+foreach($row in $planTable){
+    $p=Get-FastLlmUiDialogKeyPlan -Buttons $row.b -DefaultButton $row.d
+    Check (@($p['order']|Where-Object{$_ -ceq $p['enter']}).Count -eq 1) "the Enter target of $($row.b)/$($row.d) is one of its buttons"
+    Check ($p['escape'] -ceq '' -or @($p['order']|Where-Object{$_ -ceq $p['escape']}).Count -eq 1) "the Escape target of $($row.b)/$($row.d) is one of its buttons or nothing"
+    Check ($p['closeEnabled'] -is [bool]) "closeEnabled of $($row.b)/$($row.d) is exactly one bool"
+}
+Check ((Get-FastLlmUiDialogKeyPlan -Buttons 'YesNo' -DefaultButton 'Button1')['escape'] -ceq '' -and -not (Get-FastLlmUiDialogKeyPlan -Buttons 'YesNo')['closeEnabled']) 'a YesNo box has no Escape answer and its close box is disabled'
+Check ((Get-FastLlmUiDialogKeyPlan -Buttons 'OK')['escape'] -ceq 'OK') 'an OK box answers OK on Escape'
+$threw=$false; try{$null=Get-FastLlmUiDialogKeyPlan -Buttons 'YesNoCancel'}catch{$threw=$true}
+Check $threw 'an unsupported button set is refused'
+# Mutants on scratch copies of the function: each must fail the table check above.
+function Test-KeyPlanMutant([string]$From,[string]$To){
+    $text=${function:Get-FastLlmUiDialogKeyPlan}.ToString()
+    if(-not $text.Contains($From)){throw "FAIL: mutation anchor missing in the key plan: $From"}
+    $mutant=[scriptblock]::Create($text.Replace($From,$To))
+    return (Get-KeyPlanProblems $mutant).Count
+}
+Check ((Test-KeyPlanMutant "order=[string[]]@('Yes','No'); enter=`$enter; escape=''" "order=[string[]]@('Yes','No'); enter=`$enter; escape='No'") -gt 0) 'mutation: a YesNo box answering No on Escape fails the key-plan table'
+Check ((Test-KeyPlanMutant "`$enter='Yes'; if(`$second){`$enter='No'}" "`$enter='Yes'") -gt 0) 'mutation: Button2 on a YesNo box answering Yes on Enter fails the key-plan table'
+Check ((Test-KeyPlanMutant "closeEnabled=`$false" "closeEnabled=`$true") -gt 0) 'mutation: an enabled YesNo close box fails the key-plan table'
+Check ((Test-KeyPlanMutant "`$enter='OK'; if(`$second){`$enter='Cancel'}" "`$enter='OK'") -gt 0) 'mutation: Button2 on an OKCancel box answering OK on Enter fails the key-plan table'
+Check ((Test-KeyPlanMutant "escape='Cancel'; close='Cancel'" "escape='OK'; close='OK'") -gt 0) 'mutation: an OKCancel box answering OK on Escape fails the key-plan table'
+# ===== end PR 4a: the dialog key plan =====
+
 Write-Host "UI control states tests passed: $checks"
 exit 0
