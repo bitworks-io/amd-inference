@@ -3230,6 +3230,7 @@ Check ($script:FastLlmUiXaml.ContainsKey('FastLlm.Dialog') -and [string]$script:
 # shell has set that table (and is exactly MessageBox.Show's six-argument owner overload otherwise); the two custom dialogs dispatch on their own first line.
 $seamUiText=Get-NormalizedText $path
 $seamShellText=Get-NormalizedText (Join-Path $root 'src/FastLlm.UiFluentShell.ps1')
+function Edit-SeamPlant([string]$Text,[string]$From,[string]$To){ if($Text.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: seam plant anchor missing: $From"}; return $Text.Replace($From,$To) }
 # 5b-delete-begin
 $seamDispatchLine='if($null -ne $script:uiDialogView){return & $script:uiDialogView[''MessageBox''] -Owner $Owner -Text $Text -Caption $Caption -Buttons $Buttons -Icon $Icon -DefaultButton $DefaultButton}'
 $seamPassLine='return [Windows.Forms.MessageBox]::Show($Owner,$Text,$Caption,$Buttons,$Icon,$DefaultButton)'
@@ -3336,7 +3337,6 @@ Check ((Get-SeamFindings $seamUiText $seamShellText).Count -eq 0) 'control: the 
 foreach($k in $seamPlants.Keys){ Check (($seamPlants[$k][0] -cne $seamUiText) -or ($seamPlants[$k][1] -cne $seamShellText)) "the seam plant changes the text: $k" }
 foreach($k in $seamPlants.Keys){ Check ((Get-SeamFindings $seamPlants[$k][0] $seamPlants[$k][1]).Count -ge 1) "mutation check: the classic seam pin flags: $k" }
 # 5b-delete-end
-function Edit-SeamPlant([string]$Text,[string]$From,[string]$To){ if($Text.IndexOf($From,[StringComparison]::Ordinal) -lt 0){throw "FAIL: seam plant anchor missing: $From"}; return $Text.Replace($From,$To) }
 # The dispatch table, frozen: each of the nine dispatch functions of the window script has one call of its view entry, `& $script:uiDialogView['<Key>'] <arguments>`, in
 # its first statement (the whole statement or, while the classic body follows, the guard around it), with every parameter passed by name; the box and the six consent and
 # dialog functions return its result, the side result and the driver guidance do not. The literal is checked against the classic dispatch lines below (deleted at the flip).
