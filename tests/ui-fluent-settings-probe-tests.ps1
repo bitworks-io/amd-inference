@@ -65,6 +65,31 @@ try{
     Set-Box $modelIndex ([string]$model.id)
     Check ((Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $false) 'a row for another file revision of the model is not measured'
 
+    # Automatic never counts a model that is not auto-eligible (the planner's own skip). The fixture is the first model (A), which has a measured long row,
+    # while every other model has none. The catalog copy marks A autoEligible false or true, or leaves the property out (no property counts as eligible).
+    Check (-not [bool]$model.PSObject.Properties['autoEligible']) 'fixture: the first model has no autoEligible property in the shipped catalog'
+    $catalogPath=Join-Path $configRoot 'catalog.json'
+    $catalogText=[IO.File]::ReadAllText($catalogPath)
+    $idLine='"id": "'+[string]$model.id+'",'
+    Check (([regex]::Matches($catalogText,[regex]::Escape($idLine))).Count -eq 1) 'fixture: the first model id line is found once in the catalog copy'
+    Write-Profiles @((New-Row ([string]$model.id) ([string]$model.sha256) 'long' @(1)))
+    Set-Box 0 'Recommended for installed GPU'
+    Check ((Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $true) 'Automatic: a model with no autoEligible property counts as eligible, so its measured long row counts'
+    [IO.File]::WriteAllText($catalogPath,$catalogText.Replace($idLine,$idLine+' "autoEligible": true,'),$noBom)
+    Check ((Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $true) 'Automatic: an autoEligible true model counts'
+    [IO.File]::WriteAllText($catalogPath,$catalogText.Replace($idLine,$idLine+' "autoEligible": false,'),$noBom)
+    Check ((Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $false) 'Automatic: a model that is not auto-eligible is skipped, so its measured long row does not make Long look offered'
+    Set-Box $modelIndex ([string]$model.id)
+    Check ((Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $true) 'the same model chosen explicitly: its measured long row counts'
+    # Mutation check: the probe without the auto-eligible skip (a copy under another name) makes Long look offered on Automatic, so the check above can fail.
+    $longFn=$ast.Find({param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -ceq 'Test-FastLlmUiFluentLongMeasured'},$true).Extent.Text
+    $skipLine='if (-not $ModelId -and $autoEligible -and -not [bool] $autoEligible.Value) { continue }'
+    Check ($longFn.Contains($skipLine)) 'mutation anchor: the probe has the auto-eligible skip line'
+    . ([scriptblock]::Create($longFn.Replace('function Test-FastLlmUiFluentLongMeasured','function Test-ProbeMutantLongMeasured').Replace($skipLine,'')))
+    Set-Box 0 'Recommended for installed GPU'
+    Check ((Test-ProbeMutantLongMeasured -ProfileId 'long' -Slots 1) -eq $true -and (Test-FastLlmUiFluentLongMeasured -ProfileId 'long' -Slots 1) -eq $false) 'mutation check: without the auto-eligible skip the probe says measured on Automatic (the real probe says not)'
+    [IO.File]::WriteAllText($catalogPath,$catalogText,$noBom)
+
     # A long row allowing 1 and 2, and a default row allowing 1 and 2: both probes are true at 2 for the model.
     Write-Profiles @((New-Row ([string]$model.id) ([string]$model.sha256) 'long' @(1,2)),(New-Row ([string]$model.id) ([string]$model.sha256) 'default' @(1,2)))
     Set-Box $modelIndex ([string]$model.id)

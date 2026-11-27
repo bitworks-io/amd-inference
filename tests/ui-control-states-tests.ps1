@@ -278,6 +278,21 @@ foreach($f in @(@{contextProfile='long'},@{slots=2},@{embeddings='on'},@{embeddi
     Check (Test-FastLlmUiSettingsDirty -Saved (Copy-Held $heldAdd $f) -Held $heldAdd) "a saved $name that differs from the held one is dirty"
 }
 Check (-not (Test-FastLlmUiSettingsDirty -Saved $heldAdd -Held (Copy-Held $heldAdd @{}))) 'equal additions are not dirty'
+# Out-of-range saved values (a hand-edited or older settings.json): the held value is the store's default, the value the page's box shows. So a held
+# rebuilt from the boxes after any other edit equals the saved one on these keys: the page is not dirty, and Save does not rewrite the saved value.
+foreach($odd in @(
+    @{Name='slots 3';Over=@{slots=3};Field='slots';Want=1},
+    @{Name='slots 0';Over=@{slots=0};Field='slots';Want=1},
+    @{Name="contextProfile 'weird'";Over=@{contextProfile='weird'};Field='contextProfile';Want='default'},
+    @{Name="contextProfile 'Long'";Over=@{contextProfile='Long'};Field='contextProfile';Want='default'},
+    @{Name="embeddings 'maybe'";Over=@{embeddings='maybe'};Field='embeddings';Want='off'},
+    @{Name="embeddings 'ON'";Over=@{embeddings='ON'};Field='embeddings';Want='off'},
+    @{Name='no embeddingPort';Over=@{};Field='embeddingPort';Want=8081}
+)){
+    $oddSaved=ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent $odd.Over)
+    Check ([string]$oddSaved.($odd.Field) -ceq [string]$odd.Want) "a saved $($odd.Name) is held as $($odd.Want)"
+    Check (-not (Test-FastLlmUiSettingsDirty -Saved $oddSaved -Held (Copy-Held $oddSaved @{$odd.Field=$odd.Want}))) "a saved $($odd.Name), with its box showing $($odd.Want) after another edit, is not dirty"
+}
 
 # The additions view: every combination of its seven inputs (128); the lead's three named states are called out.
 $viewCases=0
@@ -371,6 +386,12 @@ Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '$longEnab
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '$twoEnabled = [bool](($TwoMeasured -and $catalogContext)' '$twoEnabled = [bool](($TwoMeasured)' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $true -SavedContextProfile 'default' -TwoMeasured $true -SavedSlots 1 -ContextSize 4096)['twoEnabled']})) 'mutation: the 2 context condition dropped fails the context check'
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' "if (-not `$catalogContext) { `$longReason = 'needs-catalog-context' }" "if (`$false) { `$longReason = 'needs-catalog-context' }" {(Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default' -TwoMeasured $false -SavedSlots 1 -ContextSize 4096)['longReasonCode'] -ceq 'needs-catalog-context'})) 'mutation: wrong reason precedence (not-measured wins) fails the precedence check'
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsSavedNote' "return 'The new embeddings setting applies at the next start.'" "return ''" {(Get-SettingsMutant -RunActive $true -Before $noteBase -After (New-NoteSide @{embeddings='on'})) -ceq 'The new embeddings setting applies at the next start.'})) 'mutation: the embeddings note missing fails the note check'
+# The normalisations above can fail: each mutant keeps the out-of-range saved value as it is (control: an unchanged copy passes).
+Check (Test-SettingsMutant 'ConvertTo-FastLlmUiSettingsHeld' "-and [int]`$Current.slots -eq 2) { 2 } else { 1 }" "-and [int]`$Current.slots -eq 2) { 2 } else { 1 }" {[int](Get-SettingsMutant -Current (New-SettingsCurrent @{slots=3})).slots -eq 1}) 'control: an unchanged held conversion maps a saved slots 3 to 1'
+Check (-not (Test-SettingsMutant 'ConvertTo-FastLlmUiSettingsHeld' "if (`$Current.PSObject.Properties['slots'] -and [int]`$Current.slots -eq 2) { 2 } else { 1 }" "if (`$Current.PSObject.Properties['slots']) { [int]`$Current.slots } else { 1 }" {[int](Get-SettingsMutant -Current (New-SettingsCurrent @{slots=3})).slots -eq 1})) 'mutation: a held conversion that keeps a saved slots 3 fails'
+Check (-not (Test-SettingsMutant 'ConvertTo-FastLlmUiSettingsHeld' "if (`$Current.PSObject.Properties['contextProfile'] -and [string]`$Current.contextProfile -ceq 'long') { 'long' } else { 'default' }" "if (`$Current.PSObject.Properties['contextProfile']) { [string]`$Current.contextProfile } else { 'default' }" {[string](Get-SettingsMutant -Current (New-SettingsCurrent @{contextProfile='weird'})).contextProfile -ceq 'default'})) 'mutation: a held conversion that keeps a saved contextProfile weird fails'
+Check (-not (Test-SettingsMutant 'ConvertTo-FastLlmUiSettingsHeld' "if (`$Current.PSObject.Properties['embeddings'] -and [string]`$Current.embeddings -ceq 'on') { 'on' } else { 'off' }" "if (`$Current.PSObject.Properties['embeddings']) { [string]`$Current.embeddings } else { 'off' }" {[string](Get-SettingsMutant -Current (New-SettingsCurrent @{embeddings='maybe'})).embeddings -ceq 'off'})) 'mutation: a held conversion that keeps a saved embeddings maybe fails'
+Check (-not (Test-SettingsMutant 'ConvertTo-FastLlmUiSettingsHeld' "if (`$Current.PSObject.Properties['embeddingPort']) { [int]`$Current.embeddingPort } else { 8081 }" "if (`$Current.PSObject.Properties['embeddingPort']) { [int]`$Current.embeddingPort } else { 0 }" {[int](Get-SettingsMutant -Current (New-SettingsCurrent)).embeddingPort -eq 8081})) 'mutation: a held conversion that gives a missing embeddingPort another value fails'
 
 # ===== PR 4a: the dialog key plan (Enter, Escape and the close box of a message box), against the box-kind table =====
 # The table of the plan's Global Constraints, written out: kind/default -> order, Enter, Escape, close box answer, close box enabled.
