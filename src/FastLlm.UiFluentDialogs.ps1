@@ -290,6 +290,34 @@ $script:FastLlmUiFluentDialogText = [ordered]@{
     OpenFailed    = 'Unable to open the official AMD page. No driver changes were made.'
     Viewed        = 'Driver guidance viewed. No driver changes made.'
     Url           = 'https://www.amd.com/en/support/download/drivers.html'
+    # --- PR 4b, setup check and recipe chooser (copied from ShowSetupAttention and ShowRecipeChooser; SetupPrepare and ChooserCellName are the two exceptions below) ---
+    SetupTitle    = 'FastLLM setup check'
+    SetupIntro    = 'This PC is missing a required component for the current Vulkan lane. Review the latest setup check before continuing.'
+    SetupNeed64   = 'Use 64-bit Windows PowerShell or PowerShell 7.'
+    SetupVcMissing = 'Install the current Microsoft Visual C++ 2015-2022 Redistributable (x64). Missing: {0}.'
+    SetupNoLoader = 'Install an AMD Windows driver with Vulkan support. The System32 Vulkan loader is not present.'
+    SetupAfter    = 'After prerequisite setup and any required reboot, choose Recheck. This reruns read-only diagnostics. Compatibility and GPU performance remain unqualified.'
+    SetupMsLink   = 'Official Microsoft VC++ download information'
+    SetupAmdLink  = 'Official AMD driver downloads'
+    SetupMsUrl    = 'https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist'
+    SetupAmdUrl   = 'https://www.amd.com/en/support/download/drivers.html'
+    SetupMsFailed = 'Unable to open the official Microsoft page. No software was installed.'
+    SetupAmdFailed = 'Unable to open the official AMD page. No driver changes were made.'
+    SetupRecheck  = 'Recheck'
+    # The classic caption is 'Prepare && review VC++': the WinForms escape && shows as one & (the pinned rule: the table value is the classic caption with && as &).
+    SetupPrepare  = 'Prepare & review VC++'
+    SetupLater    = 'Do later'
+    ChooserTitle  = 'Choose another setup'
+    ChooserIntro  = 'Setups for your card. Pick one, then Choose. Experimental setups are shown only while Experimental community components is on. Nothing is downloaded until you confirm.'
+    ChooserNotice = ' {0}'
+    ChooserSetup  = 'Setup'
+    ChooserModel  = 'Model'
+    ChooserContext = 'Context'
+    ChooserEngine = 'Engine and sources'
+    ChooserChoose = 'Choose'
+    ChooserCancel = 'Cancel'
+    # Not a classic literal: the automation name of a list cell (the column, then its value), so a screen reader says which column a value is in.
+    ChooserCellName = '{0}: {1}'
 }
 
 # The text scale of the dialogs (the owner's body size over 14, clamped to 1.0 .. 2.25), as New-FastLlmUiFluentDialog derives it.
@@ -426,4 +454,186 @@ function Show-FastLlmUiFluentDriverGuidance {
     try { $devices.SelectedIndex = 0; $null = Show-FastLlmUiFluentDialog -Dialog $dialog }
     finally { SetTrayMenuAvailable $true }
     $script:statusLabel.Text = [string] $t.Viewed
+}
+
+# A link-looking button (the LinkLabel of the classic dialogs): a Button, so Enter on it opens it and Tab reaches it. Named by its caption.
+function New-FastLlmUiFluentDialogLinkButton {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Name, [Parameter(Mandatory = $true)][string] $Text)
+    $link = New-Object System.Windows.Controls.Button
+    $link.Name = $Name
+    $link.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.LinkButtonStyle')
+    $link.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+    $link.Margin = New-Object System.Windows.Thickness(0, 0, 24, 0)
+    $access = New-Object System.Windows.Controls.AccessText
+    $access.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $access.Text = ConvertTo-FastLlmUiAccessText -Text $Text -UseMnemonic $false
+    $link.Content = $access
+    [System.Windows.Automation.AutomationProperties]::SetName($link, $Text)
+    return $link
+}
+
+# The setup check: the built text in a read box, the Microsoft and AMD links, and Recheck (Enter), "Prepare & review VC++" (enabled by the offer) and
+# "Do later" (Escape). Returns exactly one string: 'recheck', 'prepare' or 'defer', as ShowSetupAttention does.
+function Show-FastLlmUiFluentSetupAttention {
+    [CmdletBinding()]
+    param($Decision, $Diagnostic)
+    RevealUiForAction
+    $t = $script:FastLlmUiFluentDialogText
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$lines.Add([string] $t.SetupIntro)
+    [void]$lines.Add('')
+    if ($Decision.missing64BitHost) { [void]$lines.Add([string] $t.SetupNeed64) }
+    if (@($Decision.missingVcRuntimeFiles).Count -gt 0) {
+        [void]$lines.Add([string]::Format([string] $t.SetupVcMissing, (@($Decision.missingVcRuntimeFiles) -join ', ')))
+    }
+    $candidate = GetVcCandidate
+    $offer = Get-FastLlmUiVcOffer -Decision $Decision -InstallDecision (GetVcInstallDecision $Diagnostic.prerequisiteInventory $candidate)
+    if (@($Decision.missingVcRuntimeFiles).Count -gt 0) { [void]$lines.Add($offer.message) }
+    if ($Decision.missingVulkanLoader) { [void]$lines.Add([string] $t.SetupNoLoader) }
+    [void]$lines.Add('')
+    [void]$lines.Add([string] $t.SetupAfter)
+    foreach ($warning in @($Decision.advisoryWarnings)) { [void]$lines.Add([string] $warning) }
+    $scale = Get-FastLlmUiFluentDialogScale -Owner $script:form
+    $details = New-FastLlmUiFluentDialogReadBox -Text ($lines -join "`r`n") -MinHeight (200 * $scale) -MaxHeight (280 * $scale)
+    $details.Name = 'SetupCheckText'
+    [System.Windows.Automation.AutomationProperties]::SetName($details, [string] $t.SetupTitle)
+    $msFailed = [string] $t.SetupMsFailed
+    $amdFailed = [string] $t.SetupAmdFailed
+    $msUrl = [string] $t.SetupMsUrl
+    $amdUrl = [string] $t.SetupAmdUrl
+    $msLink = New-FastLlmUiFluentDialogLinkButton -Name 'SetupMicrosoftLink' -Text ([string] $t.SetupMsLink)
+    $amdLink = New-FastLlmUiFluentDialogLinkButton -Name 'SetupAmdLink' -Text ([string] $t.SetupAmdLink)
+    $msLink.Add_Click({ try { Start-Process $msUrl } catch { $details.Text = $msFailed } }.GetNewClosure())
+    $amdLink.Add_Click({ try { Start-Process $amdUrl } catch { $details.Text = $amdFailed } }.GetNewClosure())
+    $linkRow = New-Object System.Windows.Controls.WrapPanel
+    $linkRow.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+    $null = $linkRow.Children.Add($msLink)
+    $null = $linkRow.Children.Add($amdLink)
+    $panel = New-Object System.Windows.Controls.StackPanel
+    $null = $panel.Children.Add($details)
+    $null = $panel.Children.Add($linkRow)
+    $buttons = [ordered] @{ Recheck = [string] $t.SetupRecheck; Prepare = [string] $t.SetupPrepare; Later = [string] $t.SetupLater }
+    $dialog = New-FastLlmUiFluentDialog -Title ([string] $t.SetupTitle) -Body $panel -Buttons $buttons -Enter 'Recheck' -Escape 'Later' -Owner $script:form
+    $dialog['Buttons']['Prepare'].IsEnabled = [bool] $offer.canPrepare
+    $work = [System.Windows.SystemParameters]::WorkArea
+    $dialog['Window'].Width = [Math]::Min($work.Width * 0.9, 720.0 * $scale)
+    SetTrayMenuAvailable $false
+    try { $answer = Show-FastLlmUiFluentDialog -Dialog $dialog } finally { SetTrayMenuAvailable $true }
+    if ($answer -ceq 'Recheck') { return 'recheck' }
+    if ($answer -ceq 'Prepare' -and $offer.canPrepare) { return 'prepare' }
+    return 'defer'
+}
+
+# The recipe chooser: the intro and a list of today's four columns (a ListBox of Grid rows, scrolled by pixel). Choose is disabled until a row is selected;
+# Enter answers Choose only while it is enabled (the Enter target follows the selection), Escape Cancel, and a double-click on a selected row chooses (the
+# classic ListView's DoubleClick). Returns the picked row, or $null.
+function Show-FastLlmUiFluentRecipeChooser {
+    [CmdletBinding()]
+    param($Rows)
+    RevealUiForAction
+    $t = $script:FastLlmUiFluentDialogText
+    $switchValue = if ($script:experimentalBox.Checked) { 'on' } else { 'off' }
+    $variant = [string] $script:identifiedVariant
+    $shown = @(Get-FastLlmUiChooserRows -Rows @($Rows) -ExperimentalComponents $switchValue -Variant $variant)
+    # What the list lacks is said out loud (an unidentified card, no setup for this card, the switch on without any experimental setup).
+    $script:chooserNotice = [string] (Get-FastLlmUiChooserNotice -Shown $shown -ExperimentalComponents $switchValue -Variant $variant)
+    if ($script:chooserNotice) { $script:statusLabel.Text = $script:chooserNotice }
+    if ($shown.Count -eq 0) { return $null }
+    $scale = Get-FastLlmUiFluentDialogScale -Owner $script:form
+    $introText = [string] $t.ChooserIntro
+    if ($script:chooserNotice) { $introText = $introText + [string]::Format([string] $t.ChooserNotice, $script:chooserNotice) }
+    $intro = New-Object System.Windows.Controls.TextBlock
+    $intro.Text = $introText
+    $intro.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $intro.Margin = New-Object System.Windows.Thickness(0, 0, 0, 8)
+    # The columns: key of the row, header, relative width (the classic widths 250, 170, 100 and 360).
+    $columns = @(
+        @{ Key = 'label'; Header = [string] $t.ChooserSetup; Weight = 250 },
+        @{ Key = 'model'; Header = [string] $t.ChooserModel; Weight = 170 },
+        @{ Key = 'contextText'; Header = [string] $t.ChooserContext; Weight = 100 },
+        @{ Key = 'engineText'; Header = [string] $t.ChooserEngine; Weight = 360 }
+    )
+    $headerGrid = New-Object System.Windows.Controls.Grid
+    $headerGrid.Margin = New-Object System.Windows.Thickness(8, 0, 8, 4)
+    foreach ($column in $columns) {
+        $headColumn = New-Object System.Windows.Controls.ColumnDefinition
+        $headColumn.Width = New-Object System.Windows.GridLength([double] $column['Weight'], [System.Windows.GridUnitType]::Star)
+        $null = $headerGrid.ColumnDefinitions.Add($headColumn)
+        $head = New-Object System.Windows.Controls.TextBlock
+        $head.Text = [string] $column['Header']
+        $head.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $head.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $head.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
+        [System.Windows.Controls.Grid]::SetColumn($head, $headerGrid.ColumnDefinitions.Count - 1)
+        $null = $headerGrid.Children.Add($head)
+    }
+    $list = New-Object System.Windows.Controls.ListBox
+    $list.Name = 'ChooserList'
+    $list.SelectionMode = [System.Windows.Controls.SelectionMode]::Single
+    [System.Windows.Controls.ScrollViewer]::SetCanContentScroll($list, $false)
+    $list.MinHeight = 150 * $scale
+    $list.MaxHeight = 290 * $scale
+    [System.Windows.Automation.AutomationProperties]::SetName($list, $introText)
+    [System.Windows.Automation.AutomationProperties]::SetLabeledBy($list, $intro)
+    foreach ($row in $shown) {
+        $grid = New-Object System.Windows.Controls.Grid
+        $cellIndex = 0
+        foreach ($column in $columns) {
+            $cellColumn = New-Object System.Windows.Controls.ColumnDefinition
+            $cellColumn.Width = New-Object System.Windows.GridLength([double] $column['Weight'], [System.Windows.GridUnitType]::Star)
+            $null = $grid.ColumnDefinitions.Add($cellColumn)
+            $cell = New-Object System.Windows.Controls.TextBlock
+            $cell.Text = [string] $row.($column['Key'])
+            $cell.TextWrapping = [System.Windows.TextWrapping]::Wrap
+            $cell.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
+            $cell.Name = 'ChooserCell' + [string] $column['Key']
+            [System.Windows.Automation.AutomationProperties]::SetName($cell, [string]::Format([string] $t.ChooserCellName, [string] $column['Header'], [string] $cell.Text))
+            [System.Windows.Controls.Grid]::SetColumn($cell, $cellIndex)
+            $null = $grid.Children.Add($cell)
+            $cellIndex++
+        }
+        $item = New-Object System.Windows.Controls.ListBoxItem
+        $item.Content = $grid
+        $item.HorizontalContentAlignment = [System.Windows.HorizontalAlignment]::Stretch
+        $item.Tag = [string] $row.id
+        [System.Windows.Automation.AutomationProperties]::SetName($item, [string] $row.label)
+        $null = $list.Items.Add($item)
+    }
+    $panel = New-Object System.Windows.Controls.StackPanel
+    foreach ($child in @($intro, $headerGrid, $list)) { $null = $panel.Children.Add($child) }
+    $buttons = [ordered] @{ Choose = [string] $t.ChooserChoose; Cancel = [string] $t.ChooserCancel }
+    # Enter starts as no target: Choose is disabled until a row is selected, and the selection handler below moves the target.
+    $dialog = New-FastLlmUiFluentDialog -Title ([string] $t.ChooserTitle) -Body $panel -Buttons $buttons -Enter '' -Escape 'Cancel' -Owner $script:form
+    $choose = $dialog['Buttons']['Choose']
+    $choose.IsEnabled = $false
+    $state = $dialog['State']
+    $win = $dialog['Window']
+    $list.Add_SelectionChanged({
+        $enabled = ($list.SelectedItems.Count -eq 1)
+        $choose.IsEnabled = $enabled
+        if ($enabled) { $state['Enter'] = 'Choose' } else { $state['Enter'] = '' }
+    }.GetNewClosure())
+    # A double-click on the list chooses the selected row, as the classic ListView's DoubleClick does.
+    $list.Add_MouseDoubleClick({
+        if ($list.SelectedItems.Count -eq 1) {
+            if ([string] $state['Result'] -ceq '') { $state['Result'] = 'Choose' }
+            $win.Close()
+        }
+    }.GetNewClosure())
+    # With Choose disabled the first focus is the list (the Enter target of a ListView dialog is its list), registered after the host's own focus.
+    $win.Add_Loaded({ $null = $list.Focus() }.GetNewClosure())
+    $work = [System.Windows.SystemParameters]::WorkArea
+    $win.Width = [Math]::Min($work.Width * 0.9, 960.0 * $scale)
+    $picked = $null
+    SetTrayMenuAvailable $false
+    try {
+        $answer = Show-FastLlmUiFluentDialog -Dialog $dialog
+        if ($answer -ceq 'Choose' -and $list.SelectedItems.Count -eq 1) {
+            $pickedId = [string] $list.SelectedItems[0].Tag
+            $picked = @($shown | Where-Object { [string] $_.id -ceq $pickedId })[0]
+        }
+    }
+    finally { SetTrayMenuAvailable $true }
+    return $picked
 }

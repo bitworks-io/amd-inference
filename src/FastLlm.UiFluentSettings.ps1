@@ -558,70 +558,26 @@ function Invoke-FastLlmUiFluentSettingsSave {
     return $true
 }
 
-# The "Save your changes?" prompt: a small WinForms form until the dialogs PR restyles it (a MessageBox cannot caption Save, Don't save and Cancel).
-# Enter and Escape both mean Cancel (nothing is written, nothing is lost). Save is disabled while Settings is unavailable, and the reason is shown.
+# The "Save your changes?" prompt, on the dialog host (a MessageBox cannot caption Save, Don't save and Cancel). Enter and Escape both mean Cancel (nothing is
+# written, nothing is lost), and the first focus is Cancel, the Enter target. Save is disabled while Settings is unavailable, and the reason is shown.
 # Returns exactly one string: save, discard or cancel.
 function Show-FastLlmUiFluentSavePrompt {
     [CmdletBinding()]
     param([bool] $SaveEnabled = $true, [AllowEmptyString()][string] $Reason = '')
     $s = $script:FastLlmUiFluentStrings
     $t = $script:FastLlmUiFluentSettingsText
-    $dialog = New-Object System.Windows.Forms.Form
-    $dialog.Text = [string] $t.Title
-    $dialog.FormBorderStyle = 'FixedDialog'
-    $dialog.MaximizeBox = $false
-    $dialog.MinimizeBox = $false
-    $dialog.ShowInTaskbar = $false
-    $dialog.StartPosition = 'CenterParent'
-    $dialog.Font = $script:form.Font
-    $dialog.AutoSize = $true
-    $dialog.AutoSizeMode = 'GrowAndShrink'
-    $layout = New-Object System.Windows.Forms.TableLayoutPanel
-    $layout.ColumnCount = 1
-    $layout.RowCount = 2
-    $layout.AutoSize = $true
-    $layout.AutoSizeMode = 'GrowAndShrink'
-    $layout.Padding = New-Object System.Windows.Forms.Padding(16)
-    $body = [string] $s.SavePrompt
-    if ($Reason -ne '') { $body = $body + [Environment]::NewLine + $Reason }
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = $body
-    $label.UseMnemonic = $false
-    $label.AutoSize = $true
-    $label.MaximumSize = New-Object System.Drawing.Size(420, 0)
-    $label.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 16)
-    $buttons = New-Object System.Windows.Forms.FlowLayoutPanel
-    $buttons.FlowDirection = 'RightToLeft'
-    $buttons.WrapContents = $false
-    $buttons.AutoSize = $true
-    $buttons.AutoSizeMode = 'GrowAndShrink'
-    $buttons.Dock = 'Right'
-    $cancel = New-Object System.Windows.Forms.Button
-    $dontSave = New-Object System.Windows.Forms.Button
-    $save = New-Object System.Windows.Forms.Button
-    $cancel.Text = [string] $t.Cancel
-    $dontSave.Text = [string] $s.DontSave
-    $save.Text = [string] $t.Save
-    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $dontSave.DialogResult = [System.Windows.Forms.DialogResult]::No
-    $save.DialogResult = [System.Windows.Forms.DialogResult]::Yes
-    $save.Enabled = $SaveEnabled
-    foreach ($button in @($cancel, $dontSave, $save)) {
-        $button.AutoSize = $true
-        $button.AutoSizeMode = 'GrowAndShrink'
-        $button.MinimumSize = New-Object System.Drawing.Size(100, 34)
-        $null = $buttons.Controls.Add($button)
-    }
-    $null = $layout.Controls.Add($label, 0, 0)
-    $null = $layout.Controls.Add($buttons, 0, 1)
-    $null = $dialog.Controls.Add($layout)
-    $dialog.AcceptButton = $cancel
-    $dialog.CancelButton = $cancel
-    $dialog.ActiveControl = $cancel
+    $text = [string] $s.SavePrompt
+    if ($Reason -ne '') { $text = $text + [Environment]::NewLine + $Reason }
+    $body = New-Object System.Windows.Controls.TextBlock
+    $body.Text = $text
+    $body.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $buttons = [ordered] @{ Save = [string] $t.Save; DontSave = [string] $s.DontSave; Cancel = [string] $t.Cancel }
+    $dialog = New-FastLlmUiFluentDialog -Title ([string] $t.Title) -Body $body -Buttons $buttons -Enter 'Cancel' -Escape 'Cancel' -Owner $script:form
+    $dialog['Buttons']['Save'].IsEnabled = $SaveEnabled
     SetTrayMenuAvailable $false
-    $result = 'Cancel'
-    try { $result = [string] $dialog.ShowDialog($script:form) } finally { $dialog.Dispose(); SetTrayMenuAvailable $true }
-    if ($result -ceq 'Yes') { return 'save' }
-    if ($result -ceq 'No') { return 'discard' }
+    $answer = 'Cancel'
+    try { $answer = [string] (Show-FastLlmUiFluentDialog -Dialog $dialog) } finally { SetTrayMenuAvailable $true }
+    if ($answer -ceq 'Save') { return 'save' }
+    if ($answer -ceq 'DontSave') { return 'discard' }
     return 'cancel'
 }
