@@ -1008,6 +1008,25 @@ $plantedBox.SelectedIndex=0
 Check (-not (Test-UiSelectionDrawn $plantedBox)) 'planted: a box whose selected text is empty is not drawn'
 $plantedBox.SelectedIndex=-1
 Check (-not (Test-UiSelectionDrawn $plantedBox)) 'planted: a box with no selection is not drawn'
+# The settings-dialog-render replacements (5a): the classic dialog's reading-order fact (the switching controls below the sign-in controls) has a fluent meaning of its own,
+# the order of the page. A chain lists names top to bottom; Tops maps each shown name to its top edge in the page (a name that is not shown is left out and skipped).
+# Each shown name must not start above the shown name before it (0.5 DIP of rounding). Returns the problems.
+function Get-UiOrderProblems([string[]]$Chain,$Tops){
+    $problems=@()
+    $prev=''
+    foreach($n in $Chain){
+        if(-not $Tops.ContainsKey($n)){continue}
+        if($prev -ne '' -and [double]$Tops[$n] -lt [double]$Tops[$prev]-0.5){$problems+="$n starts above $prev"}
+        $prev=$n
+    }
+    return $problems
+}
+Check (@(Get-UiOrderProblems @('a','b','c') @{a=0;b=10;c=20}).Count -eq 0) 'planted control: a chain in order has no order problem'
+Check (@(Get-UiOrderProblems @('a','b','c') @{a=0;b=20;c=10}).Count -eq 1) 'planted: a control that starts above the one before it is an order problem'
+Check (@(Get-UiOrderProblems @('a','b','c') @{a=0;c=20}).Count -eq 0) 'planted: a name that is not shown is skipped'
+Check (@(Get-UiOrderProblems @('a','b') @{a=10;b=9.7}).Count -eq 0) 'planted: half a DIP of rounding is not an order problem'
+# The page's own top-to-bottom order, from its markup (the Server group with the switching controls, then the Starting group with the sign-in controls, then Components).
+$script:settingsOrderChain=@('SettingsServerHeading','SettingsPortLabel','SettingsThinkingLabel','SettingsChatBox','SettingsChatHelp','SettingsIdleLabel','SettingsIdleHelp','SettingsKeyBox','SettingsKeyHelp','SettingsNewKeyButton','SettingsSwitchBox','SettingsSwitchHelp','SettingsStartingHeading','SettingsSignInToggle','SettingsSignInState','SettingsSignInLast','SettingsComponentsHeading','SettingsUpdateToggle','SettingsExperimentalToggle','SettingsLicenseToggle')
 function Test-SettingsCase([string]$Kind,$case){
     $script:settingsKind=$Kind
     $script:settingsCaseHeight=[double]$case.height
@@ -1069,6 +1088,25 @@ function Test-SettingsCase([string]$Kind,$case){
     Check $keyOk "the key box shows the right caption and state for the $Kind fixture at ${label} (name='$([System.Windows.Automation.AutomationProperties]::GetName($e['SettingsKeyBox']))' checked=$keyChecked)"
     # the three value boxes hold the saved values and a selection
     Check ([string]$e['SettingsPortBox'].Text -ceq ([int]$fx.override.serverPort).ToString() -and [int]$e['SettingsThinkingBox'].SelectedIndex -ge 0 -and [int]$e['SettingsIdleBox'].SelectedIndex -ge 0) "Port shows the saved port and Thinking and the idle stop have a selection at $label (port='$($e['SettingsPortBox'].Text)' thinking=$($e['SettingsThinkingBox'].SelectedIndex) idle=$($e['SettingsIdleBox'].SelectedIndex))"
+    # settings-dialog-render, replaced: the captions of the controls the dialog's checks required (the key box above), the sign-in lines, and the page order
+    $captionBad=@()
+    foreach($pair in @(@('SettingsChatBox','Chat'),@('SettingsSwitchBox','Switch'),@('SettingsSignInToggle','SignIn'))){
+        if([string][System.Windows.Automation.AutomationProperties]::GetName($e[[string]$pair[0]]) -cne [string]$t[[string]$pair[1]]){$captionBad+="$($pair[0]) name='$([System.Windows.Automation.AutomationProperties]::GetName($e[[string]$pair[0]]))'"}
+    }
+    foreach($pair in @(@('SettingsNewKeyButton',[string]$t.NewKey),@('SettingsSaveButton',[string]$t.Save),@('SettingsDiscardButton',[string]$script:FastLlmUiFluentStrings.Discard))){
+        if([string]$e[[string]$pair[0]].Content -cne ([string]$pair[1]).Replace('_','__')){$captionBad+="$($pair[0]) content='$($e[[string]$pair[0]].Content)'"}
+    }
+    Check ($captionBad.Count -eq 0) "Create a new key, the start at sign-in switch, the switching box, Save and Discard carry their captions at ${label}: $($captionBad -join '; ')"
+    $signInBad=@('SettingsSignInState','SettingsSignInLast'|Where-Object{[string]::IsNullOrEmpty([string]$e[[string]$_].Text) -or $e[[string]$_].Visibility -ne [System.Windows.Visibility]::Visible})
+    Check ($signInBad.Count -eq 0) "the text under the sign-in switch is shown at ${label}: $($signInBad -join ', ')"
+    $tops=@{}
+    foreach($n in $script:settingsOrderChain){
+        if(-not (Test-UiShown $e[$n] $page)){continue}
+        $or=Get-UiRelativeRect $e[$n] $page
+        if($null -ne $or){$tops[$n]=[double]$or.Top}
+    }
+    $orderProblems=@(Get-UiOrderProblems $script:settingsOrderChain $tops)
+    Check ($orderProblems.Count -eq 0 -and $tops.Count -ge 15) "the Settings page lists its controls in its own order at ${label}: the Server group (with the switching controls) above the sign-in controls above the Components group ($($tops.Count) shown; $($orderProblems -join '; '))"
     foreach($n in 'SettingsThinkingBox','SettingsIdleBox'){
         $selected=[string]$e[$n].SelectedItem
         Check (Test-UiSelectionDrawn $e[$n]) "the $n selection text is drawn at ${label} ('$selected')"
@@ -1123,6 +1161,19 @@ function Test-SettingsCase([string]$Kind,$case){
             $pr=Get-UiRelativeRect $e[$n] $page
             $ink=Get-UiRegionInk $r.png $pr ([double]$case.scale)
             $seen++
+            Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
+        }
+        # settings-dialog-render, replaced: the render shows Save and Cancel (here Save and Discard, always in the footer) and the key box, the sign-in switch and the switching box (when they are in the viewport)
+        foreach($n in 'SettingsSaveButton','SettingsDiscardButton'){
+            $pr=Get-UiRelativeRect $e[$n] $page
+            $ink=Get-UiRegionInk $r.png $pr ([double]$case.scale)
+            Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
+        }
+        foreach($n in 'SettingsKeyBox','SettingsSignInToggle','SettingsSwitchBox'){
+            $br=Get-UiRelativeRect $e[$n] $scroll
+            if($null -eq $br -or $br.Top -lt 0 -or $br.Bottom -gt [double]$scroll.ViewportHeight){continue}
+            $pr=Get-UiRelativeRect $e[$n] $page
+            $ink=Get-UiRegionInk $r.png $pr ([double]$case.scale)
             Check ($ink -gt 0) "the $n is painted (ink pixels $ink) at $label"
         }
         if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){Check ($seen -eq 3) "all three value boxes are inside the viewport and inked at 1000x680 (seen $seen) at $label"}
