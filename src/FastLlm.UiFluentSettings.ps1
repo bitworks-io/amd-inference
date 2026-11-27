@@ -75,6 +75,35 @@ $script:FastLlmUiXaml['FastLlm.Settings'] = @'
           <TextBlock x:Name="SettingsIdleLabel" Margin="0,16,0,4" TextWrapping="Wrap"/>
           <ComboBox x:Name="SettingsIdleBox" HorizontalAlignment="Left" MinWidth="260" Style="{DynamicResource FastLlm.ComboBoxStyle}"/>
           <TextBlock x:Name="SettingsIdleHelp" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
+          <TextBlock x:Name="SettingsContextProfileLabel" Margin="0,16,0,4" TextWrapping="Wrap"/>
+          <ComboBox x:Name="SettingsContextProfileBox" HorizontalAlignment="Left" MinWidth="260" Style="{DynamicResource FastLlm.ComboBoxStyle}"/>
+          <TextBlock x:Name="SettingsContextProfileHelp" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
+          <TextBlock x:Name="SettingsContextProfileWhy" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"
+                     AutomationProperties.LiveSetting="Polite"/>
+          <TextBlock x:Name="SettingsRequestsLabel" Margin="0,16,0,4" TextWrapping="Wrap"/>
+          <ComboBox x:Name="SettingsRequestsBox" HorizontalAlignment="Left" MinWidth="260" Style="{DynamicResource FastLlm.ComboBoxStyle}"/>
+          <TextBlock x:Name="SettingsRequestsHelp" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
+          <StackPanel x:Name="SettingsEmbeddingsGroup" Visibility="Collapsed">
+            <CheckBox x:Name="SettingsEmbeddingsBox" Margin="0,16,0,0" Style="{DynamicResource FastLlm.CheckBoxStyle}"/>
+            <TextBlock x:Name="SettingsEmbeddingsHelp" Margin="28,0,0,0" TextWrapping="Wrap" Foreground="{DynamicResource FastLlm.TextSecondaryBrush}"/>
+            <StackPanel x:Name="SettingsEmbeddingPortGroup" Margin="28,0,0,0" Visibility="Collapsed">
+              <TextBlock x:Name="SettingsEmbeddingPortLabel" Margin="0,12,0,4" TextWrapping="Wrap"/>
+              <Grid x:Name="SettingsEmbeddingPortRow" HorizontalAlignment="Left" MinWidth="260">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SettingsEmbeddingPortBox" Grid.Column="0" Style="{DynamicResource FastLlm.TextBoxStyle}"/>
+                <RepeatButton x:Name="SettingsEmbeddingPortUp" Grid.Column="1" Margin="4,0,0,0" Style="{DynamicResource FastLlm.SpinButtonStyle}"
+                              IsEnabled="{Binding IsEnabled, ElementName=SettingsEmbeddingPortBox}"/>
+                <RepeatButton x:Name="SettingsEmbeddingPortDown" Grid.Column="2" Margin="4,0,0,0" Style="{DynamicResource FastLlm.SpinButtonStyle}"
+                              IsEnabled="{Binding IsEnabled, ElementName=SettingsEmbeddingPortBox}"/>
+              </Grid>
+              <TextBlock x:Name="SettingsEmbeddingPortSame" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{DynamicResource FastLlm.CautionTextBrush}"
+                         AutomationProperties.LiveSetting="Polite"/>
+            </StackPanel>
+          </StackPanel>
           <Border x:Name="SettingsKeyRow" Margin="0,16,0,0" Padding="8" BorderThickness="2" BorderBrush="Transparent"
                   CornerRadius="{DynamicResource FastLlm.OverlayCornerRadius}">
             <StackPanel>
@@ -148,7 +177,10 @@ function Initialize-FastLlmUiFluentSettings {
         'SettingsChatBox', 'SettingsChatHelp', 'SettingsIdleLabel', 'SettingsIdleBox', 'SettingsIdleHelp', 'SettingsKeyRow', 'SettingsKeyBox', 'SettingsKeyHelp',
         'SettingsNewKeyButton', 'SettingsSwitchBox', 'SettingsSwitchHelp', 'SettingsStartingGroup', 'SettingsStartingHeading', 'SettingsSignInToggle', 'SettingsSignInState',
         'SettingsSignInLast', 'SettingsComponentsGroup', 'SettingsComponentsHeading', 'SettingsUpdateToggle', 'SettingsExperimentalToggle', 'SettingsLicenseToggle',
-        'SettingsFooter', 'SettingsSaveButton', 'SettingsDiscardButton')
+        'SettingsFooter', 'SettingsSaveButton', 'SettingsDiscardButton', 'SettingsContextProfileLabel', 'SettingsContextProfileBox', 'SettingsContextProfileHelp',
+        'SettingsContextProfileWhy', 'SettingsRequestsLabel', 'SettingsRequestsBox', 'SettingsRequestsHelp', 'SettingsEmbeddingsGroup', 'SettingsEmbeddingsBox',
+        'SettingsEmbeddingsHelp', 'SettingsEmbeddingPortGroup', 'SettingsEmbeddingPortLabel', 'SettingsEmbeddingPortRow', 'SettingsEmbeddingPortBox',
+        'SettingsEmbeddingPortUp', 'SettingsEmbeddingPortDown', 'SettingsEmbeddingPortSame')
     $Els['SettingsTitle'].Text = [string] $s.NavSettings
     $Els['SettingsServerHeading'].Text = [string] $s.SettingsServer
     $Els['SettingsStartingHeading'].Text = [string] $s.SettingsStarting
@@ -157,11 +189,20 @@ function Initialize-FastLlmUiFluentSettings {
     $Els['SettingsIdleHelp'].Text = [string] $t.IdleHelp
     $Els['SettingsKeyHelp'].Text = [string] $t.KeyHelp
     $Els['SettingsSwitchHelp'].Text = [string] $t.SwitchHelp
+    # The Settings additions (their text is in the fluent string table, not in today's dialog): each input has its name and its label from one string.
+    $Els['SettingsContextProfileHelp'].Text = [string] $s.ContextProfileHelp
+    $Els['SettingsRequestsHelp'].Text = [string] $s.RequestsAtOnceHelp
+    $Els['SettingsEmbeddingsHelp'].Text = [string] $s.EmbeddingsHelp
     # Each labelled input has its name and its label from one string.
     Set-FastLlmUiFluentConnectInputName -Box $Els['SettingsPortBox'] -Label $Els['SettingsPortLabel'] -Text ([string] $t.Port)
     Set-FastLlmUiFluentConnectInputName -Box $Els['SettingsThinkingBox'] -Label $Els['SettingsThinkingLabel'] -Text ([string] $t.Thinking)
     Set-FastLlmUiFluentConnectInputName -Box $Els['SettingsIdleBox'] -Label $Els['SettingsIdleLabel'] -Text ([string] $t.Idle)
+    Set-FastLlmUiFluentConnectInputName -Box $Els['SettingsContextProfileBox'] -Label $Els['SettingsContextProfileLabel'] -Text ([string] $s.ContextProfile)
+    Set-FastLlmUiFluentConnectInputName -Box $Els['SettingsRequestsBox'] -Label $Els['SettingsRequestsLabel'] -Text ([string] $s.RequestsAtOnce)
+    Set-FastLlmUiFluentConnectInputName -Box $Els['SettingsEmbeddingPortBox'] -Label $Els['SettingsEmbeddingPortLabel'] -Text ([string] $s.EmbeddingPort)
     # A check box names itself with its own caption (the same string it shows).
+    $Els['SettingsEmbeddingsBox'].Content = ConvertTo-FastLlmUiAccessText -Text ([string] $s.Embeddings) -UseMnemonic $false
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['SettingsEmbeddingsBox'], [string] $s.Embeddings)
     foreach ($pair in @(@('SettingsChatBox', 'Chat'), @('SettingsSwitchBox', 'Switch'), @('SettingsSignInToggle', 'SignIn'))) {
         $caption = [string] $t[[string] $pair[1]]
         $Els[[string] $pair[0]].Content = ConvertTo-FastLlmUiAccessText -Text $caption -UseMnemonic $false
@@ -172,11 +213,22 @@ function Initialize-FastLlmUiFluentSettings {
     $Els['SettingsDiscardButton'].Content = ConvertTo-FastLlmUiAccessText -Text ([string] $s.Discard) -UseMnemonic $false
     foreach ($item in @($t.ThinkingAuto, $t.ThinkingOff)) { $null = $Els['SettingsThinkingBox'].Items.Add([string] $item) }
     foreach ($item in @($t.IdleNever, $t.IdleAfter15, $t.IdleAfter30, $t.IdleAfter60)) { $null = $Els['SettingsIdleBox'].Items.Add([string] $item) }
+    # The context profile's items are ComboBoxItems so that Long can be disabled on its own (index 0 Default, index 1 Long); requests at once is 1 then 2.
+    foreach ($item in @($s.ContextProfileDefault, $s.ContextProfileLong)) {
+        $profileItem = [System.Windows.Controls.ComboBoxItem]::new()
+        $profileItem.Content = [string] $item
+        $null = $Els['SettingsContextProfileBox'].Items.Add($profileItem.psobject.BaseObject)
+    }
+    foreach ($item in @($s.RequestsAtOnceOne, $s.RequestsAtOnceTwo)) { $null = $Els['SettingsRequestsBox'].Items.Add([string] $item) }
     # The spin buttons: icon glyphs (drawn, not read), named, never tab stops (their style).
     $Els['SettingsPortUp'].Content = New-FastLlmUiFluentGlyphText 0xE70E
     $Els['SettingsPortDown'].Content = New-FastLlmUiFluentGlyphText 0xE70D
     [System.Windows.Automation.AutomationProperties]::SetName($Els['SettingsPortUp'], [string] $s.SpinUp)
     [System.Windows.Automation.AutomationProperties]::SetName($Els['SettingsPortDown'], [string] $s.SpinDown)
+    $Els['SettingsEmbeddingPortUp'].Content = New-FastLlmUiFluentGlyphText 0xE70E
+    $Els['SettingsEmbeddingPortDown'].Content = New-FastLlmUiFluentGlyphText 0xE70D
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['SettingsEmbeddingPortUp'], [string] $s.SpinUp)
+    [System.Windows.Automation.AutomationProperties]::SetName($Els['SettingsEmbeddingPortDown'], [string] $s.SpinDown)
 
     # The Server edits write the held values (Invoke-FastLlmUiFluentSettingsEdit). The Port box commits its text on Enter, on focus loss and through the spin
     # buttons; Up and Down are read in PreviewKeyDown because a TextBox handles them before instance KeyDown handlers.
@@ -189,6 +241,20 @@ function Initialize-FastLlmUiFluentSettings {
     $Els['SettingsPortBox'].Add_LostKeyboardFocus({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsPortCommit -Direction '' })
     $Els['SettingsPortUp'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsPortCommit -Direction 'Up' })
     $Els['SettingsPortDown'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsPortCommit -Direction 'Down' })
+    # The embeddings port box commits like the server port box (the same clamp, 1024..65535, step 1).
+    $Els['SettingsEmbeddingPortBox'].Add_PreviewKeyDown({
+            param($sender, $routed)
+            if ($routed.Key -eq [System.Windows.Input.Key]::Return) { Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction '' }
+            elseif ($routed.Key -eq [System.Windows.Input.Key]::Up) { $routed.Handled = $true; Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction 'Up' }
+            elseif ($routed.Key -eq [System.Windows.Input.Key]::Down) { $routed.Handled = $true; Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction 'Down' }
+        })
+    $Els['SettingsEmbeddingPortBox'].Add_LostKeyboardFocus({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction '' })
+    $Els['SettingsEmbeddingPortUp'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction 'Up' })
+    $Els['SettingsEmbeddingPortDown'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction 'Down' })
+    $Els['SettingsContextProfileBox'].Add_SelectionChanged({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEdit })
+    $Els['SettingsRequestsBox'].Add_SelectionChanged({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEdit })
+    $Els['SettingsEmbeddingsBox'].Add_Checked({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEdit })
+    $Els['SettingsEmbeddingsBox'].Add_Unchecked({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEdit })
     $Els['SettingsThinkingBox'].Add_SelectionChanged({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEdit })
     $Els['SettingsIdleBox'].Add_SelectionChanged({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsEdit })
     foreach ($name in 'SettingsChatBox', 'SettingsSwitchBox') {
@@ -205,12 +271,12 @@ function Initialize-FastLlmUiFluentSettings {
     $Els['SettingsSignInToggle'].Add_Unchecked({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsSignIn })
     $Els['SettingsSaveButton'].Add_Click({ param($sender, $routed) $null = Invoke-FastLlmUiFluentSettingsSave })
     $Els['SettingsDiscardButton'].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentSettingsDiscard })
-    foreach ($name in 'SettingsPortBox', 'SettingsThinkingBox', 'SettingsIdleBox', 'SettingsChatBox', 'SettingsKeyBox', 'SettingsNewKeyButton', 'SettingsSwitchBox',
-        'SettingsSignInToggle', 'SettingsSaveButton', 'SettingsDiscardButton') {
+    foreach ($name in 'SettingsPortBox', 'SettingsThinkingBox', 'SettingsIdleBox', 'SettingsContextProfileBox', 'SettingsRequestsBox', 'SettingsEmbeddingsBox', 'SettingsEmbeddingPortBox',
+        'SettingsChatBox', 'SettingsKeyBox', 'SettingsNewKeyButton', 'SettingsSwitchBox', 'SettingsSignInToggle', 'SettingsSaveButton', 'SettingsDiscardButton') {
         [System.Windows.Controls.ToolTipService]::SetShowOnDisabled($Els[$name], $true)
     }
     $f = $script:FastLlmUiFluent
-    $f['Settings'] = @{ Saved = $null; Held = $null; Current = $null; Dirty = $false; Loading = $false; KeyMarked = $false; PromptOpen = $false }
+    $f['Settings'] = @{ Saved = $null; Held = $null; Current = $null; Dirty = $false; Loading = $false; KeyMarked = $false; PromptOpen = $false; EmbeddingsAvailable = $false; LongMeasured = $false }
     return $Els
 }
 
@@ -245,6 +311,10 @@ function Set-FastLlmUiFluentSettingsView {
         $e['SettingsChatBox'].IsChecked = [bool] $held.chatPage
         $e['SettingsIdleBox'].SelectedIndex = [int] $held.idleIndex
         $e['SettingsSwitchBox'].IsChecked = [bool] $held.allowSwitch
+        $e['SettingsContextProfileBox'].SelectedIndex = [int] $(if ([string] $held.contextProfile -ceq 'long') { 1 } else { 0 })
+        $e['SettingsRequestsBox'].SelectedIndex = [int] $(if ([int] $held.slots -eq 2) { 1 } else { 0 })
+        $e['SettingsEmbeddingsBox'].IsChecked = [bool] ([string] $held.embeddings -ceq 'on')
+        $e['SettingsEmbeddingPortBox'].Text = ([decimal] $held.embeddingPort).ToString('F0')
         $keyBox = $e['SettingsKeyBox']
         $caption = [string] $t.Key
         if ([string] $held.keyBox -ceq 'indeterminate') {
@@ -260,7 +330,95 @@ function Set-FastLlmUiFluentSettingsView {
         [System.Windows.Automation.AutomationProperties]::SetName($keyBox, $caption)
     }
     finally { $st['Loading'] = $false }
+    Set-FastLlmUiFluentSettingsAdditionsView
     $st['Dirty'] = [bool] (Test-FastLlmUiSettingsDirty -Saved $st['Saved'] -Held $held)
+}
+
+# What the Settings additions rows show: the pure view (Get-FastLlmUiSettingsAdditionsView) from the two availability answers read on Enter and the saved values.
+# Both Embeddings rows are shown only from the view; Long is disabled, with its reason line, when the view says so. Nothing is probed here.
+function Set-FastLlmUiFluentSettingsAdditionsView {
+    [CmdletBinding()] param()
+    $f = $script:FastLlmUiFluent
+    $e = $f['Els']
+    $st = $f['Settings']
+    $s = $script:FastLlmUiFluentStrings
+    $view = Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable ([bool] $st['EmbeddingsAvailable']) -SavedEmbeddings ([string] $st['Saved'].embeddings) -LongMeasured ([bool] $st['LongMeasured']) -SavedContextProfile ([string] $st['Saved'].contextProfile)
+    if ([bool] $view['showEmbeddings']) { $e['SettingsEmbeddingsGroup'].Visibility = [System.Windows.Visibility]::Visible }
+    else { $e['SettingsEmbeddingsGroup'].Visibility = [System.Windows.Visibility]::Collapsed }
+    $e['SettingsContextProfileBox'].Items[1].IsEnabled = [bool] $view['longEnabled']
+    $why = ''
+    if ([string] $view['longReasonCode'] -ceq 'long-not-measured') { $why = [string] $s.LongNotMeasured }
+    $e['SettingsContextProfileWhy'].Text = $why
+    if ($why -ne '') { $e['SettingsContextProfileWhy'].Visibility = [System.Windows.Visibility]::Visible } else { $e['SettingsContextProfileWhy'].Visibility = [System.Windows.Visibility]::Collapsed }
+    [System.Windows.Automation.AutomationProperties]::SetHelpText($e['SettingsContextProfileBox'], $why)
+    Update-FastLlmUiFluentSettingsEmbeddingPortView
+}
+
+# The embeddings port row follows the held values: it shows only while Embeddings is on (kept as a held value either way), and the inline message shows
+# whenever Embeddings is on and the two ports are the same, so Save is never the first place the user learns it.
+function Update-FastLlmUiFluentSettingsEmbeddingPortView {
+    [CmdletBinding()] param()
+    $f = $script:FastLlmUiFluent
+    $e = $f['Els']
+    $held = $f['Settings']['Held']
+    if ($null -eq $held) { return }
+    $on = [bool] ([string] $held.embeddings -ceq 'on')
+    if ($on) { $e['SettingsEmbeddingPortGroup'].Visibility = [System.Windows.Visibility]::Visible } else { $e['SettingsEmbeddingPortGroup'].Visibility = [System.Windows.Visibility]::Collapsed }
+    $same = [bool] ($on -and [int] $held.embeddingPort -eq [int] $held.port)
+    $line = $e['SettingsEmbeddingPortSame']
+    if ($same) {
+        $line.Text = [string] $script:FastLlmUiFluentStrings.EmbeddingPortSame
+        $line.Visibility = [System.Windows.Visibility]::Visible
+    }
+    else {
+        $line.Text = ''
+        $line.Visibility = [System.Windows.Visibility]::Collapsed
+    }
+}
+
+# Is the embeddings server on offer? The non-throwing form of the check a start makes (Assert-FastLlmEmbeddingsAvailable: an approved embedding model is
+# installed with its licence accepted, it is measured for the built-in engine, and its placement is the CPU). Read-only. Any refusal is $false.
+# Exactly one [bool]. Read on Enter only.
+function Test-FastLlmUiFluentEmbeddingsAvailable {
+    [CmdletBinding()] param()
+    try {
+        Assert-FastLlmEmbeddingsAvailable -CatalogPath (Join-Path (Join-Path $script:FastLlmUiFluentSourceRoot 'config') 'catalog.json') -InstallRoot $script:installPath
+        return $true
+    }
+    catch { return $false }
+}
+
+# Does this install have a measured long-context row for the model a start would use? The planner's own source (config/serving-profiles.json through
+# Read-FastLlmServingProfiles and Find-FastLlmServingProfileRow, for the built-in engine id and profile id 'long'). The model is the Home model box as
+# ReadSelection reads it (a chosen model, or any model the planner may pick when it is on Automatic). The backend is not probed: a row of any backend
+# counts, so a hardware mismatch is left to the start's own check. Read-only. Any failure to read is $false. Exactly one [bool]. Read on Enter only.
+function Test-FastLlmUiFluentLongMeasured {
+    [CmdletBinding()] param()
+    try {
+        $modelId = ''
+        if ([int] $script:modelBox.SelectedIndex -gt 0) { $modelId = [string] $script:modelBox.SelectedItem }
+        $configRoot = Join-Path $script:FastLlmUiFluentSourceRoot 'config'
+        $measured = & (Get-Module FastLlm) {
+            param($ConfigRoot, $ModelId)
+            $catalog = Get-FastLlmCatalog -CatalogPath (Join-Path $ConfigRoot 'catalog.json')
+            $engineId = Get-FastLlmBuiltInEngineId -Catalog $catalog
+            $rows = @(Read-FastLlmServingProfiles -Path (Join-Path $ConfigRoot 'serving-profiles.json'))
+            $backends = @($rows | ForEach-Object { Get-FastLlmServingProfileValue -Row $_ -Name 'backend' } | Where-Object { $_ -is [string] } | Select-Object -Unique)
+            foreach ($model in @($catalog.models)) {
+                if ($ModelId -and [string] $model.id -ne $ModelId) { continue }
+                if (Get-FastLlmModelSupersededBy -Model $model) { continue }
+                # Automatic never picks a model that is not auto-eligible (the planner's own skip).
+                $autoEligible = $model.PSObject.Properties['autoEligible']
+                if (-not $ModelId -and $autoEligible -and -not [bool] $autoEligible.Value) { continue }
+                foreach ($backend in $backends) {
+                    if ($null -ne (Find-FastLlmServingProfileRow -Rows $rows -Model $model -EngineId $engineId -Backend ([string] $backend) -ProfileId 'long' -Slots 1)) { return $true }
+                }
+            }
+            return $false
+        } $configRoot $modelId
+        return [bool] (@($measured) | Select-Object -Last 1)
+    }
+    catch { return $false }
 }
 
 # Reads the settings again: a fresh Current, Saved = Held (two objects with the same values), the controls filled. Enter and a saved Save both run it, so the
@@ -319,6 +477,9 @@ function Enter-FastLlmUiFluentSettings {
         $e = $script:FastLlmUiFluent['Els']
         $t = $script:FastLlmUiFluentSettingsText
         Set-FastLlmUiFluentSettingsKeyMark -On $false
+        # What the additions rows may show is read here, once per visit (never on a tick, never on a Save's reload).
+        $script:FastLlmUiFluent['Settings']['EmbeddingsAvailable'] = [bool] (Test-FastLlmUiFluentEmbeddingsAvailable)
+        $script:FastLlmUiFluent['Settings']['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured)
         Update-FastLlmUiFluentSettingsLoad
         # The three immediate toggles name themselves with the caption their adapter shows.
         foreach ($pair in @(@('SettingsUpdateToggle', 'updateBox'), @('SettingsExperimentalToggle', 'experimentalBox'), @('SettingsLicenseToggle', 'licenseBox'))) {
@@ -351,6 +512,7 @@ function Resolve-FastLlmUiFluentSettingsExit {
     $st = $script:FastLlmUiFluent['Settings']
     if ($null -eq $st -or $null -eq $st['Held']) { return $true }
     Invoke-FastLlmUiFluentSettingsPortCommit -Direction ''
+    Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction ''
     $dirty = [bool] $st['Dirty']
     if (-not $dirty) { return $true }
     # One prompt at a time: a second close while it is open is refused.
@@ -411,6 +573,10 @@ function Invoke-FastLlmUiFluentSettingsEdit {
     $held.idleIndex = [int] $e['SettingsIdleBox'].SelectedIndex
     $held.keyBox = [string] (ConvertTo-FastLlmUiKeyBoxState -IsChecked $e['SettingsKeyBox'].IsChecked)
     $held.allowSwitch = [bool] ($e['SettingsSwitchBox'].IsChecked -eq $true)
+    $held.contextProfile = [string] $(if ([int] $e['SettingsContextProfileBox'].SelectedIndex -eq 1) { 'long' } else { 'default' })
+    $held.slots = [int] $(if ([int] $e['SettingsRequestsBox'].SelectedIndex -eq 1) { 2 } else { 1 })
+    $held.embeddings = [string] $(if ($e['SettingsEmbeddingsBox'].IsChecked -eq $true) { 'on' } else { 'off' })
+    Update-FastLlmUiFluentSettingsEmbeddingPortView
     $st['Dirty'] = [bool] (Test-FastLlmUiSettingsDirty -Saved $st['Saved'] -Held $held)
 }
 
@@ -428,6 +594,25 @@ function Invoke-FastLlmUiFluentSettingsPortCommit {
     $held.port = [int] $value
     $shown = ([decimal] $value).ToString('F0')
     if ($box.Text -cne $shown) { $box.Text = $shown }
+    Update-FastLlmUiFluentSettingsEmbeddingPortView
+    $st['Dirty'] = [bool] (Test-FastLlmUiSettingsDirty -Saved $st['Saved'] -Held $held)
+}
+
+# The Embeddings port box commits through the same clamp (1024..65535, step 1) as the server port: the typed text, or a step first for Up and Down.
+function Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit {
+    [CmdletBinding()] param([AllowEmptyString()][string] $Direction = '')
+    $f = $script:FastLlmUiFluent
+    $st = $f['Settings']
+    if ($null -eq $st['Held'] -or [bool] $st['Loading']) { return }
+    $box = $f['Els']['SettingsEmbeddingPortBox']
+    $held = $st['Held']
+    $value = ConvertTo-FastLlmUiNumericValue -Text ([string] $box.Text) -Current ([decimal] $held.embeddingPort) -Minimum ([decimal] 1024) -Maximum ([decimal] 65535)
+    if ($Direction -ceq 'Up') { $value = Step-FastLlmUiNumericValue -Current $value -Increment ([decimal] 1) -Minimum ([decimal] 1024) -Maximum ([decimal] 65535) -Up }
+    elseif ($Direction -ceq 'Down') { $value = Step-FastLlmUiNumericValue -Current $value -Increment ([decimal] 1) -Minimum ([decimal] 1024) -Maximum ([decimal] 65535) }
+    $held.embeddingPort = [int] $value
+    $shown = ([decimal] $value).ToString('F0')
+    if ($box.Text -cne $shown) { $box.Text = $shown }
+    Update-FastLlmUiFluentSettingsEmbeddingPortView
     $st['Dirty'] = [bool] (Test-FastLlmUiSettingsDirty -Saved $st['Saved'] -Held $held)
 }
 
@@ -453,6 +638,7 @@ function Invoke-FastLlmUiFluentSettingsDiscard {
     $st['Held'] = [pscustomobject][ordered]@{
         port = [int] $st['Saved'].port; thinkingIndex = [int] $st['Saved'].thinkingIndex; chatPage = [bool] $st['Saved'].chatPage; idleIndex = [int] $st['Saved'].idleIndex
         keyBox = [string] $st['Saved'].keyBox; keyTouched = $false; allowSwitch = [bool] $st['Saved'].allowSwitch
+        contextProfile = [string] $st['Saved'].contextProfile; slots = [int] $st['Saved'].slots; embeddings = [string] $st['Saved'].embeddings; embeddingPort = [int] $st['Saved'].embeddingPort
     }
     Set-FastLlmUiFluentSettingsKeyMark -On $false
     Set-FastLlmUiFluentSettingsView
@@ -489,6 +675,7 @@ function Invoke-FastLlmUiFluentSettingsSave {
     $st = $f['Settings']
     if ($null -eq $st['Held']) { return $false }
     Invoke-FastLlmUiFluentSettingsPortCommit -Direction ''
+    Invoke-FastLlmUiFluentSettingsEmbeddingPortCommit -Direction ''
     # A fluent-only guard: Settings is not available (a run, an install or Microsoft setup), so nothing is written; the reason line already says why.
     if (-not [bool] $script:settingsButton.Enabled) {
         Update-FastLlmUiFluentSettings
@@ -497,6 +684,13 @@ function Invoke-FastLlmUiFluentSettingsSave {
     $current = $st['Current']
     $before = $current
     $held = $st['Held']
+    # A fluent-only guard (A3): the embeddings port equal to the server port with Embeddings on is refused before any write, so nothing is written and the
+    # edits stay. The inline message (already showing) says why, and the focus goes to the port box.
+    if ([string] $held.embeddings -ceq 'on' -and [int] $held.embeddingPort -eq [int] $held.port) {
+        Update-FastLlmUiFluentSettingsEmbeddingPortView
+        $null = $e['SettingsEmbeddingPortBox'].Focus()
+        return $false
+    }
     $keyBox = $e['SettingsKeyBox']
     $stage = 'key'
     $saved = $false
@@ -522,10 +716,10 @@ function Invoke-FastLlmUiFluentSettingsSave {
         $stage = 'serving'
         $savedApiKey=$(if($wantKey){'on'}else{'off'})
         $script:apiKeyStore=$null
-        Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$values.serverPort) -Thinking $savedThinking -ChatPage ([string]$values.chatPage) -IdleStopMinutes $savedIdle
+        Set-FastLlmServingSettings -InstallRoot $script:installPath -ServerPort ([int]$values.serverPort) -Thinking $savedThinking -ChatPage ([string]$values.chatPage) -IdleStopMinutes $savedIdle -KvContextProfile ([string]$values.contextProfile) -KvSlots ([int]$values.slots) -Embeddings ([string]$values.embeddings) -EmbeddingPort ([int]$values.embeddingPort)
         Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot -Value ([bool]$values.allowSwitch)
         $script:uiSettings.allowSwitch=[bool]$values.allowSwitch
-        $after=[pscustomobject]@{serverPort=[int]$values.serverPort;thinking=$savedThinking;chatPage=[string]$values.chatPage;idleStopMinutes=$savedIdle;apiKey=[string]$savedApiKey;allowSwitch=[bool]$values.allowSwitch}
+        $after=[pscustomobject]@{serverPort=[int]$values.serverPort;thinking=$savedThinking;chatPage=[string]$values.chatPage;idleStopMinutes=$savedIdle;apiKey=[string]$savedApiKey;allowSwitch=[bool]$values.allowSwitch;contextProfile=[string]$values.contextProfile;slots=[int]$values.slots;embeddings=[string]$values.embeddings;embeddingPort=[int]$values.embeddingPort}
         $saved = $true
     }catch{
         $saveFailureText=[string]$_.Exception.Message
