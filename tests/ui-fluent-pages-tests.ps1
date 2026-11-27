@@ -3639,10 +3639,13 @@ function Invoke-P38-SettingsAdditions {
     $two = $els.SettingsRequestsBox
 
     # A. The Embeddings rows follow the two answers read on Enter and the saved value (lead ruling A4): neither hides them, an available model or a saved 'on' shows them.
-    $probesBefore = @{ emb = [int]$script:setProbeCalls['emb']; long = [int]$script:setProbeCalls['long'] }
+    # The measured-setup probe answers two questions on Enter: Long at the held requests value, and 2 for the held profile (fixture: default, 1).
+    $probesBefore = @{ emb = [int]$script:setProbeCalls['emb']; long = [int]$script:setProbeCalls['long']; asked = [int]$script:setProbeAsked.Count }
     $null = Open-SettingsPage @{ embAvail = $false; embeddings = 'off' }
     $st = Get-SettingsState
-    Check ([int]$script:setProbeCalls['emb'] -eq $probesBefore.emb + 1 -and [int]$script:setProbeCalls['long'] -eq $probesBefore.long + 1) 'P38 opening the page reads each availability probe once (on Enter)' "emb=$($script:setProbeCalls['emb']) long=$($script:setProbeCalls['long']) before=$($probesBefore.emb)/$($probesBefore.long)"
+    $askedOnEnter = @($script:setProbeAsked.ToArray() | Select-Object -Skip $probesBefore.asked)
+    $askedSorted = (@($askedOnEnter | Sort-Object -CaseSensitive) -join ',')
+    Check ([int]$script:setProbeCalls['emb'] -eq $probesBefore.emb + 1 -and [int]$script:setProbeCalls['long'] -eq $probesBefore.long + 2 -and $askedSorted -ceq 'default:2,long:1') 'P38 opening the page reads the embeddings probe once and the measured-setup probe once per question (Long at the held requests value, 2 for the held profile)' "emb=$($script:setProbeCalls['emb']) long=$($script:setProbeCalls['long']) before=$($probesBefore.emb)/$($probesBefore.long) asked='$($askedOnEnter -join ',')'"
     Check ($els.SettingsEmbeddingsGroup.Visibility -eq $hidden -and -not $els.SettingsEmbeddingsBox.IsVisible -and -not $els.SettingsEmbeddingPortRow.IsVisible -and -not $els.SettingsEmbeddingsHelp.IsVisible) 'P38 embeddings unavailable and saved off: both Embeddings rows (the box with its help, and the port row) are hidden' "group=$($els.SettingsEmbeddingsGroup.Visibility) box=$($els.SettingsEmbeddingsBox.IsVisible) port=$($els.SettingsEmbeddingPortRow.IsVisible)"
     $null = Open-SettingsPage @{ embAvail = $true; embeddings = 'off' }
     $st = Get-SettingsState
