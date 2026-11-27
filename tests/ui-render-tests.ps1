@@ -877,8 +877,12 @@ function Get-FastLlmServingSettings{
 # Settings additions (named test change): the two availability probes are read on Enter and answer from the fixture (the real ones read the catalog and the planner's rows).
 $script:settingsEmbAvail=$false
 $script:settingsLongMeasured=$false
+$script:settingsTwoMeasured=$false
+$script:settingsContextSize=0
 function Test-FastLlmUiFluentEmbeddingsAvailable{return [bool]$script:settingsEmbAvail}
-function Test-FastLlmUiFluentLongMeasured{return [bool]$script:settingsLongMeasured}
+# The page asks Long at the held slots and 2 for the held profile; a 2 asked for a profile other than Long is the 'twoMeasured' answer, every other ask is the Long one.
+function Test-FastLlmUiFluentLongMeasured{param([string]$ProfileId,[int]$Slots)if($Slots -eq 2 -and $ProfileId -cne 'long'){return [bool]$script:settingsTwoMeasured};return [bool]$script:settingsLongMeasured}
+function Read-FastLlmUiFluentSettingsContextSize{return [int]$script:settingsContextSize}
 function Get-FastLlmSignInDefaultInstallRoot{return [string]$script:homeDir}
 function Get-FastLlmSignInSettingsView{param([string]$AppRoot,[string]$InstallRoot)return [pscustomobject]@{checked=$false;stateText='Starting FastLLM when you sign in is off.';lastResultText='No sign-in start has run yet.'}}
 # The fixtures: not set (the worst case: the long caption, the long thinking text, the biggest port), key on, key off, running (key on), unavailable (a launch is starting).
@@ -896,8 +900,26 @@ function Get-SettingsRenderFixture([string]$Kind){
         'additions'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false;contextProfile='long';slots=2;embeddings='on';embeddingPort=8081};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$true;longMeasured=$true}}
         'additionssame'{return @{override=@{serverPort=8081;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false;contextProfile='long';slots=2;embeddings='on';embeddingPort=8081};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$true;longMeasured=$true}}
         'hiddenrows'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$false;longMeasured=$false}}
+        'catalogctx'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$false;longMeasured=$false;twoMeasured=$false;contextSize=4096}}
+        'twooff'{return @{override=@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';apiKeyUndetermined=$false};snap=@{};unavailable=$false;keyChecked=$false;embAvail=$false;longMeasured=$true;twoMeasured=$false;contextSize=0}}
         default{throw "unknown Settings render state $Kind"}
     }
+}
+# A fixture's optional probe answer for 2 at once and its Models Context value (absent: not measured, Context 0).
+function Get-SettingsFixtureTwoMeasured($Fx){if($Fx.ContainsKey('twoMeasured')){return [bool]$Fx['twoMeasured']};return $false}
+function Get-SettingsFixtureContextSize($Fx){if($Fx.ContainsKey('contextSize')){return [int]$Fx['contextSize']};return 0}
+# The page's own pure view over a fixture's inputs (the probe answers, the saved values and the Context size), the one the expected states below are derived from.
+function Get-SettingsFixtureView($Fx){
+    $eff=Get-SettingsEffective $Fx
+    return (Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable ([bool]$Fx.embAvail) -SavedEmbeddings ([string]$eff.embeddings) -LongMeasured ([bool]$Fx.longMeasured) -SavedContextProfile ([string]$eff.contextProfile) -TwoMeasured (Get-SettingsFixtureTwoMeasured $Fx) -SavedSlots ([int]$eff.slots) -ContextSize (Get-SettingsFixtureContextSize $Fx))
+}
+# The reason line a fixture must show: '' (hidden), or NeedsCatalogContext (wins) or LongNotMeasured, from the view's long and 2 reason codes.
+function Get-SettingsExpectedWhy($Fx){
+    $v=Get-SettingsFixtureView $Fx
+    $str=$script:FastLlmUiFluentStrings
+    if([string]$v['longReasonCode'] -ceq 'needs-catalog-context' -or [string]$v['twoReasonCode'] -ceq 'needs-catalog-context'){return [string]$str.NeedsCatalogContext}
+    if([string]$v['longReasonCode'] -cne '' -or [string]$v['twoReasonCode'] -cne ''){return [string]$str.LongNotMeasured}
+    return ''
 }
 # What a fixture's Settings additions are once read: the store's defaults, then the fixture's overrides (a key the fixture does not name is the default).
 function Get-SettingsEffective($Fx){
@@ -915,7 +937,7 @@ function Get-SettingsExpectedHidden($Fx){
     if(-not $showEmb){foreach($n in (@('SettingsEmbeddingsGroup','SettingsEmbeddingsBox','SettingsEmbeddingsHelp')+$portNames)){[void]$hid.Add($n)}}
     elseif([string]$eff.embeddings -cne 'on'){foreach($n in $portNames){[void]$hid.Add($n)}}
     elseif([int]$eff.serverPort -ne [int]$eff.embeddingPort){[void]$hid.Add('SettingsEmbeddingPortSame')}
-    if([bool]$Fx.longMeasured -or [string]$eff.contextProfile -ceq 'long'){[void]$hid.Add('SettingsContextProfileWhy')}
+    if((Get-SettingsExpectedWhy $Fx) -ceq ''){[void]$hid.Add('SettingsContextProfileWhy')}
     return @($hid.ToArray())
 }
 function Initialize-SettingsRenderPage($Page){
@@ -931,6 +953,8 @@ function Initialize-SettingsRenderPage($Page){
     $script:settingsOverride=$fx.override
     $script:settingsEmbAvail=[bool]$fx.embAvail
     $script:settingsLongMeasured=[bool]$fx.longMeasured
+    $script:settingsTwoMeasured=(Get-SettingsFixtureTwoMeasured $fx)
+    $script:settingsContextSize=(Get-SettingsFixtureContextSize $fx)
     $script:homeSnap=New-HomeSnap $fx.snap
     $script:settingsButton.Enabled=(-not [bool]$fx.unavailable)
     $script:renderFail=''
@@ -989,7 +1013,7 @@ function Test-SettingsCase([string]$Kind,$case){
     $script:settingsCaseHeight=[double]$case.height
     $script:homeCaseTheme=[string]$case.theme
     $pngName='FastLlm.Settings'
-    switch -CaseSensitive ($Kind){'on'{$pngName='FastLlm.SettingsKeyOn'}'off'{$pngName='FastLlm.SettingsKeyOff'}'running'{$pngName='FastLlm.SettingsRunning'}'unavailable'{$pngName='FastLlm.SettingsUnavailable'}'additions'{$pngName='FastLlm.SettingsAdditions'}'additionssame'{$pngName='FastLlm.SettingsAdditionsSame'}'hiddenrows'{$pngName='FastLlm.SettingsRowsHidden'}}
+    switch -CaseSensitive ($Kind){'on'{$pngName='FastLlm.SettingsKeyOn'}'off'{$pngName='FastLlm.SettingsKeyOff'}'running'{$pngName='FastLlm.SettingsRunning'}'unavailable'{$pngName='FastLlm.SettingsUnavailable'}'additions'{$pngName='FastLlm.SettingsAdditions'}'additionssame'{$pngName='FastLlm.SettingsAdditionsSame'}'hiddenrows'{$pngName='FastLlm.SettingsRowsHidden'}'catalogctx'{$pngName='FastLlm.SettingsCatalogContext'}'twooff'{$pngName='FastLlm.SettingsTwoOff'}}
     $label="Settings $Kind $($case.theme) $($case.scale) $($case.textScale) $($case.width)x$($case.height)"
     $r=$null
     try{$r=Invoke-UiRenderCase -Name 'FastLlm.Settings' -Case $case -OutFolder $out -Prepare $settingsPrepare -PngName $pngName -TabRegions @('SettingsScroll')}catch{Check $false "Settings renders at ${label}: $($_.Exception.Message)";return}
@@ -1060,13 +1084,19 @@ function Test-SettingsCase([string]$Kind,$case){
     $profileItem=$e['SettingsContextProfileBox'].SelectedItem
     $profileText=''
     if($null -ne $profileItem){$profileText=[string]$profileItem.Content}
-    Check ((Test-UiSelectionTextDrawn $e['SettingsContextProfileBox'] $profileText) -and (Test-UiSelectionDrawn $e['SettingsRequestsBox'])) "the context profile and requests selection texts are drawn at $label ('$profileText' '$($e['SettingsRequestsBox'].SelectedItem)')"
-    $wantLongEnabled=[bool]($fx.longMeasured -or [string]$eff.contextProfile -ceq 'long')
+    $requestsItem=$e['SettingsRequestsBox'].SelectedItem
+    $requestsText=''
+    if($null -ne $requestsItem){$requestsText=[string]$requestsItem.Content}
+    Check ((Test-UiSelectionTextDrawn $e['SettingsContextProfileBox'] $profileText) -and (Test-UiSelectionTextDrawn $e['SettingsRequestsBox'] $requestsText)) "the context profile and requests selection texts are drawn at $label ('$profileText' '$requestsText')"
+    $view=Get-SettingsFixtureView $fx
+    $wantLongEnabled=[bool]$view['longEnabled']
+    $wantTwoEnabled=[bool]$view['twoEnabled']
+    $wantWhy=Get-SettingsExpectedWhy $fx
     $whyShown=($e['SettingsContextProfileWhy'].Visibility -eq [System.Windows.Visibility]::Visible)
     # an item's effective IsEnabled follows its box, so while the Server group is disabled (the unavailable case) only the reason line is judged
     $itemsOk=$true
-    if([bool]$e['SettingsServerGroup'].IsEnabled){$itemsOk=([bool]$e['SettingsContextProfileBox'].Items[1].IsEnabled -eq $wantLongEnabled -and [bool]$e['SettingsContextProfileBox'].Items[0].IsEnabled)}
-    Check ($itemsOk -and $whyShown -eq (-not $wantLongEnabled) -and (-not $whyShown -or [string]$e['SettingsContextProfileWhy'].Text -ceq [string]$str.LongNotMeasured)) "Long is enabled exactly when measured or saved, and a disabled Long shows the LongNotMeasured reason, at $label (long enabled=$($e['SettingsContextProfileBox'].Items[1].IsEnabled) reason shown=$whyShown)"
+    if([bool]$e['SettingsServerGroup'].IsEnabled){$itemsOk=([bool]$e['SettingsContextProfileBox'].Items[1].IsEnabled -eq $wantLongEnabled -and [bool]$e['SettingsContextProfileBox'].Items[0].IsEnabled -and [bool]$e['SettingsRequestsBox'].Items[1].IsEnabled -eq $wantTwoEnabled -and [bool]$e['SettingsRequestsBox'].Items[0].IsEnabled)}
+    Check ($itemsOk -and $whyShown -eq ($wantWhy -cne '') -and (-not $whyShown -or [string]$e['SettingsContextProfileWhy'].Text -ceq $wantWhy)) "Long and 2 are enabled exactly as the page's view says, and the one reason line shows NeedsCatalogContext before LongNotMeasured, at $label (long enabled=$($e['SettingsContextProfileBox'].Items[1].IsEnabled) want $wantLongEnabled, 2 enabled=$($e['SettingsRequestsBox'].Items[1].IsEnabled) want $wantTwoEnabled, reason shown=$whyShown want '$wantWhy')"
     if(-not (@($wantHidden) -contains 'SettingsEmbeddingsBox')){
         $embOn=([string]$eff.embeddings -ceq 'on')
         Check ($e['SettingsEmbeddingsBox'].IsChecked -eq $embOn -and [string][System.Windows.Automation.AutomationProperties]::GetName($e['SettingsEmbeddingsBox']) -ceq [string]$str.Embeddings -and [string]$e['SettingsEmbeddingsHelp'].Text -ceq [string]$str.EmbeddingsHelp) "the Embeddings box is shown with its caption name, its state and its help line at $label (checked=$($e['SettingsEmbeddingsBox'].IsChecked) want $embOn)"
@@ -1097,7 +1127,7 @@ function Test-SettingsCase([string]$Kind,$case){
         }
         if([int]$case.width -eq 1000 -and [double]$case.textScale -eq 1.0 -and [double]$case.scale -eq 1.0){Check ($seen -eq 3) "all three value boxes are inside the viewport and inked at 1000x680 (seen $seen) at $label"}
         # Settings additions (named test change): the two new selection boxes are painted too, in the cases that show the additions.
-        if($Kind -ceq 'additions' -or $Kind -ceq 'additionssame' -or $Kind -ceq 'hiddenrows'){
+        if($Kind -ceq 'additions' -or $Kind -ceq 'additionssame' -or $Kind -ceq 'hiddenrows' -or $Kind -ceq 'catalogctx' -or $Kind -ceq 'twooff'){
             foreach($n in 'SettingsContextProfileBox','SettingsRequestsBox'){
                 $br=Get-UiRelativeRect $e[$n] $scroll
                 if($null -eq $br -or $br.Top -lt 0 -or $br.Bottom -gt [double]$scroll.ViewportHeight){continue}
@@ -1112,12 +1142,12 @@ $settingsSw=[Diagnostics.Stopwatch]::StartNew()
 foreach($case in $matrix){Test-SettingsCase 'notset' $case}
 # Settings additions (named test change): all four rows shown (Embeddings available and ticked, Long measured and saved, slots 2) across the 12-case grid.
 foreach($case in $matrix){Test-SettingsCase 'additions' $case}
-foreach($kind in 'on','off','running','unavailable','additionssame','hiddenrows'){
+foreach($kind in 'on','off','running','unavailable','additionssame','hiddenrows','catalogctx','twooff'){
     foreach($theme in 'light','dark','high-contrast'){
         foreach($text in 1.0,2.25){Test-SettingsCase $kind @{theme=$theme;scale=[double]1.0;textScale=[double]$text;width=640;height=480}}
     }
 }
-Write-Host ('INFO: Settings render of {0} cases took {1:N1} s' -f ($matrix.Count*2+36),$settingsSw.Elapsed.TotalSeconds)
+Write-Host ('INFO: Settings render of {0} cases took {1:N1} s' -f ($matrix.Count*2+48),$settingsSw.Elapsed.TotalSeconds)
 $script:settingsKind='notset'
 $script:settingsCaseHeight=[double]480
 Test-PageReadingOrder 'Settings' 'FastLlm.Settings' 'FastLlm.SettingsReading' $settingsPrepare 13 @() @('SettingsScroll')
