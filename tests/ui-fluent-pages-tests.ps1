@@ -3893,6 +3893,54 @@ function Invoke-P38-SettingsAdditions {
     Invoke-P38SaveWithDialogs
     $r = @($script:p38Save.R)
     Check ($r.Count -eq 1 -and $r[0] -and (Get-P38Bound) -ceq '' -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2 -and [string]$script:setFx.embeddings -ceq 'on' -and [int]$script:setFx.embeddingPort -eq 9100) 'P38 an unrelated Save passes none of the four, so all four non-default values are kept' "bound=$(Get-P38Bound) fixture=$($script:setFx.contextProfile)/$($script:setFx.slots)/$($script:setFx.embeddings)/$($script:setFx.embeddingPort)"
+
+    # I. The Long Save guard: Long held at a requests-at-once value where it is not measured (and not the saved pair) is refused by Save, with no write, the edits kept and
+    # the focus on the context profile box; the probe is asked again with the new slots. A saved unmeasured pair is exempt.
+    $null = Open-SettingsPage @{ longAt = @(1); contextProfile = 'default'; slots = 1 }
+    $st = Get-SettingsState
+    $els.SettingsContextProfileBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $callsBefore = [int]$script:setProbeCalls['long']
+    $els.SettingsRequestsBox.SelectedIndex = 1
+    Invoke-Pump 50
+    $lastSlots = if ($script:setProbeSlots.Count -gt 0) { [int]$script:setProbeSlots[$script:setProbeSlots.Count - 1] } else { -1 }
+    Check ([int]$script:setProbeCalls['long'] -eq $callsBefore + 1 -and $lastSlots -eq 2) 'P38 I1 Long chosen at 1, then Requests at once changed to 2: the probe is asked again with slots 2' "calls=$($script:setProbeCalls['long']) want=$($callsBefore + 1) lastSlots=$lastSlots want=2"
+    Check ($els.SettingsContextProfileWhy.Visibility -eq $shown -and $els.SettingsContextProfileWhy.IsVisible -and [string]$els.SettingsContextProfileWhy.Text -ceq [string]$s.LongNotMeasured) 'P38 I1 Long held at 2 (not measured, not the saved pair): the reason line shows the LongNotMeasured text' "visibility=$($els.SettingsContextProfileWhy.Visibility) text='$($els.SettingsContextProfileWhy.Text)' want='$($s.LongNotMeasured)'"
+    $null = $win.Activate()
+    $null = $els.SettingsThinkingBox.Focus()
+    Invoke-Pump 50
+    $script:setLastNew = $null
+    $script:setLastServing = $null
+    $logBefore = Get-SettingsLogText
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and -not $r[0] -and (Get-SettingsLogText) -ceq $logBefore -and $null -eq $script:setLastServing -and $null -eq $script:setLastNew -and (Test-SettingsRecClean $script:p38Save.D) -and $script:p38Save.D['recs'].Count -eq 0) 'P38 I1 Save with the unmeasured Long returns one bool (false), writes nothing and shows no box' ("count=$($r.Count) value=$(if ($r.Count -gt 0) { $r[0] } else { 'none' }) log='$(Get-SettingsLogText)' want='$logBefore' serving=$($null -ne $script:setLastServing) bound=$(Get-P38Bound)")
+    $logical = [System.Windows.Input.FocusManager]::GetFocusedElement($win)
+    Check ([object]::ReferenceEquals($logical, $els.SettingsContextProfileBox)) 'P38 I1 the refused Save puts the focus on the context profile box' "focus=$(if ($null -ne $logical) { $logical.GetType().Name + ':' + $logical.Name } else { 'none' }) want=SettingsContextProfileBox"
+    Check ([string]$st['Held'].contextProfile -ceq 'long' -and [int]$st['Held'].slots -eq 2 -and [bool]$st['Dirty'] -and [int]$els.SettingsRequestsBox.SelectedIndex -eq 1 -and $els.SettingsContextProfileWhy.Visibility -eq $shown) 'P38 I1 the refused Save keeps the edits (held long and 2, dirty, requests box on 2) and the reason line' "held=$($st['Held'].contextProfile)/$($st['Held'].slots) dirty=$($st['Dirty']) requests=$($els.SettingsRequestsBox.SelectedIndex) why=$($els.SettingsContextProfileWhy.Visibility)"
+    Write-Host ("INFO: P38 I1 after the refused Save the logical focus is on " + $(if ($null -ne $logical) { $logical.GetType().Name + ':' + [string]$logical.Name } else { 'nothing' }) + "; the probe was asked with slots " + (@($script:setProbeSlots) -join ','))
+    $callsBefore = [int]$script:setProbeCalls['long']
+    $els.SettingsRequestsBox.SelectedIndex = 0
+    Invoke-Pump 50
+    Check ($els.SettingsContextProfileWhy.Visibility -eq $hidden -and [string]$els.SettingsContextProfileWhy.Text -ceq '' -and [int]$script:setProbeCalls['long'] -eq $callsBefore + 1) 'P38 I1 changing Requests at once back to 1 asks the probe again and clears the reason line' "why=$($els.SettingsContextProfileWhy.Visibility) text='$($els.SettingsContextProfileWhy.Text)' calls=$($script:setProbeCalls['long']) want=$($callsBefore + 1)"
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0] -and (Get-P38Bound) -ceq 'KvContextProfile' -and [string]$script:setLastNew['KvContextProfile'] -ceq 'long' -and -not $script:setLastNew.ContainsKey('KvSlots') -and (Test-SettingsRecClean $script:p38Save.D)) 'P38 I1 back at 1, Save writes -KvContextProfile long and no -KvSlots (the slots are the saved ones)' "count=$($r.Count) value=$(if ($r.Count -gt 0) { $r[0] } else { 'none' }) bound='$(Get-P38Bound)' want='KvContextProfile' log=$(Get-SettingsLogText)"
+
+    # I2. A saved Long at 2, not measured: nothing is refused while the pair is the saved one, and an untouched or unrelated Save passes neither field.
+    $null = Open-SettingsPage @{ contextProfile = 'long'; slots = 2; longMeasured = $false }
+    $st = Get-SettingsState
+    Check ($els.SettingsContextProfileWhy.Visibility -eq $hidden -and [string]$els.SettingsContextProfileWhy.Text -ceq '' -and [string]$st['Held'].contextProfile -ceq 'long' -and [int]$st['Held'].slots -eq 2 -and -not [bool]$st['Dirty']) 'P38 I2 a saved Long at 2 that is not measured opens with no reason line and a clean page (the saved-pair exception)' "why=$($els.SettingsContextProfileWhy.Visibility) text='$($els.SettingsContextProfileWhy.Text)' held=$($st['Held'].contextProfile)/$($st['Held'].slots) dirty=$($st['Dirty'])"
+    $script:setLastNew = $null
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ((Get-P38Bound) -ceq '' -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2 -and $els.SettingsContextProfileWhy.Visibility -eq $hidden) 'P38 I2 an untouched Save writes nothing new: neither -KvContextProfile nor -KvSlots is passed, the stored pair is kept and no reason line shows' "bound='$(Get-P38Bound)' stored=$($script:setFx.contextProfile)/$($script:setFx.slots) why=$($els.SettingsContextProfileWhy.Visibility) result=$(if ($r.Count -gt 0) { $r[0] } else { 'none' })"
+    $els.SettingsThinkingBox.SelectedIndex = 1
+    Invoke-Pump 30
+    $script:setLastNew = $null
+    Invoke-P38SaveWithDialogs
+    $r = @($script:p38Save.R)
+    Check ($r.Count -eq 1 -and $r[0] -is [bool] -and $r[0] -and (Get-P38Bound) -ceq '' -and [string]$script:setFx.contextProfile -ceq 'long' -and [int]$script:setFx.slots -eq 2) 'P38 I2 an unrelated Save at the saved unmeasured Long pair is not refused and passes none of the four' "count=$($r.Count) value=$(if ($r.Count -gt 0) { $r[0] } else { 'none' }) bound='$(Get-P38Bound)' stored=$($script:setFx.contextProfile)/$($script:setFx.slots)"
     Close-SettingsPage
     Check-NoExceptions 'P38'
 }
