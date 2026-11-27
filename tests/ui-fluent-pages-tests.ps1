@@ -5345,6 +5345,40 @@ $script:steps = @(
     'Invoke-P99-StartupFaults'
 )
 
+# Teardown while the dispatcher still pumps (CI showed a pwsh 7 exit-time CLR assert: the suite ended the loop with InvokeShutdown while the shell window was open, so the
+# real Closed handler never ran and hooks and native windows were called back during process teardown). Runs BEFORE Stop-ShellLoop; each step warns, never throws.
+$script:teardownDone = $false
+function Stop-PagesTeardown {
+    if ($script:teardownDone) { return }
+    $script:teardownDone = $true
+    try { if ($null -ne $script:FastLlmUiFluent -and $null -ne $script:FastLlmUiFluent['Timer']) { $script:FastLlmUiFluent['Timer'].Stop() } } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    for ($i = 0; $i -lt $script:scns.Count; $i++) {
+        $scn = $script:scns[$i]
+        try { $scn.Form.FastLlmFormState.FormClosing.Clear() } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+        try { $scn.Form.FastLlmFormState['BeforeClosing'] = $null } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+        try {
+            $closedRec = $scn.Closed
+            $scn.Window.Add_Closed(({ $closedRec.n++ }).GetNewClosure())
+            $scn.Window.Close()
+        }
+        catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    }
+    try {
+        if ($null -ne (Get-Command -Name DisposeTrayControls -ErrorAction SilentlyContinue)) { DisposeTrayControls }
+        else {
+            foreach ($trayName in 'trayIcon', 'trayMenu') {
+                $trayObj = Get-Variable -Name $trayName -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                if ($null -ne $trayObj -and $trayObj -is [System.IDisposable]) { $trayObj.Dispose() }
+            }
+        }
+    }
+    catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    for ($i = 0; $i -lt $script:objs.Count; $i++) {
+        try { $script:objs[$i].Dispose() } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    }
+    try { Invoke-Pump 100 } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+}
+
 $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:tick = $tick
@@ -5359,7 +5393,7 @@ $tick.Add_Tick({
     if ($script:busy -or $script:loopStopped) { return }
     $script:busy = $true
     try {
-        if ($script:si -ge $script:steps.Count) { Stop-ShellLoop; return }
+        if ($script:si -ge $script:steps.Count) { Stop-PagesTeardown; Stop-ShellLoop; return }
         $name = $script:steps[$script:si]
         $script:si++
         Write-Host "INFO: step $name started"
@@ -5367,7 +5401,7 @@ $tick.Add_Tick({
         try { $null = & $name }
         catch { $script:fail++; Write-Host "FAIL: step $name threw -- $($_.Exception.ToString())" }
         Write-Host ("INFO: step $name took " + $stepWatch.ElapsedMilliseconds + " ms")
-        if ($script:si -ge $script:steps.Count) { Stop-ShellLoop }
+        if ($script:si -ge $script:steps.Count) { Stop-PagesTeardown; Stop-ShellLoop }
     }
     finally { $script:busy = $false }
 })
@@ -5388,7 +5422,41 @@ try {
 }
 finally { Stop-ShellLoop }
 
-# Results are printed BEFORE cleanup; cleanup is by index and warn-only.
+# Teardown checks (counted in the totals) read the state Stop-PagesTeardown left, BEFORE the second-pass cleanup below closes anything.
+try {
+    $enabledDisp = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $script:FastLlmUiFluent -and $null -ne $script:FastLlmUiFluent['Timer'] -and [bool]$script:FastLlmUiFluent['Timer'].IsEnabled) { $enabledDisp.Add('shell timer') }
+    if ([bool]$script:tick.IsEnabled) { $enabledDisp.Add('step timer') }
+    if ([bool]$script:deadline.IsEnabled) { $enabledDisp.Add('deadline timer') }
+    Check ($enabledDisp.Count -eq 0) 'teardown: no DispatcherTimer is still enabled (the shell timer, the step timer, the deadline timer)' ("still enabled: " + ($enabledDisp -join ', '))
+
+    $enabledForms = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $script:objs.Count; $i++) {
+        $pair = $script:objs[$i]
+        try { if ($null -ne $pair.Forms -and [bool]$pair.Forms.Enabled) { $enabledForms.Add("objs[$i]") } } catch { $null = $_ }
+    }
+    Check ($enabledForms.Count -eq 0) 'teardown: no WinForms timer from the dialog answerers is still enabled' ("still enabled: " + ($enabledForms -join ', '))
+
+    $openWins = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $script:scns.Count; $i++) {
+        $scn = $script:scns[$i]
+        $stillSource = $false
+        try { $stillSource = ($null -ne [System.Windows.PresentationSource]::FromVisual($scn.Window)) } catch { $null = $_ }
+        if ([int]$scn.Closed.n -lt 1 -or $stillSource) { $openWins.Add("$($scn.Title) (Closed ran $($scn.Closed.n) times, source alive $stillSource)") }
+    }
+    Check ($script:scns.Count -gt 0 -and $openWins.Count -eq 0) 'teardown: every scenario window is closed' ("not closed: " + ($openWins -join '; '))
+
+    $liveHooks = New-Object System.Collections.Generic.List[string]
+    $hookEntries = @(Get-Variable -Name FastLlmUiHookEntries -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+    foreach ($entry in $hookEntries) {
+        if ($null -eq $entry) { continue }
+        foreach ($scn in $script:scns) { if ([object]::ReferenceEquals($entry.Window, $scn.Window)) { $liveHooks.Add([string]$scn.Title) } }
+    }
+    Check ($liveHooks.Count -eq 0) 'teardown: no window hook is still registered' ("registered: " + ($liveHooks -join ', '))
+}
+catch { $script:fail++; Write-Host "FAIL: teardown checks threw -- $($_.Exception.ToString())" }
+
+# Results are printed after the teardown checks and BEFORE cleanup; cleanup is by index and warn-only.
 if ($script:fail -eq 0) { Write-Host "$($script:pass) checks passed" } else { Write-Host "$($script:fail) checks FAILED, $($script:pass) passed" }
 
 try {

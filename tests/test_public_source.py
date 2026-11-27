@@ -9,8 +9,10 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import errno
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -22,10 +24,32 @@ SPEC.loader.exec_module(STAGE)
 REPO = Path(__file__).resolve().parents[1]
 
 
+def remove_tree_tolerant(target, attempts=10, delay=0.3):
+    """rmtree that retries on ENOTEMPTY (a fresh git clone can still be settling on macOS) and then gives up quietly; the temp dir is the OS's."""
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(target)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if error.errno != errno.ENOTEMPTY or attempt == attempts - 1:
+                return
+            time.sleep(delay)
+
+
 class PublicSourceTests(unittest.TestCase):
+    def cleanup_temp(self):
+        # Retries a busy tree (a fresh git clone can still be settling on macOS), then gives up quietly: the temp dir is the OS's.
+        remove_tree_tolerant(self.temp.name)
+        try:
+            self.temp.cleanup()
+        except OSError:
+            pass
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(self.cleanup_temp)
         self.base = Path(self.temp.name)
         self.source = self.base / "internal"
         self.source.mkdir()
