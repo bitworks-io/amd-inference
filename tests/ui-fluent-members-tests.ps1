@@ -88,12 +88,34 @@ $path=Join-Path $root 'fast-llm-ui.ps1'
 $errors=$null
 $tree=[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$errors)
 Check ($errors.Count -eq 0) 'fast-llm-ui.ps1 parses'
+# The seam is the one top-level statement that calls Initialize-FastLlmUiFluentShell, whether or not a guard wraps it (5b removes the guard).
+function Get-TopLevelCalls($Ast,[string]$Name){
+    $calls=@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $Name},$true)|Where-Object{
+        $fnOwner=$_.Parent; while($null -ne $fnOwner -and $fnOwner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$fnOwner=$fnOwner.Parent}
+        $null -eq $fnOwner})
+    return ,$calls
+}
+$seamCalls=Get-TopLevelCalls $tree 'Initialize-FastLlmUiFluentShell'
+Check ($seamCalls.Count -eq 1) 'the rebinding seam statement (the one top-level call of Initialize-FastLlmUiFluentShell) appears exactly once'
+# Self-check: the finder takes the call guarded or bare, and never one inside a function body.
+$seamSynGuard=[System.Management.Automation.Language.Parser]::ParseInput("if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }`nfunction F { Initialize-FastLlmUiFluentShell }",[ref]$null,[ref]$null)
+$seamSynBare=[System.Management.Automation.Language.Parser]::ParseInput("`$a=1`nInitialize-FastLlmUiFluentShell`nfunction F { Initialize-FastLlmUiFluentShell }",[ref]$null,[ref]$null)
+$seamSynTwo=[System.Management.Automation.Language.Parser]::ParseInput("Initialize-FastLlmUiFluentShell`nInitialize-FastLlmUiFluentShell",[ref]$null,[ref]$null)
+$seamSynNone=[System.Management.Automation.Language.Parser]::ParseInput('function F { Initialize-FastLlmUiFluentShell }',[ref]$null,[ref]$null)
+$seamSynGuardCalls=Get-TopLevelCalls $seamSynGuard 'Initialize-FastLlmUiFluentShell'
+$seamSynBareCalls=Get-TopLevelCalls $seamSynBare 'Initialize-FastLlmUiFluentShell'
+$seamSynTwoCalls=Get-TopLevelCalls $seamSynTwo 'Initialize-FastLlmUiFluentShell'
+$seamSynNoneCalls=Get-TopLevelCalls $seamSynNone 'Initialize-FastLlmUiFluentShell'
+Check ($seamSynGuardCalls.Count -eq 1 -and $seamSynBareCalls.Count -eq 1 -and $seamSynBareCalls[0].Extent.StartLineNumber -eq 2) 'self-check: the seam finder takes a guarded or a bare top-level call and skips the one in a function'
+Check ($seamSynTwoCalls.Count -eq 2 -and $seamSynNoneCalls.Count -eq 0) 'self-check: the seam finder counts two top-level calls as two and a call only inside a function as none'
+$seam=[int]$seamCalls[0].Extent.StartLineNumber
+# 5b-delete-begin
 $seamText="if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }"
 $seamLines=@()
 $lineNo=0
 foreach($l in (Get-Content -LiteralPath $path)){$lineNo++;if($l -ceq $seamText){$seamLines+=$lineNo}}
-Check ($seamLines.Count -eq 1) 'the rebinding seam line appears exactly once'
-$seam=[int]$seamLines[0]
+Check ($seamLines.Count -eq 1 -and [int]$seamLines[0] -eq $seam) 'the rebinding seam line appears exactly once, guarded by the -Window switch'
+# 5b-delete-end
 
 # Every control the inventory names is bound to a kind the table knows.
 foreach($k in $kinds.Keys){Check (($k -ieq 'form') -or $table.Contains($kinds[$k])) "control $k has a known adapter kind"}
@@ -156,8 +178,10 @@ foreach($r in $runs){
 # [Windows.Forms.MessageBox]::Show or the argument of .ShowDialog; NewUiApiKey passes its owner on, and is checked to use it only that way.
 # Allowlist (exact text of the statement part): the two uses below.
 $bareAllow=@{
+# 5b-delete-begin
     # The classic startup branch (the fluent branch starts its own loop); pinned by ui-flow-tests.
     '[Windows.Forms.Application]::Run($form)'='classic-only startup, never reached with -Window fluent'
+# 5b-delete-end
 }
 function Get-OwnerKind($Node){
     $p=$Node.Parent
@@ -197,12 +221,15 @@ foreach($u in @($formUses|Where-Object{$_.Kind -ceq 'finding'})){Write-Host "FIN
 Check (@($formUses|Where-Object{$_.Kind -ceq 'finding'}).Count -eq 0) '$form is only used as an owner or a member target (no bare use that needs a real Control)'
 $ownerCounts=@{}; foreach($u in $formUses){if(-not $ownerCounts.ContainsKey($u.Kind)){$ownerCounts[$u.Kind]=0};$ownerCounts[$u.Kind]++}
 Write-Host ('$form owner and allowlisted uses by kind: '+(($ownerCounts.Keys|Sort-Object|ForEach-Object{"$_=$($ownerCounts[$_])"}) -join ', '))
+Check ($ownerCounts['ShowDialog'] -gt 0 -and $ownerCounts['ShowUiMessageBox'] -gt 0) 'the scan sees ShowDialog and ShowUiMessageBox owner uses'
+# 5b-delete-begin
 Check ($ownerCounts['ShowDialog'] -gt 0 -and $ownerCounts['MessageBox.Show'] -gt 0) 'the scan sees ShowDialog and MessageBox owner uses'
 foreach($allowKey in $bareAllow.Keys){
     $allowHits=@($formUses|Where-Object{$_.Kind -ceq 'allowed' -and $_.Text -ceq $allowKey}).Count
     Check ($allowHits -eq 1) "allowlisted bare use appears exactly once (no dead entry): $allowKey (found $allowHits)"
 }
 Check (@($formUses|Where-Object{$_.Kind -ceq 'allowed'}).Count -eq $bareAllow.Count) 'every allowlisted bare use is accounted for'
+# 5b-delete-end
 # NewUiApiKey takes the owner as a parameter and may only pass it on as a MessageBox owner.
 $keyFn=$tree.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'NewUiApiKey'},$true)
 Check ($null -ne $keyFn) 'NewUiApiKey is defined'
@@ -222,6 +249,7 @@ $bareAll=Get-FormBareUses -Tree $bareTree -AfterLine 0
 $bareFound=@($bareAll|Where-Object{$_.Kind -ceq 'finding'})
 Check ($bareFound.Count -eq 3 -and @($bareFound|Where-Object{$_.Text -ceq 'Foo $form'}).Count -eq 1) 'self-check: Foo $form, a method argument and a second MessageBox argument are flagged; owner uses and member use are not'
 
+# 5b-delete-begin
 # -Window is case-sensitive: -Window Fluent is refused instead of silently running the classic window.
 $windowParam=@($tree.ParamBlock.Parameters|Where-Object{([string]$_.Name.VariablePath.UserPath) -ceq 'Window'})
 Check ($windowParam.Count -eq 1) 'the window script has a -Window parameter'
@@ -229,7 +257,14 @@ $vs=@($windowParam[0].Attributes|Where-Object{$_ -is [System.Management.Automati
 Check ($vs.Count -eq 1) '-Window has a ValidateSet'
 Check (@($vs[0].PositionalArguments|ForEach-Object{[string]$_.Value}) -join ',' -ceq 'classic,fluent') '-Window accepts classic and fluent'
 Check (@($vs[0].NamedArguments|Where-Object{[string]$_.ArgumentName -ceq 'IgnoreCase' -and [string]$_.Argument.Extent.Text -ceq '$false'}).Count -eq 1) '-Window ValidateSet has IgnoreCase=$false (-Window Fluent is refused)'
+# 5b-delete-end
 
+function Get-NormalizedText([string]$Path){
+    $bytes=[IO.File]::ReadAllBytes($Path)
+    $start=0; if($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF){$start=3}
+    return ([Text.Encoding]::UTF8.GetString($bytes,$start,$bytes.Length-$start)).Replace("`r`n","`n")
+}
+# 5b-delete-begin
 # Classic window: unchanged apart from the named changes. Undo each named change by an exact (current, original) pair; each must match
 # exactly once; the result must hash to the window script at the point this branch left main (the same text, BOM stripped, CRLF as LF).
 # PR 3 and PR 4 add their pairs here BY NAME; the flip PR, which drops the classic window, deletes this check.
@@ -575,11 +610,6 @@ function ShowRecipeChooser($Rows) {
 function ShowRecipeChooser($Rows) {
 '@}
 )
-function Get-NormalizedText([string]$Path){
-    $bytes=[IO.File]::ReadAllBytes($Path)
-    $start=0; if($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF){$start=3}
-    return ([Text.Encoding]::UTF8.GetString($bytes,$start,$bytes.Length-$start)).Replace("`r`n","`n")
-}
 function Get-Sha256Text([string]$Text){
     $sha=[Security.Cryptography.SHA256]::Create()
     try{return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))) -replace '-','').ToLowerInvariant()}finally{$sha.Dispose()}
@@ -616,6 +646,7 @@ Check ($mut2 -cne $currentText -and (Get-Sha256Text (Undo-NamedChanges $mut2).Te
 # A damaged named change is a finding, not a silent pass.
 $broken=$currentText.Replace("if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell }","if (`$Window -ceq 'fluent') { Initialize-FastLlmUiFluentShell2 }")
 Check ((Undo-NamedChanges $broken).Problems.Count -ge 1) 'mutation check: an altered named change is reported'
+# 5b-delete-end
 
 # Structural T2: every adapter in the control table is bound by a binding row (a `Name = '...'` row of a Get-FastLlmUiFluent*Bindings function or
 # of the shell's binding table) or is on the pending list with its PR. The suite does not load the shell or Home off Windows, so the bound names are read by AST.
@@ -1094,7 +1125,9 @@ Check ($proof.install -ceq 'Install && start') 'a button keeps its classic text 
 function Get-FileAst([string]$Path){ return [System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$null,[ref]$null) }
 function Get-CommandCalls($Ast,[string]$CommandName){ return ,@($Ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $CommandName},$true)) }
 function Get-Ancestor($Node,[type]$Type){ $a=$Node.Parent; while($null -ne $a -and $a -isnot $Type){$a=$a.Parent}; return $a }
+# 5b-delete-begin
 $guardPattern='\$Window\s+-ceq\s+''fluent'''
+# 5b-delete-end
 $scanFiles=@(Join-Path $root 'fast-llm-ui.ps1')+@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.ps1' -File|ForEach-Object{$_.FullName})+@(Join-Path $root 'fast-llm.ps1')
 $setCalls=@();$hostCalls=@()
 foreach($f in $scanFiles){
@@ -1125,17 +1158,23 @@ $launchLine=@($supText -split "`r?`n"|Where-Object{$_ -match 'Invoke-FastLlmUiFl
 Check ($probeOutside.Count -eq 0 -and $launchLine.Count -eq 1 -and $launchLine[0].Contains('-Command') -and $launchLine[0].Contains('$info.Arguments')) 'the probe is mentioned outside its definition only in the doctor child launch string'
 Check ($null -eq (Get-Ancestor $inShell[0].Node ([System.Management.Automation.Language.FunctionDefinitionAst]))) 'the shell-file call runs at dot-source time (top level)'
 Check ($hostCalls.Count -eq 1 -and $hostCalls[0].File.EndsWith('fast-llm-ui.ps1')) 'Test-FastLlmUiFluentHost is called only from fast-llm-ui.ps1, once'
+# 5b-delete-begin
 function Test-InFluentGuard($Node){
     $g=$Node.Parent
     while($null -ne $g){ if($g -is [System.Management.Automation.Language.IfStatementAst] -and $g.Clauses[0].Item1.Extent.Text -match $guardPattern){return $true}; $g=$g.Parent }
     return $false
 }
 Check (Test-InFluentGuard $hostCalls[0].Node) 'the support check call is inside the fluent guard'
+# 5b-delete-end
+Check ($null -eq (Get-Ancestor $hostCalls[0].Node ([System.Management.Automation.Language.FunctionDefinitionAst])) -and $hostCalls[0].Node.Extent.StartLineNumber -lt $seam) 'the support check call is a top-level statement of the window script, before the seam'
 # Every dot-source of the shell or support file in the window script is inside the fluent guard, and no file dot-sourced before the seam mentions them.
 $uiAst=Get-FileAst (Join-Path $root 'fast-llm-ui.ps1')
 $dotCmds=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot},$true))
 $fluentDots=@($dotCmds|Where-Object{$_.Extent.Text -match 'UiFluentShell\.ps1|UiFluentSupport\.ps1'})
+Check ($fluentDots.Count -eq 1) 'the window script dot-sources the shell file once'
+# 5b-delete-begin
 Check ($fluentDots.Count -eq 1 -and (Test-InFluentGuard $fluentDots[0])) 'the window script dot-sources the shell file once, only inside the fluent guard'
+# 5b-delete-end
 $preSeam=@($dotCmds|Where-Object{$_.Extent.StartLineNumber -lt $seam -and $_.Extent.Text -notmatch 'UiFluentShell'})
 $leaks=@()
 foreach($d in $preSeam){
@@ -1145,21 +1184,29 @@ foreach($d in $preSeam){
     }
 }
 Check ($preSeam.Count -gt 5 -and $leaks.Count -eq 0) 'no file dot-sourced before the seam mentions the fluent shell, the support file or the setter'
-# A classic start never executes the accessibility setter: the real support-check statement, run with $Window=classic against a mock setter.
-# Positive control: the same statement with $Window=fluent, its shell path redirected to a scratch file that only calls the mock setter.
-$guardIf=@($uiAst.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match $guardPattern -and $n.Extent.Text -match 'UiFluentShell\.ps1'},$true))
-Check ($guardIf.Count -eq 1) 'the support-check statement is found by AST'
+# The real support-check statement (found by its source line: the dot-source of the shell file and the Test-FastLlmUiFluentHost call), run against a
+# mock setter. Positive control: its shell path redirected to a scratch file that only calls the mock setter.
+$supportLines=@((Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1'))|Where-Object{$_ -cmatch 'UiFluentShell\.ps1' -and $_ -cmatch 'Test-FastLlmUiFluentHost' -and $_ -cnotmatch '^\s*#'})
+Check ($supportLines.Count -eq 1) 'the support-check statement is found by its source line'
 $scratch=Join-Path ([IO.Path]::GetTempPath()) ('fluent-guard-'+[guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path (Join-Path $scratch 'src') -Force)
 Set-Content -LiteralPath (Join-Path $scratch 'src/FastLlm.UiFluentShell.ps1') -Value 'Set-FastLlmUiFluentAccessibilitySwitches; $guardCounter.dot++; function Test-FastLlmUiFluentHost { @{ supported = $true; reason = "" } }' -Encoding ASCII
-$statement=$guardIf[0].Extent.Text.Replace('$PSScriptRoot',"'"+$scratch.Replace("'","''")+"'")
+$statement=([string]$supportLines[0]).Replace('$PSScriptRoot',"'"+$scratch.Replace("'","''")+"'")
 $guardCounter=@{ setter = 0; dot = 0 }
 function Set-FastLlmUiFluentAccessibilitySwitches { $guardCounter.setter++ }
 try{
+    # 5b-delete-begin
+    # A classic start never executes the accessibility setter: the same statement with $Window=classic.
     & { $Window='classic'; Invoke-Expression $statement }
     Check ($guardCounter.setter -eq 0 -and $guardCounter.dot -eq 0) 'a classic start never executes the accessibility setter (nor dot-sources the shell file)'
+    # 5b-delete-end
     & { $Window='fluent'; Invoke-Expression $statement }
-    Check ($guardCounter.setter -eq 1 -and $guardCounter.dot -eq 1) 'positive control: a fluent start through the same statement dot-sources the shell file and runs the setter'
+    Check ($guardCounter.setter -eq 1 -and $guardCounter.dot -eq 1) 'positive control: a start through the same statement dot-sources the shell file and runs the setter'
+    # Mutant: a statement that no longer dot-sources the shell file does not run the setter, so the control above would fail on it.
+    $guardCounter.setter=0; $guardCounter.dot=0
+    $noDot=$statement.Replace('. (Join-Path','$null=(Join-Path')
+    try{ & { $Window='fluent'; Invoke-Expression $noDot } }catch{ $null=$_ }
+    Check ($noDot -cne $statement -and $guardCounter.setter -eq 0 -and $guardCounter.dot -eq 0) 'mutation check: a support-check statement that dot-sources nothing runs no setter'
 }finally{ if(Test-Path -LiteralPath $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force} }
 
 # Connect text drift pin: every value of $script:FastLlmUiFluentConnectText (src/FastLlm.UiFluentConnect.ps1, read by AST, never run) equals a string constant of
