@@ -1563,6 +1563,43 @@ function Invoke-P4-AttachFanOut {
     Check-NoExceptions 'P4'
 }
 
+# ---- P4a: the Home card offers Attach once the pending start's Ready identity is observed (the lab canary: the card stayed "Starting" with Stop and no Attach) ----
+function Invoke-P4a-CardAttachReady {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $adapter = $script:backgroundAttachButton
+    $saved = @{ Snap = $script:shellSnap; Enabled = [bool]$adapter.Enabled; Visible = [bool]$adapter.Visible }
+    try {
+        # Start in background: our request id is pending and the observation is the host's Ready identity for that same request
+        $bg = Get-UiBackgroundFixture -Name 'ready-attachable'
+        $bg.pendingRequestId = [string]$bg.observation.requestId
+        $script:shellSnap = New-ShellSnap @{ Background = $bg }
+        # SetBusy sets the adapter from the control-state rule; the tick then draws the card
+        $adapter.Enabled = [bool](Get-FastLlmUiControlStates -Snapshot $script:shellSnap).backgroundAttach
+        Invoke-FastLlmUiFluentTick
+        Invoke-Pump 50
+        Check ([string]$els.StatusHeadline.Text -ceq 'Background run found') 'P4a a pending start with its Ready identity observed shows the Background run found headline' "headline='$($els.StatusHeadline.Text)'"
+        Check ($els.AttachButton.Visibility -eq [System.Windows.Visibility]::Visible -and $els.AttachButton.IsEnabled) 'P4a Home Attach is visible and enabled' "visibility=$($els.AttachButton.Visibility) enabled=$($els.AttachButton.IsEnabled)"
+        Check ($els.StopButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and $els.StartSplit.Visibility -eq [System.Windows.Visibility]::Collapsed) 'P4a Stop and Start are not the main action' "stop=$($els.StopButton.Visibility) start=$($els.StartSplit.Visibility)"
+        # A different request id is not ours: the card stays Starting with Stop and no Attach
+        $bg2 = Get-UiBackgroundFixture -Name 'ready-attachable'
+        $bg2.pendingRequestId = 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4'
+        $script:shellSnap = New-ShellSnap @{ Background = $bg2 }
+        $adapter.Enabled = [bool](Get-FastLlmUiControlStates -Snapshot $script:shellSnap).backgroundAttach
+        Invoke-FastLlmUiFluentTick
+        Invoke-Pump 50
+        Check ([string]$els.StatusHeadline.Text -ceq 'Starting' -and $els.AttachButton.Visibility -eq [System.Windows.Visibility]::Collapsed -and $els.StopButton.Visibility -eq [System.Windows.Visibility]::Visible) 'P4a a Ready run for another request keeps the Starting card with Stop and no Attach' "headline='$($els.StatusHeadline.Text)' attach=$($els.AttachButton.Visibility) stop=$($els.StopButton.Visibility)"
+    }
+    finally {
+        $script:shellSnap = $saved.Snap
+        $adapter.Enabled = $saved.Enabled
+        $adapter.Visible = $saved.Visible
+        Invoke-FastLlmUiFluentTick
+    }
+    Check-NoExceptions 'P4a'
+}
+
 function Invoke-P5-GreyedReasons {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -5356,7 +5393,7 @@ $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
     'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
-    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P5-GreyedReasons',
+    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
