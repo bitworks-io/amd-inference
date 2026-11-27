@@ -4033,11 +4033,11 @@ function Initialize-P42Fixtures {
         [pscustomobject]@{ id = 'probe-comp-b'; displayName = 'Probe component B'; version = '2.0'; state = 'missing'; sourceHosts = @('example.org'); redirectHosts = @('cdn.example.org'); licenseLinks = @([pscustomobject]@{ title = 'Probe licence B'; url = 'https://example.org/license-b' }) }
     )
     $consentRows = @(Get-FastLlmUiConsentRows -Chain $chain)
-    $componentRow = [pscustomobject]@{ id = 'probe-recipe-2'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup two'; model = [string]$model.id; contextSize = 8192; engineId = 'probe-engine'
+    $componentRow = [pscustomobject]@{ id = 'probe-recipe-2'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup two'; model = [string]$model.id; contextSize = 8192; contextText = '8,192 tokens'; engineText = 'Probe component B (from example.org; missing); requires Probe component A (from example.org; missing)'; engineId = 'probe-engine'
         chain = $chain; consentRequired = $true; installRequired = $true; experimental = $false; chainError = '' }
     $chooserRows = @(
-        [pscustomobject]@{ id = 'probe-recipe-1'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup one'; model = [string]$model.id; contextSize = 8192; engineId = 'probe-engine'; chain = @(); consentRequired = $false; installRequired = $false },
-        [pscustomobject]@{ id = 'probe-recipe-2'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup two'; model = [string]$model.id; contextSize = 16384; engineId = 'probe-engine'; chain = @(); consentRequired = $false; installRequired = $false }
+        [pscustomobject]@{ id = 'probe-recipe-1'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup one'; model = [string]$model.id; contextSize = 8192; contextText = '8,192 tokens'; engineText = 'probe-engine'; engineId = 'probe-engine'; chain = @(); consentRequired = $false; installRequired = $false; experimental = $false; chainError = '' },
+        [pscustomobject]@{ id = 'probe-recipe-2'; origin = 'bitworks'; variant = 'probe-card'; label = 'Probe setup two'; model = [string]$model.id; contextSize = 16384; contextText = '16,384 tokens'; engineText = 'probe-engine'; engineId = 'probe-engine'; chain = @(); consentRequired = $false; installRequired = $false; experimental = $false; chainError = '' }
     )
     $disclosure = Get-FastLlmUiLicenseDisclosure -Components @(Get-FastLlmComponents -ComponentsPath (Join-Path $root 'config/components.json'))
     $script:identifiedVariant = 'probe-card'
@@ -4306,7 +4306,8 @@ function Invoke-P43-DialogFlows {
         $r = Invoke-P43Run @(@{ Kind = 'act'; Caption = 'Install engine components'; Do = $ticks }, @{ Kind = 'box'; Caption = 'Install engine components'; Id = 'Cancel'; Fallback = 'Cancel' }) $openConsent
         Check ($script:p42Launch.Count -eq 0 -and [string]$script:statusLabel.Text -ceq 'Component install cancelled. Nothing was downloaded.' -and (Test-SettingsRecClean $r.D)) 'P43 consent Cancel (boxes ticked): nothing is launched and the status says nothing was downloaded' "launches=$($script:p42Launch.Count) status='$($script:statusLabel.Text)' $(Get-SettingsRecDetail $r.D)"
         # ---- licence setting: accept writes accept-automatically; Cancel (click) writes nothing ----
-        $openLicense = { $null = Open-SettingsPage @{}; $els.SettingsLicenseToggle.IsChecked = $true }
+        # A toggle that is already on raises no change, so the page opens with the toggle (and the classic box behind it) put to off without the handler, then turned on.
+        $openLicense = { $null = Open-SettingsPage @{}; $script:licenseRevert = $true; try { $els.SettingsLicenseToggle.IsChecked = $false; $script:licenseBox.Checked = $false } finally { $script:licenseRevert = $false }; $script:setLicWrites.Clear(); $els.SettingsLicenseToggle.IsChecked = $true }
         $r = Invoke-P43Run @(@{ Kind = 'box'; Caption = 'Install engine components automatically'; Id = 'Accept'; Fallback = 'Cancel' }) $openLicense
         Check (($script:setLicWrites.ToArray() -join ',') -ceq 'accept-automatically' -and $els.SettingsLicenseToggle.IsChecked -eq $true -and (Test-SettingsRecClean $r.D)) 'P43 licence setting Accept: the setting is written (accept-automatically) and the toggle stays on' "writes=$($script:setLicWrites.ToArray() -join ',') toggle=$($els.SettingsLicenseToggle.IsChecked) error='$($r.Err)' $(Get-SettingsRecDetail $r.D)"
         Close-SettingsPage
