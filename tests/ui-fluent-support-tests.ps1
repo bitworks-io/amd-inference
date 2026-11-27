@@ -192,4 +192,50 @@ try{
     $out4=@(Show-FastLlmUiUnsupported -Reason 'dotnet-too-old' -InstallRoot $tmp -Folder $F -PolicyReader { @([pscustomobject]@{Scope='LocalMachine';ExecutionPolicy='Restricted'}) } -NoMessageBox 6>&1 | ForEach-Object{[string]$_})
     Check ($out4[0] -ceq (Get-FastLlmUiUnsupportedText -Reason 'dotnet-too-old' -Folder $F -PolicyFlag '-ExecutionPolicy RemoteSigned ')) 'a working read of Restricted still adds the flag'
 }finally{ if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Recurse -Force} }
+
+# --- the window script's own support check, run for real (lead gate M2) ---
+# The two statements of fast-llm-ui.ps1 that decide it ($fluentSupport=Test-FastLlmUiFluentHost and the if that shows the message and exits 3) are taken by AST
+# and run in a child PowerShell with stubs: an unsupported PC shows the message, exits 3 and builds no window; a supported PC goes on to build the window.
+$uiAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$null,[ref]$null)
+$supportIf=@($uiAst.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses.Count -ge 1 -and [string]$n.Clauses[0].Item1.Extent.Text -ceq '-not $fluentSupport.supported'},$true))
+$supportSet=@($uiAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and [string]$n.Left.Extent.Text -ceq '$fluentSupport' -and [string]$n.Right.Extent.Text -ceq 'Test-FastLlmUiFluentHost'},$true))
+$shellInit=@($uiAst.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Initialize-FastLlmUiFluentShell'},$true))
+Check ($supportIf.Count -eq 1 -and $supportSet.Count -eq 1 -and $shellInit.Count -eq 1) 'the window script has one support assignment, one support if and one Initialize-FastLlmUiFluentShell call'
+Check ($supportSet[0].Extent.StartOffset -lt $supportIf[0].Extent.StartOffset -and $supportIf[0].Extent.EndOffset -lt $shellInit[0].Extent.StartOffset) 'the support check runs before the window is built (Initialize-FastLlmUiFluentShell comes after it)'
+Check ([string]$supportIf[0].Clauses[0].Item2.Extent.Text -match 'Show-FastLlmUiUnsupported\s+-Reason\s+\$fluentSupport\.reason' -and [string]$supportIf[0].Clauses[0].Item2.Extent.Text -match 'exit 3') 'the unsupported branch shows the message with the reason and exits 3'
+$childRoot=Join-Path ([IO.Path]::GetTempPath()) ('fastllm-support-child-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $childRoot -Force | Out-Null
+try{
+    $hostExe=(Get-Process -Id $PID).Path
+    function Invoke-SupportChild([string]$SupportedLiteral,[string]$IfText){
+        $marker=Join-Path $childRoot ('marker-'+[Guid]::NewGuid().ToString('N')+'.txt')
+        $lines=@(
+            '$ErrorActionPreference=''Stop'''
+            '$InstallRoot='''+$childRoot.Replace("'","''")+''''
+            '$marker='''+$marker.Replace("'","''")+''''
+            'function Test-FastLlmUiFluentHost { [pscustomobject]@{ supported = '+$SupportedLiteral+'; reason = ''dotnet-too-old'' } }'
+            'function Show-FastLlmUiUnsupported { param($Reason,$InstallRoot,$Folder) [IO.File]::AppendAllText($marker, ''shown:''+[string]$Reason+'';'') }'
+            'function Initialize-FastLlmUiFluentShell { [IO.File]::AppendAllText($marker, ''window-built;'') }'
+            [string]$supportSet[0].Extent.Text
+            $IfText
+            'Initialize-FastLlmUiFluentShell'
+            'exit 0'
+        )
+        $script=Join-Path $childRoot ('child-'+[Guid]::NewGuid().ToString('N')+'.ps1')
+        [IO.File]::WriteAllText($script,($lines -join "`n"),(New-Object Text.UTF8Encoding($false)))
+        & $hostExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script *> $null
+        $code=$LASTEXITCODE
+        $seen=''; if(Test-Path -LiteralPath $marker){ $seen=[IO.File]::ReadAllText($marker) }
+        return @{ Code=$code; Seen=$seen }
+    }
+    $realIf=[string]$supportIf[0].Extent.Text
+    $r=Invoke-SupportChild '$false' $realIf
+    Check ($r.Code -eq 3 -and $r.Seen -ceq 'shown:dotnet-too-old;') "an unsupported PC (the real statements): the message is shown with its reason, the window script exits 3, and no window is built (code=$($r.Code) seen='$($r.Seen)')"
+    $r=Invoke-SupportChild '$true' $realIf
+    Check ($r.Code -eq 0 -and $r.Seen -ceq 'window-built;') "control: a supported PC shows no message and goes on to build the window (code=$($r.Code) seen='$($r.Seen)')"
+    $m=Invoke-SupportChild '$false' ($realIf.Replace('if (-not $fluentSupport.supported) {','if ($false) {'))
+    Check ($realIf.Contains('if (-not $fluentSupport.supported) {') -and -not ($m.Code -eq 3 -and $m.Seen -ceq 'shown:dotnet-too-old;')) "mutation check: a support if that never fires lets an unsupported PC build the window (code=$($m.Code) seen='$($m.Seen)')"
+    $m=Invoke-SupportChild '$false' ($realIf.Replace('exit 3','exit 0'))
+    Check ($realIf.Contains('exit 3') -and $m.Code -ne 3) "mutation check: an unsupported branch that does not exit 3 is caught (code=$($m.Code))"
+}finally{ if(Test-Path -LiteralPath $childRoot){Remove-Item -LiteralPath $childRoot -Recurse -Force} }
 Write-Host "ui-fluent-support-tests: $checks checks passed"
