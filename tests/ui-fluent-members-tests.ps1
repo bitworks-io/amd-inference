@@ -2781,10 +2781,8 @@ function Get-DlgFindings([string]$Text){
         $footer=@($x.SelectNodes('//*[local-name()="UniformGrid"]')|Where-Object{$_.GetAttribute('Name',$xn) -ceq 'DlgFooter'})
         if($footer.Count -ne 1){[void]$f.Add('the dialog markup has no DlgFooter panel')}
         else{
-            foreach($target in 'AccessText','TextBlock'){
-                $hit=@($footer[0].SelectNodes("*[local-name()='UniformGrid.Resources']/*[local-name()='Style']")|Where-Object{$_.GetAttribute('TargetType') -ceq $target -and @($_.SelectNodes("*[local-name()='Setter'][@Property='TextWrapping'][@Value='Wrap']")).Count -eq 1})
-                if($hit.Count -ne 1){[void]$f.Add("the footer presenter has no $target style with TextWrapping Wrap")}
-            }
+            # An implicit style in the footer Resources does not reach the element a Button template makes from string content, so the wrap is in code (checked below).
+            if(@($footer[0].SelectNodes("*[local-name()='UniformGrid.Resources']")).Count -ne 0){[void]$f.Add('the footer keeps a Resources block that cannot reach the button captions')}
         }
         foreach($need in 'DlgIconHost','DlgBodyScroll','DlgFooter'){ if(@($x.SelectNodes('//*')|Where-Object{$_.GetAttribute('Name',$xn) -ceq $need}).Count -ne 1){[void]$f.Add("the dialog markup has no $need")} }
     }
@@ -2794,6 +2792,9 @@ function Get-DlgFindings([string]$Text){
     $new=Get-DlgFn $Text 'New-FastLlmUiFluentDialog'
     if($null -eq $new){[void]$f.Add('New-FastLlmUiFluentDialog is not defined exactly once')}
     else{
+        $nt=$new.Extent.Text
+        if($nt -cnotmatch '\$captionText = New-Object System\.Windows\.Controls\.AccessText' -or $nt -cnotmatch '\$captionText\.TextWrapping = \[System\.Windows\.TextWrapping\]::Wrap\b' -or $nt -cnotmatch '\$button\.Content = \$captionText\b'){[void]$f.Add('a footer button caption is not a code-built wrapping AccessText')}
+        if($nt -cnotmatch 'AutomationProperties\]::SetName\(\$button, \$caption\)'){[void]$f.Add('a footer button is not named by its caption')}
         $inv=@($new.FindAll({param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true))
         $keyHook=@($inv|Where-Object{$_.Member.Extent.Text -ceq 'Add_PreviewKeyDown' -and $_.Expression.Extent.Text -ceq '$win'})
         if($keyHook.Count -ne 1){[void]$f.Add('the dialog Window has no single PreviewKeyDown handler')}
@@ -2918,8 +2919,8 @@ $dlgPlants=[ordered]@{
     'a button with IsCancel (code)'=Edit-DlgPlant '        $button.MinWidth = 88' "        `$button.MinWidth = 88`n        `$button.IsCancel = `$true"
     'IsDefault in the markup'=Edit-DlgPlant '<UniformGrid x:Name="DlgFooter"' '<UniformGrid IsDefault="True" x:Name="DlgFooter"'
     'an event attribute in the markup'=Edit-DlgPlant '<Border x:Name="DlgIconHost"' '<Border Loaded="x" x:Name="DlgIconHost"'
-    'a footer AccessText that does not wrap'=Edit-DlgPlant '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>' '<Style TargetType="AccessText"><Setter Property="TextWrapping" Value="NoWrap"/></Style>'
-    'a footer TextBlock that does not wrap'=Edit-DlgPlant '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/>' '<Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="NoWrap"/>'
+    'a footer caption AccessText that does not wrap'=Edit-DlgPlant '$captionText.TextWrapping = [System.Windows.TextWrapping]::Wrap' '$captionText.TextWrapping = [System.Windows.TextWrapping]::NoWrap'
+    'a footer caption that is a plain string again'=Edit-DlgPlant '$button.Content = $captionText' '$button.Content = $caption'
     'the key hook moved off PreviewKeyDown'=Edit-DlgPlant '$win.Add_PreviewKeyDown({' '$win.Add_KeyDown({'
     'Enter overriding a focused button'=Edit-DlgPlant 'if ($focused -is [System.Windows.Controls.Button]) {' 'if ($false) {'
     'a focused footer button answering the Enter target'=Edit-DlgPlant '& $close $focusedId' "& `$close ([string] `$state['Enter'])"

@@ -631,6 +631,8 @@ foreach ($fnName in 'ShowSetupAttention', 'ShowVcInstallReview', 'ShowExactModel
 $script:p42Launch = New-Object System.Collections.ArrayList     # LaunchStep calls: step name and arguments
 $script:p42Begin = New-Object System.Collections.ArrayList      # BeginChosenRecipe calls: the row id
 $script:p42Candidate = $null
+$script:p42Fx = $null                                              # filled once by Initialize-P42Fixtures; StrictMode 2 needs it set before the first read
+$script:p42Result = $null
 $script:p42InstallDecision = 'offer-install'
 function LaunchStep([string]$Step, [object[]]$Arguments) { [void]$script:p42Launch.Add([pscustomobject]@{ Step = $Step; Arguments = @($Arguments) }) }
 function BeginChosenRecipe($Row) { [void]$script:p42Begin.Add([string]$Row.id) }

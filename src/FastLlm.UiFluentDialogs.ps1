@@ -25,7 +25,7 @@ $script:FastLlmUiFluentDialogIcons = @{
 }
 
 # The dialog: a Grid with a decorative icon slot, a scrolling body slot and a footer of buttons. Every visible string is set from code (Text, never markup).
-# The footer is a UniformGrid, so a caption wraps inside its button at large text; its Resources carry the wrapping AccessText and TextBlock styles.
+# The footer is a UniformGrid, so a caption wraps inside its button at large text; each button's content is a code-built wrapping AccessText (see New-FastLlmUiFluentDialog).
 $script:FastLlmUiXaml['FastLlm.Dialog'] = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -48,12 +48,7 @@ $script:FastLlmUiXaml['FastLlm.Dialog'] = @'
       <ScrollViewer x:Name="DlgBodyScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" IsTabStop="False"/>
     </Grid>
     <Border Grid.Row="1" Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrokeBrush}" BorderThickness="0,1,0,0" Padding="24,16,24,16">
-      <UniformGrid x:Name="DlgFooter" Rows="1" HorizontalAlignment="Right">
-        <UniformGrid.Resources>
-          <Style TargetType="AccessText"><Setter Property="TextWrapping" Value="Wrap"/></Style>
-          <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="TextAlignment" Value="Center"/></Style>
-        </UniformGrid.Resources>
-      </UniformGrid>
+      <UniformGrid x:Name="DlgFooter" Rows="1" HorizontalAlignment="Right"/>
     </Border>
   </Grid>
 </Window>
@@ -115,7 +110,12 @@ function New-FastLlmUiFluentDialog {
         $styleKey = 'FastLlm.ButtonStyle'
         if ([string] $id -ceq $Enter) { $styleKey = 'FastLlm.AccentButtonStyle' }
         $button.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, $styleKey)
-        $button.Content = ConvertTo-FastLlmUiAccessText -Text $caption -UseMnemonic $false
+        # A code-built wrapping AccessText: an implicit style in the footer Resources does not reach the element a Button template creates from string content.
+        $captionText = New-Object System.Windows.Controls.AccessText
+        $captionText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $captionText.TextAlignment = [System.Windows.TextAlignment]::Center
+        $captionText.Text = ConvertTo-FastLlmUiAccessText -Text $caption -UseMnemonic $false
+        $button.Content = $captionText
         $button.MinWidth = 88
         if (-not $first) { $button.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0) }
         $first = $false

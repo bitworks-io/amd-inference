@@ -186,7 +186,8 @@ Check ((@(Sort-UiReadingRows $planRows|ForEach-Object{$_.Name}) -join ',') -ceq 
 Check ((@(Sort-UiReadingRows @($planRows[0]))|Measure-Object).Count -eq 1 -and @(Sort-UiReadingRows @()).Count -eq 0) 'the reading sort keeps one stop and none'
 $dlgOrderText=[regex]::Match($selfText,'(?sm)^function Test-DialogReadingOrder.*?\r?\n}\r?\n').Value
 Check ($dlgOrderText.Contains("Get-UiTabRegion `$el `$built.Content @('DlgBodyScroll')") -and $dlgOrderText.Contains('Sort-UiReadingRows')) 'the dialog reading order sorts by the body scroll region first'
-Check ([regex]::Matches($selfText,"-TabRegions @\('DlgBodyScroll'\)").Count -eq 2) 'both dialog render calls name the body scroll as a tab region'
+Check ([regex]::Matches($selfText,"-TabRegions @\('DlgBodyScroll'\)").Count -eq 3) 'every dialog render call that checks tab order (the 4a box case, the 4b case and the reading-order walk) names the body scroll as a tab region'
+Check ($selfText.Contains('$alignVisuals=Get-UiVisualElements $built.Content') -and $selfText.Contains('$texts=@($alignVisuals|Where-Object{$_ -is [System.Windows.Controls.TextBlock]})') -and -not [regex]::IsMatch($selfText,'Get-UiVisualElements \$built\.Content\s*\|')) 'the chooser header check takes the visual list into a variable before piping it (a piped list is one array object and finds no text)'
 if($script:failures.Count -gt 0){throw ('FAIL: '+($script:failures -join '; '))}
 $onWindows=($PSVersionTable.PSVersion.Major -le 5) -or [bool](Get-Variable -Name IsWindows -ValueOnly -ErrorAction SilentlyContinue)
 if(-not $onWindows){Write-Host 'SKIP: Windows only';exit 0}
@@ -1165,7 +1166,7 @@ function Test-Dialog4bCase([string]$Label,$Spec,$Case,[string]$PngName){
     $r=$null;$built=$null
     try{
         $built=New-DialogRenderContent $Spec $Case
-        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -ScrollOwners @('ChooserList')
+        $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $Case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName $PngName -TabRegions @('DlgBodyScroll') -ScrollOwners @('ChooserList')
     }catch{Check $false "$Label renders at ${caseLabel}: $($_.Exception.Message)";return}
     $diagText='';if(@($r.diagnostics).Count -gt 0){$diagText=' | diag: '+(@($r.diagnostics) -join '; ')}
     Check (@($r.problems).Count -eq 0) "$Label clean at ${caseLabel}: $(@($r.problems) -join '; ')$diagText"
@@ -1222,7 +1223,9 @@ foreach($case in $dlgCases){
     try{
         $built=New-DialogRenderContent @{Kind='chooser'} $case
         $r=Invoke-UiRenderCase -Name 'FastLlm.Dialog' -Case $case -OutFolder $out -Element $built.Content -Prepare $dlgPrepare -PngName 'FastLlm.DialogChooserAlign' -ScrollOwners @('ChooserList')
-        $texts=@(Get-UiVisualElements $built.Content|Where-Object{$_ -is [System.Windows.Controls.TextBlock]})
+        # the visual list is one array object on the pipeline (the function returns it with a leading comma), so it is taken into a variable and piped from there
+        $alignVisuals=Get-UiVisualElements $built.Content
+        $texts=@($alignVisuals|Where-Object{$_ -is [System.Windows.Controls.TextBlock]})
         $gaps=@()
         foreach($col in @(@('Setup','label'),@('Model','model'),@('Context','contextText'),@('Engine and sources','engineText'))){
             $head=@($texts|Where-Object{[string]$_.Text -ceq [string]$col[0] -and [string]$_.Name -ceq ''})[0]
