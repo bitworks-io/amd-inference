@@ -1493,7 +1493,10 @@ function Invoke-P4a-CardAttachReady {
         # Start in background: our request id is pending and the observation is the host's Ready identity for that same request
         $bg = Get-UiBackgroundFixture -Name 'ready-attachable'
         $bg.pendingRequestId = [string]$bg.observation.requestId
-        $script:shellSnap = New-ShellSnap @{ Background = $bg }
+        # RunReady as the background poll computes it (UpdateUiRunState): an active background host whose status says ready is ready, attached or not (canary .2)
+        $runReady = [bool](Test-FastLlmUiServingReady -Status ([pscustomobject]@{ active = $true; phase = 'ready' }) -ForegroundChildActive $false -BackgroundObservation $bg.observation)
+        Check $runReady 'P4a the poll''s RunReady is true for the Ready background host' "runReady=$runReady"
+        $script:shellSnap = New-ShellSnap @{ Background = $bg; RunReady = $runReady }
         # SetBusy sets the adapter from the control-state rule; the tick then draws the card
         $adapter.Enabled = [bool](Get-FastLlmUiControlStates -Snapshot $script:shellSnap).backgroundAttach
         Invoke-FastLlmUiFluentTick

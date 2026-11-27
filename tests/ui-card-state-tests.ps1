@@ -67,10 +67,11 @@ $c=Expect '27 bare-ready' @{Background='bare-ready'} 'background-found' 'neutral
 
 # The attach-ready rule (the canary's "Starting" card that never offered Attach): a pending start whose Ready identity is observed is a background run to attach.
 $r1=$script:UiMatrixR1;$r2=$script:UiMatrixR2
-function New-AttachBg([bool]$Pending,[bool]$Attachable,[bool]$Verified,[bool]$Match,[bool]$Attached,[bool]$Attention){
+function New-AttachBg([bool]$Pending,[bool]$Attachable,[bool]$Verified,[bool]$Match,[bool]$Attached,[bool]$Attention,[string]$Phase='',[bool]$Active=$true){
     $bg=New-FastLlmUiBackgroundState
     $ready=[bool]($Attachable -or $Verified)
-    $obs=[pscustomobject]@{phase=$(if($ready){'ready'}else{'starting'});active=$true;attachable=$Attachable;occupied=$true;requestId=$r1
+    if(-not $Phase){$Phase=$(if($ready){'ready'}else{'starting'})}
+    $obs=[pscustomobject]@{phase=$Phase;active=$Active;attachable=$Attachable;occupied=$true;requestId=$r1
         runId=$script:UiMatrixRun;hostIdentity=@{pid=4242;startUtcTicks=1}}
     if($Verified){$obs|Add-Member -NotePropertyName readyIdentityVerified -NotePropertyValue $true}
     $bg.observation=$obs
@@ -92,20 +93,41 @@ $bgAtt.observation|Add-Member -NotePropertyName uiHealthChecked -NotePropertyVal
 $bgAtt.observation|Add-Member -NotePropertyName servingHealthy -NotePropertyValue $true
 [void](Expect '34 attached and health checked stays running-background' @{Background=$bgAtt} 'running-background' 'success' '' 'stop')
 [void](Expect '35 attached, health not yet checked is not offered Attach' @{Background=(New-AttachBg $false $true $true $true $true $false)} 'not-running' 'neutral' '' 'start')
+# RunReady is what the window really computes: Test-FastLlmUiServingReady over the run status and the background observation (an ACTIVE background run
+# whose status says ready is ready, attached or not). The #110 rows above left it false; the lab canary .2 card showed Running with Stop greyed and no Attach.
+function Get-RealRunReady($Bg,[string]$StatusPhase){ return [bool](Test-FastLlmUiServingReady -Status ([pscustomobject]@{active=$true;phase=$StatusPhase}) -ForegroundChildActive $false -BackgroundObservation $Bg.observation) }
+foreach($obsPhase in 'loading','ready'){
+    $bgC2=New-AttachBg $true $true $true $true $false $false $obsPhase $true
+    $rrC2=Get-RealRunReady $bgC2 'ready'
+    Check $rrC2 "36 canary .2 ($obsPhase): the real RunReady is true for the active background host whose status says ready"
+    $c=Expect "36 canary .2 ($obsPhase): pending start Ready, RunReady true, not attached" @{Background=$bgC2;RunReady=$rrC2} 'background-found' 'neutral' '' 'attach'
+    Check ($c.headline -ceq 'Background run found') "36 canary .2 ($obsPhase) headline"
+}
+$bgAtt2=New-AttachBg $false $true $true $true $true $false 'ready' $true
+$bgAtt2.observation|Add-Member -NotePropertyName uiHealthChecked -NotePropertyValue $true
+$bgAtt2.observation|Add-Member -NotePropertyName servingHealthy -NotePropertyValue $true
+$snapAtt2=Snap @{Background=$bgAtt2;RunReady=(Get-RealRunReady $bgAtt2 'ready')}
+$c=Get-FastLlmUiCardState -Snapshot $snapAtt2
+Check ($c.state -ceq 'running-background' -and $c.mainAction -ceq 'stop' -and [bool](Get-FastLlmUiControlStates -Snapshot $snapAtt2).stop) '37 attached, health checked, RunReady true: Running in background with Stop, and the Stop control is enabled'
 
 # Parity: over background snapshots the card offers Attach only when the Attach control is enabled, and (without an attention note, which the card shows first) whenever it is.
-$parityRows=0;$parityAttach=0
-foreach($pending in $false,$true){foreach($att in $false,$true){foreach($ver in $false,$true){foreach($match in $true,$false){foreach($attached in $false,$true){foreach($attn in $false,$true){
+$parityRows=0;$parityAttach=0;$parityExcused=0
+foreach($pending in $false,$true){foreach($att in $false,$true){foreach($ver in $false,$true){foreach($match in $true,$false){foreach($attached in $false,$true){foreach($attn in $false,$true){foreach($obsPhase in 'ready','loading','starting'){foreach($obsActive in $true,$false){foreach($statusPhase in 'ready','loading'){
     if(-not $pending -and -not $match){continue}
-    $snap=Snap @{Background=(New-AttachBg $pending $att $ver $match $attached $attn)}
+    $pbg=New-AttachBg $pending $att $ver $match $attached $attn $obsPhase $obsActive
+    $prr=Get-RealRunReady $pbg $statusPhase
+    $snap=Snap @{Background=$pbg;RunReady=$prr}
     $card=Get-FastLlmUiCardState -Snapshot $snap
     $ctl=[bool](Get-FastLlmUiControlStates -Snapshot $snap).backgroundAttach
-    $why="pending=$pending attachable=$att verified=$ver match=$match attached=$attached attention=$attn card=$($card.state)/$($card.mainAction) control=$ctl"
+    $why="pending=$pending attachable=$att verified=$ver match=$match attached=$attached attention=$attn phase=$obsPhase active=$obsActive status=$statusPhase runReady=$prr card=$($card.state)/$($card.mainAction) control=$ctl"
     $parityRows++
     if($card.mainAction -ceq 'attach'){$parityAttach++;Check $ctl "parity: the card offers Attach only when the control is enabled ($why)"}
-    if($ctl -and -not $attn){Check ($card.mainAction -ceq 'attach') "parity: an enabled Attach control is offered on the card ($why)"}
-}}}}}}
-Check ($parityRows -ge 40 -and $parityAttach -gt 0) "the parity matrix ran ($parityRows rows, $parityAttach with Attach)"
+    # A Needs-attention row (an attention note, an occupied run that is not active) is shown before Attach (lead ruling); only there may an enabled control go unoffered.
+    if($ctl -and $card.state -ceq 'needs-attention'){$parityExcused++}
+    if($ctl -and -not $attn -and $card.state -cne 'needs-attention'){Check ($card.mainAction -ceq 'attach') "parity: an enabled Attach control is offered on the card ($why)"}
+}}}}}}}}}
+Check ($parityRows -ge 500 -and $parityAttach -gt 0) "the parity matrix ran ($parityRows rows, $parityAttach with Attach, $parityExcused enabled-but-Needs-attention)"
+Check ((Get-RealRunReady (New-AttachBg $true $true $true $true $false $false 'ready' $true) 'ready') -and -not (Get-RealRunReady (New-AttachBg $true $true $true $true $false $false 'ready' $false) 'ready')) 'the parity matrix covers RunReady true and false (the real computation varies with the observation)'
 # The helper's two expressions are copies of the control-state ones.
 $uiStateAst=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'src/FastLlm.UiState.ps1'),[ref]$null,[ref]$null)
 function Get-UiStateExpression([string]$Function,[string]$Variable){
@@ -136,6 +158,11 @@ Check (Test-CardMutant 'elseif ($attachReady) {' 'elseif ($attachReady) {' $cana
 Check (Test-CardMutant 'elseif ($attachReady) {' 'elseif ($attachReady) {' $verifiedProbe) 'control: an unchanged card copy passes the verified-only probe through the mutation path'
 Check (-not (Test-CardMutant '-not $attachReady -and ((' '$true -and ((' $canaryProbe)) 'mutation: the old row 5 (a pending start wins over attach-ready) fails the canary probe'
 Check (-not (Test-CardMutant 'elseif ($attachReady) {' 'elseif ($attachable -and -not $attached) {' $verifiedProbe)) 'mutation: the old row 10 (observation.attachable only) fails the verified-only probe'
+$bgC2m=New-AttachBg $true $true $true $true $false $false 'loading' $true
+$canary2Snap=Snap @{Background=$bgC2m;RunReady=(Get-RealRunReady $bgC2m 'ready')}
+$canary2Probe={$x=Get-CardMutant -Snapshot $canary2Snap;$x.state -ceq 'background-found' -and $x.mainAction -ceq 'attach'}
+Check (Test-CardMutant 'elseif ($Snapshot.RunReady -and -not $attachReady) {' 'elseif ($Snapshot.RunReady -and -not $attachReady) {' $canary2Probe) 'control: an unchanged card copy passes the canary .2 probe through the mutation path'
+Check (-not (Test-CardMutant 'elseif ($Snapshot.RunReady -and -not $attachReady) {' 'elseif ($Snapshot.RunReady) {' $canary2Probe)) 'mutation: the old row 7 (serving wins over attach-ready) fails the canary .2 probe'
 
 # Every state's headline.
 $headlines=@{'not-running'='Not running';'starting'='Starting';'running'='Running';'running-background'='Running in background';'background-found'='Background run found'
