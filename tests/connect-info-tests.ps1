@@ -220,7 +220,9 @@ try {
         Check ([bool](& $Predicate $Source)) "fluent twin: $Name (control: the unmutated source passes)"
         foreach($mutantName in $Mutants.Keys){
             $mutated=[string](& $Mutants[$mutantName] $Source)
-            Check ($mutated -cne $Source) "mutation setup: $Name - $mutantName changes the source"
+            $mutantErrors=$null
+            [void][Management.Automation.Language.Parser]::ParseInput($mutated,[ref]$null,[ref]$mutantErrors)
+            Check ($mutated -cne $Source -and @($mutantErrors).Count -eq 0) "mutation setup: $Name - $mutantName changes the source and it still parses"
             Check (-not [bool](& $Predicate $mutated)) "mutation check: $Name - $mutantName"
         }
     }

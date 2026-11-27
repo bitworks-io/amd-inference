@@ -221,13 +221,18 @@ Check ($decision.canProceed -and @($decision.advisoryWarnings).Count -eq 1) 'Amb
 $cli=Get-Content -LiteralPath (Join-Path $root 'fast-llm.ps1') -Raw
 $ui=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
 # ---- 5a: fluent twins. A twin reads only the Fluent source (src/FastLlm.UiFluent*.ps1) and compares it to literals taken from the classic check next to it; the classic
-# check is also the unconditional literal == classic check (it is a Contains on the window script, so a missing anchor fails it). Each twin passes the real source (the
+# check is also the unconditional literal == classic check where it holds the same literals (it is a Contains on the window script, so a missing anchor fails it).
+# Where the Fluent design differs from the classic fact, the twin pins the Fluent shape and says so beside it (status line wraps instead of an ellipsis with a tooltip;
+# the Switch refusal shows on the Models page; the Copy full output name is 'Copy full output (Activity)'; the Open chat row of the Home table has no classic literal).
+# Each twin passes the real source (the
 # control) and fails each mutant, a copy of the source with one plausible regression. The classic checks sit between 5b-delete markers: the flip deletes exactly those.
 function Test-FluentTwin([string]$Name,[string]$Source,[scriptblock]$Predicate,[System.Collections.IDictionary]$Mutants){
     Check ([bool](& $Predicate $Source)) "fluent twin: $Name (control: the unmutated source passes)"
     foreach($mutantName in $Mutants.Keys){
         $mutated=[string](& $Mutants[$mutantName] $Source)
-        Check ($mutated -cne $Source) "mutation setup: $Name - $mutantName changes the source"
+        $mutantErrors=$null
+        [void][Management.Automation.Language.Parser]::ParseInput($mutated,[ref]$null,[ref]$mutantErrors)
+        Check ($mutated -cne $Source -and @($mutantErrors).Count -eq 0) "mutation setup: $Name - $mutantName changes the source and it still parses"
         Check (-not [bool](& $Predicate $mutated)) "mutation check: $Name - $mutantName"
     }
 }
@@ -2174,12 +2179,15 @@ Check ($pickerFn.Extent.Text -notmatch '\.Force|-Force|\bForce\b') 'picker dialo
 # 5b-delete-begin
 Check ($uiText.Contains("`$switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFailure `$_.Exception.Message}})")) 'picker dialog: the Switch model button opens the picker and shows any failure as the window''s other buttons do'
 # 5b-delete-end
-Test-FluentTwin 'the Switch action runs the picker request and shows its refusal on the page like the page shows its other results' $fluentSrc.Models {
+# Design difference to rule on: the classic Switch button shows a failure through ShowFailure; the Fluent Switch action shows the request's refusal text on the Models page
+# message line (Invoke-FastLlmUiSwitchPick returns it), and only a failure while the page opens goes through ShowFailure. This twin pins the Fluent shape.
+Test-FluentTwin 'the Switch action runs the picker request and shows its refusal on the Models page message line; a page-open failure goes through ShowFailure' $fluentSrc.Models {
     param($t)
     $now=Get-FluentFn $t 'Invoke-FastLlmUiFluentModelsSwitchNow'
-    if(-not $now){return $false}
+    $enter=Get-FluentFn $t 'Enter-FastLlmUiFluentModels'
+    if(-not $now -or -not $enter){return $false}
     return ($t.Contains('$Els[''ModelsSwitchNow''].Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentModelsSwitchNow })') -and $now.Contains('Invoke-FastLlmUiSwitchPick -InstallRoot $script:installPath') -and
-        $now.Contains('$m[''SwitchMessage''].Text = [string] $outcome.text') -and $t.Contains('catch { ShowFailure $_.Exception.Message }'))
+        $now.Contains('$m[''SwitchMessage''].Text = [string] $outcome.text') -and $enter.Contains('catch { ShowFailure $_.Exception.Message }'))
 } ([ordered]@{
     'the Switch button runs nothing' = { param($t) $t.Replace('Add_Click({ param($sender, $routed) Invoke-FastLlmUiFluentModelsSwitchNow })','Add_Click({ param($sender, $routed) })') }
     'the refusal text is not shown' = { param($t) $t.Replace('$m[''SwitchMessage''].Text = [string] $outcome.text','$null = $outcome') }
