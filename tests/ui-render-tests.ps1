@@ -1088,6 +1088,8 @@ function Test-SettingsCase([string]$Kind,$case){
     Check $keyOk "the key box shows the right caption and state for the $Kind fixture at ${label} (name='$([System.Windows.Automation.AutomationProperties]::GetName($e['SettingsKeyBox']))' checked=$keyChecked)"
     # the three value boxes hold the saved values and a selection
     Check ([string]$e['SettingsPortBox'].Text -ceq ([int]$fx.override.serverPort).ToString() -and [int]$e['SettingsThinkingBox'].SelectedIndex -ge 0 -and [int]$e['SettingsIdleBox'].SelectedIndex -ge 0) "Port shows the saved port and Thinking and the idle stop have a selection at $label (port='$($e['SettingsPortBox'].Text)' thinking=$($e['SettingsThinkingBox'].SelectedIndex) idle=$($e['SettingsIdleBox'].SelectedIndex))"
+    # Fluent shape by design (lead: cite the choice): spec section 6.1 sets the Settings layout, and the Settings page (#103) puts the switching box in the Server
+    # group, above the Starting group's sign-in toggle; its render map replaced the classic 'switching below sign-in' with the reading-order rule and this page order.
     # settings-dialog-render, replaced: the captions of the controls the dialog's checks required (the key box above), the sign-in lines, and the page order
     $captionBad=@()
     foreach($pair in @(@('SettingsChatBox','Chat'),@('SettingsSwitchBox','Switch'),@('SettingsSignInToggle','SignIn'))){

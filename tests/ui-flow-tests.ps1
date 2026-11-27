@@ -759,6 +759,8 @@ Check ($ui.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.Selec
 # 5b-delete-begin
 Check ($ui.Contains('$statusLabel.AutoEllipsis=$true') -and $ui.Contains('$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})')) 'a long status line is cut with an ellipsis and carries its full text in a tooltip'
 # 5b-delete-end
+# Fluent shape by design (lead: cite the choice): spec section 3 goal G5 and section 6.12 T6 (no clipped text; trimming only where a tooltip carries the full text).
+# The Fluent pages wrap the status line instead (built in #86).
 Test-FluentTwin 'a long status line keeps its full text: every page status is a wrapping text block that receives the composed line and carries it as its name' $fluentAll {
     param($t)
     $shellFn=Get-FluentFn $t 'Update-FastLlmUiFluentPageStatus'
@@ -2187,7 +2189,9 @@ Check ($pickerFn.Extent.Text -notmatch '\.Force|-Force|\bForce\b') 'picker dialo
 # 5b-delete-begin
 Check ($uiText.Contains("`$switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFailure `$_.Exception.Message}})")) 'picker dialog: the Switch model button opens the picker and shows any failure as the window''s other buttons do'
 # 5b-delete-end
-# Design difference to rule on: the classic Switch button shows a failure through ShowFailure; the Fluent Switch action shows the request's refusal text on the Models page
+# Fluent shape by design (lead: cite the choice): spec section 6.1 parity table moves Switch model to the Models page, and the Models page (#102) shows the
+# request's refusal on its own polite message line.
+# Design difference: the classic Switch button shows a failure through ShowFailure; the Fluent Switch action shows the request's refusal text on the Models page
 # message line (Invoke-FastLlmUiSwitchPick returns it), and only a failure while the page opens goes through ShowFailure. This twin pins the Fluent shape.
 Test-FluentTwin 'the Switch action runs the picker request and shows its refusal on the Models page message line; a page-open failure goes through ShowFailure' $fluentSrc.Models {
     param($t)
@@ -2462,6 +2466,8 @@ Check ($ui.Contains("`$failureCopyLink.Text='Copy full output'") -and $ui.Contai
 # 5b-delete-begin
 Check ($ui.Contains('$failureCopyLink.TabStop=$true') -and $ui.Contains('$failureCopyLink.TabIndex=$output.TabIndex+1') -and $ui.Contains("`$failureCopyLink.AccessibleName='Copy full output'")) 'The link is a tab stop right after the output box and has an accessible name.'
 # 5b-delete-end
+# Fluent shape by design (lead: cite the choice): spec section 6.1 puts Copy full output both in the failure message and in the Activity header (Home, #86),
+# so the Activity header button carries its own name, 'Copy full output (Activity)', starting with the classic name.
 Test-FluentTwin 'the Copy full output control has an accessible name that starts with the classic name' $fluentSrc.Home {
     param($t)
     return ((Test-TextTableValue $t 'CopyFullOutputActivity' 'Copy full output (Activity)') -and $t.Contains('[System.Windows.Automation.AutomationProperties]::SetName($copy, [string] $s.CopyFullOutputActivity)'))
