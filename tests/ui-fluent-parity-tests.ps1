@@ -145,6 +145,96 @@ Check ([string]$script:uiSettings.experimentalComponents -ceq 'on') 'the second 
 Check ([string]$script:uiSettings.updateCheck -ceq 'off') 'the second case read the saved update setting'
 
 
+# 5b-delete-begin
+# The frozen literals of ui-fluent-bindings-initial-tests.ps1 (the cross-platform pin that outlives this suite) equal what the classic creation block makes.
+# Unconditional: a missing literal function or a missing classic anchor fails (the creation block was cut above, and Check throws if it was not found).
+# The literal functions are read from that suite by their syntax tree and defined here; the suite itself is not run.
+$litPath = Join-Path $PSScriptRoot 'ui-fluent-bindings-initial-tests.ps1'
+$litAst = [System.Management.Automation.Language.Parser]::ParseFile($litPath, [ref]$null, [ref]$null)
+foreach ($litFn in 'Get-BindingsInitialFixtureCatalog', 'Get-BindingsInitialRows', 'Get-BindingsInitialSavedOverrides') {
+    $script:litWant = $litFn
+    $litDef = @($litAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $script:litWant }, $true))
+    Check ($litDef.Count -eq 1) "the frozen literal function $litFn is in ui-fluent-bindings-initial-tests.ps1 exactly once"
+    . ([scriptblock]::Create([string]$litDef[0].Extent.Text))
+}
+$litRows = @(Get-BindingsInitialRows)
+$litOverrides = Get-BindingsInitialSavedOverrides
+Check ((($litRows | ForEach-Object { [string]$_.Name }) -join ',') -ceq ($names -join ',')) "the frozen literal rows are the bindings table's control names, in its order ($($litRows.Count) rows)"
+
+# The differences between the real WinForms controls the classic block made and the literal rows (empty when equal). The own visible flag is read, never the effective Visible.
+function Get-ClassicLiteralProblems($Classic, $Rows, [string]$InstallRoot, $Overrides) {
+    $problems = New-Object System.Collections.ArrayList
+    foreach ($row in $Rows) {
+        $n = [string]$row.Name
+        $c = $Classic[$n]
+        $want = @{}; foreach ($k in @($row.Keys)) { $want[$k] = $row[$k] }
+        if ($null -ne $Overrides -and $Overrides.ContainsKey($n)) { foreach ($k in @($Overrides[$n].Keys)) { $want[$k] = $Overrides[$n][$k] } }
+        if ([string]$c.GetType().Name -cne [string]$want['Kind']) { [void]$problems.Add("$n classic type is $($c.GetType().Name), literal kind is $($want['Kind'])") }
+        if ($want.ContainsKey('Text') -and [string]$c.Text -cne [string]$want['Text']) { [void]$problems.Add("$n Text: classic='$($c.Text)' literal='$($want['Text'])'") }
+        if ($want.ContainsKey('TextIsInstallRoot') -and [string]$c.Text -cne $InstallRoot) { [void]$problems.Add("$n Text: classic='$($c.Text)' literal=the install root '$InstallRoot'") }
+        if ($want.ContainsKey('Enabled') -and [bool]$c.Enabled -ne [bool]$want['Enabled']) { [void]$problems.Add("$n Enabled: classic=$([bool]$c.Enabled) literal=$([bool]$want['Enabled'])") }
+        if ($want.ContainsKey('Visible') -and (Test-OwnVisible $c) -ne [bool]$want['Visible']) { [void]$problems.Add("$n Visible(own): classic=$(Test-OwnVisible $c) literal=$([bool]$want['Visible'])") }
+        foreach ($prop in 'Checked', 'UseMnemonic', 'AutoEllipsis', 'Multiline', 'ReadOnly') {
+            if ($want.ContainsKey($prop) -and [bool]$c.$prop -ne [bool]$want[$prop]) { [void]$problems.Add("$n ${prop}: classic=$([bool]$c.$prop) literal=$([bool]$want[$prop])") }
+        }
+        if ($want.ContainsKey('Items')) {
+            $got = (@($c.Items | ForEach-Object { [string]$_ }) -join '|')
+            if ($got -cne [string]$want['Items']) { [void]$problems.Add("$n Items: classic='$got' literal='$($want['Items'])'") }
+        }
+        if ($want.ContainsKey('SelectedIndex') -and [int]$c.SelectedIndex -ne [int]$want['SelectedIndex']) { [void]$problems.Add("$n SelectedIndex: classic=$($c.SelectedIndex) literal=$($want['SelectedIndex'])") }
+        foreach ($prop in 'Value', 'Maximum', 'Increment') {
+            if ($want.ContainsKey($prop) -and [string][decimal]$c.$prop -cne [string][decimal][string]$want[$prop]) { [void]$problems.Add("$n ${prop}: classic=$($c.$prop) literal=$($want[$prop])") }
+        }
+        if ($want.ContainsKey('Style') -and [string]$c.Style -cne [string]$want['Style']) { [void]$problems.Add("$n Style: classic='$($c.Style)' literal='$($want['Style'])'") }
+    }
+    return $problems.ToArray()
+}
+
+function Test-LiteralCase([string]$Case, [scriptblock]$Prepare, $Overrides) {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('fastllm-parity-lit-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $dir)
+    $realCatalog = $catalog
+    try {
+        & $Prepare $dir
+        # the literal rows name the fixture catalog's picker ids, so the classic block reads the fixture catalog (the block reads $catalog from this scope)
+        $catalog = Get-BindingsInitialFixtureCatalog
+        $classic = Invoke-ClassicCreation -InstallRoot $dir
+        $catalog = $realCatalog
+        $problems = @(Get-ClassicLiteralProblems $classic $litRows $dir $Overrides)
+        foreach ($p in $problems) { Write-Host "DIFF: literal vs classic, $Case $p" }
+        Check ($problems.Count -eq 0) "$Case : the frozen literal rows equal what the classic creation block makes ($($problems.Count) difference(s) in $($litRows.Count) controls)"
+        # mutants: a changed copy of the rows is found, and the unchanged rows (the check above) are the control
+        $mutants = @(
+            @{ Name = 'a changed button text'; Edit = { param($r) if ([string]$r.Name -ceq 'logsButton') { $r['Text'] = 'Open log' } } },
+            @{ Name = 'a control that starts hidden in the literal but is shown by the classic block'; Edit = { param($r) if ([string]$r.Name -ceq 'resultsLink') { $r['Visible'] = $true } } },
+            @{ Name = 'a changed picker list'; Edit = { param($r) if ([string]$r.Name -ceq 'modelBox') { $r['Items'] = 'Recommended for installed GPU|fixture-a' } } },
+            @{ Name = 'a label that keeps its access key in the literal'; Edit = { param($r) if ([string]$r.Name -ceq 'statusLabel') { $r['UseMnemonic'] = $true } } },
+            @{ Name = 'a changed context maximum'; Edit = { param($r) if ([string]$r.Name -ceq 'contextBox') { $r['Maximum'] = '32767' } } }
+        )
+        foreach ($m in $mutants) {
+            $copy = @(foreach ($r in $litRows) { $c2 = @{}; foreach ($k in @($r.Keys)) { $c2[$k] = $r[$k] }; & $m.Edit $c2; $c2 })
+            Check (@(Get-ClassicLiteralProblems $classic $copy $dir $Overrides).Count -ge 1) "$Case : mutation check: $($m.Name) is flagged against the classic controls"
+        }
+        $classic['__form'].Dispose()
+        foreach ($n in $names) { try { $classic[$n].Dispose() } catch { } }
+    }
+    finally {
+        $catalog = $realCatalog
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $f.FullName -Force }
+        Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+    }
+}
+Test-LiteralCase 'literal default settings' { param($dir) } $null
+Test-LiteralCase 'literal saved settings' {
+    param($dir)
+    $saved = [pscustomobject]@{
+        vulkanBarMitigation = 'off'; experimentalComponents = 'on'; updateCheck = 'off'
+        componentLicenses = [pscustomobject]@{ mode = 'accept-automatically'; acceptedAt = '2026-01-02T03:04:05Z'; accepted = @([pscustomobject]@{ title = 'Example engine component'; host = 'example.invalid' }) }
+    }
+    [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), ($saved | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+} $litOverrides
+# 5b-delete-end
+
 # A real NumericUpDown (Maximum 32768, Increment 1024, as the context box) takes each typed string, and its Value
 # must equal the pure clamp (the clamp that the Fluent number box runs). The same under the current culture, so grouping and decimals agree.
 $nud = New-Object Windows.Forms.NumericUpDown
