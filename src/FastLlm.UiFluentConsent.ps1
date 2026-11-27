@@ -149,10 +149,10 @@ function Show-FastLlmUiFluentComponentConsent {
             $box.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'FastLlm.CheckBoxStyle')
             $box.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
             $acceptText = [string] $consentRow.acceptText
-            # The caption wraps (the check box template's access text and text blocks wrap) and is named by its displayed text; the row's name line labels it.
-            $box.Content = ConvertTo-FastLlmUiAccessText -Text $acceptText -UseMnemonic $true
-            [System.Windows.Automation.AutomationProperties]::SetName($box, (ConvertTo-FastLlmUiDisplayText -Text $acceptText -UseMnemonic $true))
-            [System.Windows.Automation.AutomationProperties]::SetLabeledBy($box, $nameLabel)
+            # The caption wraps (the check box template's access text and text blocks wrap) and the box is named by its own caption, one string for both
+            # (as the Settings check boxes are).
+            $box.Content = ConvertTo-FastLlmUiAccessText -Text $acceptText -UseMnemonic $false
+            [System.Windows.Automation.AutomationProperties]::SetName($box, $acceptText)
             $box.Tag = [string] $consentRow.id
             $box.IsEnabled = (-not $consentRow.blocked)
             $null = $panel.Children.Add($box)
