@@ -4120,9 +4120,10 @@ function Test-SaPlant([string]$Name,[string]$Plant,[string]$Real,[scriptblock]$F
     Check ($Plant -cne $Real -and @(& $Finder $Plant).Count -ge 1) "mutation check: $Name"
 }
 
-# ---- (a) Save passes the four held values to the one serving write, and they are the only arguments beyond today's ----
+# ---- (a) Save passes each of the four held values to the one serving write only when the user changed it, and they are the only arguments beyond today's ----
 # The effect-sequence projection (above) names calls, not arguments; this pin names the four as the fluent-only arguments of the same Set-FastLlmServingSettings
-# call: the fluent parameter set is today's classic set plus exactly KvContextProfile, KvSlots, Embeddings and EmbeddingPort, each from $values (the held values).
+# call. They are not written as parameters: a hashtable @extra is splatted last on that line, and each of its four keys is added only under its own changed-test
+# (the held value against the saved one), with its value taken from $values. So an untouched Save passes none of them and the stored file is as it was.
 $saClassicServing=Get-SaCommandParams (@(Get-SaCalls $settingsDialogFn 'Set-FastLlmServingSettings'))[0]
 $saFluentOnly=@('Embeddings','EmbeddingPort','KvContextProfile','KvSlots')
 Check (@($saClassicServing.Keys|Where-Object{$saFluentOnly -ccontains $_}).Count -eq 0 -and @($saClassicServing.Keys).Count -ge 5) 'classic Save never passes the four serving additions (they are fluent-only)'
@@ -4133,27 +4134,59 @@ function Get-SaSaveArgFindings([string]$Text){
     $calls=@(Get-SaCalls $fn 'Set-FastLlmServingSettings')
     if($calls.Count -ne 1){[void]$f.Add("Save calls Set-FastLlmServingSettings $($calls.Count) times, expected 1");return ,$f.ToArray()}
     $p=Get-SaCommandParams $calls[0]
-    $want=[ordered]@{ KvContextProfile='([string]$values.contextProfile)'; KvSlots='([int]$values.slots)'; Embeddings='([string]$values.embeddings)'; EmbeddingPort='([int]$values.embeddingPort)' }
-    foreach($k in $want.Keys){
-        if(-not $p.Contains($k)){[void]$f.Add("the serving write has no -$k");continue}
-        if([string]$p[$k] -cne [string]$want[$k]){[void]$f.Add("-$k is '$($p[$k])', expected '$($want[$k])' (the held value)")}
-    }
-    $expectNames=@(@($saClassicServing.Keys)+$saFluentOnly|Sort-Object) -join ','
+    $expectNames=@(@($saClassicServing.Keys)|Sort-Object) -join ','
     $gotNames=@($p.Keys|Sort-Object) -join ','
-    if($gotNames -cne $expectNames){[void]$f.Add("the serving write passes [$gotNames], expected today's parameters plus the four [$expectNames]")}
+    if($gotNames -cne $expectNames){[void]$f.Add("the serving write passes [$gotNames] as parameters, expected exactly today's [$expectNames] (the four are only in @extra)")}
+    $els=@($calls[0].CommandElements)
+    $splats=@($els|Where-Object{$_ -is [System.Management.Automation.Language.VariableExpressionAst] -and $_.Splatted})
+    if($splats.Count -ne 1 -or $splats[0].VariablePath.UserPath -cne 'extra' -or $els[$els.Count-1] -isnot [System.Management.Automation.Language.VariableExpressionAst]){[void]$f.Add('the serving write does not end with exactly one splat of @extra')}
+    $idle=-1;$spl=-1; for($i=0;$i -lt $els.Count;$i++){ if($els[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$i].ParameterName -ceq 'IdleStopMinutes'){$idle=$i}; if($els[$i] -is [System.Management.Automation.Language.VariableExpressionAst] -and $els[$i].Splatted){$spl=$i} }
+    if($idle -lt 0 -or $spl -lt $idle){[void]$f.Add('@extra is not appended after -IdleStopMinutes on the same line')}
+    # @extra is created once, empty, before the write, and only the four keys are ever added, each under its own changed-test, with its value from $values.
+    $init=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$extra'},$true))
+    if($init.Count -ne 1 -or $init[0].Right.Extent.Text -cne '@{}' -or $init[0].Extent.StartOffset -gt $calls[0].Extent.StartOffset){[void]$f.Add('$extra is not created once as an empty @{} before the serving write')}
+    $adds=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.Left.Target.Extent.Text -ceq '$extra'},$true))
+    $want=[ordered]@{
+        KvContextProfile=@{Test='[string]$values.contextProfile -cne [string]$st[''Saved''].contextProfile';Value='[string]$values.contextProfile'}
+        KvSlots=@{Test='[int]$values.slots -ne [int]$st[''Saved''].slots';Value='[int]$values.slots'}
+        Embeddings=@{Test='[string]$values.embeddings -cne [string]$st[''Saved''].embeddings';Value='[string]$values.embeddings'}
+        EmbeddingPort=@{Test='[int]$values.embeddingPort -ne [int]$st[''Saved''].embeddingPort';Value='[int]$values.embeddingPort'}
+    }
+    if($adds.Count -ne 4){[void]$f.Add("@extra gets $($adds.Count) keys added, expected exactly 4")}
+    foreach($ad in $adds){
+        $key=$ad.Left.Index.Extent.Text.Trim("'")
+        if(-not $want.Contains($key)){[void]$f.Add("@extra gets an unexpected key '$key'");continue}
+        if($ad.Right.Extent.Text -cne $want[$key].Value){[void]$f.Add("@extra['$key'] is '$($ad.Right.Extent.Text)', expected '$($want[$key].Value)' (from the held values)")}
+        $q=$ad.Parent; $ifs=$null; while($null -ne $q -and $q -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){ if($q -is [System.Management.Automation.Language.IfStatementAst]){$ifs=$q;break}; $q=$q.Parent }
+        if($null -eq $ifs -or $ifs.Clauses.Count -ne 1 -or $null -ne $ifs.ElseClause){[void]$f.Add("@extra['$key'] is not added under one changed-test if without an else")}
+        elseif($ifs.Clauses[0].Item1.Extent.Text -cne $want[$key].Test){[void]$f.Add("@extra['$key'] is added under '$($ifs.Clauses[0].Item1.Extent.Text)', expected '$($want[$key].Test)'")}
+    }
+    foreach($k in $want.Keys){ if(@($adds|Where-Object{$_.Left.Index.Extent.Text.Trim("'") -ceq $k}).Count -ne 1){[void]$f.Add("@extra never gets exactly one -$k")} }
+    if($fn.Body.Extent.Text -cmatch '\$extra\.(Add|Remove|Clear)|\$extra\s*\+=|-Kv(ContextProfile|Slots)|-Embeddings(Port)?\b'){[void]$f.Add('another route adds a serving addition outside the four changed-tests')}
     return ,$f.ToArray()
 }
 $saSaveReal=Get-SaSaveArgFindings $settingsText
 foreach($x in $saSaveReal){Write-Host "FINDING: $x"}
-Check ($settingsText -ne '' -and $saSaveReal.Count -eq 0) 'the Save copy passes -KvContextProfile, -KvSlots, -Embeddings and -EmbeddingPort from the held values ($values), and nothing else is added to the serving write'
-Test-SaPlant 'the save-argument pin flags a literal long profile' $settingsText.Replace('-KvContextProfile ([string]$values.contextProfile)',"-KvContextProfile 'long'") $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags a literal 2 for requests at once' $settingsText.Replace('-KvSlots ([int]$values.slots)','-KvSlots 2') $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags a literal 1 for requests at once' $settingsText.Replace('-KvSlots ([int]$values.slots)','-KvSlots 1') $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags a literal on for embeddings' $settingsText.Replace('-Embeddings ([string]$values.embeddings)',"-Embeddings 'on'") $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags the embeddings port dropped' $settingsText.Replace(' -EmbeddingPort ([int]$values.embeddingPort)','') $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags the server port taken for the embeddings port' $settingsText.Replace('-EmbeddingPort ([int]$values.embeddingPort)','-EmbeddingPort ([int]$values.serverPort)') $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags an extra argument on the serving write' $settingsText.Replace('-EmbeddingPort ([int]$values.embeddingPort)','-EmbeddingPort ([int]$values.embeddingPort) -Extra 1') $settingsText ${function:Get-SaSaveArgFindings}
-Test-SaPlant 'the save-argument pin flags the idle argument dropped' $settingsText.Replace(' -IdleStopMinutes $savedIdle','') $settingsText ${function:Get-SaSaveArgFindings}
+Check ($settingsText -ne '' -and $saSaveReal.Count -eq 0) 'the Save copy passes -KvContextProfile, -KvSlots, -Embeddings and -EmbeddingPort (through @extra) only when changed, each from the held values ($values), and nothing else is added to the serving write'
+$saLineSlots="        if([int]`$values.slots -ne [int]`$st['Saved'].slots){`$extra['KvSlots']=[int]`$values.slots}`n"
+Check ($settingsText.Contains($saLineSlots)) 'self-check: the KvSlots changed-test line anchors for the planted mutants exists'
+Test-SaPlant 'the save-argument pin flags KvSlots added unconditionally with 1 (resets a saved 2)' $settingsText.Replace($saLineSlots,"        `$extra['KvSlots']=1`n") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags KvSlots added unconditionally from the held value' $settingsText.Replace($saLineSlots,"        `$extra['KvSlots']=[int]`$values.slots`n") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the embeddings key added unconditionally' $settingsText.Replace("if([string]`$values.embeddings -cne [string]`$st['Saved'].embeddings){`$extra['Embeddings']=[string]`$values.embeddings}","`$extra['Embeddings']=[string]`$values.embeddings") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the profile key added unconditionally' $settingsText.Replace("if([string]`$values.contextProfile -cne [string]`$st['Saved'].contextProfile){`$extra['KvContextProfile']=[string]`$values.contextProfile}","`$extra['KvContextProfile']=[string]`$values.contextProfile") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the port key added unconditionally' $settingsText.Replace("if([int]`$values.embeddingPort -ne [int]`$st['Saved'].embeddingPort){`$extra['EmbeddingPort']=[int]`$values.embeddingPort}","`$extra['EmbeddingPort']=[int]`$values.embeddingPort") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags a literal long profile' $settingsText.Replace("`$extra['KvContextProfile']=[string]`$values.contextProfile","`$extra['KvContextProfile']='long'") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags a literal 2 for requests at once' $settingsText.Replace("`$extra['KvSlots']=[int]`$values.slots","`$extra['KvSlots']=2") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags a literal on for embeddings' $settingsText.Replace("`$extra['Embeddings']=[string]`$values.embeddings","`$extra['Embeddings']='on'") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the server port taken for the embeddings port' $settingsText.Replace("`$extra['EmbeddingPort']=[int]`$values.embeddingPort","`$extra['EmbeddingPort']=[int]`$values.serverPort") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the changed-test comparing the wrong field (slots against the saved port)' $settingsText.Replace("[int]`$values.slots -ne [int]`$st['Saved'].slots","[int]`$values.slots -ne [int]`$st['Saved'].embeddingPort") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the embeddings changed-test comparing against the held value' $settingsText.Replace("[string]`$values.embeddings -cne [string]`$st['Saved'].embeddings","[string]`$values.embeddings -cne [string]`$held.embeddings") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the changed-test inverted' $settingsText.Replace("[int]`$values.slots -ne [int]`$st['Saved'].slots","[int]`$values.slots -eq [int]`$st['Saved'].slots") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the embeddings port dropped from the keys' $settingsText.Replace("if([int]`$values.embeddingPort -ne [int]`$st['Saved'].embeddingPort){`$extra['EmbeddingPort']=[int]`$values.embeddingPort}`n",'') $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags an extra key added to @extra' $settingsText.Replace($saLineSlots,$saLineSlots+"        if([int]`$values.serverPort -ne [int]`$st['Saved'].port){`$extra['ServerPort']=1}`n") $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the splat dropped from the serving write' $settingsText.Replace(' -IdleStopMinutes $savedIdle @extra',' -IdleStopMinutes $savedIdle') $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags a direct -KvSlots parameter back on the write' $settingsText.Replace(' -IdleStopMinutes $savedIdle @extra',' -IdleStopMinutes $savedIdle -KvSlots ([int]$values.slots) @extra') $settingsText ${function:Get-SaSaveArgFindings}
+Test-SaPlant 'the save-argument pin flags the idle argument dropped' $settingsText.Replace(' -IdleStopMinutes $savedIdle',' ') $settingsText ${function:Get-SaSaveArgFindings}
 
 # ---- (b) the A3 guard: Embeddings on with the server's port refuses Save before the try, and nothing is written ----
 function Get-SaGuardFindings([string]$Text){
@@ -4184,6 +4217,66 @@ Test-SaPlant 'the A3 guard pin flags the guard moved into the try' ($settingsTex
 Test-SaPlant 'the A3 guard pin flags the guard keyed on Embeddings off' $settingsText.Replace("-ceq 'on' -and [int] `$held.embeddingPort -eq [int] `$held.port","-ceq 'off' -and [int] `$held.embeddingPort -eq [int] `$held.port") $settingsText ${function:Get-SaGuardFindings}
 Test-SaPlant 'the A3 guard pin flags a guard that does not refuse' $settingsText.Replace($saGuardBlock,$saGuardBlock.Replace('return $false','return $true')) $settingsText ${function:Get-SaGuardFindings}
 Test-SaPlant 'the A3 guard pin flags a guard that compares another port' $settingsText.Replace("-eq [int] `$held.port) {`n        Update-FastLlmUiFluentSettingsEmbeddingPortView","-eq [int] `$held.port + 1) {`n        Update-FastLlmUiFluentSettingsEmbeddingPortView") $settingsText ${function:Get-SaGuardFindings}
+
+# ---- (b2) Long held at a requests-at-once value where it is not measured (and not the saved pair) shows the reason and refuses Save before the try ----
+function Get-SaLongGuardFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $fn=Get-SaFn $Text 'Invoke-FastLlmUiFluentSettingsSave'
+    if($null -eq $fn){[void]$f.Add('Invoke-FastLlmUiFluentSettingsSave is not defined once');return ,$f.ToArray()}
+    $top=@($fn.Body.EndBlock.Statements)
+    $firstTry=-1; for($i=0;$i -lt $top.Count;$i++){ if($top[$i] -is [System.Management.Automation.Language.TryStatementAst]){$firstTry=$i;break} }
+    $guard=-1
+    for($i=0;$i -lt $top.Count;$i++){ if($top[$i] -is [System.Management.Automation.Language.IfStatementAst] -and $top[$i].Clauses[0].Item1.Extent.Text -ceq 'Test-FastLlmUiFluentSettingsLongUnmeasuredHeld'){$guard=$i;break} }
+    if($guard -lt 0){[void]$f.Add('Save has no top-level guard on Test-FastLlmUiFluentSettingsLongUnmeasuredHeld');return ,$f.ToArray()}
+    if($firstTry -lt 0 -or $guard -gt $firstTry){[void]$f.Add('the Long guard is not before the save try')}
+    $body=$top[$guard].Clauses[0].Item2
+    if($body.Extent.Text -cnotmatch 'return \$false'){[void]$f.Add('the Long guard does not return $false')}
+    if(@(Get-SaCalls $body 'Set-FastLlmServingSettings').Count -ne 0 -or $body.Extent.Text -cmatch 'Invoke-FastLlmApiKeySetting|Set-FastLlmUiAllowSwitch'){[void]$f.Add('the Long guard writes something')}
+    if(@(Get-SaCalls $body 'Set-FastLlmUiFluentSettingsAdditionsView').Count -ne 1){[void]$f.Add('the Long guard does not show the reason line (the additions view)')}
+    if($body.Extent.Text -cnotmatch [regex]::Escape("`$e['SettingsContextProfileBox'].Focus()")){[void]$f.Add('the Long guard does not put the focus on the context profile box')}
+    $h=Get-SaFn $Text 'Test-FastLlmUiFluentSettingsLongUnmeasuredHeld'
+    if($null -eq $h){[void]$f.Add('Test-FastLlmUiFluentSettingsLongUnmeasuredHeld is not defined once');return ,$f.ToArray()}
+    # Behaviour of the helper itself, from its AST, over the page state it reads.
+    $hadState=[bool](Get-Variable -Name FastLlmUiFluent -Scope Script -ErrorAction SilentlyContinue); $prevState=$null; if($hadState){$prevState=$script:FastLlmUiFluent}
+    try{
+        Invoke-Expression $h.Extent.Text
+        $cases=@(
+            @{p='long';slots=2;measured=$false;sp='default';ss=1;want=$true;name='long at 2, not measured, saved default'}
+            @{p='long';slots=2;measured=$false;sp='long';ss=1;want=$true;name='long at 2, not measured, saved long at 1'}
+            @{p='long';slots=2;measured=$false;sp='long';ss=2;want=$false;name='the saved pair itself'}
+            @{p='long';slots=2;measured=$true;sp='default';ss=1;want=$false;name='measured'}
+            @{p='default';slots=2;measured=$false;sp='default';ss=1;want=$false;name='default profile'}
+            @{p='long';slots=1;measured=$false;sp='default';ss=1;want=$true;name='long at 1, not measured'}
+        )
+        foreach($c in $cases){
+            $script:FastLlmUiFluent=@{ Settings=@{ Held=[pscustomobject]@{contextProfile=$c.p;slots=$c.slots}; Saved=[pscustomobject]@{contextProfile=$c.sp;slots=$c.ss}; LongMeasured=$c.measured } }
+            $r=@(Test-FastLlmUiFluentSettingsLongUnmeasuredHeld)
+            if($r.Count -ne 1 -or $r[0] -isnot [bool] -or [bool]$r[0] -ne [bool]$c.want){[void]$f.Add("the Long helper answers wrong for: $($c.name)")}
+        }
+        $script:FastLlmUiFluent=@{ Settings=@{ Held=$null; Saved=$null; LongMeasured=$false } }
+        if([bool](Test-FastLlmUiFluentSettingsLongUnmeasuredHeld)){[void]$f.Add('the Long helper answers true with nothing held')}
+    }finally{ if($hadState){$script:FastLlmUiFluent=$prevState}else{Remove-Variable -Name FastLlmUiFluent -Scope Script -ErrorAction SilentlyContinue} }
+    # The reason line shows from the same helper, with the one existing string.
+    $v=Get-SaFn $Text 'Set-FastLlmUiFluentSettingsAdditionsView'
+    if($null -eq $v -or $v.Body.Extent.Text.IndexOf("if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) { `$why = [string] `$s.LongNotMeasured }",[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the reason line does not show LongNotMeasured for the held unmeasured pair')}
+    $ed=Get-SaFn $Text 'Invoke-FastLlmUiFluentSettingsEdit'
+    if($null -eq $ed -or @(Get-SaCalls $ed 'Set-FastLlmUiFluentSettingsAdditionsView').Count -ne 1){[void]$f.Add('an edit does not refresh the additions view (the reason line follows the held profile)')}
+    return ,$f.ToArray()
+}
+$saLongGuardReal=Get-SaLongGuardFindings $settingsText
+foreach($x in $saLongGuardReal){Write-Host "FINDING: $x"}
+Check ($settingsText -ne '' -and $saLongGuardReal.Count -eq 0) 'Save refuses Long held where it is not measured (and not the saved pair) before the try, writes nothing, shows the reason and focuses the context profile box'
+$saLongGuardBlock="    if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) {`n        Set-FastLlmUiFluentSettingsAdditionsView`n        `$null = `$e['SettingsContextProfileBox'].Focus()`n        return `$false`n    }`n"
+Check ($settingsText.Contains($saLongGuardBlock)) 'self-check: the Long guard block anchors for the planted mutants'
+Test-SaPlant 'the Long guard pin flags the guard dropped' $settingsText.Replace($saLongGuardBlock,'') $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags the guard moved after the try' ($settingsText.Replace($saLongGuardBlock,'').Replace("    if(-not `$saved){return `$false}`n",$saLongGuardBlock+"    if(-not `$saved){return `$false}`n")) $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags a guard that does not refuse' $settingsText.Replace($saLongGuardBlock,$saLongGuardBlock.Replace('return $false','return $true')) $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags a guard without the focus' $settingsText.Replace($saLongGuardBlock,$saLongGuardBlock.Replace("        `$null = `$e['SettingsContextProfileBox'].Focus()`n",'')) $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags the saved-pair exception ignored' $settingsText.Replace("    if ([string] `$st['Saved'].contextProfile -ceq 'long' -and [int] `$st['Saved'].slots -eq [int] `$held.slots) { return `$false }`n",'') $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags the saved-pair exception on the profile alone' $settingsText.Replace(" -and [int] `$st['Saved'].slots -eq [int] `$held.slots) { return `$false }",") { return `$false }") $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags the measured answer ignored' $settingsText.Replace("    if ([bool] `$st['LongMeasured']) { return `$false }`n",'') $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags the guard firing on the default profile too' $settingsText.Replace("    if ([string] `$held.contextProfile -cne 'long') { return `$false }`n",'') $settingsText ${function:Get-SaLongGuardFindings}
+Test-SaPlant 'the Long guard pin flags the reason line not shown' $settingsText.Replace("    if (Test-FastLlmUiFluentSettingsLongUnmeasuredHeld) { `$why = [string] `$s.LongNotMeasured }`n",'') $settingsText ${function:Get-SaLongGuardFindings}
 
 # ---- (c) the inline message and the port row follow the held values (A2, A3) ----
 function Get-SaInlineFindings([string]$Text){
@@ -4264,16 +4357,47 @@ Test-SaPlant 'the view pin flags the availability fed from a literal' $settingsT
 Test-SaPlant 'the view pin flags the saved embeddings dropped from the view' $settingsText.Replace("-SavedEmbeddings ([string] `$st['Saved'].embeddings)","-SavedEmbeddings 'off'") $settingsText ${function:Get-SaViewFindings}
 Test-SaPlant 'the view pin flags the group shown from another function' ($settingsText+"`nfunction Show-Embeddings { `$e['SettingsEmbeddingsGroup'].Visibility = [System.Windows.Visibility]::Visible }`n") $settingsText ${function:Get-SaViewFindings}
 
-# ---- (e) the availability is read on Enter only, never on a tick, an edit or a reload; each probe is non-throwing and read-only ----
+# ---- (e) the availability is read on Enter (the long probe also when the requests box changes), never on a tick or a reload; each probe is non-throwing and read-only ----
 function Get-SaProbeFindings([string]$Text){
     $f=New-Object System.Collections.ArrayList
     $a=ConvertTo-PinAst $Text
-    foreach($probe in 'Test-FastLlmUiFluentEmbeddingsAvailable','Test-FastLlmUiFluentLongMeasured'){
-        $uses=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq $probe},$true))
-        if($uses.Count -ne 1){[void]$f.Add("$probe is called $($uses.Count) times, expected 1 (Enter)");continue}
-        $enc=Get-EnclosingFunctionAst $uses[0]
-        if($null -eq $enc -or $enc.Name -cne 'Enter-FastLlmUiFluentSettings'){[void]$f.Add("$probe is called outside Enter-FastLlmUiFluentSettings (a tick, an edit or a reload must not probe)")}
+    $eu=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Test-FastLlmUiFluentEmbeddingsAvailable'},$true))
+    if($eu.Count -ne 1){[void]$f.Add("Test-FastLlmUiFluentEmbeddingsAvailable is called $($eu.Count) times, expected 1 (Enter)")}
+    else{ $enc=Get-EnclosingFunctionAst $eu[0]; if($null -eq $enc -or $enc.Name -cne 'Enter-FastLlmUiFluentSettings'){[void]$f.Add('Test-FastLlmUiFluentEmbeddingsAvailable is called outside Enter-FastLlmUiFluentSettings (a tick, an edit or a reload must not probe)')} }
+    # The long probe is called once, inside the long-state function, with the held slots; that function is called from Enter (forced), the edit and the discard only.
+    $lu=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Test-FastLlmUiFluentLongMeasured'},$true))
+    if($lu.Count -ne 1){[void]$f.Add("Test-FastLlmUiFluentLongMeasured is called $($lu.Count) times, expected 1 (the long-state function)")}
+    else{
+        $enc=Get-EnclosingFunctionAst $lu[0]
+        if($null -eq $enc -or $enc.Name -cne 'Update-FastLlmUiFluentSettingsLongState'){[void]$f.Add('Test-FastLlmUiFluentLongMeasured is called outside Update-FastLlmUiFluentSettingsLongState (a tick or a reload must not probe)')}
+        if([string](Get-SaCommandParams $lu[0])['Slots'] -cne '$slots'){[void]$f.Add('the long probe is not asked with the held slots ($slots)')}
     }
+    $ls=Get-SaFn $Text 'Update-FastLlmUiFluentSettingsLongState'
+    if($null -eq $ls){[void]$f.Add('Update-FastLlmUiFluentSettingsLongState is not defined once')}
+    else{
+        $b=$ls.Body.Extent.Text
+        foreach($need in "`$slots = [int] `$st['Held'].slots","if (-not `$Force -and [int] `$st['LongSlots'] -eq `$slots) { return }","`$st['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured -Slots `$slots)","`$st['LongSlots'] = `$slots"){ if($b.IndexOf($need,[StringComparison]::Ordinal) -lt 0){[void]$f.Add("the long-state function lacks: $need")} }
+        if(@(Get-SaCalls $ls 'Set-FastLlmUiFluentSettingsAdditionsView').Count -ne 1){[void]$f.Add('the long-state function does not show the answer through the additions view once')}
+    }
+    $callers=@($a.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Update-FastLlmUiFluentSettingsLongState'},$true))
+    $byFn=@{}
+    foreach($c in $callers){ $enc=Get-EnclosingFunctionAst $c; $name=$(if($null -eq $enc){'(none)'}else{$enc.Name}); if(-not $byFn.ContainsKey($name)){$byFn[$name]=@()}; $byFn[$name]+=$c }
+    $gotFns=@($byFn.Keys|Sort-Object) -join ','
+    $wantFns=@('Enter-FastLlmUiFluentSettings','Invoke-FastLlmUiFluentSettingsDiscard','Invoke-FastLlmUiFluentSettingsEdit') -join ','
+    if($gotFns -cne $wantFns -or $callers.Count -ne 3){[void]$f.Add("the long state is refreshed from [$gotFns] ($($callers.Count) calls), expected exactly Enter, the edit and the discard")}
+    if($byFn.ContainsKey('Enter-FastLlmUiFluentSettings')){
+        $ec=$byFn['Enter-FastLlmUiFluentSettings'][0]
+        if(-not ($ec.Extent.Text -ceq 'Update-FastLlmUiFluentSettingsLongState -Force')){[void]$f.Add('Enter does not force the long state')}
+        $load=@(Get-SaCalls (Get-SaFn $Text 'Enter-FastLlmUiFluentSettings') 'Update-FastLlmUiFluentSettingsLoad')
+        if($load.Count -ne 1 -or $load[0].Extent.StartOffset -gt $ec.Extent.StartOffset){[void]$f.Add('Enter reads the long state before the settings are loaded (the held slots are not known yet)')}
+    }
+    if($byFn.ContainsKey('Invoke-FastLlmUiFluentSettingsEdit')){
+        $ec=$byFn['Invoke-FastLlmUiFluentSettingsEdit'][0]
+        if($ec.Extent.Text -cne 'Update-FastLlmUiFluentSettingsLongState'){[void]$f.Add('the edit does not refresh the long state unforced')}
+        $sa=@((Get-SaFn $Text 'Invoke-FastLlmUiFluentSettingsEdit').FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$held.slots'},$true))
+        if($sa.Count -ne 1 -or $sa[0].Extent.StartOffset -gt $ec.Extent.StartOffset){[void]$f.Add('the edit refreshes the long state before it has read the held slots')}
+    }
+    if($byFn.ContainsKey('Invoke-FastLlmUiFluentSettingsDiscard') -and $byFn['Invoke-FastLlmUiFluentSettingsDiscard'][0].Extent.Text -cne 'Update-FastLlmUiFluentSettingsLongState'){[void]$f.Add('the discard does not refresh the long state unforced')}
     $emb=Get-SaFn $Text 'Test-FastLlmUiFluentEmbeddingsAvailable'
     if($null -eq $emb){[void]$f.Add('Test-FastLlmUiFluentEmbeddingsAvailable is not defined once')}
     else{
@@ -4292,8 +4416,16 @@ function Get-SaProbeFindings([string]$Text){
             $p=Get-SaCommandParams $find[0]
             if([string]$p['ProfileId'] -cne "'long'"){[void]$f.Add("the long probe asks for profile '$($p['ProfileId'])', expected 'long'")}
             if([string]$p['EngineId'] -cne '$engineId'){[void]$f.Add('the long probe does not use the built-in engine id')}
+            if([string]$p['Slots'] -cne '$HeldSlots'){[void]$f.Add("the long probe asks with -Slots '$($p['Slots'])', expected the held slots (`$HeldSlots)")}
+            if([string]$p['Backend'] -cne '([string] $backend)'){[void]$f.Add('the long probe does not ask each candidate backend')}
         }
         foreach($need in 'Read-FastLlmServingProfiles','Get-FastLlmBuiltInEngineId','Get-FastLlmCatalog'){ if(@(Get-SaCalls $lg $need).Count -ne 1){[void]$f.Add("the long probe does not call $need once")} }
+        # The backends are the engines installed under this install (a path check), or the catalog-enabled ones when none is installed; never every backend the rows name.
+        if(@(Get-SaCalls $lg 'Get-FastLlmEngineExecutable').Count -ne 1 -or $lg.Body.Extent.Text.IndexOf('if ($null -ne (Get-FastLlmEngineExecutable',[StringComparison]::Ordinal) -lt 0 -or $lg.Body.Extent.Text.IndexOf('$installed += $key',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the long probe does not keep only the backends whose engine is installed')}
+        if($lg.Body.Extent.Text.IndexOf('$backends = @($installed)',[StringComparison]::Ordinal) -lt 0 -or $lg.Body.Extent.Text.IndexOf('if ($backends.Count -eq 0) { $backends = @($enabled) }',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the long probe backends are not the installed ones, with the catalog-enabled ones as the only fallback')}
+        if(@(Get-SaCalls $lg 'Get-FastLlmServingProfileValue').Count -ne 0){[void]$f.Add('the long probe takes its backends from the rows (any backend), not from the install')}
+        if($lg.Body.Extent.Text -cmatch '-Slots\s+1\b'){[void]$f.Add('the long probe asks with a literal -Slots 1')}
+        if($lg.Body.Extent.Text.IndexOf('} $configRoot $modelId $script:installPath $Slots',[StringComparison]::Ordinal) -lt 0){[void]$f.Add('the long probe does not pass its -Slots and the install root to the planner scope')}
         if($lg.Body.Extent.Text -cnotmatch [regex]::Escape("if ([int] `$script:modelBox.SelectedIndex -gt 0) { `$modelId = [string] `$script:modelBox.SelectedItem }")){[void]$f.Add('the long probe does not take the model as ReadSelection does (the chosen model, or Automatic)')}
         if($lg.Body.Extent.Text -cmatch 'Set-|Write-|Remove-|Out-File|Add-Content|New-Item'){[void]$f.Add('the long probe writes something')}
     }
@@ -4301,13 +4433,29 @@ function Get-SaProbeFindings([string]$Text){
 }
 $saProbeReal=Get-SaProbeFindings $settingsText
 foreach($x in $saProbeReal){Write-Host "FINDING: $x"}
-Check ($settingsText -ne '' -and $saProbeReal.Count -eq 0) 'the two availability probes are called once each, on Enter only, are non-throwing and read-only, and ask for the long row of the built-in engine'
-$saEnterLines="        `$script:FastLlmUiFluent['Settings']['EmbeddingsAvailable'] = [bool] (Test-FastLlmUiFluentEmbeddingsAvailable)`n        `$script:FastLlmUiFluent['Settings']['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured)`n"
-Check ($settingsText.Contains($saEnterLines)) 'self-check: the Enter probe lines anchor for the planted mutants exists'
-Test-SaPlant 'the probe pin flags the probes moved into the tick hook' ($settingsText.Replace($saEnterLines,'').Replace("    `$keys = `$f['Keys']`n    `$text = Get-FastLlmUiFluentSettingsUnavailableText","    `$keys = `$f['Keys']`n"+$saEnterLines.Replace('        $script:FastLlmUiFluent','    $script:FastLlmUiFluent')+"    `$text = Get-FastLlmUiFluentSettingsUnavailableText")) $settingsText ${function:Get-SaProbeFindings}
-Test-SaPlant 'the probe pin flags a probe also run on every reload' $settingsText.Replace("    `$st['Current'] = `$current`n","    `$st['Current'] = `$current`n    `$st['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured)`n") $settingsText ${function:Get-SaProbeFindings}
-Test-SaPlant 'the probe pin flags a probe dropped from Enter' $settingsText.Replace("        `$script:FastLlmUiFluent['Settings']['LongMeasured'] = [bool] (Test-FastLlmUiFluentLongMeasured)`n",'') $settingsText ${function:Get-SaProbeFindings}
+Check ($settingsText -ne '' -and $saProbeReal.Count -eq 0) 'the embeddings probe runs on Enter only, the long probe on Enter and when the requests box changes (with the held slots, for the installed backends), both non-throwing and read-only'
+$saEnterEmb="        `$script:FastLlmUiFluent['Settings']['EmbeddingsAvailable'] = [bool] (Test-FastLlmUiFluentEmbeddingsAvailable)`n"
+$saEnterLong="        Update-FastLlmUiFluentSettingsLongState -Force`n"
+$saEditLong="    Update-FastLlmUiFluentSettingsLongState`n    Set-FastLlmUiFluentSettingsAdditionsView`n    Update-FastLlmUiFluentSettingsEmbeddingPortView`n    `$st['Dirty']"
+$saDiscLong="    Set-FastLlmUiFluentSettingsView`n    Update-FastLlmUiFluentSettingsLongState`n}"
+$saGuardLine="    if (-not `$Force -and [int] `$st['LongSlots'] -eq `$slots) { return }`n"
+Check ($settingsText.Contains($saEnterEmb) -and $settingsText.Contains($saEnterLong) -and $settingsText.Contains($saEditLong) -and $settingsText.Contains($saDiscLong) -and $settingsText.Contains($saGuardLine)) 'self-check: the probe call anchors for the planted mutants exist'
+Test-SaPlant 'the probe pin flags the embeddings probe moved into the tick hook' ($settingsText.Replace($saEnterEmb,'').Replace("    `$keys = `$f['Keys']`n    `$text = Get-FastLlmUiFluentSettingsUnavailableText","    `$keys = `$f['Keys']`n"+$saEnterEmb.Replace('        $script:FastLlmUiFluent','    $script:FastLlmUiFluent')+"    `$text = Get-FastLlmUiFluentSettingsUnavailableText")) $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state also refreshed on every reload' $settingsText.Replace("    `$st['Current'] = `$current`n","    `$st['Current'] = `$current`n    Update-FastLlmUiFluentSettingsLongState -Force`n") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state also refreshed on the tick' $settingsText.Replace("    `$keys = `$f['Keys']`n    `$text = Get-FastLlmUiFluentSettingsUnavailableText","    `$keys = `$f['Keys']`n    Update-FastLlmUiFluentSettingsLongState -Force`n    `$text = Get-FastLlmUiFluentSettingsUnavailableText") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state dropped from Enter' $settingsText.Replace($saEnterLong,'') $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state not forced on Enter' $settingsText.Replace($saEnterLong,"        Update-FastLlmUiFluentSettingsLongState`n") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state read before the settings are loaded' $settingsText.Replace($saEnterLong,'').Replace("        Update-FastLlmUiFluentSettingsLoad`n        # The three immediate toggles","        Update-FastLlmUiFluentSettingsLongState -Force`n        Update-FastLlmUiFluentSettingsLoad`n        # The three immediate toggles") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state not recomputed when the requests box changes' $settingsText.Replace($saEditLong,"    Update-FastLlmUiFluentSettingsEmbeddingPortView`n    `$st['Dirty']") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state not recomputed on a discard' $settingsText.Replace($saDiscLong,"    Set-FastLlmUiFluentSettingsView`n}") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long state asked with a literal slots value' $settingsText.Replace("`$slots = [int] `$st['Held'].slots","`$slots = 1") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the unchanged-slots guard dropped (a probe on every edit)' $settingsText.Replace($saGuardLine,'') $settingsText ${function:Get-SaProbeFindings}
 Test-SaPlant 'the probe pin flags the long probe asking for the default profile' $settingsText.Replace("-ProfileId 'long'","-ProfileId 'default'") $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long probe asking with slots 1' $settingsText.Replace('-ProfileId ''long'' -Slots $HeldSlots','-ProfileId ''long'' -Slots 1') $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long probe never passing the held slots in' $settingsText.Replace('} $configRoot $modelId $script:installPath $Slots','} $configRoot $modelId $script:installPath 1') $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long probe taking any backend the rows name' $settingsText.Replace('$backends = @($installed)','$backends = @($rows | ForEach-Object { Get-FastLlmServingProfileValue -Row $_ -Name ''backend'' } | Where-Object { $_ -is [string] } | Select-Object -Unique)') $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long probe counting an engine that is not installed' $settingsText.Replace('if ($null -ne (Get-FastLlmEngineExecutable -InstallRoot $InstallRoot -EngineVersion $version -BackendKey $key -EntryPoint ([string] $asset.entryPoint))) { $installed += $key }','$installed += $key') $settingsText ${function:Get-SaProbeFindings}
+Test-SaPlant 'the probe pin flags the long probe with no enabled-engine fallback dropped to every backend' $settingsText.Replace('if ($backends.Count -eq 0) { $backends = @($enabled) }','if ($backends.Count -eq 0) { $backends = @(''rocm'', ''vulkan'') }') $settingsText ${function:Get-SaProbeFindings}
 Test-SaPlant 'the probe pin flags the embeddings probe that throws into the page' $settingsText.Replace("    catch { return `$false }`n}`n`n# Does this install have","    catch { return `$true }`n}`n`n# Does this install have") $settingsText ${function:Get-SaProbeFindings}
 Test-SaPlant 'the probe pin flags the embeddings probe that does not ask the start check' $settingsText.Replace('        Assert-FastLlmEmbeddingsAvailable -CatalogPath','        $null = Get-Item -CatalogPath') $settingsText ${function:Get-SaProbeFindings}
 Test-SaPlant 'the probe pin flags the long probe that fails open' ($settingsText.Substring(0,$settingsText.IndexOf('function Test-FastLlmUiFluentLongMeasured'))+$settingsText.Substring($settingsText.IndexOf('function Test-FastLlmUiFluentLongMeasured')).Replace("    catch { return `$false }`n","    catch { return `$true }`n")) $settingsText ${function:Get-SaProbeFindings}

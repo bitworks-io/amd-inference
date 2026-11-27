@@ -477,6 +477,11 @@
       "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
     },
     {
+      "suite": "ui-fluent-settings-additions-tests",
+      "class": "ci",
+      "reason": "The Settings additions byte-identical proof: the page's own Save argument logic (taken from its AST) through the real serving-settings writer and reader on a temporary install root, for empty, each non-default, all four, unknown-key and invalid saved values, plus the one-row-toggled cases and planted mutants; pure file work, no WPF, GPU, network or bench; wired in test.yml."
+    },
+    {
       "suite": "ui-fluent-shell-tests",
       "class": "ci",
       "reason": "Windows-only checks of the Fluent window pieces on a real STA dispatcher: the form adapter (close guards, owner, session end), the app icon, the window message hooks; skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
