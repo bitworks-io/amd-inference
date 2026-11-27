@@ -511,6 +511,16 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-pages-tests.ps1
+      - name: UI fluent startup smoke tests in Windows PowerShell 5.1 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: powershell
+        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-fluent-startup-smoke-tests.ps1
+      - name: UI fluent startup smoke tests in PowerShell 7 (STA)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-startup-smoke-tests.ps1
       - name: UI window tests in Windows PowerShell 5.1 (STA)
         if: ${{ !cancelled() }}
         timeout-minutes: 10

@@ -482,6 +482,11 @@
       "reason": "Initial-state parity of the Fluent adapters with the classic controls built by the real creation block (WinForms); Windows only, skips elsewhere; no GPU or bench; runs in the wpf job of test.yml."
     },
     {
+      "suite": "ui-fluent-startup-smoke-tests",
+      "class": "ci",
+      "reason": "Startup smoke of the real window script: fast-llm-ui.ps1 runs in a fresh STA process with a temporary install root (a copy with only the administrator refusal cut out, because CI is elevated), the window is found by its title and closed with WM_CLOSE, and the run must exit 0 with an empty error stream and no fault reason code in the run log; the copy builder and the verdict are pinned with mutants on every platform; Windows only for the run, skips elsewhere; no network, GPU or bench; runs in the wpf job of test.yml."
+    },
+    {
       "suite": "ui-fluent-settings-additions-tests",
       "class": "ci",
       "reason": "The Settings additions byte-identical proof: the page's own Save argument logic (taken from its AST) through the real serving-settings writer and reader on a temporary install root, for empty, each non-default, all four, unknown-key and invalid saved values, plus the one-row-toggled cases and planted mutants; pure file work, no WPF, GPU, network or bench; wired in test.yml."
