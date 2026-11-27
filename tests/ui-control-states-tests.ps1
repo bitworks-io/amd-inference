@@ -260,6 +260,65 @@ $savedUnknown=ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent @{ap
 Check (-not (Test-FastLlmUiSettingsDirty -Saved $savedUnknown -Held $savedUnknown)) 'an untouched indeterminate key is not dirty'
 Check (Test-FastLlmUiSettingsDirty -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true})) 'a touched key box on a saved indeterminate counts as dirty'
 Check (-not (Test-FastLlmUiSettingsDirty -Saved $saved -Held (Copy-Held $held0 @{keyTouched=$true}))) 'a touched key box on a known saved key with the same state is not dirty'
+# Settings additions (context profile, requests at once, embeddings and its port): held, saved, dirty.
+$heldAdd=ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent)
+Check ($heldAdd.contextProfile -ceq 'default' -and $heldAdd.slots -is [int] -and $heldAdd.slots -eq 1 -and $heldAdd.embeddings -ceq 'off' -and $heldAdd.embeddingPort -is [int] -and $heldAdd.embeddingPort -eq 8081) 'a current without the new fields is held as the store defaults (default, 1, off, 8081)'
+foreach($cp in 'default','long'){foreach($sl in 1,2){foreach($em in 'off','on'){foreach($ep in 1024,8081,65535){
+    $backAdd=ConvertFrom-FastLlmUiSettingsHeld -Held (ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent @{contextProfile=$cp;slots=$sl;embeddings=$em;embeddingPort=$ep}))
+    Check ($backAdd.contextProfile -ceq $cp -and $backAdd.slots -is [int] -and $backAdd.slots -eq $sl -and $backAdd.embeddings -ceq $em -and $backAdd.embeddingPort -is [int] -and $backAdd.embeddingPort -eq $ep) "round trip contextProfile=$cp slots=$sl embeddings=$em embeddingPort=$ep"
+}}}}
+$backMissing=ConvertFrom-FastLlmUiSettingsHeld -Held (ConvertTo-FastLlmUiSettingsHeld -Current (New-SettingsCurrent))
+Check ($backMissing.contextProfile -ceq 'default' -and $backMissing.slots -eq 1 -and $backMissing.embeddings -ceq 'off' -and $backMissing.embeddingPort -eq 8081) 'missing fields map to the default and come back as the default'
+$oldHeld=[pscustomobject]@{port=1;thinkingIndex=0;chatPage=$false;idleIndex=0;keyBox='unchecked';keyTouched=$false;allowSwitch=$false}
+$backOld=ConvertFrom-FastLlmUiSettingsHeld -Held $oldHeld
+Check ($backOld.contextProfile -ceq 'default' -and $backOld.slots -eq 1 -and $backOld.embeddings -ceq 'off' -and $backOld.embeddingPort -eq 8081) 'a held without the new fields saves the defaults'
+foreach($f in @(@{contextProfile='long'},@{slots=2},@{embeddings='on'},@{embeddingPort=9090})){
+    $name=@($f.Keys)[0]
+    Check (Test-FastLlmUiSettingsDirty -Saved $heldAdd -Held (Copy-Held $heldAdd $f)) "a changed $name is dirty"
+    Check (Test-FastLlmUiSettingsDirty -Saved (Copy-Held $heldAdd $f) -Held $heldAdd) "a saved $name that differs from the held one is dirty"
+}
+Check (-not (Test-FastLlmUiSettingsDirty -Saved $heldAdd -Held (Copy-Held $heldAdd @{}))) 'equal additions are not dirty'
+
+# The additions view: every combination of its four inputs; the lead's three named states are called out.
+$viewCases=0
+foreach($av in $true,$false){foreach($se in 'off','on'){foreach($lm in $true,$false){foreach($sp in 'default','long'){
+    $v=Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $av -SavedEmbeddings $se -LongMeasured $lm -SavedContextProfile $sp
+    $viewCases++
+    $wantShow=($av -or $se -ceq 'on'); $wantLong=($lm -or $sp -ceq 'long')
+    $wantReason=$(if($wantLong){''}else{'long-not-measured'})
+    Check ($v -is [hashtable] -and $v.Count -eq 3 -and $v['showEmbeddings'] -is [bool] -and $v['longEnabled'] -is [bool] -and $v['longReasonCode'] -is [string] -and $v['showEmbeddings'] -eq $wantShow -and $v['longEnabled'] -eq $wantLong -and $v['longReasonCode'] -ceq $wantReason) "additions view available=$av savedEmb=$se longMeasured=$lm savedProfile=$sp"
+}}}}
+Check ($viewCases -eq 16) 'the additions view was checked for all 16 combinations'
+Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $true -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings'] -eq $true) 'embeddings state a: available shows the rows'
+Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'on' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings'] -eq $true) 'embeddings state b: saved on shows the rows although unavailable'
+Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings'] -eq $false) 'embeddings state neither: the rows are hidden'
+Check ((Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'ON' -LongMeasured $false -SavedContextProfile 'Long')['showEmbeddings'] -eq $false -and (Get-FastLlmUiSettingsAdditionsView -EmbeddingsAvailable $false -SavedEmbeddings 'ON' -LongMeasured $false -SavedContextProfile 'Long')['longEnabled'] -eq $false) 'the saved values are matched case-sensitively'
+
+# The saved notes of the additions (while a run is going), in order, only when the value changed; the old keys alone give today's notes.
+function New-NoteSide([hashtable]$Over=@{}){
+    $c=[ordered]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';allowSwitch=$false;contextProfile='default';slots=1;embeddings='off';embeddingPort=8081}
+    foreach($k in $Over.Keys){$c[$k]=$Over[$k]}
+    return [pscustomobject]$c
+}
+$noteBase=New-NoteSide
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{contextProfile='long'})) -ceq 'The new context profile applies at the next start.') 'note: a changed context profile during a run'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{slots=2})) -ceq 'The new requests at once setting applies at the next start.') 'note: a changed requests at once during a run'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{embeddings='on'})) -ceq 'The new embeddings setting applies at the next start.') 'note: a changed embeddings setting during a run'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{embeddingPort=9090})) -ceq 'The new embeddings port applies at the next start.') 'note: a changed embeddings port during a run'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{contextProfile='long';slots=2;embeddings='on';embeddingPort=9090})) -ceq 'The new context profile applies at the next start.') 'note: several changed gives the first in order (profile, requests, embeddings, port)'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{slots=2;embeddings='on';embeddingPort=9090})) -ceq 'The new requests at once setting applies at the next start.') 'note: requests at once comes before embeddings and the port'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{embeddings='on';embeddingPort=9090})) -ceq 'The new embeddings setting applies at the next start.') 'note: embeddings comes before the port'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide @{serverPort=9090;contextProfile='long'})) -ceq 'The new port applies at the next start.') 'note: the older keys come first'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $noteBase -After (New-NoteSide @{contextProfile='long';slots=2;embeddings='on';embeddingPort=9090})) -ceq 'Settings saved.') 'note: no run going says saved, whatever the additions'
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBase -After (New-NoteSide)) -ceq 'Settings saved.') 'note: nothing changed says saved'
+$oldBefore=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';allowSwitch=$false}
+Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $oldBefore -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';allowSwitch=$false})) -ceq 'Settings saved.') 'classic notes: a pair with only the old keys and no change says saved'
+foreach($oc in @(@{serverPort=9090;want='The new port applies at the next start.'},@{thinking='off';want='The new thinking setting applies at the next start.'},@{chatPage='on';want='The new chat page setting applies at the next start.'},@{idleStopMinutes=30;want='The new idle stop setting applies at the next start.'},@{apiKey='on';want='The new API key setting applies at the next start.'},@{allowSwitch=$true;want='The new switching setting applies at the next start.'})){
+    $aft=[ordered]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;apiKey='off';allowSwitch=$false}
+    foreach($k in @($oc.Keys)){if($k -cne 'want'){$aft[$k]=$oc[$k]}}
+    Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $oldBefore -After ([pscustomobject]$aft)) -ceq $oc.want) "classic notes: a pair that differs only in an old key gives today's note ($($oc.want))"
+}
+
 # The exit decision table (lead rulings: signout discards, hide keeps the edits).
 function Decide([bool]$Dirty,[string]$Answer,[bool]$SaveOk,[string]$Reason){return [string](Get-FastLlmUiSettingsExitDecision -Dirty $Dirty -Answer $Answer -SaveOk $SaveOk -Reason $Reason)}
 foreach($rs in 'leave','close'){Check ([string](Get-FastLlmUiSettingsExitDecision -Dirty $true -Answer 'save' -Reason $rs) -ceq 'save') "$rs save answered before Save ran says save"}
@@ -293,6 +352,11 @@ Check (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { return
 Check (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))}) 'control: an unchanged dirty-test copy passes the touched-indeterminate probe through the mutation path'
 Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsExitDecision' "default { return 'stay' }" "default { return 'go' }" {(Get-SettingsMutant -Dirty $true -Answer 'cancel' -SaveOk $true -Reason 'leave') -ceq 'stay'})) 'mutation: cancel to go fails the table'
 Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "-ceq 'indeterminate' -and [bool]`$Held.keyTouched" "-ceq 'indeterminate' -and `$false" {[bool](Get-SettingsMutant -Saved $savedUnknown -Held (Copy-Held $savedUnknown @{keyTouched=$true}))})) 'mutation: dirty ignoring keyTouched fails the touched-indeterminate check'
+
+Check (-not (Test-SettingsMutant 'Test-FastLlmUiSettingsDirty' "if (`$savedSlots -ne `$heldSlots) { return `$true }" "if (`$false) { return `$true }" {[bool](Get-SettingsMutant -Saved $heldAdd -Held (Copy-Held $heldAdd @{slots=2}))})) 'mutation: dirty ignoring slots fails the dirty-slots check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '[bool]($EmbeddingsAvailable -or ($SavedEmbeddings -ceq ''on''))' '$true' {-not (Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'default')['showEmbeddings']})) 'mutation: showEmbeddings unconditional fails the neither-state check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsAdditionsView' '[bool]($LongMeasured -or ($SavedContextProfile -ceq ''long''))' '[bool]$LongMeasured' {(Get-SettingsMutant -EmbeddingsAvailable $false -SavedEmbeddings 'off' -LongMeasured $false -SavedContextProfile 'long')['longEnabled']})) 'mutation: longEnabled ignoring the saved value fails the saved-long check'
+Check (-not (Test-SettingsMutant 'Get-FastLlmUiSettingsSavedNote' "return 'The new embeddings setting applies at the next start.'" "return ''" {(Get-SettingsMutant -RunActive $true -Before $noteBase -After (New-NoteSide @{embeddings='on'})) -ceq 'The new embeddings setting applies at the next start.'})) 'mutation: the embeddings note missing fails the note check'
 
 # ===== PR 4a: the dialog key plan (Enter, Escape and the close box of a message box), against the box-kind table =====
 # The table of the plan's Global Constraints, written out: kind/default -> order, Enter, Escape, close box answer, close box enabled.

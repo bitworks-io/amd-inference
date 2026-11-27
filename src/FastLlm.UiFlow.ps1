@@ -1534,6 +1534,19 @@ function Get-FastLlmUiSettingsSavedNote {
         $beforeSwitch = [bool] ($Before.PSObject.Properties['allowSwitch'] -and $Before.allowSwitch -eq $true)
         $afterSwitch = [bool] ($After.PSObject.Properties['allowSwitch'] -and $After.allowSwitch -eq $true)
         if ($afterSwitch -ne $beforeSwitch) { return 'The new switching setting applies at the next start.' }
+        # The Settings additions (the fluent page only; the classic window never changes them) are read tolerantly: a side that has none means no change.
+        $beforeProfile = if ($Before.PSObject.Properties['contextProfile']) { [string]$Before.contextProfile } else { 'default' }
+        $afterProfile = if ($After.PSObject.Properties['contextProfile']) { [string]$After.contextProfile } else { $beforeProfile }
+        if ($afterProfile -cne $beforeProfile) { return 'The new context profile applies at the next start.' }
+        $beforeSlots = if ($Before.PSObject.Properties['slots']) { [string]$Before.slots } else { '1' }
+        $afterSlots = if ($After.PSObject.Properties['slots']) { [string]$After.slots } else { $beforeSlots }
+        if ($afterSlots -cne $beforeSlots) { return 'The new requests at once setting applies at the next start.' }
+        $beforeEmb = if ($Before.PSObject.Properties['embeddings']) { [string]$Before.embeddings } else { 'off' }
+        $afterEmb = if ($After.PSObject.Properties['embeddings']) { [string]$After.embeddings } else { $beforeEmb }
+        if ($afterEmb -cne $beforeEmb) { return 'The new embeddings setting applies at the next start.' }
+        $beforeEmbPort = if ($Before.PSObject.Properties['embeddingPort']) { [string]$Before.embeddingPort } else { '8081' }
+        $afterEmbPort = if ($After.PSObject.Properties['embeddingPort']) { [string]$After.embeddingPort } else { $beforeEmbPort }
+        if ($afterEmbPort -cne $beforeEmbPort) { return 'The new embeddings port applies at the next start.' }
     }
     return 'Settings saved.'
 }
