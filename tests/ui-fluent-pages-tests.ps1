@@ -2568,6 +2568,41 @@ function Send-ModelsKeyChecked($Element, $Key, [int]$Vk, [scriptblock]$Done) {
     Write-Host ("INFO: P21 key $Key on $($Element.Name): path used = $path $threw")
     return $path
 }
+# Lab canary observation: the shared Expander style sets its text colour, so the Home Activity header reads TextPrimary. That is at least 4.5:1 on the layer
+# and on a card on it, light and dark. The dictionary is swapped for each theme and restored after.
+function Invoke-P21b-ExpanderContrast {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $mergedDicts = $f.Window.Resources.MergedDictionaries
+    $origDict = $mergedDicts[0]
+    try {
+        foreach ($theme in 'light', 'dark') {
+            $mergedDicts.Clear()
+            $dict = New-FastLlmUiThemeDictionary -Theme $theme -AccentPair (Get-FastLlmUiAccentPair $null) -TextScale 1.0
+            $mergedDicts.Add($dict)
+            Invoke-Pump 100
+            $tokens = Get-FastLlmUiThemeTokens -Theme $theme
+            $want = 'none'; if ($dict['FastLlm.TextPrimaryBrush'] -is [System.Windows.Media.SolidColorBrush]) { $want = [string]$dict['FastLlm.TextPrimaryBrush'].Color.ToString() }
+            $fg = $els.ActivityHeader.Foreground
+            $got = 'none'; if ($fg -is [System.Windows.Media.SolidColorBrush]) { $got = [string]$fg.Color.ToString() }
+            $onLayer = 0.0; $onCard = 0.0
+            if ($got -cne 'none') {
+                $onLayer = [double](Get-FastLlmUiContrastRatio -Foreground $got -Background ([string]$tokens.Layer))
+                $onCard = [double](Get-FastLlmUiContrastRatio -Foreground $got -Background ([string]$tokens.Card) -Layer ([string]$tokens.Layer))
+            }
+            Check ($got -cne 'none' -and $got -ceq $want -and $onLayer -ge 4.5 -and $onCard -ge 4.5) "P21b the Home Activity header text is TextPrimary, at least 4.5:1 on the layer and on a card ($theme)" "got=$got want=$want onLayer=$([Math]::Round($onLayer, 2)) onCard=$([Math]::Round($onCard, 2))"
+        }
+    }
+    finally {
+        $mergedDicts.Clear()
+        $mergedDicts.Add($origDict)
+        Invoke-Pump 50
+    }
+    Check-NoExceptions 'P21b'
+}
 function Invoke-P21-TwoWay {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -5420,7 +5455,7 @@ $script:steps = @(
     'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
-    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
+    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
     'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows', 'Invoke-P44-DialogTabWalk',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',

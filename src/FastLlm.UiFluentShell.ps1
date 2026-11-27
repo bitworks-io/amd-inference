@@ -121,6 +121,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
       </Setter>
     </Style>
     <Style x:Key="FastLlm.ExpanderStyle" TargetType="Expander">
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Expander">
