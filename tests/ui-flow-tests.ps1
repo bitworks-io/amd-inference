@@ -261,11 +261,6 @@ Check (-not $ui.Contains('Read-Host')) 'The GUI never launches a hidden interact
 Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+") -and
     $ui.Contains('Get-FastLlmUiSetupDecision -Diagnostic $diagnostic -ExitCode $code')) 'Both buttons reuse a validated read-only doctor child before acquisition.'
 Check ($ui.Contains('ShowSetupAttention') -and $ui.Contains("'setup-recheck'") -and $ui.Contains("'setup-defer'")) 'The setup dialog offers explicit recheck and deferral.'
-# 5b-delete-begin
-Check ($ui.Contains('https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist') -and
-    $ui.Contains('https://www.amd.com/en/support/download/drivers.html') -and
-    $ui.Contains(".ScrollBars='Vertical'")) 'Setup action uses fixed official links and a scrollable explanation.'
-# 5b-delete-end
 # fluent twin of the row above (the setup action): the two fixed official links are the only pages the dialog opens
 Test-FluentTwin 'the setup action opens only the two fixed official pages' $fluentSrc.Dialogs {
     param($t)
@@ -280,11 +275,6 @@ Test-FluentTwin 'the setup action opens only the two fixed official pages' $flue
     'a third page is opened' = { param($t) $t.Replace('$null = $linkRow.Children.Add($msLink)','Start-Process ''https://example.invalid/x''; $null = $linkRow.Children.Add($msLink)') }
 })
 Check ($ui.Contains("'-ModelId'") -and $ui.Contains("selection=@('-InstallRoot'")) 'Setup recheck preserves the exact model and context selection.'
-# 5b-delete-begin
-Check ($ui.Contains('Format-FastLlmUiModelConsent -Plan $Plan') -and
-    $ui.Contains('.AcceptButton=$cancel') -and $ui.Contains('.CancelButton=$cancel') -and
-    $ui.Contains(".ScrollBars='Vertical'") -and -not $ui.Contains('$accept.TabStop=$false')) 'Consent defaults Enter and Escape to Cancel, while focused Accept remains keyboard-accessible.'
-# 5b-delete-end
 # fluent twin: Enter and Escape cancel in the three consent dialogs, and the model review opens with the caret at the start
 Test-FluentTwin 'Enter and Escape cancel in the consent dialogs, and the model review opens with nothing selected' $fluentSrc.Consent {
     param($t)
@@ -299,11 +289,6 @@ Test-FluentTwin 'Enter and Escape cancel in the consent dialogs, and the model r
     'Escape installs the components' = { param($t) $t.Replace("-Buttons `$buttons -Enter 'Cancel' -Escape 'Cancel' -Owner `$script:form`n    `$context['Dialog'] = `$dialog`n    `$install = ","-Buttons `$buttons -Enter 'Cancel' -Escape 'Install' -Owner `$script:form`n    `$context['Dialog'] = `$dialog`n    `$install = ") }
     'the model review caret is not reset when shown' = { param($t) $t.Replace('$dialog[''Window''].Add_Loaded({ $details.SelectionStart = 0; $details.SelectionLength = 0 }.GetNewClosure())','') }
 })
-# 5b-delete-begin
-Check ($ui.Contains("ButtonAt 'Minimize to tray'") -and
-    $ui.Contains('EnsureTrayIcon') -and $ui.Contains('$form.Hide()') -and
-    $ui.IndexOf('EnsureTrayIcon', $ui.IndexOf('function MinimizeToTray')) -lt $ui.IndexOf('$form.Hide()', $ui.IndexOf('function MinimizeToTray'))) 'The explicit tray button creates the icon before hiding the window.'
-# 5b-delete-end
 # The tray order lives in the kept orchestration (MinimizeToTray stays after the flip): the icon is created before the window is hidden.
 Test-FluentTwin 'the explicit tray action creates the icon before hiding the window' (Get-FluentFn $ui 'MinimizeToTray') {
     param($t)
@@ -323,10 +308,6 @@ Check ($ui.Contains('function StopUiOperation') -and $ui.Contains('$stopButton.A
 Check ($ui.Contains('DisposeTrayControls;$timer.Dispose();$form.Dispose()') -and
     $ui.Contains('DisposeTrayControls') -and
     @([regex]::Matches($ui,'New-Object Bitworks\.FastLlm\.ProcessHost')).Count -eq 2 -and $ui.Contains('if($script:sideChild){$script:sideChild.Dispose()}')) 'One ProcessHost owns the child, one the read-only side step, and both and the tray controls are disposed even on an exceptional close.'
-# 5b-delete-begin
-Check ($ui.Contains('[Windows.Forms.Application]::Run($form)') -and
-    -not $ui.Contains('$form.ShowDialog()')) 'The main window uses a message loop that survives an explicit Hide-to-tray transition.'
-# 5b-delete-end
 # The message loop is the Fluent one and the form is never shown modally (the tray item is a kept statement).
 Check ($ui.Contains('Start-FastLlmUiFluentLoop') -and -not $ui.Contains('$form.ShowDialog()') -and $ui.Contains("Items.Add('Restore FastLLM')")) 'the main window runs the Fluent message loop, never shows the form modally, and the tray can restore it'
 $trayHandlerStart=$ui.IndexOf('$trayButton.Add_Click')
@@ -338,13 +319,6 @@ Check (-not $trayHandler.Contains('ShowFailure') -and -not $trayHandler.Contains
 Check ($ui.Contains('if($script:child){') -and
     $ui.Contains('The active operation remains supervised; use Stop if needed.') -and
     $ui.Contains('SetBusy $true')) 'An unrelated actionable failure cannot re-enable Start while a supervised child remains active.'
-# 5b-delete-begin
-Check ($ui.Contains('function RevealUiForAction') -and
-    $ui.Contains('function ShowSetupAttention($Decision,$Diagnostic) {') -and
-    $ui.Contains('function ShowExactModelConsent($Plan) {') -and
-    $ui.Contains('function ShowFailure($Message,[string]$Capture){') -and
-    @([regex]::Matches($ui,'RevealUiForAction')).Count -ge 4) 'Actionable setup, consent, and failure paths can restore a hidden window.'
-# 5b-delete-end
 Check ($ui.Contains('function RevealUiForAction') -and $ui.Contains('function ShowFailure($Message,[string]$Capture){') -and (Get-FluentFn $ui 'ShowFailure').Contains('RevealUiForAction')) 'the failure path restores a hidden window'
 Check (@([regex]::Matches($ui,'SetTrayMenuAvailable \$false')).Count -ge 3 -and
     @([regex]::Matches($ui,'SetTrayMenuAvailable \$true')).Count -ge 3) 'Tray menu actions are disabled during modal user decisions and restored afterward.'
@@ -500,9 +474,6 @@ $rawSettings = Get-Content -LiteralPath (Join-Path $roundRoot 'settings.json') -
 Check ($rawSettings.vulkanBarMitigation -ceq 'auto' -and $rawSettings.updateCheck -ceq 'off' -and $rawSettings.updateChannel -ceq 'canary' -and $rawSettings.futureKey -ceq 'keep') 'a UI write preserves update keys and unknown keys'
 Remove-Item -LiteralPath $roundRoot -Recurse -Force
 
-# 5b-delete-begin
-Check ($ui.Contains("`$form.Text='Bitworks FastLLM (Preview)'") -and -not $ui.Contains('lab alpha')) 'the window title is Bitworks FastLLM (Preview)'
-# 5b-delete-end
 # Twin: the Fluent window takes its title from the shell constant (D7), which holds the classic literal.
 Test-FluentTwin 'the Fluent window title is Bitworks FastLLM (Preview), from the shell constant' (Get-FluentSrc 'UiFluentShell') {
     param($s)
@@ -513,9 +484,6 @@ Test-FluentTwin 'the Fluent window title is Bitworks FastLLM (Preview), from the
 })
 Check ($ui.Contains("src/FastLlm.Update.ps1") -and -not [regex]::IsMatch($ui, 'Import-Module[^\r\n]*FastLlm\.Update')) 'the UI dot-sources the update script'
 Check ($ui.Contains('Invoke-FastLlmVerifiedUpdate -InstallRoot') -and -not [regex]::IsMatch($ui, '(?i)-Silent(?!ly)')) 'the UI runs the verified update without -Silent'
-# 5b-delete-begin
-Check ($ui.Contains('Test-FastLlmUiIntegrityDue') -and $ui.Contains('Set-FastLlmUpdateSettings') -and $ui.Contains("'Check for updates'")) 'the UI has the first-launch integrity check and the update setting'
-# 5b-delete-end
 Check ($ui.Contains('Test-FastLlmUiIntegrityDue') -and $ui.Contains('Set-FastLlmUpdateSettings')) 'the UI has the first-launch integrity check and the update setting call'
 Test-FluentTwin 'the update setting is the Check for updates box' $fluentSrc.Bindings {
     param($t)
@@ -555,9 +523,6 @@ Check (@(Get-FastLlmInstalledComponentRows -Inventory @()).Count -eq 0) 'no inst
 Check ($script:FastLlmExperimentalParagraph -like '*Bitworks has not reproduced*' -and $script:FastLlmExperimentalParagraph -like '*pinned hash*') 'the paragraph the checkbox confirms is the spec 2.7 text'
 
 # The window: the checkbox, its confirmation (Yes/No, default No), the Components list with Remove, and no recipe chooser.
-# 5b-delete-begin
-Check ($ui.Contains("Text='Experimental community components'") -and $ui.Contains('$experimentalBox.Add_CheckedChanged')) 'the settings area has an Experimental community components checkbox'
-# 5b-delete-end
 Check ($ui.Contains('$experimentalBox.Add_CheckedChanged')) 'the experimental community components box is wired to its change handler'
 Test-FluentTwin 'the settings area has an Experimental community components check box' $fluentSrc.Bindings {
     param($t)
@@ -570,9 +535,6 @@ Check ($ui.Contains("ShowUiMessageBox `$form `$script:FastLlmExperimentalParagra
 $componentsSourceText = Get-Content -LiteralPath (Join-Path $root 'src/FastLlm.Components.ps1') -Raw
 Check ($ui.Contains("`$wanted=if(`$experimentalBox.Checked){'on'}else{'off'}") -and $ui.Contains('Set-FastLlmExperimentalSwitchMirrored -SourceRoot $script:settingsRoot') -and $ui.Contains('-Value $wanted') -and $componentsSourceText.Contains('Set-FastLlmComponentSettings -InstallRoot $SourceRoot -ExperimentalComponents $Value')) 'the checkbox writes the switch through Set-FastLlmComponentSettings (via the mirroring helper)'
 Check ($ui.Contains('$removeLock=Enter-FastLlmOperation -InstallRoot $view.root') -and $ui.Contains('-InstallRoot $view.root -OperationLockHeld)') -and $ui.Contains('finally{if($removeLock){$removeLock.Dispose()}}') -and $ui.IndexOf('Enter-FastLlmOperation -InstallRoot $view.root') -lt $ui.IndexOf('-InstallRoot $view.root -OperationLockHeld)')) 'removing a component from the window takes the operation lock first, passes it to the removal and releases it'
-# 5b-delete-begin
-Check ($ui.Contains("ButtonAt 'Components'") -and $ui.Contains('Remove-FastLlmComponent -ComponentsPath') -and $ui.Contains("Text='Remove'") -and $ui.Contains('Get-FastLlmInstalledComponentRows')) 'a Components button lists installed components with a Remove action per row'
-# 5b-delete-end
 Check ($ui.Contains('Remove-FastLlmComponent -ComponentsPath')) 'removing a component calls Remove-FastLlmComponent'
 Test-FluentTwin 'the Components list has a Remove action per row that runs RemoveComponentFromWindow' $fluentSrc.Models {
     param($t)
@@ -738,9 +700,6 @@ Check ((Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'b'
 Check ((Test-FastLlmUiStatusIsCurrentRun -Status $null -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ phase = 'ready' }) -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = '' }) -PreviousRunId 'a') -eq $false) 'a missing status, a missing run id and an empty run id are not the current run'
 Check ((Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'a' }) -PreviousRunId 'a') -eq $false -and (Test-FastLlmUiStatusIsCurrentRun -Status ([pscustomobject]@{ runId = 'A' }) -PreviousRunId 'a') -eq $true) 'the same run id is the previous run and the comparison is case-sensitive'
 Check ($ui.Contains('-StopRequested:$script:bgStopRequested') -and $ui.Contains('$statusLabel.Text=''Stopped. The background run ended.''')) 'the window shows the stopped wording when the run ended after the user Stop'
-# 5b-delete-begin
-Check ($ui.Contains("LabelAt 'Not running. Install & start sets up and starts the best setup for your card.' 24 426") -and -not $ui.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first') -and $ui.Contains('No engine components are installed.') -and -not $ui.Contains('No community components are installed.')) 'the window opens with a neutral status and the empty component list says engine components'
-# 5b-delete-end
 Test-FluentTwin 'the window opens with a neutral status and the empty component list says engine components' $fluentSrc.Bindings {
     param($t)
     return ((Test-BindingRow $t 'statusLabel' 'Label' 'Not running. Install & start sets up and starts the best setup for your card.') -and -not $t.Contains('Install the AMD Vulkan driver and Microsoft VC++ x64 runtime first'))
@@ -753,12 +712,6 @@ Test-FluentTwin 'the empty component list says engine components' $fluentSrc.Mod
 } ([ordered]@{
     'the empty list says community components' = { param($t) $t.Replace('No engine components are installed.','No community components are installed.') }
 })
-# 5b-delete-begin
-Check ($ui.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}') -and $ui.Contains('$dialog.AcceptButton=$cancel;$dialog.CancelButton=$cancel')) 'the model license review opens with no text selected and Enter still cancels'
-# 5b-delete-end
-# 5b-delete-begin
-Check ($ui.Contains('$statusLabel.AutoEllipsis=$true') -and $ui.Contains('$statusLabel.Add_TextChanged({$statusTip.SetToolTip($statusLabel,[string]$statusLabel.Text)})')) 'a long status line is cut with an ellipsis and carries its full text in a tooltip'
-# 5b-delete-end
 # Fluent shape by design (lead: cite the choice): spec section 3 goal G5 and section 6.12 T6 (no clipped text; trimming only where a tooltip carries the full text).
 # The Fluent pages wrap the status line instead (built in #86).
 Test-FluentTwin 'a long status line keeps its full text: every page status is a wrapping text block that receives the composed line and carries it as its name' $fluentAll {
@@ -778,11 +731,6 @@ function Get-UiFunctionBody([string]$Text, [string]$Name) {
     $m = [regex]::Match($Text, "(?ms)^function $([regex]::Escape($Name))\b.*?(?=^function |\z)")
     return $m.Value
 }
-# 5b-delete-begin
-$exactBody = Get-UiFunctionBody $ui 'ShowExactModelConsent'
-$licenseSettingBody = Get-UiFunctionBody $ui 'ShowLicenseSettingConfirm'
-Check ($exactBody.Contains('$dialog.Add_Shown({$details.SelectionStart=0;$details.SelectionLength=0}') -and $exactBody.Contains('$dialog.AcceptButton=$cancel') -and $licenseSettingBody.Length -gt 0 -and -not $licenseSettingBody.Contains('$details')) 'the no-selection handler is in the exact model review only; the license setting confirmation has no details box'
-# 5b-delete-end
 Test-FluentTwin 'the no-selection handler is in the exact model review only; the license setting confirmation has no details box' $fluentSrc.Consent {
     param($t)
     $exact=Get-FluentFn $t 'Show-FastLlmUiFluentExactModelConsent'
@@ -824,9 +772,6 @@ $consentFn = Get-UiFunctionText 'ShowComponentConsent'
 $chooserFn = Get-UiFunctionText 'ShowRecipeChooser'
 $consentText = $consentFn.Extent.Text
 Check ($consentText -notmatch 'License Agreement' -and $consentText -notmatch 'Get-Content|ReadAllText|ReadAllLines|Invoke-WebRequest|Invoke-RestMethod|\.Multiline' -and $consentText -notmatch 'New-Object Windows\.Forms\.TextBox') 'the consent dialog embeds no license text: no agreement text, no license file read, no text box'
-# 5b-delete-begin
-Check ($consentText.Contains('New-Object Windows.Forms.LinkLabel') -and $consentText.Contains('Get-FastLlmUiSafeLicenseUrl') -and $consentText.Contains('Start-Process $target') -and $consentText.Contains('$consentRow.links')) 'the consent dialog shows each license as a clickable link opened in the browser'
-# 5b-delete-end
 Test-FluentTwin 'each consent license is a link that opens only through Get-FastLlmUiSafeLicenseUrl' $fluentSrc.Consent {
     param($t)
     $link=Get-FluentFn $t 'New-FastLlmUiFluentConsentLink'
@@ -842,9 +787,6 @@ Test-FluentTwin 'each consent license is a link that opens only through Get-Fast
     'the safe-url helper is not the one used' = { param($t) $t.Replace('${function:Get-FastLlmUiSafeLicenseUrl}','${function:Get-Command}') }
     'the component rows list no links' = { param($t) $t.Replace('foreach ($licenseLink in @($consentRow.links))','foreach ($licenseLink in @())') }
 })
-# 5b-delete-begin
-Check ($consentText.Contains('New-Object Windows.Forms.CheckBox') -and $consentText.Contains('$install.Enabled=$false') -and $consentText.Contains('$box.Add_CheckedChanged({UpdateConsentInstallState})') -and (Get-UiFunctionText 'UpdateConsentInstallState').Extent.Text.Contains('Test-FastLlmUiConsentComplete')) 'the consent dialog starts with Install disabled and enables it through the all-ticked rule'
-# 5b-delete-end
 Test-FluentTwin 'the component consent starts with Install disabled and enables it through the all-ticked rule' $fluentSrc.Consent {
     param($t)
     $fn=Get-FluentFn $t 'Show-FastLlmUiFluentComponentConsent'
@@ -858,31 +800,6 @@ Test-FluentTwin 'the component consent starts with Install disabled and enables 
     'the all-ticked rule is replaced' = { param($t) $t.Replace('$complete = ${function:Test-FastLlmUiConsentComplete}','$complete = { $true }') }
     'unticking does not update Install' = { param($t) $t.Replace('$box.Add_Checked($update); $box.Add_Unchecked($update)','$box.Add_Checked($update)') }
 })
-# 5b-delete-begin
-Check ($consentText.Contains('$dialog.AcceptButton=$cancel') -and $consentText.Contains('$dialog.CancelButton=$cancel')) 'Enter and Escape in the consent dialog cancel'
-# 5b-delete-end
-# 5b-delete-begin
-$consentDisposal = Test-NoDisposeInHandlers $consentFn
-$chooserDisposal = Test-NoDisposeInHandlers $chooserFn
-Check ($consentDisposal.handlers -ge 2 -and $consentDisposal.disposes -eq 0) 'the consent dialog disposes nothing inside its own Click, LinkClicked or CheckedChanged handlers'
-Check ($chooserDisposal.handlers -ge 2 -and $chooserDisposal.disposes -eq 0) 'the chooser disposes nothing inside its own handlers'
-# 5b-delete-end
-# 5b-delete-begin
-function Get-DisposeCounts($FunctionAst) {
-    $all = @($FunctionAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$n.Member.Value) -ceq 'Dispose' }, $true)).Count
-    $inFinally = 0
-    foreach ($tryAst in @($FunctionAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $null -ne $n.Finally }, $true))) {
-        $inFinally += @($tryAst.Finally.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$n.Member.Value) -ceq 'Dispose' }, $true)).Count
-    }
-    return [pscustomobject]@{ all = $all; inFinally = $inFinally }
-}
-$consentCounts = Get-DisposeCounts $consentFn
-$chooserCounts = Get-DisposeCounts $chooserFn
-Check ($consentCounts.all -ge 1 -and $consentCounts.all -eq $consentCounts.inFinally -and $chooserCounts.all -ge 1 -and $chooserCounts.all -eq $chooserCounts.inFinally) 'each dialog (and the font it made) is disposed only in a finally after ShowDialog returns'
-# 5b-delete-end
-# 5b-delete-begin
-Check ($chooserFn.Extent.Text.Contains('$dialog.AcceptButton=$choose') -and $chooserFn.Extent.Text.Contains('$dialog.CancelButton=$cancel') -and $chooserFn.Extent.Text.Contains('-Variant $variant') -and $chooserFn.Extent.Text.Contains('Get-FastLlmUiChooserNotice')) 'the chooser is filtered to the plan''s identified card, says what is missing, and Enter chooses the selected row'
-# 5b-delete-end
 Test-FluentTwin 'the chooser is filtered to the identified card, says what is missing, and reads the card captured at the preview' $fluentSrc.Dialogs {
     param($t)
     $fn=Get-FluentFn $t 'Show-FastLlmUiFluentRecipeChooser'
@@ -896,9 +813,6 @@ Test-FluentTwin 'the chooser is filtered to the identified card, says what is mi
     'the card is read from the flow plan' = { param($t) $t.Replace('$variant = [string] $script:identifiedVariant','$variant = [string] (Get-FastLlmUiIdentifiedVariant -Plan $script:flow.pendingPlan)') }
 })
 $continuePreviewText = (Get-UiFunctionText 'ContinueUiAfterPreview').Extent.Text
-# 5b-delete-begin
-Check ($chooserFn.Extent.Text.Contains('$variant=[string]$script:identifiedVariant') -and -not $chooserFn.Extent.Text.Contains('pendingPlan') -and $continuePreviewText.Contains('$script:identifiedVariant=Get-FastLlmUiIdentifiedVariant -Plan $Plan') -and $continuePreviewText.IndexOf('$script:identifiedVariant=') -lt $continuePreviewText.IndexOf('ShowExactModelConsent')) 'the chooser reads the identified card captured when the preview completed (before any consent dialog), never the flow''s plan'
-# 5b-delete-end
 # The flow captures the identified card when the preview completes, before any consent dialog (a kept statement of the orchestration; the chooser reads it).
 Test-FluentTwin 'the flow captures the identified card before any consent dialog' $continuePreviewText {
     param($t)
@@ -912,9 +826,6 @@ Test-FluentTwin 'the flow captures the identified card before any consent dialog
 })
 $continueAst = Get-UiFunctionText 'ContinueWithChosenRecipe'
 Check ($continueAst.Extent.Text.Contains('if($Row.installRequired){') -and $continueAst.Extent.Text.Contains('-not $script:chooserNotice') -and -not $continueAst.Extent.Text.Contains('consentRequired')) 'the install dialog opens whenever any chain member is missing, and keeps the chooser''s notice in the status line'
-# 5b-delete-begin
-Check ($consentText.Contains('$box.Enabled=(-not $consentRow.blocked)') -and $consentText.Contains('if($consentRow.needsAccept)') -and $consentText.Contains('$consentRow.statusText') -and $consentText.Contains('$linkText') -eq $false -and $consentText.Contains('$licenseLink.linkText')) 'the consent dialog lists every component, with only the missing ones tickable, and shows each link with its host'
-# 5b-delete-end
 Test-FluentTwin 'the component consent lists every component, with only the missing ones tickable, and shows each link with its text' $fluentSrc.Consent {
     param($t)
     $fn=Get-FluentFn $t 'Show-FastLlmUiFluentComponentConsent'
@@ -938,9 +849,6 @@ foreach ($planButton in @(@('installButton', 'install'), @('startButton', 'start
 $continueText = (Get-UiFunctionText 'ContinueWithChosenRecipe').Extent.Text
 Check ($continueText.Contains('Get-FastLlmUiComponentInstallArguments') -and $continueText.Contains("LaunchStep 'component install' `$installArgs") -and $continueText.Contains('$Row.experimental -and -not $experimentalBox.Checked')) 'choosing a recipe installs through the argument builder and refuses an experimental row while the switch is off'
 Check (-not $ui.Contains("'-Install'") -and -not $ui.Contains("'-AcceptLicense'")) 'the window builds no install or license-acceptance argument itself'
-# 5b-delete-begin
-Check ($ui.Contains("'recipes','-Detail','-AsJson'") -and $ui.Contains('$chooseButton.Add_Click') -and $ui.Contains("ButtonAt 'Choose another setup'") -and $ui.Contains('$script:previewReady')) 'a Choose another setup button asks the CLI for the recipe list and is tied to a preview'
-# 5b-delete-end
 Check ($ui.Contains("'recipes','-Detail','-AsJson'") -and $ui.Contains('$chooseButton.Add_Click') -and $ui.Contains('$script:previewReady')) 'a Choose another setup button asks the CLI for the recipe list and is tied to a preview'
 Test-FluentTwin 'the Choose another setup button is named and starts disabled' $fluentSrc.Bindings {
     param($t)
@@ -1367,9 +1275,6 @@ foreach($otherAction in @('plan','status')){
 
 # The window asks for the compact report, parses it through the bounded function, and keeps full output for Diagnostics.
 Check ($ui.Contains("LaunchStep 'setup check' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains("LaunchStep 'diagnostics' (@('doctor','-Compact')+`$script:selection)") -and $ui.Contains('ConvertFrom-FastLlmUiSetupCheckOutput -Text $text') -and -not $ui.Contains('65536')) 'The setup check requests the compact report and Diagnostics also runs the compact report so the window can show all of it.'
-# 5b-delete-begin
-Check ($ui.Contains('$control.UseMnemonic=$false')) 'Window labels show an ampersand instead of treating it as a mnemonic.'
-# 5b-delete-end
 
 
 # ---- engine components named by the preview, remembered declines, start arguments and the running-engine line ----
@@ -1494,9 +1399,6 @@ Check ((Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; q
     (Get-FastLlmModelDisplayName -Model ([pscustomobject]@{ id = 'some-id'; upstreamModel = ''; quantization = 'Q4' })) -ceq 'some-id') 'a model missing the name fields falls back to its id'
 Check ((Get-FastLlmModelDisplayName -Model $null) -ceq '') 'no model gives an empty display name'
 Check ((Get-FastLlmUiComponentIntro -Model (Get-FastLlmModelDisplayName -Model $displayModel) -ContextText '32,768 tokens' -Chosen $false).StartsWith("FastLLM's best setup for your card (Qwen3.8-27B UD-Q4_K_M, 32,768 tokens) needs engine components.")) 'the consent intro shows the display name'
-# 5b-delete-begin
-Check ($ui.Contains('Get-FastLlmModelDisplayName -Model $introModel') -and $ui.Contains('Get-FastLlmUiComponentIntro -Model $introName')) 'the consent dialog builds its intro from the display name'
-# 5b-delete-end
 Test-FluentTwin 'the component consent builds its intro from the display name' $fluentSrc.Consent {
     param($t)
     $fn=Get-FluentFn $t 'Show-FastLlmUiFluentComponentConsent'
@@ -1533,9 +1435,6 @@ Check (($disclosure.canAccept -eq ($disclosure.links.Count -gt 0)) -and $disclos
 Check (-not (Get-FastLlmUiLicenseDisclosure -Components @()).canAccept) 'with no license to show the setting cannot be turned on'
 
 # Source pins for the form.
-# 5b-delete-begin
-Check ($ui.Contains("'Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models.'")) 'the window notice names the Vulkan or HIP engine'
-# 5b-delete-end
 Test-FluentTwin 'the window notice names the Vulkan or HIP engine' $fluentSrc.Bindings {
     param($t)
     return (Test-BindingRow $t 'notice' 'Label' 'Preview. Windows + AMD Radeon. Vulkan or HIP engine. Text-only models.')
@@ -1543,9 +1442,6 @@ Test-FluentTwin 'the window notice names the Vulkan or HIP engine' $fluentSrc.Bi
     'the notice drops the engine names' = { param($t) $t.Replace('Vulkan or HIP engine. ','') }
     'the notice claims text and images' = { param($t) $t.Replace('Text-only models.','Text and image models.') }
 })
-# 5b-delete-begin
-Check ($ui.Contains("'Install engine components automatically (accept their licenses for me)'") -and $ui.Contains('$licenseBox.Add_CheckedChanged') -and $ui.Contains("'I accept these licenses'")) 'the settings checkbox and its confirmation button carry the specified text'
-# 5b-delete-end
 Check ($ui.Contains('$licenseBox.Add_CheckedChanged')) 'the license setting box is wired to its change handler'
 Test-FluentTwin 'the settings check box and its confirmation button carry the specified text' ($fluentSrc.Bindings + "`n" + $fluentSrc.Consent) {
     param($t)
@@ -1554,9 +1450,6 @@ Test-FluentTwin 'the settings check box and its confirmation button carry the sp
     'the check box caption is changed' = { param($t) $t.Replace('Install engine components automatically (accept their licenses for me)','Install components automatically') }
     'the confirmation caption is changed' = { param($t) $t.Replace("LicenseAccept     = 'I accept these licenses'","LicenseAccept     = 'Accept'") }
 })
-# 5b-delete-begin
-Check ($ui.Contains("`$dialog.Text='Install engine components'") -and -not $ui.Contains('Install community components')) 'the component dialog is titled Install engine components'
-# 5b-delete-end
 Check ($ui.Contains('Set-FastLlmComponentLicenseSettingMirrored -SourceRoot $script:settingsRoot') -and $ui.Contains('Sync-FastLlmComponentLicenseSetting -SourceRoot $script:settingsRoot -TargetRoot $script:installPath')) 'the license setting is stored under the launch root and mirrored into the install folder at every launch'
 Check ($ui.Contains('Get-FastLlmUiPendingDecision') -and $ui.Contains('Add-FastLlmUiDeclinedSetup') -and $ui.Contains('Get-FastLlmUiPreviewRecipeArguments -Recipe $script:chosenRecipe -FallbackRequest $script:fallbackRequest') -and $ui.Contains('Format-FastLlmUiReadyStatus')) 'the preview decides on pending components, remembers a decline, previews the fallback and shows the engine line'
 Check (([regex]::Matches($ui, 'Format-FastLlmUiBackgroundReadyStatus -Text')).Count -eq 2 -and $ui.Contains('GetUiBackgroundRunStatus') -and $ui.Contains('Get-FastLlmStatus $script:installPath')) 'both background attach paths read the engine and fallback from the run status'
@@ -1615,9 +1508,6 @@ $parseErrors=$null;$parseTokens=$null
 Check (@($parseErrors).Count -eq 0) ('fast-llm-ui-parses: '+(@($parseErrors|ForEach-Object{$_.Message}) -join '; '))
 $uiText=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
 Check (-not $uiText.Contains("SetText('http://127.0.0.1:8080/v1')")) 'Copy API URL no longer hardcodes the port'
-# 5b-delete-begin
-Check ($uiText.Contains('$rowSlotX=@(24,162,300,438,576,714)')) 'the button row slot positions are declared once'
-# 5b-delete-end
 
 # chat-url-only-when-on: the chat URL exists only for an active run whose state records chatPage on.
 $chatOnRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:18181/v1';chatPage='on'}
@@ -1633,9 +1523,6 @@ Check ($null -eq (Get-FastLlmUiChatUrl -Status ([pscustomobject]@{active=$true;e
 $oldRunning=[pscustomobject]@{active=$true;phase='ready';endpoint='http://127.0.0.1:8080/v1';modelId='m'}
 Check ($null -eq (Get-FastLlmUiChatUrl -Status $oldRunning)) 'old-status-without-new-fields: a running status with no thinking or chatPage field gives no chat URL'
 Check ((Get-FastLlmUiChatPageOffNote -Port 18181) -ceq "If the chat page still appears after you turn it off, clear the browser's site data for 127.0.0.1:18181.") 'the turn-off note names the browser site data and the current port'
-# 5b-delete-begin
-Check ($uiText.Contains("'Open chat'") -and $uiText.Contains('$openChatButton=ButtonAt ''Open chat'' $rowSlotX[2] $rowY $rowWidth') -and $uiText.Contains('Start-Process $chatUrl')) 'the Open chat button sits in slot 3 of the third row and opens the chat URL with Start-Process'
-# 5b-delete-end
 Check ($uiText.Contains('Start-Process $chatUrl')) 'the window opens the chat URL with Start-Process'
 Test-FluentTwin 'the Open chat button is named, starts disabled and is wired to its click' ($fluentSrc.Bindings + "`n" + $fluentSrc.Home) {
     param($t)
@@ -1645,9 +1532,6 @@ Test-FluentTwin 'the Open chat button is named, starts disabled and is wired to 
     'the caption is changed' = { param($t) $t.Replace("'Button','Open chat'","'Button','Chat'") }
     'the click is not wired' = { param($t) $t.Replace("Element = 'OpenChatButton';      Mode = 'Content';   Event = 'Click';","Element = 'OpenChatButton';      Mode = 'Content';   Event = '';") }
 })
-# 5b-delete-begin
-Check ($uiText.Contains('Local chat page (off by default)') -and $uiText.Contains('-ChatPage') -and $uiText.Contains('Get-FastLlmUiChatPageOffNote')) 'the Settings dialog carries the chat page checkbox, saves ChatPage and shows the turn-off note'
-# 5b-delete-end
 Test-FluentTwin 'the Settings page carries the chat page box, saves ChatPage and shows the turn-off note' $fluentSrc.Settings {
     param($t)
     $save=Get-FluentFn $t 'Invoke-FastLlmUiFluentSettingsSave'
@@ -1679,9 +1563,6 @@ Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -Mod
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).chatPage -ceq 'off') 'a settings object without chatPage gives off'
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $root -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{chatPage='yes'})).chatPage -ceq 'off') 'an unknown chatPage value gives off'
 Check ($malRequest.chatPage -ceq 'off') 'malformed settings.json: the background request uses chatPage off'
-# 5b-delete-begin
-Check ($uiText.Contains('Off: faster answers. Quality with thinking off is not measured by Bitworks.') -and $uiText.Contains('Auto (recommended)')) 'the Settings dialog carries the Thinking labels'
-# 5b-delete-end
 Test-FluentTwin 'the Settings page carries the Thinking labels' $fluentSrc.Settings {
     param($t)
     return ((Test-TextTableValue $t 'ThinkingOff' 'Off: faster answers. Quality with thinking off is not measured by Bitworks.') -and (Test-TextTableValue $t 'ThinkingAuto' 'Auto (recommended)'))
@@ -1689,9 +1570,6 @@ Test-FluentTwin 'the Settings page carries the Thinking labels' $fluentSrc.Setti
     'the Off label claims a measured quality' = { param($t) $t.Replace(' Quality with thinking off is not measured by Bitworks.','') }
     'the Auto label is changed' = { param($t) $t.Replace('Auto (recommended)','Auto') }
 })
-# 5b-delete-begin
-Check ($uiText.Contains('-Thinking') -and $uiText.Contains('Get-FastLlmUiSettingsSavedNote')) 'the Settings dialog saves Thinking and takes its saved note from the helper'
-# 5b-delete-end
 Test-FluentTwin 'the Settings page saves Thinking and takes its saved note from the helper' $fluentSrc.Settings {
     param($t)
     $save=Get-FluentFn $t 'Invoke-FastLlmUiFluentSettingsSave'
@@ -1701,9 +1579,6 @@ Test-FluentTwin 'the Settings page saves Thinking and takes its saved note from 
     'Save does not pass Thinking' = { param($t) $t.Replace('-Thinking $savedThinking','') }
     'the saved note is built inline' = { param($t) $t.Replace('Get-FastLlmUiSettingsSavedNote -RunActive $runActive -Before $before -After $after','''Settings saved.''') }
 })
-# 5b-delete-begin
-Check ($uiText.Contains('Chats are kept by your browser, not by FastLLM.')) 'the Settings dialog carries the chat privacy line under the chat page checkbox'
-# 5b-delete-end
 Test-FluentTwin 'the Settings page carries the chat privacy line' $fluentSrc.Settings {
     param($t)
     return ((Test-TextTableValue $t 'ChatHelp' 'Chats are kept by your browser, not by FastLLM.') -and $t.Contains('$Els[''SettingsChatHelp''].Text = [string] $t.ChatHelp'))
@@ -1759,12 +1634,6 @@ Check ($uiText.Contains('Get-FastLlmUiChatButtonState') -and (([regex]::Matches(
 Check ($uiText.Contains('function LaunchSideStep') -and $uiText.Contains('$script:sideChild')) 'the window has a separate side-step slot'
 
 # Residual fixes: settings notes are shown in a message box during a run, an update waits for a side step, and closing keeps a side step until confirmed.
-# 5b-delete-begin
-$noteBoxAt=$uiText.IndexOf("[void][Windows.Forms.MessageBox]::Show(`$form,[string]`$statusLabel.Text,'FastLLM settings','OK','Information')")
-$noteRunAt=$uiText.IndexOf('if($runActive -and -not [string]::IsNullOrWhiteSpace([string]$statusLabel.Text)){')
-$noteOffAt=$uiText.IndexOf('Get-FastLlmUiChatPageOffNote -Port')
-Check ($noteBoxAt -gt 0 -and $noteRunAt -gt 0 -and $noteRunAt -lt $noteBoxAt -and $noteOffAt -gt 0 -and $noteOffAt -lt $noteRunAt) 'after Save during an active run the port and chat-page notes are shown in an OK-only message box'
-# 5b-delete-end
 Test-FluentTwin 'after Save during an active run the port and chat-page notes are shown in an OK-only message box' $fluentSrc.Settings {
     param($t)
     $save=Get-FluentFn $t 'Invoke-FastLlmUiFluentSettingsSave'
@@ -1785,16 +1654,6 @@ $sideDisposeAt=$uiText.IndexOf('if($script:sideChild){$script:sideChild.Dispose(
 Check ($closeAt -gt 0 -and $sideDisposeAt -gt $closeAt) 'closing disposes the side step only after the Closing-stops confirmation'
 
 # Settings dialog: no label may sit over its control.
-# 5b-delete-begin
-function SettingsRect([string]$Name){
-    $m=[regex]::Match($uiText,'\$'+$Name+'\.Location=New-Object Drawing\.Point\((\d+),(\d+)\)')
-    $z=[regex]::Match($uiText,'\$'+$Name+'\.Size=New-Object Drawing\.Size\((\d+),(\d+)\)')
-    if(-not $m.Success -or -not $z.Success){throw "FAIL: could not read the Settings dialog geometry of $Name"}
-    return @{left=[int]$m.Groups[1].Value;right=[int]$m.Groups[1].Value+[int]$z.Groups[1].Value}
-}
-Check ((SettingsRect 'thinkingLabel').right -le (SettingsRect 'thinkingBox').left) 'the Settings Thinking label ends before the Thinking drop-down starts'
-Check ((SettingsRect 'portLabel').right -le (SettingsRect 'portBox').left) 'the Settings port label ends before the port box starts'
-# 5b-delete-end
 # Start in background: the hint after a refusal names the real cause.
 $folderHint='Background mode needs an install and model folder that only your Windows user owns, such as the default folder in your profile. Choose such a folder, then try Start in background again.'
 $preparedHint='Background mode needs an already prepared, consented model. Use Install & start first, then Stop and try Start in background.'
@@ -1829,9 +1688,6 @@ foreach($case in @(@{Value=30;Expect=30},@{Value=15;Expect=15},@{Value=60;Expect
 Check ((New-FastLlmUiBackgroundRequest -SourceRoot $root -InstallRoot $idleRequestRoot -ModelId 'm' -ContextSize 1 -BarMitigation 'on' -Settings ([pscustomobject]@{serverPort=18181})).idleStopMinutes -eq 0) 'idle-request: a settings object without idleStopMinutes gives 0'
 Check ($uiText.Contains('-ChatPage $ChatPage -IdleStopMinutes $IdleStop -UseApiKey $KeyFlag -SwitchAllowed:$SwitchAllowed -NoWait') -and $uiText.Contains('$Request.chatPage $Request.idleStopMinutes')) 'idle-request: Start in background hands the saved idle stop to the host'
 # The Settings dialog row: Never / after 15 / 30 / 60 minutes, saved through Set-FastLlmServingSettings, no label over its control, below the chat page rows and above the buttons.
-# 5b-delete-begin
-Check ($uiText.Contains("Text='Stop the model when idle'") -and $uiText.Contains("'Never (default)','After 15 minutes','After 30 minutes','After 60 minutes'")) 'idle-dialog: the row is Stop the model when idle with Never, After 15, 30 and 60 minutes'
-# 5b-delete-end
 Test-FluentTwin 'the Settings idle row is Stop the model when idle with Never, After 15, 30 and 60 minutes' $fluentSrc.Settings {
     param($t)
     return ((Test-TextTableValue $t 'Idle' 'Stop the model when idle') -and (Test-TextTableValue $t 'IdleNever' 'Never (default)') -and (Test-TextTableValue $t 'IdleAfter15' 'After 15 minutes') -and
@@ -1841,9 +1697,6 @@ Test-FluentTwin 'the Settings idle row is Stop the model when idle with Never, A
     'the Never choice is not the default' = { param($t) $t.Replace('Never (default)','Never') }
     'the 60 minute choice says 45' = { param($t) $t.Replace('After 60 minutes','After 45 minutes') }
 })
-# 5b-delete-begin
-Check ($uiText.Contains('-IdleStopMinutes $savedIdle') -and $uiText.Contains('@(0,15,30,60)[')) 'idle-dialog: Save writes the chosen minutes through Set-FastLlmServingSettings'
-# 5b-delete-end
 Test-FluentTwin 'Save writes the chosen idle minutes through Set-FastLlmServingSettings, from the 0, 15, 30, 60 table' ($fluentSrc.Settings + "`n" + $fluentSrc.UiState) {
     param($t)
     $save=Get-FluentFn $t 'Invoke-FastLlmUiFluentSettingsSave'
@@ -1854,21 +1707,6 @@ Test-FluentTwin 'Save writes the chosen idle minutes through Set-FastLlmServingS
     'Save does not pass the idle minutes' = { param($t) $t.Replace(' -IdleStopMinutes $savedIdle @extra',' @extra') }
     'the table maps the second choice to 10' = { param($t) $t.Replace('@(0,15,30,60)[[Math]','@(0,10,30,60)[[Math]') }
 })
-# 5b-delete-begin
-Check ((SettingsRect 'idleLabel').right -le (SettingsRect 'idleBox').left) 'idle-dialog: the Settings idle stop label ends before the idle stop drop-down starts'
-function SettingsTop([string]$Name){ $m=[regex]::Match($uiText,'\$'+$Name+'\.Location=New-Object Drawing\.Point\(\d+,(\d+)\)'); if(-not $m.Success){throw "FAIL: could not read the Settings dialog top of $Name"}; $top=[int]$m.Groups[1].Value
-    # Save and Cancel sit in the button row docked under the settings panel: their top in the dialog is the panel's height plus their top in the row.
-    if(@('saveButton','cancelButton') -ccontains $Name){ $row=[regex]::Match($uiText,'\[Math\]::Max\(46,\$dialog\.ClientSize\.Height-(\d+)\)'); if(-not $row.Success){throw 'FAIL: could not read the Settings panel height'}; $top+=[int]$row.Groups[1].Value }
-    return $top }
-function SettingsHeight([string]$Name){ $m=[regex]::Match($uiText,'\$'+$Name+'\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)'); if(-not $m.Success){throw "FAIL: could not read the Settings dialog height of $Name"}; return [int]$m.Groups[1].Value }
-Check ((SettingsTop 'idleLabel') -ge ((SettingsTop 'chatPrivacy')+(SettingsHeight 'chatPrivacy')) -and (SettingsTop 'idleBox') -ge ((SettingsTop 'chatPrivacy')+(SettingsHeight 'chatPrivacy'))) 'idle-dialog: the idle stop row sits below the chat page rows, not over them'
-Check ((SettingsTop 'idleHelp') -ge ((SettingsTop 'idleBox')+(SettingsHeight 'idleBox')) -and (SettingsTop 'saveButton') -ge ((SettingsTop 'idleHelp')+(SettingsHeight 'idleHelp')) -and (SettingsTop 'cancelButton') -ge ((SettingsTop 'idleHelp')+(SettingsHeight 'idleHelp'))) 'idle-dialog: the help line sits under the drop-down and the buttons under the help line'
-$dialogHeight=[int][regex]::Match($uiText,"\`$dialog\.Text='FastLLM settings';\`$dialog\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)").Groups[1].Value
-Check ($dialogHeight -ge ((SettingsTop 'saveButton')+(SettingsHeight 'saveButton')+40)) 'idle-dialog: the dialog is tall enough for the buttons below the new row'
-# 5b-delete-end
-# 5b-delete-begin
-Check ($uiText.Contains('[int]$script:settingsSavedIdle') -and $uiText.Contains('idleStopMinutes=[int]$script:settingsSavedIdle')) 'idle-dialog: the saved note is given the idle stop as well'
-# 5b-delete-end
 Test-FluentTwin 'the saved note is given the idle stop as well' $fluentSrc.Settings {
     param($t)
     $save=Get-FluentFn $t 'Invoke-FastLlmUiFluentSettingsSave'
@@ -1999,9 +1837,6 @@ $noteBefore=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idl
 $noteAfter=[pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off';idleStopMinutes=0;allowSwitch=$true}
 Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before $noteBefore -After $noteAfter) -ceq 'The new switching setting applies at the next start.' -and (Get-FastLlmUiSettingsSavedNote -RunActive $false -Before $noteBefore -After $noteAfter) -ceq 'Settings saved.') 'allow-switch note: while a run is going the new switching setting is said to apply at the next start'
 Check ((Get-FastLlmUiSettingsSavedNote -RunActive $true -Before ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'}) -After ([pscustomobject]@{serverPort=8080;thinking='auto';chatPage='off'})) -ceq 'Settings saved.') 'allow-switch note: a caller that has no such value means no change'
-# 5b-delete-begin
-Check ($uiText.Contains('Allow switching models while FastLLM runs') -and $uiText.Contains('Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot')) 'allow-switch dialog: Settings has the checkbox "Allow switching models while FastLLM runs", saved under the launch root'
-# 5b-delete-end
 Test-FluentTwin 'the Settings page has the Allow switching models box, saved under the launch root' $fluentSrc.Settings {
     param($t)
     $save=Get-FluentFn $t 'Invoke-FastLlmUiFluentSettingsSave'
@@ -2011,31 +1846,8 @@ Test-FluentTwin 'the Settings page has the Allow switching models box, saved und
     'the caption is changed' = { param($t) $t.Replace('Allow switching models while FastLLM runs','Allow switching') }
     'the value is saved under the install root' = { param($t) $t.Replace('Set-FastLlmUiAllowSwitch -InstallRoot $script:settingsRoot','Set-FastLlmUiAllowSwitch -InstallRoot $script:installPath') }
 })
-# 5b-delete-begin
-Check ((SettingsTop 'switchBox') -ge ((SettingsTop 'idleHelp')+(SettingsHeight 'idleHelp')) -and (SettingsTop 'saveButton') -ge ((SettingsTop 'switchHelp')+(SettingsHeight 'switchHelp')) -and (SettingsTop 'switchHelp') -ge ((SettingsTop 'switchBox')+(SettingsHeight 'switchBox'))) 'allow-switch dialog: the checkbox and its help line sit below the idle stop row and above the buttons'
-$dialogHeightNow=[int][regex]::Match($uiText,"\`$dialog\.Text='FastLLM settings';\`$dialog\.Size=New-Object Drawing\.Size\(\d+,(\d+)\)").Groups[1].Value
-Check ($dialogHeightNow -ge ((SettingsTop 'saveButton')+(SettingsHeight 'saveButton')+40)) 'allow-switch dialog: the dialog is tall enough for the buttons below the new row'
-# 5b-delete-end
 
 # ---- the Settings dialog scrolls; Save and Cancel stay pinned and the dialog is capped to the screen's working area ----
-# 5b-delete-begin
-$settingsFnStart=$uiText.IndexOf('function BuildUiSettingsDialog {')
-$settingsFnEnd=$uiText.IndexOf('function ShowUiSettings {')
-Check ($settingsFnStart -ge 0 -and $settingsFnEnd -gt $settingsFnStart) 'settings-scroll: the dialog builder is found'
-$settingsBuild=$uiText.Substring($settingsFnStart,$settingsFnEnd-$settingsFnStart)
-$settingsShowStart=$settingsFnEnd
-$settingsShowEnd=$uiText.IndexOf('function StartUiBackground {',$settingsShowStart)
-$settingsShow=$uiText.Substring($settingsShowStart,$settingsShowEnd-$settingsShowStart)
-Check ($settingsShow.Contains('. BuildUiSettingsDialog') -and $settingsShow.IndexOf('. BuildUiSettingsDialog') -lt $settingsShow.IndexOf('FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form.Handle)') -and $settingsShow.IndexOf('FitUiSettingsDialog $dialog (GetUiSettingsDialogMaxHeight $form.Handle)') -lt $settingsShow.IndexOf('$dialog.ShowDialog($form)')) 'settings-scroll: ShowUiSettings fits the dialog to the working area between building it and showing it'
-Check ($uiText.Contains('function GetUiSettingsDialogMaxHeight($OwnerHandle){') -and $uiText.Contains('[Windows.Forms.Screen]::FromHandle($OwnerHandle).WorkingArea.Height')) 'settings-scroll: the height cap is the working area of the screen the window is on'
-Check ($uiText.Contains('function FitUiSettingsDialog($Dialog,[int]$MaxHeight){') -and $uiText.Contains('if($Dialog.Height -gt $MaxHeight){$Dialog.Height=[Math]::Max(240,$MaxHeight);$Dialog.Width=$Dialog.Width+[Windows.Forms.SystemInformation]::VerticalScrollBarWidth}')) 'settings-scroll: FitUiSettingsDialog only shortens a dialog taller than the working area, and then widens it by the vertical scroll bar only'
-Check ($settingsBuild.Contains("`$settingsPanel.Dock='Fill';`$settingsPanel.AutoScroll=`$true;`$settingsPanel.TabIndex=0;`$dialog.Controls.Add(`$settingsPanel);`$settingsPanel.BringToFront()") -and $settingsBuild.Contains("`$buttonRow.Dock='Bottom';`$buttonRow.TabIndex=1;`$dialog.Controls.Add(`$buttonRow)")) 'settings-scroll: the settings sit in an auto-scrolling panel docked to fill the dialog above a button row docked to its bottom edge (laid out again after every resize), settings first in the tab order'
-Check ($settingsBuild.Contains("`$saveButton.Anchor='Top,Right';`$buttonRow.Controls.Add(`$saveButton)") -and $settingsBuild.Contains("`$cancelButton.Anchor='Top,Right';`$buttonRow.Controls.Add(`$cancelButton)") -and $settingsBuild.IndexOf('$dialog.Controls.Add($buttonRow)') -lt $settingsBuild.IndexOf('$buttonRow.Controls.Add($saveButton)')) 'settings-scroll: Save and Cancel are in the docked button row, right-aligned, added after the row has its width'
-$settingsDialogAdds=@([regex]::Matches($settingsBuild,'\$dialog\.Controls\.Add\((\$\w+)\)') | ForEach-Object { $_.Groups[1].Value })
-Check ($settingsDialogAdds.Count -eq 2 -and ($settingsDialogAdds -contains '$settingsPanel') -and ($settingsDialogAdds -contains '$buttonRow')) 'settings-scroll: only the settings panel and the button row are added to the dialog itself'
-$settingsRowAdds=@([regex]::Matches($settingsBuild,'\$buttonRow\.Controls\.Add\((\$\w+)\)') | ForEach-Object { $_.Groups[1].Value })
-Check ($settingsRowAdds.Count -eq 2 -and ($settingsRowAdds -contains '$saveButton') -and ($settingsRowAdds -contains '$cancelButton')) 'settings-scroll: the button row holds only Save and Cancel'
-# 5b-delete-end
 
 # ---- N3: the gap between two runs of a switch, and the switch line under a serving status ----
 function SwStatus([string]$Phase,$Block,[bool]$SwitchAllowed=$true,[bool]$Active=$true,[string]$StopReason=''){
@@ -2138,12 +1950,6 @@ $moduleRows=@(& (Get-Module FastLlm) { param($C,$R) Get-FastLlmSwitchPickerRows 
 Check ($moduleRows.Count -eq $catalogNames.Count -and ((@($moduleRows | ForEach-Object { [string]$_.displayName }) -join '|') -ceq ($catalogNames -join '|'))) 'picker rows: the display name the module gives every model is the one the window shows elsewhere (Get-FastLlmModelDisplayName)'
 
 # ---- the window script: thin wiring, rows computed once at open, nothing on the timer ----
-# 5b-delete-begin
-$pickerFn=Get-UiFunctionText 'ShowUiSwitchPicker'
-$pickerDispose=Test-NoDisposeInHandlers $pickerFn
-Check ($pickerDispose.handlers -ge 3 -and $pickerDispose.disposes -eq 0) 'picker dialog: no handler disposes anything (the dialog is disposed in its own finally)'
-Check ($pickerFn.Extent.Text.Contains('Get-FastLlmUiSwitchPickerModel') -and $pickerFn.Extent.Text.Contains('Invoke-FastLlmUiSwitchPick') -and $pickerFn.Extent.Text.Contains('Get-FastLlmUiSwitchPickerButtonState') -and -not $pickerFn.Extent.Text.Contains('Request-FastLlmSwitch') -and -not $pickerFn.Extent.Text.Contains('Get-FastLlmSwitchPickerRows')) 'picker dialog: the window function calls the UiFlow functions only (no request and no planner call of its own)'
-# 5b-delete-end
 Test-FluentTwin 'the Models page picker calls the UiFlow functions only (no request and no planner call of its own)' $fluentAll {
     param($t)
     $picker=Get-FluentFn $t 'Update-FastLlmUiFluentModelsPicker'
@@ -2158,13 +1964,6 @@ Test-FluentTwin 'the Models page picker calls the UiFlow functions only (no requ
     'the button state is computed inline' = { param($t) $t.Replace('Get-FastLlmUiSwitchPickerButtonState','Get-FastLlmSwitchPlanOptions') }
 })
 Check (-not $uiText.Contains('Request-FastLlmSwitch') -and -not $uiText.Contains('Get-FastLlmSwitchPickerRows') -and -not $uiText.Contains('Get-FastLlmSwitchPlanOptions')) 'picker dialog: fast-llm-ui.ps1 never names the request function, the rows function or the option helper'
-# 5b-delete-begin
-$modelCalls=@($uiAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq 'Get-FastLlmUiSwitchPickerModel' },$true))
-$modelCallOwners=@($modelCalls | ForEach-Object { $parent=$_.Parent; while($parent -and $parent -isnot [System.Management.Automation.Language.FunctionDefinitionAst]){$parent=$parent.Parent}; if($parent){$parent.Name}else{'<script>'} })
-function Test-InsideHandler($Node){ $p=$Node.Parent; while($p){ if($p -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and ([string]$p.Member.Value) -like 'Add_*'){return $true}; $p=$p.Parent }; return $false }
-$modelCallInHandler=@($modelCalls | Where-Object { Test-InsideHandler $_ })
-Check ($modelCalls.Count -eq 1 -and $modelCallOwners[0] -ceq 'ShowUiSwitchPicker' -and $modelCallInHandler.Count -eq 0) 'picker dialog: the rows are computed once, when the dialog opens (one call, in the open function, in no event handler and not on the timer)'
-# 5b-delete-end
 Test-FluentTwin 'the picker rows are computed once, in the open function, in no event handler and not on the timer' $fluentAll {
     param($t)
     $tokens=$null;$errors=$null
@@ -2183,12 +1982,6 @@ Test-FluentTwin 'the picker rows are computed once, in the open function, in no 
     'the call runs inside a click handler' = { param($t) $t.Replace('$picker=Get-FastLlmUiSwitchPickerModel','$null = $script:b.Add_Click({ Get-FastLlmUiSwitchPickerModel -InstallRoot 1 }); $picker=$null; $picker=Get-FastLlmUiSwitchPickerModel') }
     'the call is not guarded by the Switch button' = { param($t) $t.Replace('if ([bool] $script:switchButton.Enabled) {','if ($true) {') }
 })
-# 5b-delete-begin
-Check ($pickerFn.Extent.Text -notmatch '\.Force|-Force|\bForce\b') 'picker dialog: there is no Force anywhere in the window''s picker (a busy refusal shows its text and the user tries again)'
-# 5b-delete-end
-# 5b-delete-begin
-Check ($uiText.Contains("`$switchButton.Add_Click({try{ShowUiSwitchPicker}catch{ShowFailure `$_.Exception.Message}})")) 'picker dialog: the Switch model button opens the picker and shows any failure as the window''s other buttons do'
-# 5b-delete-end
 # Fluent shape by design (lead: cite the choice): spec section 6.1 parity table moves Switch model to the Models page, and the Models page (#102) shows the
 # request's refusal on its own polite message line.
 # Design difference: the classic Switch button shows a failure through ShowFailure; the Fluent Switch action shows the request's refusal text on the Models page
@@ -2236,14 +2029,6 @@ foreach ($refusedReason in @('no-previous-record', 'newer-release-available', 'd
 Check ((Format-FastLlmUiReinstallResult -Result ([pscustomobject]@{ status = 'failed'; step = 'install'; reason = 'installer-exit-1' }) -To '2026.10.15.1') -ceq 'Reinstall not done: installer-exit-1. Nothing was changed.') 'reinstall: another failure keeps the nothing-changed text'
 Check ((Format-FastLlmUiReinstallResult -Result $integrityOutcome -To '2026.10.15.1') -ceq "FastLLM 2026.10.15.1 was installed, but its files don't match the signed catalog. Reinstall FastLLM from the release page.") 'reinstall: an integrity failure after the installer says it was installed'
 
-# 5b-delete-begin
-$shiftAt = $ui.IndexOf('foreach($shifted in @($form.Controls))')
-$reinstallButtonAt = $ui.IndexOf('$reinstallButton=New-Object Windows.Forms.Button')
-Check ($shiftAt -gt 0 -and $reinstallButtonAt -gt $shiftAt) 'reinstall: the button is added after the banner shift, like the other banner controls'
-# 5b-delete-end
-# 5b-delete-begin
-Check ($ui.Contains("`$reinstallButton.Text='Reinstall previous version'") -and $ui.Contains('$reinstallButton.Visible=$false;$form.Controls.Add($reinstallButton)')) 'reinstall: the button starts hidden'
-# 5b-delete-end
 Test-FluentTwin 'the reinstall button and the Copy full output link start hidden' $fluentSrc.Bindings {
     param($t)
     $m=[regex]::Match($t,'foreach\(\$n in ([^)]*)\)\{\$made\[\$n\]\.Visible=\$false\}')
@@ -2460,12 +2245,6 @@ try {
 }
 
 # Source pins in the window.
-# 5b-delete-begin
-Check ($ui.Contains("`$failureCopyLink.Text='Copy full output'") -and $ui.Contains('$failureCopyLink.AutoSize=$true') -and $ui.Contains('$failureCopyLink.Visible=$false') -and $ui.Contains('$form.Controls.Add($failureCopyLink)')) 'The link "Copy full output" exists, sizes itself and starts hidden.'
-# 5b-delete-end
-# 5b-delete-begin
-Check ($ui.Contains('$failureCopyLink.TabStop=$true') -and $ui.Contains('$failureCopyLink.TabIndex=$output.TabIndex+1') -and $ui.Contains("`$failureCopyLink.AccessibleName='Copy full output'")) 'The link is a tab stop right after the output box and has an accessible name.'
-# 5b-delete-end
 # Fluent shape by design (lead: cite the choice): spec section 6.1 puts Copy full output both in the failure message and in the Activity header (Home, #86),
 # so the Activity header button carries its own name, 'Copy full output (Activity)', starting with the classic name.
 Test-FluentTwin 'the Copy full output control has an accessible name that starts with the classic name' $fluentSrc.Home {
@@ -2475,9 +2254,6 @@ Test-FluentTwin 'the Copy full output control has an accessible name that starts
     'the name is not set' = { param($t) $t.Replace('[System.Windows.Automation.AutomationProperties]::SetName($copy, [string] $s.CopyFullOutputActivity)','$null = $copy') }
     'the name is another text' = { param($t) $t.Replace("CopyFullOutputActivity = 'Copy full output (Activity)'","CopyFullOutputActivity = 'Copy'") }
 })
-# 5b-delete-begin
-Check ($ui.Contains('(820-$failureCopyLink.PreferredWidth),652') -and $ui.IndexOf('$failureCopyLink=New-Object') -gt $ui.IndexOf('$resultsLink=New-Object') -and $ui.Contains('$resultsLink=New-Object Windows.Forms.LinkLabel;$resultsLink.Text=''See results'';$resultsLink.Location=New-Object Drawing.Point(24,652)')) 'The link is right-aligned to the output box edge (x 820) on the line of See results (y 652), which does not move.'
-# 5b-delete-end
 Check ($ui.Contains('$failureCopyLink.Add_LinkClicked({try{[Windows.Forms.Clipboard]::SetText([string]$script:failureCapture)}catch{$statusLabel.Text=''Could not copy: ''+$_.Exception.Message}})')) 'The link copies the stored capture unchanged and says so when the copy fails.'
 $stepBody=$ui.Substring($ui.IndexOf('function LaunchStep('),$ui.IndexOf('function LaunchSideStep(')-$ui.IndexOf('function LaunchStep('))
 $sideBody=$ui.Substring($ui.IndexOf('function LaunchSideStep('),$ui.IndexOf('function ShowUiSideResult(')-$ui.IndexOf('function LaunchSideStep('))

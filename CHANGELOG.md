@@ -4,6 +4,14 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+- **A new FastLLM window:** FastLLM now opens a redesigned window built for Windows 11. A pane on the left goes to Home, Models, Connect, Tools and Settings, and the status card on Home shows whether FastLLM is running, with which model and at which address.
+  - It follows the Windows light, dark or high contrast theme, the display scaling and the text size. On Windows 11 22H2 and later it uses the Mica background; earlier versions get a solid background. It works with the keyboard and with Narrator.
+  - Settings is now a page: your changes apply when you press Save, and FastLLM asks before you leave the page with unsaved changes. It also shows the context profile and requests at once, which until now only the command line could change. The embeddings settings appear when an approved embedding model is available, or when embeddings are already on.
+  - Dialogs have the new look. They ask the same questions with the same choices, and Enter and Escape do what they did before.
+  - The previous window has been removed, and with it the `-Window` option of `fast-llm-ui.ps1`.
+  - A PC that cannot run the new window (it needs .NET Framework 4.7.1 or later) gets a plain message that says how to use the command line, which keeps working.
+  - Nothing changes in how models are chosen, downloaded or run. The new window adds no network access and no telemetry.
+
 - **Re-published Qwen3.8 27B files (UD IQ4_XS, Q4_K_M, Q5_K_M, Q6_K_M):** the upstream conversion was re-quantized from identical weights, so the catalog now lists four new entries with a revision suffix in the id and in the local file name (for example `qwen3.8-27b-ud-q4-k-m-4af51b35`). The downloads and the pinned size and SHA-256 are the new files; the weights and licence are the same as before.
   - The four old entries stay in the catalog and are marked superseded (`supersededBy`). A superseded model is never planned, picked by a recipe, preloaded, switched to or shown in the model picker, and an explicit request for one is refused with `model-superseded`, naming its replacement. An old file already on disk stays listed, can be removed, and is never downloaded again.
   - The measured recipes for the RX 7900 XT and RX 7900 XTX now name the new files. Their expected speeds were measured on the previous file revision and the new revision is being verified: the plan says so, and the below-expected self-test message (command line and window) repeats it. Until new measurements are published these recipes ship in canary releases only; a stable release build refuses them.

@@ -436,22 +436,6 @@ jobs:
           .\tests\update-tests.ps1
           .\tests\update-download-runspace-tests.ps1
           .\tests\semantic-smoke-tests.ps1
-      # Builds the real Settings dialog (never on a screen) and saves PNGs at 100%, 150% and two small-screen caps for a person to look at.
-      - name: Settings dialog render tests in Windows PowerShell 5.1 (off-screen)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        shell: powershell
-        env:
-          FASTLLM_RENDER_DIR: ${{ runner.temp }}\fastllm-settings-dialog
-        run: .\tests\settings-dialog-render-tests.ps1
-      - name: Upload the Settings dialog renders
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: settings-dialog-render
-          path: ${{ runner.temp }}\fastllm-settings-dialog\*.png
-          if-no-files-found: error
-          retention-days: 14
       # These mock suites run in the standard-user bench native gate instead of here:
       # - tests/background-host-tests.ps1: the background host refuses state it does not own, and files an elevated
       #   runner creates belong to Administrators.
@@ -481,16 +465,6 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-host-tests.ps1
-      - name: UI fluent parity tests in Windows PowerShell 5.1 (STA)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        shell: powershell
-        run: powershell -STA -NoLogo -NoProfile -File .\tests\ui-fluent-parity-tests.ps1
-      - name: UI fluent parity tests in PowerShell 7 (STA)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        shell: pwsh
-        run: pwsh -STA -NoLogo -NoProfile -File .\tests\ui-fluent-parity-tests.ps1
       - name: UI fluent shell tests in Windows PowerShell 5.1 (STA)
         if: ${{ !cancelled() }}
         timeout-minutes: 10

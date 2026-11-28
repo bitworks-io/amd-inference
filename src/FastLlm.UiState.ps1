@@ -284,7 +284,7 @@ function Get-FastLlmUiCardState {
         $state = 'needs-attention'; $tone = 'caution'; $reason = 'occupied'
     } elseif ($attached -and $healthChecked -and $attachable) {       # row 7: attached, health checked
         $state = 'running-background'; $tone = 'success'; $action = 'stop'
-    } elseif ($Snapshot.RunReady) {                                   # row 7: serving
+    } elseif ($Snapshot.RunReady -and -not $attachReady) {            # row 7: serving (not a background run still to attach)
         $state = 'running'; $tone = 'success'; $action = 'stop'
     } elseif ($Snapshot.ChildActive) {                                # row 8: any other foreground step
         $state = 'working'; $tone = 'accent'; $action = 'stop'

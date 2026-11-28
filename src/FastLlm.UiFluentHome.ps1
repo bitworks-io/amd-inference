@@ -487,7 +487,6 @@ function Register-FastLlmUiFluentHomePage {
 function Invoke-FastLlmUiFluentHomeConnect {
     [CmdletBinding()] param()
     if (Test-FastLlmUiFluentPageRegistered -Id 'Connect') { $null = Set-FastLlmUiFluentPage -Id 'Connect' -FocusNav }
-    else { Invoke-FastLlmUiAdapterEvent -Adapter $script:connectButton -Event 'Click' }
 }
 
 # Switch model on Home. Once the Models page is registered it opens that page and puts the focus on its pane item; until then (Task 6 registers it)
@@ -495,7 +494,6 @@ function Invoke-FastLlmUiFluentHomeConnect {
 function Invoke-FastLlmUiFluentHomeSwitch {
     [CmdletBinding()] param()
     if (Test-FastLlmUiFluentPageRegistered -Id 'Models') { $null = Set-FastLlmUiFluentPage -Id 'Models' -FocusNav }
-    else { Invoke-FastLlmUiAdapterEvent -Adapter $script:switchButton -Event 'Click' }
 }
 
 # Change (the model to start with). Once the Models page is registered it opens that page and focuses the model box; until then it does nothing.

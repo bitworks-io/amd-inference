@@ -27,7 +27,7 @@ $script:FastLlmRunLogAllowedFields = @{
     # Opt-in speculation: written once at the end of a run that had it, the two counters of /metrics. Numbers (or null) only; see Write-FastLlmRunLogEvent.
     'spec-summary'        = @('draftTokens', 'acceptedTokens')
     'idle-check-failed'   = @()
-    # -Window fluent on a PC that cannot run WPF (or a fault in the window code): one closed reason code, never a path.
+    # a PC that cannot run WPF (or a fault in the window code): one closed reason code, never a path.
     'window-unsupported'  = @('reason')
     # The window runs, but WPF reads its accessibility switches as legacy: the legacy field NAMES only, comma-joined (or type-missing).
     'window-accessibility-legacy' = @('fields')

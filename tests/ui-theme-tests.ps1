@@ -25,10 +25,10 @@ Check $threw 'a translucent background is refused'
 
 # Tokens, exact strings.
 $expect=@{
- light=[ordered]@{Layer='#FFF3F3F3';Card='#B3FFFFFF';CardStroke='#0F000000';TextPrimary='#E4000000';TextSecondary='#9E000000';ControlStroke='#0F000000';ControlStrongStroke='#72000000';TextOnAccent='#FFFFFFFF';SuccessText='#FF0F7B0F';CautionText='#FF9D5D00';CriticalText='#FFC42B1C';SuccessBackground='#FFDFF6DD';CautionBackground='#FFFFF4CE';CriticalBackground='#FFFDE7E9'}
- dark=[ordered]@{Layer='#FF202020';Card='#0DFFFFFF';CardStroke='#19000000';TextPrimary='#FFFFFFFF';TextSecondary='#C5FFFFFF';ControlStroke='#12FFFFFF';ControlStrongStroke='#8BFFFFFF';TextOnAccent='#FF000000';SuccessText='#FF6CCB5F';CautionText='#FFFCE100';CriticalText='#FFFF99A4';SuccessBackground='#FF393D1B';CautionBackground='#FF433519';CriticalBackground='#FF442726'}
+ light=[ordered]@{Layer='#FFF3F3F3';Card='#B3FFFFFF';CardStroke='#0F000000';Flyout='#FFF9F9F9';TextPrimary='#E4000000';TextSecondary='#9E000000';ControlStroke='#0F000000';ControlStrongStroke='#72000000';TextOnAccent='#FFFFFFFF';SuccessText='#FF0F7B0F';CautionText='#FF9D5D00';CriticalText='#FFC42B1C';SuccessBackground='#FFDFF6DD';CautionBackground='#FFFFF4CE';CriticalBackground='#FFFDE7E9'}
+ dark=[ordered]@{Layer='#FF202020';Card='#0DFFFFFF';CardStroke='#19000000';Flyout='#FF2C2C2C';TextPrimary='#FFFFFFFF';TextSecondary='#C5FFFFFF';ControlStroke='#12FFFFFF';ControlStrongStroke='#8BFFFFFF';TextOnAccent='#FF000000';SuccessText='#FF6CCB5F';CautionText='#FFFCE100';CriticalText='#FFFF99A4';SuccessBackground='#FF393D1B';CautionBackground='#FF433519';CriticalBackground='#FF442726'}
 }
-$keys='Layer,Card,CardStroke,TextPrimary,TextSecondary,ControlStroke,ControlStrongStroke,AccentFill,TextOnAccent,SuccessText,CautionText,CriticalText,SuccessBackground,CautionBackground,CriticalBackground'
+$keys='Layer,Card,CardStroke,Flyout,TextPrimary,TextSecondary,ControlStroke,ControlStrongStroke,AccentFill,TextOnAccent,SuccessText,CautionText,CriticalText,SuccessBackground,CautionBackground,CriticalBackground'
 $tok=@{}
 foreach($theme in 'light','dark'){
     $accent=if($theme -eq 'light'){'#FF005FB8'}else{'#FF60CDFF'}
@@ -51,12 +51,22 @@ function Pair([string]$Theme,[string]$Name,[string]$Fg,[string]$Bg,[string]$Laye
 foreach($theme in 'light','dark'){
     $t=$tok[$theme]
     foreach($n in 'TextPrimary','TextSecondary','SuccessText','CautionText','CriticalText'){Pair $theme ($n+' on Card') $t[$n] $t.Card $t.Layer 4.5 $true}
+    Pair $theme 'TextPrimary on Flyout' $t.TextPrimary $t.Flyout '' 4.5 $true
+    Pair $theme 'TextSecondary on Flyout' $t.TextSecondary $t.Flyout '' 4.5 $true
     Pair $theme 'TextSecondary on Layer' $t.TextSecondary $t.Layer '' 4.5 $true
     foreach($s in 'Success','Caution','Critical'){Pair $theme ($s+'Text on '+$s+'Background') $t[$s+'Text'] $t[$s+'Background'] '' 4.5 $true}
     Pair $theme 'TextOnAccent on AccentFill' $t.TextOnAccent $t.AccentFill '' 4.5 $true
     Pair $theme 'ControlStrongStroke on Card' $t.ControlStrongStroke $t.Card $t.Layer 3.0 $true
     Pair $theme 'ControlStrongStroke on Layer' $t.ControlStrongStroke $t.Layer '' 3.0 $true
     Pair $theme 'ControlStroke on Card' $t.ControlStroke $t.Card $t.Layer 3.0 $false
+}
+
+# The Flyout surface is a popup's own window, so it is opaque (alpha FF); Card stays translucent. A translucent Flyout must fail the check.
+function Test-FlyoutOpaque([string]$Argb){ return ($Argb -cmatch '^#FF[0-9A-F]{6}$') }
+foreach($theme in 'light','dark'){
+    Check (Test-FlyoutOpaque $tok[$theme].Flyout) ($theme+' Flyout is opaque (alpha FF)')
+    Check (-not (Test-FlyoutOpaque $tok[$theme].Card)) ($theme+' Card stays translucent (not a popup surface)')
+    Check (-not (Test-FlyoutOpaque ('#B3'+$tok[$theme].Flyout.Substring(3)))) ($theme+' mutant: a translucent Flyout fails the opaque check')
 }
 
 # Metrics.

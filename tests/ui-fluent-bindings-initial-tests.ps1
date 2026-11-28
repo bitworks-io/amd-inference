@@ -75,9 +75,6 @@ function Get-BindingsInitialRows {
     [void]$rows.Add(@{ Name = 'pathBox'; Kind = 'TextBox'; TextIsInstallRoot = $true; Enabled = $true; Visible = $true })
     [void]$rows.Add(@{ Name = 'output'; Kind = 'TextBox'; Text = ''; Enabled = $true; Visible = $true; Multiline = $true; ReadOnly = $true })
     [void]$rows.Add(@{ Name = 'progress'; Kind = 'ProgressBar'; Style = 'Marquee'; Enabled = $true; Visible = $false })
-    # 5b-delete-begin
-    [void]$rows.Add(@{ Name = 'statusTip'; Kind = 'ToolTip' })
-    # 5b-delete-end
     return $rows.ToArray()
 }
 

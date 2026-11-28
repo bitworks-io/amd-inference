@@ -150,18 +150,6 @@ function Invoke-PagesBoxTablePins([string]$UiPath) {
     Check-BoxPin ($keptCalls.Count -eq 16) 'P41 pin: fast-llm-ui.ps1 has exactly 16 ShowUiMessageBox call sites outside the two licence dialogs' "found=$($keptCalls.Count) expected=16"
     Check-BoxPin ($keptTable.Count -eq 16) 'P41 pin: the T5 table has 16 rows for them' "rows=$($keptTable.Count) expected=16"
     Check-BoxPin (@($table | Where-Object { $_.ContainsKey('Link') }).Count -eq 2) 'P41 pin: the T5 table has the two licence link rows (license-setting, license-consent)' ''
-    # 5b-delete-begin
-    Check-BoxPin ($calls.Count -eq 18) 'P41 pin: the classic file has exactly 18 ShowUiMessageBox call sites' "found=$($calls.Count) expected=18"
-    Check-BoxPin ($table.Count -eq 18) 'P41 pin: the T5 table has one row per call site (18)' "rows=$($table.Count) expected=18"
-    foreach ($row in @($table | Where-Object { $_.ContainsKey('Link') })) {
-        $match = @($calls | Where-Object { [string]$_['Site'] -ceq [string]$row.Site -and [string]$_['Caption'] -ceq [string]$row.Caption -and [string]$_['Buttons'] -ceq [string]$row.Buttons })
-        Check-BoxPin ($match.Count -eq 1) "P41 pin: row $($row.Id) matches exactly one classic call (site, caption, buttons)" "site='$($row.Site)' caption='$($row.Caption)' buttons=$($row.Buttons) matches=$($match.Count)"
-        if ($match.Count -ne 1) { continue }
-        Check-BoxPin ([string]$match[0]['Icon'] -ceq [string]$row.Icon -and [string]$match[0]['Default'] -ceq [string]$row.Default) "P41 pin: row $($row.Id) icon and default button are the classic call's" "classic icon=$($match[0]['Icon']) default=$($match[0]['Default']) table icon=$($row.Icon) default=$($row.Default) (line $($match[0]['Line']))"
-        $classicText = [string]$match[0]['Text']
-        Check-BoxPin ($classicText -ceq [string]$row.ErrorText) "P41 pin: row $($row.Id) the classic call's text is the literal the fluent twin pins" "classic text='$classicText' literal='$($row.ErrorText)'"
-    }
-    # 5b-delete-end
     foreach ($row in $keptTable) {
         $match = @($keptCalls | Where-Object { [string]$_['Site'] -ceq [string]$row.Site -and [string]$_['Caption'] -ceq [string]$row.Caption -and [string]$_['Buttons'] -ceq [string]$row.Buttons })
         Check-BoxPin ($match.Count -eq 1) "P41 pin: row $($row.Id) matches exactly one classic call (site, caption, buttons)" "site='$($row.Site)' caption='$($row.Caption)' buttons=$($row.Buttons) matches=$($match.Count)"
@@ -173,12 +161,6 @@ function Invoke-PagesBoxTablePins([string]$UiPath) {
         $hit = @($table | Where-Object { [string]$_.Site -ceq [string]$c['Site'] -and [string]$_.Caption -ceq [string]$c['Caption'] -and [string]$_.Buttons -ceq [string]$c['Buttons'] })
         Check-BoxPin ($hit.Count -eq 1) "P41 pin: the classic call at line $($c['Line']) ('$($c['Caption'])') is in the T5 table" "site='$($c['Site'])' buttons=$($c['Buttons']) rows=$($hit.Count)"
     }
-    # 5b-delete-begin
-    foreach ($c in @($calls | Where-Object { ([string]$_['Site']).StartsWith('ShowLicenseSettingConfirm|') -or ([string]$_['Site']).StartsWith('ShowComponentConsent|') })) {
-        $hit = @($table | Where-Object { [string]$_.Site -ceq [string]$c['Site'] -and [string]$_.Caption -ceq [string]$c['Caption'] -and [string]$_.Buttons -ceq [string]$c['Buttons'] })
-        Check-BoxPin ($hit.Count -eq 1) "P41 pin: the classic call at line $($c['Line']) ('$($c['Caption'])') is in the T5 table" "site='$($c['Site'])' buttons=$($c['Buttons']) rows=$($hit.Count)"
-    }
-    # 5b-delete-end
     # the two licence link-error boxes, on the fluent side: one box call in the shared link helper, the caption, the text of each dialog, the box's own default
     $consentSource = [System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentConsent.ps1'))
     $dialogsSource = [System.IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentDialogs.ps1'))
@@ -351,48 +333,6 @@ function Get-PagesFluentTextTable([string]$Root) {
     return $map
 }
 
-# 5b-delete-begin
-# The classic half of one dialog row: the classic function's title, AcceptButton, CancelButton, every button's DialogResult and caption, reveal and close box, read from fast-llm-ui.ps1.
-# Every statement is unconditional: a missing classic function fails the row.
-function Invoke-PagesClassicDialogRowPins($row, [string]$UiPath) {
-    $id = [string]$row.Id
-    # the classic form
-    $classicAst = Get-PagesFunctionAst $UiPath ([string]$row.Classic)
-    Check-BoxPin ($null -ne $classicAst) "P42 pin: row $id the classic function $($row.Classic) is in fast-llm-ui.ps1 exactly once" ''
-    if ($null -eq $classicAst) { return }
-    $facts = Get-PagesClassicFormFacts $classicAst
-    Check-BoxPin ([string]$facts.Title -ceq [string]$row.Title) "P42 pin: row $id the classic form's title is '$($row.Title)'" "classic title='$($facts.Title)'"
-    $enterText = ''; $escapeText = ''
-    if ($facts.Texts.ContainsKey([string]$facts.AcceptVar)) { $enterText = [string]$facts.Texts[[string]$facts.AcceptVar] }
-    if ($facts.Texts.ContainsKey([string]$facts.CancelVar)) { $escapeText = [string]$facts.Texts[[string]$facts.CancelVar] }
-    $wantEnterText = ''; $wantEscapeText = ''
-    foreach ($b in @($row.Buttons)) { if ([string]$b.Id -ceq [string]$row.EnterId) { $wantEnterText = [string]$b.Text }; if ([string]$b.Id -ceq [string]$row.EscapeId) { $wantEscapeText = [string]$b.Text } }
-    Check-BoxPin ($enterText -ceq $wantEnterText -and $enterText -cne '') "P42 pin: row $id the classic AcceptButton (Enter) is '$wantEnterText'" "AcceptButton=$($facts.AcceptVar) text='$enterText' expected='$wantEnterText'"
-    Check-BoxPin ($escapeText -ceq $wantEscapeText -and $escapeText -cne '') "P42 pin: row $id the classic CancelButton (Escape and the close box) is '$wantEscapeText'" "CancelButton=$($facts.CancelVar) text='$escapeText' expected='$wantEscapeText'"
-    foreach ($b in @($row.Buttons)) {
-        $var = ''
-        foreach ($k in @($facts.Texts.Keys)) { if ([string]$facts.Texts[$k] -ceq [string]$b.Text) { $var = [string]$k } }
-        $dr = ''; if ($var -ne '' -and $facts.Results.ContainsKey($var)) { $dr = [string]$facts.Results[$var] }
-        Check-BoxPin ($var -ne '' -and $dr -ceq [string]$b.DR) "P42 pin: row $id the classic button '$($b.Text)' has DialogResult $($b.DR)" "variable='$var' DialogResult='$dr' expected='$($b.DR)'"
-    }
-    Check-BoxPin (([bool]([string]$classicAst.Extent.Text).Contains('RevealUiForAction')) -eq [bool]$row.Reveal) "P42 pin: row $id the classic function reveals the window exactly when the table says ($($row.Reveal))" "classic reveal=$(([string]$classicAst.Extent.Text).Contains('RevealUiForAction')) expected=$($row.Reveal)"
-    # the classic form's X is the CancelButton: the form has no ControlBox change and no FormClosing guard
-    Check-BoxPin (-not ([string]$classicAst.Extent.Text).Contains('ControlBox') -and -not ([string]$classicAst.Extent.Text).Contains('Add_FormClosing')) "P42 pin: row $id the classic form keeps its close box (the X answers the CancelButton)" ''
-    # the answer of every button, as the classic function returns it (the frozen Result column equals what the classic dialog answers for that DialogResult)
-    $classicNoSpace = ([string]$classicAst.Extent.Text) -replace '\s', ''
-    foreach ($b in @($row.Buttons)) {
-        $wantResult = [string]$b.Result
-        $classicSays = $false
-        if ([string]$row.ResultKind -ceq 'bool') { $classicSays = ($classicNoSpace.Contains('$dialog.ShowDialog($form)-eq[Windows.Forms.DialogResult]::OK') -and $wantResult -ceq $(if ([string]$b.DR -ceq 'OK') { 'true' } else { 'false' })) }
-        elseif ([string]$row.ResultKind -ceq 'picked') { $classicSays = ($classicNoSpace.Contains('-eq[Windows.Forms.DialogResult]::OK-and$list.SelectedItems.Count-eq1') -and $classicNoSpace.Contains('return$picked') -and $wantResult -ceq $(if ([string]$b.DR -ceq 'OK') { 'picked' } else { 'null' })) }
-        else {
-            if ($wantResult -ceq 'defer') { $classicSays = $classicNoSpace.Contains("return'defer'") -and [string]$b.DR -ceq 'Cancel' }
-            else { $classicSays = [regex]::IsMatch($classicNoSpace, [regex]::Escape("[Windows.Forms.DialogResult]::$($b.DR)") + '(-and\$offer\.canPrepare)?\)\{return''' + [regex]::Escape($wantResult) + '''\}') }
-        }
-        Check-BoxPin $classicSays "P42 pin: row $($row.Id) the classic dialog answers '$wantResult' for the button '$($b.Text)' (DialogResult $($b.DR))" "result kind=$($row.ResultKind) DialogResult='$($b.DR)' expected result='$wantResult'"
-    }
-}
-# 5b-delete-end
 
 # What a fluent dialog function answers for each of its buttons, read from the function's source (the twin of the classic DialogResult column), as id -> result text:
 #   bool    : [bool] ($answer -ceq '<Id>') (the one button that answers true; every other button false)
@@ -511,9 +451,6 @@ function Invoke-PagesDialogTablePins([string]$Root) {
             Check-BoxPin ($bad.Count -eq 0) "P42 pin: row $id the fluent function answers '$($b.Result)' for the button $($b.Id)" ($bad -join '; ')
         }
         Check-BoxPin ($resultProblems.Count -eq 0) "P42 pin: row $id answers nothing but the table's results" ($resultProblems -join '; ')
-        # 5b-delete-begin
-        if ([string]$row.Classic -cne '') { Invoke-PagesClassicDialogRowPins $row $uiPath }
-        # 5b-delete-end
     }
     # mutants of the result column: each regression of an answer is found on a changed copy of the fluent source, and the unchanged source passes
     $srcConsent = [System.IO.File]::ReadAllText((Join-Path $Root 'src/FastLlm.UiFluentConsent.ps1'))
@@ -543,17 +480,6 @@ function Invoke-PagesDialogTablePins([string]$Root) {
         Check-BoxPin (@(Get-PagesChooserFluentProblems $chooserText.Replace("if (`$enabled) { `$state['Enter'] = 'Choose' } else { `$state['Enter'] = '' }", "`$state['Enter'] = 'Choose'")).Count -ge 1) 'P42 mutation check: an Enter target that does not follow the selection is flagged' ''
     }
     else { Check-BoxPin $false 'P42 pin: the fluent chooser function was found' '' }
-    # 5b-delete-begin
-    $chooserClassic = Get-PagesFunctionAst $uiPath 'ShowRecipeChooser'
-    Check-BoxPin ($null -ne $chooserClassic) 'P42 pin: the classic chooser function ShowRecipeChooser is in fast-llm-ui.ps1 exactly once' ''
-    if ($null -ne $chooserClassic) {
-        $ct = [string]$chooserClassic.Extent.Text
-        $ctNoSpace = ($ct -replace '\s', '')
-        $classicDouble = @($chooserClassic.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_DoubleClick' }, $true))
-        Check-BoxPin ($classicDouble.Count -eq 1 -and ([string]$classicDouble[0].Extent.Text -replace '\s', '').Contains('$list.SelectedItems.Count-eq1') -and ([string]$classicDouble[0].Extent.Text).Contains('[Windows.Forms.DialogResult]::OK')) "P42 pin: the classic chooser double-clicks a selected row to OK (fast-llm-ui.ps1 line $(if ($classicDouble.Count -eq 1) { $classicDouble[0].Extent.StartLineNumber } else { '?' }), `$list.Add_DoubleClick)" "handlers=$($classicDouble.Count)"
-        Check-BoxPin ($ctNoSpace.Contains('$choose.Enabled=$false') -and $ctNoSpace.Contains('$choose.Enabled=($list.SelectedItems.Count-eq1)')) 'P42 pin: the classic Choose button is disabled until exactly one row is selected' ''
-    }
-    # 5b-delete-end
     # the save prompt: its result strings and its Save button
     $saveAst = Get-PagesFunctionAst (Join-Path $Root 'src/FastLlm.UiFluentSettings.ps1') 'Show-FastLlmUiFluentSavePrompt'
     if ($null -ne $saveAst) {
@@ -1413,13 +1339,6 @@ function Invoke-P2-ConnectAnApp {
     Check ((Get-FastLlmUiFluentCurrentPage) -ceq 'Connect' -and $els.NavConnect.IsSelected) 'P2 Connect an app hosts the Connect page' "current=$(Get-FastLlmUiFluentCurrentPage)"
     Check $hasFocus 'P2 Connect an app puts the focus on the Connect pane item' "focused=$(if ($null -ne $focused) { $focused.GetType().Name } else { 'nothing' })"
     Check (Test-FastLlmUiFluentPageRegistered -Id 'Connect') 'P2 the Connect page is registered' ''
-    # 5b-delete-begin
-    Check ($script:connectDialogCalls -eq 0 -and (Test-FastLlmUiFluentPageRegistered -Id 'Connect')) 'P2 ShowConnectDialog stays at 0 while the Connect page is registered' "calls=$($script:connectDialogCalls)"
-    # Control: the counter can move. The adapter event raised directly reaches the real wiring once; then the counter is put back.
-    Invoke-FastLlmUiAdapterEvent -Adapter $script:connectButton -Event 'Click'
-    Check ($script:connectDialogCalls -eq 1) 'P2 control: a raised adapter Click reaches the wired ShowConnectDialog stub once (the counter can move)' "calls=$($script:connectDialogCalls)"
-    $script:connectDialogCalls = 0
-    # 5b-delete-end
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Check-NoExceptions 'P2'
 }
@@ -1574,7 +1493,10 @@ function Invoke-P4a-CardAttachReady {
         # Start in background: our request id is pending and the observation is the host's Ready identity for that same request
         $bg = Get-UiBackgroundFixture -Name 'ready-attachable'
         $bg.pendingRequestId = [string]$bg.observation.requestId
-        $script:shellSnap = New-ShellSnap @{ Background = $bg }
+        # RunReady as the background poll computes it (UpdateUiRunState): an active background host whose status says ready is ready, attached or not (canary .2)
+        $runReady = [bool](Test-FastLlmUiServingReady -Status ([pscustomobject]@{ active = $true; phase = 'ready' }) -ForegroundChildActive $false -BackgroundObservation $bg.observation)
+        Check $runReady 'P4a the poll''s RunReady is true for the Ready background host' "runReady=$runReady"
+        $script:shellSnap = New-ShellSnap @{ Background = $bg; RunReady = $runReady }
         # SetBusy sets the adapter from the control-state rule; the tick then draws the card
         $adapter.Enabled = [bool](Get-FastLlmUiControlStates -Snapshot $script:shellSnap).backgroundAttach
         Invoke-FastLlmUiFluentTick
@@ -2496,18 +2418,7 @@ function Invoke-P20-HomeToModels {
     # The Models page and its rows never open today's dialogs
     $null = Set-FastLlmUiFluentPage -Id 'Home'
     Open-ModelsPage
-    # 5b-delete-begin
-    Check (($script:dialogCalls['switch'] + $script:dialogCalls['models'] + $script:dialogCalls['components']) -eq 0) 'P20 ShowUiSwitchPicker, ShowModelsWindow and ShowComponentsWindow stay at 0 after Switch, Change and the Models page opening' "switch=$($script:dialogCalls['switch']) models=$($script:dialogCalls['models']) components=$($script:dialogCalls['components'])"
-    # 5b-delete-end
     # Control: each counter can move (the real-shaped wiring of P0 is reached by a raised adapter Click), then it is put back
-    # 5b-delete-begin
-    foreach ($pair in @(@('switchButton', 'switch'), @('modelsButton', 'models'), @('componentsButton', 'components'))) {
-        $before = [int]$script:dialogCalls[[string]$pair[1]]
-        Invoke-FastLlmUiAdapterEvent -Adapter (Get-Variable -Name ([string]$pair[0]) -Scope Script -ValueOnly) -Event 'Click'
-        Check ([int]$script:dialogCalls[[string]$pair[1]] -eq ($before + 1)) "P20 control: a raised $($pair[0]) Click reaches its wired dialog stub once (the counter can move)" "before=$before after=$($script:dialogCalls[[string]$pair[1]])"
-        $script:dialogCalls[[string]$pair[1]] = 0
-    }
-    # 5b-delete-end
     foreach ($pair in @(,@('chooseButton', 'recipe'))) {
         $before = [int]$script:dialogCalls[[string]$pair[1]]
         Invoke-FastLlmUiAdapterEvent -Adapter (Get-Variable -Name ([string]$pair[0]) -Scope Script -ValueOnly) -Event 'Click'
@@ -2568,6 +2479,41 @@ function Send-ModelsKeyChecked($Element, $Key, [int]$Vk, [scriptblock]$Done) {
     Write-Host ("INFO: P21 key $Key on $($Element.Name): path used = $path $threw")
     return $path
 }
+# Lab canary observation: the shared Expander style sets its text colour, so the Home Activity header reads TextPrimary. That is at least 4.5:1 on the layer
+# and on a card on it, light and dark. The dictionary is swapped for each theme and restored after.
+function Invoke-P21b-ExpanderContrast {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $mergedDicts = $f.Window.Resources.MergedDictionaries
+    $origDict = $mergedDicts[0]
+    try {
+        foreach ($theme in 'light', 'dark') {
+            $mergedDicts.Clear()
+            $dict = New-FastLlmUiThemeDictionary -Theme $theme -AccentPair (Get-FastLlmUiAccentPair $null) -TextScale 1.0
+            $mergedDicts.Add($dict)
+            Invoke-Pump 100
+            $tokens = Get-FastLlmUiThemeTokens -Theme $theme
+            $want = 'none'; if ($dict['FastLlm.TextPrimaryBrush'] -is [System.Windows.Media.SolidColorBrush]) { $want = [string]$dict['FastLlm.TextPrimaryBrush'].Color.ToString() }
+            $fg = $els.ActivityHeader.Foreground
+            $got = 'none'; if ($fg -is [System.Windows.Media.SolidColorBrush]) { $got = [string]$fg.Color.ToString() }
+            $onLayer = 0.0; $onCard = 0.0
+            if ($got -cne 'none') {
+                $onLayer = [double](Get-FastLlmUiContrastRatio -Foreground $got -Background ([string]$tokens.Layer))
+                $onCard = [double](Get-FastLlmUiContrastRatio -Foreground $got -Background ([string]$tokens.Card) -Layer ([string]$tokens.Layer))
+            }
+            Check ($got -cne 'none' -and $got -ceq $want -and $onLayer -ge 4.5 -and $onCard -ge 4.5) "P21b the Home Activity header text is TextPrimary, at least 4.5:1 on the layer and on a card ($theme)" "got=$got want=$want onLayer=$([Math]::Round($onLayer, 2)) onCard=$([Math]::Round($onCard, 2))"
+        }
+    }
+    finally {
+        $mergedDicts.Clear()
+        $mergedDicts.Add($origDict)
+        Invoke-Pump 50
+    }
+    Check-NoExceptions 'P21b'
+}
 function Invoke-P21-TwoWay {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -2604,6 +2550,50 @@ function Invoke-P21-TwoWay {
     $els.ModelsModelBox.SelectedIndex = 1
     Invoke-Pump 50
     Check ([int]$script:modelBox.SelectedIndex -eq 1 -and ($script:p21Events['model'] - $model0) -eq 1) 'P21 a model pick reaches the adapter once' "adapterIndex=$($script:modelBox.SelectedIndex) events=$($script:p21Events['model'] - $model0)"
+    # The drop-down popup is its own window, so its surface must be opaque (FastLlm.FlyoutBrush), light and dark: the template's PART_Popup child Border
+    $mergedDicts = $f.Window.Resources.MergedDictionaries
+    $origDict = $mergedDicts[0]
+    $modelBoxEl = $els.ModelsModelBox
+    foreach ($popTheme in 'light', 'dark') {
+        $popAlpha = -1; $popKind = 'none'
+        try {
+            $mergedDicts.Clear()
+            $mergedDicts.Add((New-FastLlmUiThemeDictionary -Theme $popTheme -AccentPair (Get-FastLlmUiAccentPair $null) -TextScale 1.0))
+            $null = $modelBoxEl.ApplyTemplate()
+            $popup = $modelBoxEl.Template.FindName('PART_Popup', $modelBoxEl)
+            $modelBoxEl.IsDropDownOpen = $true
+            Invoke-Pump 150
+            $popBorder = $null; if ($null -ne $popup) { $popBorder = $popup.Child }
+            if ($popBorder -is [System.Windows.Controls.Border] -and $popBorder.Background -is [System.Windows.Media.SolidColorBrush]) { $popKind = 'SolidColorBrush'; $popAlpha = [int]$popBorder.Background.Color.A }
+        }
+        finally {
+            $modelBoxEl.IsDropDownOpen = $false
+            Invoke-Pump 50
+        }
+        Check ($popKind -ceq 'SolidColorBrush' -and $popAlpha -eq 255) "P21 the Models model drop-down popup surface is an opaque SolidColorBrush in the $popTheme theme" "kind=$popKind alpha=$popAlpha"
+    }
+    # High contrast, through the shell's own theme setter: the popup surface is the system Window colour. The window's theme state is restored after.
+    $savedTheme = $f['Theme']; $savedKey = $f['ThemeKey']
+    $hcColor = 'none'; $hcWant = [string][System.Windows.SystemColors]::WindowColor.ToString()
+    try {
+        Set-FastLlmUiFluentTheme -ThemeState ([pscustomobject]@{ Choice = 'high-contrast'; Pair = (Get-FastLlmUiAccentPair $null); Scale = 1.0; Backdrop = 'solid'; Key = 'p21-high-contrast' })
+        Invoke-Pump 100
+        $null = $modelBoxEl.ApplyTemplate()
+        $popup = $modelBoxEl.Template.FindName('PART_Popup', $modelBoxEl)
+        $modelBoxEl.IsDropDownOpen = $true
+        Invoke-Pump 150
+        $popBorder = $null; if ($null -ne $popup) { $popBorder = $popup.Child }
+        if ($popBorder -is [System.Windows.Controls.Border] -and $popBorder.Background -is [System.Windows.Media.SolidColorBrush]) { $hcColor = [string]$popBorder.Background.Color.ToString() }
+    }
+    finally {
+        $modelBoxEl.IsDropDownOpen = $false
+        Invoke-Pump 50
+        $f['Theme'] = $savedTheme; $f['ThemeKey'] = $savedKey; $f['Keys']['Dot'] = $null
+    }
+    Check ($hcColor -ceq $hcWant) 'P21 in high contrast the Models model drop-down popup surface is the system Window colour (SystemColors.WindowBrush)' "got=$hcColor want=$hcWant"
+    $mergedDicts.Clear()
+    $mergedDicts.Add($origDict)
+    Invoke-Pump 50
     # The context box: typed 40000 and committed with Enter becomes 32768; abc reverts; Up from 32000 steps to 32768
     $ctx = $els.ModelsContextBox
     $ctx.Text = '40000'
@@ -3427,16 +3417,6 @@ function Invoke-P30-Save {
     $s = $script:FastLlmUiFluentStrings
     Check (@($script:p30Missing).Count -eq 0) 'P30 NewUiApiKey and ShowLicenseSettingConfirm were found in fast-llm-ui.ps1' ("missing=" + (@($script:p30Missing) -join ','))
     Check ($script:settingsWiring.ContainsKey('$updateBox') -and $script:settingsWiring.ContainsKey('$experimentalBox') -and $script:settingsWiring.ContainsKey('$licenseBox')) 'P30 the real wiring statements of the update, experimental and licence boxes were found in fast-llm-ui.ps1' "found=[$((@($script:settingsWiring.Keys) -join ','))]"
-    # 5b-delete-begin
-    Check ($script:settingsWiring.Count -eq 4) 'P30 the real wiring statements of the update, experimental and licence boxes and of settingsButton.Add_Click were found in fast-llm-ui.ps1' "found=[$((@($script:settingsWiring.Keys) -join ','))]"
-    # 5b-delete-end
-    # 5b-delete-begin
-    # Control: the classic Settings button wiring is real-shaped and a raised Click reaches its counter; the page itself never does.
-    $script:settingsDialogCalls = 0
-    Invoke-FastLlmUiAdapterEvent -Adapter $script:settingsButton -Event 'Click'
-    Check ($script:settingsDialogCalls -eq 1) 'P30 control: a raised settingsButton Click reaches the wired ShowUiSettings stub once (the counter can move)' "calls=$($script:settingsDialogCalls)"
-    $script:settingsDialogCalls = 0
-    # 5b-delete-end
 
     # A. Opening fills the page from the saved values; an edit to each field makes it dirty and Discard puts that field back.
     Check (Open-SettingsPage @{}) 'P30 Set-FastLlmUiFluentPage -Id Settings hosts the registered Settings page' "current=$(Get-FastLlmUiFluentCurrentPage)"
@@ -3591,9 +3571,6 @@ function Invoke-P30-Save {
     Check ($r.Count -eq 1 -and $r[0] -and [string]$script:shellFailMsg -ceq 'refresh boom' -and (Test-SettingsRecClean $d) -and -not [bool]$st['Dirty'] -and [int]$st['Saved'].port -eq 9000) 'P30 a throw in the after-OK block goes to ShowFailure, shows no Warning box, and the save stays a completed save (clean, Saved = Held, returns true)' ("failure='$($script:shellFailMsg)' dirty=$($st['Dirty']) saved=$($st['Saved'].port) " + (Get-SettingsRecDetail $d))
 
     Close-SettingsPage
-    # 5b-delete-begin
-    Check ($script:settingsDialogCalls -eq 0) 'P30 ShowUiSettings (the classic dialog) was never reached by the page' "calls=$($script:settingsDialogCalls)"
-    # 5b-delete-end
     Check-NoExceptions 'P30'
 }
 
@@ -4450,10 +4427,6 @@ function Invoke-P38-SettingsAdditions {
 function Invoke-P99-StartupFaults {
     if (-not $script:shellOk) { return }
     try { $script:FastLlmUiFluent.Timer.Stop() } catch { $null = $_ }
-    # 5b-delete-begin
-    Check ($script:connectDialogCalls -eq 0) 'P99 ShowConnectDialog was never called in fluent mode' "calls=$($script:connectDialogCalls)"
-    Check ($script:settingsDialogCalls -eq 0) 'P99 ShowUiSettings (the classic Settings dialog) was never called by the Fluent Settings page' "calls=$($script:settingsDialogCalls)"
-    # 5b-delete-end
     # Text C is the same for a markup fault as for a theme fault, and the real stop function passes its reason on and exits 3
     $textXaml = Get-FastLlmUiUnsupportedText -Reason 'xaml-parse' -Folder 'C:\example'
     $textTheme = Get-FastLlmUiUnsupportedText -Reason 'theme-init' -Folder 'C:\example'
@@ -4485,9 +4458,6 @@ function Invoke-P99-StartupFaults {
     finally { Set-Item -Path Function:\New-FastLlmUiXamlElement -Value $script:realXamlLoader }
     Check ($errSettings -ceq 'startup stopped: xaml-parse') 'P99 an injected Settings markup fault stops the startup with xaml-parse (text C, exit 3)' "error='$errSettings'"
     Check ((${function:New-FastLlmUiXamlElement}).ToString() -ceq $script:realXamlLoader.ToString()) 'P99 the real XAML loader is restored after the Settings fault' ''
-    # 5b-delete-begin
-    Check (($script:dialogCalls['switch'] + $script:dialogCalls['models'] + $script:dialogCalls['components']) -eq 0) 'P99 ShowUiSwitchPicker, ShowModelsWindow and ShowComponentsWindow were never called by a Fluent page action' "switch=$($script:dialogCalls['switch']) models=$($script:dialogCalls['models']) components=$($script:dialogCalls['components'])"
-    # 5b-delete-end
     Check-NoExceptions 'P99'
 }
 
@@ -4585,16 +4555,6 @@ function Get-PagesBoxSources {
     $ex = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text.Contains('That file already exists') }, $true))
     $src['ExistsStmt'] = $null
     if ($ex.Count -eq 1) { $src['ExistsStmt'] = [scriptblock]::Create([string]$ex[0].Extent.Text) }
-    # 5b-delete-begin
-    foreach ($pair in @(@('LicenseSetting', 'ShowLicenseSettingConfirm'), @('LicenseConsent', 'ShowComponentConsent'))) {
-        $script:p41Fn = [string]$pair[1]
-        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $script:p41Fn }, $true)
-        $src[[string]$pair[0]] = $null
-        if ($null -eq $fn) { continue }
-        $wire = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and [string]$n.Member.Extent.Text -ceq 'Add_LinkClicked' }, $true))
-        if ($wire.Count -eq 1 -and $wire[0].Arguments.Count -eq 1) { $src[[string]$pair[0]] = & ([scriptblock]::Create([string]$wire[0].Arguments[0].Extent.Text)) }
-    }
-    # 5b-delete-end
     return $src
 }
 # Attaches the real `<adapter>.Add_LinkClicked(...)` statements (the five link handlers) to the shell's adapters; returns the handler counts to put back.
@@ -4641,10 +4601,6 @@ function Invoke-PagesBoxOpen([string]$Id) {
             Invoke-Pump 50
             Close-SettingsPage
         }
-        # 5b-delete-begin
-        'license-setting' { & $src['LicenseSetting'] ([pscustomobject]@{ Tag = 'https://example.org/license-probe' }) $null }
-        'license-consent' { & $src['LicenseConsent'] ([pscustomobject]@{ Tag = 'https://example.org/license-probe' }) $null }
-        # 5b-delete-end
         'newkey-ask' { $null = NewUiApiKey $script:form }
         'newkey-done' { $null = NewUiApiKey $script:form }
         'remove-model' {
@@ -4829,9 +4785,6 @@ function Invoke-P41-DialogKeys {
     $script:p41Src = Get-PagesBoxSources
     $srcMissing = @($script:p41Src.Keys | Where-Object { $null -eq $script:p41Src[$_] })
     Check (@('CloseIf', 'ExistsStmt' | Where-Object { -not ($script:p41Src.ContainsKey($_) -and $null -ne $script:p41Src[$_]) }).Count -eq 0) 'P41 the Close FastLLM statement and the already-exists statement were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
-    # 5b-delete-begin
-    Check ($srcMissing.Count -eq 0 -and $script:p41Src.ContainsKey('LicenseSetting') -and $script:p41Src.ContainsKey('LicenseConsent')) 'P41 the Close FastLLM statement, the already-exists statement and the two licence link handlers were found in fast-llm-ui.ps1' ("missing=" + ($srcMissing -join ','))
-    # 5b-delete-end
     $script:p41Diagnostic = [pscustomobject]@{ windows = $true; driverGuidance = @([pscustomobject]@{ schemaVersion = 1; qualification = $false; automaticDriverInstall = $false; hasOwnTrustedMapping = $false
         asOf = '2026-01-01'; inputGpuName = 'Probe display device'; reportedPnpDriverVersion = '1.0'; knownFocusModel = $false; note = '' }) }
     # Start-Process is shadowed for the whole step (a local function, seen by every callee): a link handler's catch block shows its box and no browser opens.
@@ -4848,17 +4801,6 @@ function Invoke-P41-DialogKeys {
             }
             Write-Host ("INFO: P41 row $($row.Id) took " + ($rowWatch.ElapsedMilliseconds - $rowStart) + " ms")
         }
-        # 5b-delete-begin
-        # the two licence link rows through their classic link handlers (the fluent link boxes are driven in P43, in three phases each)
-        foreach ($row in @(Get-PagesBoxTable | Where-Object { $_.ContainsKey('Link') })) {
-            $rowStart = $rowWatch.ElapsedMilliseconds
-            foreach ($action in 'enter', 'escape', 'x') {
-                $go = Test-PagesBoxPhase $row $action $hwnd
-                if (-not $go) { break }
-            }
-            Write-Host ("INFO: P41 row $($row.Id) took " + ($rowWatch.ElapsedMilliseconds - $rowStart) + " ms")
-        }
-        # 5b-delete-end
         foreach ($kind in 'side', 'guidance') {
             foreach ($action in 'enter', 'escape', 'x') { Test-PagesFormPhase $kind $action $hwnd }
         }
@@ -5395,7 +5337,7 @@ $script:steps = @(
     'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
     'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
-    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
+    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
     'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows', 'Invoke-P44-DialogTabWalk',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',

@@ -307,21 +307,6 @@ function Invoke-A11-ScreenGap {
     $msg = ''
     try { $null = [System.Windows.Forms.Screen]::FromControl($form) } catch { $msg = $_.Exception.Message }
     Check ($msg -ne '') 'A11 Screen.FromControl($form) still throws on the adapter (which is why the call site passes the handle)' 'FromControl returned without throwing'
-    # 5b-delete-begin
-    $uiAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'), [ref]$null, [ref]$null)
-    $def = $uiAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'GetUiSettingsDialogMaxHeight' }, $true)
-    Check ($null -ne $def) 'A11 GetUiSettingsDialogMaxHeight was found in fast-llm-ui.ps1' ''
-    if ($null -ne $def) {
-        . ([scriptblock]::Create([string]$def.Extent.Text))
-        $got = -1; $want = -2; $err = ''
-        try {
-            $got = [int](GetUiSettingsDialogMaxHeight $form.Handle)
-            $want = [int][System.Windows.Forms.Screen]::FromHandle($s.Hwnd).WorkingArea.Height
-        }
-        catch { $err = $_.Exception.Message }
-        Check ($err -eq '' -and $got -gt 0 -and $got -eq $want) 'A11 GetUiSettingsDialogMaxHeight $form.Handle returns the working-area height of the adapter window''s screen (the same as Screen.FromHandle of the real hwnd)' "got=$got want=$want hwnd=$($s.Hwnd) formHandle=$($form.Handle) error=$err"
-    }
-    # 5b-delete-end
     Check-NoExceptions 'A11'
 }
 

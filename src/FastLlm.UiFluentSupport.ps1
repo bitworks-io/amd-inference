@@ -1,4 +1,4 @@
-# What happens when -Window fluent is asked for on a PC that cannot run WPF: the support decision, the execution-policy flag rule,
+# What happens on a PC that cannot run WPF: the support decision, the execution-policy flag rule,
 # the approved texts (spec 6.9, verbatim) and the run-log event. No window opens on such a PC; the caller exits with code 3.
 Set-StrictMode -Version 2.0
 

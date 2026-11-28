@@ -677,9 +677,6 @@ $expectedCallers = @(
     'FastLlm.SignInStart.ps1'
     'FastLlm.UiFluentSettings.ps1'
     'fast-llm.ps1'
-    # 5b-delete-begin
-    'fast-llm-ui.ps1'
-    # 5b-delete-end
 )
 Assert-True ($callers.Count -eq $expectedCallers.Count -and @($expectedCallers | Where-Object { $callers -ccontains $_ }).Count -eq $expectedCallers.Count -and @($callers | Where-Object { $expectedCallers -ccontains $_ }).Count -eq $callers.Count) "only the sign-in module, the fluent Settings page and the CLI settings action (and, until the flip, the window script) can register ($($callers -join ', '))"
 # the fluent Settings page is the window checkbox handler's copy: its one call sits only inside Invoke-FastLlmUiFluentSettingsSignIn
@@ -697,11 +694,6 @@ Assert-True ($beforeSettings -notmatch 'Set-FastLlmSignInStart|Invoke-FastLlmSig
 Assert-True ($cliText -match '(?s)\[ValidateSet\(''on'', ''off''\)\]\s*\[string\] \$StartAtSignIn') 'the CLI parameter is on or off'
 $uiText = Get-Content -LiteralPath (Join-Path $repo 'fast-llm-ui.ps1') -Raw
 $clickAt = $uiText.IndexOf('$startBox.Add_Click')
-# 5b-delete-begin
-Assert-True ($clickAt -gt 0 -and $uiText.IndexOf('Set-FastLlmSignInStartEnabled') -gt $clickAt -and $uiText.LastIndexOf('Set-FastLlmSignInStartEnabled') -eq $uiText.IndexOf('Set-FastLlmSignInStartEnabled')) 'the window registers only from the checkbox click handler'
-Assert-True ($uiText -match 'Get-FastLlmSignInSettingsView') 'the window reads the checked state from the Run value view'
-Assert-True ($uiText.Contains('$startBox.Add_Click') -and $uiText.Contains('Get-FastLlmSignInSettingsView')) 'literal == classic: the window handler is $startBox.Add_Click and its checked state comes from Get-FastLlmSignInSettingsView'
-# 5b-delete-end
 # The fluent twins: the Settings page registers only from the toggle's Checked and Unchecked handlers and reads the toggle state through the Run value view.
 # A mutant is a copy of the page source with one plausible regression; each twin must fail it and pass the real file (the control).
 function Test-FluentTwin([string]$Name, [string]$Source, [scriptblock]$Predicate, [System.Collections.IDictionary]$Mutants) {

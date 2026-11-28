@@ -210,11 +210,6 @@ try {
     $startAt=$entry.IndexOf("        'start' {")
     Check ($startAt -lt 0 -or $callAt -lt $startAt -or $startAt -lt $doctorAt) 'apicheck-not-in-start: not inside the start branch'
     $ui=Get-Content -LiteralPath (Join-Path $root 'fast-llm-ui.ps1') -Raw
-    # 5b-delete-begin
-    Check ($ui.Contains("LaunchSideStep 'api check' (@('doctor','-ApiCheck')") -and $ui.Contains('$connectButton=ButtonAt ''Connect an app'' $rowSlotX[1] $rowY $rowWidth')) 'window runs doctor -ApiCheck as a side step; button sits in slot 1'
-    # (the slot half is a WinForms layout fact: it has no fluent twin)
-    Check ($ui.Contains("LaunchSideStep 'api check' (@('doctor','-ApiCheck')+`$script:selection)")) 'literal == classic: the window runs the API check as the side step LaunchSideStep ''api check'' (@(''doctor'',''-ApiCheck'')+$script:selection)'
-    # 5b-delete-end
     # The fluent twin: the Connect page's Check button runs the same side step, with the same arguments, through one function. Literals come from the classic line above.
     function Test-FluentTwin([string]$Name,[string]$Source,[scriptblock]$Predicate,[System.Collections.IDictionary]$Mutants){
         Check ([bool](& $Predicate $Source)) "fluent twin: $Name (control: the unmutated source passes)"

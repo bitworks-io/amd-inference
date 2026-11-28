@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # The Fluent window shell: the window, the navigation pane, the message area, the theme, the 250 ms refresh and the message loop.
-# Dot-sourced by fast-llm-ui.ps1 only with -Window fluent, right after the existing dot-sources. The seam calls Test-FastLlmUiFluentHost
+# Dot-sourced by fast-llm-ui.ps1 right after the existing dot-sources. The seam calls Test-FastLlmUiFluentHost
 # (FastLlm.UiFluentSupport.ps1), then Initialize-FastLlmUiFluentShell right after the control-creation block, then Start-FastLlmUiFluentLoop.
 # No WPF or WinForms type is resolved at dot-source time, only inside function bodies. The new fluent-only strings are in
 # FastLlm.UiFluentHome.ps1 ($script:FastLlmUiFluentStrings); today's captions come only from the adapters.
@@ -121,6 +121,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
       </Setter>
     </Style>
     <Style x:Key="FastLlm.ExpanderStyle" TargetType="Expander">
+      <Setter Property="Foreground" Value="{DynamicResource FastLlm.TextPrimaryBrush}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Expander">
@@ -278,7 +279,7 @@ $script:FastLlmUiXaml['FastLlm.Shell'] = @'
               <Border x:Name="Ring" BorderBrush="{DynamicResource FastLlm.FocusBrush}" BorderThickness="2" CornerRadius="4" Visibility="Collapsed" IsHitTestVisible="False"/>
               <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"
                      IsOpen="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
-                <Border Background="{DynamicResource FastLlm.CardBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"
+                <Border Background="{DynamicResource FastLlm.FlyoutBrush}" BorderBrush="{DynamicResource FastLlm.ControlStrongStrokeBrush}" BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"
                         MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
                   <ScrollViewer CanContentScroll="True" Padding="2">
                     <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
@@ -600,6 +601,8 @@ function Set-FastLlmUiFluentTheme {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledTextBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledFillBrush' -Value ([System.Windows.SystemColors]::ControlBrush)
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.DisabledStrokeBrush' -Value ([System.Windows.SystemColors]::GrayTextBrush)
+        # A popup is its own window, so its surface is opaque: the system Window colour here, the opaque Flyout token otherwise.
+        Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FlyoutBrush' -Value ([System.Windows.SystemColors]::WindowBrush)
     }
     else {
         Set-FastLlmUiResourceValue -Dictionary $dictionary -Key 'FastLlm.FocusBrush' -Value $dictionary['FastLlm.AccentFillBrush']
@@ -1087,7 +1090,6 @@ function Initialize-FastLlmUiFluentShell {
     # The stage names the run-log reason: theme-init for the theme, the native types and the hooks, xaml-parse for the markup, elements and bindings.
     $stage = 'theme-init'
     try {
-        $classicForm = $script:form
         $windowTitle = [string] $script:FastLlmUiFluentWindowTitle
 
         # Fail-closed: without the native types or the message hook the sign-out guard would silently be missing.
@@ -1169,7 +1171,6 @@ function Initialize-FastLlmUiFluentShell {
         }
         # The Settings page's unsaved-edits prompt runs before the FormClosing guards (Cancel runs none of them); it is skipped at sign-out.
         $formAdapter.Add_BeforeClosing({ Test-FastLlmUiFluentSettingsCloseRefused })
-        try { $classicForm.Dispose() } catch { $null = $_ }
 
         $stage = 'theme-init'
         Set-FastLlmUiFluentWindowLook -ThemeState $themeState

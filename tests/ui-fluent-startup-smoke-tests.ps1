@@ -136,9 +136,6 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $install 'settings.json'), '{"updateCheck":"off"}', (New-Object System.Text.UTF8Encoding($false)))
     $exe = (Get-Process -Id $PID).Path
     $childArgs = @('-STA', '-NoLogo', '-NoProfile', '-File', $copyPath)
-    # 5b-delete-begin
-    $childArgs += @('-Window', 'fluent')
-    # 5b-delete-end
     $childArgs += @('-InstallRoot', $install)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build the unsigned FastLLM release package. Signing happens in .github/workflows/release.yml.
 
-Writes <out>/package-unsigned.zip and <out>/package-unsigned.sha256. The zip holds the app files (plus the individual docs the product references), FASTLLM-VERSION.json,
+Writes <out>/package-unsigned.zip and <out>/package-unsigned.sha256 (and, for a stable build that uses the reviewed lineage
+override in release/stable-lineage-override.json, <out>/stable-lineage-override.provenance.json). The zip holds the app files (plus the individual docs the product references), FASTLLM-VERSION.json,
 MANIFEST.json (every file with bytes and sha256, except itself and RELEASE.json) and RELEASE.json (last). Offline: no
 network, no keys. Refuses to run inside the private workspace (a tree with ops/).
 
@@ -179,14 +180,70 @@ def lineage_recipe_ids(recipes_bytes):
     return sorted(str(r.get("id")) for r in recipes if isinstance(r, dict) and isinstance(r.get("evidence"), dict) and r["evidence"].get("measuredModel"))
 
 
-def check_stable_recipe_lineage(files, channel):
-    """A stable package never carries a recipe whose expected numbers were measured on a previous file revision. A canary may."""
+# A reviewed, recorded owner decision to ship named lineage recipes on stable anyway. Versioned in the repo, never packaged
+# (release/ is not in TREES), read only for a stable build.
+LINEAGE_OVERRIDE_FILE = "release/stable-lineage-override.json"
+LINEAGE_OVERRIDE_SCHEMA = "fastllm.stable-lineage-override.v1"
+LINEAGE_OVERRIDE_KEYS = frozenset({"schema", "recipeIds", "reason", "approvedAtUtc", "scope"})
+LINEAGE_OVERRIDE_PROVENANCE = "stable-lineage-override.provenance.json"   # written beside the package in <out>, never packaged
+
+
+def load_lineage_override(root):
+    """The stable lineage override at <root>/release/stable-lineage-override.json, or None when there is none. Strict: a malformed file refuses."""
+    path = os.path.join(root, LINEAGE_OVERRIDE_FILE)
+    if os.path.islink(path):
+        raise BuildError("the stable lineage override must be a regular file, not a link: " + LINEAGE_OVERRIDE_FILE)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as handle:
+        data = handle.read()
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except ValueError:
+        raise BuildError("the stable lineage override is not valid JSON: " + LINEAGE_OVERRIDE_FILE)
+    if not isinstance(document, dict) or set(document) != LINEAGE_OVERRIDE_KEYS:
+        raise BuildError("the stable lineage override must have exactly the keys " + ", ".join(sorted(LINEAGE_OVERRIDE_KEYS)))
+    if document["schema"] != LINEAGE_OVERRIDE_SCHEMA:
+        raise BuildError("the stable lineage override schema must be " + LINEAGE_OVERRIDE_SCHEMA)
+    ids = document["recipeIds"]
+    if (not isinstance(ids, list) or not ids or len(set(map(str, ids))) != len(ids)
+            or not all(isinstance(i, str) and i.strip() == i and i for i in ids)):
+        raise BuildError("the stable lineage override recipeIds must be a non-empty list of distinct recipe ids")
+    for key in ("reason", "scope"):
+        if not isinstance(document[key], str) or not document[key].strip():
+            raise BuildError("the stable lineage override " + key + " must be a non-empty string")
+    if not isinstance(document["approvedAtUtc"], str) or not BUILT_AT_RE.match(document["approvedAtUtc"]):
+        raise BuildError("the stable lineage override approvedAtUtc must be YYYY-MM-DDTHH:MM:SSZ")
+    document["sha256"] = sha256_hex(data)
+    return document
+
+
+def check_stable_recipe_lineage(files, channel, override=None):
+    """A stable package never carries a recipe whose expected numbers were measured on a previous file revision. A canary may.
+
+    On stable, an override (load_lineage_override) lets exactly the recipes it lists through: an unlisted lineage recipe still
+    refuses, and a listed id that is not a lineage recipe (stale) refuses too. Returns the provenance record when the override
+    was used, else None. A canary ignores the override."""
     if channel != "stable":
-        return
+        return None
     ids = lineage_recipe_ids(files.get(RECIPES_FILE))
-    if ids:
-        raise BuildError("Refusing a stable build: recipe(s) " + ", ".join(ids)
+    listed = set(override["recipeIds"]) if override is not None else set()
+    unlisted = [i for i in ids if i not in listed]
+    if unlisted:
+        raise BuildError("Refusing a stable build: recipe(s) " + ", ".join(unlisted)
                          + " still carry expected numbers measured on a previous file revision; publish new measured evidence first.")
+    stale = sorted(listed - set(ids))
+    if stale:
+        raise BuildError("Refusing a stable build: the stable lineage override lists recipe(s) " + ", ".join(stale)
+                         + " that carry no previous-revision evidence; remove them from " + LINEAGE_OVERRIDE_FILE + ".")
+    if not ids:
+        return None
+    return {"file": LINEAGE_OVERRIDE_FILE, "sha256": override["sha256"], "recipeIds": ids, "reason": override["reason"],
+            "approvedAtUtc": override["approvedAtUtc"], "scope": override["scope"]}
+
+
+def lineage_override_line(provenance):
+    return "STABLE LINEAGE OVERRIDE: " + ", ".join(provenance["recipeIds"]) + " (" + provenance["reason"] + ")"
 
 
 def manifest_bytes(entries):
@@ -203,7 +260,8 @@ def build(root, version, channel, min_agent_version, out_dir, built_at=None, rol
         raise BuildError("the output folder already exists")
     files = collect(root)
     validate_release_policy(files.get(POLICY_FILE), version)
-    check_stable_recipe_lineage(files, channel)
+    override = load_lineage_override(root) if channel == "stable" else None
+    lineage_override = check_stable_recipe_lineage(files, channel, override)
     entries = [{"path": p, "bytes": len(b), "sha256": sha256_hex(b)} for p, b in sorted(files.items())]
     version_doc = canonical_json({"version": version, "builtAtUtc": built_at, "channel": channel,
                                   "sourceManifestSha256": sha256_hex(manifest_bytes(entries))})
@@ -236,13 +294,21 @@ def build(root, version, channel, min_agent_version, out_dir, built_at=None, rol
             unsigned_sha256 = sha256_hex(handle.read())
         with open(os.path.join(out_dir, "package-unsigned.sha256"), "w") as handle:
             handle.write(unsigned_sha256 + "\n")
+        if lineage_override is not None:
+            # Provenance beside the package, never inside it: RELEASE.json is the signed wire record the bench agent reads.
+            with open(os.path.join(out_dir, LINEAGE_OVERRIDE_PROVENANCE), "wb") as handle:
+                handle.write(canonical_json(dict(lineage_override, version=version, channel=channel, unsignedSha256=unsigned_sha256)))
     except BaseException:
         for name in os.listdir(out_dir):
             os.remove(os.path.join(out_dir, name))
         os.rmdir(out_dir)
         raise
-    return {"outDir": out_dir, "version": version, "unsignedSha256": unsigned_sha256,
-            "manifestSha256": release["manifestSha256"], "fileCount": len(entries)}
+    result = {"outDir": out_dir, "version": version, "unsignedSha256": unsigned_sha256,
+              "manifestSha256": release["manifestSha256"], "fileCount": len(entries)}
+    if lineage_override is not None:
+        print(lineage_override_line(lineage_override), file=sys.stderr)
+        result["stableLineageOverride"] = lineage_override
+    return result
 
 
 def main(argv=None):
