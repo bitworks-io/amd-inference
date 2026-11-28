@@ -1522,6 +1522,39 @@ function Invoke-P4a-CardAttachReady {
     Check-NoExceptions 'P4a'
 }
 
+# ---- P4b: the Home card hides the background line when it repeats the detail line (Stop, idle stop) and shows it otherwise ----
+function Invoke-P4b-CardRepeatedLine {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $saved = @{ Status = [string]$script:statusLabel.Text; Background = [string]$script:backgroundLabel.Text }
+    try {
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+        Invoke-Pump 50
+        $stopText = 'Stopped. The background run ended.'
+        $script:statusLabel.Text = $stopText
+        $script:backgroundLabel.Text = $stopText
+        Update-FastLlmUiFluentHome
+        Check ($els.BackgroundLine.Visibility -eq [System.Windows.Visibility]::Collapsed) 'P4b the background line is hidden when it repeats the detail line' "visibility=$($els.BackgroundLine.Visibility) detail='$($els.StatusDetail.Text)' line='$($els.BackgroundLine.Text)'"
+        $shown = New-Object System.Collections.ArrayList
+        foreach ($name in 'StatusHeadline', 'StatusDetail', 'BackgroundLine') {
+            $block = $els[$name]
+            if ($block.Visibility -eq [System.Windows.Visibility]::Visible -and ([string]$block.Text).Trim() -cne '') { [void]$shown.Add(([string]$block.Text).Trim().ToLowerInvariant()) }
+        }
+        $distinct = @($shown | Select-Object -Unique)
+        Check ($shown.Count -eq $distinct.Count) 'P4b the visible card lines (headline, detail, background line) have no duplicate' "lines=$($shown -join ' | ')"
+        $script:backgroundLabel.Text = 'Attached to Ready background inference. Closing this window detaches; use Stop to end serving.'
+        Update-FastLlmUiFluentHome
+        Check ($els.BackgroundLine.Visibility -eq [System.Windows.Visibility]::Visible) 'P4b a background line that differs from the detail line is shown' "visibility=$($els.BackgroundLine.Visibility)"
+    }
+    finally {
+        $script:statusLabel.Text = $saved.Status
+        $script:backgroundLabel.Text = $saved.Background
+        Update-FastLlmUiFluentHome
+    }
+    Check-NoExceptions 'P4b'
+}
+
 function Invoke-P5-GreyedReasons {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -5380,7 +5413,7 @@ $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
     'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
-    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P5-GreyedReasons',
+    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P4b-CardRepeatedLine', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
     'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P21c-DisabledButtons', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',

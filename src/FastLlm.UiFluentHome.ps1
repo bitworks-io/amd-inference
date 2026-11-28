@@ -557,6 +557,9 @@ function Update-FastLlmUiFluentHome {
         $keys['Composed'] = $composed
     }
 
+    # The secondary background line is hidden when it repeats the detail line or the headline (Stop and the idle stop write the same sentence to both).
+    $e['BackgroundLine'].Visibility = if (Test-FastLlmUiCardLineShown -Line ([string] $e['BackgroundLine'].Text) -Above @([string] $e['StatusDetail'].Text, [string] $card.headline)) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+
     # The main action: the card says which one shows; whether it can be pressed is only the adapter's Enabled (SetBusy).
     $action = [string] $card.mainAction
     $e['StartSplit'].Visibility = if ($action -ceq 'start') { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }

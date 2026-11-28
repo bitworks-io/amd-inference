@@ -201,5 +201,51 @@ Check ($successRows -gt 0) 'the honest-colour property saw success rows'
 foreach($s in @($headlines.Keys|Where-Object{$_ -cne 'reinstalling'})){Check ($seenStates.ContainsKey($s)) "the matrix reaches state $s"}
 Write-Host "honest-colour success rows: $successRows"
 
+# ---- The card hides a secondary line that repeats a line above it (Stop and the idle stop wrote one sentence to both lines) ----
+Check ((Test-FastLlmUiCardLineShown -Line '' -Above @('a')) -eq $false) 'line shown: an empty line is hidden'
+Check ((Test-FastLlmUiCardLineShown -Line "  `t " -Above @('a')) -eq $false) 'line shown: a whitespace line is hidden'
+Check ((Test-FastLlmUiCardLineShown -Line $null -Above @('a')) -eq $false) 'line shown: a null line is hidden'
+Check ((Test-FastLlmUiCardLineShown -Line 'Same line.' -Above @('Same line.')) -eq $false) 'line shown: a line equal to one above is hidden'
+Check ((Test-FastLlmUiCardLineShown -Line 'Same line.' -Above @('Other.','Same line.')) -eq $false) 'line shown: a match on a later entry hides it'
+Check ((Test-FastLlmUiCardLineShown -Line 'SAME line.' -Above @('same LINE.')) -eq $false) 'line shown: the comparison ignores case'
+Check ((Test-FastLlmUiCardLineShown -Line "  Same line.`t" -Above @('Same line.')) -eq $false) 'line shown: surrounding whitespace on the line is ignored'
+Check ((Test-FastLlmUiCardLineShown -Line 'Same line.' -Above @(" Same line. ")) -eq $false) 'line shown: surrounding whitespace on the entry above is ignored'
+Check ((Test-FastLlmUiCardLineShown -Line 'A different line.' -Above @('Same line.')) -eq $true) 'line shown: a different line is shown'
+Check ((Test-FastLlmUiCardLineShown -Line 'A different line.' -Above @()) -eq $true) 'line shown: a line with nothing above it is shown'
+Check ((Test-FastLlmUiCardLineShown -Line 'A different line.' -Above @($null,'Same line.')) -eq $true) 'line shown: a null entry above is ignored'
+Check ((Test-FastLlmUiCardLineShown -Line 'A different line.' -Above @('','Same line.')) -eq $true) 'line shown: an empty entry above never matches'
+Check ((Test-FastLlmUiCardLineShown -Line 'A different line.' -Above $null) -eq $true) 'line shown: a null Above shows the line'
+
+# (a) Stop: the detail is the literal the window script writes to statusLabel in ApplyUiBackgroundStatus's stop branch, read from the file (AST).
+$uiParse=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'fast-llm-ui.ps1'),[ref]$null,[ref]$null)
+$applyFn=@($uiParse.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ApplyUiBackgroundStatus'},$true))
+Check ($applyFn.Count -eq 1) 'line shown: ApplyUiBackgroundStatus is defined once in fast-llm-ui.ps1'
+$stopIfs=@($applyFn[0].FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text.Contains('$script:bgStopRequested')},$true))
+Check ($stopIfs.Count -eq 1) 'line shown: the stop branch (the if whose first condition reads bgStopRequested) is found once'
+$stopLiterals=@($stopIfs[0].Clauses[0].Item2.FindAll({param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$statusLabel.Text' -and
+    $n.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $n.Right.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true))
+Check ($stopLiterals.Count -eq 1) 'line shown: the stop branch assigns one string literal to $statusLabel.Text'
+$stopDetail=[string]$stopLiterals[0].Right.Expression.Value
+$stopBg=Get-UiBackgroundFixture -Name 'stale'
+$stopLine=Get-FastLlmUiBackgroundText -State $stopBg -StopRequested
+Check ($stopLine -ceq $stopDetail) "line shown: the Stop background line equals the detail line (the bug's precondition): '$stopLine' vs '$stopDetail'"
+Check ((Test-FastLlmUiCardLineShown -Line $stopLine -Above @($stopDetail,'Not running')) -eq $false) 'line shown: after Stop the repeated background line is hidden'
+
+# (b) Idle stop: the detail is Get-FastLlmUiIdleStopText, the background line is the idle branch of Get-FastLlmUiBackgroundText.
+$idleBg=Get-UiBackgroundFixture -Name 'stale'
+$idleBg.observation | Add-Member -NotePropertyName stopReason -NotePropertyValue 'idle'
+$idleBg.observation | Add-Member -NotePropertyName idleStopMinutes -NotePropertyValue 15
+$idleDetail=Get-FastLlmUiIdleStopText -Minutes 15
+$idleLine=Get-FastLlmUiBackgroundText -State $idleBg
+Check ($idleLine -ceq $idleDetail -and $idleDetail.Contains('15 min')) "line shown: the idle-stop background line equals the detail line: '$idleLine' vs '$idleDetail'"
+Check ((Test-FastLlmUiCardLineShown -Line $idleLine -Above @($idleDetail,'Not running')) -eq $false) 'line shown: after the idle stop the repeated background line is hidden'
+
+# (c) A healthy attached run: the background line differs from a typical detail line and stays shown.
+$okBg=Get-UiBackgroundFixture -Name 'ready-attached'
+$okLine=Get-FastLlmUiBackgroundText -State $okBg
+Check ($okLine -cmatch '^Attached to Ready background inference') "line shown: the attached healthy line is the expected sentence ('$okLine')"
+Check ((Test-FastLlmUiCardLineShown -Line $okLine -Above @('Ready. Apps can connect.','Running in the background')) -eq $true) 'line shown: a healthy attached state keeps its background line'
+
 Write-Host "UI card state tests passed: $checks"
 exit 0

@@ -4496,4 +4496,36 @@ Test-SaControl 'the edit finder' $settingsText ${function:Get-SaEditFindings}
 Test-SaControl 'the saved-note finder' $flowSaText ${function:Get-SaNoteFindings}
 # ===== end Settings additions (Task S2) =====
 
+# ===== The status card hides a secondary line that repeats the detail line (Stop, idle stop). The pin reads the real Home text (AST) and runs again on planted mutants. =====
+# Update-FastLlmUiFluentHome must set BackgroundLine's Visibility from Test-FastLlmUiCardLineShown, with the StatusDetail element's shown text in -Above.
+$clHomeText=[IO.File]::ReadAllText((Join-Path $root 'src/FastLlm.UiFluentHome.ps1'))
+function Get-CardLineFindings([string]$Text){
+    $f=New-Object System.Collections.ArrayList
+    $fn=Get-DlgFn $Text 'Update-FastLlmUiFluentHome'
+    if($null -eq $fn){[void]$f.Add('Update-FastLlmUiFluentHome is not defined once');return ,$f.ToArray()}
+    $sets=@($fn.FindAll({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq "`$e['BackgroundLine'].Visibility"},$true))
+    if($sets.Count -ne 1){[void]$f.Add("BackgroundLine Visibility is set $($sets.Count) times (want once)");return ,$f.ToArray()}
+    $calls=@($sets[0].Right.FindAll({param($n) Test-DlgCall $n 'Test-FastLlmUiCardLineShown'},$true))
+    if($calls.Count -ne 1){[void]$f.Add('the BackgroundLine Visibility is not set from one Test-FastLlmUiCardLineShown call');return ,$f.ToArray()}
+    $line=Get-DlgParamText $calls[0] 'Line'
+    if($null -eq $line -or $line -cnotmatch "\`$e\['BackgroundLine'\]\.Text"){[void]$f.Add('-Line is not the BackgroundLine element text')}
+    $above=Get-DlgParamText $calls[0] 'Above'
+    if($null -eq $above -or $above -cnotmatch "\`$e\['StatusDetail'\]\.Text"){[void]$f.Add('-Above does not carry the StatusDetail element text')}
+    return ,$f.ToArray()
+}
+$clReal=Get-CardLineFindings $clHomeText
+foreach($x in $clReal){Write-Host "FINDING: $x"}
+Check ($clReal.Count -eq 0) 'Update-FastLlmUiFluentHome sets BackgroundLine Visibility from Test-FastLlmUiCardLineShown with the StatusDetail text in -Above'
+$clAssign=[regex]::Match($clHomeText,"(?m)^    \`$e\['BackgroundLine'\]\.Visibility = .*\r?\n")
+Check ($clAssign.Success) 'self-check: the BackgroundLine Visibility assignment anchor for the planted mutants exists'
+$clPlants=[ordered]@{
+    'the Visibility assignment removed'=$clHomeText.Replace($clAssign.Value,'')
+    '-Above without StatusDetail'=$clHomeText.Replace("-Above @([string] `$e['StatusDetail'].Text, [string] `$card.headline)","-Above @([string] `$card.headline)")
+    '-Above without StatusDetail, empty'=$clHomeText.Replace("-Above @([string] `$e['StatusDetail'].Text, [string] `$card.headline)",'-Above @()')
+    'Visibility not from the helper'=$clHomeText.Replace($clAssign.Value,"    `$e['BackgroundLine'].Visibility = [System.Windows.Visibility]::Visible`n")
+    'the line is not the element text'=$clHomeText.Replace("-Line ([string] `$e['BackgroundLine'].Text)","-Line ([string] `$script:backgroundLabel.Text)")
+}
+foreach($k in $clPlants.Keys){ Check ($clPlants[$k] -cne $clHomeText -and (Get-CardLineFindings $clPlants[$k]).Count -ge 1) "mutation check: the card line pin flags: $k" }
+# ===== end the card line pin =====
+
 Write-Host "UI fluent member coverage tests passed: $checks"
