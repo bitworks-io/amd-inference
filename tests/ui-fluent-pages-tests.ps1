@@ -5457,6 +5457,25 @@ function Stop-PagesTeardown {
     try { Invoke-Pump 100 } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
 }
 
+# The window hooks still registered, one string each: the scenario window's title, or "a window outside the scenario list". The registry is the
+# shell's ArrayList ($script:FastLlmUiHookEntries). It is enumerated through @($Registry): Get-Variable -ValueOnly hands back the ArrayList itself, so
+# @(Get-Variable ...) is a one-item array holding the list, and member access (.Window) on that list enumerates it. On an empty list that throws
+# under StrictMode 2, and on a full one it yields an array that never equals one window. The scenarios (a generic List) are walked by index, as elsewhere here.
+function Get-PagesLiveHooks {
+    param($Registry, $Scenarios)
+    $found = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $Registry) { return }
+    foreach ($entry in @($Registry)) {
+        if ($null -eq $entry) { continue }
+        $window = if ($entry -is [System.Collections.IDictionary]) { $entry['Window'] } else { $null }
+        $title = $null
+        for ($j = 0; $null -ne $Scenarios -and $j -lt $Scenarios.Count; $j++) { if ([object]::ReferenceEquals($window, $Scenarios[$j].Window)) { $title = [string]$Scenarios[$j].Title; break } }
+        if ($null -eq $title) { $title = 'a window outside the scenario list' }
+        $found.Add($title)
+    }
+    return $found.ToArray()
+}
+
 $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:tick = $tick
@@ -5524,12 +5543,16 @@ try {
     }
     Check ($script:scns.Count -gt 0 -and $openWins.Count -eq 0) 'teardown: every scenario window is closed' ("not closed: " + ($openWins -join '; '))
 
-    $liveHooks = New-Object System.Collections.Generic.List[string]
-    $hookEntries = @(Get-Variable -Name FastLlmUiHookEntries -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
-    foreach ($entry in $hookEntries) {
-        if ($null -eq $entry) { continue }
-        foreach ($scn in $script:scns) { if ([object]::ReferenceEquals($entry.Window, $scn.Window)) { $liveHooks.Add([string]$scn.Title) } }
-    }
+    # Controls first: the helper must read an empty registry as nothing (the CI failure), and must find a hook planted for a scenario window.
+    $emptyRead = $null; $emptyErr = ''
+    try { $emptyRead = @(Get-PagesLiveHooks -Registry (New-Object System.Collections.ArrayList) -Scenarios $script:scns) } catch { $emptyErr = $_.Exception.Message }
+    Check ($emptyErr -ceq '' -and $null -ne $emptyRead -and $emptyRead.Count -eq 0) 'teardown control: an empty hook registry reads as no live hook, without throwing' "error='$emptyErr'"
+    $planted = New-Object System.Collections.ArrayList
+    if ($script:scns.Count -gt 0) { $null = $planted.Add(@{ Window = $script:scns[0].Window; Source = $null; Hook = $null; Obj = $null }) }
+    $plantedRead = @(Get-PagesLiveHooks -Registry $planted -Scenarios $script:scns)
+    Check ($script:scns.Count -gt 0 -and $plantedRead.Count -eq 1 -and [string]$plantedRead[0] -ceq [string]$script:scns[0].Title) 'teardown control: a hook planted for a scenario window is found, by that window''s title' ("found: " + ($plantedRead -join ', '))
+
+    $liveHooks = @(Get-PagesLiveHooks -Registry (Get-Variable -Name FastLlmUiHookEntries -Scope Script -ValueOnly -ErrorAction SilentlyContinue) -Scenarios $script:scns)
     Check ($liveHooks.Count -eq 0) 'teardown: no window hook is still registered' ("registered: " + ($liveHooks -join ', '))
 }
 catch { $script:fail++; Write-Host "FAIL: teardown checks threw -- $($_.Exception.ToString())" }
