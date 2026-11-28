@@ -412,17 +412,14 @@ class StableLineageOverrideTests(unittest.TestCase):
         self.assert_unlisted_refuses()
         self.assert_stale_refuses()
 
-    def test_the_shipped_override_lists_exactly_the_shipped_lineage_recipes(self):
+    def test_main_carries_no_lineage_override_so_stable_refuses_again(self):
+        # The override covered one stable release only. With the file gone, the shipped lineage recipes refuse a stable build again.
+        self.assertFalse((ROOT / br.LINEAGE_OVERRIDE_FILE).exists())
+        self.assertIsNone(br.load_lineage_override(str(ROOT)))
         files = br.collect(str(ROOT))
-        self.assertNotIn(br.LINEAGE_OVERRIDE_FILE, files, "release/ is never packaged")
-        override = br.load_lineage_override(str(ROOT))
-        ids = br.lineage_recipe_ids(files["config/recipes.json"])
-        self.assertEqual(sorted(override["recipeIds"]), ids)
-        self.assertEqual(override["reason"], self.REASON)
-        self.assertEqual(override["scope"], "the next stable release only")
-        provenance = br.check_stable_recipe_lineage(files, "stable", override)
-        self.assertEqual(provenance["recipeIds"], ids)
-        self.assertIn("STABLE LINEAGE OVERRIDE: " + ", ".join(ids) + " (" + self.REASON + ")", br.lineage_override_line(provenance))
+        if br.lineage_recipe_ids(files["config/recipes.json"]):
+            with self.assertRaisesRegex(br.BuildError, "Refusing a stable build"):
+                br.check_stable_recipe_lineage(files, "stable", br.load_lineage_override(str(ROOT)))
 
 
 class ProductToolsRealTreeTests(unittest.TestCase):
