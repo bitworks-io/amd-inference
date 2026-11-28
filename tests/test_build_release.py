@@ -1,4 +1,4 @@
-import hashlib, importlib.util, json, os, re, tempfile, unittest, zipfile
+import contextlib, hashlib, importlib.util, io, json, os, re, tempfile, unittest, zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -264,7 +264,7 @@ class StableRecipeLineageGateTests(unittest.TestCase):
         # Proves the refusal test bites: with the guard replaced by a no-op the same stable build succeeds, so the refusal assertion above would fail.
         self.write_recipes(True)
         original = br.check_stable_recipe_lineage
-        br.check_stable_recipe_lineage = lambda files, channel: None
+        br.check_stable_recipe_lineage = lambda files, channel, override=None: None
         try:
             self.build(channel="stable")
             with self.assertRaises(AssertionError):
@@ -276,6 +276,153 @@ class StableRecipeLineageGateTests(unittest.TestCase):
         self.out = Path(tempfile.mkdtemp()) / "out"
         with self.assertRaisesRegex(br.BuildError, "Refusing a stable build"):
             self.build(channel="stable")
+
+
+class StableLineageOverrideTests(unittest.TestCase):
+    """A reviewed override file (release/stable-lineage-override.json, never packaged) lets exactly the recipes it lists through a
+    stable build, records the decision, and is ignored on canary."""
+    setUp = PublicBuilderTests.setUp
+    build = PublicBuilderTests.build
+    names = PublicBuilderTests.names
+    member = PublicBuilderTests.member
+    write_recipes = StableRecipeLineageGateTests.write_recipes
+    REASON = "Ignore the safety check, issue the release"
+
+    def write_override(self, ids=("card.new-model.16k",), **changes):
+        document = {"schema": br.LINEAGE_OVERRIDE_SCHEMA, "recipeIds": list(ids), "reason": self.REASON,
+                    "approvedAtUtc": "2026-11-28T00:02:00Z", "scope": "the next stable release only"}
+        document.update(changes)
+        path = self.root / "release" / "stable-lineage-override.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document) if not isinstance(changes.get("raw"), str) else changes["raw"])
+        return path
+
+    def fresh_out(self):
+        self.out = Path(tempfile.mkdtemp()) / "out"
+
+    def build_stable_capturing(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            result = self.build(channel="stable")
+        return result, err.getvalue()
+
+    def assert_unlisted_refuses(self):
+        self.write_recipes(True)
+        self.write_override(ids=("card.someone-else.16k",))
+        self.fresh_out()
+        with self.assertRaisesRegex(br.BuildError, r"Refusing a stable build: recipe\(s\) card\.new-model\.16k still carry expected numbers"):
+            self.build(channel="stable")
+
+    def assert_stale_refuses(self):
+        self.write_recipes(True)
+        self.write_override(ids=("card.new-model.16k", "card.other.16k"))
+        self.fresh_out()
+        with self.assertRaisesRegex(br.BuildError, r"Refusing a stable build: the stable lineage override lists recipe\(s\) card\.other\.16k that carry no previous-revision evidence; remove them from release/stable-lineage-override\.json\."):
+            self.build(channel="stable")
+
+    def test_a_listed_lineage_recipe_builds_stable_and_records_the_provenance(self):
+        self.write_recipes(True)
+        override = self.write_override()
+        result, err = self.build_stable_capturing()
+        self.assertIn("STABLE LINEAGE OVERRIDE: card.new-model.16k (Ignore the safety check, issue the release)", err.splitlines())
+        provenance = result["stableLineageOverride"]
+        self.assertEqual(provenance, {"file": "release/stable-lineage-override.json", "sha256": hashlib.sha256(override.read_bytes()).hexdigest(),
+                                      "recipeIds": ["card.new-model.16k"], "reason": self.REASON,
+                                      "approvedAtUtc": "2026-11-28T00:02:00Z", "scope": "the next stable release only"})
+        record = json.loads((self.out / br.LINEAGE_OVERRIDE_PROVENANCE).read_text())
+        self.assertEqual(record, dict(provenance, version="2026.10.20.1", channel="stable", unsignedSha256=result["unsignedSha256"]))
+        self.assertEqual(sorted(os.listdir(self.out)), sorted(["package-unsigned.zip", "package-unsigned.sha256", br.LINEAGE_OVERRIDE_PROVENANCE]))
+
+    def test_the_override_is_never_packaged_and_the_signed_records_are_unchanged(self):
+        self.write_recipes(True)
+        self.write_override()
+        self.build_stable_capturing()
+        self.assertFalse([n for n in self.names() if n.startswith("release/") or "lineage-override" in n])
+        self.assertEqual(set(json.loads(self.member("RELEASE.json"))),
+                         {"schema", "component", "version", "channel", "minAgentVersion", "builtAtUtc", "manifestSha256"})
+        self.assertNotIn(b"OVERRIDE", self.member("FASTLLM-VERSION.json").upper())
+
+    def test_an_unlisted_lineage_recipe_still_refuses(self):
+        self.assert_unlisted_refuses()
+
+    def test_a_listed_id_that_is_not_a_lineage_recipe_refuses_as_stale(self):
+        self.assert_stale_refuses()
+
+    def test_an_override_with_no_lineage_recipe_left_refuses_as_stale(self):
+        self.write_recipes(False)
+        self.write_override()
+        with self.assertRaisesRegex(br.BuildError, r"the stable lineage override lists recipe\(s\) card\.new-model\.16k that carry no previous-revision evidence"):
+            self.build(channel="stable")
+
+    def test_stable_without_an_override_file_still_refuses(self):
+        self.write_recipes(True)
+        with self.assertRaisesRegex(br.BuildError, r"Refusing a stable build: recipe\(s\) card\.new-model\.16k still carry"):
+            self.build(channel="stable")
+
+    def test_a_malformed_override_refuses_stable(self):
+        cases = [dict(raw="{not json"), dict(schema="other"), dict(recipeIds=[]), dict(recipeIds=["a", "a"]), dict(recipeIds="card.new-model.16k"),
+                 dict(recipeIds=[" card.new-model.16k"]), dict(reason=""), dict(scope="  "), dict(approvedAtUtc="2026-11-28 00:02"), dict(extra=1)]
+        self.write_recipes(True)
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.write_override(**{k: v for k, v in changes.items()})
+                self.fresh_out()
+                with self.assertRaisesRegex(br.BuildError, "stable lineage override"):
+                    self.build(channel="stable")
+                self.assertFalse(self.out.exists())
+
+    def test_a_linked_override_refuses_stable(self):
+        self.write_recipes(True)
+        real = self.write_override()
+        link = real.with_name("linked.json")
+        real.rename(link)
+        os.symlink(link, real)
+        with self.assertRaisesRegex(br.BuildError, "must be a regular file, not a link"):
+            self.build(channel="stable")
+
+    def test_canary_ignores_the_override_even_a_malformed_one(self):
+        self.write_recipes(True)
+        self.write_override(raw="{not json")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            result = self.build(channel="canary")
+        self.assertNotIn("stableLineageOverride", result)
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(sorted(os.listdir(self.out)), ["package-unsigned.sha256", "package-unsigned.zip"])
+        self.assertIsNone(br.check_stable_recipe_lineage(br.collect(str(self.root)), "canary", {"recipeIds": [], "sha256": "x"}))
+
+    def test_mutant_an_override_that_skips_the_check_fails_the_unlisted_and_stale_tests(self):
+        # The mutant trusts any present override: on stable it returns a record for whatever is listed and never checks the lineage set.
+        original = br.check_stable_recipe_lineage
+
+        def mutant(files, channel, override=None):
+            if channel == "stable" and override is not None:
+                return {"file": br.LINEAGE_OVERRIDE_FILE, "sha256": override["sha256"], "recipeIds": sorted(override["recipeIds"]),
+                        "reason": override["reason"], "approvedAtUtc": override["approvedAtUtc"], "scope": override["scope"]}
+            return original(files, channel, override)
+
+        br.check_stable_recipe_lineage = mutant
+        try:
+            for probe in (self.assert_unlisted_refuses, self.assert_stale_refuses):
+                with self.subTest(probe=probe.__name__), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(AssertionError):
+                        probe()
+        finally:
+            br.check_stable_recipe_lineage = original
+        self.assert_unlisted_refuses()
+        self.assert_stale_refuses()
+
+    def test_the_shipped_override_lists_exactly_the_shipped_lineage_recipes(self):
+        files = br.collect(str(ROOT))
+        self.assertNotIn(br.LINEAGE_OVERRIDE_FILE, files, "release/ is never packaged")
+        override = br.load_lineage_override(str(ROOT))
+        ids = br.lineage_recipe_ids(files["config/recipes.json"])
+        self.assertEqual(sorted(override["recipeIds"]), ids)
+        self.assertEqual(override["reason"], self.REASON)
+        self.assertEqual(override["scope"], "the next stable release only")
+        provenance = br.check_stable_recipe_lineage(files, "stable", override)
+        self.assertEqual(provenance["recipeIds"], ids)
+        self.assertIn("STABLE LINEAGE OVERRIDE: " + ", ".join(ids) + " (" + self.REASON + ")", br.lineage_override_line(provenance))
 
 
 class ProductToolsRealTreeTests(unittest.TestCase):
