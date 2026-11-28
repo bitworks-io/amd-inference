@@ -2,6 +2,10 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases. Stable releases are the recommended download, starting with 2026.10.20.11.
 
+## Unreleased
+
+- **Window fixes:** disabled buttons and controls now look disabled in the light and dark themes, and after Stop or an idle stop the Home status card shows its message once instead of twice.
+
 ## 2026.11.28.2 (stable)
 
 - **A new FastLLM window:** FastLLM now opens a redesigned window built for Windows 11. A pane on the left goes to Home, Models, Connect, Tools and Settings, and the status card on Home shows whether FastLLM is running, with which model and at which address.
