@@ -1522,6 +1522,39 @@ function Invoke-P4a-CardAttachReady {
     Check-NoExceptions 'P4a'
 }
 
+# ---- P4b: the Home card hides the background line when it repeats the detail line (Stop, idle stop) and shows it otherwise ----
+function Invoke-P4b-CardRepeatedLine {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $saved = @{ Status = [string]$script:statusLabel.Text; Background = [string]$script:backgroundLabel.Text }
+    try {
+        $null = Set-FastLlmUiFluentPage -Id 'Home'
+        Invoke-Pump 50
+        $stopText = 'Stopped. The background run ended.'
+        $script:statusLabel.Text = $stopText
+        $script:backgroundLabel.Text = $stopText
+        Update-FastLlmUiFluentHome
+        Check ($els.BackgroundLine.Visibility -eq [System.Windows.Visibility]::Collapsed) 'P4b the background line is hidden when it repeats the detail line' "visibility=$($els.BackgroundLine.Visibility) detail='$($els.StatusDetail.Text)' line='$($els.BackgroundLine.Text)'"
+        $shown = New-Object System.Collections.ArrayList
+        foreach ($name in 'StatusHeadline', 'StatusDetail', 'BackgroundLine') {
+            $block = $els[$name]
+            if ($block.Visibility -eq [System.Windows.Visibility]::Visible -and ([string]$block.Text).Trim() -cne '') { [void]$shown.Add(([string]$block.Text).Trim().ToLowerInvariant()) }
+        }
+        $distinct = @($shown | Select-Object -Unique)
+        Check ($shown.Count -eq $distinct.Count) 'P4b the visible card lines (headline, detail, background line) have no duplicate' "lines=$($shown -join ' | ')"
+        $script:backgroundLabel.Text = 'Attached to Ready background inference. Closing this window detaches; use Stop to end serving.'
+        Update-FastLlmUiFluentHome
+        Check ($els.BackgroundLine.Visibility -eq [System.Windows.Visibility]::Visible) 'P4b a background line that differs from the detail line is shown' "visibility=$($els.BackgroundLine.Visibility)"
+    }
+    finally {
+        $script:statusLabel.Text = $saved.Status
+        $script:backgroundLabel.Text = $saved.Background
+        Update-FastLlmUiFluentHome
+    }
+    Check-NoExceptions 'P4b'
+}
+
 function Invoke-P5-GreyedReasons {
     if (-not $script:shellOk) { return }
     $f = $script:FastLlmUiFluent
@@ -2513,6 +2546,51 @@ function Invoke-P21b-ExpanderContrast {
         Invoke-Pump 50
     }
     Check-NoExceptions 'P21b'
+}
+# Lab canary observation: in dark, a disabled button (Home's Open chat with nothing running) looked enabled, because the disabled brushes were the enabled ones.
+# On Home with nothing running, OpenChatButton is disabled and its text is the dictionary's DisabledText colour, at least 3x less contrast than an enabled
+# button's (ConnectButton). The dictionary is swapped for each theme and restored after.
+function Invoke-P21c-DisabledButtons {
+    if (-not $script:shellOk) { return }
+    $f = $script:FastLlmUiFluent
+    $els = $f.Els
+    $null = Set-FastLlmUiFluentPage -Id 'Home'
+    Invoke-Pump 100
+    $mergedDicts = $f.Window.Resources.MergedDictionaries
+    $origDict = $mergedDicts[0]
+    try {
+        foreach ($theme in 'dark', 'light') {
+            $mergedDicts.Clear()
+            $dict = New-FastLlmUiThemeDictionary -Theme $theme -AccentPair (Get-FastLlmUiAccentPair $null) -TextScale 1.0
+            $mergedDicts.Add($dict)
+            Invoke-Pump 100
+            $tokens = Get-FastLlmUiThemeTokens -Theme $theme
+            $off = $els.OpenChatButton
+            $on = $els.ConnectButton
+            Check (-not [bool]$off.IsEnabled -and [bool]$on.IsEnabled) "P21c Home with nothing running: OpenChatButton is disabled and ConnectButton is enabled ($theme)" "off=$($off.IsEnabled) on=$($on.IsEnabled)"
+            $want = [string]$dict['FastLlm.DisabledTextBrush'].Color.ToString()
+            $gotOff = 'none'; if ($off.Foreground -is [System.Windows.Media.SolidColorBrush]) { $gotOff = [string]$off.Foreground.Color.ToString() }
+            $gotOn = 'none'; if ($on.Foreground -is [System.Windows.Media.SolidColorBrush]) { $gotOn = [string]$on.Foreground.Color.ToString() }
+            Check ($gotOff -ceq $want -and $gotOff -cne $gotOn) "P21c the disabled button text is the DisabledText colour and differs from an enabled button's ($theme)" "off=$gotOff want=$want on=$gotOn"
+            $q = 0.0
+            if ($gotOff -cne 'none' -and $gotOn -cne 'none') {
+                $cOff = [double](Get-FastLlmUiContrastRatio -Foreground $gotOff -Background ([string]$tokens.Card) -Layer ([string]$tokens.Layer))
+                $cOn = [double](Get-FastLlmUiContrastRatio -Foreground $gotOn -Background ([string]$tokens.Card) -Layer ([string]$tokens.Layer))
+                $q = $cOn / $cOff
+            }
+            Check ($q -ge 3) "P21c the enabled/disabled text contrast quotient is at least 3 ($theme)" "quotient=$([Math]::Round($q, 2))"
+            $bd = $null; try { $bd = $off.Template.FindName('Bd', $off) } catch { $bd = $null }
+            if ($null -ne $bd -and $bd.Background -is [System.Windows.Media.SolidColorBrush]) {
+                Check ([string]$bd.Background.Color.ToString() -ceq [string]$dict['FastLlm.DisabledFillBrush'].Color.ToString()) "P21c the disabled button body is the DisabledFill colour ($theme)"
+            }
+        }
+    }
+    finally {
+        $mergedDicts.Clear()
+        $mergedDicts.Add($origDict)
+        Invoke-Pump 50
+    }
+    Check-NoExceptions 'P21c'
 }
 function Invoke-P21-TwoWay {
     if (-not $script:shellOk) { return }
@@ -5335,15 +5413,68 @@ $script:steps = @(
     # P0 enters the shell's message loop; every step after it runs inside that loop's frame
     'Invoke-P0-ShellStart',
     'Invoke-P1-PageHostAndNav', 'Invoke-P16-ActivityCopyHeader', 'Invoke-P2-ConnectAnApp', 'Invoke-P17-HomeSwitchAndChange', 'Invoke-P6-PageStatusLine', 'Invoke-P14-TrayRestore',
-    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P5-GreyedReasons',
+    'Invoke-P3-ToolsBindings', 'Invoke-P4-AttachFanOut', 'Invoke-P4a-CardAttachReady', 'Invoke-P4b-CardRepeatedLine', 'Invoke-P5-GreyedReasons',
     'Invoke-P7-ConnectContent', 'Invoke-P8-ConnectKey', 'Invoke-P9-ConnectCopies', 'Invoke-P10-ConnectApiCheck',
-    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
+    'Invoke-P20-HomeToModels', 'Invoke-P21-TwoWay', 'Invoke-P21b-ExpanderContrast', 'Invoke-P21c-DisabledButtons', 'Invoke-P22-RemoveFlows', 'Invoke-P23-Picker', 'Invoke-P24-Reasons', 'Invoke-P25-DisabledRows',
     'Invoke-P30-Save', 'Invoke-P31-Leave', 'Invoke-P32-Close', 'Invoke-P33-NewKey', 'Invoke-P34-Unavailable', 'Invoke-P35-Toggles', 'Invoke-P36-Pane', 'Invoke-P38-SettingsAdditions',
     'Invoke-P40-SignInNotice', 'Invoke-P41-DialogKeys', 'Invoke-P42-DialogKeys', 'Invoke-P43-DialogFlows', 'Invoke-P44-DialogTabWalk',
     'Invoke-P11-TabWalk', 'Invoke-P12-ControlView', 'Invoke-P13-DialogOwners', 'Invoke-P15-RealTableOrder',
     # P-SLOT step names of the later tasks are added here, before P99
     'Invoke-P99-StartupFaults'
 )
+
+# Teardown while the dispatcher still pumps (CI showed a pwsh 7 exit-time CLR assert: the suite ended the loop with InvokeShutdown while the shell window was open, so the
+# real Closed handler never ran and hooks and native windows were called back during process teardown). Runs BEFORE Stop-ShellLoop; each step warns, never throws.
+$script:teardownDone = $false
+function Stop-PagesTeardown {
+    if ($script:teardownDone) { return }
+    $script:teardownDone = $true
+    try { if ($null -ne $script:FastLlmUiFluent -and $null -ne $script:FastLlmUiFluent['Timer']) { $script:FastLlmUiFluent['Timer'].Stop() } } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    for ($i = 0; $i -lt $script:scns.Count; $i++) {
+        $scn = $script:scns[$i]
+        try { $scn.Form.FastLlmFormState.FormClosing.Clear() } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+        try { $scn.Form.FastLlmFormState['BeforeClosing'] = $null } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+        try {
+            $closedRec = $scn.Closed
+            $scn.Window.Add_Closed(({ $closedRec.n++ }).GetNewClosure())
+            $scn.Window.Close()
+        }
+        catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    }
+    try {
+        if ($null -ne (Get-Command -Name DisposeTrayControls -ErrorAction SilentlyContinue)) { DisposeTrayControls }
+        else {
+            foreach ($trayName in 'trayIcon', 'trayMenu') {
+                $trayObj = Get-Variable -Name $trayName -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                if ($null -ne $trayObj -and $trayObj -is [System.IDisposable]) { $trayObj.Dispose() }
+            }
+        }
+    }
+    catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    for ($i = 0; $i -lt $script:objs.Count; $i++) {
+        try { $script:objs[$i].Dispose() } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+    }
+    try { Invoke-Pump 100 } catch { Write-Host "WARN: teardown: $($_.Exception.Message)" }
+}
+
+# The window hooks still registered, one string each: the scenario window's title, or "a window outside the scenario list". The registry is the
+# shell's ArrayList ($script:FastLlmUiHookEntries). It is enumerated through @($Registry): Get-Variable -ValueOnly hands back the ArrayList itself, so
+# @(Get-Variable ...) is a one-item array holding the list, and member access (.Window) on that list enumerates it. On an empty list that throws
+# under StrictMode 2, and on a full one it yields an array that never equals one window. The scenarios (a generic List) are walked by index, as elsewhere here.
+function Get-PagesLiveHooks {
+    param($Registry, $Scenarios)
+    $found = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $Registry) { return }
+    foreach ($entry in @($Registry)) {
+        if ($null -eq $entry) { continue }
+        $window = if ($entry -is [System.Collections.IDictionary]) { $entry['Window'] } else { $null }
+        $title = $null
+        for ($j = 0; $null -ne $Scenarios -and $j -lt $Scenarios.Count; $j++) { if ([object]::ReferenceEquals($window, $Scenarios[$j].Window)) { $title = [string]$Scenarios[$j].Title; break } }
+        if ($null -eq $title) { $title = 'a window outside the scenario list' }
+        $found.Add($title)
+    }
+    return $found.ToArray()
+}
 
 $tick = New-Object System.Windows.Threading.DispatcherTimer
 $tick.Interval = [TimeSpan]::FromMilliseconds(50)
@@ -5359,7 +5490,7 @@ $tick.Add_Tick({
     if ($script:busy -or $script:loopStopped) { return }
     $script:busy = $true
     try {
-        if ($script:si -ge $script:steps.Count) { Stop-ShellLoop; return }
+        if ($script:si -ge $script:steps.Count) { Stop-PagesTeardown; Stop-ShellLoop; return }
         $name = $script:steps[$script:si]
         $script:si++
         Write-Host "INFO: step $name started"
@@ -5367,7 +5498,7 @@ $tick.Add_Tick({
         try { $null = & $name }
         catch { $script:fail++; Write-Host "FAIL: step $name threw -- $($_.Exception.ToString())" }
         Write-Host ("INFO: step $name took " + $stepWatch.ElapsedMilliseconds + " ms")
-        if ($script:si -ge $script:steps.Count) { Stop-ShellLoop }
+        if ($script:si -ge $script:steps.Count) { Stop-PagesTeardown; Stop-ShellLoop }
     }
     finally { $script:busy = $false }
 })
@@ -5388,7 +5519,45 @@ try {
 }
 finally { Stop-ShellLoop }
 
-# Results are printed BEFORE cleanup; cleanup is by index and warn-only.
+# Teardown checks (counted in the totals) read the state Stop-PagesTeardown left, BEFORE the second-pass cleanup below closes anything.
+try {
+    $enabledDisp = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $script:FastLlmUiFluent -and $null -ne $script:FastLlmUiFluent['Timer'] -and [bool]$script:FastLlmUiFluent['Timer'].IsEnabled) { $enabledDisp.Add('shell timer') }
+    if ([bool]$script:tick.IsEnabled) { $enabledDisp.Add('step timer') }
+    if ([bool]$script:deadline.IsEnabled) { $enabledDisp.Add('deadline timer') }
+    Check ($enabledDisp.Count -eq 0) 'teardown: no DispatcherTimer is still enabled (the shell timer, the step timer, the deadline timer)' ("still enabled: " + ($enabledDisp -join ', '))
+
+    $enabledForms = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $script:objs.Count; $i++) {
+        $pair = $script:objs[$i]
+        try { if ($null -ne $pair.Forms -and [bool]$pair.Forms.Enabled) { $enabledForms.Add("objs[$i]") } } catch { $null = $_ }
+    }
+    Check ($enabledForms.Count -eq 0) 'teardown: no WinForms timer from the dialog answerers is still enabled' ("still enabled: " + ($enabledForms -join ', '))
+
+    $openWins = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $script:scns.Count; $i++) {
+        $scn = $script:scns[$i]
+        $stillSource = $false
+        try { $stillSource = ($null -ne [System.Windows.PresentationSource]::FromVisual($scn.Window)) } catch { $null = $_ }
+        if ([int]$scn.Closed.n -lt 1 -or $stillSource) { $openWins.Add("$($scn.Title) (Closed ran $($scn.Closed.n) times, source alive $stillSource)") }
+    }
+    Check ($script:scns.Count -gt 0 -and $openWins.Count -eq 0) 'teardown: every scenario window is closed' ("not closed: " + ($openWins -join '; '))
+
+    # Controls first: the helper must read an empty registry as nothing (the CI failure), and must find a hook planted for a scenario window.
+    $emptyRead = $null; $emptyErr = ''
+    try { $emptyRead = @(Get-PagesLiveHooks -Registry (New-Object System.Collections.ArrayList) -Scenarios $script:scns) } catch { $emptyErr = $_.Exception.Message }
+    Check ($emptyErr -ceq '' -and $null -ne $emptyRead -and $emptyRead.Count -eq 0) 'teardown control: an empty hook registry reads as no live hook, without throwing' "error='$emptyErr'"
+    $planted = New-Object System.Collections.ArrayList
+    if ($script:scns.Count -gt 0) { $null = $planted.Add(@{ Window = $script:scns[0].Window; Source = $null; Hook = $null; Obj = $null }) }
+    $plantedRead = @(Get-PagesLiveHooks -Registry $planted -Scenarios $script:scns)
+    Check ($script:scns.Count -gt 0 -and $plantedRead.Count -eq 1 -and [string]$plantedRead[0] -ceq [string]$script:scns[0].Title) 'teardown control: a hook planted for a scenario window is found, by that window''s title' ("found: " + ($plantedRead -join ', '))
+
+    $liveHooks = @(Get-PagesLiveHooks -Registry (Get-Variable -Name FastLlmUiHookEntries -Scope Script -ValueOnly -ErrorAction SilentlyContinue) -Scenarios $script:scns)
+    Check ($liveHooks.Count -eq 0) 'teardown: no window hook is still registered' ("registered: " + ($liveHooks -join ', '))
+}
+catch { $script:fail++; Write-Host "FAIL: teardown checks threw -- $($_.Exception.ToString())" }
+
+# Results are printed after the teardown checks and BEFORE cleanup; cleanup is by index and warn-only.
 if ($script:fail -eq 0) { Write-Host "$($script:pass) checks passed" } else { Write-Host "$($script:fail) checks FAILED, $($script:pass) passed" }
 
 try {

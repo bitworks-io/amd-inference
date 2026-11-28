@@ -4,6 +4,10 @@ FastLLM is in public Preview. Releases are signed by Bitworks LLC and published 
 
 ## Unreleased
 
+- **Window fixes:** disabled buttons and controls now look disabled in the light and dark themes, and after Stop or an idle stop the Home status card shows its message once instead of twice.
+
+## 2026.11.28.2 (stable)
+
 - **A new FastLLM window:** FastLLM now opens a redesigned window built for Windows 11. A pane on the left goes to Home, Models, Connect, Tools and Settings, and the status card on Home shows whether FastLLM is running, with which model and at which address.
   - It follows the Windows light, dark or high contrast theme, the display scaling and the text size. On Windows 11 22H2 and later it uses the Mica background; earlier versions get a solid background. It works with the keyboard and with Narrator.
   - Settings is now a page: your changes apply when you press Save, and FastLLM asks before you leave the page with unsaved changes. It also shows the context profile and requests at once, which until now only the command line could change. The embeddings settings appear when an approved embedding model is available, or when embeddings are already on.

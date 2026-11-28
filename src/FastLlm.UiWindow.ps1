@@ -96,16 +96,21 @@ function New-FastLlmUiThemeDictionary {
             $text = & $newBrush ([string]$HighContrastPalette['WindowText'])
             $hi = & $newBrush ([string]$HighContrastPalette['Highlight'])
             $hiText = & $newBrush ([string]$HighContrastPalette['HighlightText'])
+            $gray = if ($HighContrastPalette.ContainsKey('GrayText')) { & $newBrush ([string]$HighContrastPalette['GrayText']) } else { $text }
+            $ctl = if ($HighContrastPalette.ContainsKey('Control')) { & $newBrush ([string]$HighContrastPalette['Control']) } else { $win }
         } else {
             $win = $sc::WindowBrush
             $text = $sc::WindowTextBrush
             $hi = $sc::HighlightBrush
             $hiText = $sc::HighlightTextBrush
+            $gray = $sc::GrayTextBrush
+            $ctl = $sc::ControlBrush
         }
         $map = [ordered]@{
             Layer = $win; Card = $win; CardStroke = $text; Flyout = $win
             TextPrimary = $text; TextSecondary = $text
             ControlStroke = $text; ControlStrongStroke = $text
+            DisabledText = $gray; DisabledFill = $ctl; DisabledStroke = $gray
             AccentFill = $hi; TextOnAccent = $hiText
             SuccessText = $text; CautionText = $text; CriticalText = $text
             SuccessBackground = $win; CautionBackground = $win; CriticalBackground = $win
