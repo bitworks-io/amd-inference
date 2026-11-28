@@ -2,7 +2,7 @@
 
 FastLLM is in public Preview. Releases are signed by Bitworks LLC and published at https://github.com/bitworks-io/amd-inference/releases. Canary releases are pre-releases. Stable releases are the recommended download, starting with 2026.10.20.11.
 
-## Unreleased
+## 2026.11.28.2 (stable)
 
 - **A new FastLLM window:** FastLLM now opens a redesigned window built for Windows 11. A pane on the left goes to Home, Models, Connect, Tools and Settings, and the status card on Home shows whether FastLLM is running, with which model and at which address.
   - It follows the Windows light, dark or high contrast theme, the display scaling and the text size. On Windows 11 22H2 and later it uses the Mica background; earlier versions get a solid background. It works with the keyboard and with Narrator.
