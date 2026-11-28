@@ -232,6 +232,16 @@ function Test-FastLlmUiBackgroundAttachReady {
     return [bool](-not $bg.attachedRequestId -and $attachable -and $requestMatches)
 }
 
+# A card line that repeats a line above it is hidden: true only when the line has text and no line above it equals it (trimmed, ignoring case).
+function Test-FastLlmUiCardLineShown {
+    param([string]$Line, [string[]]$Above)
+    if ($null -eq $Line -or $Line.Trim().Length -eq 0) { return $false }
+    foreach ($other in $Above) {
+        if ($null -ne $other -and $Line.Trim().Equals($other.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    }
+    return $true
+}
+
 # The status card: one state, its headline, tone, reason, main action and start steps, from one snapshot. First match wins.
 function Get-FastLlmUiCardState {
     param([Parameter(Mandatory=$true)]$Snapshot)
